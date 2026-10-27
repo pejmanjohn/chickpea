@@ -237,6 +237,77 @@ test('a write that needs a permission argument is administrative and needs an ex
   assert.deepEqual(reviewed.input.required, ['idBoard', 'permissionLevel']);
 });
 
+test('a write that sends to people stays out unless a reviewer adds it', () => {
+  const send = tool('ACME_SEND_MESSAGE', ['createHint'], {
+    type: 'object',
+    properties: { thread_id: { type: 'integer' }, body: { type: 'string' } },
+    required: ['thread_id', 'body'],
+  });
+  const generated = draftComposioManifest(snapshot([send]));
+  assert.equal(generated.manifest.capabilities.some(({ tool: slug }) => slug === 'ACME_SEND_MESSAGE'), false);
+  assert.match(generated.report.excluded.find(({ tool: slug }) => slug === 'ACME_SEND_MESSAGE')!.reason, /^external_publish/);
+
+  const reviewed = draftComposioManifest(snapshot([send]), {
+    ...generated.manifest,
+    review: { add: ['ACME_SEND_MESSAGE'], drop: {}, allowArguments: {} },
+  }).manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_SEND_MESSAGE');
+  assert.equal(reviewed?.lane, 'write');
+  assert.equal(reviewed?.effect, 'external_publish');
+});
+
+test('write tools lose recipient arguments, and a tool that needs one is administrative', () => {
+  const list = { type: 'array', items: { type: 'string' } };
+  const reply = tool('ACME_REPLY_TO_THREAD', ['createHint'], {
+    type: 'object',
+    properties: {
+      thread_id: { type: 'integer' },
+      body: { type: 'string' },
+      to_emails: list,
+      cc_emails: list,
+      bcc_emails: list,
+      from_email: { type: 'string' },
+      replyTo: { type: 'string' },
+      recipients: list,
+      notify_emails: list,
+      notifyUsers: { type: 'boolean' },
+    },
+    required: ['thread_id', 'body'],
+  });
+  const forward = tool('ACME_FORWARD_THREAD', ['createHint'], {
+    type: 'object',
+    properties: { thread_id: { type: 'integer' }, to: list },
+    required: ['thread_id', 'to'],
+  });
+  const reviewed = { add: ['ACME_REPLY_TO_THREAD', 'ACME_FORWARD_THREAD'], drop: {}, allowArguments: {} };
+  const base = draftComposioManifest(snapshot([reply, forward])).manifest;
+  const { manifest, report } = draftComposioManifest(snapshot([reply, forward]), { ...base, review: reviewed });
+  const capability = manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_REPLY_TO_THREAD')!;
+
+  assert.deepEqual(Object.keys(capability.input.properties), ['thread_id', 'body']);
+  assert.deepEqual(Object.keys(capability.withheldArguments!).sort(), [
+    'bcc_emails', 'cc_emails', 'from_email', 'notifyUsers', 'notify_emails', 'recipients', 'replyTo', 'to_emails',
+  ]);
+  assert.equal(manifest.capabilities.some(({ tool: slug }) => slug === 'ACME_FORWARD_THREAD'), false);
+  assert.match(report.excluded.find(({ tool: slug }) => slug === 'ACME_FORWARD_THREAD')!.reason, /^administrative: required argument to /);
+});
+
+test('Freshdesk replies reach only the ticket requester, and forwarding and outbound email are absent', () => {
+  const ids = MANAGED_CONNECTOR_CATALOG.connector('freshdesk')!.capabilities.map(({ id }) => id);
+  assert.equal(ids.includes('freshdesk.reply_to_forward_ticket'), false);
+  assert.equal(ids.includes('freshdesk.create_ticket_outbound_email'), false);
+
+  const reply = MANAGED_CONNECTOR_CATALOG.capability('freshdesk.reply_to_ticket')!.input;
+  const answer = { ticket_id: 42, body: 'Thanks, fixed.' };
+  assert.equal(v.safeParse(reply, answer).success, true);
+  for (const field of ['to_emails', 'cc_emails', 'bcc_emails']) {
+    assert.equal(v.safeParse(reply, { ...answer, [field]: ['someone@example.com'] }).success, false, field);
+  }
+  assert.equal(v.safeParse(reply, { ...answer, from_email: 'support@example.com' }).success, false);
+
+  const note = MANAGED_CONNECTOR_CATALOG.capability('freshdesk.add_note_to_ticket')!.input;
+  assert.equal(v.safeParse(note, { ticket_id: 42, body: 'Internal.', notify_emails: ['a@example.com'] }).success, false);
+});
+
 test('the check rejects a withheld permission argument added back to a pilot manifest', async () => {
   const manifest = pilotManifest('trello');
   const board = manifest.capabilities.find(({ tool: slug }) => slug === 'TRELLO_ADD_BOARDS')!;

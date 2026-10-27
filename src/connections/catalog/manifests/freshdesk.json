@@ -10,7 +10,7 @@
   },
   "label": "Freshdesk",
   "description": "Find, create, and update tickets, contacts, companies, and help articles in one helpdesk.",
-  "securityDescription": "Freshdesk connects with an API key and helpdesk subdomain entered on Composio's hosted page; Chickpea never receives the key. Agents act as the Freshdesk agent who owns the key and can read what that agent can see. With write access, Agents can create and update tickets, contacts, and companies, add private notes, reply to and forward tickets, send outbound email, and draft help articles. Replies, forwards, and outbound email reach customers. Agents cannot delete anything, change a ticket's requester or a contact's email, phone, social, or external IDs, assign tickets to agents or groups, act as another user, make notes public, publish articles, widen which tickets a contact can see, move a contact or ticket to another company or parent ticket, or manage agents, groups, roles, SLAs, or canned responses.",
+  "securityDescription": "Freshdesk connects with an API key and helpdesk subdomain entered on Composio's hosted page; Chickpea never receives the key. Agents act as the Freshdesk agent who owns the key and can read what that agent can see. With write access, Agents can create and update tickets, contacts, and companies, add private notes, reply to a ticket's requester, and draft help articles. A reply reaches the ticket's requester and no one else. Agents cannot forward tickets, send outbound email, add To, CC, or BCC recipients, choose the sending address, or notify anyone about a note. Agents also cannot delete anything, change a ticket's requester or a contact's email, phone, social, or external IDs, assign tickets to agents or groups, act as another user, make notes public, publish articles, widen which tickets a contact can see, move a contact or ticket to another company or parent ticket, or manage agents, groups, roles, SLAs, or canned responses.",
   "preset": {
     "category": "business",
     "accent": "#00AC4C"
@@ -24,7 +24,10 @@
       "FRESHDESK_UPDATE_TICKET",
       "FRESHDESK_VIEW_TICKET"
     ],
-    "drop": {},
+    "drop": {
+      "FRESHDESK_CREATE_TICKET_OUTBOUND_EMAIL": "Emails a new ticket to any address the Agent names. The recipient is the tool's purpose, so no schema bound keeps it inside the helpdesk.",
+      "FRESHDESK_REPLY_TO_FORWARD_TICKET": "Sends the ticket conversation to any address the Agent names; to_emails is required, so the recipient cannot be withheld."
+    },
     "allowArguments": {}
   },
   "capabilities": [
@@ -34,12 +37,13 @@
       "toolName": "freshdesk_add_note_to_ticket",
       "lane": "write",
       "effect": "reversible_write",
-      "description": "Tool to add a private or public note to an existing ticket in Freshdesk. Use when you need to add internal comments or public notes to a ticket. Notes can be private (agent-only) or public, and can include HTML content.",
+      "description": "Tool to add a private note to an existing ticket in Freshdesk. Use when you need to add an internal comment to a ticket. Notes are visible only to agents and can include HTML content.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Freshdesk: Add Note to Ticket",
       "withheldArguments": {
         "private": "changes sharing, visibility, permissions, membership, or who acts",
-        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "notify_emails": "chooses who a message is sent to, copied to, or sent from"
       },
       "input": {
         "type": "object",
@@ -52,15 +56,6 @@
           "ticket_id": {
             "type": "integer",
             "description": "The unique identifier of the ticket to add the note to."
-          },
-          "notify_emails": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "Email addresses to notify about the note. IMPORTANT: Only accepts agent email addresses, not external contacts or non-agent users."
           }
         },
         "required": [
@@ -152,6 +147,7 @@
       "sideEffectLabel": "Freshdesk: Create Ticket",
       "withheldArguments": {
         "group_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "cc_emails": "chooses who a message is sent to, copied to, or sent from",
         "responder_id": "changes sharing, visibility, permissions, membership, or who acts",
         "custom_fields": "unsupported schema",
         "internal_agent_id": "changes sharing, visibility, permissions, membership, or who acts",
@@ -229,15 +225,6 @@
             ],
             "description": "Priority of the ticket."
           },
-          "cc_emails": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "Email addresses added in the 'cc' field of the incoming ticket email"
-          },
           "fr_due_by": {
             "type": "string",
             "maxLength": 20000,
@@ -297,58 +284,6 @@
         "required": [
           "subject",
           "description"
-        ]
-      }
-    },
-    {
-      "id": "freshdesk.create_ticket_outbound_email",
-      "tool": "FRESHDESK_CREATE_TICKET_OUTBOUND_EMAIL",
-      "toolName": "freshdesk_create_ticket_outbound_email",
-      "lane": "write",
-      "effect": "external_publish",
-      "description": "Tool to create a ticket by sending an outbound email to external recipients. Use when you need to initiate a support conversation via email. The ticket is automatically created with 'Closed' status and assigned to the sending agent to avoid unnecessary SLA timers.",
-      "maxResultBytes": 65536,
-      "sideEffectLabel": "Freshdesk: Create Ticket via Outbound Email",
-      "input": {
-        "type": "object",
-        "properties": {
-          "email": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Recipient email address for the outbound email"
-          },
-          "subject": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Subject line of the outbound email"
-          },
-          "priority": {
-            "type": "string",
-            "maxLength": 20000,
-            "enum": [
-              "low",
-              "medium",
-              "high",
-              "urgent"
-            ],
-            "description": "Priority level for the ticket created from this outbound email."
-          },
-          "description": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Body content of the outbound email. Supports HTML formatting"
-          },
-          "email_config_id": {
-            "type": "integer",
-            "description": "Email configuration ID to use for sending the outbound email. Can be obtained from GET /api/v2/email_configs endpoint"
-          }
-        },
-        "required": [
-          "email",
-          "subject",
-          "description",
-          "email_config_id",
-          "priority"
         ]
       }
     },
@@ -742,77 +677,20 @@
       }
     },
     {
-      "id": "freshdesk.reply_to_forward_ticket",
-      "tool": "FRESHDESK_REPLY_TO_FORWARD_TICKET",
-      "toolName": "freshdesk_reply_to_forward_ticket",
-      "lane": "write",
-      "effect": "external_publish",
-      "description": "Tool to reply to or forward a ticket to external email addresses. Use when you need to send a ticket reply to specific email recipients outside the normal ticket flow.",
-      "maxResultBytes": 65536,
-      "sideEffectLabel": "Freshdesk: Reply to Forward Ticket",
-      "input": {
-        "type": "object",
-        "properties": {
-          "body": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Content of the reply or forward message"
-          },
-          "cc_emails": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "List of email addresses to be CC'd"
-          },
-          "ticket_id": {
-            "type": "integer",
-            "description": "ID of the ticket to reply to or forward"
-          },
-          "to_emails": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "List of email addresses to send the reply/forward to"
-          },
-          "bcc_emails": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "List of email addresses to be BCC'd"
-          },
-          "from_email": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Email address from which the reply should be sent"
-          }
-        },
-        "required": [
-          "ticket_id",
-          "body",
-          "to_emails"
-        ]
-      }
-    },
-    {
       "id": "freshdesk.reply_to_ticket",
       "tool": "FRESHDESK_REPLY_TO_TICKET",
       "toolName": "freshdesk_reply_to_ticket",
       "lane": "write",
       "effect": "external_publish",
-      "description": "Tool to create a public reply to an existing support ticket in Freshdesk. Use when an agent needs to respond to a ticket. The reply is sent to the ticket requester and any CC'd recipients. Supports both plain text and HTML content, file attachments, and email distribution control.",
+      "description": "Tool to create a public reply to an existing support ticket in Freshdesk. Use when an agent needs to respond to a ticket. The reply is sent to the ticket requester only. Supports both plain text and HTML content.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Freshdesk: Reply to Ticket",
       "withheldArguments": {
-        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "cc_emails": "chooses who a message is sent to, copied to, or sent from",
+        "to_emails": "chooses who a message is sent to, copied to, or sent from",
+        "bcc_emails": "chooses who a message is sent to, copied to, or sent from",
+        "from_email": "chooses who a message is sent to, copied to, or sent from"
       },
       "input": {
         "type": "object",
@@ -822,41 +700,9 @@
             "maxLength": 20000,
             "description": "The content of the reply message. Can contain HTML formatting. This is the primary reply content that will be sent to the requester."
           },
-          "cc_emails": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "Email addresses to include in the CC field of the reply. Maximum 50 total recipients across to/cc/bcc fields."
-          },
           "ticket_id": {
             "type": "integer",
             "description": "The unique identifier of the ticket to reply to"
-          },
-          "to_emails": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "Direct recipient email addresses to override the default ticket requester. Requires the 'multiple_to' feature to be enabled in your Freshdesk account. When not using this feature, the reply is automatically sent to the ticket requester."
-          },
-          "bcc_emails": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "Email addresses to include in the BCC field of the reply. Maximum 50 total recipients across to/cc/bcc fields."
-          },
-          "from_email": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The support email address to send the reply from. If you have multiple support emails configured, use this parameter to specify which email should be used as the sender. By default, replies are sent from the support email where the ticket was originally created."
           }
         },
         "required": [

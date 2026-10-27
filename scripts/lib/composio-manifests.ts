@@ -74,7 +74,9 @@ const READ_LINT_DESCRIPTION_VERBS = new Set(`
   unsubscribe update upload upsert
 `.trim().split(/\s+/));
 
-const REVIEW_REQUIRED_EFFECTS = new Set<ManagedEffectClass>(['destructive', 'administrative', 'spend_or_budget']);
+const REVIEW_REQUIRED_EFFECTS = new Set<ManagedEffectClass>([
+  'destructive', 'administrative', 'spend_or_budget', 'external_publish',
+]);
 const ADMINISTRATIVE = /(?:^|_)(ADMIN|ADMINS|AGENT|AGENTS|API_KEY|API_KEYS|AUDIT|GROUP|GROUPS|INTEGRATION|INTEGRATIONS|MEMBER|MEMBERS|MEMBERSHIP|MEMBERSHIPS|ORGANIZATION|ORGANIZATIONS|PERMISSION|PERMISSIONS|POLICIES|POLICY|ROLE|ROLES|SCIM|SETTING|SETTINGS|SLA|SSO|TEAM|TEAMS|TOKEN|TOKENS|USER|USERS|WEBHOOK|WEBHOOKS|WORKSPACE|WORKSPACES)(?:_|$)/;
 const SPEND = /(?:^|_)(BID|BIDS|BILL|BILLING|BILLS|BUDGET|BUDGETS|BUY|CHARGE|CHARGES|CHECKOUT|INVOICE|INVOICES|ORDER|ORDERS|PAY|PAYMENT|PAYMENTS|PAYOUT|PAYOUTS|PURCHASE|REFUND|REFUNDS|SUBSCRIPTION|SUBSCRIPTIONS|TRANSFER|TRANSFERS)(?:_|$)/;
 const PUBLISH = /(?:^|_)(BROADCAST|COMMENT|COMMENTS|EMAIL|EMAILS|FORWARD|INVITE|MESSAGE|MESSAGES|NOTIFY|OUTBOUND|POST|PUBLISH|REPLY|SEND|SHARE)(?:_|$)/;
@@ -90,6 +92,11 @@ const CONTAINER_TOKENS = new Set(`
   account board company folder organization parent project space team workspace
 `.trim().split(/\s+/));
 const COPY_SOURCE_PREFIXES = new Set(['id', 'keep', 'url']);
+const RECIPIENT_TOKENS = new Set(`
+  attendee attendees bcc cc participant participants recipient recipients
+`.trim().split(/\s+/));
+/** `to_emails`, `from_email`, and `to` address a message; `applicable_to` does not. */
+const ADDRESS_LEADING_TOKENS = new Set(['from', 'to']);
 const IDENTITY_TOKENS = new Set(`
   email emails external facebook instagram linkedin login mobile password phone requester twitter username
 `.trim().split(/\s+/));
@@ -97,12 +104,14 @@ const IDENTITY_TOKENS = new Set(`
 const WITHHELD_ACCESS = 'changes sharing, visibility, permissions, membership, or who acts';
 const WITHHELD_MOVE = 'moves the record to another container';
 const WITHHELD_COPY = 'copies content from another record';
+const WITHHELD_RECIPIENT = 'chooses who a message is sent to, copied to, or sent from';
 const WITHHELD_IDENTITY = 'changes who the record belongs to or how a person is identified';
 
 /**
  * Writes run without a per-call confirmation, so a write tool's schema is the
- * gate. These rules withhold arguments that widen access, move a record out of
- * its container on update, or copy from another record.
+ * gate. These rules withhold arguments that widen access, copy from another
+ * record, address a message to someone, or, on update, move a record out of
+ * its container or change who it belongs to.
  */
 function withheldArgumentReason(
   name: string,
@@ -116,6 +125,8 @@ function withheldArgumentReason(
   if (tokens.some((token) => ACCESS_TOKENS.has(token)) || ACCESS_TEXT.test(compact) ||
       ACCESS_DESCRIPTION.test(description)) return WITHHELD_ACCESS;
   if (tokens.at(-1) === 'source' && COPY_SOURCE_PREFIXES.has(tokens[0] ?? '')) return WITHHELD_COPY;
+  if (tokens.some((token) => RECIPIENT_TOKENS.has(token) || token.startsWith('notify')) ||
+      ADDRESS_LEADING_TOKENS.has(tokens[0] ?? '') || compact.includes('replyto')) return WITHHELD_RECIPIENT;
   const identifier = tokens[0] === 'id' || tokens.at(-1) === 'id' || tokens.at(-1) === 'ids';
   if (update && !required && identifier && tokens.some((token) => CONTAINER_TOKENS.has(token))) return WITHHELD_MOVE;
   if (update && !required && tokens.some((token) => IDENTITY_TOKENS.has(token))) return WITHHELD_IDENTITY;
