@@ -14,6 +14,7 @@ import {
   GOOGLE_WORKSPACE_SERVICE_PRESETS,
   MANAGED_CONNECTOR_PRESETS,
   CONNECTION_CATALOG_PRESETS,
+  connectorCatalogLookupNames,
   getConnectorPreset,
   matchingConnectorCatalogPresets,
   presetLanes,
@@ -847,4 +848,12 @@ test('reusable connector catalog is the shared Agent-facing lookup', () => {
 test('a manifest connector resolves by the alias its preset declares', () => {
   assert.deepEqual(matchingConnectorCatalogPresets('bigquery').map(({ id }) => id), ['googlebigquery-managed']);
   assert.deepEqual(matchingConnectorCatalogPresets('Google BigQuery').map(({ id }) => id), ['googlebigquery-managed']);
+});
+
+test('every catalog id, name, and alias resolves to exactly one preset', () => {
+  for (const preset of CONNECTION_CATALOG_PRESETS) {
+    for (const lookup of connectorCatalogLookupNames(preset)) {
+      assert.deepEqual(matchingConnectorCatalogPresets(lookup).map(({ id }) => id), [preset.id], lookup);
+    }
+  }
 });

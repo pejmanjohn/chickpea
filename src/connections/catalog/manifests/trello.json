@@ -25,7 +25,12 @@
     "drop": {
       "TRELLO_GET_MEMBERS_ME": "Duplicates TRELLO_WHO_AM_I for identity and TRELLO_GET_MEMBERS_BY_ID_MEMBER for member details."
     },
-    "allowArguments": {}
+    "allowArguments": {},
+    "withholdArguments": {
+      "TRELLO_GET_MEMBERS_BY_ID_MEMBER": {
+        "tokens": "Lists the member's API tokens; token records are credential administration, not board data."
+      }
+    }
   },
   "capabilities": [
     {
@@ -980,6 +985,9 @@
       "effect": "read",
       "description": "Fetches comprehensive information about a Trello member, specified by ID or username, including profile, activities, boards, cards, notifications, and organization affiliations, with customizable detail levels via filters and field parameters.",
       "maxResultBytes": 65536,
+      "withheldArguments": {
+        "tokens": "reviewer: Lists the member's API tokens; token records are credential administration, not board data."
+      },
       "input": {
         "type": "object",
         "properties": {
@@ -997,11 +1005,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Member fields to return. Valid values: 'all' or a comma-separated list (e.g., 'fullName,username,email')."
-          },
-          "tokens": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Filters API tokens for the member. Valid values: 'all', 'none'."
           },
           "actions": {
             "type": "string",

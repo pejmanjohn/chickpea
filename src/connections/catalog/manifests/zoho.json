@@ -2714,7 +2714,7 @@
         "Owner": "changes sharing, visibility, permissions, membership, or who acts",
         "Phone": "changes who the record belongs to or how a person is identified",
         "Ownership": "changes sharing, visibility, permissions, membership, or who acts",
-        "Parent_Account": "unsupported schema"
+        "Parent_Account": "moves the record to another container"
       },
       "input": {
         "type": "object",

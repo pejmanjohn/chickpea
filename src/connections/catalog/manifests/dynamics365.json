@@ -6,7 +6,7 @@
   },
   "label": "Dynamics 365",
   "description": "Search accounts, contacts, leads, opportunities, and cases, and create or update records.",
-  "securityDescription": "Dynamics 365 sign-in opens through Composio, which also asks for the organization's Dynamics subdomain. Agents act as the signed-in Dynamics user and read the accounts, contacts, leads, campaigns, opportunities, cases, phone calls, activities, and sales order lines that user can see. With write access, Agents can create accounts, contacts, leads, opportunities, cases, tasks, and text notes, and update leads, opportunities, and cases, one record per call. Agents cannot delete records, assign a record to another owner, attach files to notes, create or change invoices, sales orders, products, or price lists, send email, or manage users, roles, security, or table definitions.",
+  "securityDescription": "Dynamics 365 sign-in opens through Composio, which also asks for the organization's Dynamics subdomain. Agents act as the signed-in Dynamics user and read the accounts, contacts, leads, campaigns, opportunities, cases, phone calls, activities, and sales order lines that user can see. With write access, Agents can create accounts, contacts, leads, opportunities, cases, tasks, and text notes, and update leads, opportunities, and cases, one record per call. A new contact or lead can include its email address; automations the organization set up can still email new records, as they do for records people create. Agents cannot delete records, assign a record to another owner, change an existing lead's email address or phone number, attach files to notes, create or change invoices, sales orders, products, or price lists, send email, or manage users, roles, security, or table definitions.",
   "preset": {
     "category": "business",
     "accent": "#0B53CE"
@@ -30,7 +30,14 @@
       "DYNAMICS365_QUERY_ENTITY_DATA"
     ],
     "drop": {},
-    "allowArguments": {},
+    "allowArguments": {
+      "DYNAMICS365_DYNAMICSCRM_CREATE_CONTACT": [
+        "emailaddress1"
+      ],
+      "DYNAMICS365_DYNAMICSCRM_CREATE_LEAD": [
+        "emailaddress1"
+      ]
+    },
     "withholdArguments": {
       "DYNAMICS365_CREATE_ANNOTATION": {
         "document_body": "Notes are text only; attaching files is out of scope.",
@@ -250,7 +257,7 @@
       "tool": "DYNAMICS365_DYNAMICSCRM_CREATE_CONTACT",
       "toolName": "dynamics365_dynamicscrm_create_contact",
       "lane": "write",
-      "effect": "reversible_write",
+      "effect": "administrative",
       "description": "Creates a new contact entity record in Dynamics CRM using the Web API.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Dynamics 365: Create Contact",
@@ -318,7 +325,7 @@
       "tool": "DYNAMICS365_DYNAMICSCRM_CREATE_LEAD",
       "toolName": "dynamics365_dynamicscrm_create_lead",
       "lane": "write",
-      "effect": "reversible_write",
+      "effect": "administrative",
       "description": "Creates a new lead entity record in Dynamics CRM using the Web API.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Dynamics 365: Create Lead",
@@ -521,7 +528,9 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "Dynamics 365: Update Lead",
       "withheldArguments": {
-        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "telephone1": "changes who the record belongs to or how a person is identified",
+        "emailaddress1": "names an address a message goes to or comes from"
       },
       "input": {
         "type": "object",
@@ -546,20 +555,10 @@
             "maxLength": 20000,
             "description": "First name of the lead."
           },
-          "telephone1": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Primary phone number of the lead."
-          },
           "companyname": {
             "type": "string",
             "maxLength": 20000,
             "description": "Name of the company associated with the lead."
-          },
-          "emailaddress1": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Primary email address of the lead."
           }
         },
         "required": [

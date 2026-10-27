@@ -536,6 +536,50 @@
       }
     },
     {
+      "id": "cal.retrieve_calendar_busy_times",
+      "tool": "CAL_RETRIEVE_CALENDAR_BUSY_TIMES",
+      "toolName": "cal_retrieve_calendar_busy_times",
+      "lane": "read",
+      "effect": "read",
+      "description": "To find busy calendar slots for scheduling/conflict detection, call this with a valid `credentialId`, an `externalId` accessible by it, and a recognized IANA `loggedInUsersTz`; returns only busy intervals, not event details or free slots. Use credentialId/externalId for single calendar queries.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "dateTo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The end date and time for querying busy times in ISO 8601 datetime format. If timezone is omitted, `loggedInUsersTz` is assumed."
+          },
+          "dateFrom": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The start date and time for querying busy times, preferably in ISO 8601 format (e.g., 'YYYY-MM-DDTHH:mm:ssZ' or 'YYYY-MM-DD'). If timezone is omitted, `loggedInUsersTz` is assumed. If not provided, the system may use a default start time (e.g., the current time)."
+          },
+          "externalId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The external identifier of the specific calendar to query. This should be the actual calendar ID from the provider, not the calendar type."
+          },
+          "credentialId": {
+            "type": "integer",
+            "description": "The numeric identifier for the credential associated with the calendar account to be queried."
+          },
+          "loggedInUsersTz": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The IANA timezone string of the logged-in user (e.g., 'America/New_York', 'Europe/London'). This is used to correctly interpret `dateFrom` and `dateTo` if they don't contain explicit timezone information."
+          }
+        },
+        "required": [
+          "loggedInUsersTz",
+          "credentialId",
+          "externalId"
+        ],
+        "description": "Request schema for `RetrieveCalendarBusyTimes`"
+      }
+    },
+    {
       "id": "cal.retrieve_calendar_list",
       "tool": "CAL_RETRIEVE_CALENDAR_LIST",
       "toolName": "cal_retrieve_calendar_list",

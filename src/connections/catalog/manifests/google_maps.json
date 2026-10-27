@@ -36,6 +36,7 @@
         "locationBias.circle": "unsupported schema",
         "locationBias.rectangle": "unsupported schema",
         "locationBias": "unsupported schema",
+        "sessionToken": "carries a credential the model would supply itself",
         "locationRestriction.circle": "unsupported schema",
         "locationRestriction.rectangle": "unsupported schema",
         "locationRestriction": "unsupported schema"
@@ -84,11 +85,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Preferred language for results using IETF BCP-47 language codes (e.g., 'en-US', 'es-ES')."
-          },
-          "sessionToken": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "User-generated string grouping calls into sessions for billing purposes."
           },
           "includedRegionCodes": {
             "type": "array",
@@ -432,6 +428,9 @@
       "effect": "read",
       "description": "Retrieves comprehensive details for a place using its resource name (places/{place_id} format). Use when you need detailed information about a specific place.",
       "maxResultBytes": 65536,
+      "withheldArguments": {
+        "sessionToken": "carries a credential the model would supply itself"
+      },
       "input": {
         "type": "object",
         "properties": {
@@ -454,11 +453,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Preferred language code for place details (BCP-47 format). Examples: 'en' (English), 'es' (Spanish), 'fr' (French), 'ja' (Japanese). If not specified, defaults to the language of the request location."
-          },
-          "sessionToken": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "URL-safe base64 string (max 36 characters) for Autocomplete session billing. Used to group this request with previous Autocomplete requests for billing purposes."
           }
         },
         "required": [
