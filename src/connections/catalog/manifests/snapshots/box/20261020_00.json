@@ -1,0 +1,1536 @@
+{
+  "toolkit": {
+    "slug": "box",
+    "name": "Box",
+    "version": "20261020_00",
+    "description": "Box is a cloud content management platform for secure file storage, sharing, collaboration, and governance.",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      }
+    ],
+    "currentUserEndpoint": "https://api.box.com/2.0/users/me"
+  },
+  "tools": [
+    {
+      "slug": "BOX_CREATE_BOX_SIGN_REQUEST",
+      "name": "Create Box Sign Request",
+      "description": "Creates a Box Sign request to send documents for electronic signing. Prepares documents and sends signature requests to signers via email. Signers do not need Box accounts. Supports up to 10 files, 35 signers, sequential signing order, templates, and custom redirect URLs. Requires Box Sign feature enabled and sign_requests.readwrite scope.",
+      "version": "20261020_00",
+      "tags": [
+        "Box Sign requests",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateBoxSignRequestRequest",
+        "required": [
+          "source_files",
+          "signers"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Name of the signature request. Used for identification purposes."
+          },
+          "signers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "Signer",
+              "required": [
+                "email"
+              ],
+              "properties": {
+                "role": {
+                  "enum": [
+                    "signer",
+                    "approver",
+                    "final_copy_reader"
+                  ],
+                  "type": "string",
+                  "title": "SignerRole",
+                  "default": "signer",
+                  "description": "Role of the signer in the signature request"
+                },
+                "email": {
+                  "type": "string",
+                  "title": "Email",
+                  "description": "Email address of the signer. Signers do not need a Box account to sign."
+                },
+                "order": {
+                  "type": "integer",
+                  "title": "Order",
+                  "description": "Signing order (1, 2, 3...). Lower numbers sign first. Same order values receive request simultaneously."
+                },
+                "is_in_person": {
+                  "type": "boolean",
+                  "title": "Is In Person",
+                  "description": "If true, the signer will sign in-person rather than via email."
+                },
+                "redirect_url": {
+                  "type": "string",
+                  "title": "Redirect Url",
+                  "description": "URL to redirect this signer to after signing. Overrides global redirect_url for this signer."
+                },
+                "login_required": {
+                  "type": "boolean",
+                  "title": "Login Required",
+                  "description": "If true, the signer must log in to a Box account before signing."
+                },
+                "signer_group_id": {
+                  "type": "string",
+                  "title": "Signer Group Id",
+                  "description": "Optional group ID to group signers. Signers in the same group can fulfill the signature requirement interchangeably."
+                },
+                "declined_redirect_url": {
+                  "type": "string",
+                  "title": "Declined Redirect Url",
+                  "description": "URL to redirect this signer to if they decline. Overrides global declined_redirect_url for this signer."
+                },
+                "embed_url_external_user_id": {
+                  "type": "string",
+                  "title": "Embed Url External User Id",
+                  "description": "External user ID for embedded signing URLs. Required when generating embedded signing experiences."
+                }
+              },
+              "description": "Information about a signer for the signature request. Maximum 35 signers allowed per request."
+            },
+            "title": "Signers",
+            "description": "List of signers for the signature request. At least one signer required, maximum 35 signers."
+          },
+          "days_valid": {
+            "type": "integer",
+            "title": "Days Valid",
+            "maximum": 730,
+            "minimum": 0,
+            "description": "Number of days (0-730) until the signature request automatically expires. No expiration if not set."
+          },
+          "external_id": {
+            "type": "string",
+            "title": "External Id",
+            "description": "External reference ID for tracking the signature request in your system."
+          },
+          "template_id": {
+            "type": "string",
+            "title": "Template Id",
+            "description": "ID of a Box Sign template to use. When provided, template settings are applied to the request."
+          },
+          "prefill_tags": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "PrefillTag",
+              "properties": {
+                "date_value": {
+                  "type": "string",
+                  "title": "Date Value",
+                  "description": "The date value to prefill for date tags (ISO 8601 format)."
+                },
+                "text_value": {
+                  "type": "string",
+                  "title": "Text Value",
+                  "description": "The text value to prefill for text tags."
+                },
+                "checkbox_value": {
+                  "type": "boolean",
+                  "title": "Checkbox Value",
+                  "description": "The boolean value to prefill for checkbox tags."
+                },
+                "document_tag_id": {
+                  "type": "string",
+                  "title": "Document Tag Id",
+                  "description": "The ID of the document tag to prefill."
+                }
+              },
+              "description": "Tag to pre-populate in the document"
+            },
+            "title": "Prefill Tags",
+            "description": "List of tags to pre-populate in the document before sending to signers."
+          },
+          "redirect_url": {
+            "type": "string",
+            "title": "Redirect Url",
+            "description": "Global URL to redirect all signers to after successfully signing."
+          },
+          "source_files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "SourceFile",
+              "required": [
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "title": "Id",
+                  "description": "The unique identifier of the Box file to be signed. Must be a file that exists in Box with non-zero content."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "file",
+                  "title": "Type",
+                  "default": "file",
+                  "description": "The type of the object. Always 'file' for source files."
+                }
+              },
+              "description": "Source file for signature request. Maximum 10 files allowed per request.\n\nIMPORTANT: Files must have content (non-zero size) to be used in Box Sign requests.\nEmpty files will be rejected by the Box Sign API with a 'File size not provided' error."
+            },
+            "title": "Source Files",
+            "description": "List of files to be signed. At least one file required, maximum 10 files. All file types are converted to PDF."
+          },
+          "email_message": {
+            "type": "string",
+            "title": "Email Message",
+            "description": "Custom message in the signature request email. Supports limited HTML tags: a, abbr, b, blockquote, code, em, i, ul, li, ol, strong."
+          },
+          "email_subject": {
+            "type": "string",
+            "title": "Email Subject",
+            "description": "Custom subject line for the signature request email sent to signers."
+          },
+          "parent_folder": {
+            "type": "object",
+            "title": "ParentFolder",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "title": "Id",
+                "description": "The unique identifier of the Box folder where signed documents will be stored. Cannot be '0' (root folder)."
+              },
+              "type": {
+                "type": "string",
+                "const": "folder",
+                "title": "Type",
+                "default": "folder",
+                "description": "The type of the object. Always 'folder' for parent folder."
+              }
+            },
+            "description": "Destination folder for signed documents. Cannot be the root folder (id='0').",
+            "additionalProperties": false
+          },
+          "signature_color": {
+            "enum": [
+              "blue",
+              "black",
+              "red"
+            ],
+            "type": "string",
+            "title": "SignatureColor",
+            "description": "Color to use for the signature"
+          },
+          "external_system_name": {
+            "type": "string",
+            "title": "External System Name",
+            "description": "Name of the external system for the signing log reference."
+          },
+          "are_reminders_enabled": {
+            "type": "boolean",
+            "title": "Are Reminders Enabled",
+            "description": "Whether to send automatic reminders on days 3, 8, 13, and 18 to outstanding signers."
+          },
+          "declined_redirect_url": {
+            "type": "string",
+            "title": "Declined Redirect Url",
+            "description": "Global URL to redirect signers to if they decline to sign."
+          },
+          "are_text_signatures_enabled": {
+            "type": "boolean",
+            "title": "Are Text Signatures Enabled",
+            "default": true,
+            "description": "Whether signers can use typed text as their signature (default: true)."
+          },
+          "is_document_preparation_needed": {
+            "type": "boolean",
+            "title": "Is Document Preparation Needed",
+            "description": "If true, returns a prepare_url for completing document preparation in the Box UI before sending."
+          }
+        },
+        "description": "Request schema for `CreateBoxSignRequest`"
+      }
+    },
+    {
+      "slug": "BOX_CREATE_COLLABORATION",
+      "name": "Create collaboration",
+      "description": "Adds a collaboration for a single user or a single group to a file or folder. Collaborations can be created using email address, user IDs, or a group IDs. If a collaboration is being created with a group, access to this endpoint is dependent on the group's ability to be invited. If collaboration is in `pending` status, the following fields are redacted: - `login` and `name` are hidden if a collaboration was created using `user_id`, - `name` is hidden if a collaboration was created using `login`.",
+      "version": "20261020_00",
+      "tags": [
+        "Collaborations",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateCollaborationRequest",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "co-owner",
+              "editor",
+              "previewer",
+              "previewer uploader",
+              "uploader",
+              "viewer",
+              "viewer uploader"
+            ],
+            "type": "string",
+            "title": "Role",
+            "description": "The level of access granted. Valid values are: 'editor' (full read/write access), 'viewer' (read-only access), 'previewer' (preview-only), 'uploader' (upload-only), 'previewer uploader' (preview and upload), 'viewer uploader' (view and upload), or 'co-owner' (full access including sharing). "
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested. "
+          },
+          "notify": {
+            "type": "boolean",
+            "title": "Notify",
+            "description": "Determines if users should receive email notification for the action performed. "
+          },
+          "item__id": {
+            "type": "string",
+            "title": "Item  Id",
+            "description": "The unique ID of the file or folder to grant access to. Required for creating a new collaboration. You can find this ID in the Box web interface URL or from other API responses. "
+          },
+          "expires_at": {
+            "type": "string",
+            "title": "Expires At",
+            "format": "date-time",
+            "description": "Set the expiration date for the collaboration. At this date, the collaboration will be automatically removed from the item. This feature will only work if the **Automatically remove invited collaborators: Allow folder owners to extend the expiry date** setting has been enabled in the **Enterprise Settings** of the **Admin Console**. When the setting is not enabled, collaborations can not have an expiry date and a value for this field will be result in an error. "
+          },
+          "item__type": {
+            "enum": [
+              "file",
+              "folder"
+            ],
+            "type": "string",
+            "title": "TypeEnm0",
+            "description": "The type of the item that this collaboration will be granted access to. Must be either 'file' or 'folder'. Required for creating a new collaboration. "
+          },
+          "can_view_path": {
+            "type": "boolean",
+            "title": "Can View Path",
+            "description": "Determines if the invited users can see the entire parent path to the associated folder. The user will not gain privileges in any parent folder and therefore can not see content the user is not collaborated on. Be aware that this meaningfully increases the time required to load the invitee\"s **All Files** page. We recommend you limit the number of collaborations with `can_view_path` enabled to 1,000 per user. Only owner or co-owners can invite collaborators with a `can_view_path` of `true`. `can_view_path` can only be used for folder collaborations. "
+          },
+          "is_access_only": {
+            "type": "boolean",
+            "title": "Is Access Only",
+            "description": "If set to `true`, collaborators have access to shared items, but such items won\"t be visible in the All Files list. Additionally, collaborators won\"t see the the path to the root folder for the shared item. "
+          },
+          "accessible__by__id": {
+            "type": "string",
+            "title": "Accessible  By  Id",
+            "description": "The Box user ID or group ID to invite. Either this field or 'accessible_by_login' must be provided (not both). Use this when you know the exact Box user/group ID. "
+          },
+          "accessible__by__type": {
+            "enum": [
+              "group",
+              "user"
+            ],
+            "type": "string",
+            "title": "TypeEnm1",
+            "description": "The type of collaborator to invite. Must be either 'user' or 'group'. Required. Use 'user' when inviting an individual (by email or user ID), or 'group' when sharing with a Box group. "
+          },
+          "accessible__by__login": {
+            "type": "string",
+            "title": "Accessible  By  Login",
+            "description": "The email address of the user to invite as a collaborator. Either this field or 'accessible_by_id' must be provided (not both). Use this for user invitations when you have the email address but not the Box user ID. Not applicable for groups. "
+          }
+        },
+        "description": "Request schema for `CreateCollaboration`"
+      }
+    },
+    {
+      "slug": "BOX_CREATE_COMMENT",
+      "name": "Create comment",
+      "description": "Adds a comment by the user to a specific file, or as a reply to an other comment.",
+      "version": "20261020_00",
+      "tags": [
+        "Comments",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateCommentRequest",
+        "required": [
+          "item__id",
+          "item__type"
+        ],
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested. "
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "The text of the comment. Required unless `tagged_message` is provided. To mention a user, use `tagged_message` instead. "
+          },
+          "item__id": {
+            "type": "string",
+            "title": "Item  Id",
+            "description": "The ID of the item to attach the comment to. This can be a file ID or a comment ID (when replying to a comment). "
+          },
+          "item__type": {
+            "enum": [
+              "comment",
+              "file"
+            ],
+            "type": "string",
+            "title": "Item  Type",
+            "description": "The type of item this comment will be placed on. Use 'file' to comment on a file, or 'comment' to reply to an existing comment. "
+          },
+          "tagged_message": {
+            "type": "string",
+            "title": "Tagged Message",
+            "description": "The text of the comment with user mentions. Use the format `@[user_id:name]` to mention a user, which sends them an email notification. The `user_id` is the target user's ID, and `name` is a display phrase that links to the user's profile in Box UI. Either `message` or `tagged_message` must be provided, but not both. "
+          }
+        },
+        "description": "Request schema for `CreateComment`"
+      }
+    },
+    {
+      "slug": "BOX_CREATE_FOLDER",
+      "name": "Create folder",
+      "description": "Creates a new empty folder within the specified parent folder.",
+      "version": "20261020_00",
+      "tags": [
+        "Folders",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateFolderRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name for the new folder. There are some restrictions to the file name. Names containing non-printable ASCII characters, forward and backward slashes (`/`, ``), as well as names with trailing spaces are prohibited. Additionally, the names `.` and `..` are not allowed either. "
+          },
+          "fields": {
+            "type": "string",
+            "title": "Fields",
+            "description": "A comma-separated list of attributes to include in the response (e.g., 'id,name,created_at'). When specified, only the requested fields plus mini representation fields are returned. Common fields: id, type, name, description, size, created_at, modified_at, path_collection, created_by, modified_by, owned_by, shared_link, parent, item_status, tags, has_collaborations."
+          },
+          "parent__id": {
+            "type": "string",
+            "title": "Parent  Id",
+            "default": "0",
+            "description": "The ID of the parent folder where the new folder will be created. Use '0' for the root folder (All Files). Example: '123456789'."
+          },
+          "sync_state": {
+            "enum": [
+              "not_synced",
+              "partially_synced",
+              "synced"
+            ],
+            "type": "string",
+            "title": "SyncStateEnm0",
+            "description": "Specifies whether a folder should be synced to a user\"s device or not. This is used by Box Sync (discontinued) and is not used by Box Drive. "
+          }
+        },
+        "description": "Request schema for `CreateFolder`"
+      }
+    },
+    {
+      "slug": "BOX_DELETE_FILE",
+      "name": "Delete file",
+      "description": "Deletes a file from Box by moving it to trash or permanently (based on enterprise settings). Use the `if_match` parameter with the file's ETag for safe concurrent operations. To permanently delete a trashed file, use the 'Permanently remove file' action instead.",
+      "version": "20261020_00",
+      "tags": [
+        "Files",
+        "destructiveHint",
+        "important",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DeleteFileRequest",
+        "required": [
+          "file_id"
+        ],
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "title": "File Id",
+            "description": "The unique identifier of the file to delete. You can find the file ID by viewing the file in Box web app and copying from the URL (e.g., for `https://*.app.box.com/files/123` the file_id is `123`)."
+          },
+          "if_match": {
+            "type": "string",
+            "title": "If Match",
+            "description": "Optional ETag value for optimistic concurrency control. Pass the file's last observed `etag` value to ensure the file hasn't been modified since you last retrieved it. If the file has changed, the request fails with HTTP 412 Precondition Failed. You can get the etag from the file's metadata or from a previous API response."
+          }
+        },
+        "description": "Request schema for `DeleteFile`"
+      }
+    },
+    {
+      "slug": "BOX_DOWNLOAD_FILE",
+      "name": "Download file",
+      "description": "Returns the contents of a file in binary format.",
+      "version": "20261020_00",
+      "tags": [
+        "Downloads",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DownloadFileRequest",
+        "required": [
+          "file_id"
+        ],
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "title": "File Id",
+            "description": "The unique identifier that represents a file. The ID for any file can be determined by visiting a file in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/files/123` the `file_id` is `123`. "
+          },
+          "version": {
+            "type": "string",
+            "title": "Version",
+            "description": "The file version ID to download. If not specified, the current (latest) version is downloaded. File versions can be obtained via the 'List all file versions' action. The version ID is the numeric identifier of the specific file version."
+          },
+          "access_token": {
+            "type": "string",
+            "title": "Access Token",
+            "description": "An optional access token that can be used to pre-authenticate this request, which means that a download link can be shared with a browser or a third party service without them needing to know how to handle the authentication. When using this parameter, please make sure that the access token is sufficiently scoped down to only allow read access to that file and no other files or folders. "
+          }
+        },
+        "description": "Request schema for `DownloadFile`"
+      }
+    },
+    {
+      "slug": "BOX_FIND_FILE_FOR_SHARED_LINK",
+      "name": "Find file for shared link",
+      "description": "Returns the file represented by a shared link. A shared file can be represented by a shared link, which can originate within the current enterprise or within another. This endpoint allows an application to retrieve information about a shared file when only given a shared link. The `shared_link_permission_options` array field can be returned by requesting it in the `fields` query parameter.",
+      "version": "20261020_00",
+      "tags": [
+        "Shared links (Files)",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "FindFileForSharedLinkRequest",
+        "properties": {
+          "boxapi": {
+            "type": "string",
+            "title": "Boxapi",
+            "description": "Header value in the format `shared_link=<URL>&shared_link_password=<PASSWORD>`. If not provided, it will be constructed from `shared_link` and `shared_link_password` when available. Provide either this header or `shared_link`."
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "title": "Fields",
+            "description": "A comma-separated list of field names to include in the response (e.g., 'name,size,shared_link'). Can be provided as a string or a list of strings. Use this to request fields that are not normally returned in the default response. To include shared link details, add 'shared_link' and/or 'shared_link_permission_options' to this list. When fields are specified, only the base fields (type, id, etag) plus the requested fields are returned."
+          },
+          "shared_link": {
+            "type": "string",
+            "title": "Shared Link",
+            "description": "The shared link URL to the item (e.g., `https://app.box.com/s/abcdef`). Used to authenticate the request via the `boxapi` header. Provide either this field or `boxapi`."
+          },
+          "shared_link_password": {
+            "type": "string",
+            "title": "Shared Link Password",
+            "description": "Password for the shared link, if the link is password-protected."
+          }
+        },
+        "description": "Request schema for `FindFileForSharedLink`"
+      }
+    },
+    {
+      "slug": "BOX_GET_CURRENT_USER",
+      "name": "Get current user",
+      "description": "Retrieves information about the user who is currently authenticated. In the case of a client-side authenticated OAuth 2.0 application this will be the user who authorized the app. In the case of a JWT, server-side authenticated application this will be the service account that belongs to the application by default. Use the `As-User` header to change who this API call is made on behalf of.",
+      "version": "20261020_00",
+      "tags": [
+        "Users",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCurrentUserRequest",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested. "
+          }
+        },
+        "description": "Request schema for `GetCurrentUser`"
+      }
+    },
+    {
+      "slug": "BOX_GET_FILE_INFORMATION",
+      "name": "Get file information",
+      "description": "Retrieves the details about a file.",
+      "version": "20261020_00",
+      "tags": [
+        "Files",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFileInformationRequest",
+        "required": [
+          "file_id"
+        ],
+        "properties": {
+          "fields": {
+            "type": "string",
+            "title": "Fields",
+            "description": "A comma-separated list of attributes to include in the response (e.g., 'name,size,created_at,modified_at'). This can be used to request fields that are not normally returned in a standard response. When specified, only the requested fields plus the base fields (id, type, etag) are returned. Common fields include: name, size, description, created_at, modified_at, path_collection, parent, sha1, shared_link, item_status, file_version. For metadata, use format: 'metadata.enterprise_12345.templateKey'."
+          },
+          "file_id": {
+            "type": "string",
+            "title": "File Id",
+            "description": "The unique identifier that represents a file. The ID for any file can be determined by visiting a file in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/files/123` the `file_id` is `123`. "
+          }
+        },
+        "description": "Request schema for `GetFileInformation`"
+      }
+    },
+    {
+      "slug": "BOX_GET_FOLDER",
+      "name": "Get folder information",
+      "description": "Retrieves details for a folder, including the first 100 entries in the folder. Passing `sort`, `direction`, `offset`, and `limit` parameters in query allows you to manage the list of returned [folder items](r://folder--full#param-item-collection). To fetch more items within the folder, use the [Get items in a folder](e://get-folders-id-items) endpoint.",
+      "version": "20261020_00",
+      "tags": [
+        "Folders",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFolderRequest",
+        "required": [
+          "folder_id"
+        ],
+        "properties": {
+          "sort": {
+            "enum": [
+              "date",
+              "id",
+              "name",
+              "size"
+            ],
+            "type": "string",
+            "title": "SortEnm0",
+            "description": "Defines the **second** attribute by which items are sorted. The folder type affects the way the items are sorted:   * **Standard folder**:   Items are always sorted by   their `type` first, with   folders listed before files,   and files listed   before web links.   * **Root folder**:   This parameter is not supported   for marker-based pagination   on the root folder   (the folder with an `id` of `0`).   * **Shared folder with parent path   to the associated folder visible to   the collaborator**:   Items are always sorted by   their `type` first, with   folders listed before files,   and files listed   before web links. "
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "The maximum number of items to return per page."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested. Additionally this field can be used to query any metadata applied to the file by specifying the `metadata` field as well as the scope and key of the template to retrieve, for example `?fields=metadata.enterprise_12345.contractTemplate`. "
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0,
+            "description": "The offset of the item at which to begin the response. Queries with offset parameter value exceeding 10000 will be rejected with a 400 response. "
+          },
+          "direction": {
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "type": "string",
+            "title": "DirectionEnm0",
+            "description": "The direction to sort results in. This can be either in alphabetical ascending (`ASC`) or descending (`DESC`) order. "
+          },
+          "folder_id": {
+            "type": "string",
+            "title": "Folder Id",
+            "description": "The unique identifier that represent a folder. The ID for any folder can be determined by visiting this folder in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/folder/123` the `folder_id` is `123`. The root folder of a Box account is always represented by the ID `0`. "
+          }
+        },
+        "description": "Request schema for `GetFolder`"
+      }
+    },
+    {
+      "slug": "BOX_LIST_FILE_COMMENTS",
+      "name": "List file comments",
+      "description": "Retrieves a list of comments for a file.",
+      "version": "20261020_00",
+      "tags": [
+        "Comments",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListFileCommentsRequest",
+        "required": [
+          "file_id"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "The maximum number of items to return per page."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested. "
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0,
+            "description": "The offset of the item at which to begin the response. Queries with offset parameter value exceeding 10000 will be rejected with a 400 response. "
+          },
+          "file_id": {
+            "type": "string",
+            "title": "File Id",
+            "description": "The unique identifier that represents a file. The ID for any file can be determined by visiting a file in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/files/123` the `file_id` is `123`. "
+          }
+        },
+        "description": "Request schema for `ListFileComments`"
+      }
+    },
+    {
+      "slug": "BOX_LIST_ITEMS_IN_FOLDER",
+      "name": "List items in folder",
+      "description": "Retrieves a page of items in a folder. These items can be files, folders, and web links. To request more information about the folder itself, like its size, use the [Get a folder](#get-folders-id) endpoint instead.",
+      "version": "20261020_00",
+      "tags": [
+        "Folders",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListItemsInFolderRequest",
+        "required": [
+          "folder_id"
+        ],
+        "properties": {
+          "sort": {
+            "enum": [
+              "date",
+              "id",
+              "name",
+              "size"
+            ],
+            "type": "string",
+            "title": "SortEnm0",
+            "description": "Defines the **second** attribute by which items are sorted. The folder type affects the way the items are sorted:   * **Standard folder**:   Items are always sorted by   their `type` first, with   folders listed before files,   and files listed   before web links.   * **Root folder**:   This parameter is not supported   for marker-based pagination   on the root folder   (the folder with an `id` of `0`).   * **Shared folder with parent path   to the associated folder visible to   the collaborator**:   Items are always sorted by   their `type` first, with   folders listed before files,   and files listed   before web links. "
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "The maximum number of items to return per page."
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Fields",
+            "description": "Attributes to include in the response, as a list of strings or a comma-separated string. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested. Additionally this field can be used to query any metadata applied to the file by specifying the `metadata` field as well as the scope and key of the template to retrieve, for example `?fields=metadata.enterprise_12345.contractTemplate`. "
+          },
+          "marker": {
+            "type": "string",
+            "title": "Marker",
+            "description": "Defines the position marker at which to begin returning results. This is used when paginating using marker-based pagination. This requires `usemarker` to be set to `true`. "
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0,
+            "description": "The offset of the item at which to begin the response. Queries with offset parameter value exceeding 10000 will be rejected with a 400 response. "
+          },
+          "direction": {
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "type": "string",
+            "title": "DirectionEnm0",
+            "description": "The direction to sort results in. This can be either in alphabetical ascending (`ASC`) or descending (`DESC`) order. "
+          },
+          "folder_id": {
+            "type": "string",
+            "title": "Folder Id",
+            "description": "The unique identifier that represent a folder. The ID for any folder can be determined by visiting this folder in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/folder/123` the `folder_id` is `123`. The root folder of a Box account is always represented by the ID `0`. "
+          },
+          "usemarker": {
+            "type": "boolean",
+            "title": "Usemarker",
+            "description": "Specifies whether to use marker-based pagination instead of offset-based pagination. Only one pagination method can be used at a time. By setting this value to true, the API will return a `marker` field that can be passed as a parameter to this endpoint to get the next page of the response. "
+          }
+        },
+        "description": "Request schema for `ListItemsInFolder`"
+      }
+    },
+    {
+      "slug": "BOX_LIST_RECENTLY_ACCESSED_ITEMS",
+      "name": "List recently accessed items",
+      "description": "Returns information about the recent items accessed by a user, either in the last 90 days or up to the last 1000 items accessed.",
+      "version": "20261020_00",
+      "tags": [
+        "Recent items",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListRecentlyAccessedItemsRequest",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "The maximum number of items to return per page."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested. "
+          },
+          "marker": {
+            "type": "string",
+            "title": "Marker",
+            "description": "Defines the position marker at which to begin returning results. This is used when paginating using marker-based pagination. This requires `usemarker` to be set to `true`. "
+          }
+        },
+        "description": "Request schema for `ListRecentlyAccessedItems`"
+      }
+    },
+    {
+      "slug": "BOX_REQUEST_ACCESS_TOKEN",
+      "name": "Request access token",
+      "description": "Request an Access Token using either a client-side obtained OAuth 2.0 authorization code or a server-side JWT assertion. An Access Token is a string that enables Box to verify that a request belongs to an authorized session. In the normal order of operations you will begin by requesting authentication from the [authorize](#get-authorize) endpoint and Box will send you an authorization code. You will then send this code to this endpoint to exchange it for an Access Token. The returned Access Token can then be used to to make Box API calls.",
+      "version": "20261020_00",
+      "tags": [
+        "Authorization",
+        "important",
+        "openWorldHint",
+        "createHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RequestAccessTokenRequest",
+        "required": [
+          "grant_type"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code",
+            "format": "token",
+            "description": "The client-side authorization code passed to your application by Box in the browser redirect after the user has successfully granted your application permission to make API calls on their behalf. Used in combination with `authorization_code` as the `grant_type`. "
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "format": "space_delimited_list",
+            "description": "The space-delimited list of scopes that you want apply to the new access token. The `subject_token` will need to have all of these scopes or the call will error with **401 Unauthorized**. "
+          },
+          "resource": {
+            "type": "string",
+            "title": "Resource",
+            "format": "url",
+            "description": "Full URL for the file that the token should be generated for."
+          },
+          "assertion": {
+            "type": "string",
+            "title": "Assertion",
+            "format": "jwt",
+            "description": "A JWT assertion for which to request a new access token. Used in combination with `urn:ietf:params:oauth:grant-type:jwt-bearer` as the `grant_type`. "
+          },
+          "client_id": {
+            "type": "string",
+            "title": "Client Id",
+            "description": "The Client ID of the application requesting an access token. Used in combination with `authorization_code`, `client_credentials`, or `urn:ietf:params:oauth:grant-type:jwt-bearer` as the `grant_type`. "
+          },
+          "grant_type": {
+            "enum": [
+              "authorization_code",
+              "client_credentials",
+              "refresh_token",
+              "urn:ietf:params:oauth:grant-type:jwt-bearer",
+              "urn:ietf:params:oauth:grant-type:token-exchange"
+            ],
+            "type": "string",
+            "title": "Grant Type",
+            "format": "urn",
+            "description": "The type of request being made, either using a client-side obtained authorization code, a refresh token, a JWT assertion, client credentials grant or another access token for the purpose of downscoping a token. "
+          },
+          "actor_token": {
+            "type": "string",
+            "title": "Actor Token",
+            "format": "token",
+            "description": "The token used to create an annotator token. This is a JWT assertion. Used in combination with `urn:ietf:params:oauth:grant-type:token-exchange` as the `grant_type`. "
+          },
+          "client_secret": {
+            "type": "string",
+            "title": "Client Secret",
+            "description": "The client secret of the application requesting an access token. Used in combination with `authorization_code`, `client_credentials`, or `urn:ietf:params:oauth:grant-type:jwt-bearer` as the `grant_type`. "
+          },
+          "refresh_token": {
+            "type": "string",
+            "title": "Refresh Token",
+            "format": "token",
+            "description": "A refresh token used to get a new access token with. Used in combination with `refresh_token` as the `grant_type`. "
+          },
+          "subject_token": {
+            "type": "string",
+            "title": "Subject Token",
+            "format": "token",
+            "description": "The token to exchange for a downscoped token. This can be a regular access token, a JWT assertion, or an app token. Used in combination with `urn:ietf:params:oauth:grant-type:token-exchange` as the `grant_type`. "
+          },
+          "box_subject_id": {
+            "type": "string",
+            "title": "Box Subject Id",
+            "description": "Used in combination with `client_credentials` as the `grant_type`. Value is determined by `box_subject_type`. If `user` use user ID and if `enterprise` use enterprise ID. "
+          },
+          "box_shared_link": {
+            "type": "string",
+            "title": "Box Shared Link",
+            "format": "url",
+            "description": "Full URL of the shared link on the file or folder that the token should be generated for. "
+          },
+          "actor_token_type": {
+            "enum": [
+              "urn:ietf:params:oauth:token-type:id_token"
+            ],
+            "type": "string",
+            "title": "ActorTokenTypeEnm0",
+            "format": "urn",
+            "description": "The type of `actor_token` passed in. Used in combination with `urn:ietf:params:oauth:grant-type:token-exchange` as the `grant_type`. "
+          },
+          "box_subject_type": {
+            "enum": [
+              "enterprise",
+              "user"
+            ],
+            "type": "string",
+            "title": "BoxSubjectTypeEnm0",
+            "description": "Used in combination with `client_credentials` as the `grant_type`."
+          },
+          "subject_token_type": {
+            "enum": [
+              "urn:ietf:params:oauth:token-type:access_token"
+            ],
+            "type": "string",
+            "title": "SubjectTokenTypeEnm0",
+            "description": "The type of `subject_token` passed in. Used in combination with `urn:ietf:params:oauth:grant-type:token-exchange` as the `grant_type`. "
+          }
+        },
+        "description": "Request schema for `RequestAccessToken`"
+      }
+    },
+    {
+      "slug": "BOX_SEARCH_FOR_CONTENT",
+      "name": "Search for content",
+      "description": "Searches for files, folders, web links, and shared files across the users content or across the entire enterprise.",
+      "version": "20261020_00",
+      "tags": [
+        "Search",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchForContentRequest",
+        "properties": {
+          "sort": {
+            "enum": [
+              "modified_at",
+              "relevance"
+            ],
+            "type": "string",
+            "title": "Sort",
+            "default": "relevance",
+            "description": "Defines the order in which search results are returned. This API defaults to returning items by relevance unless this parameter is explicitly specified. * `relevance` (default) returns the results sorted by relevance to the query search term. The relevance is based on the occurrence of the search term in the items name, description, content, and additional properties. * `modified_at` returns the results ordered in descending order by date at which the item was last modified. "
+          },
+          "type": {
+            "enum": [
+              "file",
+              "folder",
+              "web_link"
+            ],
+            "type": "string",
+            "title": "TypeEnm0",
+            "description": "Limits the search results to any items of this type. This parameter only takes one value. By default the API returns items that match any of these types. * `file` - Limits the search results to files * `folder` - Limits the search results to folders * `web_link` - Limits the search results to web links, also known    as bookmarks "
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 30,
+            "description": "Defines the maximum number of items to return as part of a page of results. "
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "The string to search for. REQUIRED unless 'mdfilters' is provided. Matched against item names, descriptions, text content, and other fields. Supports operators: \"\" (exact match), AND, OR, NOT (uppercase only)."
+          },
+          "scope": {
+            "enum": [
+              "enterprise_content",
+              "user_content"
+            ],
+            "type": "string",
+            "title": "Scope",
+            "default": "user_content",
+            "description": "Limits the search results to either the files that the user has access to, or to files available to the entire enterprise. The scope defaults to `user_content`, which limits the search results to content that is available to the currently authenticated user. The `enterprise_content` can be requested by an admin through our support channels. Once this scope has been enabled for a user, it will allow that use to query for content across the entire enterprise and not only the content that they have access to. "
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested. "
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0,
+            "description": "The offset of the item at which to begin the response. Queries with offset parameter value exceeding 10000 will be rejected with a 400 response. "
+          },
+          "direction": {
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "type": "string",
+            "title": "Direction",
+            "default": "DESC",
+            "description": "Defines the direction in which search results are ordered. This API defaults to returning items in descending (`DESC`) order unless this parameter is explicitly specified. When results are sorted by `relevance` the ordering is locked to returning items in descending order of relevance, and this parameter is ignored. "
+          },
+          "mdfilters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "SearchForContentmdfiltersRequest",
+              "properties": {
+                "scope": {
+                  "enum": [
+                    "enterprise",
+                    "enterprise_{enterprise_id}",
+                    "global"
+                  ],
+                  "type": "string",
+                  "title": "ScopeEnm1",
+                  "description": "Specifies the scope of the template to filter search results by. This will be `enterprise_{enterprise_id}` for templates defined for use in this enterprise, and `global` for general templates that are available to all enterprises using Box. "
+                },
+                "filters": {
+                  "type": "object",
+                  "title": "Filters",
+                  "description": "Specifies which fields on the template to filter the search results by. When more than one field is specified, the query performs a logical `AND` to ensure that the instance of the template matches each of the fields specified. ",
+                  "additionalProperties": true
+                },
+                "templateKey": {
+                  "type": "string",
+                  "title": "Template Key",
+                  "description": "The key of the template used to filter search results. In many cases the template key is automatically derived of its display name, for example `Contract Template` would become `contractTemplate`. In some cases the creator of the template will have provided its own template key. Please [list the templates for an enterprise][list], or get all instances on a [file][file] or [folder][folder] to inspect a template\"s key. [list]: e://get-metadata-templates-enterprise [file]: e://get-files-id-metadata [folder]: e://get-folders-id-metadata "
+                }
+              },
+              "description": "Request schema for `SearchForContentmdfilters`"
+            },
+            "title": "Mdfilters",
+            "description": "Metadata filters to limit search results. REQUIRED unless 'query' is provided. A list specifying exactly one metadata template to filter by."
+          },
+          "size_range": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Size Range",
+            "description": "Limits the search results to any items with a size within a given file size range. This applied to files and folders. Size ranges are defined as comma separated list of a lower and upper byte size limit (inclusive). The upper and lower bound can be omitted to create open ranges. "
+          },
+          "content_types": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "comments",
+                "description",
+                "file_content",
+                "name",
+                "tag"
+              ],
+              "type": "string",
+              "title": "ContentTypesEnm0"
+            },
+            "title": "Content Types",
+            "description": "Limits the search results to any items that match the search query for a specific part of the file, for example the file description. Content types are defined as a comma separated lists of Box recognized content types. The allowed content types are as follows. * `name` - The name of the item, as defined by its `name` field. * `description` - The description of the item, as defined by its   `description` field. * `file_content` - The actual content of the file. * `comments` - The content of any of the comments on a file or    folder. * `tags` - Any tags that are applied to an item, as defined by its    `tags` field. "
+          },
+          "trash_content": {
+            "enum": [
+              "all_items",
+              "non_trashed_only",
+              "trashed_only"
+            ],
+            "type": "string",
+            "title": "Trash Content",
+            "default": "non_trashed_only",
+            "description": "Determines if the search should look in the trash for items. By default, this API only returns search results for items not currently in the trash (`non_trashed_only`). * `trashed_only` - Only searches for items currently in the trash * `non_trashed_only` - Only searches for items currently not in   the trash * `all_items` - Searches for both trashed and non-trashed items. "
+          },
+          "owner_user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Owner User Ids",
+            "description": "Limits the search results to any items that are owned by the given list of owners, defined as a list of comma separated user IDs. The items still need to be owned or shared with the currently authenticated user for them to show up in the search results. If the user does not have access to any files owned by any of the users an empty result set will be returned. To search across an entire enterprise, we recommend using the `enterprise_content` scope parameter which can be requested with our support team. "
+          },
+          "file_extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "File Extensions",
+            "description": "Limits the search results to any files that match any of the provided file extensions. This list is a comma-separated list of file extensions without the dots. "
+          },
+          "created_at_range": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Created At Range",
+            "description": "Limits the search results to any items created within a given date range. Date ranges are defined as comma separated RFC3339 timestamps. If the the start date is omitted (`,2014-05-17T13:35:01-07:00`) anything created before the end date will be returned. If the end date is omitted (`2014-05-15T13:35:01-07:00,`) the current date will be used as the end date instead. "
+          },
+          "deleted_at_range": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Deleted At Range",
+            "description": "Limits the search results to any items deleted within a given date range. Date ranges are defined as comma separated RFC3339 timestamps. If the the start date is omitted (`2014-05-17T13:35:01-07:00`), anything deleted before the end date will be returned. If the end date is omitted (`2014-05-15T13:35:01-07:00`), the current date will be used as the end date instead. The `trash_content` parameter needs to be set to `trashed_only`. If searching in trash is not performed, then an empty result is returned. Data available from 2023-02-01 onwards. "
+          },
+          "deleted_user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Deleted User Ids",
+            "description": "Limits the search results to items that were deleted by the given list of users, defined as a list of comma separated user IDs. The `trash_content` parameter needs to be set to `trashed_only`. If searching in trash is not performed, an empty result set is returned. The items need to be owned or shared with the currently authenticated user for them to show up in the search results. If the user does not have access to any files owned by any of the users, an empty result set is returned. Data available from 2023-02-01 onwards. "
+          },
+          "updated_at_range": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Updated At Range",
+            "description": "Limits the search results to any items updated within a given date range. Date ranges are defined as comma separated RFC3339 timestamps. If the start date is omitted (`,2014-05-17T13:35:01-07:00`) anything updated before the end date will be returned. If the end date is omitted (`2014-05-15T13:35:01-07:00,`) the current date will be used as the end date instead. "
+          },
+          "ancestor_folder_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Ancestor Folder Ids",
+            "description": "Limits the search results to items within the given list of folders, defined as a comma separated lists of folder IDs. Search results will also include items within any subfolders of those ancestor folders. The folders still need to be owned or shared with the currently authenticated user. If the folder is not accessible by this user, or it does not exist, a `HTTP 404` error code will be returned instead. To search across an entire enterprise, we recommend using the `enterprise_content` scope parameter which can be requested with our support team. "
+          },
+          "recent_updater_user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Recent Updater User Ids",
+            "description": "Limits the search results to any items that have been updated by the given list of users, defined as a list of comma separated user IDs. The items still need to be owned or shared with the currently authenticated user for them to show up in the search results. If the user does not have access to any files owned by any of the users an empty result set will be returned. This feature only searches back to the last 10 versions of an item. "
+          },
+          "include_recent_shared_links": {
+            "type": "boolean",
+            "title": "Include Recent Shared Links",
+            "default": false,
+            "description": "Defines whether the search results should include any items that the user recently accessed through a shared link. When this parameter has been set to true, the format of the response of this API changes to return a list of [Search Results with Shared Links](r://search_results_with_shared_links) "
+          }
+        },
+        "description": "Request schema for `SearchForContent`"
+      }
+    },
+    {
+      "slug": "BOX_UPDATE_FILE",
+      "name": "Update file",
+      "description": "Updates a file. This can be used to rename or move a file, create a shared link, or lock a file.",
+      "version": "20261020_00",
+      "tags": [
+        "Files",
+        "important",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateFileRequest",
+        "required": [
+          "file_id"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "An optional different name for the file. This can be used to rename the file. "
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "description": "The tags for this item. These tags are shown in the Box web app and mobile apps next to an item. To add or remove a tag, retrieve the item\"s current tags, modify them, and then update this field. There is a limit of 100 tags per item, and 10,000 unique tags per enterprise. "
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested. "
+          },
+          "file_id": {
+            "type": "string",
+            "title": "File Id",
+            "description": "The unique identifier that represents a file. The ID for any file can be determined by visiting a file in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/files/123` the `file_id` is `123`. "
+          },
+          "parent__id": {
+            "type": "string",
+            "title": "Parent  Id",
+            "description": "The ID of a folder to move the file to. This can be used to move a file to a different location. For example, to move a file to the root folder, set this to '0'. Note: When passing parameters as JSON, use 'parent__id' (with double underscores)."
+          },
+          "collections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "UpdateFilecollectionsRequest",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "title": "Id",
+                  "description": "The unique identifier for this object"
+                },
+                "type": {
+                  "type": "string",
+                  "title": "Type",
+                  "description": "The type for this object"
+                }
+              },
+              "description": "Request schema for `UpdateFilecollections`"
+            },
+            "title": "Collections",
+            "description": "An array of collections to make this file a member of. Currently we only support the `favorites` collection. To get the ID for a collection, use the [List all collections][1] endpoint. Passing an empty array `[]` or `null` will remove the file from all collections. [1]: e://get-collections "
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "The description for a file. This can be seen in the right-hand sidebar panel when viewing a file in the Box web app. Additionally, this index is used in the search index of the file, allowing users to find the file by the content in the description. "
+          },
+          "lock__access": {
+            "enum": [
+              "lock"
+            ],
+            "type": "string",
+            "title": "AccessEnm0",
+            "description": "Set to 'lock' to create a lock on the file, preventing others from modifying it. To remove a lock, use an API call with lock set to null in the raw request. The only accepted value is 'lock'. Note: When passing parameters as JSON, use 'lock__access' (with double underscores)."
+          },
+          "disposition_at": {
+            "type": "string",
+            "title": "Disposition At",
+            "format": "date-time",
+            "description": "The retention expiration timestamp for the given file. This date cannot be shortened once set on a file. "
+          },
+          "lock__expires__at": {
+            "type": "string",
+            "title": "Lock  Expires  At",
+            "format": "date-time",
+            "description": "Defines the time at which the lock expires. Note: When passing parameters as JSON, use 'lock__expires__at' (with double underscores)."
+          },
+          "permissions__can__download": {
+            "enum": [
+              "company",
+              "open"
+            ],
+            "type": "string",
+            "title": "CanDownloadEnm0",
+            "description": "Defines who is allowed to download this file. The possible values are either `open` for everyone or `company` for the other members of the user\"s enterprise. This setting overrides the download permissions that are normally part of the `role` of a collaboration. When set to `company`, this essentially removes the download option for external users with `viewer` or `editor` a roles. Note: When passing parameters as JSON, use 'permissions__can__download' (with double underscores)."
+          },
+          "lock__is__download__prevented": {
+            "type": "boolean",
+            "title": "Lock  Is  Download  Prevented",
+            "description": "Defines if the file can be downloaded while it is locked. Note: When passing parameters as JSON, use 'lock__is__download__prevented' (with double underscores)."
+          }
+        },
+        "description": "Request schema for `UpdateFile`"
+      }
+    },
+    {
+      "slug": "BOX_UPDATE_FOLDER",
+      "name": "Update folder",
+      "description": "Updates a folder. This can be also be used to move the folder, create shared links, update collaborations, and more.",
+      "version": "20261020_00",
+      "tags": [
+        "Folders",
+        "important",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateFolderRequest",
+        "required": [
+          "folder_id"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The optional new name for this folder."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "description": "The tags for this item. These tags are shown in the Box web app and mobile apps next to an item. To add or remove a tag, retrieve the item\"s current tags, modify them, and then update this field. There is a limit of 100 tags per item, and 10,000 unique tags per enterprise. "
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested. "
+          },
+          "parent": {
+            "type": "object",
+            "title": "UpdateFolderParentRequest",
+            "properties": {
+              "id": {
+                "type": "string",
+                "title": "Id",
+                "description": "The ID of the new parent folder to move this folder to. Use '0' for the root folder."
+              }
+            },
+            "description": "Request schema for moving a folder to a new parent folder.",
+            "additionalProperties": false
+          },
+          "folder_id": {
+            "type": "string",
+            "title": "Folder Id",
+            "description": "The unique identifier that represent a folder. The ID for any folder can be determined by visiting this folder in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/folder/123` the `folder_id` is `123`. The root folder of a Box account is always represented by the ID `0`. "
+          },
+          "sync_state": {
+            "enum": [
+              "synced",
+              "not_synced",
+              "partially_synced"
+            ],
+            "type": "string",
+            "title": "SyncStateEnm",
+            "description": "Specifies whether a folder should be synced to a user\"s device or not. This is used by Box Sync (discontinued) and is not used by Box Drive. "
+          },
+          "collections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "UpdateFoldercollectionsRequest",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "title": "Id",
+                  "description": "The unique identifier for this object"
+                },
+                "type": {
+                  "type": "string",
+                  "title": "Type",
+                  "description": "The type for this object"
+                }
+              },
+              "description": "Request schema for `UpdateFoldercollections`"
+            },
+            "title": "Collections",
+            "description": "An array of collections to make this folder a member of. Currently we only support the `favorites` collection. To get the ID for a collection, use the [List all collections][1] endpoint. Passing an empty array `[]` or `null` will remove the folder from all collections. [1]: e://get-collections "
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "The optional description of this folder"
+          },
+          "shared_link": {
+            "type": "object",
+            "title": "UpdateFolderSharedLinkRequest",
+            "properties": {
+              "access": {
+                "enum": [
+                  "open",
+                  "company",
+                  "collaborators"
+                ],
+                "type": "string",
+                "title": "SharedLinkAccessEnm",
+                "description": "The level of access for the shared link. 'open' means anyone with the link can access. 'company' means only users within the same enterprise. 'collaborators' means only invited collaborators."
+              },
+              "password": {
+                "type": "string",
+                "title": "Password",
+                "description": "The password required to access the shared link. Set to null to remove the password."
+              },
+              "permissions": {
+                "type": "object",
+                "title": "UpdateFolderSharedLinkPermissions",
+                "properties": {
+                  "can_edit": {
+                    "type": "boolean",
+                    "title": "Can Edit",
+                    "description": "If the shared link allows editing. This can only be enabled with open sharing."
+                  },
+                  "can_preview": {
+                    "type": "boolean",
+                    "title": "Can Preview",
+                    "description": "If the shared link allows previewing of the folder contents."
+                  },
+                  "can_download": {
+                    "type": "boolean",
+                    "title": "Can Download",
+                    "description": "If the shared link allows downloading of the folder contents."
+                  }
+                },
+                "description": "Permissions for the shared link.",
+                "additionalProperties": false
+              },
+              "unshared_at": {
+                "type": "string",
+                "title": "Unshared At",
+                "description": "The date and time when this link will be disabled in RFC 3339 format (e.g., '2012-12-12T10:53:43-08:00')."
+              },
+              "vanity_name": {
+                "type": "string",
+                "title": "Vanity Name",
+                "description": "A custom vanity name for the shared link URL (e.g., 'my-custom-name' results in a URL like box.com/v/my-custom-name)."
+              }
+            },
+            "description": "Request schema for creating/updating a shared link on the folder.",
+            "additionalProperties": false
+          },
+          "folder_upload_email": {
+            "type": "object",
+            "title": "UpdateFolderUploadEmailRequest",
+            "properties": {
+              "access": {
+                "enum": [
+                  "open",
+                  "collaborators"
+                ],
+                "type": "string",
+                "title": "FolderUploadEmailAccessEnm",
+                "description": "The access level for the upload email address. 'open' allows anyone with the email to upload. 'collaborators' restricts uploads to folder collaborators only."
+              }
+            },
+            "description": "Request schema for configuring folder upload email.",
+            "additionalProperties": false
+          },
+          "can_non_owners_invite": {
+            "type": "boolean",
+            "title": "Can Non Owners Invite",
+            "description": "Specifies if users who are not the owner of the folder can invite new collaborators to the folder. "
+          },
+          "can_non_owners_view_collaborators": {
+            "type": "boolean",
+            "title": "Can Non Owners View Collaborators",
+            "description": "Restricts collaborators who are not the owner of this folder from viewing other collaborations on this folder. It also restricts non-owners from inviting new collaborators. When setting this field to `false`, it is required to also set `can_non_owners_invite_collaborators` to `false` if it has not already been set. "
+          },
+          "is_collaboration_restricted_to_enterprise": {
+            "type": "boolean",
+            "title": "Is Collaboration Restricted To Enterprise",
+            "description": "Specifies if new invites to this folder are restricted to users within the enterprise. This does not affect existing collaborations. "
+          }
+        },
+        "description": "Request schema for `UpdateFolder`"
+      }
+    }
+  ]
+}

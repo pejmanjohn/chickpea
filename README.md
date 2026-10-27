@@ -161,7 +161,7 @@ Every connection belongs to one Agent for its lifetime. A **team account** is sh
 
 Selected connection capabilities authorize the Agent to carry out the requested task. The model uses the conversation and saved instructions to determine intent, without requiring particular words or an extra confirmation merely because a tool can write. Explicit read-only permissions, preview-only requests, and saved confirmation requirements remain in force. Conversation text and API results cannot expand connection grants. The [Security Model](#security-model) has the full list.
 
-What you can connect, 76 presets in all. 22 run through a single Composio key; the other 54 go through the vendor's hosted MCP server or a direct API:
+What you can connect, 83 presets in all. 29 run through a single Composio key; the other 54 go through the vendor's hosted MCP server or a direct API:
 
 <table>
   <tr>
@@ -189,16 +189,24 @@ What you can connect, 76 presets in all. 22 run through a single Composio key; t
     <td><img src="https://cdn.simpleicons.org/bitbucket" width="14" height="14" alt=""> Bitbucket</td>
   </tr>
   <tr>
+    <td><img src="https://cdn.simpleicons.org/box" width="14" height="14" alt=""> Box</td>
+    <td><img src="https://cdn.simpleicons.org/dropbox" width="14" height="14" alt=""> Dropbox</td>
     <td>Excel</td>
+    <td><img src="https://cdn.simpleicons.org/figma" width="14" height="14" alt=""> Figma</td>
     <td><img src="https://cdn.simpleicons.org/github" width="14" height="14" alt=""> GitHub</td>
+  </tr>
+  <tr>
+    <td><img src="https://cdn.simpleicons.org/googlebigquery" width="14" height="14" alt=""> Google BigQuery</td>
+    <td><img src="https://cdn.simpleicons.org/mailchimp/241C15/FFE01B" width="14" height="14" alt=""> Mailchimp</td>
     <td>OneDrive</td>
     <td>Outlook</td>
     <td><img src="https://cdn.simpleicons.org/pagerduty" width="14" height="14" alt=""> PagerDuty</td>
   </tr>
   <tr>
+    <td>Pipedrive</td>
+    <td><img src="https://cdn.simpleicons.org/quickbooks" width="14" height="14" alt=""> QuickBooks</td>
     <td>Salesforce</td>
     <td>SharePoint</td>
-    <td colspan="3"></td>
   </tr>
   <tr>
     <th colspan="5" align="left">Presets · the vendor's hosted MCP server, with OAuth or an API key</th>

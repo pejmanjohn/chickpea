@@ -1,0 +1,897 @@
+{
+  "toolkit": "figma",
+  "version": "20261010_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Figma",
+  "description": "Read design files, components, styles, variables, and comments, render frames as images, and post comments.",
+  "securityDescription": "Figma sign-in opens through Composio. Agents act as the signed-in Figma user and can read the files, projects, components, styles, variables, and comments that user can open. With write access, Agents can post comments and replies on a file, which everyone who can open the file sees. Agents cannot edit designs or variables, delete comments, manage webhooks or dev resources, or change sharing, team, or billing settings.",
+  "preset": {
+    "category": "docs",
+    "accent": "#F24E1E"
+  },
+  "validationCapability": "figma.get_current_user",
+  "review": {
+    "add": [
+      "FIGMA_ADD_A_COMMENT_TO_A_FILE",
+      "FIGMA_DISCOVER_FIGMA_RESOURCES",
+      "FIGMA_GET_COMMENTS_IN_A_FILE",
+      "FIGMA_GET_FILE_STYLES",
+      "FIGMA_GET_VERSIONS_OF_A_FILE",
+      "FIGMA_RENDER_IMAGES_OF_FILE_NODES"
+    ],
+    "drop": {},
+    "allowArguments": {
+      "FIGMA_ADD_A_COMMENT_TO_A_FILE": [
+        "file_key"
+      ]
+    }
+  },
+  "capabilities": [
+    {
+      "id": "figma.add_a_comment_to_a_file",
+      "tool": "FIGMA_ADD_A_COMMENT_TO_A_FILE",
+      "toolName": "figma_add_a_comment_to_a_file",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Posts a new comment to a Figma file or branch, optionally replying to an existing root comment (replies cannot be nested); `region_height` and `region_width` in `client_meta` must be positive if defining a comment region.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Figma: Add a comment to a file",
+      "withheldArguments": {
+        "client_meta": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Text content of the comment."
+          },
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Figma file key or branch key. Extract from the file URL: https://www.figma.com/design/FILE_KEY/... or https://www.figma.com/file/FILE_KEY/... The FILE_KEY is the alphanumeric string between 'design/' or 'file/' and the next slash. You must have access to the file (editor or commenter permissions required to add comments). For branch keys, use GET /v1/files/:key with branch_data parameter."
+          },
+          "comment_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of an existing root comment to reply to. Replies cannot be made to other replies."
+          }
+        },
+        "required": [
+          "file_key",
+          "message"
+        ],
+        "description": "Request schema for `AddACommentToAFile`"
+      }
+    },
+    {
+      "id": "figma.design_tokens_to_tailwind",
+      "tool": "FIGMA_DESIGN_TOKENS_TO_TAILWIND",
+      "toolName": "figma_design_tokens_to_tailwind",
+      "lane": "read",
+      "effect": "read",
+      "description": "Convert design tokens to Tailwind CSS configuration. TWO-STEP WORKFLOW: 1. First, call FIGMA_EXTRACT_DESIGN_TOKENS with a Figma file_key to extract design tokens 2. Then, pass the returned DesignTokens object to this action's 'tokens' parameter This action generates: - tailwind.config.ts/js with theme extensions - Optional globals.css with font imports Note: Shadow colors can be provided in either string format (e.g., \"rgba(15, 110, 110, 0.32)\") or dictionary format (e.g., {\"r\": 0.059, \"g\": 0.431, \"b\": 0.431, \"a\": 0.32}).",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "tokens.shadows": "unsupported schema",
+        "tokens.border_radius": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "prefix": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Prefix for generated token names (e.g., 'brand-')"
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "colors": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "The name identifier for the color token."
+                    },
+                    "value": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "CSS hex color format (e.g., '#ff0000')"
+                    },
+                    "source": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "enum": [
+                        "style",
+                        "variable",
+                        "extracted"
+                      ],
+                      "description": "Source of the token extraction"
+                    },
+                    "opacity": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1,
+                      "description": "Opacity value (0-1) if less than 1"
+                    },
+                    "usage_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Number of times this token appears in the design"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "value",
+                    "source"
+                  ],
+                  "description": "A color design token."
+                },
+                "maxItems": 100,
+                "description": "List of color design tokens"
+              },
+              "sources": {
+                "type": "object",
+                "properties": {
+                  "style": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Tokens extracted from Figma styles"
+                  },
+                  "variable": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Tokens extracted from Figma variables"
+                  },
+                  "extracted": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Tokens extracted from node properties"
+                  }
+                },
+                "description": "Count of tokens by extraction source"
+              },
+              "spacing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "Name of the spacing token"
+                    },
+                    "type": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "enum": [
+                        "padding",
+                        "margin",
+                        "gap",
+                        "spacing"
+                      ],
+                      "description": "Type of spacing"
+                    },
+                    "value": {
+                      "type": "number",
+                      "minimum": 0,
+                      "description": "Spacing value in pixels"
+                    },
+                    "source": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "enum": [
+                        "style",
+                        "variable",
+                        "extracted"
+                      ],
+                      "description": "Source of the token extraction"
+                    },
+                    "usage_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Number of times this token appears in the design"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "value",
+                    "type",
+                    "source"
+                  ],
+                  "description": "A spacing design token."
+                },
+                "maxItems": 100,
+                "description": "List of spacing design tokens"
+              },
+              "typography": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "Name of the typography token"
+                    },
+                    "source": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "enum": [
+                        "style",
+                        "variable",
+                        "extracted"
+                      ],
+                      "description": "Source of the token extraction"
+                    },
+                    "font_size": {
+                      "type": "number",
+                      "minimum": 0,
+                      "description": "Font size in pixels"
+                    },
+                    "font_family": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "Font family name (e.g., 'Inter', 'Roboto')"
+                    },
+                    "font_weight": {
+                      "type": "integer",
+                      "minimum": 100,
+                      "maximum": 900,
+                      "description": "Font weight (100-900)"
+                    },
+                    "line_height": {
+                      "type": "number",
+                      "description": "Line height in pixels"
+                    },
+                    "usage_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Number of times this token appears in the design"
+                    },
+                    "letter_spacing": {
+                      "type": "number",
+                      "description": "Letter spacing in pixels"
+                    },
+                    "text_transform": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "enum": [
+                        "ORIGINAL",
+                        "UPPER",
+                        "LOWER",
+                        "TITLE",
+                        "SMALL_CAPS",
+                        "SMALL_CAPS_FORCED"
+                      ],
+                      "description": "Text case transformation"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "font_family",
+                    "font_size",
+                    "font_weight",
+                    "source"
+                  ],
+                  "description": "A typography design token."
+                },
+                "maxItems": 100,
+                "description": "List of typography design tokens"
+              },
+              "total_tokens": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Total number of design tokens extracted"
+              },
+              "composio_execution_message": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Message about execution issues or warnings"
+              }
+            },
+            "required": [
+              "total_tokens",
+              "sources"
+            ],
+            "description": "Design tokens object obtained from the FIGMA_EXTRACT_DESIGN_TOKENS action output. Contains colors, typography, spacing, border_radius, shadows, total_tokens, and sources."
+          },
+          "config_format": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Output format: 'ts' for TypeScript or 'js' for JavaScript"
+          },
+          "include_font_imports": {
+            "type": "boolean",
+            "description": "Include @import statements for Google Fonts"
+          }
+        },
+        "required": [
+          "tokens"
+        ],
+        "description": "Request to convert design tokens to Tailwind config. PREREQUISITE: First call FIGMA_EXTRACT_DESIGN_TOKENS with a Figma file_key to obtain the DesignTokens object, then pass that output as the 'tokens' parameter here."
+      }
+    },
+    {
+      "id": "figma.discover_figma_resources",
+      "tool": "FIGMA_DISCOVER_FIGMA_RESOURCES",
+      "toolName": "figma_discover_figma_resources",
+      "lane": "read",
+      "effect": "read",
+      "description": "Smart Figma resource discovery - extract IDs from any Figma URL. Supports all URL formats: /file/, /design/, /board/, /proto/, /slides/ Example: figma.com/board/ABC123/Name → file_key=ABC123 Discovery workflow: team_id → projects → files → nodes Use extracted IDs with GetFileJson, DetectBackground, etc.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "team_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Team ID to list all projects from. Get this from team URL: https://www.figma.com/files/team/YOUR_TEAM_ID/Team-Name. Returns list of projects with IDs and names. Cannot be inferred from user identity or FIGMA_GET_CURRENT_USER; must come from a team URL or be provided directly."
+          },
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "File key to extract all node IDs from. Get this from file URL (figma.com/file/FILE_KEY/...) or from project files list. Returns hierarchical list of all nodes with IDs, names, types, and paths."
+          },
+          "figma_url": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Full Figma URL to extract file_key, node_id, and team_id from. Works with any Figma URL format: • File: https://www.figma.com/file/ABC123/Design-Name • Design: https://www.figma.com/design/ABC123/Design-Name • Board: https://www.figma.com/board/ABC123/Board-Name • Prototype: https://www.figma.com/proto/ABC123/Prototype-Name • Slides: https://www.figma.com/slides/ABC123/Slide-Name • With node: https://www.figma.com/file/ABC123/Design?node-id=123:456 • Team:"
+          },
+          "max_depth": {
+            "type": "integer",
+            "description": "Maximum tree depth to traverse when discovering nodes. 2=pages+frames, 3=pages+frames+components, etc. Higher values find more nodes but take longer. Responses at depth 4+ or broad file_key traversal can exceed 20k tokens with significant latency; cap at 2–3 and target specific CANVAS or FRAME node IDs to limit response size."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Project ID to list all files from. Get this from project URL or from team projects list. Returns files with keys, names, and thumbnails."
+          }
+        },
+        "description": "Request to discover Figma resources and extract IDs automatically."
+      }
+    },
+    {
+      "id": "figma.download_figma_images",
+      "tool": "FIGMA_DOWNLOAD_FIGMA_IMAGES",
+      "toolName": "figma_download_figma_images",
+      "lane": "read",
+      "effect": "read",
+      "description": "Download images from Figma file nodes. Renders specified nodes as images and downloads them. Supports PNG, SVG, JPG, and PDF formats. REQUIRED PARAMETERS: - file_key (string): The Figma file key from the URL - images (array): List of objects, each containing: - node_id (string, required): The node ID to export (e.g., \"1:2\") - file_name (string, required): Output filename with extension (e.g., \"logo.png\") - format (string, optional): One of 'png', 'svg', 'jpg', 'pdf'. Defaults to 'png' Example usage: { \"file_key\": \"abc123XYZ\", \"images\": [ {\"node_id\": \"1:2\", \"file_name\": \"logo.png\", \"format\": \"png\"} ] } To find node IDs, use FIGMA_GET_FILE_JSON or look in Figma URLs after 'node-id='. NOTE: Returned image URLs expire shortly after generation — download them immediately.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "scale": {
+            "type": "number",
+            "description": "Image scaling factor for PNG/JPG exports (0.01 to 4). Default is 2 for retina quality. Ignored for SVG/PDF. Exports are capped at ~32 megapixels; reduce scale or split large nodes to avoid hitting this limit."
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "format": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "Image format to export. Supported values: 'png', 'svg', 'jpg', 'pdf'. Defaults to 'png'."
+                },
+                "node_id": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "REQUIRED. The Figma node ID to render as an image. Node IDs are found in Figma URLs after 'node-id=' (e.g., '1:2', '123:456'). You can also get node IDs by using the FIGMA_GET_FILE_JSON action."
+                },
+                "file_name": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "REQUIRED. The output filename with extension for the downloaded image (e.g., 'logo.png', 'header-image.svg', 'icon.jpg')."
+                }
+              },
+              "required": [
+                "node_id",
+                "file_name"
+              ],
+              "description": "Individual image download request specifying which node to render and how to save it. Example: {\"node_id\": \"1:2\", \"file_name\": \"logo.png\", \"format\": \"png\"}"
+            },
+            "maxItems": 100,
+            "description": "REQUIRED. A list of image download requests. Each item must be an object with 'node_id' (string, required), 'file_name' (string, required), and optionally 'format' (string, defaults to 'png'). Example: [{\"node_id\": \"1:2\", \"file_name\": \"logo.png\"}]"
+          },
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "REQUIRED. The Figma file key extracted from a Figma URL. For URL 'https://www.figma.com/file/abc123XYZ/MyDesign', the file_key is 'abc123XYZ'. This identifies which Figma file to download images from."
+          },
+          "svg_include_id": {
+            "type": "boolean",
+            "description": "For SVG exports only: include element IDs in the SVG output. Defaults to false."
+          },
+          "svg_outline_text": {
+            "type": "boolean",
+            "description": "For SVG exports only: convert text to paths for accurate rendering. Defaults to true."
+          },
+          "svg_simplify_stroke": {
+            "type": "boolean",
+            "description": "For SVG exports only: simplify strokes for cleaner SVG output. Defaults to true."
+          }
+        },
+        "required": [
+          "file_key",
+          "images"
+        ],
+        "description": "Request to download images from a Figma file. REQUIRED PARAMETERS: - file_key: The Figma file key (string) - images: List of image download requests (array of objects) Example request: { \"file_key\": \"abc123XYZ\", \"images\": [ {\"node_id\": \"1:2\", \"file_name\": \"logo.png\", \"format\": \"png\"}, {\"node_id\": \"3:4\", \"file_name\": \"icon.svg\", \"format\": \"svg\"} ] }"
+      }
+    },
+    {
+      "id": "figma.extract_design_tokens",
+      "tool": "FIGMA_EXTRACT_DESIGN_TOKENS",
+      "toolName": "figma_extract_design_tokens",
+      "lane": "read",
+      "effect": "read",
+      "description": "Extract design tokens from Figma files by combining styles, variables, and node-extracted values. Only values defined as Figma styles or variables are captured — any design values not encoded as styles/variables are silently omitted. Requires `file_variables:read` scope and a Figma plan that supports variables for full output; if variables return empty, supplement with FIGMA_GET_LOCAL_VARIABLES.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Figma file key (e.g., 'aA1b2Cd3E4F5g6H7i8J9k0L'). Extract from Figma URLs like figma.com/file/FILE_KEY/... or use FIGMA_DISCOVER_FIGMA_RESOURCES to find file keys"
+          },
+          "include_variables": {
+            "type": "boolean",
+            "description": "Include variables in extraction. Even with this enabled, modes and scopes may be incomplete; use FIGMA_GET_LOCAL_VARIABLES for full semantic token coverage including variable modes and aliases."
+          },
+          "extract_from_nodes": {
+            "type": "boolean",
+            "description": "Extract tokens from node properties"
+          },
+          "include_local_styles": {
+            "type": "boolean",
+            "description": "Include local styles in extraction"
+          }
+        },
+        "required": [
+          "file_key"
+        ],
+        "description": "Request to extract design tokens."
+      }
+    },
+    {
+      "id": "figma.extract_prototype_interactions",
+      "tool": "FIGMA_EXTRACT_PROTOTYPE_INTERACTIONS",
+      "toolName": "figma_extract_prototype_interactions",
+      "lane": "read",
+      "effect": "read",
+      "description": "Extract prototype interactions and animations from Figma files. Required parameter: - file_key: The Figma file key extracted from a URL like 'https://www.figma.com/file/ABC123xyz/MyFile' (the 'ABC123xyz' part) Analyzes the prototype data to extract: - User interactions (clicks, hovers, etc.) - Transition animations - Component variant states - User flows and navigation",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. The unique file key from a Figma URL. To find it: from a URL like 'https://www.figma.com/file/ABC123xyz/MyFileName' or 'https://www.figma.com/design/ABC123xyz/MyFileName', extract the alphanumeric string after '/file/' or '/design/' (e.g., 'ABC123xyz'). This is typically 22 alphanumeric characters."
+          },
+          "analyze_components": {
+            "type": "boolean",
+            "description": "Extract component variant states"
+          },
+          "include_animations": {
+            "type": "boolean",
+            "description": "Include detailed animation data"
+          }
+        },
+        "required": [
+          "file_key"
+        ],
+        "description": "Request to extract prototype interactions. Note: file_key is required and must be extracted from the Figma file URL."
+      }
+    },
+    {
+      "id": "figma.get_comments_in_a_file",
+      "tool": "FIGMA_GET_COMMENTS_IN_A_FILE",
+      "toolName": "figma_get_comments_in_a_file",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all comments from an existing Figma file, identified by a valid `file_key`, returning details like content, author, position, and reactions, with an option for Markdown formatted content.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "as_md": {
+            "type": "boolean",
+            "description": "If true, comment content will be returned in Markdown format where applicable (e.g., for links, bold text). Defaults to false, returning rich text structure."
+          },
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Identifier for the Figma file from which to retrieve comments. This can be a file key (a unique string identifying a file) or a branch key. To obtain a branch key, use the `GET /v1/files/:key` endpoint with the `branch_data` query parameter."
+          }
+        },
+        "required": [
+          "file_key"
+        ],
+        "description": "Request schema for `GetCommentsInAFile` action. Specifies the file and formatting options for retrieving comments."
+      }
+    },
+    {
+      "id": "figma.get_component2",
+      "tool": "FIGMA_GET_COMPONENT2",
+      "toolName": "figma_get_component2",
+      "lane": "read",
+      "effect": "read",
+      "description": "Fetches metadata for a specific component using its unique identifier. Use when you need to retrieve published component details from a team library.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the component."
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "description": "Request schema for retrieving a Figma component by its unique key."
+      }
+    },
+    {
+      "id": "figma.get_current_user",
+      "tool": "FIGMA_GET_CURRENT_USER",
+      "toolName": "figma_get_current_user",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information for the currently authenticated Figma user.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request for `GetCurrentUser`; no parameters are needed."
+      }
+    },
+    {
+      "id": "figma.get_file_component_sets",
+      "tool": "FIGMA_GET_FILE_COMPONENT_SETS",
+      "toolName": "figma_get_file_component_sets",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all published component sets from the specified Figma main file (file_key must not be for a branch).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Key of the Figma file. Must be a main file key (not a branch key) as component sets are published from main files. Extract from Figma URL: https://www.figma.com/design/{file_key}/... or https://www.figma.com/file/{file_key}/..."
+          }
+        },
+        "required": [
+          "file_key"
+        ],
+        "description": "Request schema for retrieving component sets from a specific Figma file."
+      }
+    },
+    {
+      "id": "figma.get_file_components",
+      "tool": "FIGMA_GET_FILE_COMPONENTS",
+      "toolName": "figma_get_file_components",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves published components from a Figma file, which must be a main file (not a branch) acting as a library.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Key of the Figma file. This file must be a main file (not a branch key) that acts as a library, as components are published from main files."
+          }
+        },
+        "required": [
+          "file_key"
+        ],
+        "description": "Request to retrieve published components from a Figma file."
+      }
+    },
+    {
+      "id": "figma.get_file_json",
+      "tool": "FIGMA_GET_FILE_JSON",
+      "toolName": "figma_get_file_json",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get Figma Design file data with automatic simplification. IMPORTANT: Only supports Design files (figma.com/design/{file_key}). FigJam board files (figma.com/board/{file_key}) and Slides files (figma.com/slides/{file_key}) are NOT supported and will return a 400 error: \"File type not supported by this endpoint\". This enhanced version automatically transforms verbose Figma JSON into clean, AI-friendly format with: - CSS-like property names - Deduplicated variables - Removed empty values - 70%+ size reduction Use simplify=False to get raw API response.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated node IDs to fetch specific nodes (uses /nodes endpoint). Node IDs can be extracted from Figma URLs: figma.com/design/{file_key}/{name}?node-id={node_id}. Example: '1:2,1:3' for multiple nodes. Must be a string, not an array — passing an array causes validation failure. URL node IDs use hyphens (e.g., '1-2'); convert to colons (e.g., '1:2') before passing here."
+          },
+          "depth": {
+            "type": "integer",
+            "description": "Tree traversal depth (e.g., 2 for pages and top-level children). Omitting depth on large files can produce extremely large responses or timeouts; scope with `ids` and set depth to the minimum needed."
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specific version ID; current version if omitted"
+          },
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "File key extracted from a Figma Design file URL. SUPPORTED: figma.com/design/{file_key}/... or figma.com/file/{file_key}/... NOT SUPPORTED: FigJam boards (figma.com/board/{file_key}) and Slides (figma.com/slides/{file_key}). Example valid key: 'abc123XYZ' from URL figma.com/design/abc123XYZ/My-Design."
+          },
+          "geometry": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Set to \"paths\" to include vector data"
+          },
+          "branch_data": {
+            "type": "boolean",
+            "description": "Include branch metadata"
+          },
+          "plugin_data": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated plugin IDs to include plugin data"
+          },
+          "response_detail": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "minimal",
+              "full"
+            ],
+            "description": "Level of detail in the response. 'minimal' (default) simplifies file data for AI consumption. 'full' returns the raw Figma API response."
+          }
+        },
+        "required": [
+          "file_key"
+        ],
+        "description": "Request schema for GetFileJson with simplification options."
+      }
+    },
+    {
+      "id": "figma.get_file_metadata",
+      "tool": "FIGMA_GET_FILE_METADATA",
+      "toolName": "figma_get_file_metadata",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get Figma file metadata including name, creator, last modification details, thumbnail, and access information. Use when you need quick file overview without the full document tree.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "File key to get metadata for. This can be a file key or branch key. Extract from file URL: https://www.figma.com/design/{file_key}/... or https://www.figma.com/file/{file_key}/... Use `GET /v1/files/:key` with the `branch_data` query param to get the branch key."
+          }
+        },
+        "required": [
+          "file_key"
+        ],
+        "description": "Request schema for retrieving metadata of a Figma file."
+      }
+    },
+    {
+      "id": "figma.get_file_styles",
+      "tool": "FIGMA_GET_FILE_STYLES",
+      "toolName": "figma_get_file_styles",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of published styles (like colors, text attributes, effects, and layout grids) from a specified main Figma file (not a branch).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Key of the main Figma file (not a branch) from which to retrieve published styles. Extract the file_key from the Figma URL: figma.com/design/{file_key}/... or figma.com/file/{file_key}/... Note: This endpoint only returns PUBLISHED styles from team libraries. For local/unpublished styles, use FIGMA_GET_FILE_JSON instead."
+          }
+        },
+        "required": [
+          "file_key"
+        ],
+        "description": "Request to retrieve styles from a Figma file."
+      }
+    },
+    {
+      "id": "figma.get_files_in_a_project",
+      "tool": "FIGMA_GET_FILES_IN_A_PROJECT",
+      "toolName": "figma_get_files_in_a_project",
+      "lane": "read",
+      "effect": "read",
+      "description": "Fetches a list of files in a Figma project, optionally including branch metadata.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Identifier of the Figma project, typically found in its URL."
+          },
+          "branch_data": {
+            "type": "boolean",
+            "description": "If true, includes metadata for branches of main files."
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "description": "Defines the parameters needed to retrieve a list of files from a specified Figma project."
+      }
+    },
+    {
+      "id": "figma.get_local_variables",
+      "tool": "FIGMA_GET_LOCAL_VARIABLES",
+      "toolName": "figma_get_local_variables",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all local/remote variables for a Figma file/branch; crucial for obtaining mode-specific values which `/v1/files/{file_key}/variables/published` omits.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Key of the Figma file or branch. Can be a standard file key or a branch-specific key (to obtain a branch key, use `GET /v1/files/:key` with the `branch_data` query parameter)."
+          }
+        },
+        "required": [
+          "file_key"
+        ],
+        "description": "Request schema for `GetLocalVariables`"
+      }
+    },
+    {
+      "id": "figma.get_projects_in_a_team",
+      "tool": "FIGMA_GET_PROJECTS_IN_A_TEAM",
+      "toolName": "figma_get_projects_in_a_team",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves projects within a specified Figma team that are visible to the authenticated user.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "team_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Identifier of the Figma team from which to list projects. Note: The `team_id` cannot be programmatically obtained solely from a user token. To find a `team_id`, navigate to a team page you are a member of in Figma. The `team_id` will be present in the URL, typically formatted as `https://www.figma.com/files/team/YOUR_TEAM_ID/Your_Team_Name`."
+          }
+        },
+        "required": [
+          "team_id"
+        ],
+        "description": "Request schema for `GetProjectsInATeam`"
+      }
+    },
+    {
+      "id": "figma.get_versions_of_a_file",
+      "tool": "FIGMA_GET_VERSIONS_OF_A_FILE",
+      "toolName": "figma_get_versions_of_a_file",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the version history for a Figma file or branch, as specified by its `file_key`.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "after": {
+            "type": "integer",
+            "description": "Version ID for pagination; retrieves versions created strictly after this ID."
+          },
+          "before": {
+            "type": "integer",
+            "description": "Version ID for pagination; retrieves versions created strictly before this ID."
+          },
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The key of the Figma file or branch from which to retrieve the version history. Extract from file URL: https://www.figma.com/design/{file_key}/... or https://www.figma.com/file/{file_key}/... For branch keys, use `GET /v1/files/:key` with the `branch_data` query param to obtain it. The authenticated user must have access to the file; otherwise a 404 'Not found' error is returned."
+          },
+          "page_size": {
+            "type": "integer",
+            "description": "Number of version items per page. The API defaults to 30 if this parameter is not sent."
+          }
+        },
+        "required": [
+          "file_key"
+        ],
+        "description": "Request schema for retrieving the version history of a Figma file."
+      }
+    },
+    {
+      "id": "figma.render_images_of_file_nodes",
+      "tool": "FIGMA_RENDER_IMAGES_OF_FILE_NODES",
+      "toolName": "figma_render_images_of_file_nodes",
+      "lane": "read",
+      "effect": "read",
+      "description": "Render Figma nodes as images (PNG, JPG, SVG, PDF). Returns a map of node IDs to temporary image URLs (valid for 30 days). Images are capped at 32 megapixels; larger requests are automatically scaled down. REQUIRED PARAMETERS: - file_key: Figma file key from URL (e.g., 'abc123XYZ' from figma.com/design/abc123XYZ/...) - ids: Comma-separated node IDs to render (e.g., '1:2' or '1:2,1:3,1:4') NODE IDs: Found in Figma URLs after 'node-id=' or from FIGMA_GET_FILE_JSON response. FORMATS: - png/jpg: Raster images with optional scale (0.01-4.0) - svg: Vector graphics with text outline options - pdf: Document format COMMON ISSUES: - null value in images map = node failed to render (invalid ID, invisible, 0% opacity) - 404 error = file_key not found or no access - 429 error = rate limit exceeded, wait and retry",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of node IDs to render as images. Node IDs are found in Figma URLs after 'node-id=' (e.g., '1:2') or from FIGMA_GET_FILE_JSON response. Example: '1:2,1:3,1:4'."
+          },
+          "scale": {
+            "type": "number",
+            "minimum": 0.01,
+            "maximum": 4,
+            "description": "Image scaling factor between 0.01 and 4.0. Example: 2.0 renders at 2x resolution. Applies to PNG/JPG only; ignored for SVG/PDF."
+          },
+          "format": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "jpg",
+              "pdf",
+              "png",
+              "svg"
+            ],
+            "description": "Output image format: 'png', 'jpg', 'svg', or 'pdf'."
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specific version ID of the file to render. If omitted, uses current version."
+          },
+          "file_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Key of the Figma file or branch. Extract from Figma URLs: figma.com/design/{file_key}/... or figma.com/file/{file_key}/... For branch keys, use GET /v1/files/:key with branch_data=true."
+          },
+          "contents_only": {
+            "type": "boolean",
+            "description": "If true, excludes content that overlaps node boundaries. If false, includes overlapping content (may increase processing time)."
+          },
+          "svg_include_id": {
+            "type": "boolean",
+            "description": "(SVG only) If true, includes 'id' attributes (using layer names) on SVG elements."
+          },
+          "svg_outline_text": {
+            "type": "boolean",
+            "description": "(SVG only) If true, text renders as vector paths (outlines) for exact visual fidelity. If false, text renders as <text> elements (selectable, but appearance may vary by system fonts)."
+          },
+          "svg_include_node_id": {
+            "type": "boolean",
+            "description": "(SVG only) If true, adds 'data-node-id' attribute (with Figma node ID) to SVG elements."
+          },
+          "svg_simplify_stroke": {
+            "type": "boolean",
+            "description": "(SVG only) If true, simplifies strokes using 'stroke' attribute instead of <mask>."
+          },
+          "use_absolute_bounds": {
+            "type": "boolean",
+            "description": "If true, uses full node dimensions ignoring cropping/empty space. Useful for text nodes to avoid unintended cropping."
+          }
+        },
+        "required": [
+          "file_key",
+          "ids"
+        ],
+        "description": "Request model for rendering images of specified nodes within a Figma file."
+      }
+    }
+  ]
+}

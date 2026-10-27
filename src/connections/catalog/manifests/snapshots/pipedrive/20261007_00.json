@@ -1,0 +1,5019 @@
+{
+  "toolkit": {
+    "slug": "pipedrive",
+    "name": "Pipedrive",
+    "version": "20261007_00",
+    "description": "Pipedrive is a sales management tool built around pipeline visualization, lead tracking, activity reminders, and automation to keep deals progressing",
+    "managedAuthSchemes": [],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      },
+      {
+        "mode": "API_KEY",
+        "fields": [
+          "subdomain",
+          "generic_api_key"
+        ]
+      }
+    ],
+    "currentUserEndpoint": "https://api.pipedrive.com/v1/users/me"
+  },
+  "tools": [
+    {
+      "slug": "PIPEDRIVE_ADD_A_DEAL",
+      "name": "Add a deal",
+      "description": "Add a new deal to Pipedrive with any custom fields, which vary by account and are identified by long hash keys. Check dealFields for existing custom fields. For details, visit the tutorial on adding a deal.",
+      "version": "20261007_00",
+      "tags": [
+        "Deals",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddADealRequest",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "The deal title"
+          },
+          "value": {
+            "type": "number",
+            "title": "Value",
+            "description": "Monetary value of the deal"
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "description": "ID of the organization"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Status of the deal (open, won, lost). Defaults to open"
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "description": "ID of the user who will be marked as owner of this deal"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency",
+            "description": "Currency for the deal value (3-letter ISO code)"
+          },
+          "stage_id": {
+            "type": "integer",
+            "title": "Stage Id",
+            "description": "Stage ID for the deal"
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "description": "ID of the person this deal is linked to"
+          },
+          "visible_to": {
+            "type": "integer",
+            "title": "Visible To",
+            "description": "Visibility of the deal (owner, entire company etc)"
+          },
+          "pipeline_id": {
+            "type": "integer",
+            "title": "Pipeline Id",
+            "description": "Pipeline ID for the deal"
+          },
+          "probability": {
+            "type": "number",
+            "title": "Probability",
+            "description": "Success probability percentage (0-100)"
+          },
+          "expected_close_date": {
+            "type": "string",
+            "title": "Expected Close Date",
+            "format": "date",
+            "description": "Expected close date in format YYYY-MM-DD"
+          }
+        },
+        "description": "Request schema for `AddADeal`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_ADD_A_NOTE",
+      "name": "Add a note (Deprecated)",
+      "description": "DEPRECATED: Use PIPEDRIVE_PIPEDRIVE_ADD_NOTE instead. Add a note to a deal, person, organization, lead, or project in Pipedrive. At least one of deal_id, person_id, org_id, lead_id, or project_id must be provided.",
+      "version": "20261007_00",
+      "tags": [
+        "Notes",
+        "important",
+        "openWorldHint",
+        "deprecated",
+        "createHint"
+      ],
+      "deprecated": true,
+      "input": {
+        "type": "object",
+        "title": "AddANoteRequest",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "description": "The ID of the organization this note will be attached to. Required unless one of (deal_id/person_id/lead_id/project_id) is specified."
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "description": "The content of the note in HTML format. Subject to sanitization on the back-end."
+          },
+          "deal_id": {
+            "type": "integer",
+            "title": "Deal Id",
+            "description": "The ID of the deal the note will be attached to. Required unless one of (lead_id/person_id/org_id/project_id) is specified."
+          },
+          "lead_id": {
+            "type": "string",
+            "title": "Lead Id",
+            "description": "The ID of the lead the note will be attached to (UUID format). Required unless one of (deal_id/person_id/org_id/project_id) is specified."
+          },
+          "add_time": {
+            "type": "string",
+            "title": "Add Time",
+            "description": "The optional creation date & time of the note in UTC. Format: YYYY-MM-DD HH:MM:SS"
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "description": "The ID of the person this note will be attached to. Required unless one of (deal_id/lead_id/org_id/project_id) is specified."
+          },
+          "project_id": {
+            "type": "integer",
+            "title": "Project Id",
+            "description": "The ID of the project the note will be attached to. Required unless one of (deal_id/person_id/org_id/lead_id) is specified."
+          }
+        },
+        "description": "Request schema for `AddANote`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_ADD_A_PERSON",
+      "name": "Add a person",
+      "description": "Add a new contact in Pipedrive with optional custom fields unique to each account found using the `personFields` endpoint. The endpoint also handles `data.marketing_status` for Campaigns product users.",
+      "version": "20261007_00",
+      "tags": [
+        "Persons",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddAPersonRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name of the person. REQUIRED by Pipedrive API."
+          },
+          "email": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ContactItem",
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "title": "Label",
+                  "description": "Label for the item (e.g., work, home)"
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "description": "The email/phone value"
+                },
+                "primary": {
+                  "type": "boolean",
+                  "title": "Primary",
+                  "description": "Whether this is the primary item"
+                }
+              },
+              "description": "Email/Phone item schema used by Pipedrive v1 for persons."
+            },
+            "title": "Email",
+            "description": "List of email objects: { value: string, label?: string, primary?: bool }"
+          },
+          "phone": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ContactItem",
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "title": "Label",
+                  "description": "Label for the item (e.g., work, home)"
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "description": "The email/phone value"
+                },
+                "primary": {
+                  "type": "boolean",
+                  "title": "Primary",
+                  "description": "Whether this is the primary item"
+                }
+              },
+              "description": "Email/Phone item schema used by Pipedrive v1 for persons."
+            },
+            "title": "Phone",
+            "description": "List of phone objects: { value: string, label?: string, primary?: bool }"
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "description": "ID of the linked organization"
+          },
+          "add_time": {
+            "type": "string",
+            "title": "Add Time",
+            "format": "date-time",
+            "description": "Creation time (RFC 3339)"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "description": "ID of the user who will be marked as the owner of this person"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Label Ids",
+            "description": "IDs of labels to assign to the person"
+          },
+          "visible_to": {
+            "type": "integer",
+            "title": "Visible To",
+            "description": "Visibility of the person (e.g., 1=owner only, 3=entire company)"
+          },
+          "update_time": {
+            "type": "string",
+            "title": "Update Time",
+            "format": "date-time",
+            "description": "Last update time (RFC 3339)"
+          },
+          "marketing_status": {
+            "type": "string",
+            "title": "Marketing Status",
+            "description": "Marketing status (no_consent, unsubscribed, subscribed, archived). Field is available only when Campaigns is enabled."
+          }
+        },
+        "description": "Request schema for `AddAPerson`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_ADD_AN_ACTIVITY",
+      "name": "Add an activity",
+      "description": "New activity added. Response includes `more_activities_scheduled_in_context` to show if more are planned with the same entity. See tutorial on adding activities [here](https://pipedrive.readme.io/docs/adding-an-activity).",
+      "version": "20261007_00",
+      "tags": [
+        "Activities",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddAnActivityRequest",
+        "required": [
+          "subject",
+          "type"
+        ],
+        "properties": {
+          "done": {
+            "type": "integer",
+            "title": "Done",
+            "description": "Whether the activity is done (0 = not done, 1 = done)"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "description": "Note/description of the activity"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "The type of the activity (matches ActivityTypes.key_string)"
+          },
+          "org_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Org Id",
+            "description": "ID of the linked organization"
+          },
+          "deal_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Deal Id",
+            "description": "ID of the linked deal (integer or numeric string)"
+          },
+          "lead_id": {
+            "type": "string",
+            "title": "Lead Id",
+            "description": "ID of the linked lead (UUID string)"
+          },
+          "subject": {
+            "type": "string",
+            "title": "Subject",
+            "description": "The subject/title of the activity"
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "description": "ID of the user who owns the activity"
+          },
+          "due_date": {
+            "type": "string",
+            "title": "Due Date",
+            "format": "date",
+            "description": "Due date of the activity (YYYY-MM-DD)"
+          },
+          "due_time": {
+            "type": "string",
+            "title": "Due Time",
+            "description": "Due time of the activity (HH:MM)"
+          },
+          "duration": {
+            "type": "string",
+            "title": "Duration",
+            "description": "Duration of the activity (e.g., 00:30)"
+          },
+          "location": {
+            "type": "string",
+            "title": "Location",
+            "description": "Location/address of the activity"
+          },
+          "attendees": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "title": "Attendees",
+            "description": "Attendees of the activity (contacts or external emails)"
+          },
+          "busy_flag": {
+            "type": "boolean",
+            "title": "Busy Flag",
+            "description": "Whether the activity marks the assignee as busy"
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "description": "ID of the linked person"
+          },
+          "project_id": {
+            "type": "integer",
+            "title": "Project Id",
+            "description": "ID of the linked project"
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "title": "Participants",
+            "description": "Participants of the activity"
+          },
+          "public_description": {
+            "type": "string",
+            "title": "Public Description",
+            "description": "Public description synced to external calendar"
+          }
+        },
+        "description": "Request schema for `AddAnActivity`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_ADD_AN_ORGANIZATION",
+      "name": "Add an organization",
+      "description": "Creates a new organization in Pipedrive. The 'name' parameter is required and represents the organization's name (e.g., 'Acme Corp'). Optionally specify 'owner_id' to assign an owner and 'visible_to' for visibility settings. Custom fields can also be added using field keys from organizationFields.",
+      "version": "20261007_00",
+      "tags": [
+        "Organizations",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddAnOrganizationRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name of the organization to create (required). This is typically a company or business name such as 'Acme Corp' or 'Tech Solutions Inc.'"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "description": "Owner user ID"
+          },
+          "visible_to": {
+            "type": "integer",
+            "title": "Visible To",
+            "description": "Visibility (e.g., 1=owner only, 3=entire company)"
+          }
+        },
+        "description": "Request schema for `AddAnOrganization`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_ADD_DEAL_PRODUCTS",
+      "name": "Bulk add products to deal",
+      "description": "Tool to bulk add products to a Pipedrive deal. Use when attaching multiple products simultaneously, with maximum 100 products per request.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "deals",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddDealProductsRequest",
+        "required": [
+          "id",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              42,
+              123
+            ],
+            "description": "The ID of the deal to which products will be attached"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ProductItem",
+              "required": [
+                "product_id",
+                "item_price",
+                "quantity"
+              ],
+              "properties": {
+                "tax": {
+                  "type": "number",
+                  "title": "Tax",
+                  "examples": [
+                    0,
+                    10,
+                    20
+                  ],
+                  "description": "Product tax; defaults to 0"
+                },
+                "comments": {
+                  "type": "string",
+                  "title": "Comments",
+                  "examples": [
+                    "Special handling required",
+                    "Bulk discount applied"
+                  ],
+                  "description": "Product notes"
+                },
+                "discount": {
+                  "type": "number",
+                  "title": "Discount",
+                  "examples": [
+                    0,
+                    10,
+                    15.5
+                  ],
+                  "description": "Discount value; defaults to 0"
+                },
+                "quantity": {
+                  "type": "number",
+                  "title": "Quantity",
+                  "examples": [
+                    1,
+                    2,
+                    5
+                  ],
+                  "description": "Product quantity"
+                },
+                "is_enabled": {
+                  "type": "boolean",
+                  "title": "Is Enabled",
+                  "examples": [
+                    true,
+                    false
+                  ],
+                  "description": "Whether product is active; defaults to true"
+                },
+                "item_price": {
+                  "type": "number",
+                  "title": "Item Price",
+                  "examples": [
+                    100,
+                    150.5,
+                    99.99
+                  ],
+                  "description": "Price value of the product"
+                },
+                "product_id": {
+                  "type": "integer",
+                  "title": "Product Id",
+                  "examples": [
+                    1,
+                    42,
+                    123
+                  ],
+                  "description": "The product identifier"
+                },
+                "tax_method": {
+                  "type": "string",
+                  "title": "Tax Method",
+                  "examples": [
+                    "exclusive",
+                    "inclusive",
+                    "none"
+                  ],
+                  "description": "Options are 'exclusive', 'inclusive', or 'none'"
+                },
+                "discount_type": {
+                  "type": "string",
+                  "title": "Discount Type",
+                  "examples": [
+                    "percentage",
+                    "amount"
+                  ],
+                  "description": "Specifies 'percentage' or 'amount'; defaults to percentage"
+                },
+                "billing_frequency": {
+                  "type": "string",
+                  "title": "Billing Frequency",
+                  "examples": [
+                    "one-time",
+                    "monthly",
+                    "quarterly",
+                    "yearly"
+                  ],
+                  "description": "Billing cycle (one-time, monthly, etc.); Growth+ plans only"
+                },
+                "billing_start_date": {
+                  "type": "string",
+                  "title": "Billing Start Date",
+                  "examples": [
+                    "2024-01-01",
+                    "2024-12-31"
+                  ],
+                  "description": "Start date in YYYY-MM-DD format; Growth+ plans only"
+                },
+                "product_variation_id": {
+                  "type": "integer",
+                  "title": "Product Variation Id",
+                  "examples": [
+                    1,
+                    2,
+                    3
+                  ],
+                  "description": "Variant identifier"
+                },
+                "billing_frequency_cycles": {
+                  "type": "integer",
+                  "title": "Billing Frequency Cycles",
+                  "examples": [
+                    1,
+                    12,
+                    24
+                  ],
+                  "description": "Repetition count; Growth+ plans only"
+                }
+              },
+              "description": "Product item to be added to a deal"
+            },
+            "title": "Data",
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Array of product objects to attach to the deal. Maximum 100 products per request."
+          }
+        },
+        "description": "Request schema for `AddDealProducts`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_ADD_LEAD",
+      "name": "Add a lead",
+      "description": "Pipedrive API lets you add leads linked to people or organizations and tags them with 'API' source. Custom fields from deals apply to leads and appear in responses if set. Details are in the tutorials for adding and updating leads.",
+      "version": "20261007_00",
+      "tags": [
+        "Leads",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddLeadRequest",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "The name of the lead"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "description": "The ID of the user which will be the owner of the created lead. If not provided, the user making the request will be used. "
+          },
+          "was_seen": {
+            "type": "boolean",
+            "title": "Was Seen",
+            "description": "A flag indicating whether the lead was seen by someone in the Pipedrive UI "
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Label Ids",
+            "description": "The IDs of the lead labels which will be associated with the lead"
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "description": "REQUIRED if organization_id is not provided. The ID of a person which this lead will be linked to. If the person does not exist yet, it needs to be created first. At least one of person_id or organization_id must be set."
+          },
+          "value__amount": {
+            "type": "integer",
+            "title": "Value  Amount",
+            "description": "Amount"
+          },
+          "organization_id": {
+            "type": "integer",
+            "title": "Organization Id",
+            "description": "REQUIRED if person_id is not provided. The ID of an organization which this lead will be linked to. If the organization does not exist yet, it needs to be created first. At least one of person_id or organization_id must be set."
+          },
+          "value__currency": {
+            "type": "string",
+            "title": "Value  Currency",
+            "description": "Currency"
+          },
+          "expected_close_date": {
+            "type": "string",
+            "title": "Expected Close Date",
+            "format": "date",
+            "description": "The date of when the deal which will be created from the lead is expected to be closed. In ISO 8601 format: YYYY-MM-DD. "
+          }
+        },
+        "description": "Request schema for `AddLead`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_ADD_NOTE",
+      "name": "Add Note",
+      "description": "Tool to add a note to a deal, person, organization, lead, or project in Pipedrive. Use when you need to create a note attached to an entity. At least one entity ID (lead_id, deal_id, person_id, org_id, or project_id) must be provided.",
+      "version": "20261007_00",
+      "tags": [
+        "openWorldHint",
+        "notes_and_comments",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveAddNoteRequest",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "examples": [
+              789
+            ],
+            "description": "The ID of the organization to attach the note to. At least one of lead_id, deal_id, person_id, org_id, or project_id must be provided."
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "examples": [
+              "<p>This is a note about the deal</p>"
+            ],
+            "description": "The content of the note in HTML format. Subject to sanitization on the back-end."
+          },
+          "deal_id": {
+            "type": "integer",
+            "title": "Deal Id",
+            "examples": [
+              123
+            ],
+            "description": "The ID of the deal to attach the note to. At least one of lead_id, deal_id, person_id, org_id, or project_id must be provided."
+          },
+          "lead_id": {
+            "type": "string",
+            "title": "Lead Id",
+            "examples": [
+              "550e8400-e29b-41d4-a716-446655440000"
+            ],
+            "description": "The ID of the lead to attach the note to (UUID format). At least one of lead_id, deal_id, person_id, org_id, or project_id must be provided."
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "examples": [
+              10
+            ],
+            "description": "The ID of the user who will be marked as the author of the note. Only admins can change this."
+          },
+          "add_time": {
+            "type": "string",
+            "title": "Add Time",
+            "examples": [
+              "2023-12-31 23:59:59"
+            ],
+            "description": "The creation timestamp for the note in UTC. Format: YYYY-MM-DD HH:MM:SS"
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "examples": [
+              456
+            ],
+            "description": "The ID of the person to attach the note to. At least one of lead_id, deal_id, person_id, org_id, or project_id must be provided."
+          },
+          "project_id": {
+            "type": "integer",
+            "title": "Project Id",
+            "examples": [
+              321
+            ],
+            "description": "The ID of the project to attach the note to. At least one of lead_id, deal_id, person_id, org_id, or project_id must be provided."
+          },
+          "pinned_to_deal_flag": {
+            "enum": [
+              0,
+              1
+            ],
+            "type": "integer",
+            "title": "Pinned To Deal Flag",
+            "examples": [
+              1
+            ],
+            "description": "If set to 1, the note will be pinned to the deal. 0 or omit to not pin."
+          },
+          "pinned_to_lead_flag": {
+            "enum": [
+              0,
+              1
+            ],
+            "type": "integer",
+            "title": "Pinned To Lead Flag",
+            "examples": [
+              1
+            ],
+            "description": "If set to 1, the note will be pinned to the lead. 0 or omit to not pin."
+          },
+          "pinned_to_person_flag": {
+            "enum": [
+              0,
+              1
+            ],
+            "type": "integer",
+            "title": "Pinned To Person Flag",
+            "examples": [
+              1
+            ],
+            "description": "If set to 1, the note will be pinned to the person. 0 or omit to not pin."
+          },
+          "pinned_to_project_flag": {
+            "enum": [
+              0,
+              1
+            ],
+            "type": "integer",
+            "title": "Pinned To Project Flag",
+            "examples": [
+              1
+            ],
+            "description": "If set to 1, the note will be pinned to the project. 0 or omit to not pin."
+          },
+          "pinned_to_organization_flag": {
+            "enum": [
+              0,
+              1
+            ],
+            "type": "integer",
+            "title": "Pinned To Organization Flag",
+            "examples": [
+              1
+            ],
+            "description": "If set to 1, the note will be pinned to the organization. 0 or omit to not pin."
+          }
+        },
+        "description": "Request schema for `PipedriveAddNote`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_ADD_PRODUCT",
+      "name": "Add a product",
+      "description": "Adds a new product to the Products inventory. For more information, see the tutorial for <a href=\"https://pipedrive.readme.io/docs/adding-a-product\" target=\"_blank\" rel=\"noopener noreferrer\">adding a product</a>.",
+      "version": "20261007_00",
+      "tags": [
+        "Products",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddProductRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "tax": {
+            "type": "number",
+            "title": "Tax",
+            "description": "Tax percentage"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code",
+            "description": "Product code"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Product name; cannot be empty"
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit",
+            "description": "Sales unit of the product"
+          },
+          "prices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ProductPrice",
+              "properties": {
+                "id": {
+                  "type": "number",
+                  "title": "Id",
+                  "description": "Unique identifier of the price"
+                },
+                "cost": {
+                  "type": "number",
+                  "title": "Cost",
+                  "description": "Cost of the product"
+                },
+                "notes": {
+                  "type": "string",
+                  "title": "Notes",
+                  "description": "Additional notes about this price"
+                },
+                "price": {
+                  "type": "number",
+                  "title": "Price",
+                  "description": "The actual price value"
+                },
+                "currency": {
+                  "type": "string",
+                  "title": "Currency",
+                  "description": "Currency code (e.g., EUR, USD)"
+                },
+                "product_id": {
+                  "type": "number",
+                  "title": "Product Id",
+                  "description": "ID of the product this price belongs to"
+                },
+                "direct_cost": {
+                  "type": "number",
+                  "title": "Direct Cost",
+                  "description": "Direct cost of the product"
+                },
+                "overhead_cost": {
+                  "type": "number",
+                  "title": "Overhead Cost",
+                  "description": "Overhead cost of the product"
+                }
+              },
+              "description": "Price object for product prices array"
+            },
+            "title": "Prices",
+            "description": "Array of prices per currency"
+          },
+          "category": {
+            "type": "integer",
+            "title": "Category",
+            "description": "Product category"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "description": "Owner user ID; if omitted, authorized user ID is used"
+          },
+          "visible_to": {
+            "type": "integer",
+            "title": "Visible To",
+            "description": "Product visibility setting"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "Product description"
+          },
+          "is_linkable": {
+            "type": "boolean",
+            "title": "Is Linkable",
+            "description": "Whether the product can be added to a deal"
+          },
+          "billing_frequency": {
+            "type": "string",
+            "title": "Billing Frequency",
+            "description": "Billing frequency (one-time, annually, semi-annually, quarterly, monthly, weekly)"
+          },
+          "billing_frequency_cycles": {
+            "type": "integer",
+            "title": "Billing Frequency Cycles",
+            "description": "Number of billing repeats (rules depend on billing_frequency)"
+          }
+        },
+        "description": "Request schema for `AddProduct`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_CONVERT_LEAD_TO_DEAL",
+      "name": "Convert Lead to Deal",
+      "description": "Tool to convert a Pipedrive lead to a deal asynchronously. Use when you need to convert an existing lead into a deal. The conversion transfers all related entities (notes, files, emails, activities) to the new deal. Upon successful conversion, the lead is marked as deleted. Use the returned conversion_id to check the conversion status.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "leads",
+        "createHint",
+        "destructiveHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ConvertLeadToDealRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "examples": [
+              "74be8540-dfd0-11f0-a36b-3f9ef1ff36ee",
+              "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+            ],
+            "description": "The ID of the lead to convert (UUID format)"
+          },
+          "stage_id": {
+            "type": "integer",
+            "title": "Stage Id",
+            "examples": [
+              1,
+              5,
+              10
+            ],
+            "description": "The ID of a stage the created deal will be added to. The pipeline will be assigned automatically based on the stage_id. Do not use both pipeline_id and stage_id together."
+          },
+          "pipeline_id": {
+            "type": "integer",
+            "title": "Pipeline Id",
+            "examples": [
+              1,
+              2,
+              3
+            ],
+            "description": "The ID of a pipeline the created deal will be added to. The deal will be added to the first stage of the specified pipeline. Note: pipeline_id will be ignored if both pipeline_id and stage_id are provided."
+          }
+        },
+        "description": "Request model for converting a lead to a deal."
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_DEALS_UPDATE_DEAL",
+      "name": "Update deal product",
+      "description": "Tool to update product details attached to a deal in Pipedrive using the v2 API. Use when you need to modify product attributes like price, quantity, discount, or tax for a deal-product attachment.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "idempotentHint",
+        "updateHint",
+        "openWorldHint",
+        "deals"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveDealsUpdateDealRequest",
+        "required": [
+          "id",
+          "product_attachment_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              123
+            ],
+            "description": "The ID of the deal"
+          },
+          "tax": {
+            "type": "number",
+            "title": "Tax",
+            "examples": [
+              0,
+              15.5
+            ],
+            "description": "Product tax amount (default: 0)"
+          },
+          "comments": {
+            "type": "string",
+            "title": "Comments",
+            "examples": [
+              "Discounted item",
+              "Bulk purchase"
+            ],
+            "description": "Product notes/comments"
+          },
+          "discount": {
+            "type": "number",
+            "title": "Discount",
+            "examples": [
+              5,
+              10.5
+            ],
+            "description": "Discount value - amount or percentage based on discount_type (default: 0)"
+          },
+          "quantity": {
+            "type": "number",
+            "title": "Quantity",
+            "examples": [
+              3,
+              5
+            ],
+            "description": "Quantity of the product"
+          },
+          "is_enabled": {
+            "type": "boolean",
+            "title": "Is Enabled",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Whether product is active/enabled for the deal. Note: API v2 uses strict validation - only accepts true/false, not 1/0."
+          },
+          "item_price": {
+            "type": "number",
+            "title": "Item Price",
+            "examples": [
+              150,
+              99.99
+            ],
+            "description": "Price value for the product"
+          },
+          "product_id": {
+            "type": "integer",
+            "title": "Product Id",
+            "examples": [
+              10,
+              25
+            ],
+            "description": "The product identifier"
+          },
+          "tax_method": {
+            "enum": [
+              "exclusive",
+              "inclusive",
+              "none"
+            ],
+            "type": "string",
+            "title": "Tax Method",
+            "examples": [
+              "exclusive",
+              "inclusive",
+              "none"
+            ],
+            "description": "Tax application method - 'exclusive' (tax not included in price), 'inclusive' (tax included in price), or 'none' (no tax)"
+          },
+          "discount_type": {
+            "enum": [
+              "percentage",
+              "amount"
+            ],
+            "type": "string",
+            "title": "Discount Type",
+            "examples": [
+              "percentage",
+              "amount"
+            ],
+            "description": "Discount type - either 'percentage' or 'amount'"
+          },
+          "billing_frequency": {
+            "enum": [
+              "one-time",
+              "annually",
+              "semi-annually",
+              "quarterly",
+              "monthly",
+              "weekly"
+            ],
+            "type": "string",
+            "title": "Billing Frequency",
+            "examples": [
+              "monthly",
+              "annually"
+            ],
+            "description": "Billing cycle option for Growth+ plans - 'one-time', 'annually', 'semi-annually', 'quarterly', 'monthly', or 'weekly'"
+          },
+          "billing_start_date": {
+            "type": "string",
+            "title": "Billing Start Date",
+            "examples": [
+              "2024-01-01",
+              "2024-06-15"
+            ],
+            "description": "When billing commences (Growth+ plans). Format: YYYY-MM-DD"
+          },
+          "product_variation_id": {
+            "type": "integer",
+            "title": "Product Variation Id",
+            "examples": [
+              7,
+              12
+            ],
+            "description": "Specific product variation identifier"
+          },
+          "product_attachment_id": {
+            "type": "integer",
+            "title": "Product Attachment Id",
+            "examples": [
+              3,
+              45
+            ],
+            "description": "The ID of the deal-product attachment (correlation ID between deal and product, obtained from GET /deals/{id}/products). This is NOT the same as the product_id."
+          },
+          "billing_frequency_cycles": {
+            "type": "integer",
+            "title": "Billing Frequency Cycles",
+            "examples": [
+              12,
+              24
+            ],
+            "description": "Number of billing frequency repetitions (Growth+ plans)"
+          }
+        },
+        "description": "Request schema for `PipedriveDealsUpdateDeal`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_DELETE_DEAL",
+      "name": "Delete Deal",
+      "description": "Tool to delete a deal in Pipedrive. Use when you need to remove a deal. This is a soft delete operation - the deal will be permanently deleted after 30 days.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "destructiveHint",
+        "idempotentHint",
+        "openWorldHint",
+        "deals"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveDeleteDealRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              3,
+              42,
+              123
+            ],
+            "description": "The ID of the deal to be deleted"
+          }
+        },
+        "description": "Request model for deleting a deal"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_DELETE_ORGANIZATION",
+      "name": "Delete an organization",
+      "description": "Tool to delete an organization in Pipedrive. Use when you need to mark an organization as deleted. The organization will be permanently deleted after 30 days.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "destructiveHint",
+        "idempotentHint",
+        "openWorldHint",
+        "organizations"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveDeleteOrganizationRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              123,
+              456
+            ],
+            "description": "The ID of the organization to delete"
+          }
+        },
+        "description": "Request schema for deleting an organization"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_DELETE_PERSON",
+      "name": "Delete a person",
+      "description": "Tool to delete a person in Pipedrive. Use when you need to mark a person as deleted. The person will be permanently deleted after 30 days.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "destructiveHint",
+        "idempotentHint",
+        "openWorldHint",
+        "persons"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveDeletePersonRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              42,
+              123
+            ],
+            "description": "The ID of the person to delete"
+          }
+        },
+        "description": "Request schema for `PipedriveDeletePerson`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_ACTIVITY",
+      "name": "Get details of an activity",
+      "description": "Returns the details of a specific activity.",
+      "version": "20261007_00",
+      "tags": [
+        "Activities",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetActivityRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "The ID of the activity"
+          }
+        },
+        "description": "Request schema for `GetActivity`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_ACTIVITY_FIELD",
+      "name": "Get one activity field",
+      "description": "Tool to retrieve detailed metadata for a specific activity field by its field code. Use when you need information about field structure, type, options, or properties.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "ActivityFields"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetActivityFieldRequest",
+        "required": [
+          "field_code"
+        ],
+        "properties": {
+          "field_code": {
+            "type": "string",
+            "title": "Field Code",
+            "examples": [
+              "subject",
+              "due_date",
+              "type",
+              "duration"
+            ],
+            "description": "The unique code identifying the field (e.g., 'subject', 'due_date', or a 40-character hash for custom fields)"
+          },
+          "include_fields": {
+            "enum": [
+              "ui_visibility"
+            ],
+            "type": "string",
+            "title": "IncludeFieldsEnum",
+            "description": "Enum for additional data namespaces to include in response"
+          }
+        },
+        "description": "Request schema for `GetActivityField`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_ALL_LEADS",
+      "name": "Get all leads",
+      "description": "The API returns sorted leads by creation time, supporting pagination via `limit` and `start`. Custom field values are included if set, mimicking the `Deals` endpoint structure; unset fields are omitted. Leads share custom fields with deals.",
+      "version": "20261007_00",
+      "tags": [
+        "Leads",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAllLeadsRequest",
+        "properties": {
+          "sort": {
+            "type": "string",
+            "title": "Sort",
+            "description": "The field name and sorting mode. Format: 'field_name ASC' or 'field_name DESC'. Valid field names: id, title, owner_id, creator_id, was_seen, expected_close_date, next_activity_id, add_time (creation timestamp), update_time. Note: Use 'add_time' for creation time (NOT 'creation_date'). Only first-level field keys are supported (no nested keys)."
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "For pagination, the limit of entries to be returned. If not provided, 100 items will be returned. "
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "description": "For pagination, the position that represents the first result for the page "
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "description": "If supplied, only leads matching the given user will be returned. However, `filter_id` takes precedence over `owner_id` when supplied. "
+          },
+          "filter_id": {
+            "type": "integer",
+            "title": "Filter Id",
+            "description": "Optional ID of a saved filter to apply. Filter IDs are account-specific and must be obtained from the user's Pipedrive account using the 'Get all filters' endpoint (GET /filters with type='leads'). Do not pass placeholder values like 1. When filter_id is provided, it takes precedence over owner_id, person_id, and organization_id parameters. If omitted, returns all leads without filtering."
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "description": "If supplied, only leads matching the given person will be returned. However, `filter_id` takes precedence over `person_id` when supplied. "
+          },
+          "archived_status": {
+            "enum": [
+              "archived",
+              "not_archived",
+              "all"
+            ],
+            "type": "string",
+            "title": "ArchivedStatusEnm",
+            "description": "Filtering based on the archived status of a lead. If not provided, `All` is used. "
+          },
+          "organization_id": {
+            "type": "integer",
+            "title": "Organization Id",
+            "description": "If supplied, only leads matching the given organization will be returned. However, `filter_id` takes precedence over `organization_id` when supplied. "
+          }
+        },
+        "description": "Request schema for `GetAllLeads`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_ALL_NOTES",
+      "name": "Get all notes",
+      "description": "Returns all notes.",
+      "version": "20261007_00",
+      "tags": [
+        "Notes",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAllNotesRequest",
+        "properties": {
+          "sort": {
+            "type": "string",
+            "title": "Sort",
+            "description": "The field names and sorting mode separated by a comma (`field_name_1 ASC`, `field_name_2 DESC`). Only first-level field keys are supported (no nested keys). Supported fields: `id`, `user_id`, `deal_id`, `person_id`, `org_id`, `content`, `add_time`, `update_time`. "
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "description": "Pagination start"
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "description": "The ID of the organization which notes to fetch. If omitted, notes about all organizations will be returned. "
+          },
+          "deal_id": {
+            "type": "integer",
+            "title": "Deal Id",
+            "description": "The ID of the deal which notes to fetch. If omitted, notes about all deals will be returned. "
+          },
+          "lead_id": {
+            "type": "string",
+            "title": "Lead Id",
+            "description": "The ID of the lead which notes to fetch. If omitted, notes about all leads will be returned. "
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "description": "The ID of the user whose notes to fetch. If omitted, notes by all users will be returned. "
+          },
+          "end_date": {
+            "type": "string",
+            "title": "End Date",
+            "description": "The date in format of YYYY-MM-DD until which notes to fetch to"
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "description": "The ID of the person whose notes to fetch. If omitted, notes about all persons will be returned. "
+          },
+          "start_date": {
+            "type": "string",
+            "title": "Start Date",
+            "description": "The date in format of YYYY-MM-DD from which notes to fetch"
+          },
+          "pinned_to_deal_flag": {
+            "type": "integer",
+            "title": "Pinned To Deal Flag",
+            "description": "If set, the results are filtered by note to deal pinning state"
+          },
+          "pinned_to_lead_flag": {
+            "type": "integer",
+            "title": "Pinned To Lead Flag",
+            "description": "If set, the results are filtered by note to lead pinning state"
+          },
+          "pinned_to_person_flag": {
+            "type": "integer",
+            "title": "Pinned To Person Flag",
+            "description": "If set, the results are filtered by note to person pinning state"
+          },
+          "pinned_to_organization_flag": {
+            "type": "integer",
+            "title": "Pinned To Organization Flag",
+            "description": "If set, the results are filtered by note to organization pinning state"
+          }
+        },
+        "description": "Request schema for `GetAllNotes`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_ALL_ORGANIZATIONS",
+      "name": "Get all organizations",
+      "description": "Returns all organizations.",
+      "version": "20261007_00",
+      "tags": [
+        "Organizations",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAllOrganizationsRequest",
+        "properties": {
+          "sort": {
+            "type": "string",
+            "title": "Sort",
+            "description": "The field names and sorting mode separated by a comma (`field_name_1 ASC`, `field_name_2 DESC`). Only first-level field keys are supported (no nested keys). "
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "description": "Pagination start"
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "description": "If supplied, only organizations owned by the given user will be returned. However, `filter_id` takes precedence over `user_id` when both are supplied. "
+          },
+          "filter_id": {
+            "type": "integer",
+            "title": "Filter Id",
+            "description": "The ID of the filter to use"
+          },
+          "first_char": {
+            "type": "string",
+            "title": "First Char",
+            "description": "If supplied, only organizations whose name starts with the specified letter will be returned (case-insensitive) "
+          }
+        },
+        "description": "Request schema for `GetAllOrganizations`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_ALL_PIPELINES",
+      "name": "Get all pipelines",
+      "description": "Returns data about all pipelines. This action retrieves all pipelines from the user's Pipedrive instance using their instance-specific URL (e.g., https://company.pipedrive.com/api/v2/pipelines).",
+      "version": "20261007_00",
+      "tags": [
+        "Pipelines",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAllPipelinesRequest",
+        "properties": {},
+        "description": "Request schema for `GetAllPipelines`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_ALL_PRODUCTS",
+      "name": "Get all products",
+      "description": "Returns data about all products.",
+      "version": "20261007_00",
+      "tags": [
+        "Products",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAllProductsRequest",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Ids",
+            "description": "An array of integers with the IDs of the products that should be returned in the response "
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "description": "Pagination start"
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "description": "If supplied, only products owned by the given user will be returned"
+          },
+          "filter_id": {
+            "type": "integer",
+            "title": "Filter Id",
+            "description": "The ID of the filter to use"
+          },
+          "first_char": {
+            "type": "string",
+            "title": "First Char",
+            "description": "If supplied, only products whose name starts with the specified letter will be returned (case-insensitive) "
+          },
+          "get_summary": {
+            "type": "boolean",
+            "title": "Get Summary",
+            "description": "If supplied, the response will return the total numbers of products in the `additional_data.summary.total_count` property "
+          }
+        },
+        "description": "Request schema for `GetAllProducts`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_ALL_STAGES",
+      "name": "Get all stages",
+      "description": "Returns data about all stages.",
+      "version": "20261007_00",
+      "tags": [
+        "Stages",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAllStagesRequest",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "description": "Pagination start"
+          },
+          "pipeline_id": {
+            "type": "integer",
+            "title": "Pipeline Id",
+            "description": "The ID of the pipeline to fetch stages for. If omitted, stages for all pipelines will be fetched. "
+          }
+        },
+        "description": "Request schema for `GetAllStages`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_DEAL",
+      "name": "Get Deal Details",
+      "description": "Tool to get details of a specific deal in Pipedrive. Use when you need to retrieve comprehensive information about a deal by its ID.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "deals"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveGetDealRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              123,
+              456
+            ],
+            "description": "The ID of the deal to retrieve"
+          },
+          "custom_fields": {
+            "type": "string",
+            "title": "Custom Fields",
+            "examples": [
+              "field1,field2,field3"
+            ],
+            "description": "Comma-separated list of custom field keys to include (maximum 15 keys). Use this parameter for faster results and smaller responses when only specific custom fields are needed."
+          },
+          "include_fields": {
+            "type": "string",
+            "title": "Include Fields",
+            "examples": [
+              "products_count,activities_count",
+              "files_count,notes_count"
+            ],
+            "description": "Comma-separated list of additional fields to include in the response. Acceptable values: next_activity_id, last_activity_id, first_won_time, products_count, files_count, notes_count, followers_count, email_messages_count, activities_count, done_activities_count, undone_activities_count, participants_count, last_incoming_mail_time, last_outgoing_mail_time, smart_bcc_email"
+          }
+        },
+        "description": "Request model for getting details of a specific deal."
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_DEAL_FIELD",
+      "name": "Get one deal field",
+      "description": "Tool to retrieve a specific deal field by ID. Use when you need to get metadata and configuration for a deal field.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "custom_fields_and_options"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveGetDealFieldRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              12345
+            ],
+            "description": "The ID of the deal field to retrieve"
+          }
+        },
+        "description": "Request schema for `PipedriveGetDealField`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_LEAD_CONVERSION_STATUS",
+      "name": "Get lead conversion status by ID",
+      "description": "Tool to retrieve the conversion status for a specific lead conversion job. Use when you need to check the progress of a lead-to-deal conversion including current state and resulting deal ID upon completion.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "leads"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetLeadConversionStatusRequest",
+        "required": [
+          "id",
+          "conversion_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "examples": [
+              "8a674260-dfd0-11f0-90a6-6118ff270bea"
+            ],
+            "description": "The identifier for a specific lead (UUID format)"
+          },
+          "conversion_id": {
+            "type": "string",
+            "title": "Conversion Id",
+            "examples": [
+              "9d9dde2b-7f25-4213-88a6-775701b3de5d"
+            ],
+            "description": "The identifier for the conversion job (UUID format)"
+          }
+        },
+        "description": "Request schema for `GetLeadConversionStatus`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_ONE_LEAD",
+      "name": "Get one lead",
+      "description": "API returns specific lead details with custom field values in the Deals format. Unset custom fields are omitted. Leads share custom fields with deals, not having a unique set.",
+      "version": "20261007_00",
+      "tags": [
+        "Leads",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetOneLeadRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The ID of the lead"
+          }
+        },
+        "description": "Request schema for `GetOneLead`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_ORGANIZATION",
+      "name": "Get Organization Details",
+      "description": "Tool to get details of a specific organization in Pipedrive. Use when you need to retrieve comprehensive information about an organization by its ID.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "organizations"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveGetOrganizationRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              2,
+              123
+            ],
+            "description": "The ID of the organization to retrieve"
+          },
+          "custom_fields": {
+            "type": "string",
+            "title": "Custom Fields",
+            "examples": [
+              "field1,field2,field3"
+            ],
+            "description": "Comma-separated list of custom field keys to include (maximum 15 keys). Use this parameter for faster results and smaller responses when only specific custom fields are needed."
+          },
+          "include_fields": {
+            "type": "string",
+            "title": "Include Fields",
+            "examples": [
+              "people_count,activities_count",
+              "open_deals_count,closed_deals_count"
+            ],
+            "description": "Comma-separated list of additional fields to include in the response. Acceptable values: next_activity_id, last_activity_id, open_deals_count, related_open_deals_count, closed_deals_count, related_closed_deals_count, email_messages_count, people_count, activities_count, done_activities_count, undone_activities_count, files_count, notes_count, followers_count, won_deals_count, related_won_deals_count, lost_deals_count, related_lost_deals_count"
+          }
+        },
+        "description": "Request model for getting details of a specific organization."
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_ORGANIZATION_FIELD",
+      "name": "Get one organization field",
+      "description": "Tool to retrieve a specific organization field by ID. Use when you need to get metadata and configuration for an organization field.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "custom_fields_and_options"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveGetOrganizationFieldRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              12345
+            ],
+            "description": "The ID of the organization field to retrieve"
+          }
+        },
+        "description": "Request schema for `PipedriveGetOrganizationField`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_PERSON",
+      "name": "Get Person Details",
+      "description": "Tool to get details of a specific person in Pipedrive. Use when you need to retrieve comprehensive information about a person by their ID.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "persons"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveGetPersonRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              123,
+              456
+            ],
+            "description": "The ID of the person to retrieve"
+          },
+          "custom_fields": {
+            "type": "string",
+            "title": "Custom Fields",
+            "examples": [
+              "field1,field2,field3"
+            ],
+            "description": "Comma-separated list of custom field keys to include (maximum 15 keys). Use this parameter for faster results and smaller responses when only specific custom fields are needed."
+          },
+          "include_fields": {
+            "type": "string",
+            "title": "Include Fields",
+            "examples": [
+              "activities_count,done_activities_count",
+              "open_deals_count,email_messages_count"
+            ],
+            "description": "Comma-separated list of additional fields to include in the response. Allowed values: next_activity_id, last_activity_id, open_deals_count, related_open_deals_count, closed_deals_count, related_closed_deals_count, participant_open_deals_count, participant_closed_deals_count, email_messages_count, activities_count, done_activities_count, undone_activities_count, files_count, notes_count, followers_count, won_deals_count, related_won_deals_count, lost_deals_count, related_lost_deals_count, last_incoming_mail_time, last_outgoing_mail_time, marketing_status, doi_status. Note: marketing_status and doi_status are only available if company has marketing app enabled."
+          }
+        },
+        "description": "Request model for getting details of a specific person."
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_PERSON_FIELD",
+      "name": "Get one person field",
+      "description": "Tool to retrieve metadata for a specific person field by its ID. Use when you need to get field properties like name, type, order, and options.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "custom_fields_and_options"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveGetPersonFieldRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1
+            ],
+            "description": "The ID of the person field"
+          }
+        },
+        "description": "Request schema for `PipedriveGetPersonField`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_PERSON_PICTURE",
+      "name": "Get Person Picture",
+      "description": "Tool to get picture details of a specific person in Pipedrive. Use when you need to retrieve picture information and URLs for a person by their ID.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "Persons"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetPersonPictureRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              43,
+              123
+            ],
+            "description": "The ID of the person whose picture to retrieve"
+          }
+        },
+        "description": "Request model for getting picture details of a specific person."
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_GET_PRODUCT_IMAGES",
+      "name": "Get product images",
+      "description": "Tool to retrieve image data for a specific product. Use when you need to get the public URL and metadata for a product's image. Note that public URLs have a limited lifetime of 7 days.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "Products"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetProductImagesRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              123,
+              456
+            ],
+            "description": "The ID of the product"
+          }
+        },
+        "description": "Request schema for `GetProductImages`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_LIST_ACTIVITIES",
+      "name": "List activities",
+      "description": "List activities, or select up to 100 IDs, with relationship and completion filters and cursor pagination.",
+      "version": "20261007_00",
+      "tags": [
+        "Activities",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListActivitiesRequest",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Ids",
+            "maxItems": 100,
+            "description": "Activity IDs to return, with at most 100 IDs per request."
+          },
+          "done": {
+            "type": "boolean",
+            "title": "Done",
+            "description": "Whether to return completed or incomplete activities."
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "maximum": 500,
+            "minimum": 1,
+            "description": "Maximum number of activities to return."
+          },
+          "cursor": {
+            "type": "string",
+            "title": "Cursor",
+            "description": "Opaque cursor identifying the next page to return."
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "description": "The ID of the organization linked to the activities."
+          },
+          "deal_id": {
+            "type": "integer",
+            "title": "Deal Id",
+            "description": "The ID of the deal linked to the activities."
+          },
+          "lead_id": {
+            "type": "string",
+            "title": "Lead Id",
+            "description": "The UUID of the lead linked to the activities."
+          },
+          "sort_by": {
+            "enum": [
+              "id",
+              "update_time",
+              "add_time",
+              "due_date"
+            ],
+            "type": "string",
+            "title": "Sort By",
+            "default": "id",
+            "description": "Field used to sort the activities."
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "description": "The ID of the user who owns the activities."
+          },
+          "filter_id": {
+            "type": "integer",
+            "title": "Filter Id",
+            "description": "The ID of the filter to apply."
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "description": "The ID of the person linked to the activities."
+          },
+          "updated_since": {
+            "type": "string",
+            "title": "Updated Since",
+            "description": "Return activities updated at or after this ISO 8601 timestamp."
+          },
+          "updated_until": {
+            "type": "string",
+            "title": "Updated Until",
+            "description": "Return activities updated before this ISO 8601 timestamp."
+          },
+          "include_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "const": "attendees"
+            },
+            "title": "Include Fields",
+            "description": "Additional activity fields to include in the response."
+          },
+          "sort_direction": {
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "type": "string",
+            "title": "Sort Direction",
+            "default": "asc",
+            "description": "Direction used to sort the activities."
+          }
+        },
+        "description": "Request schema for listing activities using the Pipedrive v2 API."
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_LIST_DEAL_ACTIVITIES",
+      "name": "List activities associated with a deal",
+      "description": "Lists activities associated with a deal.",
+      "version": "20261007_00",
+      "tags": [
+        "Deals",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListDealActivitiesRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "The ID of the deal"
+          },
+          "done": {
+            "type": "integer",
+            "title": "Done",
+            "description": "Whether the activity is done or not. 0 = Not done, 1 = Done. If omitted, returns both Done and Not done activities. "
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "description": "Pagination start"
+          },
+          "exclude": {
+            "type": "string",
+            "title": "Exclude",
+            "description": "A comma-separated string of activity IDs to exclude from result"
+          }
+        },
+        "description": "Request schema for `ListDealActivities`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_LIST_DEALS",
+      "name": "List deals",
+      "description": "List non-archived deals with relationship and status filters, selected custom fields, and cursor pagination.",
+      "version": "20261007_00",
+      "tags": [
+        "Deals",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListDealsRequest",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Ids",
+            "maxItems": 100,
+            "description": "Deal IDs to return, with at most 100 IDs per request."
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "maximum": 500,
+            "minimum": 1,
+            "description": "Maximum number of deals to return (1-500)."
+          },
+          "cursor": {
+            "type": "string",
+            "title": "Cursor",
+            "description": "Opaque cursor returned by the previous page."
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "description": "Return deals linked to this organization ID."
+          },
+          "status": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "open",
+                "won",
+                "lost",
+                "deleted"
+              ],
+              "type": "string"
+            },
+            "title": "Status",
+            "description": "Deal statuses to return: open, won, lost, or deleted."
+          },
+          "sort_by": {
+            "enum": [
+              "id",
+              "update_time",
+              "add_time"
+            ],
+            "type": "string",
+            "title": "Sort By",
+            "default": "id",
+            "description": "Field used to sort deals."
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "description": "Return deals owned by this user ID."
+          },
+          "stage_id": {
+            "type": "integer",
+            "title": "Stage Id",
+            "description": "Return deals in this stage ID."
+          },
+          "filter_id": {
+            "type": "integer",
+            "title": "Filter Id",
+            "description": "ID of the filter to apply."
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "description": "Return deals linked to this person ID."
+          },
+          "pipeline_id": {
+            "type": "integer",
+            "title": "Pipeline Id",
+            "description": "Return deals in this pipeline ID."
+          },
+          "custom_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Custom Fields",
+            "maxItems": 15,
+            "description": "Custom field keys to include, with at most 15 keys per request."
+          },
+          "updated_since": {
+            "type": "string",
+            "title": "Updated Since",
+            "description": "Return deals updated at or after this RFC 3339 timestamp."
+          },
+          "updated_until": {
+            "type": "string",
+            "title": "Updated Until",
+            "description": "Return deals updated before this RFC 3339 timestamp."
+          },
+          "include_fields": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "next_activity_id",
+                "last_activity_id",
+                "first_won_time",
+                "products_count",
+                "files_count",
+                "notes_count",
+                "followers_count",
+                "email_messages_count",
+                "activities_count",
+                "done_activities_count",
+                "undone_activities_count",
+                "participants_count",
+                "last_incoming_mail_time",
+                "last_outgoing_mail_time",
+                "smart_bcc_email",
+                "source_lead_id"
+              ],
+              "type": "string"
+            },
+            "title": "Include Fields",
+            "description": "Additional deal fields to include in each result."
+          },
+          "include_labels": {
+            "type": "boolean",
+            "title": "Include Labels",
+            "description": "Whether to include deal label details."
+          },
+          "sort_direction": {
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "type": "string",
+            "title": "Sort Direction",
+            "default": "asc",
+            "description": "Direction used to sort deals."
+          },
+          "include_option_labels": {
+            "type": "boolean",
+            "title": "Include Option Labels",
+            "description": "Whether to include labels for custom-field options."
+          }
+        },
+        "description": "Request schema for listing deals through the Pipedrive v2 API."
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_LIST_FILES",
+      "name": "List all files",
+      "description": "Lists all files uploaded to Pipedrive with optional filtering via pagination and sorting. Use this action when you need to retrieve all files across the entire Pipedrive account, regardless of which entity they're attached to. This differs from entity-specific file actions (like get_deal_files) which only return files for a particular deal, person, or organization.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "Files"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListFilesRequest",
+        "properties": {
+          "sort": {
+            "type": "string",
+            "title": "Sort",
+            "examples": [
+              "id ASC",
+              "update_time DESC"
+            ],
+            "description": "Field names and sorting mode separated by a comma. Supported fields: `id`, `update_time`. Example: 'id ASC' or 'update_time DESC'."
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 25,
+            "examples": [
+              10,
+              25,
+              50
+            ],
+            "description": "Number of items shown per page. Maximum value of 100 is allowed."
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "examples": [
+              0,
+              10,
+              20
+            ],
+            "description": "Pagination start position. Defaults to 0."
+          }
+        },
+        "description": "Request schema for `ListFiles`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_LIST_PERSONS",
+      "name": "List persons",
+      "description": "List persons, or select up to 100 IDs, with relationship filters, selected custom fields, and cursor pagination.",
+      "version": "20261007_00",
+      "tags": [
+        "Persons",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListPersonsRequest",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Ids",
+            "maxItems": 100,
+            "description": "IDs of up to 100 persons to return."
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "maximum": 500,
+            "minimum": 1,
+            "description": "Maximum number of persons to return (1-500)."
+          },
+          "cursor": {
+            "type": "string",
+            "title": "Cursor",
+            "description": "Cursor returned by the previous page."
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "description": "Return persons linked to this organization ID."
+          },
+          "deal_id": {
+            "type": "integer",
+            "title": "Deal Id",
+            "description": "Return persons linked to this deal ID."
+          },
+          "sort_by": {
+            "enum": [
+              "id",
+              "update_time",
+              "add_time"
+            ],
+            "type": "string",
+            "title": "Sort By",
+            "default": "id",
+            "description": "Field used to sort the persons."
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "description": "Return persons owned by this user ID."
+          },
+          "filter_id": {
+            "type": "integer",
+            "title": "Filter Id",
+            "description": "ID of the filter to use."
+          },
+          "custom_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Custom Fields",
+            "maxItems": 15,
+            "description": "Keys of up to 15 custom fields to include."
+          },
+          "updated_since": {
+            "type": "string",
+            "title": "Updated Since",
+            "description": "Return persons updated after this RFC 3339 timestamp."
+          },
+          "updated_until": {
+            "type": "string",
+            "title": "Updated Until",
+            "description": "Return persons updated before this RFC 3339 timestamp."
+          },
+          "include_fields": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "next_activity_id",
+                "last_activity_id",
+                "open_deals_count",
+                "related_open_deals_count",
+                "closed_deals_count",
+                "related_closed_deals_count",
+                "participant_open_deals_count",
+                "participant_closed_deals_count",
+                "email_messages_count",
+                "activities_count",
+                "done_activities_count",
+                "undone_activities_count",
+                "files_count",
+                "notes_count",
+                "followers_count",
+                "won_deals_count",
+                "related_won_deals_count",
+                "lost_deals_count",
+                "related_lost_deals_count",
+                "last_incoming_mail_time",
+                "last_outgoing_mail_time",
+                "marketing_status",
+                "doi_status",
+                "smart_bcc_email"
+              ],
+              "type": "string"
+            },
+            "title": "Include Fields",
+            "description": "Additional person fields to include. Marketing status fields require the Campaigns product."
+          },
+          "include_labels": {
+            "type": "boolean",
+            "title": "Include Labels",
+            "description": "Whether to include person label details."
+          },
+          "sort_direction": {
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "type": "string",
+            "title": "Sort Direction",
+            "default": "asc",
+            "description": "Direction used to sort the persons."
+          },
+          "include_option_labels": {
+            "type": "boolean",
+            "title": "Include Option Labels",
+            "description": "Whether to include human-readable custom field option labels."
+          }
+        },
+        "description": "Request schema for listing persons through the Pipedrive v2 API."
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_MERGE_DEALS",
+      "name": "Merge Deals",
+      "description": "Tool to merge two deals in Pipedrive. Use when you need to consolidate two deals into one. The deal specified by 'id' will be merged into the deal specified by 'merge_with_id', and the first deal will be removed while the second one will remain with all consolidated data.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "deals",
+        "updateHint",
+        "destructiveHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveMergeDealsRequest",
+        "required": [
+          "id",
+          "merge_with_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              4,
+              123
+            ],
+            "description": "The ID of the deal that will be merged and removed from the account"
+          },
+          "merge_with_id": {
+            "type": "integer",
+            "title": "Merge With Id",
+            "examples": [
+              2,
+              3,
+              456
+            ],
+            "description": "The ID of the deal that will remain in the account and receive the merged data. This deal takes priority in conflict scenarios, and all related data (activities, emails, notes, products, followers, participants, filters) will be transferred to it."
+          }
+        },
+        "description": "Request model for merging two deals."
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_MERGE_ORGANIZATIONS",
+      "name": "Merge Organizations",
+      "description": "Tool to merge two organizations in Pipedrive. Use when you need to consolidate two organizations into one. The organization specified by 'id' will be merged into the organization specified by 'merge_with_id', and the first organization will be removed while the second one will remain with all consolidated data.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "organizations",
+        "updateHint",
+        "destructiveHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveMergeOrganizationsRequest",
+        "required": [
+          "id",
+          "merge_with_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              4,
+              123
+            ],
+            "description": "The ID of the organization that will be merged and removed from the account"
+          },
+          "merge_with_id": {
+            "type": "integer",
+            "title": "Merge With Id",
+            "examples": [
+              2,
+              3,
+              456
+            ],
+            "description": "The ID of the organization that will remain in the account and receive the merged data. This organization takes priority in conflict scenarios."
+          }
+        },
+        "description": "Request model for merging two organizations."
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_MERGE_PERSONS",
+      "name": "Merge two persons",
+      "description": "Tool to merge two persons in Pipedrive. Use when you need to combine two person records into one. The person ID specified in the request will be merged and removed, while the merge_with_id person will remain. When data conflicts exist, the merge_with_id person's field data takes priority.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "persons",
+        "updateHint",
+        "destructiveHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveMergePersonsRequest",
+        "required": [
+          "id",
+          "merge_with_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              2,
+              42
+            ],
+            "description": "The ID of the person that will be merged and removed from Pipedrive"
+          },
+          "merge_with_id": {
+            "type": "integer",
+            "title": "Merge With Id",
+            "examples": [
+              3,
+              5,
+              100
+            ],
+            "description": "The ID of the person that will remain after the merge. This person's data will be prioritized in case of conflict with the other person."
+          }
+        },
+        "description": "Request schema for `PipedriveMergePersons`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_SEARCH_DEALS",
+      "name": "Search deals",
+      "description": "This API endpoint searches deals by title, notes, and custom fields, filters results by person or organization ID, and is a specific use case of /v1/itemSearch with limited OAuth scope.",
+      "version": "20261007_00",
+      "tags": [
+        "Deals",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchDealsRequest",
+        "required": [
+          "term"
+        ],
+        "properties": {
+          "term": {
+            "type": "string",
+            "title": "Term",
+            "description": "The search term to look for. Minimum 2 characters required (or 1 character if exact_match is set to true). Please note that the search term has to be URL encoded. "
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "maximum": 100,
+            "description": "Items shown per page. Maximum value is 100."
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "description": "Pagination start. Note that the pagination is based on main results and does not include related items when using `search_for_related_items` parameter. "
+          },
+          "fields": {
+            "enum": [
+              "custom_fields",
+              "notes",
+              "title"
+            ],
+            "type": "string",
+            "title": "FieldsEnm",
+            "description": "A comma-separated string array. The fields to perform the search from. Defaults to all of them. Only the following custom field types are searchable: `address`, `varchar`, `text`, `varchar_auto`, `double`, `monetary` and `phone`. Read more about searching by custom fields <a href=\"https://support.pipedrive.com/en/article/search-finding-what-you-need#searching-by-custom-fields\" target=\"_blank\" rel=\"noopener noreferrer\">here</a>. "
+          },
+          "status": {
+            "enum": [
+              "open",
+              "won",
+              "lost"
+            ],
+            "type": "string",
+            "title": "StatusEnm",
+            "description": "Will filter deals by the provided specific status. open = Open, won = Won, lost = Lost. The upper limit of found deals associated with the status is 2000. "
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "description": "Will filter deals by the provided person ID. The upper limit of found deals associated with the person is 2000. "
+          },
+          "exact_match": {
+            "type": "boolean",
+            "title": "Exact Match",
+            "description": "When enabled, only full exact matches against the given term are returned. It is <b>not</b> case sensitive. "
+          },
+          "include_fields": {
+            "enum": [
+              "deal.cc_email"
+            ],
+            "type": "string",
+            "title": "IncludeFieldsEnm",
+            "description": "Supports including optional fields in the results which are not provided by default "
+          },
+          "organization_id": {
+            "type": "integer",
+            "title": "Organization Id",
+            "description": "Will filter deals by the provided organization ID. The upper limit of found deals associated with the organization is 2000. "
+          }
+        },
+        "description": "Request schema for `SearchDeals`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_SEARCH_LEADS",
+      "name": "Search leads",
+      "description": "Endpoint searches leads by title, notes, custom fields, with options to filter by person and organization IDs, and is a more specific use of the /v1/itemSearch with limited OAuth scope.",
+      "version": "20261007_00",
+      "tags": [
+        "Leads",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchLeadsRequest",
+        "required": [
+          "term"
+        ],
+        "properties": {
+          "term": {
+            "type": "string",
+            "title": "Term",
+            "description": "The search term to look for. Minimum 2 characters (or 1 if using `exact_match`). Please note that the search term has to be URL encoded. "
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "description": "Pagination start. Note that the pagination is based on main results and does not include related items when using `search_for_related_items` parameter. "
+          },
+          "fields": {
+            "enum": [
+              "custom_fields",
+              "notes",
+              "title"
+            ],
+            "type": "string",
+            "title": "FieldsEnm",
+            "description": "A comma-separated string array. The fields to perform the search from. Defaults to all of them. "
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "description": "Will filter leads by the provided person ID. The upper limit of found leads associated with the person is 2000. "
+          },
+          "exact_match": {
+            "type": "boolean",
+            "title": "Exact Match",
+            "description": "When enabled, only full exact matches against the given term are returned. It is <b>not</b> case sensitive. "
+          },
+          "include_fields": {
+            "enum": [
+              "lead.was_seen"
+            ],
+            "type": "string",
+            "title": "IncludeFieldsEnm",
+            "description": "Supports including optional fields in the results which are not provided by default "
+          },
+          "organization_id": {
+            "type": "integer",
+            "title": "Organization Id",
+            "description": "Will filter leads by the provided organization ID. The upper limit of found leads associated with the organization is 2000. "
+          }
+        },
+        "description": "Request schema for `SearchLeads`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_SEARCH_ORGANIZATIONS",
+      "name": "Search organizations",
+      "description": "Searches all organizations by name, address, notes and/or custom fields. This endpoint is a wrapper of <a href=\"https://developers.pipedrive.com/docs/api/v1/ItemSearch#searchItem\">/v1/itemSearch</a> with a narrower OAuth scope.",
+      "version": "20261007_00",
+      "tags": [
+        "Organizations",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchOrganizationsRequest",
+        "required": [
+          "term"
+        ],
+        "properties": {
+          "term": {
+            "type": "string",
+            "title": "Term",
+            "description": "The search term to look for. Minimum 2 characters (or 1 if using `exact_match`). Please note that the search term has to be URL encoded. "
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "description": "Pagination start. Note that the pagination is based on main results and does not include related items when using `search_for_related_items` parameter. "
+          },
+          "fields": {
+            "enum": [
+              "address",
+              "custom_fields",
+              "notes",
+              "name"
+            ],
+            "type": "string",
+            "title": "FieldsEnm",
+            "description": "A comma-separated string array. The fields to perform the search from. Defaults to all of them. Only the following custom field types are searchable: `address`, `varchar`, `text`, `varchar_auto`, `double`, `monetary` and `phone`. Read more about searching by custom fields <a href=\"https://support.pipedrive.com/en/article/search-finding-what-you-need#searching-by-custom-fields\" target=\"_blank\" rel=\"noopener noreferrer\">here</a>. "
+          },
+          "exact_match": {
+            "type": "boolean",
+            "title": "Exact Match",
+            "description": "When enabled, only full exact matches against the given term are returned. It is <b>not</b> case sensitive. "
+          }
+        },
+        "description": "Request schema for `SearchOrganizations`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_SEARCH_PERSONS",
+      "name": "Search persons",
+      "description": "This endpoint searches for individuals by various identifiers and is a specific use case of /v1/itemSearch with limited OAuth scope, allowing results filtering by organization ID.",
+      "version": "20261007_00",
+      "tags": [
+        "Persons",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchPersonsRequest",
+        "required": [
+          "term"
+        ],
+        "properties": {
+          "term": {
+            "type": "string",
+            "title": "Term",
+            "description": "The search term to look for. Minimum 2 characters (or 1 if using `exact_match`). Wildcards like '*' or '@' are NOT supported. To list all persons in an organization, use the GET_ALL_PERSONS or LIST_PERSONS_OF_AN_ORGANIZATION action instead. "
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "description": "Pagination start. Note that the pagination is based on main results and does not include related items when using `search_for_related_items` parameter. "
+          },
+          "fields": {
+            "enum": [
+              "custom_fields",
+              "email",
+              "notes",
+              "phone",
+              "name"
+            ],
+            "type": "string",
+            "title": "FieldsEnm",
+            "description": "The field to perform the search from. Defaults to all searchable fields. Only the following custom field types are searchable: address, varchar, text, varchar_auto, double, monetary and phone."
+          },
+          "exact_match": {
+            "type": "boolean",
+            "title": "Exact Match",
+            "description": "When enabled, only full exact matches against the given term are returned. It is <b>not</b> case sensitive. "
+          },
+          "include_fields": {
+            "enum": [
+              "person.picture"
+            ],
+            "type": "string",
+            "title": "IncludeFieldsEnm",
+            "description": "Supports including optional fields in the results which are not provided by default "
+          },
+          "organization_id": {
+            "type": "integer",
+            "title": "Organization Id",
+            "description": "Will filter persons by the provided organization ID. The upper limit of found persons associated with the organization is 2000. "
+          }
+        },
+        "description": "Request schema for `SearchPersons`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_UPDATE_A_DEAL",
+      "name": "Update a deal",
+      "description": "Updates the properties of a deal. For more information, see the tutorial for <a href=\"https://pipedrive.readme.io/docs/updating-a-deal\" target=\"_blank\" rel=\"noopener noreferrer\">updating a deal</a>.",
+      "version": "20261007_00",
+      "tags": [
+        "Deals",
+        "important",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateADealRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "The ID of the deal"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "The deal title"
+          },
+          "value": {
+            "type": "number",
+            "title": "Value",
+            "description": "Monetary value of the deal"
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "description": "ID of the organization"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Status of the deal (open, won, lost). Defaults to open"
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "description": "ID of the user who will be marked as owner of this deal"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency",
+            "description": "Currency for the deal value (3-letter ISO code)"
+          },
+          "stage_id": {
+            "type": "integer",
+            "title": "Stage Id",
+            "description": "Stage ID for the deal"
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "description": "ID of the person this deal is linked to"
+          },
+          "visible_to": {
+            "type": "integer",
+            "title": "Visible To",
+            "description": "Visibility of the deal (owner, entire company etc)"
+          },
+          "lost_reason": {
+            "type": "string",
+            "title": "Lost Reason",
+            "description": "Reason for losing the deal (only with status=lost)"
+          },
+          "pipeline_id": {
+            "type": "integer",
+            "title": "Pipeline Id",
+            "description": "Pipeline ID for the deal"
+          },
+          "probability": {
+            "type": "number",
+            "title": "Probability",
+            "description": "Success probability percentage (0-100)"
+          },
+          "expected_close_date": {
+            "type": "string",
+            "title": "Expected Close Date",
+            "format": "date",
+            "description": "Expected close date in format YYYY-MM-DD"
+          }
+        },
+        "description": "Request schema for `UpdateADeal`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_UPDATE_A_PERSON",
+      "name": "Update a person",
+      "description": "Modifies a person’s details in Pipedrive. See the linked tutorial for guidance. If utilizing Campaigns, the endpoint also handles `data.marketing_status`.",
+      "version": "20261007_00",
+      "tags": [
+        "Persons",
+        "important",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateAPersonRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "The ID of the person"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name of the person"
+          },
+          "email": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ContactItem",
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "title": "Label",
+                  "description": "Label for the item (e.g., work, home)"
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "description": "The email/phone value"
+                },
+                "primary": {
+                  "type": "boolean",
+                  "title": "Primary",
+                  "description": "Whether this is the primary item"
+                }
+              },
+              "description": "Email/Phone item schema used by Pipedrive v1 for persons."
+            },
+            "title": "Email",
+            "description": "List of email objects: { value: string, label?: string, primary?: bool }"
+          },
+          "phone": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ContactItem",
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "title": "Label",
+                  "description": "Label for the item (e.g., work, home)"
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "description": "The email/phone value"
+                },
+                "primary": {
+                  "type": "boolean",
+                  "title": "Primary",
+                  "description": "Whether this is the primary item"
+                }
+              },
+              "description": "Email/Phone item schema used by Pipedrive v1 for persons."
+            },
+            "title": "Phone",
+            "description": "List of phone objects: { value: string, label?: string, primary?: bool }"
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "description": "ID of the linked organization"
+          },
+          "add_time": {
+            "type": "string",
+            "title": "Add Time",
+            "format": "date-time",
+            "description": "Creation time (RFC 3339)"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "description": "ID of the user who will be marked as the owner of this person"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Label Ids",
+            "description": "IDs of labels to assign to the person"
+          },
+          "visible_to": {
+            "type": "integer",
+            "title": "Visible To",
+            "description": "Visibility of the person (e.g., 1=owner only, 3=entire company)"
+          },
+          "update_time": {
+            "type": "string",
+            "title": "Update Time",
+            "format": "date-time",
+            "description": "Last update time (RFC 3339)"
+          },
+          "marketing_status": {
+            "type": "string",
+            "title": "Marketing Status",
+            "description": "Marketing status (no_consent, unsubscribed, subscribed, archived). Field is available only when Campaigns is enabled."
+          }
+        },
+        "description": "Request schema for `UpdateAPerson`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_UPDATE_ACTIVITY",
+      "name": "Update an activity",
+      "description": "Tool to update an existing activity in Pipedrive including scheduling, assignments, descriptions, and participants. Use when you need to modify any properties of an activity such as subject, due date/time, status, or associated entities.",
+      "version": "20261007_00",
+      "tags": [
+        "Activities",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateActivityRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              2,
+              100
+            ],
+            "description": "The unique identifier of the activity to update",
+            "exclusiveMinimum": 0
+          },
+          "busy": {
+            "type": "boolean",
+            "title": "Busy",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Calendar availability flag (true=busy, false=available)"
+          },
+          "done": {
+            "type": "boolean",
+            "title": "Done",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Completion status indicator (true=completed, false=not completed)"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "examples": [
+              "Remember to prepare slides",
+              "Follow up on previous discussion"
+            ],
+            "description": "Internal activity comments/notes"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "examples": [
+              "call",
+              "meeting",
+              "task",
+              "deadline",
+              "email",
+              "lunch"
+            ],
+            "description": "The activity category/type (e.g., 'call', 'meeting', 'task')"
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "examples": [
+              987,
+              135
+            ],
+            "description": "Associated organization identifier"
+          },
+          "deal_id": {
+            "type": "integer",
+            "title": "Deal Id",
+            "examples": [
+              789,
+              101112
+            ],
+            "description": "Associated deal identifier"
+          },
+          "lead_id": {
+            "type": "string",
+            "title": "Lead Id",
+            "examples": [
+              "8a674260-dfd0-11f0-90a6-6118ff270bea"
+            ],
+            "description": "Associated lead identifier (UUID format)"
+          },
+          "subject": {
+            "type": "string",
+            "title": "Subject",
+            "examples": [
+              "Call with John",
+              "Meeting about Q4 goals"
+            ],
+            "description": "The activity's title/subject"
+          },
+          "due_date": {
+            "type": "string",
+            "title": "Due Date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "examples": [
+              "2024-12-25",
+              "2025-01-15"
+            ],
+            "description": "Activity date in YYYY-MM-DD format"
+          },
+          "due_time": {
+            "type": "string",
+            "title": "Due Time",
+            "pattern": "^\\d{2}:\\d{2}$",
+            "examples": [
+              "09:30",
+              "14:00",
+              "16:45"
+            ],
+            "description": "Activity time in HH:MM format"
+          },
+          "duration": {
+            "type": "string",
+            "title": "Duration",
+            "pattern": "^\\d{2}:\\d{2}$",
+            "examples": [
+              "00:30",
+              "01:00",
+              "02:15"
+            ],
+            "description": "Activity length in HH:MM format"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "object",
+                "title": "LocationObject",
+                "properties": {
+                  "route": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Route",
+                    "default": null,
+                    "description": "Street name"
+                  },
+                  "value": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Value",
+                    "default": null,
+                    "description": "Full address string"
+                  },
+                  "country": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Country",
+                    "default": null,
+                    "description": "Country name"
+                  },
+                  "locality": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Locality",
+                    "default": null,
+                    "description": "City or locality"
+                  },
+                  "subpremise": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Subpremise",
+                    "default": null,
+                    "description": "Apartment, suite, or unit number"
+                  },
+                  "postal_code": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Postal Code",
+                    "default": null,
+                    "description": "Postal or ZIP code"
+                  },
+                  "sublocality": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Sublocality",
+                    "default": null,
+                    "description": "Sublocality or neighborhood"
+                  },
+                  "street_number": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Street Number",
+                    "default": null,
+                    "description": "Street number"
+                  },
+                  "admin_area_level_1": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Admin Area Level 1",
+                    "default": null,
+                    "description": "State or province"
+                  },
+                  "admin_area_level_2": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Admin Area Level 2",
+                    "default": null,
+                    "description": "County or district"
+                  }
+                },
+                "description": "Location object with address fields for API v2"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Location",
+            "examples": [
+              "123 Main St, New York, NY 10001"
+            ],
+            "description": "Geographic information with address fields or simple string address"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "examples": [
+              123,
+              456
+            ],
+            "description": "User ID assigned to the activity"
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "minimum": 1,
+            "examples": [
+              1,
+              2,
+              3
+            ],
+            "description": "Importance level of the activity"
+          },
+          "attendees": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "AttendeeObject",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "title": "Name",
+                  "description": "Name of the attendee"
+                },
+                "status": {
+                  "enum": [
+                    "accepted",
+                    "declined",
+                    "tentative",
+                    "needs_action"
+                  ],
+                  "type": "string",
+                  "title": "Status",
+                  "description": "Response status of the attendee"
+                },
+                "user_id": {
+                  "type": "integer",
+                  "title": "User Id",
+                  "description": "User ID if the attendee is an internal user"
+                },
+                "person_id": {
+                  "type": "integer",
+                  "title": "Person Id",
+                  "description": "Person ID if the attendee is a contact"
+                },
+                "email_address": {
+                  "type": "string",
+                  "title": "Email Address",
+                  "description": "Email address of the attendee"
+                }
+              },
+              "description": "Attendee object for meeting attendees"
+            },
+            "title": "Attendees",
+            "description": "External and internal meeting participants with email, name, and status"
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "examples": [
+              321,
+              654
+            ],
+            "description": "Primary participant identifier"
+          },
+          "project_id": {
+            "type": "integer",
+            "title": "Project Id",
+            "examples": [
+              246,
+              369
+            ],
+            "description": "Associated project identifier"
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ParticipantObject",
+              "required": [
+                "person_id"
+              ],
+              "properties": {
+                "primary": {
+                  "type": "boolean",
+                  "title": "Primary",
+                  "description": "Whether this is the primary participant"
+                },
+                "person_id": {
+                  "type": "integer",
+                  "title": "Person Id",
+                  "description": "Person ID of the participant"
+                }
+              },
+              "description": "Participant object for activity participants"
+            },
+            "title": "Participants",
+            "description": "Multiple person associations for the activity"
+          },
+          "public_description": {
+            "type": "string",
+            "title": "Public Description",
+            "examples": [
+              "Quarterly business review meeting"
+            ],
+            "description": "Calendar-synced event details visible in external calendars"
+          }
+        },
+        "description": "Request schema for updating an activity"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_UPDATE_DEAL",
+      "name": "Update a deal",
+      "description": "Tool to update an existing deal in Pipedrive. Use when you need to modify properties of a deal such as title, value, status, stage, or associated contacts/organizations.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "idempotentHint",
+        "updateHint",
+        "openWorldHint",
+        "deals"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveUpdateDealRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              42,
+              100
+            ],
+            "description": "The ID of the deal to update"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Updated Test Deal via API",
+              "Q4 Enterprise Deal"
+            ],
+            "description": "The title/name of the deal"
+          },
+          "value": {
+            "type": "number",
+            "title": "Value",
+            "examples": [
+              5000,
+              15000.5,
+              100000
+            ],
+            "description": "The monetary value of the deal"
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "examples": [
+              202,
+              303
+            ],
+            "description": "The ID of the organization associated with the deal"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "won",
+              "lost"
+            ],
+            "type": "string",
+            "title": "Status",
+            "examples": [
+              "open",
+              "won",
+              "lost"
+            ],
+            "description": "The status of the deal. Must be one of: open, won, lost"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency",
+            "examples": [
+              "USD",
+              "EUR",
+              "GBP"
+            ],
+            "description": "Three-letter ISO currency code for the deal value"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "examples": [
+              123,
+              456
+            ],
+            "description": "The ID of the user who owns the deal"
+          },
+          "stage_id": {
+            "type": "integer",
+            "title": "Stage Id",
+            "examples": [
+              10,
+              20,
+              30
+            ],
+            "description": "The ID of the stage within the pipeline"
+          },
+          "won_time": {
+            "type": "string",
+            "title": "Won Time",
+            "examples": [
+              "2024-12-15 14:30:00"
+            ],
+            "description": "Date and time when status changed to won"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Label Ids",
+            "examples": [
+              [
+                "label1",
+                "label2"
+              ]
+            ],
+            "description": "Array of label IDs assigned to the deal"
+          },
+          "lost_time": {
+            "type": "string",
+            "title": "Lost Time",
+            "examples": [
+              "2024-12-10 09:15:00"
+            ],
+            "description": "Date and time when status changed to lost"
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "examples": [
+              789,
+              101
+            ],
+            "description": "The ID of the person/contact associated with the deal"
+          },
+          "close_time": {
+            "type": "string",
+            "title": "Close Time",
+            "examples": [
+              "2024-12-15 14:30:00"
+            ],
+            "description": "Date and time of closing the deal (for won/lost status)"
+          },
+          "visible_to": {
+            "type": "integer",
+            "title": "Visible To",
+            "examples": [
+              1,
+              3,
+              7
+            ],
+            "description": "Visibility setting for the deal"
+          },
+          "is_archived": {
+            "type": "boolean",
+            "title": "Is Archived",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Whether the deal is archived. Note: From July 15, 2025, archived deals cannot be edited except for this property."
+          },
+          "lost_reason": {
+            "type": "string",
+            "title": "Lost Reason",
+            "examples": [
+              "Budget constraints",
+              "Chose competitor",
+              "No longer interested"
+            ],
+            "description": "Reason for losing the deal. Required when status is set to 'lost'"
+          },
+          "pipeline_id": {
+            "type": "integer",
+            "title": "Pipeline Id",
+            "examples": [
+              1,
+              2,
+              5
+            ],
+            "description": "The ID of the pipeline for the deal. When changed, stage_id auto-updates to first stage."
+          },
+          "probability": {
+            "type": "number",
+            "title": "Probability",
+            "examples": [
+              50,
+              75.5,
+              90
+            ],
+            "description": "The success probability percentage (0-100)"
+          },
+          "archive_time": {
+            "type": "string",
+            "title": "Archive Time",
+            "examples": [
+              "2024-12-31 23:59:59"
+            ],
+            "description": "Date and time of archiving in UTC in YYYY-MM-DD HH:MM:SS format"
+          },
+          "expected_close_date": {
+            "type": "string",
+            "title": "Expected Close Date",
+            "examples": [
+              "2024-12-31",
+              "2025-03-15"
+            ],
+            "description": "Expected closing date in YYYY-MM-DD format"
+          }
+        },
+        "description": "Request schema for updating a deal"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_UPDATE_DEAL_V2",
+      "name": "Update deal (v2 API)",
+      "description": "Tool to update an existing deal using Pipedrive v2 API. Use when you need to modify deal properties including custom fields, archive status, or deletion status.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "idempotentHint",
+        "updateHint",
+        "openWorldHint",
+        "Deals"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateDealV2Request",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              42,
+              123
+            ],
+            "description": "The ID of the deal to update"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Updated Deal Title",
+              "Q4 Enterprise Deal"
+            ],
+            "description": "The title of the deal"
+          },
+          "value": {
+            "type": "number",
+            "title": "Value",
+            "examples": [
+              5000,
+              15000.5,
+              100000
+            ],
+            "description": "The value of the deal"
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "examples": [
+              202,
+              303
+            ],
+            "description": "The ID of the organization linked to the deal"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "examples": [
+              "open",
+              "won",
+              "lost"
+            ],
+            "description": "The status of the deal"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency",
+            "examples": [
+              "USD",
+              "EUR",
+              "GBP"
+            ],
+            "description": "The currency associated with the deal"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "examples": [
+              123,
+              456
+            ],
+            "description": "The ID of the user who owns the deal"
+          },
+          "stage_id": {
+            "type": "integer",
+            "title": "Stage Id",
+            "examples": [
+              10,
+              20,
+              30
+            ],
+            "description": "The ID of the deal stage"
+          },
+          "won_time": {
+            "type": "string",
+            "title": "Won Time",
+            "examples": [
+              "2024-12-15T14:30:00Z"
+            ],
+            "description": "The date and time of changing the deal status as won. Can only be set if deal status is won."
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Label Ids",
+            "examples": [
+              [
+                1,
+                2,
+                3
+              ]
+            ],
+            "description": "The IDs of labels assigned to the deal"
+          },
+          "lost_time": {
+            "type": "string",
+            "title": "Lost Time",
+            "examples": [
+              "2024-12-10T09:15:00Z"
+            ],
+            "description": "The date and time of changing the deal status as lost. Can only be set if deal status is lost."
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "examples": [
+              789,
+              1011
+            ],
+            "description": "The ID of the person linked to the deal"
+          },
+          "close_time": {
+            "type": "string",
+            "title": "Close Time",
+            "examples": [
+              "2024-12-31T23:59:59Z"
+            ],
+            "description": "The date and time of closing the deal. Can only be set if deal status is won or lost."
+          },
+          "is_deleted": {
+            "type": "boolean",
+            "title": "Is Deleted",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Whether the deal is deleted or not"
+          },
+          "visible_to": {
+            "type": "integer",
+            "title": "Visible To",
+            "examples": [
+              1,
+              3,
+              7
+            ],
+            "description": "The visibility of the deal"
+          },
+          "is_archived": {
+            "type": "boolean",
+            "title": "Is Archived",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Whether the deal is archived or not"
+          },
+          "lost_reason": {
+            "type": "string",
+            "title": "Lost Reason",
+            "examples": [
+              "Budget constraints",
+              "Chose competitor"
+            ],
+            "description": "The reason for losing the deal. Can only be set if deal status is lost."
+          },
+          "pipeline_id": {
+            "type": "integer",
+            "title": "Pipeline Id",
+            "examples": [
+              1,
+              2,
+              5
+            ],
+            "description": "The ID of the pipeline associated with the deal"
+          },
+          "probability": {
+            "type": "integer",
+            "title": "Probability",
+            "examples": [
+              50,
+              75,
+              90
+            ],
+            "description": "The success probability percentage of the deal (must be an integer)"
+          },
+          "archive_time": {
+            "type": "string",
+            "title": "Archive Time",
+            "examples": [
+              "2024-12-31 23:59:59"
+            ],
+            "description": "The optional date and time of archiving the deal in UTC. Format: YYYY-MM-DD HH:MM:SS. If omitted and is_archived is true, it will be set to the current date and time."
+          },
+          "custom_fields": {
+            "type": "object",
+            "title": "Custom Fields",
+            "examples": [
+              {
+                "abc123def456": "custom value"
+              }
+            ],
+            "description": "An object where each key represents a custom field. All custom fields are referenced as randomly generated 40-character hashes",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "expected_close_date": {
+            "type": "string",
+            "title": "Expected Close Date",
+            "examples": [
+              "2024-12-31",
+              "2025-03-15"
+            ],
+            "description": "The expected close date of the deal in YYYY-MM-DD format"
+          }
+        },
+        "description": "Request schema for updating a deal using v2 API"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_UPDATE_LEAD",
+      "name": "Update a lead",
+      "description": "Tool to update a lead in Pipedrive. Use when you need to modify properties of an existing lead such as title, value, status, or linked contacts.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "idempotentHint",
+        "updateHint",
+        "openWorldHint",
+        "leads"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveUpdateLeadRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "examples": [
+              "74be8540-dfd0-11f0-a36b-3f9ef1ff36ee"
+            ],
+            "description": "The unique identifier of the lead to update in UUID format"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Updated Lead Title",
+              "New Business Opportunity"
+            ],
+            "description": "The name/title of the lead"
+          },
+          "value": {
+            "type": "object",
+            "title": "ValueObject",
+            "examples": [
+              {
+                "amount": 5000,
+                "currency": "USD"
+              }
+            ],
+            "properties": {
+              "amount": {
+                "type": "number",
+                "title": "Amount",
+                "examples": [
+                  5000,
+                  1200.5,
+                  10000
+                ],
+                "description": "The monetary amount of the potential value"
+              },
+              "currency": {
+                "type": "string",
+                "title": "Currency",
+                "examples": [
+                  "USD",
+                  "EUR",
+                  "GBP"
+                ],
+                "description": "The currency code (e.g., USD, EUR, GBP)"
+              }
+            },
+            "description": "Schema for the value object containing amount and currency",
+            "additionalProperties": false
+          },
+          "channel": {
+            "type": "integer",
+            "title": "Channel",
+            "examples": [
+              1,
+              2,
+              3
+            ],
+            "description": "Marketing channel identifier"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "examples": [
+              123,
+              456
+            ],
+            "description": "The ID of the user who will own the lead"
+          },
+          "was_seen": {
+            "type": "boolean",
+            "title": "Was Seen",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Flag indicating if lead was seen in Pipedrive UI"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Label Ids",
+            "examples": [
+              [
+                "label1",
+                "label2"
+              ]
+            ],
+            "description": "Array of lead label identifiers to assign to the lead"
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "examples": [
+              789,
+              101
+            ],
+            "description": "ID of person to link to the lead. Lead requires person OR organization link. Set to null to unset."
+          },
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id",
+            "examples": [
+              "channel_123",
+              "source_456"
+            ],
+            "description": "Optional ID to distinguish the marketing channel"
+          },
+          "visible_to": {
+            "type": "string",
+            "title": "Visible To",
+            "examples": [
+              "1",
+              "3",
+              "5",
+              "7"
+            ],
+            "description": "Visibility setting (values: 1, 3, 5, or 7 depending on plan)"
+          },
+          "is_archived": {
+            "type": "boolean",
+            "title": "Is Archived",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Archive status flag. Set to true to archive the lead, false to unarchive."
+          },
+          "organization_id": {
+            "type": "integer",
+            "title": "Organization Id",
+            "examples": [
+              202,
+              303
+            ],
+            "description": "ID of organization to link to the lead. Lead requires person OR organization link. Set to null to unset."
+          },
+          "expected_close_date": {
+            "type": "string",
+            "title": "Expected Close Date",
+            "examples": [
+              "2024-12-31",
+              "2025-03-15"
+            ],
+            "description": "Expected close date in ISO 8601 format (YYYY-MM-DD)"
+          }
+        },
+        "description": "Request schema for updating a lead"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_UPDATE_NOTE",
+      "name": "Update Note",
+      "description": "Tool to update an existing note in Pipedrive. Use when you need to modify the content or properties of a note attached to deals, persons, organizations, leads, or projects.",
+      "version": "20261007_00",
+      "tags": [
+        "idempotentHint",
+        "updateHint",
+        "openWorldHint",
+        "notes_and_comments"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveUpdateNoteRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              6,
+              10,
+              25
+            ],
+            "description": "The ID of the note to update"
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "examples": [
+              789
+            ],
+            "description": "The ID of the organization to attach the note to."
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "examples": [
+              "<p>Updated note content</p>",
+              "Updated note content - testing the UPDATE_NOTE endpoint successfully"
+            ],
+            "description": "The content of the note in HTML format. Subject to sanitization on the back-end."
+          },
+          "deal_id": {
+            "type": "integer",
+            "title": "Deal Id",
+            "examples": [
+              123
+            ],
+            "description": "The ID of the deal to attach the note to."
+          },
+          "lead_id": {
+            "type": "string",
+            "title": "Lead Id",
+            "examples": [
+              "550e8400-e29b-41d4-a716-446655440000"
+            ],
+            "description": "The ID of the lead to attach the note to (UUID format)."
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "examples": [
+              10
+            ],
+            "description": "The ID of the user to mark as the note's author. Only administrators can change this."
+          },
+          "add_time": {
+            "type": "string",
+            "title": "Add Time",
+            "examples": [
+              "2023-12-31 23:59:59"
+            ],
+            "description": "Creation date and time of the note in UTC. Format: YYYY-MM-DD HH:MM:SS"
+          },
+          "person_id": {
+            "type": "integer",
+            "title": "Person Id",
+            "examples": [
+              456
+            ],
+            "description": "The ID of the person to attach the note to."
+          },
+          "project_id": {
+            "type": "integer",
+            "title": "Project Id",
+            "examples": [
+              321
+            ],
+            "description": "The ID of the project to attach the note to."
+          },
+          "pinned_to_deal_flag": {
+            "enum": [
+              0,
+              1
+            ],
+            "type": "integer",
+            "title": "Pinned To Deal Flag",
+            "examples": [
+              1
+            ],
+            "description": "If set, updates the note-to-deal pinning state. Requires deal_id to be set. 0 to unpin, 1 to pin."
+          },
+          "pinned_to_lead_flag": {
+            "enum": [
+              0,
+              1
+            ],
+            "type": "integer",
+            "title": "Pinned To Lead Flag",
+            "examples": [
+              1
+            ],
+            "description": "If set, updates the note-to-lead pinning state. Requires lead_id to be set. 0 to unpin, 1 to pin."
+          },
+          "pinned_to_person_flag": {
+            "enum": [
+              0,
+              1
+            ],
+            "type": "integer",
+            "title": "Pinned To Person Flag",
+            "examples": [
+              1
+            ],
+            "description": "If set, updates the note-to-person pinning state. Requires person_id to be set. 0 to unpin, 1 to pin."
+          },
+          "pinned_to_project_flag": {
+            "enum": [
+              0,
+              1
+            ],
+            "type": "integer",
+            "title": "Pinned To Project Flag",
+            "examples": [
+              1
+            ],
+            "description": "If set, updates the note-to-project pinning state. Requires project_id to be set. 0 to unpin, 1 to pin."
+          },
+          "pinned_to_organization_flag": {
+            "enum": [
+              0,
+              1
+            ],
+            "type": "integer",
+            "title": "Pinned To Organization Flag",
+            "examples": [
+              1
+            ],
+            "description": "If set, updates the note-to-organization pinning state. Requires org_id to be set. 0 to unpin, 1 to pin."
+          }
+        },
+        "description": "Request schema for updating a note"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_UPDATE_ORGANIZATION",
+      "name": "Update Organization",
+      "description": "Tool to update an existing organization in Pipedrive. Use when you need to modify organization properties such as name, owner, visibility, labels, or address.",
+      "version": "20261007_00",
+      "tags": [
+        "Organizations",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateOrganizationRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              2,
+              100
+            ],
+            "description": "The unique identifier of the organization to update",
+            "exclusiveMinimum": 0
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Acme Corporation",
+              "Tech Solutions Inc"
+            ],
+            "description": "The name of the organization"
+          },
+          "address": {
+            "type": "object",
+            "title": "AddressObject",
+            "properties": {
+              "route": {
+                "type": "string",
+                "title": "Route",
+                "description": "Street name"
+              },
+              "value": {
+                "type": "string",
+                "title": "Value",
+                "description": "Full formatted address string"
+              },
+              "country": {
+                "type": "string",
+                "title": "Country",
+                "description": "Country name"
+              },
+              "locality": {
+                "type": "string",
+                "title": "Locality",
+                "description": "City or locality"
+              },
+              "subpremise": {
+                "type": "string",
+                "title": "Subpremise",
+                "description": "Apartment, suite, or unit number"
+              },
+              "postal_code": {
+                "type": "string",
+                "title": "Postal Code",
+                "description": "Postal or ZIP code"
+              },
+              "sublocality": {
+                "type": "string",
+                "title": "Sublocality",
+                "description": "Sublocality or neighborhood"
+              },
+              "street_number": {
+                "type": "string",
+                "title": "Street Number",
+                "description": "Street number"
+              },
+              "admin_area_level_1": {
+                "type": "string",
+                "title": "Admin Area Level 1",
+                "description": "State or province"
+              },
+              "admin_area_level_2": {
+                "type": "string",
+                "title": "Admin Area Level 2",
+                "description": "County or district"
+              }
+            },
+            "description": "Address object with structured fields",
+            "additionalProperties": false
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "examples": [
+              123,
+              456
+            ],
+            "description": "The ID of the user who owns the organization"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Label Ids",
+            "examples": [
+              [
+                1,
+                2,
+                3
+              ]
+            ],
+            "description": "The IDs of labels assigned to the organization"
+          },
+          "visible_to": {
+            "type": "integer",
+            "title": "Visible To",
+            "examples": [
+              1,
+              3,
+              7
+            ],
+            "description": "The visibility of the organization. 1=owner only, 3=owner's visibility group, 7=entire company"
+          }
+        },
+        "description": "Request schema for updating an organization"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_UPDATE_PERSON",
+      "name": "Update a person",
+      "description": "Tool to update a person's properties in Pipedrive. Use when you need to modify existing person details such as name, contact information, owner, or organization.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "idempotentHint",
+        "updateHint",
+        "openWorldHint",
+        "persons"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PipedriveUpdatePersonRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              3,
+              123
+            ],
+            "description": "The ID of the person to update"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "John Doe",
+              "Test Participant Person Updated"
+            ],
+            "description": "The person's full name"
+          },
+          "email": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "EmailItem",
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "title": "Label",
+                  "description": "Label for the email (e.g., work, home)"
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "description": "The email address"
+                },
+                "primary": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "title": "Primary",
+                  "description": "Whether this is the primary email. Can be boolean or string 'true'/'false'"
+                }
+              },
+              "description": "Email item schema for person contact information."
+            },
+            "title": "Email",
+            "examples": [
+              [
+                {
+                  "value": "john@example.com",
+                  "primary": "true"
+                }
+              ]
+            ],
+            "description": "Email addresses as an array of objects with properties: value (required), primary (optional), label (optional)"
+          },
+          "label": {
+            "type": "integer",
+            "title": "Label",
+            "examples": [
+              1,
+              2
+            ],
+            "description": "Label ID for categorizing the person (deprecated in v2, use label_ids)"
+          },
+          "phone": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "PhoneItem",
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "title": "Label",
+                  "description": "Label for the phone (e.g., work, home, mobile)"
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "description": "The phone number"
+                },
+                "primary": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "title": "Primary",
+                  "description": "Whether this is the primary phone. Can be boolean or string 'true'/'false'"
+                }
+              },
+              "description": "Phone item schema for person contact information."
+            },
+            "title": "Phone",
+            "examples": [
+              [
+                {
+                  "label": "work",
+                  "value": "+1234567890",
+                  "primary": "true"
+                }
+              ]
+            ],
+            "description": "Phone numbers as an array of objects with properties: value (required), primary (optional), label (optional)"
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "examples": [
+              5,
+              10,
+              20
+            ],
+            "description": "The ID of the organization this person belongs to"
+          },
+          "add_time": {
+            "type": "string",
+            "title": "Add Time",
+            "examples": [
+              "2024-01-15 10:30:00"
+            ],
+            "description": "The creation date and time of the person in UTC. Format: YYYY-MM-DD HH:MM:SS"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "examples": [
+              1,
+              2,
+              5
+            ],
+            "description": "The ID of the user who will be the owner of the person. Requires proper permissions; without can_modify_owner_for_people permission, a 403 error will be thrown."
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Label Ids",
+            "examples": [
+              [
+                1,
+                2,
+                3
+              ]
+            ],
+            "description": "Array of label IDs to assign to the person"
+          },
+          "visible_to": {
+            "type": "integer",
+            "title": "Visible To",
+            "examples": [
+              1,
+              3,
+              5,
+              7
+            ],
+            "description": "Visibility of the person. Values: 1 (Owner & followers), 3 (Entire company), 5 (Owner only), 7 (Owner's visibility group)"
+          },
+          "update_time": {
+            "type": "string",
+            "title": "Update Time",
+            "examples": [
+              "2024-01-20 15:45:00"
+            ],
+            "description": "The last update date and time of the person in UTC. Format: YYYY-MM-DD HH:MM:SS"
+          },
+          "marketing_status": {
+            "enum": [
+              "no_consent",
+              "unsubscribed",
+              "subscribed",
+              "archived"
+            ],
+            "type": "string",
+            "title": "Marketing Status",
+            "examples": [
+              "subscribed",
+              "unsubscribed"
+            ],
+            "description": "Marketing status. Only available if company uses Campaigns product. Must be one of: no_consent, unsubscribed, subscribed, archived"
+          }
+        },
+        "description": "Request schema for updating a person"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_UPDATE_PERSON_V2",
+      "name": "Update person (v2)",
+      "description": "Tool to update a person's properties in Pipedrive using the v2 API. Use when you need to modify existing person details such as name, contact information, owner, or organization.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "idempotentHint",
+        "updateHint",
+        "openWorldHint",
+        "persons"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdatePersonV2Request",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1,
+              123,
+              456
+            ],
+            "description": "The ID of the person to update"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "John Doe",
+              "Jane Smith"
+            ],
+            "description": "The person's full name"
+          },
+          "emails": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "EmailItem",
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "title": "Label",
+                  "description": "Label for the email (e.g., work, home)"
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "description": "The email address"
+                },
+                "primary": {
+                  "type": "boolean",
+                  "title": "Primary",
+                  "description": "Whether this is the primary email"
+                }
+              },
+              "description": "Email item schema for person contact information."
+            },
+            "title": "Emails",
+            "description": "Email addresses as objects with properties: value, primary, label"
+          },
+          "org_id": {
+            "type": "integer",
+            "title": "Org Id",
+            "examples": [
+              5,
+              10
+            ],
+            "description": "The ID of the organization this person belongs to"
+          },
+          "phones": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "PhoneItem",
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "title": "Label",
+                  "description": "Label for the phone (e.g., work, home, mobile)"
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "description": "The phone number"
+                },
+                "primary": {
+                  "type": "boolean",
+                  "title": "Primary",
+                  "description": "Whether this is the primary phone"
+                }
+              },
+              "description": "Phone item schema for person contact information."
+            },
+            "title": "Phones",
+            "description": "Phone numbers as objects with properties: value, primary, label"
+          },
+          "add_time": {
+            "type": "string",
+            "title": "Add Time",
+            "examples": [
+              "2024-01-15 10:30:00"
+            ],
+            "description": "The creation date and time of the person in UTC. Format: YYYY-MM-DD HH:MM:SS"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "examples": [
+              1,
+              2
+            ],
+            "description": "The ID of the user who will be the owner of the person"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Label Ids",
+            "examples": [
+              [
+                1,
+                2,
+                3
+              ]
+            ],
+            "description": "Array of label IDs to assign to the person"
+          },
+          "last_name": {
+            "type": "string",
+            "title": "Last Name",
+            "examples": [
+              "Doe",
+              "Smith"
+            ],
+            "description": "The person's last name"
+          },
+          "first_name": {
+            "type": "string",
+            "title": "First Name",
+            "examples": [
+              "John",
+              "Jane"
+            ],
+            "description": "The person's first name"
+          },
+          "visible_to": {
+            "type": "integer",
+            "title": "Visible To",
+            "examples": [
+              1,
+              3,
+              5,
+              7
+            ],
+            "description": "Visibility of the person. Values: 1 (Owner & followers), 3 (Entire company), 5 (Owner only), 7 (Owner's visibility group)"
+          },
+          "update_time": {
+            "type": "string",
+            "title": "Update Time",
+            "examples": [
+              "2024-01-20 15:45:00"
+            ],
+            "description": "The last update date and time of the person in UTC. Format: YYYY-MM-DD HH:MM:SS"
+          },
+          "marketing_status": {
+            "type": "string",
+            "title": "Marketing Status",
+            "examples": [
+              "subscribed",
+              "unsubscribed"
+            ],
+            "description": "Marketing status. Values: 'no_consent', 'unsubscribed', 'subscribed', 'archived'. Only available if company uses Campaigns product."
+          }
+        },
+        "description": "Request schema for `UpdatePersonV2`"
+      }
+    },
+    {
+      "slug": "PIPEDRIVE_WHO_AM_I",
+      "name": "Who Am I",
+      "description": "Return the identity (name, email) of the connected Pipedrive account.",
+      "version": "20261007_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "auth"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "WhoAmIRequest",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

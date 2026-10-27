@@ -1,0 +1,747 @@
+{
+  "toolkit": "box",
+  "version": "20261020_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Box",
+  "description": "Search and read files and folders, comment on files, and create and rename folders.",
+  "securityDescription": "Box sign-in opens through Composio. Agents act as the signed-in Box user and reach what that user can reach. With write access, Agents can create folders, rename folders and edit their descriptions and tags, and comment on files. A comment is visible to everyone who can open the file, and a mention emails the mentioned Box user without giving them access. Agents cannot upload, move, copy, lock, or delete files or folders, create or change shared links, add collaborators, change permissions or retention, request signatures, or manage users, groups, or enterprise settings.",
+  "preset": {
+    "category": "docs",
+    "accent": "#0061D5"
+  },
+  "validationCapability": "box.get_current_user",
+  "review": {
+    "add": [
+      "BOX_CREATE_COMMENT",
+      "BOX_GET_CURRENT_USER",
+      "BOX_LIST_RECENTLY_ACCESSED_ITEMS"
+    ],
+    "drop": {
+      "BOX_CREATE_BOX_SIGN_REQUEST": "Emails signature requests to any signer address the Agent names.",
+      "BOX_CREATE_COLLABORATION": "Grants a person or group access to a file or folder.",
+      "BOX_DELETE_FILE": "Box enterprise settings decide whether a delete goes to the trash or is permanent, so the Agent cannot know it is recoverable.",
+      "BOX_REQUEST_ACCESS_TOKEN": "Mints OAuth access tokens; credentials never reach the model.",
+      "BOX_UPDATE_FILE": "Can set a retention date that cannot be shortened and a lock that blocks collaborators from editing or downloading; neither argument can be withheld."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "box.create_comment",
+      "tool": "BOX_CREATE_COMMENT",
+      "toolName": "box_create_comment",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Adds a comment by the user to a specific file, or as a reply to an other comment.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Box: Create comment",
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested."
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The text of the comment. Required unless `tagged_message` is provided. To mention a user, use `tagged_message` instead."
+          },
+          "item__id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the item to attach the comment to. This can be a file ID or a comment ID (when replying to a comment)."
+          },
+          "item__type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "comment",
+              "file"
+            ],
+            "description": "The type of item this comment will be placed on. Use 'file' to comment on a file, or 'comment' to reply to an existing comment."
+          },
+          "tagged_message": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The text of the comment with user mentions. Use the format `@[user_id:name]` to mention a user, which sends them an email notification. The `user_id` is the target user's ID, and `name` is a display phrase that links to the user's profile in Box UI. Either `message` or `tagged_message` must be provided, but not both."
+          }
+        },
+        "required": [
+          "item__id",
+          "item__type"
+        ],
+        "description": "Request schema for `CreateComment`"
+      }
+    },
+    {
+      "id": "box.create_folder",
+      "tool": "BOX_CREATE_FOLDER",
+      "toolName": "box_create_folder",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new empty folder within the specified parent folder.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Box: Create folder",
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name for the new folder. There are some restrictions to the file name. Names containing non-printable ASCII characters, forward and backward slashes (`/`, ``), as well as names with trailing spaces are prohibited. Additionally, the names `.` and `..` are not allowed either."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of attributes to include in the response (e.g., 'id,name,created_at'). When specified, only the requested fields plus mini representation fields are returned. Common fields: id, type, name, description, size, created_at, modified_at, path_collection, created_by, modified_by, owned_by, shared_link, parent, item_status, tags, has_collaborations."
+          },
+          "parent__id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the parent folder where the new folder will be created. Use '0' for the root folder (All Files). Example: '123456789'."
+          },
+          "sync_state": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "not_synced",
+              "partially_synced",
+              "synced"
+            ],
+            "description": "Specifies whether a folder should be synced to a user\"s device or not. This is used by Box Sync (discontinued) and is not used by Box Drive."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Request schema for `CreateFolder`"
+      }
+    },
+    {
+      "id": "box.download_file",
+      "tool": "BOX_DOWNLOAD_FILE",
+      "toolName": "box_download_file",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns the contents of a file in binary format.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier that represents a file. The ID for any file can be determined by visiting a file in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/files/123` the `file_id` is `123`."
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The file version ID to download. If not specified, the current (latest) version is downloaded. File versions can be obtained via the 'List all file versions' action. The version ID is the numeric identifier of the specific file version."
+          },
+          "access_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "An optional access token that can be used to pre-authenticate this request, which means that a download link can be shared with a browser or a third party service without them needing to know how to handle the authentication. When using this parameter, please make sure that the access token is sufficiently scoped down to only allow read access to that file and no other files or folders."
+          }
+        },
+        "required": [
+          "file_id"
+        ],
+        "description": "Request schema for `DownloadFile`"
+      }
+    },
+    {
+      "id": "box.find_file_for_shared_link",
+      "tool": "BOX_FIND_FILE_FOR_SHARED_LINK",
+      "toolName": "box_find_file_for_shared_link",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns the file represented by a shared link. A shared file can be represented by a shared link, which can originate within the current enterprise or within another. This endpoint allows an application to retrieve information about a shared file when only given a shared link. The `shared_link_permission_options` array field can be returned by requesting it in the `fields` query parameter.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "boxapi": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Header value in the format `shared_link=<URL>&shared_link_password=<PASSWORD>`. If not provided, it will be constructed from `shared_link` and `shared_link_password` when available. Provide either this header or `shared_link`."
+          },
+          "shared_link": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The shared link URL to the item (e.g., `https://app.box.com/s/abcdef`). Used to authenticate the request via the `boxapi` header. Provide either this field or `boxapi`."
+          },
+          "shared_link_password": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Password for the shared link, if the link is password-protected."
+          }
+        },
+        "description": "Request schema for `FindFileForSharedLink`"
+      }
+    },
+    {
+      "id": "box.get_current_user",
+      "tool": "BOX_GET_CURRENT_USER",
+      "toolName": "box_get_current_user",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves information about the user who is currently authenticated. In the case of a client-side authenticated OAuth 2.0 application this will be the user who authorized the app. In the case of a JWT, server-side authenticated application this will be the service account that belongs to the application by default. Use the `As-User` header to change who this API call is made on behalf of.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested."
+          }
+        },
+        "description": "Request schema for `GetCurrentUser`"
+      }
+    },
+    {
+      "id": "box.get_file_information",
+      "tool": "BOX_GET_FILE_INFORMATION",
+      "toolName": "box_get_file_information",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the details about a file.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of attributes to include in the response (e.g., 'name,size,created_at,modified_at'). This can be used to request fields that are not normally returned in a standard response. When specified, only the requested fields plus the base fields (id, type, etag) are returned. Common fields include: name, size, description, created_at, modified_at, path_collection, parent, sha1, shared_link, item_status, file_version."
+          },
+          "file_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier that represents a file. The ID for any file can be determined by visiting a file in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/files/123` the `file_id` is `123`."
+          }
+        },
+        "required": [
+          "file_id"
+        ],
+        "description": "Request schema for `GetFileInformation`"
+      }
+    },
+    {
+      "id": "box.get_folder",
+      "tool": "BOX_GET_FOLDER",
+      "toolName": "box_get_folder",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves details for a folder, including the first 100 entries in the folder. Passing `sort`, `direction`, `offset`, and `limit` parameters in query allows you to manage the list of returned [folder items](r://folder--full#param-item-collection). To fetch more items within the folder, use the [Get items in a folder](e://get-folders-id-items) endpoint.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "date",
+              "id",
+              "name",
+              "size"
+            ],
+            "description": "Defines the **second** attribute by which items are sorted. The folder type affects the way the items are sorted: * **Standard folder**: Items are always sorted by their `type` first, with folders listed before files, and files listed before web links. * **Root folder**: This parameter is not supported for marker-based pagination on the root folder (the folder with an `id` of `0`)."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "The maximum number of items to return per page."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "The offset of the item at which to begin the response. Queries with offset parameter value exceeding 10000 will be rejected with a 400 response."
+          },
+          "direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "description": "The direction to sort results in. This can be either in alphabetical ascending (`ASC`) or descending (`DESC`) order."
+          },
+          "folder_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier that represent a folder. The ID for any folder can be determined by visiting this folder in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/folder/123` the `folder_id` is `123`. The root folder of a Box account is always represented by the ID `0`."
+          }
+        },
+        "required": [
+          "folder_id"
+        ],
+        "description": "Request schema for `GetFolder`"
+      }
+    },
+    {
+      "id": "box.list_file_comments",
+      "tool": "BOX_LIST_FILE_COMMENTS",
+      "toolName": "box_list_file_comments",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of comments for a file.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "The maximum number of items to return per page."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "The offset of the item at which to begin the response. Queries with offset parameter value exceeding 10000 will be rejected with a 400 response."
+          },
+          "file_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier that represents a file. The ID for any file can be determined by visiting a file in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/files/123` the `file_id` is `123`."
+          }
+        },
+        "required": [
+          "file_id"
+        ],
+        "description": "Request schema for `ListFileComments`"
+      }
+    },
+    {
+      "id": "box.list_items_in_folder",
+      "tool": "BOX_LIST_ITEMS_IN_FOLDER",
+      "toolName": "box_list_items_in_folder",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a page of items in a folder. These items can be files, folders, and web links. To request more information about the folder itself, like its size, use the [Get a folder](#get-folders-id) endpoint instead.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "date",
+              "id",
+              "name",
+              "size"
+            ],
+            "description": "Defines the **second** attribute by which items are sorted. The folder type affects the way the items are sorted: * **Standard folder**: Items are always sorted by their `type` first, with folders listed before files, and files listed before web links. * **Root folder**: This parameter is not supported for marker-based pagination on the root folder (the folder with an `id` of `0`)."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "The maximum number of items to return per page."
+          },
+          "marker": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Defines the position marker at which to begin returning results. This is used when paginating using marker-based pagination. This requires `usemarker` to be set to `true`."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "The offset of the item at which to begin the response. Queries with offset parameter value exceeding 10000 will be rejected with a 400 response."
+          },
+          "direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "description": "The direction to sort results in. This can be either in alphabetical ascending (`ASC`) or descending (`DESC`) order."
+          },
+          "folder_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier that represent a folder. The ID for any folder can be determined by visiting this folder in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/folder/123` the `folder_id` is `123`. The root folder of a Box account is always represented by the ID `0`."
+          },
+          "usemarker": {
+            "type": "boolean",
+            "description": "Specifies whether to use marker-based pagination instead of offset-based pagination. Only one pagination method can be used at a time. By setting this value to true, the API will return a `marker` field that can be passed as a parameter to this endpoint to get the next page of the response."
+          }
+        },
+        "required": [
+          "folder_id"
+        ],
+        "description": "Request schema for `ListItemsInFolder`"
+      }
+    },
+    {
+      "id": "box.list_recently_accessed_items",
+      "tool": "BOX_LIST_RECENTLY_ACCESSED_ITEMS",
+      "toolName": "box_list_recently_accessed_items",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns information about the recent items accessed by a user, either in the last 90 days or up to the last 1000 items accessed.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "The maximum number of items to return per page."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested."
+          },
+          "marker": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Defines the position marker at which to begin returning results. This is used when paginating using marker-based pagination. This requires `usemarker` to be set to `true`."
+          }
+        },
+        "description": "Request schema for `ListRecentlyAccessedItems`"
+      }
+    },
+    {
+      "id": "box.search_for_content",
+      "tool": "BOX_SEARCH_FOR_CONTENT",
+      "toolName": "box_search_for_content",
+      "lane": "read",
+      "effect": "read",
+      "description": "Searches for files, folders, web links, and shared files across the users content or across the entire enterprise.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "mdfilters[].filters": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "modified_at",
+              "relevance"
+            ],
+            "description": "Defines the order in which search results are returned. This API defaults to returning items by relevance unless this parameter is explicitly specified. * `relevance` (default) returns the results sorted by relevance to the query search term. The relevance is based on the occurrence of the search term in the items name, description, content, and additional properties. * `modified_at` returns the results ordered in descending order by date at which the item was last modified."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "file",
+              "folder",
+              "web_link"
+            ],
+            "description": "Limits the search results to any items of this type. This parameter only takes one value. By default the API returns items that match any of these types. * `file` - Limits the search results to files * `folder` - Limits the search results to folders * `web_link` - Limits the search results to web links, also known as bookmarks"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Defines the maximum number of items to return as part of a page of results."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The string to search for. REQUIRED unless 'mdfilters' is provided. Matched against item names, descriptions, text content, and other fields. Supports operators: \"\" (exact match), AND, OR, NOT (uppercase only)."
+          },
+          "scope": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "enterprise_content",
+              "user_content"
+            ],
+            "description": "Limits the search results to either the files that the user has access to, or to files available to the entire enterprise. The scope defaults to `user_content`, which limits the search results to content that is available to the currently authenticated user. The `enterprise_content` can be requested by an admin through our support channels."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "The offset of the item at which to begin the response. Queries with offset parameter value exceeding 10000 will be rejected with a 400 response."
+          },
+          "direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "description": "Defines the direction in which search results are ordered. This API defaults to returning items in descending (`DESC`) order unless this parameter is explicitly specified. When results are sorted by `relevance` the ordering is locked to returning items in descending order of relevance, and this parameter is ignored."
+          },
+          "mdfilters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "scope": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "enum": [
+                    "enterprise",
+                    "enterprise_{enterprise_id}",
+                    "global"
+                  ],
+                  "description": "Specifies the scope of the template to filter search results by. This will be `enterprise_{enterprise_id}` for templates defined for use in this enterprise, and `global` for general templates that are available to all enterprises using Box."
+                },
+                "templateKey": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The key of the template used to filter search results. In many cases the template key is automatically derived of its display name, for example `Contract Template` would become `contractTemplate`. In some cases the creator of the template will have provided its own template key. Please [list the templates for an enterprise][list], or get all instances on a [file][file] or [folder][folder] to inspect a template\"s key."
+                }
+              },
+              "description": "Request schema for `SearchForContentmdfilters`"
+            },
+            "maxItems": 100,
+            "description": "Metadata filters to limit search results. REQUIRED unless 'query' is provided. A list specifying exactly one metadata template to filter by."
+          },
+          "size_range": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "description": "Limits the search results to any items with a size within a given file size range. This applied to files and folders. Size ranges are defined as comma separated list of a lower and upper byte size limit (inclusive). The upper and lower bound can be omitted to create open ranges."
+          },
+          "content_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "comments",
+                "description",
+                "file_content",
+                "name",
+                "tag"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Limits the search results to any items that match the search query for a specific part of the file, for example the file description. Content types are defined as a comma separated lists of Box recognized content types. The allowed content types are as follows. * `name` - The name of the item, as defined by its `name` field. * `description` - The description of the item, as defined by its `description` field. * `file_content` - The actual content of the file."
+          },
+          "trash_content": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "all_items",
+              "non_trashed_only",
+              "trashed_only"
+            ],
+            "description": "Determines if the search should look in the trash for items. By default, this API only returns search results for items not currently in the trash (`non_trashed_only`). * `trashed_only` - Only searches for items currently in the trash * `non_trashed_only` - Only searches for items currently not in the trash * `all_items` - Searches for both trashed and non-trashed items."
+          },
+          "owner_user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Limits the search results to any items that are owned by the given list of owners, defined as a list of comma separated user IDs. The items still need to be owned or shared with the currently authenticated user for them to show up in the search results. If the user does not have access to any files owned by any of the users an empty result set will be returned."
+          },
+          "file_extensions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Limits the search results to any files that match any of the provided file extensions. This list is a comma-separated list of file extensions without the dots."
+          },
+          "created_at_range": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Limits the search results to any items created within a given date range. Date ranges are defined as comma separated RFC3339 timestamps. If the the start date is omitted (`,2014-05-17T13:35:01-07:00`) anything created before the end date will be returned. If the end date is omitted (`2014-05-15T13:35:01-07:00,`) the current date will be used as the end date instead."
+          },
+          "deleted_at_range": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Limits the search results to any items deleted within a given date range. Date ranges are defined as comma separated RFC3339 timestamps. If the the start date is omitted (`2014-05-17T13:35:01-07:00`), anything deleted before the end date will be returned. If the end date is omitted (`2014-05-15T13:35:01-07:00`), the current date will be used as the end date instead. The `trash_content` parameter needs to be set to `trashed_only`."
+          },
+          "deleted_user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Limits the search results to items that were deleted by the given list of users, defined as a list of comma separated user IDs. The `trash_content` parameter needs to be set to `trashed_only`. If searching in trash is not performed, an empty result set is returned. The items need to be owned or shared with the currently authenticated user for them to show up in the search results. If the user does not have access to any files owned by any of the users, an empty result set is returned."
+          },
+          "updated_at_range": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Limits the search results to any items updated within a given date range. Date ranges are defined as comma separated RFC3339 timestamps. If the start date is omitted (`,2014-05-17T13:35:01-07:00`) anything updated before the end date will be returned. If the end date is omitted (`2014-05-15T13:35:01-07:00,`) the current date will be used as the end date instead."
+          },
+          "ancestor_folder_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Limits the search results to items within the given list of folders, defined as a comma separated lists of folder IDs. Search results will also include items within any subfolders of those ancestor folders. The folders still need to be owned or shared with the currently authenticated user. If the folder is not accessible by this user, or it does not exist, a `HTTP 404` error code will be returned instead."
+          },
+          "recent_updater_user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Limits the search results to any items that have been updated by the given list of users, defined as a list of comma separated user IDs. The items still need to be owned or shared with the currently authenticated user for them to show up in the search results. If the user does not have access to any files owned by any of the users an empty result set will be returned. This feature only searches back to the last 10 versions of an item."
+          },
+          "include_recent_shared_links": {
+            "type": "boolean",
+            "description": "Defines whether the search results should include any items that the user recently accessed through a shared link. When this parameter has been set to true, the format of the response of this API changes to return a list of [Search Results with Shared Links](r://search_results_with_shared_links)"
+          }
+        },
+        "description": "Request schema for `SearchForContent`"
+      }
+    },
+    {
+      "id": "box.update_folder",
+      "tool": "BOX_UPDATE_FOLDER",
+      "toolName": "box_update_folder",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates a folder. This can be also be used to move the folder, create shared links, update collaborations, and more.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Box: Update folder",
+      "withheldArguments": {
+        "parent": "moves the record to another container",
+        "shared_link": "changes sharing, visibility, permissions, membership, or who acts",
+        "folder_upload_email": "names an address a message goes to or comes from",
+        "can_non_owners_invite": "changes sharing, visibility, permissions, membership, or who acts",
+        "can_non_owners_view_collaborators": "changes sharing, visibility, permissions, membership, or who acts",
+        "is_collaboration_restricted_to_enterprise": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The optional new name for this folder."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "The tags for this item. These tags are shown in the Box web app and mobile apps next to an item. To add or remove a tag, retrieve the item\"s current tags, modify them, and then update this field. There is a limit of 100 tags per item, and 10,000 unique tags per enterprise."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested."
+          },
+          "folder_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier that represent a folder. The ID for any folder can be determined by visiting this folder in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/folder/123` the `folder_id` is `123`. The root folder of a Box account is always represented by the ID `0`."
+          },
+          "sync_state": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "synced",
+              "not_synced",
+              "partially_synced"
+            ],
+            "description": "Specifies whether a folder should be synced to a user\"s device or not. This is used by Box Sync (discontinued) and is not used by Box Drive."
+          },
+          "collections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The unique identifier for this object"
+                },
+                "type": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The type for this object"
+                }
+              },
+              "description": "Request schema for `UpdateFoldercollections`"
+            },
+            "maxItems": 100,
+            "description": "An array of collections to make this folder a member of. Currently we only support the `favorites` collection. To get the ID for a collection, use the [List all collections][1] endpoint. Passing an empty array `[]` or `null` will remove the folder from all collections. [1]: e://get-collections"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The optional description of this folder"
+          }
+        },
+        "required": [
+          "folder_id"
+        ],
+        "description": "Request schema for `UpdateFolder`"
+      }
+    }
+  ]
+}

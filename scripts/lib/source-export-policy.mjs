@@ -282,6 +282,10 @@ export const allowedBinaryFiles = new Map([
   [exportPath('assets', 'connectors', 'read-ai.png'), 'fe8f0534b7675156e58b7985bf3a6c3ca5337dcac444235b022183cd57f4a69c'],
   [exportPath('assets', 'connectors', 'attio.png'), '9264485c51b8be828781a2ee9e14a596552d0e9a4371d53e215fa990e5dbac29'],
   [exportPath('assets', 'connectors', 'apollo.png'), '25ae17edffd848672eceaca705a64de7e7e5226db6d81a8a89208c8def07064f'],
+  [exportPath('assets', 'connectors', 'googlebigquery.png'), '3c8e74ebbca6314d4ba786450414f9a1e695fe7a0baa9588ea95040d6ed9ddfa'],
+  [exportPath('assets', 'connectors', 'mailchimp.png'), '794278c5093177663748e4a179a7eedf815063f5ccfe0e86b42fee3a5a907901'],
+  [exportPath('assets', 'connectors', 'pipedrive.png'), '32005547b7dae4c70db57eb3541de15e8a20ab020ac501aef84e3fc8c3566a7b'],
+  [exportPath('assets', 'connectors', 'quickbooks.png'), 'fbb9a774485736d868563505d849ce6fb080cf6019bc0161402f3df7f4616095'],
   [
     exportPath('assets', 'chickpea-mark.png'),
     '84864d6d3323f7d9d5491a139c0e9e0b0d92b1e076c742d5f4d50e75148b65fb',

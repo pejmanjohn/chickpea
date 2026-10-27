@@ -334,12 +334,47 @@ export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
     "svg": "<svg aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320.000000 320.000000\" ><g transform=\"translate(0.000000,320.000000) scale(0.100000,-0.100000)\" fill=\"#0052CC\" stroke=\"none\"><path d=\"M399 2713 c-33 -14 -51 -51 -44 -91 2 -15 7 -43 10 -62 3 -19 8 -46 10 -60 3 -14 7 -41 10 -60 3 -19 7 -46 10 -60 3 -14 8 -45 10 -68 3 -24 7 -47 9 -50 2 -4 7 -34 11 -67 3 -32 8 -62 10 -65 2 -4 7 -29 11 -56 3 -27 7 -56 9 -64 1 -8 6 -35 10 -60 4 -25 9 -54 11 -65 2 -11 11 -63 19 -115 9 -52 17 -104 19 -115 2 -11 7 -40 11 -65 4 -25 9 -54 11 -65 2 -11 7 -40 10 -65 3 -25 7 -52 9 -60 3 -8 7 -33 10 -55 3 -22 8 -49 10 -61 2 -11 7 -45 11 -75 3 -30 8 -57 10 -60 2 -4 8 -38 14 -75 5 -38 12 -80 14 -94 3 -14 8 -38 11 -55 3 -16 8 -48 10 -70 3 -22 12 -78 20 -125 8 -47 17 -98 20 -115 11 -65 17 -81 34 -102 11 -13 31 -27 45 -33 16 -6 330 -8 853 -6 455 2 833 4 840 5 7 0 21 11 32 22 18 19 23 38 36 129 2 14 11 68 20 120 9 52 18 106 20 120 2 14 18 111 35 215 17 105 33 204 36 220 2 17 9 55 14 85 18 98 91 554 95 595 3 22 7 51 10 65 8 38 13 70 20 120 3 25 8 52 10 60 2 8 6 33 10 55 6 44 5 38 35 211 25 153 25 167 -3 200 l-23 27 -1188 1 c-921 1 -1194 -1 -1217 -11z m1550 -966 c-21 -122 -40 -233 -42 -247 -3 -14 -12 -74 -22 -135 -10 -60 -22 -114 -26 -119 -6 -7 -343 -12 -490 -7 -25 1 -27 6 -43 89 -9 48 -19 98 -21 112 -3 14 -7 39 -10 55 -3 17 -8 41 -10 55 -8 37 -14 68 -25 130 -12 66 -18 97 -25 130 -3 14 -8 39 -11 55 -2 17 -9 44 -13 62 -6 22 -6 33 2 36 7 2 183 4 393 5 l380 0 -37 -221z\"/></g></svg>",
     "full": true
   },
+  // Official Box mark from Box's developer documentation, embedded for self-hosted/offline rendering.
+  // Source: https://developer.box.com/ (retrieved 2026-10-27).
+  // Asset: https://mintlify.s3.us-west-1.amazonaws.com/box/images/sidebar/box.svg
+  "box": {
+    "svg": "<svg aria-hidden=\"true\" width=\"92\" height=\"92\" viewBox=\"0 0 92 92\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M22.3734 0.657259H69.2555C81.249 0.657259 90.9717 10.3799 90.9717 22.3735V69.2548C90.9717 81.2484 81.249 90.971 69.2555 90.971H22.3734C10.3799 90.971 0.657197 81.2484 0.657197 69.2548V22.3735C0.657197 10.3799 10.3799 0.657259 22.3734 0.657259Z\" fill=\"#0061D5\" stroke-width=\"1.31451\" stroke=\"#0061D5\"/><path d=\"M20.1249 31.2463C21.25 31.2463 22.1643 32.1433 22.1847 33.2638V41.9357C23.9109 40.6425 26.0503 39.877 28.366 39.877C32.3097 39.877 35.7375 42.0925 37.4652 45.3454C39.1923 42.0925 42.6218 39.877 46.5628 39.877C52.2488 39.877 56.8613 44.4841 56.8613 50.1684C56.8613 55.8554 52.2488 60.4636 46.5628 60.4636C42.6218 60.4636 39.1923 58.2461 37.4652 54.9963C35.7375 58.2461 32.3097 60.4636 28.366 60.4636C22.7331 60.4636 18.1616 55.9469 18.0709 50.34H18.0686V33.2638C18.0944 32.1433 18.9998 31.2463 20.1249 31.2463ZM69.2642 40.8081C70.0221 39.9279 71.3962 39.754 72.3756 40.4326C73.3539 41.1055 73.557 42.3719 72.8485 43.279L67.2437 50.155L72.8417 57.0177C73.5516 57.9273 73.3475 59.1901 72.3692 59.8657C71.3898 60.5415 70.0159 60.3695 69.2573 59.488L64.4423 53.5898L59.6245 59.488C58.8745 60.3695 57.4918 60.5415 56.5153 59.8657C55.5389 59.1901 55.3348 57.9273 56.0469 57.0177H56.045L61.6396 50.155L56.045 43.279H56.0469C55.3348 42.3719 55.5389 41.1061 56.5153 40.4326C57.4918 39.754 58.8745 39.9279 59.6245 40.8081V40.8066L64.4423 46.713L69.2642 40.8066V40.8081ZM46.5628 43.9978C43.15 43.9978 40.3828 46.7604 40.3828 50.1684C40.3828 53.5794 43.15 56.3425 46.5628 56.3425C49.9742 56.3425 52.74 53.5794 52.74 50.1684C52.74 46.7604 49.9742 43.9978 46.5628 43.9978ZM28.366 43.9978C24.9539 43.9978 22.1847 46.7604 22.1847 50.1698C22.1847 53.5801 24.9539 56.3425 28.366 56.3425C31.7777 56.3425 34.5411 53.5794 34.5411 50.1684C34.5411 46.7604 31.7777 43.9978 28.366 43.9978Z\" fill-rule=\"evenodd\" clip-rule=\"evenodd\" fill=\"white\"/></svg>",
+    "full": true
+  },
+  // Official Dropbox glyph, embedded for self-hosted/offline rendering.
+  // Source: https://www.dropbox.com/ (retrieved 2026-10-27).
+  // Asset: https://fjord.dropboxstatic.com/warp/conversion/dropbox/warp/icons/Dropbox-logo-nav.svg
+  "dropbox": {
+    "svg": "<svg aria-hidden=\"true\" width=\"34\" height=\"34\" viewBox=\"0 0 34 34\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><rect x=\"1\" y=\"1\" width=\"32\" height=\"32\" rx=\"7.31429\" fill=\"white\"/><path d=\"M11.925 8.5L6.85059 11.6875L11.925 14.875L17.0003 11.6875L22.0747 14.875L27.1491 11.6875L22.0747 8.5L17.0003 11.6875L11.925 8.5Z\" fill=\"#0061FE\"/><path d=\"M11.925 21.2501L6.85059 18.0626L11.925 14.875L17.0003 18.0626L11.925 21.2501Z\" fill=\"#0061FE\"/><path d=\"M17.0003 18.0626L22.0747 14.875L27.1491 18.0626L22.0747 21.2501L17.0003 18.0626Z\" fill=\"#0061FE\"/><path d=\"M17.0003 25.5L11.925 22.3125L17.0003 19.125L22.0747 22.3125L17.0003 25.5Z\" fill=\"#0061FE\"/><rect x=\"0.542857\" y=\"0.542857\" width=\"32.9143\" height=\"32.9143\" rx=\"7.77143\" stroke=\"#A69171\" stroke-opacity=\"0.2\" stroke-width=\"0.914286\"/></svg>",
+    "full": true
+  },
   // Official Microsoft Excel product icon from the Fluent UI brand icon set. Embedded for self-hosted/offline rendering.
   // Source: https://developer.microsoft.com/en-us/fluentui (retrieved 2026-10-27).
   // Asset: https://res-1.cdn.office.net/files/fabric-cdn-prod_20230815.002/assets/brand-icons/product/svg/excel_48x1.svg
   "excel": {
     "svg": "<svg aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 48 48\"><defs><linearGradient id=\"excel-a\" x1=\"5.822\" y1=\"11.568\" x2=\"20.178\" y2=\"36.432\" gradientUnits=\"userSpaceOnUse\"><stop offset=\"0\" stop-color=\"#18884f\"/><stop offset=\".5\" stop-color=\"#117e43\"/><stop offset=\"1\" stop-color=\"#0b6631\"/></linearGradient></defs><path d=\"M29 23l-17-3v22.167A1.833 1.833 0 0 0 13.833 44h29.334A1.833 1.833 0 0 0 45 42.167V34z\" fill=\"#185c37\"/><path d=\"M29 4H13.833A1.833 1.833 0 0 0 12 5.833V14l17 10 9 3 7-3V14z\" fill=\"#21a366\"/><path fill=\"#107c41\" d=\"M12 14h17v10H12z\"/><path fill=\"none\" d=\"M0 0h48v48H0z\"/><path d=\"M24.167 12H12v25h12.167A1.839 1.839 0 0 0 26 35.167V13.833A1.839 1.839 0 0 0 24.167 12z\" opacity=\".1\"/><path d=\"M23.167 13H12v25h11.167A1.839 1.839 0 0 0 25 36.167V14.833A1.839 1.839 0 0 0 23.167 13z\" opacity=\".2\"/><path d=\"M23.167 13H12v23h11.167A1.839 1.839 0 0 0 25 34.167V14.833A1.839 1.839 0 0 0 23.167 13z\" opacity=\".2\"/><path d=\"M22.167 13H12v23h10.167A1.839 1.839 0 0 0 24 34.167V14.833A1.839 1.839 0 0 0 22.167 13z\" opacity=\".2\"/><rect x=\"2\" y=\"13\" width=\"22\" height=\"22\" rx=\"1.833\" fill=\"url(#excel-a)\"/><path d=\"M7.677 29.958l3.856-5.975L8 18.041h2.842l1.928 3.8c.178.361.3.629.366.806h.025q.19-.432.4-.839l2.061-3.765h2.609l-3.623 5.907 3.715 6.008h-2.776l-2.227-4.171a3.5 3.5 0 0 1-.266-.557h-.033a2.638 2.638 0 0 1-.258.54l-2.293 4.188z\" fill=\"#fff\"/><path d=\"M43.167 4H29v10h16V5.833A1.833 1.833 0 0 0 43.167 4z\" fill=\"#33c481\"/><path fill=\"#107c41\" d=\"M29 24h16v10H29z\"/></svg>",
     "full": true
+  },
+  // Official Figma site icon, embedded for self-hosted/offline rendering.
+  // Source: https://www.figma.com/ (retrieved 2026-10-27).
+  // Asset: https://static.figma.com/app/icon/2/favicon.svg
+  "figma": {
+    "svg": "<svg aria-hidden=\"true\" width=\"64\" height=\"64\" viewBox=\"0 0 64 64\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M11.9999 52.0001C11.9999 46.4772 16.477 42.0001 21.9999 42.0001H31.9999V52.0001C31.9999 57.5229 27.5227 62.0001 21.9999 62.0001V62.0001C16.477 62.0001 11.9999 57.5229 11.9999 52.0001V52.0001Z\" fill=\"#24CB71\"/><path d=\"M32 2V22H42C47.5228 22 52 17.5228 52 12V12C52 6.47715 47.5228 2 42 2L32 2Z\" fill=\"#FF7237\"/><circle cx=\"41.9166\" cy=\"31.9999\" r=\"10\" fill=\"#00B6FF\"/><path d=\"M11.9999 11.9999C11.9999 17.5228 16.477 21.9999 21.9999 21.9999L31.9999 21.9999L31.9999 1.99994L21.9999 1.99994C16.477 1.99994 11.9999 6.47709 11.9999 11.9999V11.9999Z\" fill=\"#FF3737\"/><path d=\"M11.9999 32.0001C11.9999 37.5229 16.477 42.0001 21.9999 42.0001H31.9999L31.9999 22.0001L21.9999 22.0001C16.477 22.0001 11.9999 26.4772 11.9999 32.0001V32.0001Z\" fill=\"#874FFF\"/></svg>",
+    "full": true
+  },
+  // Official Google Cloud BigQuery product icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://cloud.google.com/bigquery (retrieved 2026-10-27).
+  // Asset: https://www.gstatic.com/cloud/images/navigation/bigquery.png
+  "googlebigquery": {
+    "svg": "<img src=\"/connectors/googlebigquery.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Mailchimp touch icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://mailchimp.com/ (retrieved 2026-10-27).
+  // Asset: https://digitalasset.intuit.com/render/content/dam/intuit/mc-fe/en_us/images/mailchimp-favicons/apple-touch-icon.png
+  "mailchimp": {
+    "svg": "<img src=\"/connectors/mailchimp.png\" alt=\"\">",
+    "raster": true
   },
   // Official Microsoft OneDrive product icon from the Fluent UI brand icon set. Embedded for self-hosted/offline rendering.
   // Source: https://developer.microsoft.com/en-us/fluentui (retrieved 2026-10-27).
@@ -361,6 +396,20 @@ export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
   "pagerduty": {
     "svg": "<svg aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 450 450\"><path fill=\"#04ac38\" d=\"M0 0h450v450H0z\"/><path fill=\"#fff\" d=\"M127 297h45v83h-45zM297 86c-24-13-41-15-81-15h-89v187h89c35 0 62-2 85-18 26-17 39-45 39-77 0-35-16-63-43-77Zm-71 132h-54V110h51c47-1 70 16 70 53 0 40-29 55-67 55Z\"/></svg>",
     "full": true
+  },
+  // Official Pipedrive site icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://www.pipedrive.com/ (retrieved 2026-10-27).
+  // Asset: https://cdn.cmh-1.pipedriveassets.com/www-main-renderer/_next/static/media/favicon-196x196.98c71512.png
+  "pipedrive": {
+    "svg": "<img src=\"/connectors/pipedrive.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official QuickBooks touch icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://quickbooks.intuit.com/ (retrieved 2026-10-27).
+  // Asset: https://quickbooks.intuit.com/cas/dam/IMAGE/A7mjJ5rpg/apple-touch-icon-196x196.png
+  "quickbooks": {
+    "svg": "<img src=\"/connectors/quickbooks.png\" alt=\"\">",
+    "raster": true
   },
   // Official Salesforce cloud logo. Embedded for self-hosted/offline rendering.
   // Source: https://www.salesforce.com/ (retrieved 2026-10-27).
