@@ -22,7 +22,7 @@ import { SqliteSettingsStore, type SettingsPatch } from '../src/config/settings-
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
-import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
+import { MANAGED_CONNECTOR_CATALOG, composioManifest } from '../src/connections/catalog/index.ts';
 import {
   ComposioPlatformConfigurationError,
   ComposioPlatformReconciliationRequiredError,
@@ -118,9 +118,14 @@ class FakeComposioProject {
         },
         create: async (toolkit) => {
           this.creates += 1;
-          const id = `ac_${toolkit}_platform`;
-          this.configs.set(toolkit, [...(this.configs.get(toolkit) ?? []), compatible(toolkit, id)]);
-          return { id, authScheme: 'OAUTH2', isComposioManaged: true, toolkit };
+          const created = compatible(toolkit, `ac_${toolkit}_platform`);
+          this.configs.set(toolkit, [...(this.configs.get(toolkit) ?? []), created]);
+          return {
+            id: created.id,
+            authScheme: created.authScheme!,
+            isComposioManaged: created.isComposioManaged!,
+            toolkit,
+          };
         },
         get: async (id) => {
           const value = [...this.configs.values()].flat().find((item) => item.id === id);
@@ -180,14 +185,16 @@ class FakeComposioProject {
 }
 
 function compatible(toolkit: string, id: string): ComposioAuthConfigLike {
+  const apiKey = composioManifest(toolkit)?.auth.mode === 'api_key';
   return {
     id,
     name: `Chickpea default — ${toolkit} v1`,
     toolkit: { slug: toolkit },
     status: 'ENABLED',
+    authScheme: apiKey ? 'API_KEY' : 'OAUTH2',
     credentials: {},
     restrictToFollowingTools: [],
-    isComposioManaged: true,
+    isComposioManaged: !apiKey,
     createdAt: '2026-10-02T00:00:00.000Z',
     toolAccessConfig: { toolsAvailableForExecution: [], toolsForConnectedAccountCreation: [] },
   };

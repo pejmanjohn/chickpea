@@ -11,7 +11,7 @@ import {
   type ComposioConfigurationDependencies,
 } from '../src/config/composio-settings.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
-import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
+import { MANAGED_CONNECTOR_CATALOG, composioManifest } from '../src/connections/catalog/index.ts';
 import {
   ComposioProjectKeyValidationError,
   ComposioSetupInProgressError,
@@ -263,6 +263,50 @@ test('setup creates missing defaults, retains partial successes, and persists sa
   });
 });
 
+test('API-key connectors get a credential-free custom auth config and never reuse a managed one', async () => {
+  await withDependencies(async ({ dependencies }) => {
+    await saveStoredComposioProjectKey('ak_api_key_toolkit_setup', dependencies);
+    const configs = new Map<string, ComposioAuthConfigLike[]>();
+    for (const { toolkit } of MANAGED_CONNECTOR_CATALOG.list()) {
+      if (toolkit !== 'freshdesk') configs.set(toolkit, [compatible(toolkit, `ac_${toolkit}_default`)]);
+    }
+    configs.set('freshdesk', [{
+      ...compatible('freshdesk', 'ac_freshdesk_managed_lookalike'),
+      authScheme: 'OAUTH2',
+      isComposioManaged: true,
+    }]);
+    const created: Array<{ toolkit: string; options: Record<string, unknown> }> = [];
+    const listQueries: Array<Record<string, unknown> | undefined> = [];
+    const client = setupClient(configs, (toolkit, options) => created.push({ toolkit, options }));
+    const list = client.authConfigs!.list;
+    client.authConfigs!.list = async (query, requestOptions) => {
+      if (query?.toolkit === 'freshdesk') listQueries.push(query);
+      return list(query, requestOptions);
+    };
+
+    const result = await prepareResolvedComposioManagedAuthConfigs({
+      ...dependencies,
+      createClient: async () => client,
+    });
+
+    assert.equal(result.status, 'ready');
+    assert.deepEqual(created, [{
+      toolkit: 'freshdesk',
+      options: {
+        type: 'use_custom_auth',
+        name: 'Chickpea default — freshdesk v1',
+        authScheme: 'API_KEY',
+        credentials: {},
+      },
+    }]);
+    assert.equal(listQueries.some((query) => query && 'isComposioManaged' in query), false);
+    assert.deepEqual(result.authConfigIds.freshdesk, {
+      read: 'ac_freshdesk_created',
+      write: 'ac_freshdesk_created',
+    });
+  });
+});
+
 test('a partial retry preserves the last verified ID for the failed toolkit', async () => {
   await withDependencies(async ({ dependencies }) => {
     await saveStoredComposioProjectKey('ak_preserve_partial_retry', dependencies);
@@ -311,8 +355,8 @@ test('the create response survives a stale list and prevents duplicate defaults 
           created.set(value.id, { ...value, name: options.name });
           return {
             id: value.id,
-            authScheme: 'OAUTH2',
-            isComposioManaged: true,
+            authScheme: value.authScheme!,
+            isComposioManaged: value.isComposioManaged!,
             toolkit,
           };
         },
@@ -453,14 +497,16 @@ function compatible(
   id: string,
   createdAt = '2026-08-24T00:00:00.000Z',
 ): ComposioAuthConfigLike {
+  const apiKey = composioManifest(toolkit)?.auth.mode === 'api_key';
   return {
     id,
     name: `Chickpea default — ${toolkit} v1`,
     toolkit: { slug: toolkit },
     status: 'ENABLED',
+    authScheme: apiKey ? 'API_KEY' : 'OAUTH2',
     credentials: {},
     restrictToFollowingTools: [],
-    isComposioManaged: true,
+    isComposioManaged: !apiKey,
     createdAt,
     toolAccessConfig: {
       toolsAvailableForExecution: [],
@@ -485,8 +531,14 @@ function setupClient(
       async create(toolkit, options) {
         beforeCreate(toolkit, options);
         const id = `ac_${toolkit}_created`;
-        configs.set(toolkit, [...(configs.get(toolkit) ?? []), compatible(toolkit, id)]);
-        return { id, authScheme: 'OAUTH2', isComposioManaged: true, toolkit };
+        const created = compatible(toolkit, id);
+        configs.set(toolkit, [...(configs.get(toolkit) ?? []), created]);
+        return {
+          id,
+          authScheme: created.authScheme!,
+          isComposioManaged: created.isComposioManaged!,
+          toolkit,
+        };
       },
       async get(id) {
         const value = [...configs.values()].flat().find((item) => item.id === id);

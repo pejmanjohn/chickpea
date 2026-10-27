@@ -8,6 +8,7 @@ import {
 } from '../artifacts.ts';
 import {
   MANAGED_CONNECTOR_CATALOG,
+  composioManifest,
   type ManagedAccessLane,
   type ManagedConnectorDefinition,
   type ManagedProviderAvailability,
@@ -27,6 +28,7 @@ import {
   ManagedAuthorityDeniedError,
   ManagedProviderRequestError,
 } from '../managed-errors.ts';
+import { manifestComposioCapabilities } from './composio/manifest-capabilities.ts';
 import { composioToolkitVersion } from './composio/versions.ts';
 
 interface ComposioSessionLike {
@@ -48,6 +50,7 @@ export interface ComposioAuthConfigLike {
   name: string;
   toolkit: { slug: string };
   status: string;
+  authScheme?: string | undefined;
   credentials?: Record<string, unknown> | undefined;
   restrictToFollowingTools?: string[] | undefined;
   isComposioManaged?: boolean | undefined;
@@ -80,6 +83,11 @@ export interface ComposioClientLike {
       options: {
         type: 'use_composio_managed_auth';
         name: string;
+      } | {
+        type: 'use_custom_auth';
+        name: string;
+        authScheme: 'API_KEY';
+        credentials: Record<string, never>;
       },
       requestOptions?: { signal?: AbortSignal },
     ): Promise<{
@@ -185,6 +193,10 @@ interface ComposioCapability {
     data: Record<string, unknown>,
     input: Record<string, unknown>,
   ): Record<string, unknown>;
+  beforeDispatch?(
+    input: Record<string, unknown>,
+    read: (tool: string, arguments_: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  ): Promise<void>;
 }
 
 /**
@@ -194,7 +206,10 @@ interface ComposioCapability {
 export const COMPOSIO_REVOKE_FAILED = 'Composio managed connection could not be revoked';
 export const COMPOSIO_KEY_MISSING = 'COMPOSIO_API_KEY is not configured';
 
+const MANIFEST_CAPABILITIES = manifestComposioCapabilities();
+
 const COMPOSIO_CAPABILITIES: Readonly<Record<string, ComposioCapability>> = {
+  ...MANIFEST_CAPABILITIES,
   'gmail.profile.read': {
     toolkit: 'gmail',
     tool: 'GMAIL_GET_PROFILE',
@@ -1506,6 +1521,7 @@ const COMPOSIO_CAPABILITIES: Readonly<Record<string, ComposioCapability>> = {
 };
 
 const AMBIGUOUS_WRITE_CAPABILITIES = new Set([
+  ...Object.keys(MANIFEST_CAPABILITIES).filter((id) => MANIFEST_CAPABILITIES[id]!.write),
   'gmail.drafts.create',
   'gmail.messages.send',
   'calendar.events.create',
@@ -1904,6 +1920,20 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
           );
         }
       }
+      const manifest = composioManifest(input.policy.toolkit);
+      if (manifest) {
+        const validation = COMPOSIO_CAPABILITIES[manifest.validationCapability]!;
+        const client = await this.client(apiKey);
+        const result = await executeComposioTool(client, input.policy, {
+          toolkit: validation.toolkit,
+          tool: validation.tool,
+          arguments: {},
+          signal,
+        });
+        if (result.error) {
+          throw definiteManagedValidationFailure(`${manifest.label} account verification failed`, 1);
+        }
+      }
       if (input.policy.toolkit === 'notion') {
         const search = COMPOSIO_CAPABILITIES['notion.content.search'];
         if (!search) {
@@ -2048,6 +2078,27 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         });
       }
       if (!toolArguments) throw new Error('Composio capability arguments are unavailable');
+      try {
+        await capability.beforeDispatch?.(toolArguments, async (tool, arguments_) => {
+          const result = await executeComposioTool(client, input.policy, {
+            toolkit: capability.toolkit, tool, arguments: arguments_, signal,
+          });
+          if (result.error) throw new Error('lookup failed');
+          return result.data;
+        });
+      } catch (error) {
+        throw new ManagedProviderRequestError('validation_failed',
+          error instanceof Error ? error.message : 'Managed connection precondition failed',
+          {
+            providerTool: capability.tool,
+            providerVersion,
+            remoteCallCount,
+            providerToolCallCount,
+            capabilityToolDispatched: false,
+            definiteFailure: true,
+          },
+        );
+      }
       dispatchingCapability = true;
       let result: {
         data: Record<string, unknown>;

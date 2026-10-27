@@ -1,5 +1,6 @@
 import type { GoogleWorkspaceService } from './api-oauth-policy.ts';
 import { BUGSNAG_MCP_SERVER_URL } from './bugsnag-policy.ts';
+import { MANAGED_CONNECTOR_CATALOG, composioManifest } from '../connections/catalog/index.ts';
 import {
   META_ADS_OAUTH_DEFAULT_SCOPE,
   META_ADS_OAUTH_MANAGEMENT_SCOPE,
@@ -229,6 +230,19 @@ export const MANAGED_CONNECTOR_PRESETS: ManagedConnectorPreset[] = [
     accent: '#FF0000',
     logoId: 'youtube',
   },
+  ...MANAGED_CONNECTOR_CATALOG.list().flatMap(({ id, toolkit }) => {
+    const manifest = composioManifest(toolkit);
+    return manifest ? [{
+      id,
+      managedToolkit: toolkit,
+      providerId: toolkit,
+      name: manifest.label,
+      description: manifest.description,
+      category: manifest.preset.category,
+      accent: manifest.preset.accent,
+      logoId: toolkit,
+    }] : [];
+  }),
 ];
 
 export const CONNECTOR_PRESETS: ConnectorPreset[] = [

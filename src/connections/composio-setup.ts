@@ -16,6 +16,7 @@ import { deploymentTenancy } from '../config/installation-scope.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import {
   MANAGED_CONNECTOR_CATALOG,
+  composioManifest,
   type ManagedAccessLane,
 } from './catalog/index.ts';
 import {
@@ -32,6 +33,30 @@ const MAX_AUTH_CONFIG_PAGES = 100;
 const AUTH_CONFIG_PAGE_SIZE = 100;
 const AUTH_CONFIG_NAME_SUFFIX = 'v1';
 const LEASE_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+
+/**
+ * API-key toolkits get a custom config with no credentials: Composio's hosted
+ * Connect Link collects each account's key and fields, so Chickpea never sees them.
+ */
+const AUTH_CONFIG_MODES = {
+  managed_oauth: {
+    listQuery: { isComposioManaged: true },
+    create: (name: string) => ({ type: 'use_composio_managed_auth', name } as const),
+    matches: (value: { isComposioManaged?: boolean | undefined }) => value.isComposioManaged === true,
+  },
+  api_key: {
+    listQuery: {},
+    create: (name: string) => ({
+      type: 'use_custom_auth', name, authScheme: 'API_KEY', credentials: {},
+    } as const),
+    matches: (value: { isComposioManaged?: boolean | undefined; authScheme?: string | undefined }) =>
+      value.isComposioManaged !== true && value.authScheme === 'API_KEY',
+  },
+} as const;
+
+function authConfigMode(toolkit: string): (typeof AUTH_CONFIG_MODES)[keyof typeof AUTH_CONFIG_MODES] {
+  return AUTH_CONFIG_MODES[composioManifest(toolkit)?.auth.mode ?? 'managed_oauth'];
+}
 
 interface SetupLease {
   version: 1;
@@ -350,13 +375,10 @@ async function prepareAllToolkits(input: {
         input.signal?.throwIfAborted();
         const created = await authConfigs.create(
           connector.toolkit,
-          {
-            type: 'use_composio_managed_auth',
-            name: defaultAuthConfigName(connector.toolkit),
-          },
+          authConfigMode(connector.toolkit).create(defaultAuthConfigName(connector.toolkit)),
           input.signal ? { signal: input.signal } : undefined,
         );
-        if (isComposioAuthConfigId(created.id) && created.isComposioManaged === true &&
+        if (isComposioAuthConfigId(created.id) && authConfigMode(connector.toolkit).matches(created) &&
             created.toolkit.toLowerCase() === connector.toolkit) {
           selectedId = created.id;
         } else {
@@ -408,7 +430,7 @@ async function listCompatibleConfigs(
   for (let page = 0; page < MAX_AUTH_CONFIG_PAGES; page += 1) {
     const response = await authConfigs.list({
       toolkit,
-      isComposioManaged: true,
+      ...authConfigMode(toolkit).listQuery,
       showDisabled: true,
       limit: AUTH_CONFIG_PAGE_SIZE,
       ...(cursor ? { cursor } : {}),
@@ -429,7 +451,7 @@ function isCompatibleDefault(value: ComposioAuthConfigLike, toolkit: string): bo
     normalizedAuthConfigName(value.name) === normalizedAuthConfigName(defaultAuthConfigName(toolkit)) &&
     value.toolkit.slug.toLowerCase() === toolkit &&
     value.status === 'ENABLED' &&
-    value.isComposioManaged === true &&
+    authConfigMode(toolkit).matches(value) &&
     isEmptyRecord(value.credentials) &&
     isEmptyArray(value.restrictToFollowingTools) &&
     isEmptyArray(value.toolAccessConfig?.toolsAvailableForExecution) &&

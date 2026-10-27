@@ -1,0 +1,3321 @@
+{
+  "toolkit": {
+    "slug": "freshdesk",
+    "name": "Freshdesk",
+    "version": "20260828_00",
+    "description": "Freshdesk provides customer support software with ticketing, knowledge base, and automation features for efficient helpdesk operations and better customer experiences",
+    "managedAuthSchemes": [],
+    "authModes": [
+      {
+        "mode": "API_KEY",
+        "fields": [
+          "subdomain",
+          "generic_api_key"
+        ]
+      }
+    ],
+    "currentUserEndpoint": "https://{{subdomain}}.freshdesk.com/api/v2/account"
+  },
+  "tools": [
+    {
+      "slug": "FRESHDESK_ADD_NOTE_TO_TICKET",
+      "name": "Add Note to Ticket",
+      "description": "Tool to add a private or public note to an existing ticket in Freshdesk. Use when you need to add internal comments or public notes to a ticket. Notes can be private (agent-only) or public, and can include HTML content.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "tickets_and_conversations",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddNoteToTicketRequest",
+        "required": [
+          "ticket_id",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "examples": [
+              "This is a note",
+              "<div>This is an HTML note</div>"
+            ],
+            "description": "The content of the note. Can contain plain text or HTML."
+          },
+          "private": {
+            "type": "boolean",
+            "title": "Private",
+            "default": true,
+            "description": "Indicates whether the note is private (visible only to agents). Default: true"
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "examples": [
+              1120003354576
+            ],
+            "description": "The ID of the user creating the note (useful for posting on behalf of another user)."
+          },
+          "ticket_id": {
+            "type": "integer",
+            "title": "Ticket Id",
+            "examples": [
+              1,
+              110
+            ],
+            "description": "The unique identifier of the ticket to add the note to."
+          },
+          "notify_emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Notify Emails",
+            "examples": [
+              [
+                "agent@company.com"
+              ]
+            ],
+            "description": "Email addresses to notify about the note. IMPORTANT: Only accepts agent email addresses, not external contacts or non-agent users."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_CREATE_ADMIN_GROUP",
+      "name": "Create Admin Group",
+      "description": "Tool to create a new admin-level support agent group in Freshdesk. Use when you need to create groups for organizing support agents and managing ticket routing at the admin level.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "administration_team_access",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateAdminGroupRequest",
+        "required": [
+          "name",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Support Team",
+              "Technical Support Group"
+            ],
+            "description": "The name of the group. Must be unique within the Freshdesk account."
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "examples": [
+              "support_agent_group"
+            ],
+            "description": "The type of group. Must be 'support_agent_group' for creating support agent groups."
+          },
+          "agent_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Agent Ids",
+            "examples": [
+              [
+                158000123456,
+                158000234567
+              ]
+            ],
+            "description": "Array of agent IDs who should be members of this group."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "Primary support team handling customer inquiries"
+            ],
+            "description": "A brief description of the group's purpose and responsibilities."
+          },
+          "escalate_to": {
+            "type": "integer",
+            "title": "Escalate To",
+            "examples": [
+              158000817960
+            ],
+            "description": "ID of the group to which unassigned tickets should be escalated after the specified time period."
+          },
+          "unassigned_for": {
+            "type": "string",
+            "title": "Unassigned For",
+            "examples": [
+              "30m",
+              "1h",
+              "2h",
+              "8h",
+              "1d"
+            ],
+            "description": "Time period after which an unassigned ticket in the group should be escalated. Format examples: '30m', '1h', '2h', '8h', '1d'."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_CREATE_AGENTS",
+      "name": "Create Multiple Agents",
+      "description": "Tool to create multiple agents in Freshdesk in a single bulk operation. Use when you need to add multiple agents at once. This is an asynchronous operation that returns a job_id for tracking the creation status.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "administration_team_access",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateAgentsRequest",
+        "required": [
+          "agents"
+        ],
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "AgentInput",
+              "required": [
+                "email"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "title": "Name",
+                  "examples": [
+                    "John Doe"
+                  ],
+                  "description": "Full name of the agent"
+                },
+                "email": {
+                  "type": "string",
+                  "title": "Email",
+                  "examples": [
+                    "agent@example.com"
+                  ],
+                  "description": "Email address of the agent (required)"
+                },
+                "language": {
+                  "type": "string",
+                  "title": "Language",
+                  "examples": [
+                    "en"
+                  ],
+                  "description": "Language preference code (e.g., 'en', 'es', 'fr')"
+                },
+                "role_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "title": "Role Ids",
+                  "examples": [
+                    [
+                      1120000123456
+                    ]
+                  ],
+                  "description": "List of role IDs to assign to the agent"
+                },
+                "group_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "title": "Group Ids",
+                  "examples": [
+                    [
+                      1120000123456,
+                      1120000234567
+                    ]
+                  ],
+                  "description": "List of group IDs to which the agent should belong"
+                },
+                "signature": {
+                  "type": "string",
+                  "title": "Signature",
+                  "description": "Agent's email signature in HTML format"
+                },
+                "skill_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "title": "Skill Ids",
+                  "examples": [
+                    [
+                      1120000123456
+                    ]
+                  ],
+                  "description": "List of skill IDs to assign to the agent"
+                },
+                "time_zone": {
+                  "type": "string",
+                  "title": "Time Zone",
+                  "examples": [
+                    "Eastern Time (US & Canada)"
+                  ],
+                  "description": "Time zone setting (e.g., 'Eastern Time (US & Canada)', 'Tokyo')"
+                },
+                "focus_mode": {
+                  "type": "boolean",
+                  "title": "Focus Mode",
+                  "description": "Enable focus mode to allow the agent to work through tickets sequentially without interruption"
+                },
+                "occasional": {
+                  "type": "boolean",
+                  "title": "Occasional",
+                  "description": "Set to true if the agent is an occasional agent (not full-time)"
+                },
+                "ticket_scope": {
+                  "enum": [
+                    "global_access",
+                    "group_access",
+                    "restricted_access"
+                  ],
+                  "type": "string",
+                  "title": "TicketScope",
+                  "examples": [
+                    "global_access"
+                  ],
+                  "description": "Ticket permission scope."
+                }
+              }
+            },
+            "title": "Agents",
+            "examples": [
+              [
+                {
+                  "name": "Agent One",
+                  "email": "agent1@example.com"
+                },
+                {
+                  "name": "Agent Two",
+                  "email": "agent2@example.com"
+                }
+              ]
+            ],
+            "description": "List of agent objects to create in bulk. Each agent must have at least an email address."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_CREATE_CANNED_RESPONSE",
+      "name": "Create Canned Response",
+      "description": "Tool to create a new canned response in Freshdesk. Use when you need to create a reusable message template that agents can quickly insert into tickets.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "canned_responses",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateCannedResponseRequest",
+        "required": [
+          "title",
+          "content_html",
+          "visibility"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Welcome Message",
+              "Follow-up Response"
+            ],
+            "description": "The title/name of the canned response"
+          },
+          "folder_id": {
+            "type": "integer",
+            "title": "Folder Id",
+            "examples": [
+              1120000035928
+            ],
+            "description": "ID of the folder to place the canned response in. If not provided, the canned response will be auto-assigned to a folder"
+          },
+          "group_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Group Ids",
+            "examples": [
+              [
+                1120000045678,
+                1120000045679
+              ]
+            ],
+            "description": "Array of group IDs that can access this canned response. Only applicable when visibility is set to 2 (specific groups)"
+          },
+          "visibility": {
+            "type": "integer",
+            "title": "Visibility",
+            "examples": [
+              1
+            ],
+            "description": "Visibility of the canned response. 0 = Personal/Private (visible only to creator), 1 = All agents (visible to all agents in the account), 2 = Specific groups (visible to designated agent groups)"
+          },
+          "content_html": {
+            "type": "string",
+            "title": "Content Html",
+            "examples": [
+              "<p>Thank you for contacting us! We'll respond shortly.</p>"
+            ],
+            "description": "The HTML content of the canned response. This is the message template that will be inserted when the canned response is used"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_CREATE_CONTACT",
+      "name": "Create Contact",
+      "description": "Tool to create a new contact in Freshdesk. Use when you need to add a customer or user to your Freshdesk account. IMPORTANT: The 'employee_id' custom field is mandatory for this Freshdesk instance.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "contacts_and_companies",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateContactRequest",
+        "required": [
+          "name",
+          "custom_fields"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "John Doe",
+              "Jane Smith"
+            ],
+            "description": "Name of the contact [REQUIRED]"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "examples": [
+              [
+                "vip",
+                "enterprise",
+                "priority"
+              ]
+            ],
+            "description": "Tags associated with the contact"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "examples": [
+              "john.doe@example.com"
+            ],
+            "description": "Primary email address of the contact. Either email or phone must be provided."
+          },
+          "phone": {
+            "type": "string",
+            "title": "Phone",
+            "examples": [
+              "+1-555-1234"
+            ],
+            "description": "Phone number of the contact. Either email or phone must be provided."
+          },
+          "avatar": {
+            "type": "string",
+            "title": "Avatar",
+            "description": "URL of the contact's avatar image"
+          },
+          "mobile": {
+            "type": "string",
+            "title": "Mobile",
+            "examples": [
+              "+1-555-5678"
+            ],
+            "description": "Mobile number of the contact"
+          },
+          "address": {
+            "type": "string",
+            "title": "Address",
+            "examples": [
+              "123 Main St, Springfield, IL 62701"
+            ],
+            "description": "Physical address of the contact"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "examples": [
+              "en",
+              "es",
+              "fr"
+            ],
+            "description": "Language code for the contact's preferred language"
+          },
+          "job_title": {
+            "type": "string",
+            "title": "Job Title",
+            "examples": [
+              "Senior Engineer",
+              "Product Manager"
+            ],
+            "description": "Job title of the contact"
+          },
+          "time_zone": {
+            "type": "string",
+            "title": "Time Zone",
+            "examples": [
+              "Pacific Time (US & Canada)",
+              "Eastern Time (US & Canada)"
+            ],
+            "description": "Time zone of the contact"
+          },
+          "company_id": {
+            "type": "integer",
+            "title": "Company Id",
+            "examples": [
+              123456
+            ],
+            "description": "ID of the primary company associated with this contact"
+          },
+          "twitter_id": {
+            "type": "string",
+            "title": "Twitter Id",
+            "examples": [
+              "@johndoe"
+            ],
+            "description": "Twitter handle of the contact"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "VIP customer from enterprise plan"
+            ],
+            "description": "Description or notes about the contact"
+          },
+          "other_emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Other Emails",
+            "examples": [
+              [
+                "secondary@example.com",
+                "tertiary@example.com"
+              ]
+            ],
+            "description": "Additional email addresses of the contact"
+          },
+          "custom_fields": {
+            "type": "object",
+            "title": "Custom Fields",
+            "examples": [
+              {
+                "department": "Engineering",
+                "employee_id": "EMP12345"
+              }
+            ],
+            "description": "Custom fields object. IMPORTANT: The 'employee_id' field is required for this Freshdesk instance and cannot be blank. Custom field keys should be the field name directly (not prefixed with 'cf_').",
+            "additionalProperties": true
+          },
+          "other_companies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              }
+            },
+            "title": "Other Companies",
+            "examples": [
+              [
+                {
+                  "company_id": 789
+                }
+              ]
+            ],
+            "description": "Array of other company IDs associated with the contact. Each item should have 'company_id' and optionally 'view_all_tickets'"
+          },
+          "view_all_tickets": {
+            "type": "boolean",
+            "title": "View All Tickets",
+            "description": "Set to true if the contact can view all tickets from their company"
+          },
+          "unique_external_id": {
+            "type": "string",
+            "title": "Unique External Id",
+            "examples": [
+              "EXT-12345"
+            ],
+            "description": "External ID of the contact for integration purposes"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_CREATE_SLA_POLICIES",
+      "name": "Create SLA Policy",
+      "description": "Tool to create a new SLA (Service Level Agreement) policy in Freshdesk. Use when you need to establish service level targets for ticket response and resolution times based on priority levels.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "business_hours_and_slas",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateSLAPoliciesRequest",
+        "required": [
+          "name",
+          "sla_target",
+          "applicable_to"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Standard Support SLA",
+              "Premium SLA"
+            ],
+            "description": "Name of the SLA policy"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active",
+            "default": true,
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Whether the SLA policy is active or not"
+          },
+          "sla_target": {
+            "type": "object",
+            "title": "Sla Target",
+            "required": [
+              "priority_1",
+              "priority_2",
+              "priority_3",
+              "priority_4"
+            ],
+            "properties": {
+              "priority_1": {
+                "type": "object",
+                "title": "Priority 1",
+                "required": [
+                  "respond_within",
+                  "resolve_within",
+                  "business_hours",
+                  "escalation_enabled"
+                ],
+                "properties": {
+                  "business_hours": {
+                    "type": "boolean",
+                    "title": "Business Hours",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether to use business hours calendar for this priority level"
+                  },
+                  "resolve_within": {
+                    "type": "integer",
+                    "title": "Resolve Within",
+                    "minimum": 1,
+                    "examples": [
+                      28800,
+                      57600,
+                      86400,
+                      115200
+                    ],
+                    "description": "Resolution time target in seconds (e.g., 28800=8hrs, 57600=16hrs, 86400=24hrs)"
+                  },
+                  "respond_within": {
+                    "type": "integer",
+                    "title": "Respond Within",
+                    "minimum": 1,
+                    "examples": [
+                      900,
+                      1800,
+                      3600,
+                      7200
+                    ],
+                    "description": "First response time target in seconds (e.g., 900=15min, 3600=1hr, 7200=2hrs)"
+                  },
+                  "escalation_enabled": {
+                    "type": "boolean",
+                    "title": "Escalation Enabled",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether escalation is enabled for this priority level"
+                  }
+                },
+                "description": "SLA targets for priority 1 (Urgent)",
+                "additionalProperties": false
+              },
+              "priority_2": {
+                "type": "object",
+                "title": "Priority 2",
+                "required": [
+                  "respond_within",
+                  "resolve_within",
+                  "business_hours",
+                  "escalation_enabled"
+                ],
+                "properties": {
+                  "business_hours": {
+                    "type": "boolean",
+                    "title": "Business Hours",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether to use business hours calendar for this priority level"
+                  },
+                  "resolve_within": {
+                    "type": "integer",
+                    "title": "Resolve Within",
+                    "minimum": 1,
+                    "examples": [
+                      28800,
+                      57600,
+                      86400,
+                      115200
+                    ],
+                    "description": "Resolution time target in seconds (e.g., 28800=8hrs, 57600=16hrs, 86400=24hrs)"
+                  },
+                  "respond_within": {
+                    "type": "integer",
+                    "title": "Respond Within",
+                    "minimum": 1,
+                    "examples": [
+                      900,
+                      1800,
+                      3600,
+                      7200
+                    ],
+                    "description": "First response time target in seconds (e.g., 900=15min, 3600=1hr, 7200=2hrs)"
+                  },
+                  "escalation_enabled": {
+                    "type": "boolean",
+                    "title": "Escalation Enabled",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether escalation is enabled for this priority level"
+                  }
+                },
+                "description": "SLA targets for priority 2 (High)",
+                "additionalProperties": false
+              },
+              "priority_3": {
+                "type": "object",
+                "title": "Priority 3",
+                "required": [
+                  "respond_within",
+                  "resolve_within",
+                  "business_hours",
+                  "escalation_enabled"
+                ],
+                "properties": {
+                  "business_hours": {
+                    "type": "boolean",
+                    "title": "Business Hours",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether to use business hours calendar for this priority level"
+                  },
+                  "resolve_within": {
+                    "type": "integer",
+                    "title": "Resolve Within",
+                    "minimum": 1,
+                    "examples": [
+                      28800,
+                      57600,
+                      86400,
+                      115200
+                    ],
+                    "description": "Resolution time target in seconds (e.g., 28800=8hrs, 57600=16hrs, 86400=24hrs)"
+                  },
+                  "respond_within": {
+                    "type": "integer",
+                    "title": "Respond Within",
+                    "minimum": 1,
+                    "examples": [
+                      900,
+                      1800,
+                      3600,
+                      7200
+                    ],
+                    "description": "First response time target in seconds (e.g., 900=15min, 3600=1hr, 7200=2hrs)"
+                  },
+                  "escalation_enabled": {
+                    "type": "boolean",
+                    "title": "Escalation Enabled",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether escalation is enabled for this priority level"
+                  }
+                },
+                "description": "SLA targets for priority 3 (Medium)",
+                "additionalProperties": false
+              },
+              "priority_4": {
+                "type": "object",
+                "title": "Priority 4",
+                "required": [
+                  "respond_within",
+                  "resolve_within",
+                  "business_hours",
+                  "escalation_enabled"
+                ],
+                "properties": {
+                  "business_hours": {
+                    "type": "boolean",
+                    "title": "Business Hours",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether to use business hours calendar for this priority level"
+                  },
+                  "resolve_within": {
+                    "type": "integer",
+                    "title": "Resolve Within",
+                    "minimum": 1,
+                    "examples": [
+                      28800,
+                      57600,
+                      86400,
+                      115200
+                    ],
+                    "description": "Resolution time target in seconds (e.g., 28800=8hrs, 57600=16hrs, 86400=24hrs)"
+                  },
+                  "respond_within": {
+                    "type": "integer",
+                    "title": "Respond Within",
+                    "minimum": 1,
+                    "examples": [
+                      900,
+                      1800,
+                      3600,
+                      7200
+                    ],
+                    "description": "First response time target in seconds (e.g., 900=15min, 3600=1hr, 7200=2hrs)"
+                  },
+                  "escalation_enabled": {
+                    "type": "boolean",
+                    "title": "Escalation Enabled",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether escalation is enabled for this priority level"
+                  }
+                },
+                "description": "SLA targets for priority 4 (Low)",
+                "additionalProperties": false
+              }
+            },
+            "description": "SLA targets for all four priority levels with respond_within and resolve_within times in seconds",
+            "additionalProperties": false
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "SLA policy for standard support tickets"
+            ],
+            "description": "Description of the SLA policy"
+          },
+          "applicable_to": {
+            "type": "object",
+            "title": "Applicable To",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "email",
+                    "portal",
+                    "phone",
+                    "chat",
+                    "feedback_widget",
+                    "outbound_email"
+                  ],
+                  "type": "string",
+                  "title": "TicketSource"
+                },
+                "title": "Sources",
+                "examples": [
+                  [
+                    "email"
+                  ],
+                  [
+                    "email",
+                    "portal",
+                    "phone"
+                  ]
+                ],
+                "description": "List of ticket sources. At least one non-empty array is required."
+              },
+              "group_ids": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Group Ids",
+                "examples": [
+                  [
+                    1,
+                    2,
+                    3
+                  ]
+                ],
+                "description": "List of group IDs where this policy applies."
+              },
+              "product_ids": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Product Ids",
+                "examples": [
+                  [
+                    1,
+                    2
+                  ]
+                ],
+                "description": "List of product IDs where this policy applies."
+              }
+            },
+            "description": "Conditions defining where the SLA policy applies. At least one non-empty array (sources, group_ids, or product_ids) is required.",
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_CREATE_SOLUTION_ARTICLE",
+      "name": "Create Solution Article",
+      "description": "Tool to create a new solution article in a Freshdesk knowledge base folder. Use when you need to add documentation, FAQs, or help content to your knowledge base.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "knowledge_base_solutions",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateSolutionArticleRequest",
+        "required": [
+          "folder_id",
+          "title",
+          "description"
+        ],
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "examples": [
+              [
+                "password",
+                "security",
+                "account"
+              ]
+            ],
+            "description": "Tags for categorizing the article"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "How to reset your password"
+            ],
+            "description": "Title of the solution article"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "published"
+            ],
+            "type": "string",
+            "title": "Status",
+            "default": "draft",
+            "examples": [
+              "published"
+            ],
+            "description": "Publication status of the article."
+          },
+          "agent_id": {
+            "type": "integer",
+            "title": "Agent Id",
+            "examples": [
+              1120003354576
+            ],
+            "description": "ID of the agent creating the article. If not specified, the authenticated agent will be used"
+          },
+          "seo_data": {
+            "type": "object",
+            "title": "SeoDataRequest",
+            "properties": {
+              "meta_title": {
+                "type": "string",
+                "title": "Meta Title",
+                "description": "SEO meta title for the article"
+              },
+              "meta_keywords": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Meta Keywords",
+                "description": "SEO meta keywords for the article as a list of keyword strings"
+              },
+              "meta_description": {
+                "type": "string",
+                "title": "Meta Description",
+                "description": "SEO meta description for the article"
+              }
+            },
+            "description": "SEO data for creating/updating an article (request format).",
+            "additionalProperties": false
+          },
+          "folder_id": {
+            "type": "integer",
+            "title": "Folder Id",
+            "examples": [
+              1120000087270
+            ],
+            "description": "The unique identifier of the folder where the article will be created"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "<p>Follow these steps to reset your password...</p>"
+            ],
+            "description": "Description/content of the article in HTML format"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_CREATE_TICKET",
+      "name": "Create Ticket",
+      "description": "Creates a new ticket in Freshdesk. REQUIRED FIELDS: - subject and description are always required - At least ONE requester identifier is REQUIRED: requester_id, email, phone, facebook_id, twitter_id, or unique_external_id CONDITIONAL REQUIREMENTS: - If phone is provided without email, name becomes MANDATORY NOTE ON ATTACHMENTS: - attachments field expects multipart/form-data format, not file paths",
+      "version": "20260828_00",
+      "tags": [
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateTicketRequest",
+        "required": [
+          "subject",
+          "description"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Name of the requester"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "description": "Tags that have been associated with the ticket"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "Email address of the requester"
+          },
+          "phone": {
+            "type": "string",
+            "title": "Phone",
+            "description": "Phone number of the requester"
+          },
+          "due_by": {
+            "type": "string",
+            "title": "Due By",
+            "description": "Timestamp when the ticket is due to be resolved. Format: ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."
+          },
+          "source": {
+            "enum": [
+              "email",
+              "portal",
+              "phone",
+              "chat",
+              "feedback_widget",
+              "outbound_email"
+            ],
+            "type": "string",
+            "title": "Source",
+            "default": "portal",
+            "description": "Channel through which the ticket was created."
+          },
+          "status": {
+            "enum": [
+              "open",
+              "pending",
+              "resolved",
+              "closed"
+            ],
+            "type": "string",
+            "title": "Status",
+            "default": "open",
+            "description": "Status of the ticket."
+          },
+          "subject": {
+            "type": "string",
+            "title": "Subject",
+            "description": "Subject of the ticket. Must be a non-empty string."
+          },
+          "group_id": {
+            "type": "integer",
+            "title": "Group Id",
+            "description": "ID of the group to which the ticket has been assigned"
+          },
+          "priority": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "type": "string",
+            "title": "Priority",
+            "default": "low",
+            "description": "Priority of the ticket."
+          },
+          "cc_emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Cc Emails",
+            "description": "Email addresses added in the 'cc' field of the incoming ticket email"
+          },
+          "fr_due_by": {
+            "type": "string",
+            "title": "Fr Due By",
+            "description": "Timestamp when the first response is due. Format: ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."
+          },
+          "company_id": {
+            "type": "integer",
+            "title": "Company Id",
+            "description": "Company ID of the requester"
+          },
+          "product_id": {
+            "type": "integer",
+            "title": "Product Id",
+            "description": "ID of the product linked to the ticket"
+          },
+          "twitter_id": {
+            "type": "string",
+            "title": "Twitter Id",
+            "description": "Twitter handle of the requester"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Attachments",
+            "description": "Ticket attachments. Note: File attachments require multipart/form-data format and are not supported via JSON API calls."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "HTML content of the ticket. Supports HTML formatting such as <p>, <strong>, <em>, etc."
+          },
+          "facebook_id": {
+            "type": "string",
+            "title": "Facebook Id",
+            "description": "Facebook ID of the requester"
+          },
+          "requester_id": {
+            "type": "integer",
+            "title": "Requester Id",
+            "description": "User ID of the requester"
+          },
+          "responder_id": {
+            "type": "integer",
+            "title": "Responder Id",
+            "description": "ID of the agent to whom the ticket has been assigned"
+          },
+          "custom_fields": {
+            "type": "object",
+            "title": "Custom Fields",
+            "description": "Key–value pairs containing the names and values of custom fields. Example: {\"cf_<field-name>\": \"test-value\"}. Note: custom fields are to be predefined in Freshdesk.",
+            "additionalProperties": true
+          },
+          "email_config_id": {
+            "type": "integer",
+            "title": "Email Config Id",
+            "description": "ID of email config which is used for this ticket"
+          },
+          "lookup_parameter": {
+            "type": "string",
+            "title": "Lookup Parameter",
+            "description": "Lookup field for custom objects"
+          },
+          "internal_agent_id": {
+            "type": "integer",
+            "title": "Internal Agent Id",
+            "description": "ID of the internal agent which the ticket should be assigned with"
+          },
+          "internal_group_id": {
+            "type": "integer",
+            "title": "Internal Group Id",
+            "description": "ID of the internal group to which the ticket should be assigned with"
+          },
+          "unique_external_id": {
+            "type": "string",
+            "title": "Unique External Id",
+            "description": "External ID of the requester"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_CREATE_TICKET_OUTBOUND_EMAIL",
+      "name": "Create Ticket via Outbound Email",
+      "description": "Tool to create a ticket by sending an outbound email to external recipients. Use when you need to initiate a support conversation via email. The ticket is automatically created with 'Closed' status and assigned to the sending agent to avoid unnecessary SLA timers.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "tickets_and_conversations",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateTicketOutboundEmailRequest",
+        "required": [
+          "email",
+          "subject",
+          "description",
+          "email_config_id",
+          "priority"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "examples": [
+              "customer@example.com"
+            ],
+            "description": "Recipient email address for the outbound email"
+          },
+          "subject": {
+            "type": "string",
+            "title": "Subject",
+            "examples": [
+              "Thank you for your inquiry"
+            ],
+            "description": "Subject line of the outbound email"
+          },
+          "priority": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "type": "string",
+            "title": "Priority",
+            "examples": [
+              "low"
+            ],
+            "description": "Priority level for the ticket created from this outbound email."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "<p>We have received your request and will respond shortly.</p>"
+            ],
+            "description": "Body content of the outbound email. Supports HTML formatting"
+          },
+          "email_config_id": {
+            "type": "integer",
+            "title": "Email Config Id",
+            "examples": [
+              158000239332
+            ],
+            "description": "Email configuration ID to use for sending the outbound email. Can be obtained from GET /api/v2/email_configs endpoint"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_CURRENTLY_AUTHENTICATED_AGENT",
+      "name": "Currently Authenticated Agent",
+      "description": "Tool to retrieve profile information for the currently authenticated agent. Use when you need to get details about the agent whose API credentials are being used for authentication.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "agents_groups_skills"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CurrentlyAuthenticatedAgentRequest",
+        "properties": {}
+      }
+    },
+    {
+      "slug": "FRESHDESK_GET_ACCOUNT",
+      "name": "Get Account",
+      "description": "Tool to view Freshdesk account information. Use when you need to retrieve comprehensive account details including organization information, agent counts, timezone, data center location, plan tier, address, and primary contact information.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "account_admin_settings"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAccountRequest",
+        "properties": {}
+      }
+    },
+    {
+      "slug": "FRESHDESK_GET_AGENT",
+      "name": "Get Agent",
+      "description": "Tool to retrieve detailed information about a specific agent by ID. Use when you need to view a particular agent's profile, contact information, availability status, and role assignments.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "agents_groups_skills"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAgentRequest",
+        "required": [
+          "agent_id"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "integer",
+            "title": "Agent Id",
+            "examples": [
+              1120003427750
+            ],
+            "description": "The unique identifier of the agent to retrieve. Use FRESHDESK_GET_AGENTS to list all agents and obtain valid agent IDs."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_GET_AGENTS",
+      "name": "Search Agents Autocomplete",
+      "description": "Tool to search for agents using autocomplete functionality in Freshdesk. Use when you need to quickly find agents by name or email keyword for autocomplete suggestions.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "agents_groups_skills"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAgentsRequest",
+        "required": [
+          "term"
+        ],
+        "properties": {
+          "term": {
+            "type": "string",
+            "title": "Term",
+            "examples": [
+              "john",
+              "admin",
+              "support"
+            ],
+            "description": "The search keyword to find agents by name or email. Minimum 2 characters recommended for meaningful results."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_GET_COMPANIES",
+      "name": "Get Companies",
+      "description": "Tool to retrieve all companies from a Freshdesk account with pagination support. Use when you need to list companies representing customer organizations.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "companies_and_fields"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCompaniesRequest",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "examples": [
+              1,
+              2
+            ],
+            "description": "Page number for pagination. Starts at 1. Default: 1."
+          },
+          "per_page": {
+            "type": "integer",
+            "title": "Per Page",
+            "examples": [
+              30,
+              50,
+              100
+            ],
+            "description": "Number of companies to return per page. Maximum: 100. Default: 30. Invalid values or values greater than 100 will result in an error."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_GET_COMPANY",
+      "name": "Get Company",
+      "description": "Tool to retrieve detailed information about a specific company by ID. Use when you need to view a particular company's details, domains, and custom fields.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "companies_and_fields"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCompanyRequest",
+        "required": [
+          "company_id"
+        ],
+        "properties": {
+          "company_id": {
+            "type": "integer",
+            "title": "Company Id",
+            "examples": [
+              1120000198169
+            ],
+            "description": "The unique identifier of the company to retrieve"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_GET_COMPANY_FIELDS",
+      "name": "Get Company Fields",
+      "description": "Tool to retrieve all company fields configured in Freshdesk. Use when you need to get the complete list of company field definitions including default fields (name, description, domains, etc.) and custom fields with their metadata.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "companies_and_fields"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCompanyFieldsRequest",
+        "properties": {}
+      }
+    },
+    {
+      "slug": "FRESHDESK_GET_CONTACT",
+      "name": "Get Contact",
+      "description": "Tool to retrieve detailed information about a specific contact by ID. Use when you need to view a particular contact's profile, contact information, and custom fields.",
+      "version": "20260828_00",
+      "tags": [
+        "readOnlyHint",
+        "important",
+        "contacts_and_companies"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetContactRequest",
+        "required": [
+          "contact_id"
+        ],
+        "properties": {
+          "contact_id": {
+            "type": "integer",
+            "title": "Contact Id",
+            "examples": [
+              1120003513639
+            ],
+            "description": "The unique identifier of the contact to retrieve"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_GET_CONTACT_FIELDS",
+      "name": "Get Contact Fields",
+      "description": "Tool to retrieve all contact fields configured in Freshdesk. Use when you need to get the complete list of contact field definitions including default fields (name, email, phone, etc.) and custom fields with their metadata.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "contacts_and_fields"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetContactFieldsRequest",
+        "properties": {}
+      }
+    },
+    {
+      "slug": "FRESHDESK_GET_CONTACTS",
+      "name": "Get Contacts",
+      "description": "Tool to retrieve all contacts from a Freshdesk account. Use when you need to list contacts, optionally filtered by email, phone, mobile, company, state, or modification date. Results are paginated; iterate through pages using `page` and `per_page` (max 100) to retrieve the full dataset.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "contacts_and_fields"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetContactsRequest",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "examples": [
+              1,
+              2
+            ],
+            "description": "Page number for pagination. Starts at 1. Default: 1."
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "examples": [
+              "contact@example.com"
+            ],
+            "description": "Filter contacts by email address"
+          },
+          "phone": {
+            "type": "string",
+            "title": "Phone",
+            "examples": [
+              "9876543210"
+            ],
+            "description": "Filter contacts by phone number. Should contain only numeric values; avoid characters like '-', '+', '(', ')'"
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "examples": [
+              "verified",
+              "unverified"
+            ],
+            "description": "Filter contacts by state"
+          },
+          "mobile": {
+            "type": "string",
+            "title": "Mobile",
+            "examples": [
+              "1234567890"
+            ],
+            "description": "Filter contacts by mobile number. Should contain only numeric values; avoid characters like '-', '+', '(', ')'"
+          },
+          "per_page": {
+            "type": "integer",
+            "title": "Per Page",
+            "examples": [
+              30,
+              50,
+              100
+            ],
+            "description": "Number of contacts to return per page. Maximum: 100. Default: 30."
+          },
+          "company_id": {
+            "type": "integer",
+            "title": "Company Id",
+            "examples": [
+              1120000198167
+            ],
+            "description": "Filter contacts belonging to a specific company by company ID"
+          },
+          "updated_since": {
+            "type": "string",
+            "title": "Updated Since",
+            "examples": [
+              "2023-01-01T00:00:00Z"
+            ],
+            "description": "Retrieve contacts modified after a specified timestamp in ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ)"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_GET_SEARCH",
+      "name": "Filter Tickets",
+      "description": "Tool to search and filter tickets in Freshdesk using flexible query syntax. Use when you need to find tickets based on status, priority, tags, custom fields, dates, or other ticket attributes with complex filtering logic.",
+      "version": "20260828_00",
+      "tags": [
+        "readOnlyHint",
+        "important",
+        "search_and_discovery"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSearchRequest",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "examples": [
+              1,
+              2,
+              3
+            ],
+            "description": "Page number for pagination. Starts at 1 and cannot exceed 10. Default: 1. Each page returns up to 30 results. Maximum 300 tickets can be retrieved across all pages."
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "examples": [
+              "(status:2)",
+              "(status:2 AND priority:3)",
+              "(created_at:>'2023-01-01' AND status:2)",
+              "(tag:'urgent')",
+              "(agent_id:null)"
+            ],
+            "description": "Query string to filter tickets using field:value syntax. Wrap conditions in parentheses for grouping. Use AND, OR for logic. Use :> (≥) and :< (≤) for numeric/date comparisons. Use null for empty fields. String values need single quotes. Do NOT include outer double quotes - they are added automatically. Max 512 characters. Common searchable fields: status (2=Open, 3=Pending, 4=Resolved, 5=Closed), priority (1=Low, 2=Medium, 3=High, 4=Urgent), agent_id, group_id, tag, created_at, updated_at, due_by. Custom fields use cf_ prefix. Note: Not all fields are searchable (e.g., requester_id may not work); use FRESHDESK_LIST_TICKET_FIELDS to discover available searchable fields. Dates in UTC (YYYY-MM-DD)."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_GET_TICKETS",
+      "name": "Get Tickets",
+      "description": "Retrieves a list of tickets from Freshdesk. Tickets are returned under `response_data` in the response object.",
+      "version": "20260828_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTicketsRequest",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "default": 1,
+            "description": "Page number to retrieve"
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "Predefined filter to apply. Possible values include 'new_and_my_open', 'watching', 'spam', 'deleted', etc."
+          },
+          "status": {
+            "enum": [
+              "open",
+              "pending",
+              "resolved",
+              "closed",
+              "waiting_on_customer",
+              "waiting_on_third_party"
+            ],
+            "type": "string",
+            "title": "TicketStatus",
+            "description": "Enum for ticket status values."
+          },
+          "sort_by": {
+            "type": "string",
+            "title": "Sort By",
+            "description": "Field to sort tickets by, e.g., 'created_at'"
+          },
+          "agent_id": {
+            "type": "integer",
+            "title": "Agent Id",
+            "description": "Filter tickets by agent ID"
+          },
+          "group_id": {
+            "type": "integer",
+            "title": "Group Id",
+            "description": "Filter tickets by group ID"
+          },
+          "per_page": {
+            "type": "integer",
+            "title": "Per Page",
+            "default": 30,
+            "description": "Number of tickets per page"
+          },
+          "priority": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "type": "string",
+            "title": "TicketPriority",
+            "description": "Enum for ticket priority values."
+          },
+          "sort_order": {
+            "type": "string",
+            "title": "Sort Order",
+            "description": "Order of sorting: 'asc' or 'desc'"
+          },
+          "requester_id": {
+            "type": "integer",
+            "title": "Requester Id",
+            "description": "Filter tickets by requester ID"
+          },
+          "created_since": {
+            "type": "string",
+            "title": "Created Since",
+            "format": "date-time",
+            "description": "Retrieve tickets created since this timestamp. Format: YYYY-MM-DDTHH:MM:SSZ"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_LIST_ALL_TICKET_CONVERSATIONS",
+      "name": "List All Ticket Conversations",
+      "description": "Tool to retrieve all conversations of a specific ticket in Freshdesk. Use when you need to view all messages, notes, and replies associated with a ticket.",
+      "version": "20260828_00",
+      "tags": [
+        "readOnlyHint",
+        "important",
+        "tickets_and_conversations"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListAllTicketConversationsRequest",
+        "required": [
+          "ticket_id"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "minimum": 1,
+            "examples": [
+              1
+            ],
+            "description": "Page number for pagination. Used to retrieve specific pages of results when there are many conversations."
+          },
+          "per_page": {
+            "type": "integer",
+            "title": "Per Page",
+            "maximum": 100,
+            "minimum": 1,
+            "examples": [
+              30
+            ],
+            "description": "Number of items per page for pagination. Controls how many conversation records are returned per page."
+          },
+          "ticket_id": {
+            "type": "integer",
+            "title": "Ticket Id",
+            "examples": [
+              110
+            ],
+            "description": "The unique identifier of the ticket whose conversations are to be retrieved."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_LIST_SOLUTION_ARTICLES",
+      "name": "List Solution Articles",
+      "description": "Tool to retrieve all solution articles within a specified folder in Freshdesk. Use when you need to list all articles that exist within a specific solution folder.",
+      "version": "20260828_00",
+      "tags": [
+        "readOnlyHint",
+        "important",
+        "knowledge_base_solutions"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListSolutionArticlesRequest",
+        "required": [
+          "folder_id"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "examples": [
+              1,
+              2,
+              3
+            ],
+            "description": "Page number for pagination. Starts at 1. Each page returns up to 30 articles."
+          },
+          "folder_id": {
+            "type": "integer",
+            "title": "Folder Id",
+            "examples": [
+              1120000087270
+            ],
+            "description": "The unique identifier of the solution folder for which to retrieve articles"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_LIST_SOLUTION_CATEGORIES",
+      "name": "List Solution Categories",
+      "description": "Tool to retrieve all solution categories in Freshdesk. Use when you need to list all available solution categories in the knowledge base.",
+      "version": "20260828_00",
+      "tags": [
+        "readOnlyHint",
+        "important",
+        "openWorldHint",
+        "knowledge_base_solutions"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListSolutionCategoriesRequest",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "examples": [
+              1,
+              2,
+              3
+            ],
+            "description": "Page number for pagination. Starts at 1. Each page returns up to 30 categories."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_PATCH_ADMIN_GROUPS_AGENTS",
+      "name": "Update Group Agents",
+      "description": "Tool to add or remove agents in a Freshdesk group. Use when you need to modify the list of agents assigned to a specific group by providing an array of agent IDs.",
+      "version": "20260828_00",
+      "tags": [
+        "updateHint",
+        "important",
+        "openWorldHint",
+        "administration_team_access"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PatchAdminGroupsAgentsRequest",
+        "required": [
+          "id",
+          "agents"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              158000817808
+            ],
+            "description": "The unique identifier of the group to modify"
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Agents",
+            "examples": [
+              [
+                1120000123456,
+                1120000234567
+              ],
+              []
+            ],
+            "description": "Array of agent IDs to set for the group. This replaces the current list of agents in the group. Pass an empty array to remove all agents from the group."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_REPLY_TO_FORWARD_TICKET",
+      "name": "Reply to Forward Ticket",
+      "description": "Tool to reply to or forward a ticket to external email addresses. Use when you need to send a ticket reply to specific email recipients outside the normal ticket flow.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "tickets_and_conversations",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ReplyToForwardTicketRequest",
+        "required": [
+          "ticket_id",
+          "body",
+          "to_emails"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "examples": [
+              "Thank you for your inquiry. We will get back to you soon."
+            ],
+            "description": "Content of the reply or forward message"
+          },
+          "cc_emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Cc Emails",
+            "examples": [
+              [
+                "cc@example.com"
+              ]
+            ],
+            "description": "List of email addresses to be CC'd"
+          },
+          "ticket_id": {
+            "type": "integer",
+            "title": "Ticket Id",
+            "examples": [
+              123,
+              456
+            ],
+            "description": "ID of the ticket to reply to or forward"
+          },
+          "to_emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "To Emails",
+            "examples": [
+              [
+                "user@example.com"
+              ],
+              [
+                "user1@example.com",
+                "user2@example.com"
+              ]
+            ],
+            "description": "List of email addresses to send the reply/forward to"
+          },
+          "bcc_emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Bcc Emails",
+            "examples": [
+              [
+                "bcc@example.com"
+              ]
+            ],
+            "description": "List of email addresses to be BCC'd"
+          },
+          "from_email": {
+            "type": "string",
+            "title": "From Email",
+            "examples": [
+              "support@company.com"
+            ],
+            "description": "Email address from which the reply should be sent"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_REPLY_TO_TICKET",
+      "name": "Reply to Ticket",
+      "description": "Tool to create a public reply to an existing support ticket in Freshdesk. Use when an agent needs to respond to a ticket. The reply is sent to the ticket requester and any CC'd recipients. Supports both plain text and HTML content, file attachments, and email distribution control.",
+      "version": "20260828_00",
+      "tags": [
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ReplyToTicketRequest",
+        "required": [
+          "ticket_id",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "examples": [
+              "Thank you for contacting us. We are looking into your issue."
+            ],
+            "description": "The content of the reply message. Can contain HTML formatting. This is the primary reply content that will be sent to the requester."
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "examples": [
+              456
+            ],
+            "description": "The ID of the agent creating the reply. Use this to create a reply on behalf of a specific user. Can also be used to create a reply as if it came from the customer."
+          },
+          "cc_emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Cc Emails",
+            "examples": [
+              [
+                "manager@example.com",
+                "team@example.com"
+              ]
+            ],
+            "description": "Email addresses to include in the CC field of the reply. Maximum 50 total recipients across to/cc/bcc fields."
+          },
+          "ticket_id": {
+            "type": "integer",
+            "title": "Ticket Id",
+            "examples": [
+              123,
+              456
+            ],
+            "description": "The unique identifier of the ticket to reply to"
+          },
+          "to_emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "To Emails",
+            "examples": [
+              [
+                "customer@example.com"
+              ]
+            ],
+            "description": "Direct recipient email addresses to override the default ticket requester. Requires the 'multiple_to' feature to be enabled in your Freshdesk account. When not using this feature, the reply is automatically sent to the ticket requester."
+          },
+          "bcc_emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Bcc Emails",
+            "examples": [
+              [
+                "supervisor@example.com"
+              ]
+            ],
+            "description": "Email addresses to include in the BCC field of the reply. Maximum 50 total recipients across to/cc/bcc fields."
+          },
+          "from_email": {
+            "type": "string",
+            "title": "From Email",
+            "examples": [
+              "support@company.com"
+            ],
+            "description": "The support email address to send the reply from. If you have multiple support emails configured, use this parameter to specify which email should be used as the sender. By default, replies are sent from the support email where the ticket was originally created."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_SEARCH_AGENTS",
+      "name": "Search Agents",
+      "description": "Tool to search and filter agents in Freshdesk. Use when you need to find agents by email, phone, mobile, or state (fulltime/occasional).",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "agents_groups_skills"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchAgentsRequest",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "description": "Specifies which page of results to return"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "examples": [
+              "abc@xyz.com"
+            ],
+            "description": "Filter agents by email address"
+          },
+          "phone": {
+            "type": "string",
+            "title": "Phone",
+            "description": "Filter agents by phone number"
+          },
+          "state": {
+            "enum": [
+              "fulltime",
+              "occasional"
+            ],
+            "type": "string",
+            "title": "State",
+            "description": "Filter agents by their state (fulltime or occasional)"
+          },
+          "mobile": {
+            "type": "string",
+            "title": "Mobile",
+            "examples": [
+              "123792182138"
+            ],
+            "description": "Filter agents by mobile phone number"
+          },
+          "per_page": {
+            "type": "integer",
+            "title": "Per Page",
+            "description": "Specifies the number of results per page"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_SEARCH_COMPANY",
+      "name": "Search Companies Autocomplete",
+      "description": "Tool to search for companies using autocomplete functionality in Freshdesk. Use when you need to quickly find companies by name or partial name keyword for autocomplete suggestions.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "companies_and_fields"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchCompanyRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Acme",
+              "Tech Corp",
+              "Industries"
+            ],
+            "description": "The company name or partial name to search for. Use this parameter to find companies matching the search term via autocomplete functionality."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_SEARCH_CONTACTS",
+      "name": "Search Contacts",
+      "description": "Tool to search and filter contacts in Freshdesk using query-based search. Use when you need to find contacts based on fields like email, phone, mobile, company_id, or other searchable contact attributes.",
+      "version": "20260828_00",
+      "tags": [
+        "readOnlyHint",
+        "important",
+        "search_and_discovery"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchContactsRequest",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "examples": [
+              1,
+              2,
+              3
+            ],
+            "description": "Page number for pagination. Starts at 1 and cannot exceed 10. Default: 1. Returns maximum 30 results per page."
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "examples": [
+              "\"email:'user@example.com'\"",
+              "\"mobile:1234567890\"",
+              "\"company_id:12345\"",
+              "\"active:true\"",
+              "\"company_id:null\""
+            ],
+            "description": "Query string to filter contacts. IMPORTANT: The entire query must be wrapped in double quotes. Format: \"field:value\" for strings or \"field:number\" for numeric values. Searchable fields: email, phone, mobile, company_id, active. Supports logical operators (AND, OR) for combining conditions. String values must use single quotes inside the double-quoted query. Limited to 512 characters. Use \"field:null\" to search for null values. Note: The search API requires exact matches; partial/regex searches are not supported."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_SEARCH_CONTACTS_AUTOCOMPLETE",
+      "name": "Search Contacts Autocomplete",
+      "description": "Tool to search for contacts using autocomplete functionality in Freshdesk. Use when you need to quickly find contacts by name, email, or other contact attributes for autocomplete suggestions.",
+      "version": "20260828_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "contacts_and_companies",
+        "search_and_discovery"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchContactsAutocompleteRequest",
+        "required": [
+          "term"
+        ],
+        "properties": {
+          "term": {
+            "type": "string",
+            "title": "Term",
+            "examples": [
+              "john",
+              "user@example.com",
+              "smith"
+            ],
+            "description": "Search term to find matching contacts. The endpoint searches across contact name, email, and other contact fields to return matches for autocomplete suggestions. Minimum 1 character required."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_SEARCH_SOLUTION_ARTICLES",
+      "name": "Search Solution Articles",
+      "description": "Tool to search solution articles in Freshdesk knowledge base by keyword. Use when you need to find articles by searching titles and content.",
+      "version": "20260828_00",
+      "tags": [
+        "readOnlyHint",
+        "important",
+        "search_and_discovery"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchSolutionArticlesRequest",
+        "required": [
+          "term"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "examples": [
+              1,
+              2,
+              3
+            ],
+            "description": "Page number for pagination. Starts at 1. Each page returns up to 30 results (max 10 pages)."
+          },
+          "term": {
+            "type": "string",
+            "title": "Term",
+            "examples": [
+              "password reset",
+              "login",
+              "billing"
+            ],
+            "description": "The search term or keyword to search for in solution articles. Searches across article titles and body content."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_UPDATE_ADMIN_GROUP",
+      "name": "Update Admin Group",
+      "description": "Tool to update an existing admin-level support agent group in Freshdesk. Use when you need to modify group details such as name, description, assigned agents, or escalation settings at the admin level.",
+      "version": "20260828_00",
+      "tags": [
+        "updateHint",
+        "important",
+        "openWorldHint",
+        "administration_team_access"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateAdminGroupRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              158000817961
+            ],
+            "description": "The unique identifier of the admin group to update"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Support Team",
+              "Technical Support Group"
+            ],
+            "description": "The name of the group. Must be unique within the Freshdesk account."
+          },
+          "agent_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Agent Ids",
+            "examples": [
+              [
+                158000123456,
+                158000234567
+              ]
+            ],
+            "description": "Array of agent IDs who should be members of this group."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "Primary support team handling customer inquiries"
+            ],
+            "description": "A brief description of the group's purpose and responsibilities."
+          },
+          "escalate_to": {
+            "type": "integer",
+            "title": "Escalate To",
+            "examples": [
+              158000817960
+            ],
+            "description": "ID of the group to which unassigned tickets should be escalated after the specified time period."
+          },
+          "unassigned_for": {
+            "type": "string",
+            "title": "Unassigned For",
+            "examples": [
+              "30m",
+              "1h",
+              "2h",
+              "8h",
+              "1d"
+            ],
+            "description": "Time period after which an unassigned ticket in the group should be escalated. Format examples: '30m', '1h', '2h', '8h', '1d'."
+          },
+          "business_calendar_id": {
+            "type": "integer",
+            "title": "Business Calendar Id",
+            "examples": [
+              158000001234
+            ],
+            "description": "ID of the business calendar associated with this group for calculating business hours."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_UPDATE_AGENT",
+      "name": "Update Agent",
+      "description": "Tool to update an existing agent's information in Freshdesk. Use when you need to modify agent details such as email, permissions, signature, skills, groups, roles, or focus mode.",
+      "version": "20260828_00",
+      "tags": [
+        "updateHint",
+        "important",
+        "openWorldHint",
+        "agents_groups_skills"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateAgentRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              158009309941
+            ],
+            "description": "The unique identifier of the agent to update"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "examples": [
+              "agent@example.com"
+            ],
+            "description": "Email address of the Agent"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "examples": [
+              "en",
+              "es",
+              "fr"
+            ],
+            "description": "Agent language preference, defaults to en"
+          },
+          "role_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Role Ids",
+            "examples": [
+              [
+                1120000063913,
+                1120000063914
+              ]
+            ],
+            "description": "Array of role identifiers"
+          },
+          "group_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Group Ids",
+            "examples": [
+              [
+                1120000063913,
+                1120000063914
+              ]
+            ],
+            "description": "Array of group identifiers"
+          },
+          "signature": {
+            "type": "string",
+            "title": "Signature",
+            "examples": [
+              "<p>Best regards,<br>Agent Name</p>"
+            ],
+            "description": "Signature of the agent in HTML format"
+          },
+          "skill_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Skill Ids",
+            "examples": [
+              [
+                1120000063913,
+                1120000063914
+              ]
+            ],
+            "description": "Array of skill identifiers"
+          },
+          "time_zone": {
+            "type": "string",
+            "title": "Time Zone",
+            "examples": [
+              "Pacific Time (US & Canada)",
+              "Eastern Time (US & Canada)"
+            ],
+            "description": "Agent timezone setting"
+          },
+          "agent_type": {
+            "enum": [
+              "support",
+              "field",
+              "collaborator"
+            ],
+            "type": "string",
+            "title": "AgentType",
+            "examples": [
+              "support"
+            ],
+            "description": "Agent classification."
+          },
+          "focus_mode": {
+            "type": "boolean",
+            "title": "Focus Mode",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Focus mode toggle, defaults to true"
+          },
+          "occasional": {
+            "type": "boolean",
+            "title": "Occasional",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Agent employment type indicator - true for occasional, false for full-time"
+          },
+          "ticket_scope": {
+            "enum": [
+              "global_access",
+              "group_access",
+              "restricted_access"
+            ],
+            "type": "string",
+            "title": "TicketScope",
+            "examples": [
+              "global_access"
+            ],
+            "description": "Ticket permission scope."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_UPDATE_COMPANIES",
+      "name": "Update Company",
+      "description": "Tool to update an existing company's information in Freshdesk. Use when you need to modify company details, domains, or custom fields.",
+      "version": "20260828_00",
+      "tags": [
+        "updateHint",
+        "important",
+        "contacts_and_companies"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateCompaniesRequest",
+        "required": [
+          "company_id"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Company name"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "description": "Notes associated with the company"
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Domains",
+            "examples": [
+              [
+                "example.com",
+                "example.org"
+              ]
+            ],
+            "description": "Domain names for the company. Multiple domains can be added"
+          },
+          "industry": {
+            "type": "string",
+            "title": "Industry",
+            "description": "Industry classification of the company. Editable dropdown of standard industry choices. Available on Blossom plan and above"
+          },
+          "company_id": {
+            "type": "integer",
+            "title": "Company Id",
+            "examples": [
+              1120000198169
+            ],
+            "description": "The unique identifier of the company to update"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "Description about the company"
+          },
+          "account_tier": {
+            "type": "string",
+            "title": "Account Tier",
+            "description": "Account tier for the company. Editable dropdown with choices: 'basic', 'premium', 'enterprise'. Available on Blossom plan and above"
+          },
+          "health_score": {
+            "type": "string",
+            "title": "Health Score",
+            "description": "Health score for the company. Editable dropdown with choices: 'happy', 'doing okay', 'at risk'. Available on Blossom plan and above"
+          },
+          "renewal_date": {
+            "type": "string",
+            "title": "Renewal Date",
+            "description": "Date field for contract or renewal dates in ISO 8601 format (e.g., '2024-12-31'). Available on Blossom plan and above"
+          },
+          "custom_fields": {
+            "type": "object",
+            "title": "Custom Fields",
+            "description": "Custom field values specific to your Freshdesk configuration. Available on Growth plan or above",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_UPDATE_CONTACT",
+      "name": "Update Contact",
+      "description": "Tool to update an existing contact's information in Freshdesk. Use when you need to modify contact details such as name, email, phone, job title, or custom fields.",
+      "version": "20260828_00",
+      "tags": [
+        "updateHint",
+        "important",
+        "openWorldHint",
+        "contacts_and_companies"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateContactRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              158009716344
+            ],
+            "description": "ID of the contact to update"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Alice Brown - Updated"
+            ],
+            "description": "Updated name of the contact"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "examples": [
+              [
+                "vip",
+                "enterprise"
+              ]
+            ],
+            "description": "Updated tags associated with the contact"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "examples": [
+              "alice.updated@example.com"
+            ],
+            "description": "Updated email address"
+          },
+          "phone": {
+            "type": "string",
+            "title": "Phone",
+            "examples": [
+              "+1-555-1234"
+            ],
+            "description": "Updated phone number"
+          },
+          "mobile": {
+            "type": "string",
+            "title": "Mobile",
+            "examples": [
+              "+1-555-5678"
+            ],
+            "description": "Updated mobile number"
+          },
+          "address": {
+            "type": "string",
+            "title": "Address",
+            "examples": [
+              "123 Main St, Springfield, IL 62701"
+            ],
+            "description": "Updated physical address"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "examples": [
+              "en",
+              "es",
+              "fr"
+            ],
+            "description": "Updated language code for preferred language"
+          },
+          "job_title": {
+            "type": "string",
+            "title": "Job Title",
+            "examples": [
+              "Senior Manager"
+            ],
+            "description": "Updated job title"
+          },
+          "time_zone": {
+            "type": "string",
+            "title": "Time Zone",
+            "examples": [
+              "Pacific Time (US & Canada)",
+              "Eastern Time (US & Canada)"
+            ],
+            "description": "Updated time zone"
+          },
+          "company_id": {
+            "type": "integer",
+            "title": "Company Id",
+            "examples": [
+              123456
+            ],
+            "description": "Updated ID of the primary company associated with this contact"
+          },
+          "twitter_id": {
+            "type": "string",
+            "title": "Twitter Id",
+            "examples": [
+              "@alicebrown"
+            ],
+            "description": "Updated Twitter handle"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "Updated contact information"
+            ],
+            "description": "Updated description or notes about the contact"
+          },
+          "other_emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Other Emails",
+            "examples": [
+              [
+                "secondary@example.com"
+              ]
+            ],
+            "description": "Updated additional email addresses"
+          },
+          "custom_fields": {
+            "type": "object",
+            "title": "Custom Fields",
+            "examples": [
+              {
+                "employee_id": "EMP001"
+              }
+            ],
+            "description": "Custom fields object. Note: If contact has required custom fields (e.g., employee_id), they must be included in updates to avoid validation errors.",
+            "additionalProperties": true
+          },
+          "view_all_tickets": {
+            "type": "boolean",
+            "title": "View All Tickets",
+            "description": "Set to true if the contact can view all tickets from their company"
+          },
+          "unique_external_id": {
+            "type": "string",
+            "title": "Unique External Id",
+            "examples": [
+              "EXT-12345"
+            ],
+            "description": "Updated external ID for integration purposes"
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_UPDATE_SLA_POLICIES",
+      "name": "Update SLA Policy",
+      "description": "Tool to update an existing SLA (Service Level Agreement) policy in Freshdesk. Use when you need to modify service level targets, policy settings, or applicability conditions for an SLA policy.",
+      "version": "20260828_00",
+      "tags": [
+        "updateHint",
+        "important",
+        "business_hours_and_slas"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateSLAPoliciesRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "examples": [
+              1120000034497
+            ],
+            "description": "Unique identifier of the SLA policy to update"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Standard Support SLA",
+              "Premium SLA"
+            ],
+            "description": "Name of the SLA policy"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Whether the SLA policy is active or not"
+          },
+          "sla_target": {
+            "type": "object",
+            "title": "UpdateSLATarget",
+            "properties": {
+              "priority_1": {
+                "type": "object",
+                "title": "UpdateSLATargetPriority",
+                "properties": {
+                  "business_hours": {
+                    "type": "boolean",
+                    "title": "Business Hours",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether business hours apply to this priority level"
+                  },
+                  "resolve_within": {
+                    "type": "integer",
+                    "title": "Resolve Within",
+                    "minimum": 1,
+                    "examples": [
+                      28800,
+                      57600,
+                      86400,
+                      115200
+                    ],
+                    "description": "Resolution time target in seconds (e.g., 28800=8hrs, 57600=16hrs, 86400=24hrs)"
+                  },
+                  "respond_within": {
+                    "type": "integer",
+                    "title": "Respond Within",
+                    "minimum": 1,
+                    "examples": [
+                      900,
+                      1800,
+                      3600,
+                      7200
+                    ],
+                    "description": "First response time target in seconds (e.g., 900=15min, 3600=1hr, 7200=2hrs)"
+                  },
+                  "escalation_enabled": {
+                    "type": "boolean",
+                    "title": "Escalation Enabled",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether escalation is enabled for this priority level"
+                  }
+                },
+                "description": "SLA target configuration for a specific priority level.",
+                "additionalProperties": false
+              },
+              "priority_2": {
+                "type": "object",
+                "title": "UpdateSLATargetPriority",
+                "properties": {
+                  "business_hours": {
+                    "type": "boolean",
+                    "title": "Business Hours",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether business hours apply to this priority level"
+                  },
+                  "resolve_within": {
+                    "type": "integer",
+                    "title": "Resolve Within",
+                    "minimum": 1,
+                    "examples": [
+                      28800,
+                      57600,
+                      86400,
+                      115200
+                    ],
+                    "description": "Resolution time target in seconds (e.g., 28800=8hrs, 57600=16hrs, 86400=24hrs)"
+                  },
+                  "respond_within": {
+                    "type": "integer",
+                    "title": "Respond Within",
+                    "minimum": 1,
+                    "examples": [
+                      900,
+                      1800,
+                      3600,
+                      7200
+                    ],
+                    "description": "First response time target in seconds (e.g., 900=15min, 3600=1hr, 7200=2hrs)"
+                  },
+                  "escalation_enabled": {
+                    "type": "boolean",
+                    "title": "Escalation Enabled",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether escalation is enabled for this priority level"
+                  }
+                },
+                "description": "SLA target configuration for a specific priority level.",
+                "additionalProperties": false
+              },
+              "priority_3": {
+                "type": "object",
+                "title": "UpdateSLATargetPriority",
+                "properties": {
+                  "business_hours": {
+                    "type": "boolean",
+                    "title": "Business Hours",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether business hours apply to this priority level"
+                  },
+                  "resolve_within": {
+                    "type": "integer",
+                    "title": "Resolve Within",
+                    "minimum": 1,
+                    "examples": [
+                      28800,
+                      57600,
+                      86400,
+                      115200
+                    ],
+                    "description": "Resolution time target in seconds (e.g., 28800=8hrs, 57600=16hrs, 86400=24hrs)"
+                  },
+                  "respond_within": {
+                    "type": "integer",
+                    "title": "Respond Within",
+                    "minimum": 1,
+                    "examples": [
+                      900,
+                      1800,
+                      3600,
+                      7200
+                    ],
+                    "description": "First response time target in seconds (e.g., 900=15min, 3600=1hr, 7200=2hrs)"
+                  },
+                  "escalation_enabled": {
+                    "type": "boolean",
+                    "title": "Escalation Enabled",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether escalation is enabled for this priority level"
+                  }
+                },
+                "description": "SLA target configuration for a specific priority level.",
+                "additionalProperties": false
+              },
+              "priority_4": {
+                "type": "object",
+                "title": "UpdateSLATargetPriority",
+                "properties": {
+                  "business_hours": {
+                    "type": "boolean",
+                    "title": "Business Hours",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether business hours apply to this priority level"
+                  },
+                  "resolve_within": {
+                    "type": "integer",
+                    "title": "Resolve Within",
+                    "minimum": 1,
+                    "examples": [
+                      28800,
+                      57600,
+                      86400,
+                      115200
+                    ],
+                    "description": "Resolution time target in seconds (e.g., 28800=8hrs, 57600=16hrs, 86400=24hrs)"
+                  },
+                  "respond_within": {
+                    "type": "integer",
+                    "title": "Respond Within",
+                    "minimum": 1,
+                    "examples": [
+                      900,
+                      1800,
+                      3600,
+                      7200
+                    ],
+                    "description": "First response time target in seconds (e.g., 900=15min, 3600=1hr, 7200=2hrs)"
+                  },
+                  "escalation_enabled": {
+                    "type": "boolean",
+                    "title": "Escalation Enabled",
+                    "examples": [
+                      true,
+                      false
+                    ],
+                    "description": "Whether escalation is enabled for this priority level"
+                  }
+                },
+                "description": "SLA target configuration for a specific priority level.",
+                "additionalProperties": false
+              }
+            },
+            "description": "SLA targets for different priority levels.",
+            "additionalProperties": false
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "SLA policy for standard support tickets"
+            ],
+            "description": "Description of the SLA policy"
+          },
+          "applicable_to": {
+            "type": "object",
+            "title": "UpdateApplicableTo",
+            "properties": {
+              "group_ids": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Group Ids",
+                "examples": [
+                  [
+                    1,
+                    2,
+                    3
+                  ],
+                  []
+                ],
+                "description": "List of group IDs where this policy applies. Empty array means applies to all groups."
+              },
+              "product_ids": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Product Ids",
+                "examples": [
+                  [
+                    1,
+                    2
+                  ],
+                  []
+                ],
+                "description": "List of product IDs where this policy applies. Empty array means applies to all products."
+              }
+            },
+            "description": "Conditions that determine where the SLA policy applies.",
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_UPDATE_TICKET",
+      "name": "Update Ticket",
+      "description": "Tool to update an existing ticket in Freshdesk. Use when you need to modify ticket attributes like subject, priority, status, description, or custom fields.",
+      "version": "20260828_00",
+      "tags": [
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateTicketRequest",
+        "required": [
+          "ticket_id"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Name of the requester."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "description": "Array of tags to associate with the ticket."
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "Type of the ticket. Default types: Question, Incident, Problem, Feature Request. Custom types configured in your Freshdesk instance (e.g., Billing, Refund, Bug, Enhancement) are also supported."
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "Email address of the requester."
+          },
+          "phone": {
+            "type": "string",
+            "title": "Phone",
+            "description": "Phone number of the requester."
+          },
+          "due_by": {
+            "type": "string",
+            "title": "Due By",
+            "description": "Timestamp when the ticket is due to be resolved in ISO 8601 format (e.g., '2026-01-30T15:00:00Z')."
+          },
+          "source": {
+            "enum": [
+              "email",
+              "portal",
+              "phone",
+              "forum",
+              "twitter",
+              "facebook",
+              "chat",
+              "mobihelp",
+              "feedback_widget",
+              "outbound_email"
+            ],
+            "type": "string",
+            "title": "TicketSource",
+            "description": "Enum for ticket source values."
+          },
+          "status": {
+            "enum": [
+              "open",
+              "pending",
+              "resolved",
+              "closed",
+              "waiting_on_customer",
+              "waiting_on_third_party"
+            ],
+            "type": "string",
+            "title": "TicketStatus",
+            "description": "Enum for ticket status values."
+          },
+          "subject": {
+            "type": "string",
+            "title": "Subject",
+            "description": "Subject of the ticket."
+          },
+          "group_id": {
+            "type": "integer",
+            "title": "Group Id",
+            "description": "ID of the group to which the ticket has been assigned."
+          },
+          "priority": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "type": "string",
+            "title": "TicketPriority",
+            "description": "Enum for ticket priority values."
+          },
+          "fr_due_by": {
+            "type": "string",
+            "title": "Fr Due By",
+            "description": "Timestamp when the first response is due in ISO 8601 format (e.g., '2026-01-28T15:00:00Z')."
+          },
+          "parent_id": {
+            "type": "integer",
+            "title": "Parent Id",
+            "description": "ID of the parent ticket to link this ticket to."
+          },
+          "ticket_id": {
+            "type": "integer",
+            "title": "Ticket Id",
+            "description": "ID of the ticket to be updated."
+          },
+          "company_id": {
+            "type": "integer",
+            "title": "Company Id",
+            "description": "ID of the company associated with the requester."
+          },
+          "product_id": {
+            "type": "integer",
+            "title": "Product Id",
+            "description": "ID of the product associated with this ticket."
+          },
+          "twitter_id": {
+            "type": "string",
+            "title": "Twitter Id",
+            "description": "Twitter handle of the requester."
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "title": "Attachments",
+            "description": "Array of attachment objects to add to the ticket."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "HTML content of the ticket description."
+          },
+          "facebook_id": {
+            "type": "string",
+            "title": "Facebook Id",
+            "description": "Facebook ID of the requester."
+          },
+          "requester_id": {
+            "type": "integer",
+            "title": "Requester Id",
+            "description": "User ID of the requester."
+          },
+          "responder_id": {
+            "type": "integer",
+            "title": "Responder Id",
+            "description": "ID of the agent to whom the ticket has been assigned."
+          },
+          "custom_fields": {
+            "type": "object",
+            "title": "Custom Fields",
+            "description": "Key-value pairs containing names and values of custom fields. Example: {\"cf_reference_number\": \"REF-123\"}. Custom fields must be predefined in Freshdesk admin settings.",
+            "additionalProperties": true
+          },
+          "email_config_id": {
+            "type": "integer",
+            "title": "Email Config Id",
+            "description": "ID of the email configuration used for this ticket."
+          },
+          "lookup_parameter": {
+            "type": "string",
+            "title": "Lookup Parameter",
+            "description": "Lookup field value for custom objects."
+          },
+          "internal_agent_id": {
+            "type": "integer",
+            "title": "Internal Agent Id",
+            "description": "ID of the internal agent to assign the ticket to."
+          },
+          "internal_group_id": {
+            "type": "integer",
+            "title": "Internal Group Id",
+            "description": "ID of the internal group to assign the ticket to."
+          },
+          "unique_external_id": {
+            "type": "string",
+            "title": "Unique External Id",
+            "description": "External ID of the requester."
+          }
+        }
+      }
+    },
+    {
+      "slug": "FRESHDESK_VIEW_TICKET",
+      "name": "View Ticket",
+      "description": "Views an existing ticket in Freshdesk. Ticket details are returned nested under `response_data` in the tool response.",
+      "version": "20260828_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ViewTicketRequest",
+        "required": [
+          "ticket_id"
+        ],
+        "properties": {
+          "include": {
+            "type": "string",
+            "title": "Include",
+            "examples": [
+              "stats",
+              "requester",
+              "company",
+              "stats,requester,company"
+            ],
+            "description": "Comma-separated list of additional information to include in the response. Valid values: 'stats' (ticket timing statistics like first response time), 'requester' (full requester details), 'company' (company information). Example: 'stats,requester,company' to include all expansion fields."
+          },
+          "ticket_id": {
+            "type": "integer",
+            "title": "Ticket Id",
+            "description": "ID of the ticket to be viewed"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,1306 @@
+{
+  "toolkit": "freshdesk",
+  "version": "20260828_00",
+  "auth": {
+    "mode": "api_key",
+    "fields": [
+      "subdomain",
+      "generic_api_key"
+    ]
+  },
+  "label": "Freshdesk",
+  "description": "Find, create, and update tickets, contacts, companies, and help articles in one helpdesk.",
+  "securityDescription": "Freshdesk connects with an API key and helpdesk subdomain entered on Composio's hosted page; Chickpea never receives the key. Agents act as the Freshdesk agent who owns the key and can read what that agent can see. With write access, Agents can create and update tickets, contacts, and companies, add private notes, reply to and forward tickets, send outbound email, and draft help articles. Replies, forwards, and outbound email reach customers. Agents cannot delete anything, change a ticket's requester or a contact's email, phone, social, or external IDs, assign tickets to agents or groups, act as another user, make notes public, publish articles, widen which tickets a contact can see, move a contact or ticket to another company or parent ticket, or manage agents, groups, roles, SLAs, or canned responses.",
+  "preset": {
+    "category": "business",
+    "accent": "#00AC4C"
+  },
+  "validationCapability": "freshdesk.currently_authenticated_agent",
+  "review": {
+    "add": [
+      "FRESHDESK_CREATE_TICKET",
+      "FRESHDESK_GET_TICKETS",
+      "FRESHDESK_REPLY_TO_TICKET",
+      "FRESHDESK_UPDATE_TICKET",
+      "FRESHDESK_VIEW_TICKET"
+    ],
+    "drop": {},
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "freshdesk.add_note_to_ticket",
+      "tool": "FRESHDESK_ADD_NOTE_TO_TICKET",
+      "toolName": "freshdesk_add_note_to_ticket",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to add a private or public note to an existing ticket in Freshdesk. Use when you need to add internal comments or public notes to a ticket. Notes can be private (agent-only) or public, and can include HTML content.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Freshdesk: Add Note to Ticket",
+      "withheldArguments": {
+        "private": "changes sharing, visibility, permissions, membership, or who acts",
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The content of the note. Can contain plain text or HTML."
+          },
+          "ticket_id": {
+            "type": "integer",
+            "description": "The unique identifier of the ticket to add the note to."
+          },
+          "notify_emails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Email addresses to notify about the note. IMPORTANT: Only accepts agent email addresses, not external contacts or non-agent users."
+          }
+        },
+        "required": [
+          "ticket_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.create_solution_article",
+      "tool": "FRESHDESK_CREATE_SOLUTION_ARTICLE",
+      "toolName": "freshdesk_create_solution_article",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to create a new solution article in a Freshdesk knowledge base folder. Use when you need to add documentation, FAQs, or help content to your knowledge base.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Freshdesk: Create Solution Article",
+      "withheldArguments": {
+        "status": "changes sharing, visibility, permissions, membership, or who acts",
+        "agent_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Tags for categorizing the article"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Title of the solution article"
+          },
+          "seo_data": {
+            "type": "object",
+            "properties": {
+              "meta_title": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "SEO meta title for the article"
+              },
+              "meta_keywords": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "maxItems": 100,
+                "description": "SEO meta keywords for the article as a list of keyword strings"
+              },
+              "meta_description": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "SEO meta description for the article"
+              }
+            },
+            "description": "SEO data for creating/updating an article (request format)."
+          },
+          "folder_id": {
+            "type": "integer",
+            "description": "The unique identifier of the folder where the article will be created"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Description/content of the article in HTML format"
+          }
+        },
+        "required": [
+          "folder_id",
+          "title",
+          "description"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.create_ticket",
+      "tool": "FRESHDESK_CREATE_TICKET",
+      "toolName": "freshdesk_create_ticket",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new ticket in Freshdesk. REQUIRED FIELDS: - subject and description are always required - At least ONE requester identifier is REQUIRED: requester_id, email, phone, facebook_id, twitter_id, or unique_external_id CONDITIONAL REQUIREMENTS: - If phone is provided without email, name becomes MANDATORY NOTE ON ATTACHMENTS: - attachments field expects multipart/form-data format, not file paths",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Freshdesk: Create Ticket",
+      "withheldArguments": {
+        "group_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "responder_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "custom_fields": "unsupported schema",
+        "internal_agent_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "internal_group_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name of the requester"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Tags that have been associated with the ticket"
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Email address of the requester"
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Phone number of the requester"
+          },
+          "due_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Timestamp when the ticket is due to be resolved. Format: ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "email",
+              "portal",
+              "phone",
+              "chat",
+              "feedback_widget",
+              "outbound_email"
+            ],
+            "description": "Channel through which the ticket was created."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "open",
+              "pending",
+              "resolved",
+              "closed"
+            ],
+            "description": "Status of the ticket."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Subject of the ticket. Must be a non-empty string."
+          },
+          "priority": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "description": "Priority of the ticket."
+          },
+          "cc_emails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Email addresses added in the 'cc' field of the incoming ticket email"
+          },
+          "fr_due_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Timestamp when the first response is due. Format: ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."
+          },
+          "company_id": {
+            "type": "integer",
+            "description": "Company ID of the requester"
+          },
+          "product_id": {
+            "type": "integer",
+            "description": "ID of the product linked to the ticket"
+          },
+          "twitter_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Twitter handle of the requester"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Ticket attachments. Note: File attachments require multipart/form-data format and are not supported via JSON API calls."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "HTML content of the ticket. Supports HTML formatting such as <p>, <strong>, <em>, etc."
+          },
+          "facebook_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Facebook ID of the requester"
+          },
+          "requester_id": {
+            "type": "integer",
+            "description": "User ID of the requester"
+          },
+          "email_config_id": {
+            "type": "integer",
+            "description": "ID of email config which is used for this ticket"
+          },
+          "lookup_parameter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lookup field for custom objects"
+          },
+          "unique_external_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "External ID of the requester"
+          }
+        },
+        "required": [
+          "subject",
+          "description"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.create_ticket_outbound_email",
+      "tool": "FRESHDESK_CREATE_TICKET_OUTBOUND_EMAIL",
+      "toolName": "freshdesk_create_ticket_outbound_email",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Tool to create a ticket by sending an outbound email to external recipients. Use when you need to initiate a support conversation via email. The ticket is automatically created with 'Closed' status and assigned to the sending agent to avoid unnecessary SLA timers.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Freshdesk: Create Ticket via Outbound Email",
+      "input": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Recipient email address for the outbound email"
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Subject line of the outbound email"
+          },
+          "priority": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "description": "Priority level for the ticket created from this outbound email."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Body content of the outbound email. Supports HTML formatting"
+          },
+          "email_config_id": {
+            "type": "integer",
+            "description": "Email configuration ID to use for sending the outbound email. Can be obtained from GET /api/v2/email_configs endpoint"
+          }
+        },
+        "required": [
+          "email",
+          "subject",
+          "description",
+          "email_config_id",
+          "priority"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.currently_authenticated_agent",
+      "tool": "FRESHDESK_CURRENTLY_AUTHENTICATED_AGENT",
+      "toolName": "freshdesk_currently_authenticated_agent",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve profile information for the currently authenticated agent. Use when you need to get details about the agent whose API credentials are being used for authentication.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "id": "freshdesk.get_account",
+      "tool": "FRESHDESK_GET_ACCOUNT",
+      "toolName": "freshdesk_get_account",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to view Freshdesk account information. Use when you need to retrieve comprehensive account details including organization information, agent counts, timezone, data center location, plan tier, address, and primary contact information.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "id": "freshdesk.get_agent",
+      "tool": "FRESHDESK_GET_AGENT",
+      "toolName": "freshdesk_get_agent",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve detailed information about a specific agent by ID. Use when you need to view a particular agent's profile, contact information, availability status, and role assignments.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "type": "integer",
+            "description": "The unique identifier of the agent to retrieve. Use FRESHDESK_GET_AGENTS to list all agents and obtain valid agent IDs."
+          }
+        },
+        "required": [
+          "agent_id"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.get_agents",
+      "tool": "FRESHDESK_GET_AGENTS",
+      "toolName": "freshdesk_get_agents",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search for agents using autocomplete functionality in Freshdesk. Use when you need to quickly find agents by name or email keyword for autocomplete suggestions.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "term": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The search keyword to find agents by name or email. Minimum 2 characters recommended for meaningful results."
+          }
+        },
+        "required": [
+          "term"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.get_companies",
+      "tool": "FRESHDESK_GET_COMPANIES",
+      "toolName": "freshdesk_get_companies",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all companies from a Freshdesk account with pagination support. Use when you need to list companies representing customer organizations.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination. Starts at 1. Default: 1."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of companies to return per page. Maximum: 100. Default: 30. Invalid values or values greater than 100 will result in an error."
+          }
+        }
+      }
+    },
+    {
+      "id": "freshdesk.get_company",
+      "tool": "FRESHDESK_GET_COMPANY",
+      "toolName": "freshdesk_get_company",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve detailed information about a specific company by ID. Use when you need to view a particular company's details, domains, and custom fields.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "company_id": {
+            "type": "integer",
+            "description": "The unique identifier of the company to retrieve"
+          }
+        },
+        "required": [
+          "company_id"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.get_company_fields",
+      "tool": "FRESHDESK_GET_COMPANY_FIELDS",
+      "toolName": "freshdesk_get_company_fields",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all company fields configured in Freshdesk. Use when you need to get the complete list of company field definitions including default fields (name, description, domains, etc.) and custom fields with their metadata.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "id": "freshdesk.get_contact",
+      "tool": "FRESHDESK_GET_CONTACT",
+      "toolName": "freshdesk_get_contact",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve detailed information about a specific contact by ID. Use when you need to view a particular contact's profile, contact information, and custom fields.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "contact_id": {
+            "type": "integer",
+            "description": "The unique identifier of the contact to retrieve"
+          }
+        },
+        "required": [
+          "contact_id"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.get_contact_fields",
+      "tool": "FRESHDESK_GET_CONTACT_FIELDS",
+      "toolName": "freshdesk_get_contact_fields",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all contact fields configured in Freshdesk. Use when you need to get the complete list of contact field definitions including default fields (name, email, phone, etc.) and custom fields with their metadata.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "id": "freshdesk.get_contacts",
+      "tool": "FRESHDESK_GET_CONTACTS",
+      "toolName": "freshdesk_get_contacts",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all contacts from a Freshdesk account. Use when you need to list contacts, optionally filtered by email, phone, mobile, company, state, or modification date. Results are paginated; iterate through pages using `page` and `per_page` (max 100) to retrieve the full dataset.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination. Starts at 1. Default: 1."
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter contacts by email address"
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter contacts by phone number. Should contain only numeric values; avoid characters like '-', '+', '(', ')'"
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter contacts by state"
+          },
+          "mobile": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter contacts by mobile number. Should contain only numeric values; avoid characters like '-', '+', '(', ')'"
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of contacts to return per page. Maximum: 100. Default: 30."
+          },
+          "company_id": {
+            "type": "integer",
+            "description": "Filter contacts belonging to a specific company by company ID"
+          },
+          "updated_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Retrieve contacts modified after a specified timestamp in ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ)"
+          }
+        }
+      }
+    },
+    {
+      "id": "freshdesk.get_search",
+      "tool": "FRESHDESK_GET_SEARCH",
+      "toolName": "freshdesk_get_search",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search and filter tickets in Freshdesk using flexible query syntax. Use when you need to find tickets based on status, priority, tags, custom fields, dates, or other ticket attributes with complex filtering logic.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination. Starts at 1 and cannot exceed 10. Default: 1. Each page returns up to 30 results. Maximum 300 tickets can be retrieved across all pages."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string to filter tickets using field:value syntax. Wrap conditions in parentheses for grouping. Use AND, OR for logic. Use :> (≥) and :< (≤) for numeric/date comparisons. Use null for empty fields. String values need single quotes. Do NOT include outer double quotes - they are added automatically. Max 512 characters."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.get_tickets",
+      "tool": "FRESHDESK_GET_TICKETS",
+      "toolName": "freshdesk_get_tickets",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of tickets from Freshdesk. Tickets are returned under `response_data` in the response object.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number to retrieve"
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Predefined filter to apply. Possible values include 'new_and_my_open', 'watching', 'spam', 'deleted', etc."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "open",
+              "pending",
+              "resolved",
+              "closed",
+              "waiting_on_customer",
+              "waiting_on_third_party"
+            ],
+            "description": "Enum for ticket status values."
+          },
+          "sort_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field to sort tickets by, e.g., 'created_at'"
+          },
+          "agent_id": {
+            "type": "integer",
+            "description": "Filter tickets by agent ID"
+          },
+          "group_id": {
+            "type": "integer",
+            "description": "Filter tickets by group ID"
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of tickets per page"
+          },
+          "priority": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "description": "Enum for ticket priority values."
+          },
+          "sort_order": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Order of sorting: 'asc' or 'desc'"
+          },
+          "requester_id": {
+            "type": "integer",
+            "description": "Filter tickets by requester ID"
+          },
+          "created_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Retrieve tickets created since this timestamp. Format: YYYY-MM-DDTHH:MM:SSZ"
+          }
+        }
+      }
+    },
+    {
+      "id": "freshdesk.list_all_ticket_conversations",
+      "tool": "FRESHDESK_LIST_ALL_TICKET_CONVERSATIONS",
+      "toolName": "freshdesk_list_all_ticket_conversations",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all conversations of a specific ticket in Freshdesk. Use when you need to view all messages, notes, and replies associated with a ticket.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for pagination. Used to retrieve specific pages of results when there are many conversations."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of items per page for pagination. Controls how many conversation records are returned per page."
+          },
+          "ticket_id": {
+            "type": "integer",
+            "description": "The unique identifier of the ticket whose conversations are to be retrieved."
+          }
+        },
+        "required": [
+          "ticket_id"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.list_solution_articles",
+      "tool": "FRESHDESK_LIST_SOLUTION_ARTICLES",
+      "toolName": "freshdesk_list_solution_articles",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all solution articles within a specified folder in Freshdesk. Use when you need to list all articles that exist within a specific solution folder.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination. Starts at 1. Each page returns up to 30 articles."
+          },
+          "folder_id": {
+            "type": "integer",
+            "description": "The unique identifier of the solution folder for which to retrieve articles"
+          }
+        },
+        "required": [
+          "folder_id"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.list_solution_categories",
+      "tool": "FRESHDESK_LIST_SOLUTION_CATEGORIES",
+      "toolName": "freshdesk_list_solution_categories",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all solution categories in Freshdesk. Use when you need to list all available solution categories in the knowledge base.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination. Starts at 1. Each page returns up to 30 categories."
+          }
+        }
+      }
+    },
+    {
+      "id": "freshdesk.reply_to_forward_ticket",
+      "tool": "FRESHDESK_REPLY_TO_FORWARD_TICKET",
+      "toolName": "freshdesk_reply_to_forward_ticket",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Tool to reply to or forward a ticket to external email addresses. Use when you need to send a ticket reply to specific email recipients outside the normal ticket flow.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Freshdesk: Reply to Forward Ticket",
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Content of the reply or forward message"
+          },
+          "cc_emails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of email addresses to be CC'd"
+          },
+          "ticket_id": {
+            "type": "integer",
+            "description": "ID of the ticket to reply to or forward"
+          },
+          "to_emails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of email addresses to send the reply/forward to"
+          },
+          "bcc_emails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of email addresses to be BCC'd"
+          },
+          "from_email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Email address from which the reply should be sent"
+          }
+        },
+        "required": [
+          "ticket_id",
+          "body",
+          "to_emails"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.reply_to_ticket",
+      "tool": "FRESHDESK_REPLY_TO_TICKET",
+      "toolName": "freshdesk_reply_to_ticket",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Tool to create a public reply to an existing support ticket in Freshdesk. Use when an agent needs to respond to a ticket. The reply is sent to the ticket requester and any CC'd recipients. Supports both plain text and HTML content, file attachments, and email distribution control.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Freshdesk: Reply to Ticket",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The content of the reply message. Can contain HTML formatting. This is the primary reply content that will be sent to the requester."
+          },
+          "cc_emails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Email addresses to include in the CC field of the reply. Maximum 50 total recipients across to/cc/bcc fields."
+          },
+          "ticket_id": {
+            "type": "integer",
+            "description": "The unique identifier of the ticket to reply to"
+          },
+          "to_emails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Direct recipient email addresses to override the default ticket requester. Requires the 'multiple_to' feature to be enabled in your Freshdesk account. When not using this feature, the reply is automatically sent to the ticket requester."
+          },
+          "bcc_emails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Email addresses to include in the BCC field of the reply. Maximum 50 total recipients across to/cc/bcc fields."
+          },
+          "from_email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The support email address to send the reply from. If you have multiple support emails configured, use this parameter to specify which email should be used as the sender. By default, replies are sent from the support email where the ticket was originally created."
+          }
+        },
+        "required": [
+          "ticket_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.search_agents",
+      "tool": "FRESHDESK_SEARCH_AGENTS",
+      "toolName": "freshdesk_search_agents",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search and filter agents in Freshdesk. Use when you need to find agents by email, phone, mobile, or state (fulltime/occasional).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Specifies which page of results to return"
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter agents by email address"
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter agents by phone number"
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "fulltime",
+              "occasional"
+            ],
+            "description": "Filter agents by their state (fulltime or occasional)"
+          },
+          "mobile": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter agents by mobile phone number"
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Specifies the number of results per page"
+          }
+        }
+      }
+    },
+    {
+      "id": "freshdesk.search_company",
+      "tool": "FRESHDESK_SEARCH_COMPANY",
+      "toolName": "freshdesk_search_company",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search for companies using autocomplete functionality in Freshdesk. Use when you need to quickly find companies by name or partial name keyword for autocomplete suggestions.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The company name or partial name to search for. Use this parameter to find companies matching the search term via autocomplete functionality."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.search_contacts",
+      "tool": "FRESHDESK_SEARCH_CONTACTS",
+      "toolName": "freshdesk_search_contacts",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search and filter contacts in Freshdesk using query-based search. Use when you need to find contacts based on fields like email, phone, mobile, company_id, or other searchable contact attributes.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination. Starts at 1 and cannot exceed 10. Default: 1. Returns maximum 30 results per page."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string to filter contacts. IMPORTANT: The entire query must be wrapped in double quotes. Format: \"field:value\" for strings or \"field:number\" for numeric values. Searchable fields: email, phone, mobile, company_id, active. Supports logical operators (AND, OR) for combining conditions. String values must use single quotes inside the double-quoted query. Limited to 512 characters. Use \"field:null\" to search for null values."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.search_contacts_autocomplete",
+      "tool": "FRESHDESK_SEARCH_CONTACTS_AUTOCOMPLETE",
+      "toolName": "freshdesk_search_contacts_autocomplete",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search for contacts using autocomplete functionality in Freshdesk. Use when you need to quickly find contacts by name, email, or other contact attributes for autocomplete suggestions.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "term": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search term to find matching contacts. The endpoint searches across contact name, email, and other contact fields to return matches for autocomplete suggestions. Minimum 1 character required."
+          }
+        },
+        "required": [
+          "term"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.search_solution_articles",
+      "tool": "FRESHDESK_SEARCH_SOLUTION_ARTICLES",
+      "toolName": "freshdesk_search_solution_articles",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search solution articles in Freshdesk knowledge base by keyword. Use when you need to find articles by searching titles and content.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination. Starts at 1. Each page returns up to 30 results (max 10 pages)."
+          },
+          "term": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The search term or keyword to search for in solution articles. Searches across article titles and body content."
+          }
+        },
+        "required": [
+          "term"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.update_companies",
+      "tool": "FRESHDESK_UPDATE_COMPANIES",
+      "toolName": "freshdesk_update_companies",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update an existing company's information in Freshdesk. Use when you need to modify company details, domains, or custom fields.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Freshdesk: Update Company",
+      "withheldArguments": {
+        "custom_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Company name"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Notes associated with the company"
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Domain names for the company. Multiple domains can be added"
+          },
+          "industry": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Industry classification of the company. Editable dropdown of standard industry choices. Available on Blossom plan and above"
+          },
+          "company_id": {
+            "type": "integer",
+            "description": "The unique identifier of the company to update"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Description about the company"
+          },
+          "account_tier": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Account tier for the company. Editable dropdown with choices: 'basic', 'premium', 'enterprise'. Available on Blossom plan and above"
+          },
+          "health_score": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Health score for the company. Editable dropdown with choices: 'happy', 'doing okay', 'at risk'. Available on Blossom plan and above"
+          },
+          "renewal_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Date field for contract or renewal dates in ISO 8601 format (e.g., '2024-12-31'). Available on Blossom plan and above"
+          }
+        },
+        "required": [
+          "company_id"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.update_contact",
+      "tool": "FRESHDESK_UPDATE_CONTACT",
+      "toolName": "freshdesk_update_contact",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update an existing contact's information in Freshdesk. Use when you need to modify contact details such as name, email, phone, job title, or custom fields.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Freshdesk: Update Contact",
+      "withheldArguments": {
+        "email": "changes who the record belongs to or how a person is identified",
+        "phone": "changes who the record belongs to or how a person is identified",
+        "mobile": "changes who the record belongs to or how a person is identified",
+        "company_id": "moves the record to another container",
+        "twitter_id": "changes who the record belongs to or how a person is identified",
+        "other_emails": "changes who the record belongs to or how a person is identified",
+        "custom_fields": "unsupported schema",
+        "view_all_tickets": "changes sharing, visibility, permissions, membership, or who acts",
+        "unique_external_id": "changes who the record belongs to or how a person is identified"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "ID of the contact to update"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated name of the contact"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Updated tags associated with the contact"
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated physical address"
+          },
+          "language": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated language code for preferred language"
+          },
+          "job_title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated job title"
+          },
+          "time_zone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated time zone"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated description or notes about the contact"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.update_ticket",
+      "tool": "FRESHDESK_UPDATE_TICKET",
+      "toolName": "freshdesk_update_ticket",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update an existing ticket in Freshdesk. Use when you need to modify ticket attributes like subject, priority, status, description, or custom fields.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Freshdesk: Update Ticket",
+      "withheldArguments": {
+        "email": "changes who the record belongs to or how a person is identified",
+        "phone": "changes who the record belongs to or how a person is identified",
+        "group_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "parent_id": "moves the record to another container",
+        "company_id": "moves the record to another container",
+        "twitter_id": "changes who the record belongs to or how a person is identified",
+        "attachments": "unsupported schema",
+        "facebook_id": "changes who the record belongs to or how a person is identified",
+        "requester_id": "changes who the record belongs to or how a person is identified",
+        "responder_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "custom_fields": "unsupported schema",
+        "email_config_id": "changes who the record belongs to or how a person is identified",
+        "internal_agent_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "internal_group_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "unique_external_id": "changes who the record belongs to or how a person is identified"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name of the requester."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Array of tags to associate with the ticket."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Type of the ticket. Default types: Question, Incident, Problem, Feature Request. Custom types configured in your Freshdesk instance (e.g., Billing, Refund, Bug, Enhancement) are also supported."
+          },
+          "due_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Timestamp when the ticket is due to be resolved in ISO 8601 format (e.g., '2026-01-30T15:00:00Z')."
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "email",
+              "portal",
+              "phone",
+              "forum",
+              "twitter",
+              "facebook",
+              "chat",
+              "mobihelp",
+              "feedback_widget",
+              "outbound_email"
+            ],
+            "description": "Enum for ticket source values."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "open",
+              "pending",
+              "resolved",
+              "closed",
+              "waiting_on_customer",
+              "waiting_on_third_party"
+            ],
+            "description": "Enum for ticket status values."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Subject of the ticket."
+          },
+          "priority": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "description": "Enum for ticket priority values."
+          },
+          "fr_due_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Timestamp when the first response is due in ISO 8601 format (e.g., '2026-01-28T15:00:00Z')."
+          },
+          "ticket_id": {
+            "type": "integer",
+            "description": "ID of the ticket to be updated."
+          },
+          "product_id": {
+            "type": "integer",
+            "description": "ID of the product associated with this ticket."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "HTML content of the ticket description."
+          },
+          "lookup_parameter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lookup field value for custom objects."
+          }
+        },
+        "required": [
+          "ticket_id"
+        ]
+      }
+    },
+    {
+      "id": "freshdesk.view_ticket",
+      "tool": "FRESHDESK_VIEW_TICKET",
+      "toolName": "freshdesk_view_ticket",
+      "lane": "read",
+      "effect": "read",
+      "description": "Views an existing ticket in Freshdesk. Ticket details are returned nested under `response_data` in the tool response.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "include": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of additional information to include in the response. Valid values: 'stats' (ticket timing statistics like first response time), 'requester' (full requester details), 'company' (company information). Example: 'stats,requester,company' to include all expansion fields."
+          },
+          "ticket_id": {
+            "type": "integer",
+            "description": "ID of the ticket to be viewed"
+          }
+        },
+        "required": [
+          "ticket_id"
+        ]
+      }
+    }
+  ]
+}

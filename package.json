@@ -156,6 +156,7 @@
     "verify:openai-subscription-runtime:live": "node --import tsx scripts/verify-openai-subscription-runtime-live.mjs",
     "verify:openai-subscription-slack:live": "node scripts/verify-openai-subscription-slack-live.mjs",
     "catalog:build": "node --import tsx scripts/build-model-catalog.mjs",
+    "connectors:composio": "node --import tsx scripts/composio-manifests.mjs",
     "avatars:build": "node scripts/build-agent-avatar-pool.mjs",
     "brand:build": "node scripts/build-chickpea-product-mark.mjs",
     "catalog:reconcile": "node scripts/reconcile-model-catalog.mjs",
