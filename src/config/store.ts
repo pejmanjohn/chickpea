@@ -616,6 +616,11 @@ export interface RefreshGatewayClaimSetupInput {
   now: number;
 }
 
+/** Deletes an Agent's live routines inside the Agent delete's transaction. */
+export interface AgentRoutineDeletion {
+  deleteAgentRoutines(agentId: string): void;
+}
+
 export class ConfigStoreLogic {
   private readonly legacyChannelBehaviorColumns: boolean;
   private slackPublicContextPrunedAt = Number.NEGATIVE_INFINITY;
@@ -623,6 +628,7 @@ export class ConfigStoreLogic {
   constructor(
     private readonly db: StateDb,
     seed: ConfigSeed = DEFAULT_SEED,
+    private readonly agentRoutines?: (db: StateDb) => AgentRoutineDeletion,
   ) {
     const install = schemaInstallRequired(db);
     if (install) {
@@ -2538,6 +2544,7 @@ export class ConfigStoreLogic {
       this.requireAgentHasNoBlockingReferences(agentId);
       this.deleteRevokedAgentConnectionBindings(agentId);
       this.deleteAgentThreadRoutes(agentId);
+      this.deleteAgentSchedules(agentId);
       const deleted = this.db.run(
         'DELETE FROM config_agents WHERE id = ? AND revision = ? AND credential_incarnation = ?',
         agentId,
@@ -2582,6 +2589,7 @@ export class ConfigStoreLogic {
       this.requireAgentHasNoBlockingReferences(agentId);
       this.deleteRevokedAgentConnectionBindings(agentId);
       this.deleteAgentThreadRoutes(agentId);
+      this.deleteAgentSchedules(agentId);
       const deleted = this.db.run(
         'DELETE FROM config_agents WHERE id = ? AND revision = ? AND credential_incarnation = ?',
         agentId,
@@ -2755,6 +2763,26 @@ export class ConfigStoreLogic {
       this.deleteSlackPublicContextRoot(String(route.workspace_id), String(route.channel_id), String(route.thread_ts));
     }
     this.db.run('DELETE FROM config_agent_thread_routes WHERE agent_id = ?', agentId);
+  }
+
+  /**
+   * A deleted Agent's live routines go with it, so no live routine is ever left
+   * without a schedule reference. Their body-free revisions, runs and audit
+   * stay, since Scheduled work and Usage still read them.
+   */
+  private deleteAgentSchedules(agentId: string): void {
+    if (tableExists(this.db, 'routines')) {
+      this.agentRoutines?.(this.sharedTransactionDb()).deleteAgentRoutines(agentId);
+      const live = this.db.get(
+        `SELECT r.id FROM routines r
+         JOIN config_agent_schedule_references s ON s.schedule_id = r.id
+         WHERE s.agent_id = ? AND r.deleted_at IS NULL
+         LIMIT 1`,
+        agentId,
+      );
+      if (live) throw new Error(`Agent ${agentId} still has live routine ${String(live.id)}`);
+    }
+    this.db.run('DELETE FROM config_agent_schedule_references WHERE agent_id = ?', agentId);
   }
 
   private deleteRevokedAgentConnectionBindings(agentId: string): void {
@@ -3810,13 +3838,17 @@ export interface SqliteConfigStore extends ConfigStore {
 }
 
 export class SqliteConfigStore {
-  constructor(path: string = resolveStateDbPath(), seed: ConfigSeed = DEFAULT_SEED) {
+  constructor(
+    path: string = resolveStateDbPath(),
+    seed: ConfigSeed = DEFAULT_SEED,
+    agentRoutines?: (db: StateDb) => AgentRoutineDeletion,
+  ) {
     const db = openStateDb(path);
     try {
       // The Proxy facade drops the `implements` compile check, so this typed
       // binding is the conformance assertion that keeps it: a logic method that
       // stops matching ConfigStore fails typecheck here.
-      const _conforms: ConfigStore = promisify(new ConfigStoreLogic(db, seed), {
+      const _conforms: ConfigStore = promisify(new ConfigStoreLogic(db, seed, agentRoutines), {
         close: () => db.close(),
       });
       return _conforms as unknown as SqliteConfigStore;

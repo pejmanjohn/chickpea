@@ -3123,6 +3123,9 @@ export class WorkspaceManagementService {
     } else if (operation.kind === 'control_routine' || operation.kind === 'run_routine' ||
         operation.kind === 'delete_routine') {
       agentId = (await this.stores.config.getAgentScheduleReference(operation.routineId))?.agentId;
+      if (!agentId) {
+        throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
+      }
     }
     if (!agentId) return;
     const agent = await optionalAgent(this.stores.config, agentId);
