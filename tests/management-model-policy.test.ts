@@ -49,8 +49,6 @@ import { withPersonApproval } from './helpers/slack-person-approval.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
 const NOW = Date.UTC(2026, 9, 26, 12);
-/** The identity store's clock in the adapter fixture. */
-const FIXTURE_NOW = 1_800_000_000_000;
 const OPUS = 'anthropic/claude-opus-5-5';
 const SONNET = 'anthropic/claude-sonnet-5-5';
 const SOL = 'openai/gpt-6.1-sol';
@@ -245,7 +243,6 @@ async function addMember(f: ManagementAdapterFixture): Promise<ManagementActorCo
     role: 'admin',
     locatorHash,
     inviterMembershipId: f.owner.membership.id,
-    expiresAt: FIXTURE_NOW + 60_000,
   });
   const invited = await f.identity.consumeInvitation({
     invitationId: invitation.id,

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { IdentityStateError } from '../src/identity/errors.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import type { CreateInvitationInput, ResendInvitationInput } from '../src/identity/types.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 
 const NOW = 1_786_000_000_000;
@@ -117,7 +118,6 @@ test('Slack tuple and Better Auth mapping uniqueness are storage-backed', async 
     role: 'admin',
     locatorHash: 'c'.repeat(64),
     inviterMembershipId: owner.membership.id,
-    expiresAt: NOW + 60_000,
   });
   const admin = await store.consumeInvitation({
     invitationId: invitation.id,
@@ -138,7 +138,6 @@ test('Slack tuple and Better Auth mapping uniqueness are storage-backed', async 
     role: 'admin',
     locatorHash: 'd'.repeat(64),
     inviterMembershipId: owner.membership.id,
-    expiresAt: NOW + 60_000,
   });
   await assert.rejects(
     () => store.consumeInvitation({
@@ -163,7 +162,6 @@ test('membership authority mutation revokes every pinned token and session atomi
     role: 'admin',
     locatorHash: 'f'.repeat(64),
     inviterMembershipId: owner.membership.id,
-    expiresAt: NOW + 60_000,
   });
   const admin = await store.consumeInvitation({
     invitationId: invitation.id,
@@ -408,23 +406,36 @@ test('an auth audit records a failure apart from a denial and refuses an unsafe 
   }
 });
 
-test('pending Slack invitations expire durably and the same tuple then requires a fresh locator', async () => {
+test('pending Slack invitations expire on the store clock and the same tuple then requires a fresh locator', async () => {
+  const ttl = 7 * 24 * 60 * 60_000;
   let now = NOW;
   const store = new SqliteIdentityStore(':memory:', { now: () => now });
   try {
     const owner = await claimFirstOwner(store);
+    // The Durable Object boundary is untyped, so a caller can still send an
+    // expiry: here the one a Worker clock 1 ms ahead would have computed.
     const first = await store.createInvitation({
       organizationId: owner.membership.organizationId,
       slackTeamId: TEAM,
       slackUserId: 'UINVITED1',
       displayName: 'Invited',
       role: 'admin',
-      locatorHash: 'b'.repeat(64),
+      locatorHash: 'a'.repeat(64),
       inviterMembershipId: owner.membership.id,
-      expiresAt: NOW + 60_000,
-    });
+      expiresAt: NOW + 1 + ttl,
+    } as CreateInvitationInput);
+    assert.equal(first.expiresAt, NOW + ttl);
+    now = NOW + 60_000;
+    const resent = await store.resendInvitation({
+      invitationId: first.id,
+      locatorHash: 'b'.repeat(64),
+      expiresAt: Number.MAX_SAFE_INTEGER,
+    } as ResendInvitationInput);
+    assert.equal(resent.expiresAt, now + ttl);
+    assert.equal(await store.findInvitation('a'.repeat(64)), undefined);
+    now += ttl - 1;
     assert.equal((await store.findInvitation('b'.repeat(64)))?.id, first.id);
-    now = NOW + 60_001;
+    now += 1;
     assert.equal(await store.findInvitation('b'.repeat(64)), undefined);
     assert.equal((await store.listInvitations()).find((row) => row.id === first.id)?.status, 'expired');
     const replacement = await store.createInvitation({
@@ -435,7 +446,6 @@ test('pending Slack invitations expire durably and the same tuple then requires 
       role: 'admin',
       locatorHash: 'c'.repeat(64),
       inviterMembershipId: owner.membership.id,
-      expiresAt: now + 60_000,
     });
     assert.notEqual(replacement.id, first.id);
     assert.equal((await store.findInvitation('c'.repeat(64)))?.id, replacement.id);

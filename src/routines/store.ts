@@ -712,10 +712,11 @@ export class RoutineStoreLogic {
 
   cancelConfirmation(input: CancelRoutineConfirmationInput): boolean {
     validateRoutineScope(input.workspaceId, input.channelId, input.actorId);
-    if (!/^[a-f0-9]{64}$/.test(input.tokenHash) || !Number.isSafeInteger(input.at)) {
+    if (!/^[a-f0-9]{64}$/.test(input.tokenHash)) {
       throw routineError('routine_confirmation_invalid', 'Routine confirmation is invalid.');
     }
     return this.db.transaction(() => {
+      const at = this.now();
       const confirmation = this.getConfirmation(input.tokenHash);
       if (
         !confirmation ||
@@ -723,13 +724,13 @@ export class RoutineStoreLogic {
         confirmation.workspaceId !== input.workspaceId ||
         confirmation.channelId !== input.channelId ||
         confirmation.consumedAt !== null ||
-        confirmation.expiresAt < input.at
+        confirmation.expiresAt < at
       ) {
         return false;
       }
       this.db.run(
         'UPDATE routine_confirmations SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL',
-        input.at,
+        at,
         confirmation.id,
       );
       return true;

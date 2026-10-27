@@ -805,13 +805,11 @@ export interface CreateInvitationInput {
   role: 'admin';
   locatorHash: string;
   inviterMembershipId: string;
-  expiresAt: number;
 }
 
 export interface ResendInvitationInput {
   invitationId: string;
   locatorHash: string;
-  expiresAt: number;
 }
 
 export interface ConsumeInvitationInput {

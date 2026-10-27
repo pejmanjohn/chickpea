@@ -13,6 +13,7 @@ import { agentRoutineDeletion, RoutineStoreLogic, SqliteRoutineStore } from '../
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
   RoutineStateError,
+  type CancelRoutineConfirmationInput,
   type PutRoutineConfirmationInput,
   type RoutineConfirmationDraft,
   type RoutineDefinition,
@@ -864,6 +865,9 @@ test('confirmation is actor, scope, preview, expiry, version, and replay bound',
       }),
       (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_confirmation_expired',
     );
+    assert.equal(await store.cancelConfirmation({
+      tokenHash, actorId: 'U_MEMBER', workspaceId: 'T_TEST', channelId: 'C_TEST', at: CREATED_AT,
+    } as CancelRoutineConfirmationInput), false);
   } finally {
     store.close();
   }

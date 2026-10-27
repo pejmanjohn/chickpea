@@ -318,7 +318,6 @@ async function executeRoutineCommand(
       actorId: turn.userId,
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
-      at: now(),
     });
     return cancelled
       ? '**Routine deletion cancelled**'

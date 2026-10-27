@@ -64,7 +64,6 @@ async function createMember(f: Fixture, suffix: string) {
     role: 'admin',
     locatorHash,
     inviterMembershipId: f.owner.membership.id,
-    expiresAt: NOW + 60_000,
   });
   const invited = await f.identity.consumeInvitation({
     invitationId: invitation.id,

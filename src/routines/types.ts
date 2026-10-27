@@ -196,7 +196,6 @@ export interface CancelRoutineConfirmationInput {
   actorId: string;
   workspaceId: string;
   channelId: string;
-  at: number;
 }
 
 export interface ConfirmRoutineInput {

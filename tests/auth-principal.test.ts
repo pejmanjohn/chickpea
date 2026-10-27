@@ -118,7 +118,6 @@ test('active Better Auth session resolves only through canonical Slack authority
       role: 'admin',
       locatorHash: 'd'.repeat(64),
       inviterMembershipId: owner.membership.id,
-      expiresAt: NOW + 60_000,
     });
     const admin = await identity.consumeInvitation({
       invitationId: invitation.id,
