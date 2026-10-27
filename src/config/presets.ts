@@ -992,7 +992,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsUrl: 'https://developers.miro.com/docs/miro-mcp',
     tokenDocsHint: 'Sign in to the Miro account Chickpea should access.',
     notes:
-      'On Enterprise plans, an admin must first turn on MCP under Admin settings → Apps & Integrations → MCP. Each Miro user connects one team at a time, so authorizing another team or app replaces the earlier connection.',
+      'On Enterprise plans, an admin must first turn on MCP under Admin settings → Apps and integrations → MCP. Each Miro user connects one team at a time, so authorizing another team or app replaces the earlier connection.',
   },
   {
     id: 'google-workspace',
