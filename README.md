@@ -476,6 +476,23 @@ The address serves the [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md), which stay
 coding agent preserves the existing installation settings, deploys the latest
 release, and verifies Admin access. It does not send test messages to Slack.
 
+<a id="uninstall-with-your-coding-agent"></a>
+
+### Uninstall Chickpea
+
+Open your Chickpea folder in your coding agent and paste:
+
+```text
+Uninstall this Chickpea installation. Follow:
+https://github.com/pejmanjohn/chickpea/blob/main/UNINSTALL_CHICKPEA_CLOUDFLARE.md
+```
+
+The address serves the [uninstall guide](UNINSTALL_CHICKPEA_CLOUDFLARE.md),
+which stays current on `main`. Your coding agent lists exactly what it will
+remove and waits for you to confirm before deleting anything. It then removes
+Chickpea from Slack, deletes the Worker and its database from Cloudflare, and
+disconnects itself from your installation. Deletion is permanent.
+
 ---
 
 <a id="install"></a>

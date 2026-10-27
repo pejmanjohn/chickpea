@@ -898,6 +898,7 @@ export const REQUIRED_PACKAGED_FILES = [
   'INSTALL_CHICKPEA_CLOUDFLARE.md',
   'INSTALL_CHICKPEA_NODE.md',
   'UPDATE_CHICKPEA_CLOUDFLARE.md',
+  'UNINSTALL_CHICKPEA_CLOUDFLARE.md',
   'TELEMETRY.md',
   'assets/admin-agent.png',
   'assets/bot-avatar.png',
