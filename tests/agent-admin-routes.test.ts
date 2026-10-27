@@ -6681,6 +6681,46 @@ test('Admin deletes an archived Agent that still owns a Slack thread route', asy
   }
 });
 
+test('Admin deletes an archived Agent that had routines', async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    for (const scheduleId of ['routine_deleted_digest', 'routine_weekly_digest']) {
+      await fixture.store.putAgentScheduleReference({
+        scheduleId, agentId: 'agent_support', workspaceId: 'T_TEST',
+        channelId: 'C_SUPPORT', createdByMembershipId: 'membership_test_owner',
+        runsAsMembershipId: 'membership_test_owner', authorityReceiptId: 'schedule_authority_owner',
+        requiredConnectionAccountIds: [], state: 'active',
+      });
+    }
+    // Deleting a routine retires its reference rather than removing it.
+    assert.equal(await fixture.store.retireAgentScheduleReference('routine_deleted_digest'), true);
+    const archived = await supportAgentRequest(fixture.app, 'POST', '/archive', {
+      expectedRevision: (await fixture.store.getAgent('agent_support')).revision,
+    });
+    assert.equal(archived.status, 200);
+    assert.deepEqual((await fixture.store.listAgentScheduleReferences('agent_support')).map(({ state }) => state),
+      ['archived', 'paused']);
+    const agent = await fixture.store.getAgent('agent_support');
+    const deleted = await fixture.app.request('http://localhost/admin/api/agents/agent_support', {
+      method: 'DELETE', headers: auth(),
+      body: JSON.stringify({
+        expectedRevision: agent.revision,
+        credentialConfigurationBinding: agentCredentialConfigurationBinding(agent.credentialIncarnation),
+      }),
+    });
+    assert.equal(deleted.status, 204, await deleted.clone().text());
+    await assert.rejects(fixture.store.getAgent('agent_support'), UnknownAgentError);
+    assert.equal(await fixture.store.getAgentScheduleReference('routine_deleted_digest'), undefined,
+      'the deleted routine\'s reference goes with the Agent');
+    assert.equal(await fixture.store.getAgentScheduleReference('routine_weekly_digest'), undefined,
+      'the paused routine\'s reference goes with the Agent');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 function onePixelPng(pixel: readonly number[]): Uint8Array {
   const crc32 = (value: Uint8Array) => {
     let crc = 0xffffffff;
