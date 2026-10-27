@@ -859,6 +859,43 @@ test('reviewed manifests keep expiry, import, credential, and system arguments f
   }
 });
 
+test('review.allowValues narrows a string enum the model can set and fails on a value the input does not offer', () => {
+  const campaigns = snapshot([tool('ACME_UPDATE_CAMPAIGNS', ['updateHint', 'destructiveHint'], {
+    type: 'object',
+    properties: {
+      updates: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { id: { type: 'string' }, status: { type: 'string', enum: ['ACTIVE', 'PAUSED'] } },
+          required: ['id'],
+        },
+      },
+    },
+    required: ['updates'],
+  })]);
+  const reviewed = (allowValues: NonNullable<ComposioManifest['review']['allowValues']>) => ({
+    ...draftComposioManifest(campaigns).manifest,
+    review: { add: ['ACME_UPDATE_CAMPAIGNS'], drop: {}, allowArguments: {}, allowValues },
+  });
+  const pause = { values: ['PAUSED'], reason: 'ACTIVE restarts delivery and spend.' };
+
+  const { manifest, report } = draftComposioManifest(campaigns, reviewed({ ACME_UPDATE_CAMPAIGNS: { 'updates[].status': pause } }));
+  const input = compileComposioManifest(manifest).capabilities.find(({ id }) => id === 'acme.update_campaigns')!.input;
+  assert.equal(v.is(input, { updates: [{ id: '1', status: 'PAUSED' }] }), true);
+  assert.equal(v.is(input, { updates: [{ id: '1', status: 'ACTIVE' }] }), false);
+  assert.deepEqual(report.allowedValues, [{ tool: 'ACME_UPDATE_CAMPAIGNS', argument: 'updates[].status', values: ['PAUSED'] }]);
+  assert.deepEqual(checkComposioManifest(manifest, campaigns), []);
+
+  for (const [argument, values] of [['updates[].status', ['DRAFT']], ['updates[].id', ['1']], ['status', ['PAUSED']]] as const) {
+    assert.throws(
+      () => draftComposioManifest(campaigns, reviewed({ ACME_UPDATE_CAMPAIGNS: { [argument]: { ...pause, values: [...values] } } })),
+      /review\.allowValues names ACME_UPDATE_CAMPAIGNS/,
+      argument,
+    );
+  }
+});
+
 test('reviewer drops stay out of their manifests', () => {
   // A rule change cannot release these: the review drops each one by name.
   const dropped: Array<[toolkit: string, tool: string]> = [

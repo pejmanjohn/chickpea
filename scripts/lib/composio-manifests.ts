@@ -55,6 +55,8 @@ export interface DraftReport {
   excluded: Array<{ tool: string; reason: string }>;
   withheldArguments: Array<{ tool: string; arguments: Record<string, string> }>;
   preconditions: Array<{ tool: string; argument: string }>;
+  /** String enum arguments review.allowValues narrowed, with the values kept. */
+  allowedValues: Array<{ tool: string; argument: string; values: string[] }>;
   /** Write tools without `destructiveHint` that the irreversibility lint made destructive. */
   irreversible: Array<{ tool: string; verb: string }>;
 }
@@ -373,19 +375,36 @@ interface DeriveContext {
   withheld: Record<string, string>;
   /** Arguments a rule withholds that review.allowArguments kept, with the rule's reason. */
   allowedKept: Record<string, string>;
+  /** String enum argument paths a reviewer narrowed to the listed values. */
+  values: ReadonlyMap<string, readonly string[]>;
+  /** Paths from `values` that named a string enum offering every listed value. */
+  narrowed: Set<string>;
 }
 
 export function deriveInputSchema(
   raw: unknown,
-  options: { write?: WriteKind; allow?: ReadonlySet<string>; deny?: ReadonlyMap<string, string> } = {},
-): { schema: ManifestObjectSchema; withheld: Record<string, string>; allowedKept: Record<string, string> } | { error: string } {
+  options: {
+    write?: WriteKind;
+    allow?: ReadonlySet<string>;
+    deny?: ReadonlyMap<string, string>;
+    values?: ReadonlyMap<string, readonly string[]>;
+  } = {},
+): {
+  schema: ManifestObjectSchema;
+  withheld: Record<string, string>;
+  allowedKept: Record<string, string>;
+  narrowed: ReadonlySet<string>;
+} | { error: string } {
   const context: DeriveContext = {
     ...options, allow: options.allow ?? new Set(), deny: options.deny ?? new Map(), withheld: {}, allowedKept: {},
+    values: options.values ?? new Map(), narrowed: new Set(),
   };
   const derived = deriveNode(raw, 0, '', context, true);
   if ('unsupported' in derived) return { error: derived.unsupported };
   if (!('type' in derived.schema) || derived.schema.type !== 'object') return { error: 'input is not an object' };
-  return { schema: derived.schema, withheld: context.withheld, allowedKept: context.allowedKept };
+  return {
+    schema: derived.schema, withheld: context.withheld, allowedKept: context.allowedKept, narrowed: context.narrowed,
+  };
 }
 
 function deriveNode(
@@ -426,11 +445,15 @@ function deriveNode(
         raw.enum.length <= COMPOSIO_MANIFEST_LIMITS.enumValues &&
         raw.enum.every((value) => typeof value === 'string' && value.length <= COMPOSIO_MANIFEST_LIMITS.enumValueLength)
         ? raw.enum as string[] : undefined;
+      const allowed = context.values.get(where);
+      const narrowed = allowed && values && allowed.every((value) => values.includes(value))
+        ? values.filter((value) => allowed.includes(value)) : values;
+      if (narrowed !== values) context.narrowed.add(where);
       return {
         schema: withDescription({
           type: 'string', maxLength,
           ...(minLength && minLength <= maxLength ? { minLength } : {}),
-          ...(values ? { enum: values } : {}),
+          ...(narrowed ? { enum: narrowed } : {}),
         }, description),
       };
     }
@@ -544,6 +567,7 @@ export function draftComposioManifest(
   const drop = previous?.review.drop ?? {};
   const allowArguments = previous?.review.allowArguments ?? {};
   const withholdArguments = previous?.review.withholdArguments ?? {};
+  const allowValues = previous?.review.allowValues ?? {};
   const overridden = [...add].filter((slug) => slug in drop);
   if (overridden.length > 0) {
     throw new Error(`review.add names ${overridden.join(', ')}, which review.drop also names; keep only the decision that applies`);
@@ -552,7 +576,7 @@ export function draftComposioManifest(
   const prefix = `${toolkit.toUpperCase()}_`;
   const report: DraftReport = {
     toolkit, version: snapshot.toolkit.version, validationCapability: '',
-    read: [], write: [], excluded: [], withheldArguments: [], preconditions: [], irreversible: [],
+    read: [], write: [], excluded: [], withheldArguments: [], preconditions: [], irreversible: [], allowedValues: [],
   };
   const capabilities: ComposioManifestCapability[] = [];
   for (const tool of [...snapshot.tools].sort((left, right) => left.slug.localeCompare(right.slug))) {
@@ -572,10 +596,12 @@ export function draftComposioManifest(
     if (irreversible) report.irreversible.push({ tool: tool.slug, verb: irreversible });
     const write = classification.lane === 'write';
     const deny = new Map(Object.entries(withholdArguments[tool.slug] ?? {}));
+    const values = new Map(Object.entries(allowValues[tool.slug] ?? {}).map(([path, { values }]) => [path, values]));
     const input = deriveInputSchema(tool.input, {
       ...(write ? { write: writeKind(tool.tags) } : {}),
       allow: new Set(allowArguments[tool.slug] ?? []),
       deny,
+      values,
     });
     if ('error' in input) {
       exclude(input.error);
@@ -584,6 +610,11 @@ export function draftComposioManifest(
     const unmatched = [...deny.keys()].filter((argument) => !(argument in input.withheld));
     if (unmatched.length > 0) {
       throw new Error(`review.withholdArguments names ${tool.slug} ${unmatched.join(', ')}, which its input does not accept`);
+    }
+    const unnarrowed = [...values.keys()].filter((argument) => !input.narrowed.has(argument));
+    if (unnarrowed.length > 0) {
+      throw new Error(`review.allowValues names ${tool.slug} ${unnarrowed.join(', ')}, which its input does not offer ` +
+        'as a string enum with every listed value');
     }
     const allowedKept = Object.entries(input.allowedKept);
     if (!write && allowedKept.length > 0) {
@@ -627,6 +658,7 @@ export function draftComposioManifest(
       report.preconditions.push({ tool: tool.slug, argument });
     }
     if (withheld) report.withheldArguments.push({ tool: tool.slug, arguments: input.withheld });
+    for (const [argument, kept] of values) report.allowedValues.push({ tool: tool.slug, argument, values: [...kept] });
     if (write) report.write.push({ tool: tool.slug, effect });
     else report.read.push(tool.slug);
   }
@@ -660,6 +692,10 @@ export function draftComposioManifest(
         withholdArguments: Object.fromEntries(Object.entries(withholdArguments).sort()
           .map(([slug, reasons]) => [slug, Object.fromEntries(Object.entries(reasons).sort())])),
       } : {}),
+      ...(Object.keys(allowValues).length > 0 ? {
+        allowValues: Object.fromEntries(Object.entries(allowValues).sort()
+          .map(([slug, paths]) => [slug, Object.fromEntries(Object.entries(paths).sort())])),
+      } : {}),
     },
     capabilities,
   };
@@ -670,7 +706,7 @@ export function draftComposioManifest(
 export function reviewedTools(manifest: ComposioManifest): string[] {
   return [
     ...manifest.review.add, ...Object.keys(manifest.review.drop), ...Object.keys(manifest.review.allowArguments),
-    ...Object.keys(manifest.review.withholdArguments ?? {}),
+    ...Object.keys(manifest.review.withholdArguments ?? {}), ...Object.keys(manifest.review.allowValues ?? {}),
   ];
 }
 
@@ -858,6 +894,10 @@ export function renderDraftReport(report: DraftReport): string {
     '',
     `## Arguments with a precondition (${report.preconditions.length})`,
     ...report.preconditions.map(({ tool, argument }) => `- \`${tool}\`: \`${argument}\``),
+    '',
+    `## Enum arguments narrowed by review (${report.allowedValues.length})`,
+    ...report.allowedValues.map(({ tool, argument, values }) =>
+      `- \`${tool}\`: \`${argument}\` only ${values.map((value) => `\`${value}\``).join(', ')}`),
     '',
     `## Arguments withheld (${report.withheldArguments.reduce((sum, { arguments: names }) => sum + Object.keys(names).length, 0)})`,
     ...report.withheldArguments.flatMap(({ tool, arguments: names }) => [
