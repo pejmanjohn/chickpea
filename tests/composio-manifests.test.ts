@@ -827,13 +827,21 @@ test('reviewed manifests keep expiry, import, credential, and system arguments f
     ['klaviyo', 'KLAVIYO_UPDATE_PROFILE', 'data__meta__patch__properties__unset'],
     ['microsoft_teams', 'MICROSOFT_TEAMS_CREATE_MEETING', 'chat_info'],
     ['microsoft_teams', 'MICROSOFT_TEAMS_CREATE_MEETING', 'lobby_bypass_settings'],
+    ['square', 'SQUARE_UPDATE_CUSTOMER', 'reference_id'],
+    ['trello', 'TRELLO_ADD_BOARDS', 'prefs__calendarFeedEnabled'],
     ['trello', 'TRELLO_GET_MEMBERS_BY_ID_MEMBER', 'tokens'],
     ['wrike', 'WRIKE_CREATE_TASK', 'parents'],
     ['wrike', 'WRIKE_CREATE_TASK', 'superTasks'],
-    ...['addParents', 'addSuperTasks', 'convertToCustomItemType', 'removeParents', 'removeSuperTasks']
+    ...['addParents', 'addSuperTasks', 'convertToCustomItemType', 'customFields', 'dates', 'removeParents',
+      'removeSuperTasks']
       .map((argument) => ['wrike', 'WRIKE_MODIFY_TASK', argument] as [string, string, string]),
     ...['ZOHO_CREATE_CONTACT', 'ZOHO_CREATE_DEAL', 'ZOHO_CREATE_LEAD']
       .map((slug) => ['zoho', slug, 'lar_id'] as [string, string, string]),
+    ['zoom', 'ZOOM_GET_MEETING_RECORDINGS', 'include_fields'],
+    ...['ZOOM_CREATE_A_MEETING', 'ZOOM_UPDATE_A_MEETING'].flatMap((slug) => ['schedule_for',
+      'settings__alternative__hosts', 'settings__join__before__host', 'settings__meeting__authentication',
+      'settings__resources', 'settings__use__pmi', 'settings__waiting__room']
+      .map((argument) => ['zoom', slug, argument] as [string, string, string])),
   ];
   const offered = (schema: unknown, path: string[]): boolean => {
     const properties = (schema as { properties?: Record<string, unknown> }).properties ?? {};
@@ -848,6 +856,19 @@ test('reviewed manifests keep expiry, import, credential, and system arguments f
   for (const [toolkit, slug, argument] of reviewed) {
     const capability = pilotManifest(toolkit).capabilities.find(({ tool: name }) => name === slug)!;
     assert.match(capability.withheldArguments![argument]!, /^reviewer: /, `${slug}.${argument} is withheld by review`);
+  }
+});
+
+test('reviewer drops stay out of their manifests', () => {
+  // A rule change cannot release these: the review drops each one by name.
+  const dropped: Array<[toolkit: string, tool: string]> = [
+    ['contentful', 'CONTENTFUL_QUERY_ASSET_COLLECTION'],
+    ['contentful', 'CONTENTFUL_QUERY_GRAPHQL_CONTENT_TYPE_COLLECTION'],
+  ];
+  for (const [toolkit, slug] of dropped) {
+    const manifest = pilotManifest(toolkit);
+    assert.ok(manifest.review.drop[slug], `${slug} is dropped by review`);
+    assert.equal(manifest.capabilities.some(({ tool: name }) => name === slug), false, `${slug} is not offered`);
   }
 });
 
