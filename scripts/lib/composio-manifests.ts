@@ -81,10 +81,16 @@ const ADMINISTRATIVE = /(?:^|_)(ADMIN|ADMINS|AGENT|AGENTS|API_KEY|API_KEYS|AUDIT
 const SPEND = /(?:^|_)(BID|BIDS|BILL|BILLING|BILLS|BUDGET|BUDGETS|BUY|CHARGE|CHARGES|CHECKOUT|INVOICE|INVOICES|ORDER|ORDERS|PAY|PAYMENT|PAYMENTS|PAYOUT|PAYOUTS|PURCHASE|REFUND|REFUNDS|SUBSCRIPTION|SUBSCRIPTIONS|TRANSFER|TRANSFERS)(?:_|$)/;
 const PUBLISH = /(?:^|_)(BROADCAST|COMMENT|COMMENTS|EMAIL|EMAILS|FORWARD|INVITE|MESSAGE|MESSAGES|NOTIFY|OUTBOUND|POST|PUBLISH|REPLY|SEND|SHARE)(?:_|$)/;
 
+/**
+ * Who can see, follow, or act on a record. Company domains count: Freshdesk
+ * joins new contacts to a company by domain, which widens ticket visibility.
+ * Webhooks and callbacks hand record data to an outside URL.
+ */
 const ACCESS_TOKENS = new Set(`
-  acl admin admins agent agents collaborator collaborators group groups guest guests member members
-  org orgs organization organizations owner owners private public responder role roles team teams
-  user users
+  acl admin admins agent agents assignee assignees callback collaborator collaborators domain domains
+  follower followers group groups guest guests member members org orgs organization organizations
+  owner owners private public responder role roles subscriber subscribers team teams user users
+  watcher watchers webhook webhooks
 `.trim().split(/\s+/));
 const ACCESS_TEXT = /permission|visib|privacy|invit|selfjoin|viewall|share|membership/;
 const ACCESS_DESCRIPTION = /\b(?:permissions?|visibility|visible to|public|private|publication|publish\w*|who can|invit\w*|membership)\b/i;

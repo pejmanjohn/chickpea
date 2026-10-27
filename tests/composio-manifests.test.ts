@@ -502,6 +502,41 @@ test('update tools lose requester and identity arguments; create tools keep them
   assert.deepEqual(properties('ACME_CREATE_CONTACT'), ['id', 'name', 'mobile', 'requester_id', 'unique_external_id']);
 });
 
+test('write tools lose domain, assignee, follower, owner, and webhook arguments', () => {
+  const text = { type: 'string' };
+  const list = { type: 'array', items: text };
+  const { manifest } = draftComposioManifest(snapshot([
+    tool('ACME_UPDATE_COMPANY', ['updateHint'], {
+      type: 'object',
+      properties: {
+        company_id: { type: 'integer' },
+        name: text,
+        domains: list,
+        domain: text,
+        assignee_id: text,
+        assignees: list,
+        watchers: list,
+        follower_ids: list,
+        subscribers: list,
+        collaborators: list,
+        owner_id: text,
+        webhook_url: text,
+        callbackUrl: text,
+      },
+      required: ['company_id'],
+    }),
+  ]));
+  const company = manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_UPDATE_COMPANY')!;
+
+  assert.deepEqual(Object.keys(company.input.properties), ['company_id', 'name']);
+  assert.ok(Object.values(company.withheldArguments!).every((reason) => reason.includes('who acts')),
+    JSON.stringify(company.withheldArguments));
+
+  const update = MANAGED_CONNECTOR_CATALOG.capability('freshdesk.update_companies')!.input;
+  assert.equal(v.safeParse(update, { company_id: 9, name: 'Acme' }).success, true);
+  assert.equal(v.safeParse(update, { company_id: 9, domains: ['example.com'] }).success, false);
+});
+
 test('a Freshdesk ticket can only be opened for someone already in the helpdesk, so a reply cannot reach a new address', () => {
   const create = MANAGED_CONNECTOR_CATALOG.capability('freshdesk.create_ticket')!.input;
   const ticket = { subject: 'Printer jam', description: 'Tray 2 is stuck.' };

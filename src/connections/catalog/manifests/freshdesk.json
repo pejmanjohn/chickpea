@@ -10,7 +10,7 @@
   },
   "label": "Freshdesk",
   "description": "Find, create, and update tickets, contacts, companies, and help articles in one helpdesk.",
-  "securityDescription": "Freshdesk connects with an API key and helpdesk subdomain entered on Composio's hosted page; Chickpea never receives the key. Agents act as the Freshdesk agent who owns the key and can read what that agent can see. With write access, Agents can create and update tickets, contacts, and companies, add private notes, reply to tickets, and draft help articles. A reply goes only to the ticket's requester, and a new ticket's requester must be an existing contact or have no email address. Agents cannot forward tickets, send outbound email, add recipients or email addresses, choose the sending address, or notify anyone about a note. They cannot delete anything, change a ticket's requester or a contact's phone, social, or external IDs, assign tickets to agents or groups, act as another user, make notes public, publish articles, widen which tickets a contact can see, move a contact or ticket to another company or parent ticket, or manage agents, groups, roles, SLAs, or canned responses.",
+  "securityDescription": "Freshdesk connects with an API key and helpdesk subdomain entered on Composio's hosted page; Chickpea never receives the key. Agents act as the Freshdesk agent who owns the key and can read what that agent can see. With write access, Agents can create and update tickets, contacts, and companies, add private notes, reply to tickets, and draft help articles. A reply goes only to the ticket's requester, and a new ticket's requester must be an existing contact or have no email address. Agents cannot forward tickets, send outbound email, add recipients or email addresses, choose the sending address, or notify anyone about a note. They cannot delete anything, change a ticket's requester, a contact's phone, social, or external IDs, or a company's domains, assign tickets, act as another user, make notes public, publish articles, widen which tickets a contact can see, move a contact or ticket to another company or parent ticket, or manage agents, groups, roles, SLAs, or canned responses.",
   "preset": {
     "category": "business",
     "accent": "#00AC4C"
@@ -856,6 +856,7 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "Freshdesk: Update Company",
       "withheldArguments": {
+        "domains": "changes sharing, visibility, permissions, membership, or who acts",
         "custom_fields": "unsupported schema"
       },
       "input": {
@@ -870,15 +871,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Notes associated with the company"
-          },
-          "domains": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "Domain names for the company. Multiple domains can be added"
           },
           "industry": {
             "type": "string",
