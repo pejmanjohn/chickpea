@@ -32,6 +32,7 @@ export const PUBLIC_ASSET_PATHS = [
     'clay', 'close', 'customer-io', 'mercury', 'plain', 'pylon',
     'pandadoc', 'fathom', 'otter', 'read-ai',
     'attio', 'apollo',
+    'googlebigquery', 'mailchimp', 'pipedrive', 'quickbooks',
   ].map((name) => `connectors/${name}.png`),
 ];
 const publicPaths = new Set(PUBLIC_ASSET_PATHS);

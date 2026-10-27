@@ -5,8 +5,8 @@
     "mode": "managed_oauth"
   },
   "label": "OneDrive",
-  "description": "Find, read, and create files and folders, and update Excel workbooks stored in OneDrive.",
-  "securityDescription": "Microsoft sign-in opens through Composio. Agents can read the files, folders, and SharePoint content the connected account can reach, including who an item is shared with. With write access, Agents can create text files and folders, rename items or edit their descriptions, restore items from the recycle bin to their original folder, and edit cells, formats, and tables in Excel workbooks. Agents cannot replace existing files or folders, share items, create or redeem sharing or preview links, change permissions, move or copy items, check files in or out, or delete anything.",
+  "description": "Find files and folders, read their details, create text files and folders, and read and update Excel workbooks in OneDrive.",
+  "securityDescription": "Microsoft sign-in opens through Composio. Agents can find the files, folders, and SharePoint content the connected account can reach and read their details, including who an item is shared with, and read Excel workbooks, but cannot download file contents. With write access, Agents can create text files and folders, rename items or edit their descriptions, restore items from the recycle bin to their original folder, and edit cells, formats, and tables in Excel workbooks. Agents cannot replace existing files or folders, share items, create or redeem sharing or preview links, change permissions, move or copy items, check files in or out, or delete anything.",
   "preset": {
     "category": "docs",
     "accent": "#0364B8"
@@ -58,58 +58,6 @@
         },
         "required": [
           "item_id"
-        ]
-      }
-    },
-    {
-      "id": "one_drive.download_file",
-      "tool": "ONE_DRIVE_DOWNLOAD_FILE",
-      "toolName": "one_drive_download_file",
-      "lane": "read",
-      "effect": "read",
-      "description": "Downloads a file from a user's OneDrive using its item ID, which must refer to a file and not a folder. Response contains a content object with the downloaded file, MIME type, and name; raw file data is not returned directly. Parsing content from Excel, Word, PDF, or other formats requires additional tooling. The downloaded file can be passed to downstream tools such as OUTLOOK_SEND_EMAIL or OUTLOOK_CREATE_DRAFT.",
-      "maxResultBytes": 65536,
-      "input": {
-        "type": "object",
-        "properties": {
-          "format": {
-            "type": "string",
-            "maxLength": 20000,
-            "enum": [
-              "pdf",
-              "html"
-            ],
-            "description": "Optional format for file conversion during download. 'pdf' converts supported source files (doc, docx, dot, dotx, dotm, dsn, dwg, eml, epub, fluidframework, form, htm, html, loop, loot, markdown, md, msg, note, odp, ods, odt, page, pps, ppsx, ppt, pptx, pulse, rtf, task, tif, tiff, wbtx, whiteboard, xls, xlsm, xlsx) to PDF. 'html' converts Loop/Fluid files (loop, fluid, wbtx) to HTML. Leave empty to download the file in its original format without conversion."
-          },
-          "item_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Raw item ID only (e.g., '1234567890ABC'). Do not include URL fragments or query parameters like '&cid=...' or '?param=...' from sharing links."
-          },
-          "user_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "User's ID or User Principal Name (UPN), or 'me' for the authenticated user's OneDrive. Ignored when drive_id is provided."
-          },
-          "drive_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The ID of the drive containing the file. Required for SharePoint or OneDrive for Business drives. When provided, user_id is ignored."
-          },
-          "file_name": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Desired filename (including extension) for the downloaded content."
-          },
-          "if_none_match": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Optional ETag or cTag value for conditional download. If the provided tag matches the current file's tag, the API returns HTTP 304 Not Modified without downloading the file, saving bandwidth. Useful for caching scenarios."
-          }
-        },
-        "required": [
-          "item_id",
-          "file_name"
         ]
       }
     },
@@ -536,57 +484,6 @@
             "description": "If this request header value (etag) matches the current etag on the item, an HTTP 304 Not Modified response is returned."
           }
         }
-      }
-    },
-    {
-      "id": "one_drive.get_item_thumbnails",
-      "tool": "ONE_DRIVE_GET_ITEM_THUMBNAILS",
-      "toolName": "one_drive_get_item_thumbnails",
-      "lane": "read",
-      "effect": "read",
-      "description": "Tool to retrieve the thumbnails associated with a DriveItem. Use when you need to display visual previews of files. Response contains a `value` array with size keys (`small`, `medium`, `large`); thumbnails may not be generated for all file types or newly uploaded items, so handle an empty or missing `value` array. Returned thumbnail URLs are external HTTP endpoints with independent availability.",
-      "maxResultBytes": 65536,
-      "input": {
-        "type": "object",
-        "properties": {
-          "select": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "A comma-separated list of thumbnail sizes to retrieve (e.g., \"small,medium,large\", or \"c300x400_crop\"). If not specified, all available thumbnails for the first thumbnailSet (id: \"0\") are returned."
-          },
-          "item_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The unique identifier of the DriveItem."
-          },
-          "site_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The unique identifier of a Site. Provide either drive_id, group_id, site_id, or user_id."
-          },
-          "user_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The unique identifier of a User. Provide either drive_id, group_id, site_id, or user_id."
-          },
-          "drive_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The unique identifier of the Drive. If not provided, 'me' will be used for the current user's drive."
-          },
-          "group_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The unique identifier of a Group. Provide either drive_id, group_id, site_id, or user_id."
-          },
-          "original_orientation": {
-            "type": "boolean",
-            "description": "If true, retrieves the thumbnail with its original EXIF orientation. This is only supported on OneDrive Personal. Defaults to false."
-          }
-        },
-        "required": [
-          "item_id"
-        ]
       }
     },
     {

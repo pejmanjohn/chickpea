@@ -1,0 +1,3162 @@
+{
+  "toolkit": {
+    "slug": "dropbox",
+    "name": "Dropbox",
+    "version": "20261001_00",
+    "description": "Dropbox is a cloud storage service offering file syncing, sharing, and collaboration across devices with version control and robust integrations",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      }
+    ],
+    "currentUserEndpoint": "https://api.dropboxapi.com/2/users/get_current_account"
+  },
+  "tools": [
+    {
+      "slug": "DROPBOX_ADD_FILE_MEMBER",
+      "name": "Add file member",
+      "description": "Tool to add specified members to a Dropbox file with configurable access levels. Use when sharing a file with specific users by email or Dropbox ID. Supports custom invitation messages and notification controls. Note: This endpoint does not support apps with the app folder permission, and members will receive invitations unless quiet mode is enabled.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "shared_files",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddFileMemberRequest",
+        "required": [
+          "file",
+          "members"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "title": "File",
+            "description": "File to which to add members. Use the file ID format (e.g., 'id:7bh4zBmgZoAAAAAAAAABCQ') or file path."
+          },
+          "quiet": {
+            "type": "boolean",
+            "title": "Quiet",
+            "default": false,
+            "description": "Whether to suppress device notifications for added members. If false (default), members will be notified of their invitation."
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "MemberSelector",
+              "required": [
+                ".tag"
+              ],
+              "properties": {
+                ".tag": {
+                  "enum": [
+                    "email",
+                    "dropbox_id"
+                  ],
+                  "type": "string",
+                  "title": ".Tag",
+                  "description": "Type of member selector. 'email' - Add member by email address. 'dropbox_id' - Add member by Dropbox account ID."
+                },
+                "email": {
+                  "type": "string",
+                  "title": "Email",
+                  "examples": [
+                    "testuser@example.com",
+                    "colleague@company.com"
+                  ],
+                  "description": "Email address of the member to add. Required when tag is 'email'. Note: If the email is the user's main account email, they may be directly added to the membership."
+                },
+                "dropbox_id": {
+                  "type": "string",
+                  "title": "Dropbox Id",
+                  "description": "Dropbox account, team member, or group ID. Required when tag is 'dropbox_id'."
+                }
+              },
+              "description": "Identifies a member to add to the file."
+            },
+            "title": "Members",
+            "minItems": 1,
+            "description": "List of members to add to the file. Each member is identified by email or Dropbox ID. Note: If an email is provided and it's the user's main account email, they may be directly added to the membership."
+          },
+          "access_level": {
+            "type": "object",
+            "title": "AccessLevel",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "owner",
+                  "editor",
+                  "viewer",
+                  "viewer_no_comment"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "Access level for the collaborator. 'owner' - The collaborator is the owner (can view, edit, and set policies). 'editor' - The collaborator can view and edit the file. 'viewer' - The collaborator can only view the file. 'viewer_no_comment' - The collaborator can only view without commenting."
+              }
+            },
+            "description": "Defines the access level for the new member.",
+            "additionalProperties": false
+          },
+          "custom_message": {
+            "type": "string",
+            "title": "Custom Message",
+            "examples": [
+              "Please review this document",
+              "Sharing this file for your review"
+            ],
+            "description": "Custom message to include in the invitation email sent to added members."
+          },
+          "add_message_as_comment": {
+            "type": "boolean",
+            "title": "Add Message As Comment",
+            "default": false,
+            "description": "If true and a custom_message is provided, the message will be added as a comment on the file."
+          }
+        },
+        "description": "Request model for adding members to a file."
+      }
+    },
+    {
+      "slug": "DROPBOX_ADD_FILE_TAGS",
+      "name": "Add tag to file or folder",
+      "description": "Tool to add a tag to a file or folder in Dropbox. Use when you need to tag items for organization. Tags are automatically converted to lowercase.",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "files",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddFileTagsRequest",
+        "required": [
+          "path",
+          "tag_text"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/test-tag-file.txt",
+              "/Documents/report.pdf",
+              "/Photos"
+            ],
+            "description": "Path to the file or folder to tag. Must be a valid path in the user's Dropbox."
+          },
+          "tag_text": {
+            "type": "string",
+            "title": "Tag Text",
+            "examples": [
+              "important",
+              "work",
+              "personal"
+            ],
+            "description": "The tag text to add. Will be automatically converted to lowercase letters by Dropbox."
+          },
+          "Dropbox-API-Select-User": {
+            "type": "string",
+            "title": "Dropbox Api Select User",
+            "description": "Team member ID (format: dbmid:...) required when using team tokens. Specifies which team member's account to operate on."
+          }
+        },
+        "description": "Request parameters for adding a tag to a file or folder."
+      }
+    },
+    {
+      "slug": "DROPBOX_ADD_FOLDER_MEMBER_ACTION",
+      "name": "Add folder member",
+      "description": "Tool to add members to a shared folder with specified access levels. Use when an owner or editor needs to invite new members to a shared folder. Members receive invites and must be mounted via mount_folder for full access. Requires appropriate ACL permissions.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "shared_folders",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddFolderMemberRequest",
+        "required": [
+          "shared_folder_id",
+          "members"
+        ],
+        "properties": {
+          "quiet": {
+            "type": "boolean",
+            "title": "Quiet",
+            "default": false,
+            "description": "Whether to suppress email and device notifications for the added members. If true, members are added silently without notification. Default is false"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "AddFolderMember",
+              "required": [
+                "member",
+                "access_level"
+              ],
+              "properties": {
+                "member": {
+                  "type": "object",
+                  "title": "Member",
+                  "required": [
+                    ".tag"
+                  ],
+                  "properties": {
+                    ".tag": {
+                      "enum": [
+                        "email",
+                        "dropbox_id"
+                      ],
+                      "type": "string",
+                      "title": ".Tag",
+                      "description": "Type of member identifier: 'email' for email address, 'dropbox_id' for Dropbox account ID"
+                    },
+                    "email": {
+                      "type": "string",
+                      "title": "Email",
+                      "examples": [
+                        "user@example.com",
+                        "colleague@company.com"
+                      ],
+                      "description": "Email address of the member to add. Required when tag is 'email'"
+                    },
+                    "dropbox_id": {
+                      "type": "string",
+                      "title": "Dropbox Id",
+                      "description": "Dropbox account ID of the member to add. Required when tag is 'dropbox_id'"
+                    }
+                  },
+                  "description": "The member to add to the shared folder",
+                  "additionalProperties": false
+                },
+                "access_level": {
+                  "type": "object",
+                  "title": "Access Level",
+                  "required": [
+                    ".tag"
+                  ],
+                  "properties": {
+                    ".tag": {
+                      "enum": [
+                        "owner",
+                        "editor",
+                        "viewer",
+                        "viewer_no_comment"
+                      ],
+                      "type": "string",
+                      "title": ".Tag",
+                      "description": "Access level for the shared folder member: 'owner' - Full control including deletion, 'editor' - Can edit and manage content, 'viewer' - Can view and comment, 'viewer_no_comment' - Can only view without commenting"
+                    }
+                  },
+                  "description": "The access level to grant to the member",
+                  "additionalProperties": false
+                }
+              },
+              "description": "Specifies a member and their access level."
+            },
+            "title": "Members",
+            "minItems": 1,
+            "description": "List of members to add to the shared folder. Each member will receive an invitation to join the folder"
+          },
+          "custom_message": {
+            "type": "string",
+            "title": "Custom Message",
+            "description": "Optional custom message to include in the invitation email sent to added members"
+          },
+          "shared_folder_id": {
+            "type": "string",
+            "title": "Shared Folder Id",
+            "examples": [
+              "84528192421",
+              "13501973233"
+            ],
+            "description": "The ID of the shared folder to add members to. You can get this from list_shared_folders action"
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_ADD_TEAM_GROUP_MEMBERS",
+      "name": "Add members to team group",
+      "description": "Tool to add members to a team group with specified access levels. Use when you need to add users to an existing team group. Requires team admin credentials with group management permissions.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "team",
+        "groups",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddTeamGroupMembersRequest",
+        "required": [
+          "group",
+          "members"
+        ],
+        "properties": {
+          "group": {
+            "type": "object",
+            "title": "Group",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "group_id",
+                  "group_external_id"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "Type of group identifier: 'group_id' for internal Dropbox group ID, 'group_external_id' for external ID"
+              },
+              "group_id": {
+                "type": "string",
+                "title": "Group Id",
+                "description": "The internal Dropbox group ID. Required when tag is 'group_id'"
+              },
+              "group_external_id": {
+                "type": "string",
+                "title": "Group External Id",
+                "description": "The external ID for the group. Required when tag is 'group_external_id'"
+              }
+            },
+            "description": "The group to add members to. Use group_id obtained from list_team_groups or create_team_group actions",
+            "additionalProperties": false
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "GroupMemberToAdd",
+              "required": [
+                "user",
+                "access_type"
+              ],
+              "properties": {
+                "user": {
+                  "type": "object",
+                  "title": "User",
+                  "required": [
+                    ".tag"
+                  ],
+                  "properties": {
+                    ".tag": {
+                      "enum": [
+                        "team_member_id",
+                        "external_id",
+                        "email"
+                      ],
+                      "type": "string",
+                      "title": ".Tag",
+                      "description": "Type of user identifier: 'team_member_id' for internal team member ID, 'external_id' for external ID, 'email' for email address"
+                    },
+                    "email": {
+                      "type": "string",
+                      "title": "Email",
+                      "examples": [
+                        "user@example.com"
+                      ],
+                      "description": "The email address of the user. Required when tag is 'email'"
+                    },
+                    "external_id": {
+                      "type": "string",
+                      "title": "External Id",
+                      "description": "An external ID for the user. Required when tag is 'external_id'"
+                    },
+                    "team_member_id": {
+                      "type": "string",
+                      "title": "Team Member Id",
+                      "description": "The internal Dropbox team member ID. Required when tag is 'team_member_id'"
+                    }
+                  },
+                  "description": "The user to add to the group",
+                  "additionalProperties": false
+                },
+                "access_type": {
+                  "type": "object",
+                  "title": "Access Type",
+                  "required": [
+                    ".tag"
+                  ],
+                  "properties": {
+                    ".tag": {
+                      "enum": [
+                        "member",
+                        "owner"
+                      ],
+                      "type": "string",
+                      "title": ".Tag",
+                      "description": "Access level for the group member: 'member' for regular member access, 'owner' for owner privileges including ability to manage group"
+                    }
+                  },
+                  "description": "The access level to grant to the user",
+                  "additionalProperties": false
+                }
+              },
+              "description": "Specifies a user and their access level to add to the group."
+            },
+            "title": "Members",
+            "minItems": 1,
+            "description": "List of members to add to the group with their respective access levels"
+          },
+          "return_members": {
+            "type": "boolean",
+            "title": "Return Members",
+            "default": true,
+            "description": "Whether to return the list of members in the group after adding. Default is true"
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_ADD_TEAM_MEMBERS",
+      "name": "Add team members",
+      "description": "Tool to add new members to a Dropbox team. Use when you need to invite users to join the team with specified roles and settings. Maximum of 20 members per request. Requires team admin credentials.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "team",
+        "members",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddTeamMembersRequest",
+        "required": [
+          "new_members"
+        ],
+        "properties": {
+          "force_async": {
+            "type": "boolean",
+            "title": "Force Async",
+            "default": false,
+            "description": "Whether to force the operation to happen asynchronously. If true, returns an async_job_id to poll for completion. Default is false"
+          },
+          "new_members": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "NewMemberProfile",
+              "required": [
+                "member_email",
+                "member_given_name",
+                "member_surname"
+              ],
+              "properties": {
+                "role": {
+                  "type": "object",
+                  "title": "AdminRole",
+                  "required": [
+                    ".tag"
+                  ],
+                  "properties": {
+                    ".tag": {
+                      "enum": [
+                        "team_admin",
+                        "user_management_admin",
+                        "support_admin",
+                        "limited_admin",
+                        "member_only"
+                      ],
+                      "type": "string",
+                      "title": ".Tag",
+                      "description": "Admin tier: 'team_admin' for full admin privileges, 'user_management_admin' for user management, 'support_admin' for support access, 'limited_admin' for limited privileges, 'member_only' for no admin privileges"
+                    }
+                  },
+                  "description": "Admin tier for the role.",
+                  "additionalProperties": false
+                },
+                "member_email": {
+                  "type": "string",
+                  "title": "Member Email",
+                  "examples": [
+                    "test.member@example.com",
+                    "newuser@company.com"
+                  ],
+                  "description": "Email address of the new team member. Must be a valid email format"
+                },
+                "member_surname": {
+                  "type": "string",
+                  "title": "Member Surname",
+                  "examples": [
+                    "Doe",
+                    "Smith"
+                  ],
+                  "description": "The last name of the new team member. Required for team invitation"
+                },
+                "member_given_name": {
+                  "type": "string",
+                  "title": "Member Given Name",
+                  "examples": [
+                    "John",
+                    "Jane"
+                  ],
+                  "description": "The first name of the new team member. Required for team invitation"
+                },
+                "member_external_id": {
+                  "type": "string",
+                  "title": "Member External Id",
+                  "description": "External ID for the member, useful for syncing with external systems"
+                },
+                "send_welcome_email": {
+                  "type": "boolean",
+                  "title": "Send Welcome Email",
+                  "default": true,
+                  "description": "Whether to send a welcome email to the member. Set to false for SSO flows handling announcements themselves. Default is true"
+                },
+                "member_persistent_id": {
+                  "type": "string",
+                  "title": "Member Persistent Id",
+                  "description": "Persistent ID for member. Only available to teams using persistent ID SAML configuration"
+                },
+                "is_directory_restricted": {
+                  "type": "boolean",
+                  "title": "Is Directory Restricted",
+                  "description": "Whether the user is directory restricted. Directory restricted users can only see members in their team directory"
+                }
+              },
+              "description": "Profile information for a new team member to add."
+            },
+            "title": "New Members",
+            "maxItems": 20,
+            "minItems": 1,
+            "description": "List of new members to add to the team. Maximum of 20 members per request"
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_COPY_FILE_OR_FOLDER",
+      "name": "Copy file or folder",
+      "description": "Tool to copy a file or folder to a different location in Dropbox. Use when you need to duplicate content without removing the original. If the source path is a folder, all its contents will be copied.",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DropboxCopyFileOrFolderRequest",
+        "required": [
+          "from_path",
+          "to_path"
+        ],
+        "properties": {
+          "to_path": {
+            "type": "string",
+            "title": "To Path",
+            "examples": [
+              "/Homework/archive/math_prime_numbers.txt",
+              "/Photos/2024/Vacation_copy"
+            ],
+            "description": "Path in the user's Dropbox that is the destination. This path is case-sensitive."
+          },
+          "from_path": {
+            "type": "string",
+            "title": "From Path",
+            "examples": [
+              "/Homework/math/prime_numbers.txt",
+              "/Photos/Vacation"
+            ],
+            "description": "Path in the user's Dropbox to be copied. This path is case-sensitive."
+          },
+          "autorename": {
+            "type": "boolean",
+            "title": "Autorename",
+            "default": false,
+            "description": "If there's a conflict (e.g., a file with the same name already exists at the destination), have the Dropbox server try to auto-rename the file to avoid the conflict. The default is false."
+          },
+          "allow_shared_folder": {
+            "type": "boolean",
+            "title": "Allow Shared Folder",
+            "default": false,
+            "description": "If true, allows copying of shared folders. Note: This flag has no effect in current API version. The default is false."
+          },
+          "dropbox_api_select_user": {
+            "type": "string",
+            "title": "Dropbox Api Select User",
+            "description": "Team member ID (format: dbmid:...) required when using team tokens. Specifies which team member's account to operate on."
+          },
+          "allow_ownership_transfer": {
+            "type": "boolean",
+            "title": "Allow Ownership Transfer",
+            "default": false,
+            "description": "Allow moves by owner even if it would result in an ownership transfer for the content being moved. Note: This does not apply to copies. The default is false."
+          }
+        },
+        "description": "Request model for copying a file or folder in Dropbox."
+      }
+    },
+    {
+      "slug": "DROPBOX_CREATE_FILE_REQUEST",
+      "name": "Create file request",
+      "description": "Tool to create a new file request in Dropbox. Use when you need to request files from others by generating a unique link for uploads to a specified Dropbox folder, optionally with a deadline.",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateFileRequestRequest",
+        "required": [
+          "title",
+          "destination"
+        ],
+        "properties": {
+          "open": {
+            "type": "boolean",
+            "title": "Open",
+            "default": true,
+            "description": "Whether the file request should be open by default. If true, the file request will start accepting files immediately."
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "minLength": 1,
+            "description": "The title of the new file request. Must be 1 character or more."
+          },
+          "deadline": {
+            "type": "object",
+            "title": "FileRequestDeadlineRequest",
+            "properties": {
+              "due_date": {
+                "type": "string",
+                "title": "Due Date",
+                "format": "date-time",
+                "description": "The deadline for the file request. Timestamps should be in UTC. Example: '2024-08-15T17:00:00Z'"
+              },
+              "allow_late_uploads": {
+                "enum": [
+                  "seven_days",
+                  "thirty_days",
+                  "always",
+                  "false"
+                ],
+                "type": "string",
+                "title": "Allow Late Uploads",
+                "description": "Specifies the policy for uploads after the deadline. 'seven_days' or 'thirty_days' allows uploads for that period. 'always' allows indefinite late uploads. 'false' (or not set) means no late uploads."
+              }
+            },
+            "description": "Represents the deadline parameters for a file request.",
+            "additionalProperties": false
+          },
+          "destination": {
+            "type": "string",
+            "title": "Destination",
+            "pattern": "^/.*",
+            "description": "The path in the user's Dropbox where uploaded files will be saved. Must be a path starting with '/'. Example: '/Homework/math'"
+          }
+        },
+        "description": "Defines the parameters for creating a new file request in Dropbox."
+      }
+    },
+    {
+      "slug": "DROPBOX_CREATE_FOLDER",
+      "name": "Create folder",
+      "description": "Tool to create a new folder at a specified path in Dropbox. Use when you need to organize files by creating a new directory.",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateFolderRequest",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/test_folder",
+              "/Documents/new_project"
+            ],
+            "description": "Path in the user's Dropbox to create the folder. Must start with a slash. May use 'id:' prefix for namespace-based paths. Must not end with '/' or whitespace. Paths are case-insensitive but must be correctly formatted to avoid validation errors."
+          },
+          "autorename": {
+            "type": "boolean",
+            "title": "Autorename",
+            "default": false,
+            "description": "If there's a conflict, have the Dropbox server try to autorename the folder to avoid the conflict. Default is False. Without autorename, a conflict returns a `path_conflict` error. For idempotent folder creation, set autorename=true or treat `path_conflict` as non-fatal."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_CREATE_PAPER_DOCUMENT",
+      "name": "Create paper document",
+      "description": "Creates a new Dropbox Paper document at the specified path using HTML or Markdown content.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreatePaperDocumentRequest",
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/Paper Docs/New Doc.paper",
+              "/Meeting Notes.paper"
+            ],
+            "description": "The fully qualified path in Dropbox where the Paper document will be created. MUST include the .paper extension at the end (e.g., '/My Documents/Notes.paper')."
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "examples": [
+              "<h1>My Document</h1><p>Content here</p>"
+            ],
+            "description": "Content of the paper document"
+          },
+          "import_format": {
+            "type": "string",
+            "title": "Import Format",
+            "default": "html",
+            "examples": [
+              "html",
+              "markdown"
+            ],
+            "description": "Format of the provided content"
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_CREATE_SHARED_LINK",
+      "name": "Create shared link",
+      "description": "Tool to create a stable, long-lived shared link for a Dropbox file or folder. Use when the user needs a permanent URL suitable for embedding or long-term sharing (as opposed to temporary links that expire in hours). Supports optional settings like expiration, password protection, and visibility controls. Note: If a shared link already exists for the path, the API will return an error; in that case, use a separate list_shared_links endpoint to retrieve existing links.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "idempotentHint",
+        "shared_links",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateSharedLinkRequest",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "The path or file identifier to be shared by the shared link. Supports Dropbox path (e.g., '/folder/file.txt'), id:..., rev:..., or ns:... notation."
+          },
+          "settings": {
+            "type": "object",
+            "title": "SharedLinkSettings",
+            "properties": {
+              "access": {
+                "enum": [
+                  "viewer",
+                  "editor"
+                ],
+                "type": "string",
+                "title": "Access",
+                "description": "The requested access level for the link. 'viewer' - Users can view and comment on content. 'editor' - Users can edit content."
+              },
+              "expires": {
+                "type": "string",
+                "title": "Expires",
+                "examples": [
+                  "2026-12-31T23:59:59Z",
+                  "2027-01-15T12:00:00Z"
+                ],
+                "description": "The expiration date and time for the link in ISO 8601 format (e.g., '2026-12-31T23:59:59Z'). If not set, the link will not expire."
+              },
+              "audience": {
+                "enum": [
+                  "public",
+                  "team",
+                  "no_one"
+                ],
+                "type": "string",
+                "title": "Audience",
+                "description": "Who can benefit from the access level of the link. 'public' - Link is accessible by anyone. 'team' - Link is accessible by team members only. 'no_one' - The link doesn't grant access."
+              },
+              "link_password": {
+                "type": "string",
+                "title": "Link Password",
+                "description": "The password for the link if 'require_password' is true. Only applicable when password protection is enabled for the account."
+              },
+              "allow_download": {
+                "type": "boolean",
+                "title": "Allow Download",
+                "description": "Whether to allow download of the shared file or folder. If not set, defaults to true."
+              },
+              "require_password": {
+                "type": "boolean",
+                "title": "Require Password",
+                "description": "Whether to require a password to access the link. If true, you must also provide 'link_password'."
+              },
+              "requested_visibility": {
+                "enum": [
+                  "public",
+                  "team_only",
+                  "no_one"
+                ],
+                "type": "string",
+                "title": "Requested Visibility",
+                "description": "The requested visibility for the link. 'public' - Anyone with the link can access. 'team_only' - Only team members can access. 'no_one' - Link does not grant access. Note: This field is deprecated; use 'audience' instead for newer implementations."
+              }
+            },
+            "description": "Settings for the shared link configuration.",
+            "additionalProperties": false
+          }
+        },
+        "description": "Request model for creating a shared link with settings."
+      }
+    },
+    {
+      "slug": "DROPBOX_CREATE_SHARED_LINK_SIMPLE",
+      "name": "Create simple shared link (Deprecated)",
+      "description": "DEPRECATED: Use CreateSharedLinkV2 instead. Tool to create a basic shared link for a Dropbox file or folder. If a shared link already exists for the given path, that link is returned. Use when you need a simple shared link without advanced settings like password protection or custom expiration. For links with advanced settings, use the create_shared_link action instead.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "idempotentHint",
+        "shared_links",
+        "deprecated",
+        "createHint",
+        "updateHint"
+      ],
+      "deprecated": true,
+      "input": {
+        "type": "object",
+        "title": "CreateSharedLinkSimpleRequest",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/Documents/report.pdf",
+              "/Photos/vacation.jpg",
+              "/Projects/presentation.pptx"
+            ],
+            "description": "The path to share. This can be a file or folder path in Dropbox (e.g., '/folder/file.txt'). If a shared link already exists for this path, that link will be returned instead of creating a new one."
+          },
+          "short_url": {
+            "type": "boolean",
+            "title": "Short Url",
+            "default": false,
+            "description": "Whether to return a shortened URL. If true, the returned URL will be shorter and easier to share."
+          },
+          "pending_upload": {
+            "type": "object",
+            "title": "PendingUploadMode",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "file",
+                  "folder"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "Type of pending upload. Use 'file' if the path will be a file, 'folder' if it will be a folder."
+              }
+            },
+            "description": "Mode for pending upload indicating file or folder type.",
+            "additionalProperties": false
+          }
+        },
+        "description": "Request model for creating a simple shared link."
+      }
+    },
+    {
+      "slug": "DROPBOX_CREATE_TEAM_FOLDER",
+      "name": "Create team folder",
+      "description": "Tool to create a new, active team folder with no members in Dropbox. Use when you need to set up a new team folder for collaboration. The folder is created without any members initially.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "team",
+        "team_folders",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateTeamFolderRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Marketing",
+              "Sales Team",
+              "Engineering Docs"
+            ],
+            "description": "Name for the new team folder. The name must be unique within the team."
+          },
+          "sync_setting": {
+            "enum": [
+              "default",
+              "not_synced"
+            ],
+            "type": "string",
+            "title": "SyncSettingEnum",
+            "description": "Sync setting enum for the team folder."
+          }
+        },
+        "description": "Request model for creating a team folder."
+      }
+    },
+    {
+      "slug": "DROPBOX_CREATE_TEAM_GROUP",
+      "name": "Create team group",
+      "description": "Tool to create a new, empty team group in Dropbox with a specified name. Use when you need to create a new group for organizing team members. Requires team admin credentials with team member management permissions.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "team",
+        "groups",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateTeamGroupRequest",
+        "required": [
+          "group_name"
+        ],
+        "properties": {
+          "group_name": {
+            "type": "string",
+            "title": "Group Name",
+            "examples": [
+              "Marketing Team",
+              "Engineering Group",
+              "Sales Division"
+            ],
+            "description": "The name for the new group. Must not be empty."
+          },
+          "group_external_id": {
+            "type": "string",
+            "title": "Group External Id",
+            "description": "An arbitrary external ID that the creator of the team can associate with the group for organizational purposes."
+          },
+          "group_management_type": {
+            "enum": [
+              "user_managed",
+              "company_managed",
+              "system_managed",
+              "other"
+            ],
+            "type": "string",
+            "title": "GroupManagementType",
+            "description": "The type of group management for the team group."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_DELETE_FILE",
+      "name": "Delete file or folder",
+      "description": "Tool to delete a file or folder at the specified path in Dropbox. Use when you need to permanently remove a file or folder and all its contents.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "destructiveHint",
+        "idempotentHint",
+        "openWorldHint",
+        "files"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DeleteFileRequest",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/test_file.txt",
+              "/Documents/old_file.pdf",
+              "/Photos/vacation"
+            ],
+            "description": "Path in the user's Dropbox to delete. The path must start with a slash."
+          },
+          "parent_rev": {
+            "type": "string",
+            "title": "Parent Rev",
+            "description": "Perform delete if given 'rev' matches the existing file's latest 'rev'. This field does not support deleting a folder."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_EXPORT_FILE",
+      "name": "Export File",
+      "description": "Tool to export non-downloadable Dropbox files (especially Dropbox Paper) to Markdown/HTML/plain text and return usable content. Use when you need to access content from files that cannot be downloaded directly, such as Dropbox Paper documents or Google Docs stored in Dropbox. Requires files.content.read scope.",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ExportFileRequest",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "return_text",
+              "store_and_link"
+            ],
+            "type": "string",
+            "title": "Mode",
+            "default": "return_text",
+            "description": "'return_text': return exported text directly (truncated safely if very large). 'store_and_link': create a temporary Dropbox download link to the original file."
+          },
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "The path of the file to be exported. Supports Dropbox path (e.g., '/folder/file.paper'), id:..., rev:..., or ns:... notation. Use this for non-downloadable files like Dropbox Paper documents."
+          },
+          "export_format": {
+            "type": "string",
+            "title": "Export Format",
+            "examples": [
+              "markdown",
+              "html",
+              "plain_text"
+            ],
+            "description": "The file format to export to. Common values: 'markdown', 'html', 'plain_text'. If not specified, the default format for the file type will be used. For Dropbox Paper, default is 'markdown'."
+          }
+        },
+        "description": "Request parameters for exporting a Dropbox file."
+      }
+    },
+    {
+      "slug": "DROPBOX_FILES_SEARCH",
+      "name": "Search files and folders",
+      "description": "Tool to search for files and folders in Dropbox by name or content. Use when you need to find items matching a search query within a specific path or across the entire Dropbox.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "files"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DropboxFilesSearchRequest",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "filename",
+              "filename_and_content",
+              "deleted_filename"
+            ],
+            "type": "string",
+            "title": "SearchMode",
+            "default": "filename",
+            "description": "Search mode for Dropbox files search."
+          },
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "default": "",
+            "examples": [
+              "",
+              "/Documents",
+              "/Photos/2024"
+            ],
+            "description": "The path in the user's Dropbox to search. Should probably be a folder. Use empty string to search the entire Dropbox."
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "examples": [
+              "test",
+              "invoice 2024",
+              "report.pdf"
+            ],
+            "minLength": 1,
+            "description": "The string to search for. The search string is split on spaces into multiple tokens. For file name searching, the last token is used for prefix matching (e.g., 'bat c' matches 'bat cave' but not 'batman car')."
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "minimum": 0,
+            "description": "The starting index within the search results (used for paging). Default is 0."
+          },
+          "max_results": {
+            "type": "integer",
+            "title": "Max Results",
+            "default": 100,
+            "maximum": 1000,
+            "minimum": 1,
+            "description": "The maximum number of search results to return. Default is 100, max is 1000."
+          }
+        },
+        "description": "Request parameters for searching files and folders in Dropbox."
+      }
+    },
+    {
+      "slug": "DROPBOX_GET_ACCOUNT",
+      "name": "Get account",
+      "description": "Tool to get information about a user's Dropbox account using their account ID. Use when you need to retrieve account details for a specific user.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "accounts"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DropboxGetAccountRequest",
+        "required": [
+          "account_id"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "title": "Account Id",
+            "description": "A user's account identifier. Can be obtained from get_current_account endpoint."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_GET_METADATA",
+      "name": "Get file or folder metadata",
+      "description": "Tool to fetch metadata for a file or folder by path. Use when you need to verify existence, get canonical identifiers (id, path_display), determine type (.tag), or retrieve detailed attributes without enumerating folder contents.",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetMetadataRequest",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/Documents/report.pdf",
+              "/Photos"
+            ],
+            "description": "The path of a file or folder on Dropbox (e.g., \"/Documents/report.pdf\"). Note: The root folder (\"\" or \"/\") is not supported by this endpoint."
+          },
+          "include_deleted": {
+            "type": "boolean",
+            "title": "Include Deleted",
+            "default": false,
+            "description": "If true, DeletedMetadata will be returned for deleted files or folders. Otherwise, deleted items will return an error."
+          },
+          "include_media_info": {
+            "type": "boolean",
+            "title": "Include Media Info",
+            "default": false,
+            "description": "If true, FileMetadata.media_info is set for photo and video files, providing additional metadata like dimensions and location."
+          },
+          "include_has_explicit_shared_members": {
+            "type": "boolean",
+            "title": "Include Has Explicit Shared Members",
+            "default": false,
+            "description": "If true, the result will include a flag indicating whether the file has any explicit shared members."
+          }
+        },
+        "description": "Request parameters for fetching metadata."
+      }
+    },
+    {
+      "slug": "DROPBOX_GET_SHARED_FOLDER_METADATA",
+      "name": "Get shared folder metadata",
+      "description": "Tool to retrieve metadata for a specific shared folder by its ID. Use when you need detailed information about a shared folder including access level, policies, owner, paths, and permissions.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "shared_folders"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSharedFolderMetadataRequest",
+        "required": [
+          "shared_folder_id"
+        ],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "FolderAction",
+              "required": [
+                ".tag"
+              ],
+              "properties": {
+                ".tag": {
+                  "type": "string",
+                  "title": ".Tag",
+                  "description": "Folder action type (e.g., 'change_options', 'edit_contents', 'invite_editor', 'invite_viewer', 'leave_a_copy', 'share_link', 'create_link', 'unshare')"
+                }
+              }
+            },
+            "title": "Actions",
+            "description": "A list of FolderActions corresponding to FolderPermissions that should appear in the response's permissions field describing the actions the authenticated user can perform on the folder"
+          },
+          "shared_folder_id": {
+            "type": "string",
+            "title": "Shared Folder Id",
+            "examples": [
+              "84528192421",
+              "13512984419"
+            ],
+            "description": "The ID for the shared folder"
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_GET_SPACE_USAGE",
+      "name": "Get space usage",
+      "description": "Tool to get space usage information for the current user's Dropbox account. Use when you need to check storage usage, available space, or quota information.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "accounts"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSpaceUsageRequest",
+        "properties": {},
+        "description": "Request model for getting space usage. This endpoint requires no parameters."
+      }
+    },
+    {
+      "slug": "DROPBOX_GET_TEAM_INFO",
+      "name": "Get team info",
+      "description": "Tool to retrieve information about a Dropbox team. Use when you need to get team details such as team name, ID, licensed user counts, or team policies.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "team"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTeamInfoRequest",
+        "properties": {},
+        "description": "Request model for getting team information. This endpoint requires no parameters."
+      }
+    },
+    {
+      "slug": "DROPBOX_GET_TEAM_LOG_EVENTS",
+      "name": "Get team audit log events",
+      "description": "Tool to retrieve team audit log events from Dropbox. Use when you need to access team activity logs, audit trails, or monitor team events. Supports filtering by time range and event category, with pagination for large result sets.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "team",
+        "team_log"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTeamLogEventsRequest",
+        "properties": {
+          "time": {
+            "type": "object",
+            "title": "TimeRange",
+            "properties": {
+              "end_time": {
+                "type": "string",
+                "title": "End Time",
+                "description": "Ending time for the range filter (ISO 8601 format, e.g., '2023-12-31T23:59:59Z')."
+              },
+              "start_time": {
+                "type": "string",
+                "title": "Start Time",
+                "description": "Starting time for the range filter (ISO 8601 format, e.g., '2023-01-01T00:00:00Z')."
+              }
+            },
+            "description": "Time range filter for events.",
+            "additionalProperties": false
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 1000,
+            "maximum": 1000,
+            "minimum": 1,
+            "description": "Maximum number of events to return per request. Default is 1000, maximum is 1000."
+          },
+          "cursor": {
+            "type": "string",
+            "title": "Cursor",
+            "description": "Cursor for pagination, obtained from a previous response. Use this to retrieve the next page of results."
+          },
+          "category": {
+            "type": "string",
+            "title": "Category",
+            "description": "Event category filter to limit results (e.g., 'apps', 'devices', 'domains', 'file_operations', 'file_requests', 'groups', 'logins', 'members', 'paper', 'passwords', 'sharing', 'team_folders', 'team_policies')."
+          }
+        },
+        "description": "Request parameters for fetching team audit log events."
+      }
+    },
+    {
+      "slug": "DROPBOX_LIST_FILE_REQUESTS",
+      "name": "List file requests",
+      "description": "Tool to list all file requests owned by the current user. Use when you need to see existing file requests, their status, and details.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "file_requests"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListFileRequestsRequest",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Maximum number of file requests to return. Default: 1000."
+          }
+        },
+        "description": "Request model for listing file requests."
+      }
+    },
+    {
+      "slug": "DROPBOX_LIST_FILE_REVISIONS",
+      "name": "List file revisions",
+      "description": "Tool to retrieve the revision history for a file. Use when you need to see past versions of a file, restore a previous version, or track changes over time.",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "files"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListFileRevisionsRequest",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "mode": {
+            "type": "object",
+            "title": "ListRevisionsMode",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "path",
+                  "id"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "Determines the behavior of the API in listing revisions. 'path' returns revisions with the same file path as identified by the latest file entry at the given file path or id. 'id' returns revisions with the same file id as identified by the latest file entry at the given file path or id."
+              }
+            },
+            "description": "Mode for listing revisions.",
+            "additionalProperties": false
+          },
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/Documents/report.pdf",
+              "/Photos/image.jpg"
+            ],
+            "description": "The path to the file you want to see the revisions of (e.g., \"/Documents/report.pdf\"). Must be a valid file path in Dropbox."
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 10,
+            "maximum": 100,
+            "minimum": 1,
+            "description": "The maximum number of revision entries returned. Default is 10, minimum is 1, maximum is 100."
+          }
+        },
+        "description": "Request parameters for listing file revisions."
+      }
+    },
+    {
+      "slug": "DROPBOX_LIST_FILES_IN_FOLDER",
+      "name": "List files in folder",
+      "description": "Tool to list files and folders in a specified Dropbox directory. Use when you need to see the contents of a folder, including subfolders if recursive is true. When the response contains `has_more=true`, continue fetching with the returned cursor until `has_more=false` — stopping early misses entries in large folders. Response entries include both files and folders; use the `.tag` field on each entry to distinguish item types.",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListFilesInFolderRequest",
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "default": "",
+            "description": "The folder path (e.g., \"/europe/invoices\") or folder ID (e.g., \"id:aBcDeFgH123\") to list contents from. Use \"\" (empty string) for the root folder. No trailing slashes or whitespace allowed — malformed paths can silently produce empty results. Prefer paths from `path_display` or `path_lower` fields in prior API responses over manually constructed paths."
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 2000,
+            "maximum": 2000,
+            "minimum": 1,
+            "description": "The maximum number of results to return per request. Default is 2000. Max is 2000."
+          },
+          "recursive": {
+            "type": "boolean",
+            "title": "Recursive",
+            "default": false,
+            "description": "If true, recursively lists contents of nested subfolders; otherwise, lists only immediate contents. Large or broad folder trees with recursive=true can produce very large responses and high latency; use only when full hierarchy is explicitly needed."
+          },
+          "include_deleted": {
+            "type": "boolean",
+            "title": "Include Deleted",
+            "default": false,
+            "description": "If true, includes deleted (but potentially recoverable) files and folders in the listing."
+          },
+          "include_media_info": {
+            "type": "boolean",
+            "title": "Include Media Info",
+            "default": false,
+            "description": "If true, includes media metadata (e.g., dimensions, location) for photo and video files."
+          },
+          "include_non_downloadable_files": {
+            "type": "boolean",
+            "title": "Include Non Downloadable Files",
+            "default": true,
+            "description": "If true, includes non-downloadable files (e.g., Google Docs, Dropbox Paper) in the listing."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_LIST_FOLDER_CONTINUE",
+      "name": "List folder continue",
+      "description": "Tool to continue paginating through folder contents using a cursor from list_folder. Use when has_more is true to retrieve remaining entries.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "files"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListFolderContinueRequest",
+        "required": [
+          "cursor"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "title": "Cursor",
+            "description": "The cursor returned by your last call to list_folder or list_folder/continue. Use this to paginate through all files and retrieve updates to the folder."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_LIST_PAPER_DOCS",
+      "name": "List Paper docs",
+      "description": "Tool to return the list of all Paper docs according to filter and sort specifications. Use when you need to retrieve Paper document IDs for further operations. To iterate through full pagination, pass the cursor to docs/list/continue.",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "paper"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListPaperDocsRequest",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "maximum": 1000,
+            "minimum": 1,
+            "examples": [
+              100,
+              500,
+              1000
+            ],
+            "description": "Size limit per batch. The maximum number of docs that can be retrieved per batch is 1000. Higher value results in invalid arguments error."
+          },
+          "sort_by": {
+            "enum": [
+              "accessed",
+              "modified",
+              "created"
+            ],
+            "type": "string",
+            "title": "Sort By",
+            "examples": [
+              "accessed",
+              "modified",
+              "created"
+            ],
+            "description": "Allows user to specify how the Paper docs should be sorted. 'accessed' sorts by last accessed time, 'modified' sorts by last modified time, 'created' sorts by creation time."
+          },
+          "filter_by": {
+            "enum": [
+              "docs_accessed",
+              "docs_created"
+            ],
+            "type": "string",
+            "title": "Filter By",
+            "examples": [
+              "docs_accessed",
+              "docs_created"
+            ],
+            "description": "Allows user to specify how the Paper docs should be filtered. 'docs_accessed' fetches all Paper doc IDs that the user has ever accessed. 'docs_created' fetches only the Paper doc IDs that the user has created."
+          },
+          "sort_order": {
+            "enum": [
+              "ascending",
+              "descending"
+            ],
+            "type": "string",
+            "title": "Sort Order",
+            "examples": [
+              "ascending",
+              "descending"
+            ],
+            "description": "Allows user to specify the sort order of the result. 'ascending' sorts in ascending order, 'descending' sorts in descending order."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_LIST_RECEIVED_FILES",
+      "name": "List received files",
+      "description": "Tool to list all files shared with the current user. Returns files directly shared with the user but does not include files received via shared folders or unclaimed invitations. Use when discovering files that have been shared with the authenticated user.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "shared_files"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListReceivedFilesRequest",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 100,
+            "maximum": 300,
+            "minimum": 1,
+            "description": "Number of files to return max per query. Defaults to 100 if no limit is specified. Must be between 1 and 300."
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "FileAction",
+              "required": [
+                ".tag"
+              ],
+              "properties": {
+                ".tag": {
+                  "type": "string",
+                  "title": ".Tag",
+                  "description": "The file action type. Possible values: 'disable_viewer_info', 'edit_contents', 'enable_viewer_info', 'invite_viewer', 'invite_viewer_no_comment', 'unshare', 'relinquish_membership', 'share_link', 'create_link', 'other'"
+                }
+              },
+              "description": "Actions that may be taken on files."
+            },
+            "title": "Actions",
+            "description": "A list of FileActions corresponding to FilePermissions that should appear in the response's SharedFileMetadata.permissions field describing the actions the authenticated user can perform on the file."
+          }
+        },
+        "description": "Request model for listing received files."
+      }
+    },
+    {
+      "slug": "DROPBOX_LIST_SHARED_FOLDERS",
+      "name": "List shared folders",
+      "description": "Tool to list all shared folders the authenticated user has access to. Use when discovering shared or team-mounted folders that may not appear in a standard path listing. Returns metadata including folder name, ID, access level, and paths (if mounted).",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "shared_folders"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListSharedFoldersRequest",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 1000,
+            "maximum": 1000,
+            "minimum": 1,
+            "description": "Maximum number of shared folders to return per request"
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_LIST_SHARED_LINKS",
+      "name": "List shared links",
+      "description": "Tool to list existing shared links for the current user, optionally filtered by path. Use when you need to discover or reuse existing shared links to avoid creating duplicates or to check what links already exist for a file or folder. Supports pagination via cursor for large result sets.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "shared_links"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListSharedLinksRequest",
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/Documents/report.pdf",
+              "/Photos/vacation.jpg",
+              ""
+            ],
+            "description": "The path to the file or folder to list shared links for. If omitted, returns all shared links for the current user. If provided, returns links that grant access to the specified path (including parent folder links unless direct_only is true). Supports Dropbox path notation (e.g., '/folder/file.txt')."
+          },
+          "cursor": {
+            "type": "string",
+            "title": "Cursor",
+            "description": "The cursor returned by a previous call to this endpoint. Use this to retrieve additional results when 'has_more' is true. The API returns a maximum of ~200 links per call."
+          },
+          "direct_only": {
+            "type": "boolean",
+            "title": "Direct Only",
+            "description": "If true, only return direct links to the specified path. If false or omitted, also include links to parent folders. Only relevant when 'path' is specified."
+          }
+        },
+        "description": "Request model for listing shared links."
+      }
+    },
+    {
+      "slug": "DROPBOX_LIST_TEAM_FOLDERS",
+      "name": "List team folders",
+      "description": "Tool to list all team folders for a Dropbox Business team. Use when you need to discover team-wide folders or manage team folder access.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "team",
+        "team_folders"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListTeamFoldersRequest",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 100,
+            "maximum": 1000,
+            "minimum": 1,
+            "description": "Maximum number of team folders to return per request"
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_LIST_TEAM_MEMBERS",
+      "name": "List team members",
+      "description": "Tool to list members of a Dropbox team. Use when you need to retrieve information about team members, including their status, roles, and contact details. Supports pagination for teams with many members.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "team",
+        "members"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListTeamMembersRequest",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "maximum": 1000,
+            "minimum": 1,
+            "description": "Number of results to return per call. Maximum is 1000. If not specified, the server will use a default value."
+          },
+          "include_removed": {
+            "type": "boolean",
+            "title": "Include Removed",
+            "description": "Whether to return members who have been removed from the team. If true, includes removed members in the results."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_MODIFY_SHARED_LINK_SETTINGS",
+      "name": "Modify shared link settings",
+      "description": "Tool to modify settings of an existing Dropbox shared link. Use when the user needs to change visibility, access permissions, expiration, or password settings for a shared link. Supports changing audience (public/team/private), access level (viewer/editor), expiration dates, and password protection.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "updateHint",
+        "shared_links"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ModifySharedLinkSettingsRequest",
+        "required": [
+          "url",
+          "settings"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "examples": [
+              "https://www.dropbox.com/s/your_shared_link_id_here/Prime_Numbers.txt?dl=0",
+              "https://www.dropbox.com/scl/fi/your_file_id_here/test_file.txt?rlkey=your_rlkey_here&dl=0"
+            ],
+            "description": "The URL of the shared link to modify. This must be a valid Dropbox shared link URL."
+          },
+          "settings": {
+            "type": "object",
+            "title": "Settings",
+            "properties": {
+              "access": {
+                "enum": [
+                  "viewer",
+                  "editor"
+                ],
+                "type": "string",
+                "title": "Access",
+                "description": "The requested access level for the link. 'viewer' - Users can view and comment on content. 'editor' - Users can edit content."
+              },
+              "expires": {
+                "type": "string",
+                "title": "Expires",
+                "examples": [
+                  "2026-12-31T23:59:59Z",
+                  "2027-01-15T12:00:00Z"
+                ],
+                "description": "The expiration date and time for the link in ISO 8601 format (e.g., '2026-12-31T23:59:59Z'). If not set, the link will not expire."
+              },
+              "audience": {
+                "enum": [
+                  "public",
+                  "team",
+                  "no_one"
+                ],
+                "type": "string",
+                "title": "Audience",
+                "description": "Who can benefit from the access level of the link. 'public' - Link is accessible by anyone. 'team' - Link is accessible by team members only. 'no_one' - The link doesn't grant access."
+              },
+              "link_password": {
+                "type": "string",
+                "title": "Link Password",
+                "description": "The password for the link if 'require_password' is true. Only applicable when password protection is enabled for the account."
+              },
+              "allow_download": {
+                "type": "boolean",
+                "title": "Allow Download",
+                "description": "Whether to allow download of the shared file or folder. If not set, defaults to true."
+              },
+              "require_password": {
+                "type": "boolean",
+                "title": "Require Password",
+                "description": "Whether to require a password to access the link. If true, you must also provide 'link_password'."
+              },
+              "requested_visibility": {
+                "enum": [
+                  "public",
+                  "team_only",
+                  "no_one"
+                ],
+                "type": "string",
+                "title": "Requested Visibility",
+                "description": "The requested visibility for the link. 'public' - Anyone with the link can access. 'team_only' - Only team members can access. 'no_one' - Link does not grant access. Note: This field is deprecated; use 'audience' instead for newer implementations."
+              }
+            },
+            "description": "The new settings to apply to the shared link. Only the specified fields will be updated; unspecified fields remain unchanged.",
+            "additionalProperties": false
+          },
+          "remove_expiration": {
+            "type": "boolean",
+            "title": "Remove Expiration",
+            "default": false,
+            "description": "If set to true, removes the expiration date from the shared link. This overrides any 'expires' value in settings."
+          }
+        },
+        "description": "Request model for modifying shared link settings."
+      }
+    },
+    {
+      "slug": "DROPBOX_MOVE_FILE_OR_FOLDER",
+      "name": "Move file or folder",
+      "description": "Move file or folder",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "important",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DropboxMoveFileOrFolderRequest",
+        "required": [
+          "from_path",
+          "to_path"
+        ],
+        "properties": {
+          "to_path": {
+            "type": "string",
+            "title": "To Path",
+            "examples": [
+              "/Homework/archive/math_prime_numbers.txt",
+              "/Photos/2024/Vacation_renamed"
+            ],
+            "description": "Path in the user's Dropbox that is the destination. This path is case-sensitive."
+          },
+          "from_path": {
+            "type": "string",
+            "title": "From Path",
+            "examples": [
+              "/Homework/math/prime_numbers.txt",
+              "/Photos/Vacation"
+            ],
+            "description": "Path in the user's Dropbox to be moved. This path is case-sensitive. Use canonical paths from metadata (path_display or path_lower) rather than manually constructed strings to avoid path/not_found errors."
+          },
+          "autorename": {
+            "type": "boolean",
+            "title": "Autorename",
+            "default": false,
+            "description": "If there's a conflict (e.g., a file with the same name already exists at the destination), have the Dropbox server try to auto-rename the file to avoid the conflict. The default is false. Leaving this false will cause the call to fail outright when a name conflict exists at the destination."
+          },
+          "allow_shared_folder": {
+            "type": "boolean",
+            "title": "Allow Shared Folder",
+            "default": false,
+            "description": "If true, allows moving shared folders. The default is false."
+          },
+          "allow_ownership_transfer": {
+            "type": "boolean",
+            "title": "Allow Ownership Transfer",
+            "default": false,
+            "description": "Allow moves by owner even if it would result in an ownership transfer for the content being moved. This does not apply to copies. The default is false."
+          }
+        },
+        "description": "Request model for moving a file or folder in Dropbox."
+      }
+    },
+    {
+      "slug": "DROPBOX_READ_FILE",
+      "name": "Read a file",
+      "description": "Downloads a file from the specified Dropbox path, requiring `files.content.read` scope. Response field `file_content_bytes` is base64-encoded binary; decode before saving or passing to libraries. Bursty reads may trigger HTTP 429; honor the `Retry-After` header.",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "returnsHostedFile": true,
+      "input": {
+        "type": "object",
+        "title": "ReadFileOrFolderRequest",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/photo.jpg",
+              "/Documents/file.pdf",
+              "/Homework/math/Matrices.txt"
+            ],
+            "description": "The path to search in Must be a canonical Dropbox path from `path_display` or `path_lower` in API results — hand-typed paths frequently cause not-found or 409 errors. Paths in shared/team folders may become invalid if items are moved or access is revoked."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_REMOVE_FILE_PROPERTIES",
+      "name": "Remove File Properties",
+      "description": "Tool to permanently remove specified property groups from a file or folder. Use when you need to delete custom properties associated with a file.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "file_properties",
+        "destructiveHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RemoveFilePropertiesRequest",
+        "required": [
+          "path",
+          "property_template_ids"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "A unique identifier for the file or folder. This can be a path (e.g., '/test_properties_file.txt') or a file ID."
+          },
+          "property_template_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Property Template Ids",
+            "description": "A list of identifiers for property templates to remove from the file. These are template IDs created by templates/add_for_user or templates/add_for_team. Use an empty list to remove all property groups."
+          },
+          "Dropbox-API-Select-User": {
+            "type": "string",
+            "title": "Dropbox Api Select User",
+            "description": "Team member ID (format: dbmid:...) required when using team tokens. Specifies which team member's account to operate on."
+          }
+        },
+        "description": "Request to permanently remove specified property groups from a file."
+      }
+    },
+    {
+      "slug": "DROPBOX_REMOVE_FILE_TAG",
+      "name": "Remove tag from file or folder",
+      "description": "Tool to remove a tag from a file or folder in Dropbox. Use when you need to delete or untag an existing tag from an item. The tag will be removed only if it exists on the specified path.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "files",
+        "destructiveHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RemoveFileTagRequest",
+        "required": [
+          "path",
+          "tag_text"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/test.txt",
+              "/Documents/report.pdf",
+              "/Photos"
+            ],
+            "description": "Path to the file or folder to remove the tag from. Must start with a slash."
+          },
+          "tag_text": {
+            "type": "string",
+            "title": "Tag Text",
+            "examples": [
+              "important",
+              "project-alpha",
+              "archived"
+            ],
+            "description": "The tag to remove. Will be automatically converted to lowercase letters by Dropbox."
+          },
+          "Dropbox-API-Select-User": {
+            "type": "string",
+            "title": "Dropbox Api Select User",
+            "description": "Team member ID (format: dbmid:...) required when using team tokens. Specifies which team member's account to operate on."
+          }
+        },
+        "description": "Request parameters for removing a tag from a file or folder."
+      }
+    },
+    {
+      "slug": "DROPBOX_RESTORE_FILE",
+      "name": "Restore file to specific revision",
+      "description": "Tool to restore a specific revision of a file to the given path in Dropbox. Use when you need to revert a file to a previous version using its revision identifier.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "files",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RestoreFileRequest",
+        "required": [
+          "path",
+          "rev"
+        ],
+        "properties": {
+          "rev": {
+            "type": "string",
+            "title": "Rev",
+            "examples": [
+              "01649efbe6f88ab00000002e00499b3",
+              "015a01044acb99900000001aa8954d0"
+            ],
+            "description": "The revision to restore for the file. This is a unique identifier for a specific version of the file."
+          },
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/test_restore_file.txt",
+              "/Documents/report.pdf"
+            ],
+            "description": "The path to the file you want to restore in the user's Dropbox. Path is case-sensitive."
+          }
+        },
+        "description": "Request parameters for restoring a file to a specific revision."
+      }
+    },
+    {
+      "slug": "DROPBOX_REVOKE_SHARED_LINK",
+      "name": "Revoke shared link",
+      "description": "Tool to revoke a Dropbox shared link. Use when you need to remove access to a file or folder by disabling its shared link. Note that revoking a direct link to a file may not fully prevent access if parent folders have active shared links.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "shared_links",
+        "destructiveHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RevokeSharedLinkRequest",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "examples": [
+              "https://www.dropbox.com/scl/fi/5qnoiq0sb4bra3mwwpsfs/test.txt?rlkey=v2ld1w6kc7wimjf55uqjloz3t&dl=0",
+              "https://www.dropbox.com/s/2sn712vy1ovegw8/Prime_Numbers.txt?dl=0",
+              "https://www.dropbox.com/sh/abcdefg1234567/AABBccDDeeFFgg?dl=0"
+            ],
+            "description": "The URL of the shared link to revoke. Can be any valid Dropbox shared link URL. Note: After revoking a link, the file may still be accessible if there are shared links to parent folders."
+          }
+        },
+        "description": "Request model for revoking a shared link."
+      }
+    },
+    {
+      "slug": "DROPBOX_SAVE_COPY_REFERENCE",
+      "name": "Save copy reference",
+      "description": "Tool to save a copy reference to the user's Dropbox. Use when you have a copy reference (obtained from copy_reference/get) and need to save it to a specific destination path.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "files",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DropboxCopyReferenceSaveRequest",
+        "required": [
+          "copy_reference",
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/test_file_copy_saved.txt",
+              "/Documents/copied_file.pdf"
+            ],
+            "description": "Path in the user's Dropbox that is the destination where the referenced file or folder will be saved. This path is case-sensitive and must start with '/'."
+          },
+          "copy_reference": {
+            "type": "string",
+            "title": "Copy Reference",
+            "examples": [
+              "AAAAAuAEmbNibzBibzd2dnR5dG0"
+            ],
+            "description": "A copy reference returned by copy_reference/get. This is an opaque string that can be used to save a file or folder to the user's Dropbox."
+          }
+        },
+        "description": "Request model for saving a copy reference to Dropbox."
+      }
+    },
+    {
+      "slug": "DROPBOX_SEARCH_CONTINUE",
+      "name": "Continue Dropbox Search",
+      "description": "Tool to fetch the next page of search results from a previous Dropbox search. Use when you have a cursor from a search operation and need to retrieve additional results. Note: search along with search_continue can only retrieve a maximum of 10,000 matches total.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "files"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchContinueRequest",
+        "required": [
+          "cursor"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "title": "Cursor",
+            "minLength": 1,
+            "description": "The cursor returned by your last call to search or search_continue. Used to fetch the next page of results."
+          }
+        },
+        "description": "Request model for continuing a Dropbox search."
+      }
+    },
+    {
+      "slug": "DROPBOX_SEARCH_FILE_OR_FOLDER",
+      "name": "Search File or Folder",
+      "description": "Tool to search for files and folders in Dropbox by name or content, optionally scoped to a path, with pagination support. Results paginate via cursor (up to 100 per page); check `has_more` in the response and re-fetch with the cursor until `has_more` is false. Newly indexed items may have a brief delay before appearing. Verify `path_display` and `.tag` (file vs folder) on each result before acting, as multiple similar-named items may match. Results are limited to items visible to the authenticated user.",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchFileOrFolderRequest",
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "minLength": 1,
+            "description": "The search string. Must be 1 or more non-whitespace characters. Queries are case-insensitive. Required unless cursor is provided."
+          },
+          "cursor": {
+            "type": "string",
+            "title": "Cursor",
+            "description": "Cursor from a previous search response for fetching the next page of results. When provided, all other parameters are ignored and the continue endpoint is called."
+          },
+          "options": {
+            "type": "object",
+            "title": "SearchOptions",
+            "properties": {
+              "path": {
+                "type": "string",
+                "title": "Path",
+                "description": "Scopes the search to the given path and its subfolders. Provide an empty string to search the root. Non-root paths must start with '/' (e.g., '/my-folder'). If the leading slash is missing, it will be automatically prepended. If None, searches the entire Dropbox."
+              },
+              "order_by": {
+                "enum": [
+                  "relevance",
+                  "last_modified_time"
+                ],
+                "type": "string",
+                "title": "SearchOrderBy",
+                "description": "Order by options for search results."
+              },
+              "file_status": {
+                "enum": [
+                  "active",
+                  "deleted"
+                ],
+                "type": "string",
+                "title": "File Status",
+                "default": "active",
+                "description": "Restricts search to files with the given status. Can be 'active' (default) or 'deleted'. To search both, omit this parameter or make separate requests."
+              },
+              "max_results": {
+                "type": "integer",
+                "title": "Max Results",
+                "default": 100,
+                "maximum": 1000,
+                "minimum": 1,
+                "description": "The maximum number of search results to return per request. Default is 100, min 1, max 1000."
+              },
+              "filename_only": {
+                "type": "boolean",
+                "title": "Filename Only",
+                "default": false,
+                "description": "Restricts search to only match on filenames."
+              },
+              "file_categories": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "image",
+                    "document",
+                    "pdf",
+                    "spreadsheet",
+                    "presentation",
+                    "audio",
+                    "video",
+                    "folder",
+                    "paper",
+                    "others"
+                  ],
+                  "type": "string"
+                },
+                "title": "File Categories",
+                "description": "Restricts search to only match files in the given categories."
+              },
+              "file_extensions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "File Extensions",
+                "description": "Restricts search to only match files with the given extensions (e.g., ['jpg', 'png']). This is case-insensitive."
+              }
+            },
+            "description": "Additional options for the search. If not provided, default search options will be used. Key sub-fields: `path` (must start with '/' or use 'id:...' format; omit to search entire account, narrow to reduce noise); `file_categories` and `file_extensions` to filter by type; no native date-range filter — apply date logic client-side using `server_modified` (UTC). Prefer reusing `path_display` values from prior results rather than manually composing paths.",
+            "additionalProperties": false
+          },
+          "match_field_options": {
+            "type": "object",
+            "title": "MatchFieldOptions",
+            "properties": {
+              "include_highlights": {
+                "type": "boolean",
+                "title": "Include Highlights",
+                "default": false,
+                "description": "If true, highlight information for the matches will be returned."
+              }
+            },
+            "description": "Options for match field highlighting. If not provided, default options will be used.",
+            "additionalProperties": false
+          },
+          "Dropbox-API-Select-User": {
+            "type": "string",
+            "title": "Dropbox Api Select User",
+            "description": "Team member ID (format: dbmid:...) required when using team tokens. Specifies which team member's account to operate on."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_SEARCH_FILE_PROPERTIES",
+      "name": "Search File Properties",
+      "description": "Tool to search across property templates for particular property field values. Use when you need to find files or folders that have specific custom property values (e.g., find all files with priority='high'). Note: This endpoint does not support apps with the app folder permission.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "files"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchFilePropertiesRequest",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "title": "Cursor",
+            "minLength": 1,
+            "description": "Cursor returned by a previous properties/search response. When provided, the action calls properties/search/continue and ignores queries/template_filter."
+          },
+          "queries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "PropertiesSearchQuery",
+              "required": [
+                "query",
+                "mode"
+              ],
+              "properties": {
+                "mode": {
+                  "type": "object",
+                  "title": "Mode",
+                  "required": [
+                    "field_name"
+                  ],
+                  "properties": {
+                    ".tag": {
+                      "type": "string",
+                      "const": "field_name",
+                      "title": ".Tag",
+                      "default": "field_name",
+                      "description": "The type of search mode. Use 'field_name' to search for a value associated with a field name."
+                    },
+                    "field_name": {
+                      "type": "string",
+                      "title": "Field Name",
+                      "examples": [
+                        "priority",
+                        "status",
+                        "category"
+                      ],
+                      "description": "The name of the property field to search within."
+                    }
+                  },
+                  "description": "The mode with which to perform the search, specifying which field to search within.",
+                  "additionalProperties": false
+                },
+                "query": {
+                  "type": "string",
+                  "title": "Query",
+                  "examples": [
+                    "high",
+                    "completed",
+                    "urgent"
+                  ],
+                  "description": "The property field value for which to search across templates."
+                },
+                "logical_operator": {
+                  "type": "object",
+                  "title": "LogicalOperator",
+                  "properties": {
+                    ".tag": {
+                      "type": "string",
+                      "const": "or_operator",
+                      "title": ".Tag",
+                      "default": "or_operator",
+                      "description": "The logical operator to join search queries. Currently only 'or_operator' is supported."
+                    }
+                  },
+                  "description": "The logical operator with which to append the query.",
+                  "additionalProperties": false
+                }
+              },
+              "description": "A single search query for property field values."
+            },
+            "title": "Queries",
+            "minItems": 1,
+            "description": "List of queries to search. Required unless cursor is provided. Each query specifies a property field value to search for and the field name to search within."
+          },
+          "template_filter": {
+            "type": "object",
+            "title": "TemplateFilter",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "filter_some",
+                  "filter_none"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "examples": [
+                  "filter_none",
+                  "filter_some"
+                ],
+                "description": "The type of filter. Use 'filter_some' to filter by specific template IDs, or 'filter_none' to return all templates."
+              },
+              "filter_some": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Filter Some",
+                "description": "List of template IDs to filter by. Only required when tag is 'filter_some'."
+              }
+            },
+            "description": "Filter results to contain only properties associated with specific template IDs.",
+            "additionalProperties": false
+          }
+        },
+        "description": "Request to search across property templates for particular property field values."
+      }
+    },
+    {
+      "slug": "DROPBOX_SHARE_FOLDER",
+      "name": "Share folder",
+      "description": "Tool to share a folder with collaborators in Dropbox. Most sharing will be completed synchronously, but large folders will be completed asynchronously. If an async_job_id is returned, you'll need to call check_share_job_status until the action completes to get the folder metadata. Use when you need to create a shared folder or convert an existing folder to a shared folder.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "shared_folders",
+        "createHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ShareFolderRequest",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/TestSharedFolder",
+              "/Documents/TeamFolder",
+              "/Projects/2024/Q1"
+            ],
+            "description": "The path to the folder to share. If it does not exist, then a new one is created. Must be a valid Dropbox path (e.g., '/TestSharedFolder')."
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "FolderAction",
+              "required": [
+                ".tag"
+              ],
+              "properties": {
+                ".tag": {
+                  "type": "string",
+                  "title": ".Tag",
+                  "description": "The action type (e.g., 'change_options', 'edit_contents', 'invite_editor', 'invite_viewer', etc.)"
+                }
+              },
+              "description": "Actions that may be taken on shared folders."
+            },
+            "title": "Actions",
+            "description": "A list of FolderActions corresponding to FolderPermissions that should appear in the response's SharedFolderMetadata.permissions field describing the actions the authenticated user can perform on the folder."
+          },
+          "force_async": {
+            "type": "boolean",
+            "title": "Force Async",
+            "description": "Whether to force the share to happen asynchronously. Large folders will be completed asynchronously anyway. Set to true to make testing the async case repeatable."
+          },
+          "link_settings": {
+            "type": "object",
+            "title": "LinkSettings",
+            "properties": {
+              "expiry": {
+                "type": "object",
+                "title": "LinkExpiry",
+                "required": [
+                  ".tag"
+                ],
+                "properties": {
+                  ".tag": {
+                    "type": "string",
+                    "title": ".Tag",
+                    "description": "The expiry action type ('remove_expiry', 'set_expiry', 'other')."
+                  },
+                  "set_expiry": {
+                    "type": "string",
+                    "title": "Set Expiry",
+                    "description": "The expiry timestamp in ISO 8601 format (if tag is 'set_expiry')."
+                  }
+                },
+                "description": "Link expiry settings.",
+                "additionalProperties": false
+              },
+              "audience": {
+                "type": "object",
+                "title": "LinkAudience",
+                "required": [
+                  ".tag"
+                ],
+                "properties": {
+                  ".tag": {
+                    "type": "string",
+                    "title": ".Tag",
+                    "description": "The audience type. 'public' - Link is accessible by anyone. 'team' - Link is accessible only by team members. 'members' - Link is accessible only by members of the content."
+                  }
+                },
+                "description": "The audience type for a link.",
+                "additionalProperties": false
+              },
+              "password": {
+                "type": "object",
+                "title": "LinkPassword",
+                "required": [
+                  ".tag"
+                ],
+                "properties": {
+                  ".tag": {
+                    "type": "string",
+                    "title": ".Tag",
+                    "description": "The password action type ('remove_password', 'set_password', 'other')."
+                  },
+                  "set_password": {
+                    "type": "string",
+                    "title": "Set Password",
+                    "description": "The password to set (if tag is 'set_password')."
+                  }
+                },
+                "description": "Link password settings.",
+                "additionalProperties": false
+              },
+              "access_level": {
+                "type": "object",
+                "title": "AccessLevel",
+                "required": [
+                  ".tag"
+                ],
+                "properties": {
+                  ".tag": {
+                    "type": "string",
+                    "title": ".Tag",
+                    "description": "The access level type. 'viewer' - Can only view. 'viewer_no_comment' - Can only view without comments. 'editor' - Can view and edit."
+                  }
+                },
+                "description": "Access level for a collaborator on a shared link.",
+                "additionalProperties": false
+              }
+            },
+            "description": "Settings that apply to a link.",
+            "additionalProperties": false
+          },
+          "member_policy": {
+            "type": "object",
+            "title": "MemberPolicy",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "team",
+                  "anyone",
+                  "other"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "Who can become a member. 'team' - Only a teammate can become a member. 'anyone' - Anyone can become a member. 'other' - Other."
+              }
+            },
+            "description": "Policy governing who can be a member of a shared folder.",
+            "additionalProperties": false
+          },
+          "acl_update_policy": {
+            "type": "object",
+            "title": "AclUpdatePolicy",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "owner",
+                  "editors",
+                  "other"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "Who can add, remove, or change the privileges of members. 'owner' - Only the owner can update the ACL. 'editors' - Any editor can update the ACL. 'other' - Other."
+              }
+            },
+            "description": "Who can change a shared folder's access control list.",
+            "additionalProperties": false
+          },
+          "shared_link_policy": {
+            "type": "object",
+            "title": "SharedLinkPolicy",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "anyone",
+                  "team",
+                  "members",
+                  "other"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "Who can view shared links. 'anyone' - Links can be shared with anyone. 'team' - Links can be shared with anyone on the same team. 'members' - Links can only be shared among members of the shared folder. 'other' - Other."
+              }
+            },
+            "description": "Who can view shared links in this folder.",
+            "additionalProperties": false
+          },
+          "viewer_info_policy": {
+            "type": "object",
+            "title": "ViewerInfoPolicy",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "enabled",
+                  "disabled",
+                  "other"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "Whether viewer information is available. 'enabled' - Viewer information is available. 'disabled' - Viewer information is disabled. 'other' - Other."
+              }
+            },
+            "description": "Who can enable/disable viewer info for this shared folder.",
+            "additionalProperties": false
+          }
+        },
+        "description": "Request model for sharing a folder."
+      }
+    },
+    {
+      "slug": "DROPBOX_UPDATE_FILE_MEMBER",
+      "name": "Update file member",
+      "description": "Tool to change a member's access level on a shared file. Use when you need to update permissions for an existing file member (e.g., change from editor to viewer or vice versa). Note: This endpoint does not support apps with the app folder permission.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "updateHint",
+        "shared_files"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateFileMemberRequest",
+        "required": [
+          "file",
+          "member",
+          "access_level"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "title": "File",
+            "description": "File for which to update the member's access. Can be a file path (e.g., '/test_read_file_basic.txt') or file ID (e.g., 'id:xxxxx')."
+          },
+          "member": {
+            "type": "object",
+            "title": "Member",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "email",
+                  "dropbox_id"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "Type of member selector. 'email' - Identify member by email address. 'dropbox_id' - Identify member by Dropbox account ID."
+              },
+              "email": {
+                "type": "string",
+                "title": "Email",
+                "examples": [
+                  "test@example.com",
+                  "colleague@company.com"
+                ],
+                "description": "Email address of the member. Required when tag is 'email'."
+              },
+              "dropbox_id": {
+                "type": "string",
+                "title": "Dropbox Id",
+                "description": "Dropbox account, team member, or group ID. Required when tag is 'dropbox_id'."
+              }
+            },
+            "description": "The member whose access to update. Identify by email or Dropbox ID.",
+            "additionalProperties": false
+          },
+          "access_level": {
+            "enum": [
+              "viewer",
+              "editor"
+            ],
+            "type": "string",
+            "title": "Access Level",
+            "description": "The new access level for the member. 'viewer' - The member can only view the file. 'editor' - The member can edit the file. Note: Editor access may fail with no_permission for certain file types."
+          }
+        },
+        "description": "Request model for updating a member's access on a file."
+      }
+    },
+    {
+      "slug": "DROPBOX_UPDATE_FILE_PROPERTIES",
+      "name": "Update file properties",
+      "description": "Tool to update custom properties on a file or folder in Dropbox. Use when you need to modify metadata fields associated with a property template, such as updating status, priority, or other custom attributes. Requires the files.metadata.write scope.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "updateHint",
+        "file_properties"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateFilePropertiesRequest",
+        "required": [
+          "path",
+          "update_property_groups"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "A unique identifier for the file or folder. Can be a path (e.g., '/test.txt') or file ID (e.g., 'id:a4ayc_80_OEAAAAAAAAAXz')."
+          },
+          "update_property_groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "PropertyGroupUpdate",
+              "required": [
+                "template_id"
+              ],
+              "properties": {
+                "template_id": {
+                  "type": "string",
+                  "title": "Template Id",
+                  "description": "A unique identifier for the property template type."
+                },
+                "remove_fields": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Remove Fields",
+                  "examples": [
+                    [
+                      "old_field",
+                      "deprecated_field"
+                    ]
+                  ],
+                  "description": "Property field names to remove, provided they exist."
+                },
+                "add_or_update_fields": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "title": "PropertyFieldUpdate",
+                    "required": [
+                      "name",
+                      "value"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "title": "Name",
+                        "examples": [
+                          "priority",
+                          "status",
+                          "category"
+                        ],
+                        "description": "The name or key of the custom property field."
+                      },
+                      "value": {
+                        "type": "string",
+                        "title": "Value",
+                        "examples": [
+                          "high",
+                          "completed",
+                          "urgent"
+                        ],
+                        "description": "The value to set for this custom property field."
+                      }
+                    },
+                    "description": "A single property field to add or update."
+                  },
+                  "title": "Add Or Update Fields",
+                  "description": "Property fields to add or update. If the property field already exists, it is updated. If it doesn't exist, the property group is added."
+                }
+              },
+              "description": "Represents a property group update with fields to add/update or remove."
+            },
+            "title": "Update Property Groups",
+            "description": "The property groups 'delta' updates to apply. Each update specifies a template ID and the fields to add/update or remove."
+          },
+          "Dropbox-API-Select-User": {
+            "type": "string",
+            "title": "Dropbox Api Select User",
+            "description": "Team member ID (format: dbmid:...) required when using team tokens. Specifies which team member's account to operate on."
+          }
+        },
+        "description": "Request to update custom properties on a file or folder."
+      }
+    },
+    {
+      "slug": "DROPBOX_UPDATE_PAPER_DOCUMENT",
+      "name": "Update Paper Document",
+      "description": "Tool to update an existing Dropbox Paper document with new content in Markdown, HTML, or plain text format. Use when you need to modify, append, prepend, or overwrite content in an existing Paper doc. This endpoint does not support apps with the app folder permission.",
+      "version": "20261001_00",
+      "tags": [
+        "openWorldHint",
+        "updateHint",
+        "paper"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdatePaperDocumentRequest",
+        "required": [
+          "path",
+          "content",
+          "import_format",
+          "doc_update_policy"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "examples": [
+              "/API Test Document.paper",
+              "/Meeting Notes.paper",
+              "/Documents/Report.paper"
+            ],
+            "description": "Path to the existing Paper doc in Dropbox to update. MUST include the .paper extension at the end (e.g., '/My Documents/Notes.paper')."
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "examples": [
+              "\n\nThis is additional content appended via the update API.",
+              "<h2>New Section</h2><p>Updated content here</p>",
+              "# New Heading\n\nMarkdown content"
+            ],
+            "description": "Content to add or replace in the Paper document based on the update policy."
+          },
+          "import_format": {
+            "enum": [
+              "plain_text",
+              "markdown",
+              "html"
+            ],
+            "type": "string",
+            "title": "Import Format",
+            "examples": [
+              "plain_text",
+              "markdown",
+              "html"
+            ],
+            "description": "Format of the provided content: plain_text, markdown, or html."
+          },
+          "paper_revision": {
+            "type": "integer",
+            "title": "Paper Revision",
+            "examples": [
+              1,
+              5,
+              10
+            ],
+            "description": "The paper revision number. Required when doc_update_policy is 'update'. This value must match the current revision of the doc or an error will be returned."
+          },
+          "doc_update_policy": {
+            "enum": [
+              "append",
+              "prepend",
+              "overwrite",
+              "update"
+            ],
+            "type": "string",
+            "title": "Doc Update Policy",
+            "examples": [
+              "append",
+              "prepend",
+              "overwrite",
+              "update"
+            ],
+            "description": "Policy for updating the document: 'append' adds content to the end, 'prepend' adds content to the beginning, 'overwrite' replaces all content, 'update' merges content intelligently (requires paper_revision)."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_UPDATE_TEAM_GROUP",
+      "name": "Update team group",
+      "description": "Tool to update a team group's name, external ID, and/or management type. Use when you need to modify group properties such as renaming a group or changing how it's managed.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "updateHint",
+        "team",
+        "groups"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateTeamGroupRequest",
+        "required": [
+          "group"
+        ],
+        "properties": {
+          "group": {
+            "type": "object",
+            "title": "Group",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "group_id",
+                  "group_external_id"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "The type of selector to use. 'group_id' to select by Dropbox group ID, 'group_external_id' to select by external ID."
+              },
+              "group_id": {
+                "type": "string",
+                "title": "Group Id",
+                "description": "The Dropbox group ID. Required when tag is 'group_id'."
+              },
+              "group_external_id": {
+                "type": "string",
+                "title": "Group External Id",
+                "description": "The external group ID. Required when tag is 'group_external_id'."
+              }
+            },
+            "description": "Specify the group to update by either group_id or group_external_id.",
+            "additionalProperties": false
+          },
+          "new_group_name": {
+            "type": "string",
+            "title": "New Group Name",
+            "examples": [
+              "Updated Marketing Team",
+              "Sales Division 2024"
+            ],
+            "description": "The new name for the group. If not provided, the group name remains unchanged."
+          },
+          "return_members": {
+            "type": "boolean",
+            "title": "Return Members",
+            "default": false,
+            "description": "Whether to return the list of members in the response. Note that the default will cause all group members to be returned, which may take a long time for large groups."
+          },
+          "new_group_external_id": {
+            "type": "string",
+            "title": "New Group External Id",
+            "description": "The new external ID for the group. If not provided, the external ID remains unchanged. Set to empty string to clear the external ID."
+          },
+          "new_group_management_type": {
+            "type": "object",
+            "title": "GroupManagementType",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "user_managed",
+                  "company_managed",
+                  "system_managed",
+                  "other"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "The group management type."
+              }
+            },
+            "description": "The management type for the group.",
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_UPDATE_TEAM_MEMBER_ADMIN_PERMISSIONS",
+      "name": "Set team member admin permissions",
+      "description": "Tool to update a team member's admin permissions. Use when you need to grant or revoke admin privileges for team members. Requires team admin permissions to execute.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "updateHint",
+        "team",
+        "permissions"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateTeamMemberAdminPermissionsRequest",
+        "required": [
+          "user",
+          "new_role"
+        ],
+        "properties": {
+          "user": {
+            "type": "object",
+            "title": "User",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "team_member_id",
+                  "external_id",
+                  "email"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "Type of user identifier: 'team_member_id' for team member ID, 'external_id' for external ID, 'email' for email address"
+              },
+              "email": {
+                "type": "string",
+                "title": "Email",
+                "examples": [
+                  "user@example.com",
+                  "admin@company.com"
+                ],
+                "description": "Email address of the user. Required when tag is 'email'"
+              },
+              "external_id": {
+                "type": "string",
+                "title": "External Id",
+                "description": "External ID of the user. Required when tag is 'external_id'"
+              },
+              "team_member_id": {
+                "type": "string",
+                "title": "Team Member Id",
+                "description": "Team member ID of the user. Required when tag is 'team_member_id'"
+              }
+            },
+            "description": "Identity of the team member whose admin permissions will be set. Use exactly one of team_member_id, email, or external_id to identify the user",
+            "additionalProperties": false
+          },
+          "new_role": {
+            "type": "object",
+            "title": "New Role",
+            "required": [
+              ".tag"
+            ],
+            "properties": {
+              ".tag": {
+                "enum": [
+                  "team_admin",
+                  "user_management_admin",
+                  "support_admin",
+                  "member_only"
+                ],
+                "type": "string",
+                "title": ".Tag",
+                "description": "Admin permissions level for the team member: 'team_admin' - User is an administrator of the team with all permissions, 'user_management_admin' - User can do most user provisioning, de-provisioning and management, 'support_admin' - User can do a limited set of common support tasks for existing users, 'member_only' - User is not an admin of the team"
+              }
+            },
+            "description": "The new admin permissions role to assign to the team member",
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "slug": "DROPBOX_WHO_AM_I",
+      "name": "Who Am I",
+      "description": "Return the identity (email, name) of the connected Dropbox account.",
+      "version": "20261001_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "auth"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "WhoAmIRequest",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

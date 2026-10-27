@@ -1,0 +1,2249 @@
+{
+  "toolkit": "pipedrive",
+  "version": "20261007_00",
+  "auth": {
+    "mode": "api_key",
+    "fields": [
+      "subdomain",
+      "generic_api_key"
+    ]
+  },
+  "label": "Pipedrive",
+  "description": "Find, create, and update deals, people, organizations, leads, activities, and notes in one Pipedrive company.",
+  "securityDescription": "Pipedrive connects with an API key and company subdomain entered on Composio's hosted page; Chickpea never receives the key. Agents act as the Pipedrive user who owns the key. With write access, Agents can create and update deals, people, organizations, leads, and activities, and add and edit notes. People are saved without email addresses or marketing consent, and an update cannot change a person's phone numbers. Agents cannot delete or merge records, change who owns a record or who can see it, add products to deals, manage pipelines, stages, users, roles, permissions, or webhooks, or send email.",
+  "preset": {
+    "category": "business",
+    "accent": "#017737"
+  },
+  "validationCapability": "pipedrive.who_am_i",
+  "review": {
+    "add": [
+      "PIPEDRIVE_ADD_AN_ORGANIZATION",
+      "PIPEDRIVE_ADD_A_DEAL",
+      "PIPEDRIVE_ADD_A_PERSON",
+      "PIPEDRIVE_ADD_LEAD",
+      "PIPEDRIVE_ADD_NOTE",
+      "PIPEDRIVE_GET_ACTIVITY",
+      "PIPEDRIVE_GET_ALL_NOTES",
+      "PIPEDRIVE_GET_ALL_ORGANIZATIONS",
+      "PIPEDRIVE_GET_ALL_PIPELINES",
+      "PIPEDRIVE_GET_ALL_STAGES",
+      "PIPEDRIVE_LIST_ACTIVITIES",
+      "PIPEDRIVE_LIST_DEALS",
+      "PIPEDRIVE_LIST_DEAL_ACTIVITIES",
+      "PIPEDRIVE_LIST_PERSONS",
+      "PIPEDRIVE_SEARCH_DEALS",
+      "PIPEDRIVE_SEARCH_LEADS",
+      "PIPEDRIVE_SEARCH_ORGANIZATIONS",
+      "PIPEDRIVE_SEARCH_PERSONS",
+      "PIPEDRIVE_UPDATE_ACTIVITY",
+      "PIPEDRIVE_UPDATE_DEAL_V2",
+      "PIPEDRIVE_UPDATE_LEAD",
+      "PIPEDRIVE_UPDATE_NOTE",
+      "PIPEDRIVE_UPDATE_ORGANIZATION",
+      "PIPEDRIVE_UPDATE_PERSON_V2"
+    ],
+    "drop": {
+      "PIPEDRIVE_ADD_PRODUCT": "Changes the shared product catalog, which is outside the deal, person, organization, and activity records this connector edits.",
+      "PIPEDRIVE_DEALS_UPDATE_DEAL": "Changes product pricing and quantities attached to a deal; deal products stay a person's change.",
+      "PIPEDRIVE_UPDATE_A_DEAL": "Duplicates PIPEDRIVE_UPDATE_DEAL_V2 on the older API.",
+      "PIPEDRIVE_UPDATE_A_PERSON": "Duplicates PIPEDRIVE_UPDATE_PERSON_V2 on the older API.",
+      "PIPEDRIVE_UPDATE_DEAL": "Duplicates PIPEDRIVE_UPDATE_DEAL_V2.",
+      "PIPEDRIVE_UPDATE_PERSON": "Duplicates PIPEDRIVE_UPDATE_PERSON_V2."
+    },
+    "allowArguments": {
+      "PIPEDRIVE_ADD_A_DEAL": [
+        "org_id"
+      ],
+      "PIPEDRIVE_ADD_A_PERSON": [
+        "org_id"
+      ],
+      "PIPEDRIVE_ADD_LEAD": [
+        "organization_id"
+      ],
+      "PIPEDRIVE_ADD_NOTE": [
+        "org_id"
+      ],
+      "PIPEDRIVE_UPDATE_DEAL_V2": [
+        "org_id"
+      ],
+      "PIPEDRIVE_UPDATE_LEAD": [
+        "organization_id"
+      ],
+      "PIPEDRIVE_UPDATE_PERSON_V2": [
+        "org_id"
+      ]
+    },
+    "withholdArguments": {
+      "PIPEDRIVE_ADD_A_PERSON": {
+        "marketing_status": "Records marketing consent, which lets Pipedrive Campaigns email the person."
+      },
+      "PIPEDRIVE_UPDATE_DEAL_V2": {
+        "is_deleted": "Deletes the deal."
+      },
+      "PIPEDRIVE_UPDATE_PERSON_V2": {
+        "marketing_status": "Records marketing consent, which lets Pipedrive Campaigns email the person."
+      }
+    }
+  },
+  "capabilities": [
+    {
+      "id": "pipedrive.add_a_deal",
+      "tool": "PIPEDRIVE_ADD_A_DEAL",
+      "toolName": "pipedrive_add_a_deal",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Add a new deal to Pipedrive with any custom fields, which vary by account and are identified by long hash keys. Check dealFields for existing custom fields. For details, visit the tutorial on adding a deal.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pipedrive: Add a deal",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "visible_to": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The deal title"
+          },
+          "value": {
+            "type": "number",
+            "description": "Monetary value of the deal"
+          },
+          "org_id": {
+            "type": "integer",
+            "description": "ID of the organization"
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Status of the deal (open, won, lost). Defaults to open"
+          },
+          "currency": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Currency for the deal value (3-letter ISO code)"
+          },
+          "stage_id": {
+            "type": "integer",
+            "description": "Stage ID for the deal"
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "ID of the person this deal is linked to"
+          },
+          "pipeline_id": {
+            "type": "integer",
+            "description": "Pipeline ID for the deal"
+          },
+          "probability": {
+            "type": "number",
+            "description": "Success probability percentage (0-100)"
+          },
+          "expected_close_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Expected close date in format YYYY-MM-DD"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "description": "Request schema for `AddADeal`"
+      }
+    },
+    {
+      "id": "pipedrive.add_a_person",
+      "tool": "PIPEDRIVE_ADD_A_PERSON",
+      "toolName": "pipedrive_add_a_person",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Add a new contact in Pipedrive with optional custom fields unique to each account found using the `personFields` endpoint. The endpoint also handles `data.marketing_status` for Campaigns product users.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pipedrive: Add a person",
+      "withheldArguments": {
+        "email": "names an address a message goes to or comes from",
+        "owner_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "visible_to": "changes sharing, visibility, permissions, membership, or who acts",
+        "marketing_status": "reviewer: Records marketing consent, which lets Pipedrive Campaigns email the person."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the person. REQUIRED by Pipedrive API."
+          },
+          "phone": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "Label for the item (e.g., work, home)"
+                },
+                "value": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The email/phone value"
+                },
+                "primary": {
+                  "type": "boolean",
+                  "description": "Whether this is the primary item"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "description": "Email/Phone item schema used by Pipedrive v1 for persons."
+            },
+            "maxItems": 100,
+            "description": "List of phone objects: { value: string, label?: string, primary?: bool }"
+          },
+          "org_id": {
+            "type": "integer",
+            "description": "ID of the linked organization"
+          },
+          "add_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Creation time (RFC 3339)"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "description": "IDs of labels to assign to the person"
+          },
+          "update_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Last update time (RFC 3339)"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Request schema for `AddAPerson`"
+      }
+    },
+    {
+      "id": "pipedrive.add_an_activity",
+      "tool": "PIPEDRIVE_ADD_AN_ACTIVITY",
+      "toolName": "pipedrive_add_an_activity",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "New activity added. Response includes `more_activities_scheduled_in_context` to show if more are planned with the same entity. See tutorial on adding activities [here](https://pipedrive.readme.io/docs/adding-an-activity).",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pipedrive: Add an activity",
+      "withheldArguments": {
+        "org_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "attendees": "names an address a message goes to or comes from",
+        "participants": "names an address a message goes to or comes from",
+        "public_description": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "done": {
+            "type": "integer",
+            "description": "Whether the activity is done (0 = not done, 1 = done)"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Note/description of the activity"
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The type of the activity (matches ActivityTypes.key_string)"
+          },
+          "deal_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string",
+                "maxLength": 20000
+              }
+            ],
+            "description": "ID of the linked deal (integer or numeric string)"
+          },
+          "lead_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the linked lead (UUID string)"
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The subject/title of the activity"
+          },
+          "due_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Due date of the activity (YYYY-MM-DD)"
+          },
+          "due_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Due time of the activity (HH:MM)"
+          },
+          "duration": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Duration of the activity (e.g., 00:30)"
+          },
+          "location": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Location/address of the activity"
+          },
+          "busy_flag": {
+            "type": "boolean",
+            "description": "Whether the activity marks the assignee as busy"
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "ID of the linked person"
+          },
+          "project_id": {
+            "type": "integer",
+            "description": "ID of the linked project"
+          }
+        },
+        "required": [
+          "subject",
+          "type"
+        ],
+        "description": "Request schema for `AddAnActivity`"
+      }
+    },
+    {
+      "id": "pipedrive.add_an_organization",
+      "tool": "PIPEDRIVE_ADD_AN_ORGANIZATION",
+      "toolName": "pipedrive_add_an_organization",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Creates a new organization in Pipedrive. The 'name' parameter is required and represents the organization's name (e.g., 'Acme Corp'). Optionally specify 'owner_id' to assign an owner and 'visible_to' for visibility settings. Custom fields can also be added using field keys from organizationFields.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pipedrive: Add an organization",
+      "withheldArguments": {
+        "owner_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "visible_to": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the organization to create (required). This is typically a company or business name such as 'Acme Corp' or 'Tech Solutions Inc.'"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Request schema for `AddAnOrganization`"
+      }
+    },
+    {
+      "id": "pipedrive.add_lead",
+      "tool": "PIPEDRIVE_ADD_LEAD",
+      "toolName": "pipedrive_add_lead",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Pipedrive API lets you add leads linked to people or organizations and tags them with 'API' source. Custom fields from deals apply to leads and appear in responses if set. Details are in the tutorials for adding and updating leads.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pipedrive: Add a lead",
+      "withheldArguments": {
+        "owner_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the lead"
+          },
+          "was_seen": {
+            "type": "boolean",
+            "description": "A flag indicating whether the lead was seen by someone in the Pipedrive UI"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "The IDs of the lead labels which will be associated with the lead"
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "REQUIRED if organization_id is not provided. The ID of a person which this lead will be linked to. If the person does not exist yet, it needs to be created first. At least one of person_id or organization_id must be set."
+          },
+          "value__amount": {
+            "type": "integer",
+            "description": "Amount"
+          },
+          "organization_id": {
+            "type": "integer",
+            "description": "REQUIRED if person_id is not provided. The ID of an organization which this lead will be linked to. If the organization does not exist yet, it needs to be created first. At least one of person_id or organization_id must be set."
+          },
+          "value__currency": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Currency"
+          },
+          "expected_close_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The date of when the deal which will be created from the lead is expected to be closed. In ISO 8601 format: YYYY-MM-DD."
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "description": "Request schema for `AddLead`"
+      }
+    },
+    {
+      "id": "pipedrive.add_note",
+      "tool": "PIPEDRIVE_ADD_NOTE",
+      "toolName": "pipedrive_add_note",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Tool to add a note to a deal, person, organization, lead, or project in Pipedrive. Use when you need to create a note attached to an entity. At least one entity ID (lead_id, deal_id, person_id, org_id, or project_id) must be provided.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pipedrive: Add Note",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "pinned_to_organization_flag": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "org_id": {
+            "type": "integer",
+            "description": "The ID of the organization to attach the note to. At least one of lead_id, deal_id, person_id, org_id, or project_id must be provided."
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The content of the note in HTML format. Subject to sanitization on the back-end."
+          },
+          "deal_id": {
+            "type": "integer",
+            "description": "The ID of the deal to attach the note to. At least one of lead_id, deal_id, person_id, org_id, or project_id must be provided."
+          },
+          "lead_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the lead to attach the note to (UUID format). At least one of lead_id, deal_id, person_id, org_id, or project_id must be provided."
+          },
+          "add_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The creation timestamp for the note in UTC. Format: YYYY-MM-DD HH:MM:SS"
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "The ID of the person to attach the note to. At least one of lead_id, deal_id, person_id, org_id, or project_id must be provided."
+          },
+          "project_id": {
+            "type": "integer",
+            "description": "The ID of the project to attach the note to. At least one of lead_id, deal_id, person_id, org_id, or project_id must be provided."
+          },
+          "pinned_to_deal_flag": {
+            "type": "integer",
+            "description": "If set to 1, the note will be pinned to the deal. 0 or omit to not pin."
+          },
+          "pinned_to_lead_flag": {
+            "type": "integer",
+            "description": "If set to 1, the note will be pinned to the lead. 0 or omit to not pin."
+          },
+          "pinned_to_person_flag": {
+            "type": "integer",
+            "description": "If set to 1, the note will be pinned to the person. 0 or omit to not pin."
+          },
+          "pinned_to_project_flag": {
+            "type": "integer",
+            "description": "If set to 1, the note will be pinned to the project. 0 or omit to not pin."
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "description": "Request schema for `PipedriveAddNote`"
+      }
+    },
+    {
+      "id": "pipedrive.get_activity",
+      "tool": "PIPEDRIVE_GET_ACTIVITY",
+      "toolName": "pipedrive_get_activity",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns the details of a specific activity.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ID of the activity"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for `GetActivity`"
+      }
+    },
+    {
+      "id": "pipedrive.get_activity_field",
+      "tool": "PIPEDRIVE_GET_ACTIVITY_FIELD",
+      "toolName": "pipedrive_get_activity_field",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve detailed metadata for a specific activity field by its field code. Use when you need information about field structure, type, options, or properties.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "field_code": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique code identifying the field (e.g., 'subject', 'due_date', or a 40-character hash for custom fields)"
+          },
+          "include_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ui_visibility"
+            ],
+            "description": "Enum for additional data namespaces to include in response"
+          }
+        },
+        "required": [
+          "field_code"
+        ],
+        "description": "Request schema for `GetActivityField`"
+      }
+    },
+    {
+      "id": "pipedrive.get_all_leads",
+      "tool": "PIPEDRIVE_GET_ALL_LEADS",
+      "toolName": "pipedrive_get_all_leads",
+      "lane": "read",
+      "effect": "read",
+      "description": "The API returns sorted leads by creation time, supporting pagination via `limit` and `start`. Custom field values are included if set, mimicking the `Deals` endpoint structure; unset fields are omitted. Leads share custom fields with deals.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The field name and sorting mode. Format: 'field_name ASC' or 'field_name DESC'. Valid field names: id, title, owner_id, creator_id, was_seen, expected_close_date, next_activity_id, add_time (creation timestamp), update_time. Note: Use 'add_time' for creation time (NOT 'creation_date'). Only first-level field keys are supported (no nested keys)."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "For pagination, the limit of entries to be returned. If not provided, 100 items will be returned."
+          },
+          "start": {
+            "type": "integer",
+            "description": "For pagination, the position that represents the first result for the page"
+          },
+          "owner_id": {
+            "type": "integer",
+            "description": "If supplied, only leads matching the given user will be returned. However, `filter_id` takes precedence over `owner_id` when supplied."
+          },
+          "filter_id": {
+            "type": "integer",
+            "description": "Optional ID of a saved filter to apply. Filter IDs are account-specific and must be obtained from the user's Pipedrive account using the 'Get all filters' endpoint (GET /filters with type='leads'). Do not pass placeholder values like 1. When filter_id is provided, it takes precedence over owner_id, person_id, and organization_id parameters. If omitted, returns all leads without filtering."
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "If supplied, only leads matching the given person will be returned. However, `filter_id` takes precedence over `person_id` when supplied."
+          },
+          "archived_status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "archived",
+              "not_archived",
+              "all"
+            ],
+            "description": "Filtering based on the archived status of a lead. If not provided, `All` is used."
+          },
+          "organization_id": {
+            "type": "integer",
+            "description": "If supplied, only leads matching the given organization will be returned. However, `filter_id` takes precedence over `organization_id` when supplied."
+          }
+        },
+        "description": "Request schema for `GetAllLeads`"
+      }
+    },
+    {
+      "id": "pipedrive.get_all_notes",
+      "tool": "PIPEDRIVE_GET_ALL_NOTES",
+      "toolName": "pipedrive_get_all_notes",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns all notes.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The field names and sorting mode separated by a comma (`field_name_1 ASC`, `field_name_2 DESC`). Only first-level field keys are supported (no nested keys). Supported fields: `id`, `user_id`, `deal_id`, `person_id`, `org_id`, `content`, `add_time`, `update_time`."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "description": "Pagination start"
+          },
+          "org_id": {
+            "type": "integer",
+            "description": "The ID of the organization which notes to fetch. If omitted, notes about all organizations will be returned."
+          },
+          "deal_id": {
+            "type": "integer",
+            "description": "The ID of the deal which notes to fetch. If omitted, notes about all deals will be returned."
+          },
+          "lead_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the lead which notes to fetch. If omitted, notes about all leads will be returned."
+          },
+          "user_id": {
+            "type": "integer",
+            "description": "The ID of the user whose notes to fetch. If omitted, notes by all users will be returned."
+          },
+          "end_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The date in format of YYYY-MM-DD until which notes to fetch to"
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "The ID of the person whose notes to fetch. If omitted, notes about all persons will be returned."
+          },
+          "start_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The date in format of YYYY-MM-DD from which notes to fetch"
+          },
+          "pinned_to_deal_flag": {
+            "type": "integer",
+            "description": "If set, the results are filtered by note to deal pinning state"
+          },
+          "pinned_to_lead_flag": {
+            "type": "integer",
+            "description": "If set, the results are filtered by note to lead pinning state"
+          },
+          "pinned_to_person_flag": {
+            "type": "integer",
+            "description": "If set, the results are filtered by note to person pinning state"
+          },
+          "pinned_to_organization_flag": {
+            "type": "integer",
+            "description": "If set, the results are filtered by note to organization pinning state"
+          }
+        },
+        "description": "Request schema for `GetAllNotes`"
+      }
+    },
+    {
+      "id": "pipedrive.get_all_organizations",
+      "tool": "PIPEDRIVE_GET_ALL_ORGANIZATIONS",
+      "toolName": "pipedrive_get_all_organizations",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns all organizations.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The field names and sorting mode separated by a comma (`field_name_1 ASC`, `field_name_2 DESC`). Only first-level field keys are supported (no nested keys)."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "description": "Pagination start"
+          },
+          "user_id": {
+            "type": "integer",
+            "description": "If supplied, only organizations owned by the given user will be returned. However, `filter_id` takes precedence over `user_id` when both are supplied."
+          },
+          "filter_id": {
+            "type": "integer",
+            "description": "The ID of the filter to use"
+          },
+          "first_char": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If supplied, only organizations whose name starts with the specified letter will be returned (case-insensitive)"
+          }
+        },
+        "description": "Request schema for `GetAllOrganizations`"
+      }
+    },
+    {
+      "id": "pipedrive.get_all_pipelines",
+      "tool": "PIPEDRIVE_GET_ALL_PIPELINES",
+      "toolName": "pipedrive_get_all_pipelines",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns data about all pipelines. This action retrieves all pipelines from the user's Pipedrive instance using their instance-specific URL (e.g., https://company.pipedrive.com/api/v2/pipelines).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request schema for `GetAllPipelines`"
+      }
+    },
+    {
+      "id": "pipedrive.get_all_products",
+      "tool": "PIPEDRIVE_GET_ALL_PRODUCTS",
+      "toolName": "pipedrive_get_all_products",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns data about all products.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "description": "An array of integers with the IDs of the products that should be returned in the response"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "description": "Pagination start"
+          },
+          "user_id": {
+            "type": "integer",
+            "description": "If supplied, only products owned by the given user will be returned"
+          },
+          "filter_id": {
+            "type": "integer",
+            "description": "The ID of the filter to use"
+          },
+          "first_char": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If supplied, only products whose name starts with the specified letter will be returned (case-insensitive)"
+          },
+          "get_summary": {
+            "type": "boolean",
+            "description": "If supplied, the response will return the total numbers of products in the `additional_data.summary.total_count` property"
+          }
+        },
+        "description": "Request schema for `GetAllProducts`"
+      }
+    },
+    {
+      "id": "pipedrive.get_all_stages",
+      "tool": "PIPEDRIVE_GET_ALL_STAGES",
+      "toolName": "pipedrive_get_all_stages",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns data about all stages.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "description": "Pagination start"
+          },
+          "pipeline_id": {
+            "type": "integer",
+            "description": "The ID of the pipeline to fetch stages for. If omitted, stages for all pipelines will be fetched."
+          }
+        },
+        "description": "Request schema for `GetAllStages`"
+      }
+    },
+    {
+      "id": "pipedrive.get_deal",
+      "tool": "PIPEDRIVE_GET_DEAL",
+      "toolName": "pipedrive_get_deal",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get details of a specific deal in Pipedrive. Use when you need to retrieve comprehensive information about a deal by its ID.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ID of the deal to retrieve"
+          },
+          "custom_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of custom field keys to include (maximum 15 keys). Use this parameter for faster results and smaller responses when only specific custom fields are needed."
+          },
+          "include_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of additional fields to include in the response. Acceptable values: next_activity_id, last_activity_id, first_won_time, products_count, files_count, notes_count, followers_count, email_messages_count, activities_count, done_activities_count, undone_activities_count, participants_count, last_incoming_mail_time, last_outgoing_mail_time, smart_bcc_email"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request model for getting details of a specific deal."
+      }
+    },
+    {
+      "id": "pipedrive.get_deal_field",
+      "tool": "PIPEDRIVE_GET_DEAL_FIELD",
+      "toolName": "pipedrive_get_deal_field",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a specific deal field by ID. Use when you need to get metadata and configuration for a deal field.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ID of the deal field to retrieve"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for `PipedriveGetDealField`"
+      }
+    },
+    {
+      "id": "pipedrive.get_lead_conversion_status",
+      "tool": "PIPEDRIVE_GET_LEAD_CONVERSION_STATUS",
+      "toolName": "pipedrive_get_lead_conversion_status",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the conversion status for a specific lead conversion job. Use when you need to check the progress of a lead-to-deal conversion including current state and resulting deal ID upon completion.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The identifier for a specific lead (UUID format)"
+          },
+          "conversion_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The identifier for the conversion job (UUID format)"
+          }
+        },
+        "required": [
+          "id",
+          "conversion_id"
+        ],
+        "description": "Request schema for `GetLeadConversionStatus`"
+      }
+    },
+    {
+      "id": "pipedrive.get_one_lead",
+      "tool": "PIPEDRIVE_GET_ONE_LEAD",
+      "toolName": "pipedrive_get_one_lead",
+      "lane": "read",
+      "effect": "read",
+      "description": "API returns specific lead details with custom field values in the Deals format. Unset custom fields are omitted. Leads share custom fields with deals, not having a unique set.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the lead"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for `GetOneLead`"
+      }
+    },
+    {
+      "id": "pipedrive.get_organization",
+      "tool": "PIPEDRIVE_GET_ORGANIZATION",
+      "toolName": "pipedrive_get_organization",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get details of a specific organization in Pipedrive. Use when you need to retrieve comprehensive information about an organization by its ID.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ID of the organization to retrieve"
+          },
+          "custom_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of custom field keys to include (maximum 15 keys). Use this parameter for faster results and smaller responses when only specific custom fields are needed."
+          },
+          "include_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of additional fields to include in the response. Acceptable values: next_activity_id, last_activity_id, open_deals_count, related_open_deals_count, closed_deals_count, related_closed_deals_count, email_messages_count, people_count, activities_count, done_activities_count, undone_activities_count, files_count, notes_count, followers_count, won_deals_count, related_won_deals_count, lost_deals_count, related_lost_deals_count"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request model for getting details of a specific organization."
+      }
+    },
+    {
+      "id": "pipedrive.get_organization_field",
+      "tool": "PIPEDRIVE_GET_ORGANIZATION_FIELD",
+      "toolName": "pipedrive_get_organization_field",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a specific organization field by ID. Use when you need to get metadata and configuration for an organization field.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ID of the organization field to retrieve"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for `PipedriveGetOrganizationField`"
+      }
+    },
+    {
+      "id": "pipedrive.get_person",
+      "tool": "PIPEDRIVE_GET_PERSON",
+      "toolName": "pipedrive_get_person",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get details of a specific person in Pipedrive. Use when you need to retrieve comprehensive information about a person by their ID.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ID of the person to retrieve"
+          },
+          "custom_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of custom field keys to include (maximum 15 keys). Use this parameter for faster results and smaller responses when only specific custom fields are needed."
+          },
+          "include_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of additional fields to include in the response. Allowed values: next_activity_id, last_activity_id, open_deals_count, related_open_deals_count, closed_deals_count, related_closed_deals_count, participant_open_deals_count, participant_closed_deals_count, email_messages_count, activities_count, done_activities_count, undone_activities_count, files_count, notes_count, followers_count, won_deals_count, related_won_deals_count, lost_deals_count, related_lost_deals_count,"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request model for getting details of a specific person."
+      }
+    },
+    {
+      "id": "pipedrive.get_person_field",
+      "tool": "PIPEDRIVE_GET_PERSON_FIELD",
+      "toolName": "pipedrive_get_person_field",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve metadata for a specific person field by its ID. Use when you need to get field properties like name, type, order, and options.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ID of the person field"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for `PipedriveGetPersonField`"
+      }
+    },
+    {
+      "id": "pipedrive.get_person_picture",
+      "tool": "PIPEDRIVE_GET_PERSON_PICTURE",
+      "toolName": "pipedrive_get_person_picture",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get picture details of a specific person in Pipedrive. Use when you need to retrieve picture information and URLs for a person by their ID.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ID of the person whose picture to retrieve"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request model for getting picture details of a specific person."
+      }
+    },
+    {
+      "id": "pipedrive.list_activities",
+      "tool": "PIPEDRIVE_LIST_ACTIVITIES",
+      "toolName": "pipedrive_list_activities",
+      "lane": "read",
+      "effect": "read",
+      "description": "List activities, or select up to 100 IDs, with relationship and completion filters and cursor pagination.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "description": "Activity IDs to return, with at most 100 IDs per request."
+          },
+          "done": {
+            "type": "boolean",
+            "description": "Whether to return completed or incomplete activities."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Maximum number of activities to return."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque cursor identifying the next page to return."
+          },
+          "org_id": {
+            "type": "integer",
+            "description": "The ID of the organization linked to the activities."
+          },
+          "deal_id": {
+            "type": "integer",
+            "description": "The ID of the deal linked to the activities."
+          },
+          "lead_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The UUID of the lead linked to the activities."
+          },
+          "sort_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "id",
+              "update_time",
+              "add_time",
+              "due_date"
+            ],
+            "description": "Field used to sort the activities."
+          },
+          "owner_id": {
+            "type": "integer",
+            "description": "The ID of the user who owns the activities."
+          },
+          "filter_id": {
+            "type": "integer",
+            "description": "The ID of the filter to apply."
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "The ID of the person linked to the activities."
+          },
+          "updated_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Return activities updated at or after this ISO 8601 timestamp."
+          },
+          "updated_until": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Return activities updated before this ISO 8601 timestamp."
+          },
+          "include_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Additional activity fields to include in the response."
+          },
+          "sort_direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Direction used to sort the activities."
+          }
+        },
+        "description": "Request schema for listing activities using the Pipedrive v2 API."
+      }
+    },
+    {
+      "id": "pipedrive.list_deal_activities",
+      "tool": "PIPEDRIVE_LIST_DEAL_ACTIVITIES",
+      "toolName": "pipedrive_list_deal_activities",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists activities associated with a deal.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ID of the deal"
+          },
+          "done": {
+            "type": "integer",
+            "description": "Whether the activity is done or not. 0 = Not done, 1 = Done. If omitted, returns both Done and Not done activities."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "description": "Pagination start"
+          },
+          "exclude": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated string of activity IDs to exclude from result"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for `ListDealActivities`"
+      }
+    },
+    {
+      "id": "pipedrive.list_deals",
+      "tool": "PIPEDRIVE_LIST_DEALS",
+      "toolName": "pipedrive_list_deals",
+      "lane": "read",
+      "effect": "read",
+      "description": "List non-archived deals with relationship and status filters, selected custom fields, and cursor pagination.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "description": "Deal IDs to return, with at most 100 IDs per request."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Maximum number of deals to return (1-500)."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque cursor returned by the previous page."
+          },
+          "org_id": {
+            "type": "integer",
+            "description": "Return deals linked to this organization ID."
+          },
+          "status": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "open",
+                "won",
+                "lost",
+                "deleted"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Deal statuses to return: open, won, lost, or deleted."
+          },
+          "sort_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "id",
+              "update_time",
+              "add_time"
+            ],
+            "description": "Field used to sort deals."
+          },
+          "owner_id": {
+            "type": "integer",
+            "description": "Return deals owned by this user ID."
+          },
+          "stage_id": {
+            "type": "integer",
+            "description": "Return deals in this stage ID."
+          },
+          "filter_id": {
+            "type": "integer",
+            "description": "ID of the filter to apply."
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "Return deals linked to this person ID."
+          },
+          "pipeline_id": {
+            "type": "integer",
+            "description": "Return deals in this pipeline ID."
+          },
+          "custom_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 15,
+            "description": "Custom field keys to include, with at most 15 keys per request."
+          },
+          "updated_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Return deals updated at or after this RFC 3339 timestamp."
+          },
+          "updated_until": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Return deals updated before this RFC 3339 timestamp."
+          },
+          "include_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "next_activity_id",
+                "last_activity_id",
+                "first_won_time",
+                "products_count",
+                "files_count",
+                "notes_count",
+                "followers_count",
+                "email_messages_count",
+                "activities_count",
+                "done_activities_count",
+                "undone_activities_count",
+                "participants_count",
+                "last_incoming_mail_time",
+                "last_outgoing_mail_time",
+                "smart_bcc_email",
+                "source_lead_id"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Additional deal fields to include in each result."
+          },
+          "include_labels": {
+            "type": "boolean",
+            "description": "Whether to include deal label details."
+          },
+          "sort_direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Direction used to sort deals."
+          },
+          "include_option_labels": {
+            "type": "boolean",
+            "description": "Whether to include labels for custom-field options."
+          }
+        },
+        "description": "Request schema for listing deals through the Pipedrive v2 API."
+      }
+    },
+    {
+      "id": "pipedrive.list_files",
+      "tool": "PIPEDRIVE_LIST_FILES",
+      "toolName": "pipedrive_list_files",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists all files uploaded to Pipedrive with optional filtering via pagination and sorting. Use this action when you need to retrieve all files across the entire Pipedrive account, regardless of which entity they're attached to. This differs from entity-specific file actions (like get_deal_files) which only return files for a particular deal, person, or organization.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field names and sorting mode separated by a comma. Supported fields: `id`, `update_time`. Example: 'id ASC' or 'update_time DESC'."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Number of items shown per page. Maximum value of 100 is allowed."
+          },
+          "start": {
+            "type": "integer",
+            "description": "Pagination start position. Defaults to 0."
+          }
+        },
+        "description": "Request schema for `ListFiles`"
+      }
+    },
+    {
+      "id": "pipedrive.list_persons",
+      "tool": "PIPEDRIVE_LIST_PERSONS",
+      "toolName": "pipedrive_list_persons",
+      "lane": "read",
+      "effect": "read",
+      "description": "List persons, or select up to 100 IDs, with relationship filters, selected custom fields, and cursor pagination.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "description": "IDs of up to 100 persons to return."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Maximum number of persons to return (1-500)."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Cursor returned by the previous page."
+          },
+          "org_id": {
+            "type": "integer",
+            "description": "Return persons linked to this organization ID."
+          },
+          "deal_id": {
+            "type": "integer",
+            "description": "Return persons linked to this deal ID."
+          },
+          "sort_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "id",
+              "update_time",
+              "add_time"
+            ],
+            "description": "Field used to sort the persons."
+          },
+          "owner_id": {
+            "type": "integer",
+            "description": "Return persons owned by this user ID."
+          },
+          "filter_id": {
+            "type": "integer",
+            "description": "ID of the filter to use."
+          },
+          "custom_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 15,
+            "description": "Keys of up to 15 custom fields to include."
+          },
+          "updated_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Return persons updated after this RFC 3339 timestamp."
+          },
+          "updated_until": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Return persons updated before this RFC 3339 timestamp."
+          },
+          "include_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "next_activity_id",
+                "last_activity_id",
+                "open_deals_count",
+                "related_open_deals_count",
+                "closed_deals_count",
+                "related_closed_deals_count",
+                "participant_open_deals_count",
+                "participant_closed_deals_count",
+                "email_messages_count",
+                "activities_count",
+                "done_activities_count",
+                "undone_activities_count",
+                "files_count",
+                "notes_count",
+                "followers_count",
+                "won_deals_count",
+                "related_won_deals_count",
+                "lost_deals_count",
+                "related_lost_deals_count",
+                "last_incoming_mail_time",
+                "last_outgoing_mail_time",
+                "marketing_status",
+                "doi_status",
+                "smart_bcc_email"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Additional person fields to include. Marketing status fields require the Campaigns product."
+          },
+          "include_labels": {
+            "type": "boolean",
+            "description": "Whether to include person label details."
+          },
+          "sort_direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Direction used to sort the persons."
+          },
+          "include_option_labels": {
+            "type": "boolean",
+            "description": "Whether to include human-readable custom field option labels."
+          }
+        },
+        "description": "Request schema for listing persons through the Pipedrive v2 API."
+      }
+    },
+    {
+      "id": "pipedrive.search_deals",
+      "tool": "PIPEDRIVE_SEARCH_DEALS",
+      "toolName": "pipedrive_search_deals",
+      "lane": "read",
+      "effect": "read",
+      "description": "This API endpoint searches deals by title, notes, and custom fields, filters results by person or organization ID, and is a specific use case of /v1/itemSearch with limited OAuth scope.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "term": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The search term to look for. Minimum 2 characters required (or 1 character if exact_match is set to true). Please note that the search term has to be URL encoded."
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100,
+            "description": "Items shown per page. Maximum value is 100."
+          },
+          "start": {
+            "type": "integer",
+            "description": "Pagination start. Note that the pagination is based on main results and does not include related items when using `search_for_related_items` parameter."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "custom_fields",
+              "notes",
+              "title"
+            ],
+            "description": "A comma-separated string array. The fields to perform the search from. Defaults to all of them. Only the following custom field types are searchable: `address`, `varchar`, `text`, `varchar_auto`, `double`, `monetary` and `phone`. Read more about searching by custom fields <a href=\"https://support.pipedrive.com/en/article/search-finding-what-you-need#searching-by-custom-fields\" target=\"_blank\" rel=\"noopener noreferrer\">here</a>."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "open",
+              "won",
+              "lost"
+            ],
+            "description": "Will filter deals by the provided specific status. open = Open, won = Won, lost = Lost. The upper limit of found deals associated with the status is 2000."
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "Will filter deals by the provided person ID. The upper limit of found deals associated with the person is 2000."
+          },
+          "exact_match": {
+            "type": "boolean",
+            "description": "When enabled, only full exact matches against the given term are returned. It is <b>not</b> case sensitive."
+          },
+          "include_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "deal.cc_email"
+            ],
+            "description": "Supports including optional fields in the results which are not provided by default"
+          },
+          "organization_id": {
+            "type": "integer",
+            "description": "Will filter deals by the provided organization ID. The upper limit of found deals associated with the organization is 2000."
+          }
+        },
+        "required": [
+          "term"
+        ],
+        "description": "Request schema for `SearchDeals`"
+      }
+    },
+    {
+      "id": "pipedrive.search_leads",
+      "tool": "PIPEDRIVE_SEARCH_LEADS",
+      "toolName": "pipedrive_search_leads",
+      "lane": "read",
+      "effect": "read",
+      "description": "Endpoint searches leads by title, notes, custom fields, with options to filter by person and organization IDs, and is a more specific use of the /v1/itemSearch with limited OAuth scope.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "term": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The search term to look for. Minimum 2 characters (or 1 if using `exact_match`). Please note that the search term has to be URL encoded."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "description": "Pagination start. Note that the pagination is based on main results and does not include related items when using `search_for_related_items` parameter."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "custom_fields",
+              "notes",
+              "title"
+            ],
+            "description": "A comma-separated string array. The fields to perform the search from. Defaults to all of them."
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "Will filter leads by the provided person ID. The upper limit of found leads associated with the person is 2000."
+          },
+          "exact_match": {
+            "type": "boolean",
+            "description": "When enabled, only full exact matches against the given term are returned. It is <b>not</b> case sensitive."
+          },
+          "include_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "lead.was_seen"
+            ],
+            "description": "Supports including optional fields in the results which are not provided by default"
+          },
+          "organization_id": {
+            "type": "integer",
+            "description": "Will filter leads by the provided organization ID. The upper limit of found leads associated with the organization is 2000."
+          }
+        },
+        "required": [
+          "term"
+        ],
+        "description": "Request schema for `SearchLeads`"
+      }
+    },
+    {
+      "id": "pipedrive.search_organizations",
+      "tool": "PIPEDRIVE_SEARCH_ORGANIZATIONS",
+      "toolName": "pipedrive_search_organizations",
+      "lane": "read",
+      "effect": "read",
+      "description": "Searches all organizations by name, address, notes and/or custom fields. This endpoint is a wrapper of <a href=\"https://developers.pipedrive.com/docs/api/v1/ItemSearch#searchItem\">/v1/itemSearch</a> with a narrower OAuth scope.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "term": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The search term to look for. Minimum 2 characters (or 1 if using `exact_match`). Please note that the search term has to be URL encoded."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "description": "Pagination start. Note that the pagination is based on main results and does not include related items when using `search_for_related_items` parameter."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "address",
+              "custom_fields",
+              "notes",
+              "name"
+            ],
+            "description": "A comma-separated string array. The fields to perform the search from. Defaults to all of them. Only the following custom field types are searchable: `address`, `varchar`, `text`, `varchar_auto`, `double`, `monetary` and `phone`. Read more about searching by custom fields <a href=\"https://support.pipedrive.com/en/article/search-finding-what-you-need#searching-by-custom-fields\" target=\"_blank\" rel=\"noopener noreferrer\">here</a>."
+          },
+          "exact_match": {
+            "type": "boolean",
+            "description": "When enabled, only full exact matches against the given term are returned. It is <b>not</b> case sensitive."
+          }
+        },
+        "required": [
+          "term"
+        ],
+        "description": "Request schema for `SearchOrganizations`"
+      }
+    },
+    {
+      "id": "pipedrive.search_persons",
+      "tool": "PIPEDRIVE_SEARCH_PERSONS",
+      "toolName": "pipedrive_search_persons",
+      "lane": "read",
+      "effect": "read",
+      "description": "This endpoint searches for individuals by various identifiers and is a specific use case of /v1/itemSearch with limited OAuth scope, allowing results filtering by organization ID.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "term": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The search term to look for. Minimum 2 characters (or 1 if using `exact_match`). Wildcards like '*' or '@' are NOT supported. To list all persons in an organization, use the GET_ALL_PERSONS or LIST_PERSONS_OF_AN_ORGANIZATION action instead."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Items shown per page"
+          },
+          "start": {
+            "type": "integer",
+            "description": "Pagination start. Note that the pagination is based on main results and does not include related items when using `search_for_related_items` parameter."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "custom_fields",
+              "email",
+              "notes",
+              "phone",
+              "name"
+            ],
+            "description": "The field to perform the search from. Defaults to all searchable fields. Only the following custom field types are searchable: address, varchar, text, varchar_auto, double, monetary and phone."
+          },
+          "exact_match": {
+            "type": "boolean",
+            "description": "When enabled, only full exact matches against the given term are returned. It is <b>not</b> case sensitive."
+          },
+          "include_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "person.picture"
+            ],
+            "description": "Supports including optional fields in the results which are not provided by default"
+          },
+          "organization_id": {
+            "type": "integer",
+            "description": "Will filter persons by the provided organization ID. The upper limit of found persons associated with the organization is 2000."
+          }
+        },
+        "required": [
+          "term"
+        ],
+        "description": "Request schema for `SearchPersons`"
+      }
+    },
+    {
+      "id": "pipedrive.update_activity",
+      "tool": "PIPEDRIVE_UPDATE_ACTIVITY",
+      "toolName": "pipedrive_update_activity",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update an existing activity in Pipedrive including scheduling, assignments, descriptions, and participants. Use when you need to modify any properties of an activity such as subject, due date/time, status, or associated entities.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pipedrive: Update an activity",
+      "withheldArguments": {
+        "org_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "location": "unsupported schema",
+        "owner_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "attendees": "names an address a message goes to or comes from",
+        "project_id": "moves the record to another container",
+        "participants": "names an address a message goes to or comes from",
+        "public_description": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The unique identifier of the activity to update"
+          },
+          "busy": {
+            "type": "boolean",
+            "description": "Calendar availability flag (true=busy, false=available)"
+          },
+          "done": {
+            "type": "boolean",
+            "description": "Completion status indicator (true=completed, false=not completed)"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Internal activity comments/notes"
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The activity category/type (e.g., 'call', 'meeting', 'task')"
+          },
+          "deal_id": {
+            "type": "integer",
+            "description": "Associated deal identifier"
+          },
+          "lead_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Associated lead identifier (UUID format)"
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The activity's title/subject"
+          },
+          "due_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Activity date in YYYY-MM-DD format"
+          },
+          "due_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Activity time in HH:MM format"
+          },
+          "duration": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Activity length in HH:MM format"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Importance level of the activity"
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "Primary participant identifier"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for updating an activity"
+      }
+    },
+    {
+      "id": "pipedrive.update_deal_v2",
+      "tool": "PIPEDRIVE_UPDATE_DEAL_V2",
+      "toolName": "pipedrive_update_deal_v2",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Tool to update an existing deal using Pipedrive v2 API. Use when you need to modify deal properties including custom fields, archive status, or deletion status.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pipedrive: Update deal (v2 API)",
+      "withheldArguments": {
+        "owner_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "is_deleted": "reviewer: Deletes the deal.",
+        "visible_to": "changes sharing, visibility, permissions, membership, or who acts",
+        "custom_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ID of the deal to update"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The title of the deal"
+          },
+          "value": {
+            "type": "number",
+            "description": "The value of the deal"
+          },
+          "org_id": {
+            "type": "integer",
+            "description": "The ID of the organization linked to the deal"
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The status of the deal"
+          },
+          "currency": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The currency associated with the deal"
+          },
+          "stage_id": {
+            "type": "integer",
+            "description": "The ID of the deal stage"
+          },
+          "won_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The date and time of changing the deal status as won. Can only be set if deal status is won."
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "description": "The IDs of labels assigned to the deal"
+          },
+          "lost_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The date and time of changing the deal status as lost. Can only be set if deal status is lost."
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "The ID of the person linked to the deal"
+          },
+          "close_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The date and time of closing the deal. Can only be set if deal status is won or lost."
+          },
+          "is_archived": {
+            "type": "boolean",
+            "description": "Whether the deal is archived or not"
+          },
+          "lost_reason": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The reason for losing the deal. Can only be set if deal status is lost."
+          },
+          "pipeline_id": {
+            "type": "integer",
+            "description": "The ID of the pipeline associated with the deal"
+          },
+          "probability": {
+            "type": "integer",
+            "description": "The success probability percentage of the deal (must be an integer)"
+          },
+          "archive_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The optional date and time of archiving the deal in UTC. Format: YYYY-MM-DD HH:MM:SS. If omitted and is_archived is true, it will be set to the current date and time."
+          },
+          "expected_close_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The expected close date of the deal in YYYY-MM-DD format"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for updating a deal using v2 API"
+      }
+    },
+    {
+      "id": "pipedrive.update_lead",
+      "tool": "PIPEDRIVE_UPDATE_LEAD",
+      "toolName": "pipedrive_update_lead",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Tool to update a lead in Pipedrive. Use when you need to modify properties of an existing lead such as title, value, status, or linked contacts.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pipedrive: Update a lead",
+      "withheldArguments": {
+        "owner_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "visible_to": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the lead to update in UUID format"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name/title of the lead"
+          },
+          "value": {
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "number",
+                "description": "The monetary amount of the potential value"
+              },
+              "currency": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The currency code (e.g., USD, EUR, GBP)"
+              }
+            },
+            "description": "Schema for the value object containing amount and currency"
+          },
+          "channel": {
+            "type": "integer",
+            "description": "Marketing channel identifier"
+          },
+          "was_seen": {
+            "type": "boolean",
+            "description": "Flag indicating if lead was seen in Pipedrive UI"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Array of lead label identifiers to assign to the lead"
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "ID of person to link to the lead. Lead requires person OR organization link. Set to null to unset."
+          },
+          "channel_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional ID to distinguish the marketing channel"
+          },
+          "is_archived": {
+            "type": "boolean",
+            "description": "Archive status flag. Set to true to archive the lead, false to unarchive."
+          },
+          "organization_id": {
+            "type": "integer",
+            "description": "ID of organization to link to the lead. Lead requires person OR organization link. Set to null to unset."
+          },
+          "expected_close_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Expected close date in ISO 8601 format (YYYY-MM-DD)"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for updating a lead"
+      }
+    },
+    {
+      "id": "pipedrive.update_note",
+      "tool": "PIPEDRIVE_UPDATE_NOTE",
+      "toolName": "pipedrive_update_note",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update an existing note in Pipedrive. Use when you need to modify the content or properties of a note attached to deals, persons, organizations, leads, or projects.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pipedrive: Update Note",
+      "withheldArguments": {
+        "org_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "project_id": "moves the record to another container",
+        "pinned_to_organization_flag": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ID of the note to update"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The content of the note in HTML format. Subject to sanitization on the back-end."
+          },
+          "deal_id": {
+            "type": "integer",
+            "description": "The ID of the deal to attach the note to."
+          },
+          "lead_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the lead to attach the note to (UUID format)."
+          },
+          "add_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Creation date and time of the note in UTC. Format: YYYY-MM-DD HH:MM:SS"
+          },
+          "person_id": {
+            "type": "integer",
+            "description": "The ID of the person to attach the note to."
+          },
+          "pinned_to_deal_flag": {
+            "type": "integer",
+            "description": "If set, updates the note-to-deal pinning state. Requires deal_id to be set. 0 to unpin, 1 to pin."
+          },
+          "pinned_to_lead_flag": {
+            "type": "integer",
+            "description": "If set, updates the note-to-lead pinning state. Requires lead_id to be set. 0 to unpin, 1 to pin."
+          },
+          "pinned_to_person_flag": {
+            "type": "integer",
+            "description": "If set, updates the note-to-person pinning state. Requires person_id to be set. 0 to unpin, 1 to pin."
+          },
+          "pinned_to_project_flag": {
+            "type": "integer",
+            "description": "If set, updates the note-to-project pinning state. Requires project_id to be set. 0 to unpin, 1 to pin."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for updating a note"
+      }
+    },
+    {
+      "id": "pipedrive.update_organization",
+      "tool": "PIPEDRIVE_UPDATE_ORGANIZATION",
+      "toolName": "pipedrive_update_organization",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Tool to update an existing organization in Pipedrive. Use when you need to modify organization properties such as name, owner, visibility, labels, or address.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pipedrive: Update Organization",
+      "withheldArguments": {
+        "address.admin_area_level_1": "changes sharing, visibility, permissions, membership, or who acts",
+        "address.admin_area_level_2": "changes sharing, visibility, permissions, membership, or who acts",
+        "owner_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "visible_to": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The unique identifier of the organization to update"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the organization"
+          },
+          "address": {
+            "type": "object",
+            "properties": {
+              "route": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Street name"
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Full formatted address string"
+              },
+              "country": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Country name"
+              },
+              "locality": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "City or locality"
+              },
+              "subpremise": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Apartment, suite, or unit number"
+              },
+              "postal_code": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Postal or ZIP code"
+              },
+              "sublocality": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Sublocality or neighborhood"
+              },
+              "street_number": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Street number"
+              }
+            },
+            "description": "Address object with structured fields"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "description": "The IDs of labels assigned to the organization"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for updating an organization"
+      }
+    },
+    {
+      "id": "pipedrive.update_person_v2",
+      "tool": "PIPEDRIVE_UPDATE_PERSON_V2",
+      "toolName": "pipedrive_update_person_v2",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Tool to update a person's properties in Pipedrive using the v2 API. Use when you need to modify existing person details such as name, contact information, owner, or organization.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pipedrive: Update person (v2)",
+      "withheldArguments": {
+        "emails": "names an address a message goes to or comes from",
+        "phones": "changes who the record belongs to or how a person is identified",
+        "owner_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "visible_to": "changes sharing, visibility, permissions, membership, or who acts",
+        "marketing_status": "reviewer: Records marketing consent, which lets Pipedrive Campaigns email the person."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ID of the person to update"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The person's full name"
+          },
+          "org_id": {
+            "type": "integer",
+            "description": "The ID of the organization this person belongs to"
+          },
+          "add_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The creation date and time of the person in UTC. Format: YYYY-MM-DD HH:MM:SS"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "description": "Array of label IDs to assign to the person"
+          },
+          "last_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The person's last name"
+          },
+          "first_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The person's first name"
+          },
+          "update_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The last update date and time of the person in UTC. Format: YYYY-MM-DD HH:MM:SS"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for `UpdatePersonV2`"
+      }
+    },
+    {
+      "id": "pipedrive.who_am_i",
+      "tool": "PIPEDRIVE_WHO_AM_I",
+      "toolName": "pipedrive_who_am_i",
+      "lane": "read",
+      "effect": "read",
+      "description": "Return the identity (name, email) of the connected Pipedrive account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

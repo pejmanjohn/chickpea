@@ -15,6 +15,7 @@ import {
   MANAGED_CONNECTOR_PRESETS,
   CONNECTION_CATALOG_PRESETS,
   getConnectorPreset,
+  matchingConnectorCatalogPresets,
   presetLanes,
   resolveConnectorCatalogPreset,
   type ConnectorPreset,
@@ -228,6 +229,24 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     accent: '#0052CC',
     logoId: 'bitbucket',
   }, {
+    id: 'box-managed',
+    managedToolkit: 'box',
+    providerId: 'box',
+    name: 'Box',
+    description: 'Search files and folders, read their details and comments, comment on files, and create and rename folders.',
+    category: 'docs',
+    accent: '#0061D5',
+    logoId: 'box',
+  }, {
+    id: 'dropbox-managed',
+    managedToolkit: 'dropbox',
+    providerId: 'dropbox',
+    name: 'Dropbox',
+    description: 'Search files and folders, read Paper docs as text, create folders and Paper docs, and restore earlier file versions.',
+    category: 'docs',
+    accent: '#0061FE',
+    logoId: 'dropbox',
+  }, {
     id: 'excel-managed',
     managedToolkit: 'excel',
     providerId: 'excel',
@@ -236,6 +255,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     category: 'data',
     accent: '#107C41',
     logoId: 'excel',
+  }, {
+    id: 'figma-managed',
+    managedToolkit: 'figma',
+    providerId: 'figma',
+    name: 'Figma',
+    description: 'Read design files, components, styles, variables, and comments, and post comments.',
+    category: 'docs',
+    accent: '#F24E1E',
+    logoId: 'figma',
   }, {
     id: 'freshdesk-managed',
     managedToolkit: 'freshdesk',
@@ -255,11 +283,30 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     accent: '#181717',
     logoId: 'github',
   }, {
+    id: 'googlebigquery-managed',
+    managedToolkit: 'googlebigquery',
+    providerId: 'googlebigquery',
+    name: 'Google BigQuery',
+    aliases: ['BigQuery'],
+    description: 'Browse projects, datasets, tables, schemas, and rows, read finished query results, and create datasets and tables.',
+    category: 'data',
+    accent: '#669DF6',
+    logoId: 'googlebigquery',
+  }, {
+    id: 'mailchimp-managed',
+    managedToolkit: 'mailchimp',
+    providerId: 'mailchimp',
+    name: 'Mailchimp',
+    description: 'Read audiences, contacts, campaigns, and reports, and draft campaigns and templates for a person to send.',
+    category: 'business',
+    accent: '#FFE01B',
+    logoId: 'mailchimp',
+  }, {
     id: 'one-drive-managed',
     managedToolkit: 'one_drive',
     providerId: 'one_drive',
     name: 'OneDrive',
-    description: 'Find, read, and create files and folders, and update Excel workbooks stored in OneDrive.',
+    description: 'Find files and folders, read their details, create text files and folders, and read and update Excel workbooks in OneDrive.',
     category: 'docs',
     accent: '#0364B8',
     logoId: 'one_drive',
@@ -282,6 +329,24 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     accent: '#04AC38',
     logoId: 'pagerduty',
   }, {
+    id: 'pipedrive-managed',
+    managedToolkit: 'pipedrive',
+    providerId: 'pipedrive',
+    name: 'Pipedrive',
+    description: 'Find, create, and update deals, people, organizations, leads, activities, and notes in one Pipedrive company.',
+    category: 'business',
+    accent: '#017737',
+    logoId: 'pipedrive',
+  }, {
+    id: 'quickbooks-managed',
+    managedToolkit: 'quickbooks',
+    providerId: 'quickbooks',
+    name: 'QuickBooks',
+    description: 'Read customers, vendors, transactions, and financial reports, and create estimates, customers, vendors, and products.',
+    category: 'business',
+    accent: '#2CA01C',
+    logoId: 'quickbooks',
+  }, {
     id: 'salesforce-managed',
     managedToolkit: 'salesforce',
     providerId: 'salesforce',
@@ -295,7 +360,7 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     managedToolkit: 'share_point',
     providerId: 'share_point',
     name: 'SharePoint',
-    description: 'Search SharePoint sites, read files, pages, and lists, and add folders and list items.',
+    description: 'Search SharePoint sites, read file details, pages, and lists, and add folders and list items.',
     category: 'docs',
     accent: '#038387',
     logoId: 'share_point',
@@ -714,4 +779,9 @@ test('reusable connector catalog is the shared Agent-facing lookup', () => {
   assert.ok(sheets && 'managedToolkit' in sheets);
   assert.equal(sheets.managedToolkit, 'googlesheets');
   assert.equal(resolveConnectorCatalogPreset('unknown'), undefined);
+});
+
+test('a manifest connector resolves by the alias its preset declares', () => {
+  assert.deepEqual(matchingConnectorCatalogPresets('bigquery').map(({ id }) => id), ['googlebigquery-managed']);
+  assert.deepEqual(matchingConnectorCatalogPresets('Google BigQuery').map(({ id }) => id), ['googlebigquery-managed']);
 });

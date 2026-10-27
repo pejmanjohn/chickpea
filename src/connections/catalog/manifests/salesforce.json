@@ -6,7 +6,7 @@
   },
   "label": "Salesforce",
   "description": "Search and query CRM records, and create or update accounts, contacts, leads, opportunities, campaigns, tasks, and notes.",
-  "securityDescription": "Salesforce sign-in opens through Composio, which asks for the org's My Domain. Agents can read the records the connected user can reach and run SOQL queries. With write access, Agents can create and update accounts, contacts, leads, opportunities, campaigns, and tasks, and add notes. A new contact or lead can carry an email address. Agents cannot change a record's owner, an existing person's email or phone, or a parent or account link, send email, delete records, run bulk or composite requests, upload files, run Apex tests, or create custom objects, fields, flows, or validation rules.",
+  "securityDescription": "Salesforce sign-in opens through Composio, which asks for the org's My Domain. Agents can read the records the connected user can reach and run SOQL queries. With write access, Agents can create and update accounts, contacts, leads, opportunities, campaigns, and tasks, and add notes. A new contact or lead can carry an email address. Agents cannot change a record's owner, an existing person's email or phone, or a parent or account link, send email, delete records, run bulk or composite requests, upload or download files, run Apex tests, or create custom objects, fields, flows, or validation rules.",
   "preset": {
     "category": "business",
     "accent": "#00A1E0"
@@ -805,38 +805,6 @@
         },
         "required": [
           "contact_id"
-        ]
-      }
-    },
-    {
-      "id": "salesforce.get_file_content",
-      "tool": "SALESFORCE_GET_FILE_CONTENT",
-      "toolName": "salesforce_get_file_content",
-      "lane": "read",
-      "effect": "read",
-      "description": "Returns the binary content of a Salesforce file, including references to external files. Use when you need to download or retrieve the actual file data from Salesforce.",
-      "maxResultBytes": 65536,
-      "input": {
-        "type": "object",
-        "properties": {
-          "file_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The 18-character Salesforce ID of the ContentDocument or ContentVersion file to retrieve."
-          },
-          "version_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Specifies a particular version of the file to retrieve. If not specified, returns the latest version."
-          },
-          "rendition_type": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Specifies the type of file rendition to return. Available values: THUMB120BY90, THUMB240BY180, THUMB720BY480, SVGZ, ORIGINAL_<File_Extension>."
-          }
-        },
-        "required": [
-          "file_id"
         ]
       }
     },

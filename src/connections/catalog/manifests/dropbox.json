@@ -1,0 +1,888 @@
+{
+  "toolkit": "dropbox",
+  "version": "20261001_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Dropbox",
+  "description": "Search files and folders, read Paper docs as text, create folders and Paper docs, and restore earlier file versions.",
+  "securityDescription": "Dropbox sign-in opens through Composio. Agents act as the signed-in Dropbox user and reach what that user can reach. They can find files and folders, read their details, and export Paper docs and Google files stored in Dropbox as text, but not download other files. With write access, Agents can create folders, create Paper docs, tag files and folders, and restore a file to an earlier version from its history. A doc created in a shared folder is visible to that folder's members. Agents cannot edit existing Paper docs, upload, move, copy, rename, or delete files or folders, create shared links, temporary links, or file requests, share folders, add or remove members, or change team, sharing, or account settings.",
+  "preset": {
+    "category": "docs",
+    "accent": "#0061FE"
+  },
+  "validationCapability": "dropbox.who_am_i",
+  "review": {
+    "add": [
+      "DROPBOX_ADD_FILE_TAGS",
+      "DROPBOX_EXPORT_FILE",
+      "DROPBOX_GET_METADATA",
+      "DROPBOX_LIST_FILES_IN_FOLDER",
+      "DROPBOX_LIST_FILE_REVISIONS",
+      "DROPBOX_LIST_PAPER_DOCS",
+      "DROPBOX_LIST_SHARED_FOLDERS",
+      "DROPBOX_READ_FILE"
+    ],
+    "drop": {
+      "DROPBOX_COPY_FILE_OR_FOLDER": "Copies into any path, including a shared folder other people can open.",
+      "DROPBOX_CREATE_FILE_REQUEST": "Opens an upload link that anyone with the URL can use to put files in the account.",
+      "DROPBOX_CREATE_SHARED_LINK": "Creates a link that can make a file or folder readable outside the account.",
+      "DROPBOX_DELETE_FILE": "Deletes a file or folder for everyone who shares it; recovery depends on the plan's history window.",
+      "DROPBOX_MOVE_FILE_OR_FOLDER": "Moves across folders, including into or out of shared folders, which changes who can open the item.",
+      "DROPBOX_SAVE_COPY_REFERENCE": "Copies a file from another Dropbox account by an opaque reference the person cannot inspect.",
+      "DROPBOX_SHARE_FOLDER": "Shares a folder with other people.",
+      "DROPBOX_UPDATE_PAPER_DOCUMENT": "Its required doc_update_policy accepts overwrite, which replaces the whole doc, and a required argument cannot be withheld."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "dropbox.add_file_tags",
+      "tool": "DROPBOX_ADD_FILE_TAGS",
+      "toolName": "dropbox_add_file_tags",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to add a tag to a file or folder in Dropbox. Use when you need to tag items for organization. Tags are automatically converted to lowercase.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dropbox: Add tag to file or folder",
+      "withheldArguments": {
+        "Dropbox-API-Select-User": "picks the user, admin, or namespace the call acts as"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Path to the file or folder to tag. Must be a valid path in the user's Dropbox."
+          },
+          "tag_text": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The tag text to add. Will be automatically converted to lowercase letters by Dropbox."
+          }
+        },
+        "required": [
+          "path",
+          "tag_text"
+        ],
+        "description": "Request parameters for adding a tag to a file or folder."
+      }
+    },
+    {
+      "id": "dropbox.create_folder",
+      "tool": "DROPBOX_CREATE_FOLDER",
+      "toolName": "dropbox_create_folder",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to create a new folder at a specified path in Dropbox. Use when you need to organize files by creating a new directory.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dropbox: Create folder",
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Path in the user's Dropbox to create the folder. Must start with a slash. May use 'id:' prefix for namespace-based paths. Must not end with '/' or whitespace. Paths are case-insensitive but must be correctly formatted to avoid validation errors."
+          },
+          "autorename": {
+            "type": "boolean",
+            "description": "If there's a conflict, have the Dropbox server try to autorename the folder to avoid the conflict. Default is False. Without autorename, a conflict returns a `path_conflict` error. For idempotent folder creation, set autorename=true or treat `path_conflict` as non-fatal."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "id": "dropbox.create_paper_document",
+      "tool": "DROPBOX_CREATE_PAPER_DOCUMENT",
+      "toolName": "dropbox_create_paper_document",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new Dropbox Paper document at the specified path using HTML or Markdown content.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dropbox: Create paper document",
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The fully qualified path in Dropbox where the Paper document will be created. MUST include the .paper extension at the end (e.g., '/My Documents/Notes.paper')."
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Content of the paper document"
+          },
+          "import_format": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Format of the provided content"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ]
+      }
+    },
+    {
+      "id": "dropbox.export_file",
+      "tool": "DROPBOX_EXPORT_FILE",
+      "toolName": "dropbox_export_file",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to export non-downloadable Dropbox files (especially Dropbox Paper) to Markdown/HTML/plain text and return usable content. Use when you need to access content from files that cannot be downloaded directly, such as Dropbox Paper documents or Google Docs stored in Dropbox. Requires files.content.read scope.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "mode": "can make the provider mint a link anyone holding it can open"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The path of the file to be exported. Supports Dropbox path (e.g., '/folder/file.paper'), id:..., rev:..., or ns:... notation. Use this for non-downloadable files like Dropbox Paper documents."
+          },
+          "export_format": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The file format to export to. Common values: 'markdown', 'html', 'plain_text'. If not specified, the default format for the file type will be used. For Dropbox Paper, default is 'markdown'."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "description": "Request parameters for exporting a Dropbox file."
+      }
+    },
+    {
+      "id": "dropbox.files_search",
+      "tool": "DROPBOX_FILES_SEARCH",
+      "toolName": "dropbox_files_search",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search for files and folders in Dropbox by name or content. Use when you need to find items matching a search query within a specific path or across the entire Dropbox.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "filename",
+              "filename_and_content",
+              "deleted_filename"
+            ],
+            "description": "Search mode for Dropbox files search."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The path in the user's Dropbox to search. Should probably be a folder. Use empty string to search the entire Dropbox."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "The string to search for. The search string is split on spaces into multiple tokens. For file name searching, the last token is used for prefix matching (e.g., 'bat c' matches 'bat cave' but not 'batman car')."
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The starting index within the search results (used for paging). Default is 0."
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "The maximum number of search results to return. Default is 100, max is 1000."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "description": "Request parameters for searching files and folders in Dropbox."
+      }
+    },
+    {
+      "id": "dropbox.get_account",
+      "tool": "DROPBOX_GET_ACCOUNT",
+      "toolName": "dropbox_get_account",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get information about a user's Dropbox account using their account ID. Use when you need to retrieve account details for a specific user.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A user's account identifier. Can be obtained from get_current_account endpoint."
+          }
+        },
+        "required": [
+          "account_id"
+        ]
+      }
+    },
+    {
+      "id": "dropbox.get_metadata",
+      "tool": "DROPBOX_GET_METADATA",
+      "toolName": "dropbox_get_metadata",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to fetch metadata for a file or folder by path. Use when you need to verify existence, get canonical identifiers (id, path_display), determine type (.tag), or retrieve detailed attributes without enumerating folder contents.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The path of a file or folder on Dropbox (e.g., \"/Documents/report.pdf\"). Note: The root folder (\"\" or \"/\") is not supported by this endpoint."
+          },
+          "include_deleted": {
+            "type": "boolean",
+            "description": "If true, DeletedMetadata will be returned for deleted files or folders. Otherwise, deleted items will return an error."
+          },
+          "include_media_info": {
+            "type": "boolean",
+            "description": "If true, FileMetadata.media_info is set for photo and video files, providing additional metadata like dimensions and location."
+          },
+          "include_has_explicit_shared_members": {
+            "type": "boolean",
+            "description": "If true, the result will include a flag indicating whether the file has any explicit shared members."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "description": "Request parameters for fetching metadata."
+      }
+    },
+    {
+      "id": "dropbox.get_shared_folder_metadata",
+      "tool": "DROPBOX_GET_SHARED_FOLDER_METADATA",
+      "toolName": "dropbox_get_shared_folder_metadata",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve metadata for a specific shared folder by its ID. Use when you need detailed information about a shared folder including access level, policies, owner, paths, and permissions.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "actions": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "shared_folder_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID for the shared folder"
+          }
+        },
+        "required": [
+          "shared_folder_id"
+        ]
+      }
+    },
+    {
+      "id": "dropbox.get_space_usage",
+      "tool": "DROPBOX_GET_SPACE_USAGE",
+      "toolName": "dropbox_get_space_usage",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get space usage information for the current user's Dropbox account. Use when you need to check storage usage, available space, or quota information.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request model for getting space usage. This endpoint requires no parameters."
+      }
+    },
+    {
+      "id": "dropbox.get_team_info",
+      "tool": "DROPBOX_GET_TEAM_INFO",
+      "toolName": "dropbox_get_team_info",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve information about a Dropbox team. Use when you need to get team details such as team name, ID, licensed user counts, or team policies.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request model for getting team information. This endpoint requires no parameters."
+      }
+    },
+    {
+      "id": "dropbox.get_team_log_events",
+      "tool": "DROPBOX_GET_TEAM_LOG_EVENTS",
+      "toolName": "dropbox_get_team_log_events",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve team audit log events from Dropbox. Use when you need to access team activity logs, audit trails, or monitor team events. Supports filtering by time range and event category, with pagination for large result sets.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "time": {
+            "type": "object",
+            "properties": {
+              "end_time": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Ending time for the range filter (ISO 8601 format, e.g., '2023-12-31T23:59:59Z')."
+              },
+              "start_time": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Starting time for the range filter (ISO 8601 format, e.g., '2023-01-01T00:00:00Z')."
+              }
+            },
+            "description": "Time range filter for events."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of events to return per request. Default is 1000, maximum is 1000."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Cursor for pagination, obtained from a previous response. Use this to retrieve the next page of results."
+          },
+          "category": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Event category filter to limit results (e.g., 'apps', 'devices', 'domains', 'file_operations', 'file_requests', 'groups', 'logins', 'members', 'paper', 'passwords', 'sharing', 'team_folders', 'team_policies')."
+          }
+        },
+        "description": "Request parameters for fetching team audit log events."
+      }
+    },
+    {
+      "id": "dropbox.list_file_requests",
+      "tool": "DROPBOX_LIST_FILE_REQUESTS",
+      "toolName": "dropbox_list_file_requests",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all file requests owned by the current user. Use when you need to see existing file requests, their status, and details.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of file requests to return. Default: 1000."
+          }
+        },
+        "description": "Request model for listing file requests."
+      }
+    },
+    {
+      "id": "dropbox.list_file_revisions",
+      "tool": "DROPBOX_LIST_FILE_REVISIONS",
+      "toolName": "dropbox_list_file_revisions",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the revision history for a file. Use when you need to see past versions of a file, restore a previous version, or track changes over time.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "mode": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The path to the file you want to see the revisions of (e.g., \"/Documents/report.pdf\"). Must be a valid file path in Dropbox."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The maximum number of revision entries returned. Default is 10, minimum is 1, maximum is 100."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "description": "Request parameters for listing file revisions."
+      }
+    },
+    {
+      "id": "dropbox.list_files_in_folder",
+      "tool": "DROPBOX_LIST_FILES_IN_FOLDER",
+      "toolName": "dropbox_list_files_in_folder",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list files and folders in a specified Dropbox directory. Use when you need to see the contents of a folder, including subfolders if recursive is true. When the response contains `has_more=true`, continue fetching with the returned cursor until `has_more=false` — stopping early misses entries in large folders. Response entries include both files and folders; use the `.tag` field on each entry to distinguish item types.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The folder path (e.g., \"/europe/invoices\") or folder ID (e.g., \"id:aBcDeFgH123\") to list contents from. Use \"\" (empty string) for the root folder. No trailing slashes or whitespace allowed — malformed paths can silently produce empty results. Prefer paths from `path_display` or `path_lower` fields in prior API responses over manually constructed paths."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000,
+            "description": "The maximum number of results to return per request. Default is 2000. Max is 2000."
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "If true, recursively lists contents of nested subfolders; otherwise, lists only immediate contents. Large or broad folder trees with recursive=true can produce very large responses and high latency; use only when full hierarchy is explicitly needed."
+          },
+          "include_deleted": {
+            "type": "boolean",
+            "description": "If true, includes deleted (but potentially recoverable) files and folders in the listing."
+          },
+          "include_media_info": {
+            "type": "boolean",
+            "description": "If true, includes media metadata (e.g., dimensions, location) for photo and video files."
+          },
+          "include_non_downloadable_files": {
+            "type": "boolean",
+            "description": "If true, includes non-downloadable files (e.g., Google Docs, Dropbox Paper) in the listing."
+          }
+        }
+      }
+    },
+    {
+      "id": "dropbox.list_folder_continue",
+      "tool": "DROPBOX_LIST_FOLDER_CONTINUE",
+      "toolName": "dropbox_list_folder_continue",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to continue paginating through folder contents using a cursor from list_folder. Use when has_more is true to retrieve remaining entries.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The cursor returned by your last call to list_folder or list_folder/continue. Use this to paginate through all files and retrieve updates to the folder."
+          }
+        },
+        "required": [
+          "cursor"
+        ]
+      }
+    },
+    {
+      "id": "dropbox.list_paper_docs",
+      "tool": "DROPBOX_LIST_PAPER_DOCS",
+      "toolName": "dropbox_list_paper_docs",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to return the list of all Paper docs according to filter and sort specifications. Use when you need to retrieve Paper document IDs for further operations. To iterate through full pagination, pass the cursor to docs/list/continue.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Size limit per batch. The maximum number of docs that can be retrieved per batch is 1000. Higher value results in invalid arguments error."
+          },
+          "sort_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "accessed",
+              "modified",
+              "created"
+            ],
+            "description": "Allows user to specify how the Paper docs should be sorted. 'accessed' sorts by last accessed time, 'modified' sorts by last modified time, 'created' sorts by creation time."
+          },
+          "filter_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "docs_accessed",
+              "docs_created"
+            ],
+            "description": "Allows user to specify how the Paper docs should be filtered. 'docs_accessed' fetches all Paper doc IDs that the user has ever accessed. 'docs_created' fetches only the Paper doc IDs that the user has created."
+          },
+          "sort_order": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ascending",
+              "descending"
+            ],
+            "description": "Allows user to specify the sort order of the result. 'ascending' sorts in ascending order, 'descending' sorts in descending order."
+          }
+        }
+      }
+    },
+    {
+      "id": "dropbox.list_received_files",
+      "tool": "DROPBOX_LIST_RECEIVED_FILES",
+      "toolName": "dropbox_list_received_files",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all files shared with the current user. Returns files directly shared with the user but does not include files received via shared folders or unclaimed invitations. Use when discovering files that have been shared with the authenticated user.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "actions": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300,
+            "description": "Number of files to return max per query. Defaults to 100 if no limit is specified. Must be between 1 and 300."
+          }
+        },
+        "description": "Request model for listing received files."
+      }
+    },
+    {
+      "id": "dropbox.list_shared_folders",
+      "tool": "DROPBOX_LIST_SHARED_FOLDERS",
+      "toolName": "dropbox_list_shared_folders",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all shared folders the authenticated user has access to. Use when discovering shared or team-mounted folders that may not appear in a standard path listing. Returns metadata including folder name, ID, access level, and paths (if mounted).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of shared folders to return per request"
+          }
+        }
+      }
+    },
+    {
+      "id": "dropbox.list_shared_links",
+      "tool": "DROPBOX_LIST_SHARED_LINKS",
+      "toolName": "dropbox_list_shared_links",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list existing shared links for the current user, optionally filtered by path. Use when you need to discover or reuse existing shared links to avoid creating duplicates or to check what links already exist for a file or folder. Supports pagination via cursor for large result sets.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The path to the file or folder to list shared links for. If omitted, returns all shared links for the current user. If provided, returns links that grant access to the specified path (including parent folder links unless direct_only is true). Supports Dropbox path notation (e.g., '/folder/file.txt')."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The cursor returned by a previous call to this endpoint. Use this to retrieve additional results when 'has_more' is true. The API returns a maximum of ~200 links per call."
+          },
+          "direct_only": {
+            "type": "boolean",
+            "description": "If true, only return direct links to the specified path. If false or omitted, also include links to parent folders. Only relevant when 'path' is specified."
+          }
+        },
+        "description": "Request model for listing shared links."
+      }
+    },
+    {
+      "id": "dropbox.list_team_folders",
+      "tool": "DROPBOX_LIST_TEAM_FOLDERS",
+      "toolName": "dropbox_list_team_folders",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all team folders for a Dropbox Business team. Use when you need to discover team-wide folders or manage team folder access.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of team folders to return per request"
+          }
+        }
+      }
+    },
+    {
+      "id": "dropbox.list_team_members",
+      "tool": "DROPBOX_LIST_TEAM_MEMBERS",
+      "toolName": "dropbox_list_team_members",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list members of a Dropbox team. Use when you need to retrieve information about team members, including their status, roles, and contact details. Supports pagination for teams with many members.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Number of results to return per call. Maximum is 1000. If not specified, the server will use a default value."
+          },
+          "include_removed": {
+            "type": "boolean",
+            "description": "Whether to return members who have been removed from the team. If true, includes removed members in the results."
+          }
+        }
+      }
+    },
+    {
+      "id": "dropbox.restore_file",
+      "tool": "DROPBOX_RESTORE_FILE",
+      "toolName": "dropbox_restore_file",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to restore a specific revision of a file to the given path in Dropbox. Use when you need to revert a file to a previous version using its revision identifier.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dropbox: Restore file to specific revision",
+      "input": {
+        "type": "object",
+        "properties": {
+          "rev": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The revision to restore for the file. This is a unique identifier for a specific version of the file."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The path to the file you want to restore in the user's Dropbox. Path is case-sensitive."
+          }
+        },
+        "required": [
+          "path",
+          "rev"
+        ],
+        "description": "Request parameters for restoring a file to a specific revision."
+      }
+    },
+    {
+      "id": "dropbox.search_continue",
+      "tool": "DROPBOX_SEARCH_CONTINUE",
+      "toolName": "dropbox_search_continue",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to fetch the next page of search results from a previous Dropbox search. Use when you have a cursor from a search operation and need to retrieve additional results. Note: search along with search_continue can only retrieve a maximum of 10,000 matches total.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "The cursor returned by your last call to search or search_continue. Used to fetch the next page of results."
+          }
+        },
+        "required": [
+          "cursor"
+        ],
+        "description": "Request model for continuing a Dropbox search."
+      }
+    },
+    {
+      "id": "dropbox.search_file_or_folder",
+      "tool": "DROPBOX_SEARCH_FILE_OR_FOLDER",
+      "toolName": "dropbox_search_file_or_folder",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search for files and folders in Dropbox by name or content, optionally scoped to a path, with pagination support. Results paginate via cursor (up to 100 per page); check `has_more` in the response and re-fetch with the cursor until `has_more` is false. Newly indexed items may have a brief delay before appearing. Verify `path_display` and `.tag` (file vs folder) on each result before acting, as multiple similar-named items may match. Results are limited to items visible to the authenticated user.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "Dropbox-API-Select-User": "picks the user, admin, or namespace the call acts as"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "The search string. Must be 1 or more non-whitespace characters. Queries are case-insensitive. Required unless cursor is provided."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Cursor from a previous search response for fetching the next page of results. When provided, all other parameters are ignored and the continue endpoint is called."
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Scopes the search to the given path and its subfolders. Provide an empty string to search the root. Non-root paths must start with '/' (e.g., '/my-folder'). If the leading slash is missing, it will be automatically prepended. If None, searches the entire Dropbox."
+              },
+              "order_by": {
+                "type": "string",
+                "maxLength": 20000,
+                "enum": [
+                  "relevance",
+                  "last_modified_time"
+                ],
+                "description": "Order by options for search results."
+              },
+              "file_status": {
+                "type": "string",
+                "maxLength": 20000,
+                "enum": [
+                  "active",
+                  "deleted"
+                ],
+                "description": "Restricts search to files with the given status. Can be 'active' (default) or 'deleted'. To search both, omit this parameter or make separate requests."
+              },
+              "max_results": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000,
+                "description": "The maximum number of search results to return per request. Default is 100, min 1, max 1000."
+              },
+              "filename_only": {
+                "type": "boolean",
+                "description": "Restricts search to only match on filenames."
+              },
+              "file_categories": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "enum": [
+                    "image",
+                    "document",
+                    "pdf",
+                    "spreadsheet",
+                    "presentation",
+                    "audio",
+                    "video",
+                    "folder",
+                    "paper",
+                    "others"
+                  ]
+                },
+                "maxItems": 100,
+                "description": "Restricts search to only match files in the given categories."
+              },
+              "file_extensions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "maxItems": 100,
+                "description": "Restricts search to only match files with the given extensions (e.g., ['jpg', 'png']). This is case-insensitive."
+              }
+            },
+            "description": "Additional options for the search. If not provided, default search options will be used. Key sub-fields: `path` (must start with '/' or use 'id:...' format; omit to search entire account, narrow to reduce noise); `file_categories` and `file_extensions` to filter by type; no native date-range filter — apply date logic client-side using `server_modified` (UTC). Prefer reusing `path_display` values from prior results rather than manually composing paths."
+          },
+          "match_field_options": {
+            "type": "object",
+            "properties": {
+              "include_highlights": {
+                "type": "boolean",
+                "description": "If true, highlight information for the matches will be returned."
+              }
+            },
+            "description": "Options for match field highlighting. If not provided, default options will be used."
+          }
+        }
+      }
+    },
+    {
+      "id": "dropbox.search_file_properties",
+      "tool": "DROPBOX_SEARCH_FILE_PROPERTIES",
+      "toolName": "dropbox_search_file_properties",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search across property templates for particular property field values. Use when you need to find files or folders that have specific custom property values (e.g., find all files with priority='high'). Note: This endpoint does not support apps with the app folder permission.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "queries[].mode..tag": "unsupported schema",
+        "queries[].logical_operator..tag": "unsupported schema",
+        "queries[].logical_operator": "unsupported schema",
+        "template_filter": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "Cursor returned by a previous properties/search response. When provided, the action calls properties/search/continue and ignores queries/template_filter."
+          },
+          "queries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "type": "object",
+                  "properties": {
+                    "field_name": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "The name of the property field to search within."
+                    }
+                  },
+                  "required": [
+                    "field_name"
+                  ],
+                  "description": "The mode with which to perform the search, specifying which field to search within."
+                },
+                "query": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The property field value for which to search across templates."
+                }
+              },
+              "required": [
+                "query",
+                "mode"
+              ],
+              "description": "A single search query for property field values."
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "List of queries to search. Required unless cursor is provided. Each query specifies a property field value to search for and the field name to search within."
+          }
+        },
+        "description": "Request to search across property templates for particular property field values."
+      }
+    },
+    {
+      "id": "dropbox.who_am_i",
+      "tool": "DROPBOX_WHO_AM_I",
+      "toolName": "dropbox_who_am_i",
+      "lane": "read",
+      "effect": "read",
+      "description": "Return the identity (email, name) of the connected Dropbox account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

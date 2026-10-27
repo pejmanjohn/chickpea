@@ -27,6 +27,8 @@ export interface ComposioSnapshotTool {
   version: string;
   tags: string[];
   deprecated: boolean;
+  /** Composio returns the file as a download URL on its own storage (`file_downloadable` in the output schema). */
+  returnsHostedFile?: true;
   input: unknown;
 }
 
@@ -95,7 +97,31 @@ const REVIEW_REQUIRED_EFFECTS = new Set<ManagedEffectClass>([
 ]);
 const ADMINISTRATIVE = /(?:^|_)(ADMIN|ADMINS|AGENT|AGENTS|API_KEY|API_KEYS|AUDIT|CREDENTIAL|CREDENTIALS|GROUP|GROUPS|INTEGRATION|INTEGRATIONS|MEMBER|MEMBERS|MEMBERSHIP|MEMBERSHIPS|ORGANIZATION|ORGANIZATIONS|PASSWORD|PASSWORDS|PERMISSION|PERMISSIONS|POLICIES|POLICY|ROLE|ROLES|SCIM|SECRET|SECRETS|SETTING|SETTINGS|SLA|SSO|TEAM|TEAMS|TOKEN|TOKENS|USER|USERS|WEBHOOK|WEBHOOKS|WORKSPACE|WORKSPACES)(?:_|$)/;
 const SPEND = /(?:^|_)(BID|BIDS|BILL|BILLING|BILLS|BUDGET|BUDGETS|BUY|CHARGE|CHARGES|CHECKOUT|INVOICE|INVOICES|ORDER|ORDERS|PAY|PAYMENT|PAYMENTS|PAYOUT|PAYOUTS|PURCHASE|REFUND|REFUNDS|SUBSCRIPTION|SUBSCRIPTIONS|TRANSFER|TRANSFERS)(?:_|$)/;
-const PUBLISH = /(?:^|_)(BROADCAST|COMMENT|COMMENTS|EMAIL|EMAILS|FORWARD|INVITE|MESSAGE|MESSAGES|NOTIFY|OUTBOUND|POST|PUBLISH|REPLY|SEND|SHARE)(?:_|$)/;
+const PUBLISH = /(?:^|_)(BROADCAST|COMMENT|COMMENTS|EMAIL|EMAILS|FORWARD|INVITE|MESSAGE|MESSAGES|NOTIFY|OUTBOUND|POST|PUBLISH|REPLY|SEND|SHARE|SHARED)(?:_|$)/;
+
+/** Picks who or where a call acts, such as Dropbox's `Dropbox-API-Select-User` header. Withheld on reads too. */
+const ACTING = /(?:^|_)(?:select_(?:user|admin|member)|as_user|act_as|on_behalf_of|impersonat\w*|path_root|sudo|run_as|actor_id)(?:_|$)/;
+/**
+ * A token, key, or password the model would type in itself, such as Box's
+ * download `access_token`. Pagination tokens and record keys are not credentials.
+ */
+const CREDENTIAL = /(?:^|_)(?:access_token|oauth_token|auth_token|id_token|refresh_token|api_key|apikey|bearer|authorization|client_secret|secrets?|password|passwd|credentials?|private_key)(?:_|$)/;
+const CREDENTIAL_DESCRIPTION = /\b(?:api key|(?:oauth|access|bearer)\s+tokens?|pre-?authenticat\w*)\b/i;
+/**
+ * A mode or flag that makes the provider mint a link anyone holding it can
+ * open, such as Dropbox export's `store_and_link` or a `format` of `url`.
+ * `web_link` names a kind of item, and `include_recent_shared_links` filters,
+ * so a link alone does not count.
+ */
+const LINK_TOKENS = new Set(['link', 'links', 'url', 'urls']);
+const LINK_MINT_TOKENS = new Set(words(`
+  create download generate get make mint presigned public share signed store temp temporary
+`));
+/** A read whose result is such a link: "temporary image URLs", "Returned image URLs expire". */
+const LINK_MINT_DESCRIPTION = new RegExp([
+  String.raw`\b(?:temporary|public|shareable|pre-?signed|signed|expiring|pre-?authenticated)\s+(?:[\w()-]+\s+){0,2}(?:urls?|links?)\b`,
+  String.raw`\b(?:urls?|links?)\s+(?:that\s+|which\s+)?(?:will\s+|may\s+)?(?:expire|are\s+external)\b`,
+].join('|'), 'i');
 
 /**
  * Who can see, follow, or act on a record. Company domains count, because
@@ -120,6 +146,8 @@ const OVERWRITE = /^(?:overwrite|replace)$/i;
 const CONTAINER_TOKENS = new Set(words(`
   account board company folder organization parent product project space team workspace
 `));
+/** On update, these name where the record goes even without an ID: `parents`, `destination_folder`. */
+const LOCATION_TOKENS = new Set(['destination', 'parents']);
 /**
  * Withheld on create too. A Freshdesk ticket's company shows it to that
  * company's contacts who can view all its tickets, and its product picks the
@@ -138,7 +166,8 @@ const RECIPIENT_TOKENS = new Set(words(`
 /** `to_emails`, `from_email`, and `to` address a message; `applicable_to` does not. */
 const ADDRESS_LEADING_TOKENS = new Set(['from', 'to']);
 const IDENTITY_TOKENS = new Set(words(`
-  external facebook instagram linkedin login mobile password phone requester twitter username
+  external facebook instagram linkedin login logins mobile mobiles password phone phones requester twitter
+  username usernames
 `));
 
 const WITHHELD_ACCESS = 'changes sharing, visibility, permissions, membership, or who acts';
@@ -148,6 +177,33 @@ const WITHHELD_COPY = 'copies content from another record, URL, or file';
 const WITHHELD_RECIPIENT = 'names an address a message goes to or comes from';
 const WITHHELD_IDENTITY = 'changes who the record belongs to or how a person is identified';
 const WITHHELD_OVERWRITE = 'can replace an existing item';
+const WITHHELD_ACTING = 'picks the user, admin, or namespace the call acts as';
+const WITHHELD_LINK = 'can make the provider mint a link anyone holding it can open';
+const WITHHELD_CREDENTIAL = 'carries a credential the model would supply itself';
+const EXCLUDED_HOSTED_FILE =
+  'returns the file as a download URL on Composio storage, which the model would see instead of an artifact';
+
+function argumentTokens(name: string): string[] {
+  return name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+function mintsLink(text: string): boolean {
+  const tokens = argumentTokens(text);
+  return tokens.some((token) => LINK_TOKENS.has(token)) && tokens.some((token) => LINK_MINT_TOKENS.has(token));
+}
+
+/** An option value such as `store_and_link`, or a bare `url` that returns a link in place of content. */
+function linkValue(value: unknown): boolean {
+  return typeof value === 'string' && (mintsLink(value) || LINK_TOKENS.has(value.trim().toLowerCase()));
+}
+
+/** Rules for every tool, reads included: who the call acts as, credentials, and modes that mint a shareable link. */
+function anyToolWithheldReason(name: string, schema: unknown): string | undefined {
+  const tokens = argumentTokens(name).join('_');
+  if (ACTING.test(tokens)) return WITHHELD_ACTING;
+  if (CREDENTIAL.test(tokens) || CREDENTIAL_DESCRIPTION.test(descriptionOf(schema))) return WITHHELD_CREDENTIAL;
+  return mintsLink(name) || enumValues(schema).some(linkValue) ? WITHHELD_LINK : undefined;
+}
 
 /** A tool with both hints counts as a create. `other` is a delete, whose IDs name the record itself. */
 type WriteKind = 'create' | 'update' | 'other';
@@ -170,9 +226,9 @@ function withheldArgumentReason(
   required: boolean,
   kind: WriteKind,
 ): string | undefined {
-  const tokens = name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const tokens = argumentTokens(name);
   const compact = tokens.join('');
-  const description = isPlainObject(schema) && typeof schema.description === 'string' ? schema.description : '';
+  const description = descriptionOf(schema);
   if (tokens.some((token) => ACCESS_TOKENS.has(token)) || ACCESS_TEXT.test(compact) ||
       ACCESS_DESCRIPTION.test(description.replace(GRANT_TYPE_PHRASE, ''))) return WITHHELD_ACCESS;
   if (tokens.includes('overwrite') ||
@@ -182,9 +238,14 @@ function withheldArgumentReason(
   if ((tokens.length > 1 && tokens.at(-1) === 'source') || tokens[0]?.startsWith('file')) return WITHHELD_COPY;
   if (tokens.some((token) => RECIPIENT_TOKENS.has(token) || token.startsWith('notify')) ||
       ADDRESS_LEADING_TOKENS.has(tokens[0] ?? '') || compact.includes('replyto')) return WITHHELD_RECIPIENT;
-  const identifier = tokens[0] === 'id' || tokens.at(-1) === 'id' || tokens.at(-1) === 'ids';
+  // Box's `parent: { id }` names the destination folder as an object rather than a flat `parent_id`,
+  // and OneDrive's `parent_reference: { path }` by path.
+  const fields = Object.keys(propertiesOf(schema)).map((field) => field.toLowerCase());
+  const identifier = tokens[0] === 'id' || ['id', 'ids', 'path'].includes(tokens.at(-1) ?? '') ||
+    fields.includes('id') || fields.includes('path');
   // A required container ID on update usually names the record itself (company_id on update-company).
-  if (kind === 'update' && !required && identifier && tokens.some((token) => CONTAINER_TOKENS.has(token))) {
+  if (kind === 'update' && !required && (tokens.some((token) => LOCATION_TOKENS.has(token)) ||
+      (identifier && tokens.some((token) => CONTAINER_TOKENS.has(token))))) {
     return WITHHELD_MOVE;
   }
   if (kind === 'create' && identifier && tokens.some((token) => AUDIENCE_CONTAINER_TOKENS.has(token))) {
@@ -249,11 +310,12 @@ type Classification =
 
 function classify(tool: ComposioSnapshotTool, name: string): Classification {
   if (tool.deprecated) return { excluded: 'deprecated' };
+  if (tool.returnsHostedFile) return { excluded: EXCLUDED_HOSTED_FILE };
   const hints = HINTS.filter((hint) => tool.tags.includes(hint));
   if (hints.length === 0) return { excluded: 'no read or write hint' };
   if (hints.includes('readOnlyHint')) {
     if (hints.length > 1) return { excluded: 'conflicting hints' };
-    const hit = readLaneLintHit(name, tool.description);
+    const hit = readLaneLintHit(name, tool.description) ?? LINK_MINT_DESCRIPTION.exec(tool.description)?.[0];
     return hit ? { excluded: `read lint hit "${hit}"; never reclassified` } : { lane: 'read', effect: 'read' };
   }
   if (hints.includes('destructiveHint')) return { lane: 'write', effect: 'destructive' };
@@ -270,15 +332,20 @@ interface DeriveContext {
   write?: WriteKind;
   /** Argument paths a reviewer kept despite a withholding rule. */
   allow: ReadonlySet<string>;
+  /** Argument paths a reviewer withheld that no rule catches, with the reason. */
+  deny: ReadonlyMap<string, string>;
   withheld: Record<string, string>;
-  allowedKept: string[];
+  /** Arguments a rule withholds that review.allowArguments kept, with the rule's reason. */
+  allowedKept: Record<string, string>;
 }
 
 export function deriveInputSchema(
   raw: unknown,
-  options: { write?: WriteKind; allow?: ReadonlySet<string> } = {},
-): { schema: ManifestObjectSchema; withheld: Record<string, string>; allowedKept: string[] } | { error: string } {
-  const context: DeriveContext = { ...options, allow: options.allow ?? new Set(), withheld: {}, allowedKept: [] };
+  options: { write?: WriteKind; allow?: ReadonlySet<string>; deny?: ReadonlyMap<string, string> } = {},
+): { schema: ManifestObjectSchema; withheld: Record<string, string>; allowedKept: Record<string, string> } | { error: string } {
+  const context: DeriveContext = {
+    ...options, allow: options.allow ?? new Set(), deny: options.deny ?? new Map(), withheld: {}, allowedKept: {},
+  };
   const derived = deriveNode(raw, 0, '', context, true);
   if ('unsupported' in derived) return { error: derived.unsupported };
   if (!('type' in derived.schema) || derived.schema.type !== 'object') return { error: 'input is not an object' };
@@ -367,18 +434,33 @@ function deriveNode(
       const properties: Record<string, ManifestInputSchema> = {};
       for (const [key, child] of source) {
         const childWhere = where ? `${where}.${key}` : key;
-        const withheld = context.write
-          ? withheldArgumentReason(key, child, required.has(key), context.write)
-          : undefined;
-        if (withheld && !context.allow.has(childWhere)) {
+        const reviewed = context.deny.get(childWhere);
+        const withheld = reviewed === undefined
+          ? anyToolWithheldReason(key, child) ??
+            (context.write && withheldArgumentReason(key, child, required.has(key), context.write))
+          : `reviewer: ${reviewed}`;
+        if (withheld && (reviewed !== undefined || !context.allow.has(childWhere))) {
+          if (reviewed !== undefined && required.has(key)) {
+            return { unsupported: `required argument ${childWhere} is withheld by review` };
+          }
+          const defaults = defaultValues(child);
+          // Leaving out an argument whose default mints a link would still mint one.
+          if (withheld === WITHHELD_LINK && defaults.some((value) => value === true || linkValue(value))) {
+            return { unsupported: `${childWhere} mints a shareable link by default` };
+          }
           // Withholding an argument whose default overwrites would still overwrite.
-          const overwritesByDefault = withheld === WITHHELD_OVERWRITE && isPlainObject(child) &&
-            (child.default === true || (typeof child.default === 'string' && OVERWRITE.test(child.default)));
+          const overwritesByDefault = withheld === WITHHELD_OVERWRITE &&
+            defaults.some((value) => value === true || (typeof value === 'string' && OVERWRITE.test(value)));
           if (required.has(key) || overwritesByDefault) {
             const argument = required.has(key)
               ? `required argument ${childWhere} ${withheld}`
               : `argument ${childWhere} ${withheld} by default`;
-            return { unsupported: `administrative: ${argument}; keep it only through review.allowArguments and review.add` };
+            // A read cannot keep a withheld argument, so only a write has a review path.
+            return {
+              unsupported: context.write
+                ? `administrative: ${argument}; keep it only through review.allowArguments and review.add`
+                : argument,
+            };
           }
           context.withheld[childWhere] = withheld;
           continue;
@@ -389,7 +471,7 @@ function deriveNode(
           : { unsupported: `${childWhere} exceeds the property limit or naming rule` };
         if ('schema' in derived) {
           properties[key] = derived.schema;
-          if (withheld) context.allowedKept.push(childWhere);
+          if (withheld) context.allowedKept[childWhere] = withheld;
         } else if (required.has(key)) {
           return { unsupported: `required argument ${derived.unsupported}` };
         } else {
@@ -422,6 +504,7 @@ export function draftComposioManifest(
   const add = new Set(previous?.review.add ?? []);
   const drop = previous?.review.drop ?? {};
   const allowArguments = previous?.review.allowArguments ?? {};
+  const withholdArguments = previous?.review.withholdArguments ?? {};
   const kept = new Map(previous?.capabilities.map((capability) => [capability.tool, capability]) ?? []);
   const prefix = `${toolkit.toUpperCase()}_`;
   const report: DraftReport = {
@@ -445,21 +528,32 @@ export function draftComposioManifest(
     const irreversible = 'irreversible' in classification ? classification.irreversible : undefined;
     if (irreversible) report.irreversible.push({ tool: tool.slug, verb: irreversible });
     const write = classification.lane === 'write';
+    const deny = new Map(Object.entries(withholdArguments[tool.slug] ?? {}));
     const input = deriveInputSchema(tool.input, {
       ...(write ? { write: writeKind(tool.tags) } : {}),
       allow: new Set(allowArguments[tool.slug] ?? []),
+      deny,
     });
     if ('error' in input) {
       exclude(input.error);
       continue;
     }
-    const effect = input.allowedKept.length > 0 && classification.effect !== 'destructive'
+    const unmatched = [...deny.keys()].filter((argument) => !(argument in input.withheld));
+    if (unmatched.length > 0) {
+      throw new Error(`review.withholdArguments names ${tool.slug} ${unmatched.join(', ')}, which its input does not accept`);
+    }
+    const allowedKept = Object.entries(input.allowedKept);
+    if (!write && allowedKept.length > 0) {
+      const kept = allowedKept.map(([argument, reason]) => `${argument}, which ${reason}`).join('; ');
+      throw new Error(`review.allowArguments keeps ${tool.slug} ${kept}; a read tool cannot keep a withheld argument`);
+    }
+    const effect = allowedKept.length > 0 && classification.effect !== 'destructive'
       ? 'administrative'
       : classification.effect;
     if (REVIEW_REQUIRED_EFFECTS.has(effect) && !add.has(tool.slug)) {
       const notes = [
         ...(irreversible ? [`irreversible verb ${irreversible}`] : []),
-        ...(input.allowedKept.length > 0 ? [`keeps ${input.allowedKept.join(', ')}`] : []),
+        ...(allowedKept.length > 0 ? [`keeps ${allowedKept.map(([argument]) => argument).join(', ')}`] : []),
       ];
       exclude(`${effect}${notes.length > 0 ? ` (${notes.join('; ')})` : ''}; include only by adding it to review.add`);
       continue;
@@ -512,10 +606,22 @@ export function draftComposioManifest(
       add: [...add].sort(),
       drop: Object.fromEntries(Object.entries(drop).sort()),
       allowArguments: Object.fromEntries(Object.entries(allowArguments).sort()),
+      ...(Object.keys(withholdArguments).length > 0 ? {
+        withholdArguments: Object.fromEntries(Object.entries(withholdArguments).sort()
+          .map(([slug, reasons]) => [slug, Object.fromEntries(Object.entries(reasons).sort())])),
+      } : {}),
     },
     capabilities,
   };
   return { manifest: parseComposioManifest(manifest), report };
+}
+
+/** Every tool a manifest's review names; a snapshot must keep each one. */
+export function reviewedTools(manifest: ComposioManifest): string[] {
+  return [
+    ...manifest.review.add, ...Object.keys(manifest.review.drop), ...Object.keys(manifest.review.allowArguments),
+    ...Object.keys(manifest.review.withholdArguments ?? {}),
+  ];
 }
 
 export function checkComposioManifest(value: unknown, snapshot: ComposioSnapshot): string[] {
@@ -530,9 +636,7 @@ export function checkComposioManifest(value: unknown, snapshot: ComposioSnapshot
     return [`${where} pins ${manifest.version}, but its snapshot is ${snapshot.toolkit.slug} ${snapshot.toolkit.version}`];
   }
   const known = new Set(snapshot.tools.map(({ slug }) => slug));
-  const problems = [
-    ...manifest.review.add, ...Object.keys(manifest.review.drop), ...Object.keys(manifest.review.allowArguments),
-  ]
+  const problems = reviewedTools(manifest)
     .filter((slug) => !known.has(slug))
     .map((slug) => `${where} review names ${slug}, which the snapshot does not contain`);
   let expected: ComposioManifest;
@@ -670,6 +774,7 @@ export function snapshotFromComposio(
       version: String(tool.version ?? ''),
       tags: (tool.tags as unknown[]).map(String),
       deprecated: tool.is_deprecated === true,
+      ...(marksDownloadableFile(tool.output_parameters) ? { returnsHostedFile: true as const } : {}),
       input: tool.input_parameters ?? {},
     })).sort((left, right) => left.slug.localeCompare(right.slug)),
   };
@@ -734,10 +839,44 @@ function connectedAccountFields(value: unknown): string[] {
     : [];
 }
 
+/** Composio marks a schema it fills with a file on its own storage, URL included, with `file_downloadable`. */
+function marksDownloadableFile(schema: unknown): boolean {
+  if (Array.isArray(schema)) return schema.some(marksDownloadableFile);
+  if (!isPlainObject(schema)) return false;
+  return schema.file_downloadable === true || Object.values(schema).some(marksDownloadableFile);
+}
+
+/** Enum values of an argument, its `anyOf` branches, and the items of an array argument. */
 function enumValues(schema: unknown): unknown[] {
   if (!isPlainObject(schema)) return [];
-  return [schema, ...(Array.isArray(schema.anyOf) ? schema.anyOf : [])]
-    .flatMap((node) => isPlainObject(node) && Array.isArray(node.enum) ? node.enum : []);
+  return [
+    ...(Array.isArray(schema.enum) ? schema.enum : []),
+    ...(Array.isArray(schema.anyOf) ? schema.anyOf.flatMap(enumValues) : []),
+    ...enumValues(schema.items),
+  ];
+}
+
+/** Defaults of an argument and its `anyOf` branches. */
+function defaultValues(schema: unknown): unknown[] {
+  if (!isPlainObject(schema)) return [];
+  return [
+    ...('default' in schema ? [schema.default] : []),
+    ...(Array.isArray(schema.anyOf) ? schema.anyOf.flatMap(defaultValues) : []),
+  ];
+}
+
+/** The properties of an object argument, seen through an optional `anyOf` or an array of objects. */
+function propertiesOf(schema: unknown): Record<string, unknown> {
+  if (!isPlainObject(schema)) return {};
+  if (isPlainObject(schema.properties)) return schema.properties;
+  const present = Array.isArray(schema.anyOf)
+    ? schema.anyOf.filter((variant) => !isPlainObject(variant) || variant.type !== 'null')
+    : [];
+  return present.length === 1 ? propertiesOf(present[0]) : propertiesOf(schema.items);
+}
+
+function descriptionOf(schema: unknown): string {
+  return isPlainObject(schema) && typeof schema.description === 'string' ? schema.description : '';
 }
 
 function withDescription<T extends ManifestInputSchema>(schema: T, description: string | undefined): T {

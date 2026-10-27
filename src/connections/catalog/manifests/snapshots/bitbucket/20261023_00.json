@@ -1180,6 +1180,7 @@
         "repository"
       ],
       "deprecated": false,
+      "returnsHostedFile": true,
       "input": {
         "type": "object",
         "title": "DownloadRepositoryArchiveRequest",

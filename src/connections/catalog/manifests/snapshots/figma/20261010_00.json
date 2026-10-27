@@ -1,0 +1,1481 @@
+{
+  "toolkit": {
+    "slug": "figma",
+    "name": "Figma",
+    "version": "20261010_00",
+    "description": "A collaborative interface design tool.",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      },
+      {
+        "mode": "API_KEY",
+        "fields": [
+          "full",
+          "generic_api_key"
+        ]
+      }
+    ],
+    "currentUserEndpoint": "https://api.figma.com/v1/me"
+  },
+  "tools": [
+    {
+      "slug": "FIGMA_ADD_A_COMMENT_TO_A_FILE",
+      "name": "Add a comment to a file",
+      "description": "Posts a new comment to a Figma file or branch, optionally replying to an existing root comment (replies cannot be nested); `region_height` and `region_width` in `client_meta` must be positive if defining a comment region.",
+      "version": "20261010_00",
+      "tags": [
+        "Comments",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddACommentToAFileRequest",
+        "required": [
+          "file_key",
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "examples": [
+              "Great work on this design!",
+              "Can we update the color here?"
+            ],
+            "description": "Text content of the comment."
+          },
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "examples": [
+              "sFHgQh9dL6369o5wrZHmdR",
+              "ABC123xyz789FileKey",
+              "branch_key-0"
+            ],
+            "description": "Figma file key or branch key. Extract from the file URL: https://www.figma.com/design/FILE_KEY/... or https://www.figma.com/file/FILE_KEY/... The FILE_KEY is the alphanumeric string between 'design/' or 'file/' and the next slash. You must have access to the file (editor or commenter permissions required to add comments). For branch keys, use GET /v1/files/:key with branch_data parameter."
+          },
+          "comment_id": {
+            "type": "string",
+            "title": "Comment Id",
+            "examples": [
+              "12345",
+              "987:654"
+            ],
+            "description": "ID of an existing root comment to reply to. Replies cannot be made to other replies."
+          },
+          "client_meta": {
+            "type": "object",
+            "title": "Client Meta",
+            "examples": [
+              "{\"x\": 100, \"y\": 200}",
+              "{\"x\": -500, \"y\": 300}",
+              "{\"node_id\": \"1:2\", \"node_offset\": {\"x\": 10, \"y\": 5}}",
+              "{\"x\": 50, \"y\": 75, \"region_height\": 30, \"region_width\": 60, \"comment_pin_corner\": \"top-left\"}",
+              "{\"node_id\": \"0:1\", \"node_offset\": {\"x\": 10, \"y\": 5}, \"region_height\": 50, \"region_width\": 100, \"comment_pin_corner\": \"top-right\"}"
+            ],
+            "description": "Dictionary specifying the comment's position. Valid formats: 1) Absolute coordinates: {x, y} 2) Node-relative: {node_id, node_offset: {x, y}} (when node_id is used, coordinates MUST be inside node_offset) 3) Absolute region: {x, y, region_height, region_width, comment_pin_corner?} 4) Node-relative region: {node_id, node_offset: {x, y}, region_height, region_width, comment_pin_corner?}. While technically optional, providing this parameter is strongly recommended to properly position the comment in the file.",
+            "additionalProperties": true
+          }
+        },
+        "description": "Request schema for `AddACommentToAFile`"
+      }
+    },
+    {
+      "slug": "FIGMA_DESIGN_TOKENS_TO_TAILWIND",
+      "name": "Design tokens to tailwind",
+      "description": "Convert design tokens to Tailwind CSS configuration. TWO-STEP WORKFLOW: 1. First, call FIGMA_EXTRACT_DESIGN_TOKENS with a Figma file_key to extract design tokens 2. Then, pass the returned DesignTokens object to this action's 'tokens' parameter This action generates: - tailwind.config.ts/js with theme extensions - Optional globals.css with font imports Note: Shadow colors can be provided in either string format (e.g., \"rgba(15, 110, 110, 0.32)\") or dictionary format (e.g., {\"r\": 0.059, \"g\": 0.431, \"b\": 0.431, \"a\": 0.32}).",
+      "version": "20261010_00",
+      "tags": [
+        "important",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DesignTokensToTailwindRequest",
+        "required": [
+          "tokens"
+        ],
+        "properties": {
+          "prefix": {
+            "type": "string",
+            "title": "Prefix",
+            "default": "",
+            "description": "Prefix for generated token names (e.g., 'brand-')"
+          },
+          "tokens": {
+            "type": "object",
+            "title": "Tokens",
+            "examples": [
+              {
+                "colors": [
+                  {
+                    "name": "primary",
+                    "value": "#3B82F6",
+                    "source": "style",
+                    "opacity": null,
+                    "usage_count": 5
+                  }
+                ],
+                "shadows": [
+                  {
+                    "name": "card-shadow",
+                    "source": "style",
+                    "shadows": [
+                      {
+                        "x": 0,
+                        "y": 4,
+                        "blur": 6,
+                        "type": "DROP_SHADOW",
+                        "color": {
+                          "a": 0.1,
+                          "b": 0,
+                          "g": 0,
+                          "r": 0
+                        }
+                      }
+                    ],
+                    "usage_count": 2
+                  }
+                ],
+                "sources": {
+                  "style": 3,
+                  "extracted": 2
+                },
+                "spacing": [
+                  {
+                    "name": "padding-16",
+                    "type": "padding",
+                    "value": 16,
+                    "source": "extracted",
+                    "usage_count": 10
+                  }
+                ],
+                "typography": [
+                  {
+                    "name": "heading",
+                    "source": "style",
+                    "font_size": 24,
+                    "font_family": "Inter",
+                    "font_weight": 700,
+                    "line_height": 32,
+                    "usage_count": 3,
+                    "letter_spacing": null,
+                    "text_transform": null
+                  }
+                ],
+                "total_tokens": 5,
+                "border_radius": [
+                  {
+                    "name": "radius-8",
+                    "value": 8,
+                    "source": "extracted",
+                    "usage_count": 7
+                  }
+                ]
+              }
+            ],
+            "required": [
+              "total_tokens",
+              "sources"
+            ],
+            "properties": {
+              "colors": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "title": "ColorToken",
+                  "required": [
+                    "name",
+                    "value",
+                    "source"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "title": "Name",
+                      "description": "The name identifier for the color token."
+                    },
+                    "value": {
+                      "type": "string",
+                      "title": "Value",
+                      "description": "CSS hex color format (e.g., '#ff0000')"
+                    },
+                    "source": {
+                      "enum": [
+                        "style",
+                        "variable",
+                        "extracted"
+                      ],
+                      "type": "string",
+                      "title": "Source",
+                      "description": "Source of the token extraction"
+                    },
+                    "opacity": {
+                      "type": "number",
+                      "title": "Opacity",
+                      "maximum": 1,
+                      "minimum": 0,
+                      "description": "Opacity value (0-1) if less than 1"
+                    },
+                    "usage_count": {
+                      "type": "integer",
+                      "title": "Usage Count",
+                      "default": 0,
+                      "minimum": 0,
+                      "description": "Number of times this token appears in the design"
+                    }
+                  },
+                  "description": "A color design token."
+                },
+                "title": "Colors",
+                "description": "List of color design tokens"
+              },
+              "shadows": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "title": "ShadowToken",
+                  "required": [
+                    "name",
+                    "shadows",
+                    "source"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "title": "Name",
+                      "description": "Name of the shadow token"
+                    },
+                    "source": {
+                      "enum": [
+                        "style",
+                        "variable",
+                        "extracted"
+                      ],
+                      "type": "string",
+                      "title": "Source",
+                      "description": "Source of the token extraction"
+                    },
+                    "shadows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "title": "ShadowProperties",
+                        "properties": {
+                          "type": {
+                            "enum": [
+                              "DROP_SHADOW",
+                              "INNER_SHADOW"
+                            ],
+                            "type": "string",
+                            "title": "Type",
+                            "description": "Shadow type"
+                          },
+                          "color": {
+                            "type": "object",
+                            "title": "RgbaColor",
+                            "required": [
+                              "r",
+                              "g",
+                              "b"
+                            ],
+                            "properties": {
+                              "a": {
+                                "type": "number",
+                                "title": "A",
+                                "default": 1,
+                                "maximum": 1,
+                                "minimum": 0,
+                                "description": "Alpha/opacity component (0-1)"
+                              },
+                              "b": {
+                                "type": "number",
+                                "title": "B",
+                                "maximum": 1,
+                                "minimum": 0,
+                                "description": "Blue component (0-1)"
+                              },
+                              "g": {
+                                "type": "number",
+                                "title": "G",
+                                "maximum": 1,
+                                "minimum": 0,
+                                "description": "Green component (0-1)"
+                              },
+                              "r": {
+                                "type": "number",
+                                "title": "R",
+                                "maximum": 1,
+                                "minimum": 0,
+                                "description": "Red component (0-1)"
+                              }
+                            },
+                            "description": "RGBA color values (0-1 range for each component).",
+                            "additionalProperties": false
+                          },
+                          "offset": {
+                            "type": "object",
+                            "title": "ShadowOffset",
+                            "required": [
+                              "x",
+                              "y"
+                            ],
+                            "properties": {
+                              "x": {
+                                "type": "number",
+                                "title": "X",
+                                "description": "Horizontal offset in pixels"
+                              },
+                              "y": {
+                                "type": "number",
+                                "title": "Y",
+                                "description": "Vertical offset in pixels"
+                              }
+                            },
+                            "description": "Shadow offset values in pixels.",
+                            "additionalProperties": false
+                          },
+                          "radius": {
+                            "type": "number",
+                            "title": "Radius",
+                            "minimum": 0,
+                            "description": "Blur radius in pixels"
+                          },
+                          "visible": {
+                            "type": "boolean",
+                            "title": "Visible",
+                            "description": "Whether the shadow is visible"
+                          }
+                        },
+                        "description": "Properties of a shadow effect."
+                      },
+                      "title": "Shadows",
+                      "description": "List of shadow effect properties"
+                    },
+                    "usage_count": {
+                      "type": "integer",
+                      "title": "Usage Count",
+                      "default": 0,
+                      "minimum": 0,
+                      "description": "Number of times this token appears in the design"
+                    }
+                  },
+                  "description": "A shadow design token."
+                },
+                "title": "Shadows",
+                "description": "List of shadow design tokens"
+              },
+              "sources": {
+                "type": "object",
+                "title": "Sources",
+                "properties": {
+                  "style": {
+                    "type": "integer",
+                    "title": "Style",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Tokens extracted from Figma styles"
+                  },
+                  "variable": {
+                    "type": "integer",
+                    "title": "Variable",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Tokens extracted from Figma variables"
+                  },
+                  "extracted": {
+                    "type": "integer",
+                    "title": "Extracted",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Tokens extracted from node properties"
+                  }
+                },
+                "description": "Count of tokens by extraction source",
+                "additionalProperties": false
+              },
+              "spacing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "title": "SpacingToken",
+                  "required": [
+                    "name",
+                    "value",
+                    "type",
+                    "source"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "title": "Name",
+                      "description": "Name of the spacing token"
+                    },
+                    "type": {
+                      "enum": [
+                        "padding",
+                        "margin",
+                        "gap",
+                        "spacing"
+                      ],
+                      "type": "string",
+                      "title": "Type",
+                      "description": "Type of spacing"
+                    },
+                    "value": {
+                      "type": "number",
+                      "title": "Value",
+                      "minimum": 0,
+                      "description": "Spacing value in pixels"
+                    },
+                    "source": {
+                      "enum": [
+                        "style",
+                        "variable",
+                        "extracted"
+                      ],
+                      "type": "string",
+                      "title": "Source",
+                      "description": "Source of the token extraction"
+                    },
+                    "usage_count": {
+                      "type": "integer",
+                      "title": "Usage Count",
+                      "default": 0,
+                      "minimum": 0,
+                      "description": "Number of times this token appears in the design"
+                    }
+                  },
+                  "description": "A spacing design token."
+                },
+                "title": "Spacing",
+                "description": "List of spacing design tokens"
+              },
+              "typography": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "title": "TypographyToken",
+                  "required": [
+                    "name",
+                    "font_family",
+                    "font_size",
+                    "font_weight",
+                    "source"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "title": "Name",
+                      "description": "Name of the typography token"
+                    },
+                    "source": {
+                      "enum": [
+                        "style",
+                        "variable",
+                        "extracted"
+                      ],
+                      "type": "string",
+                      "title": "Source",
+                      "description": "Source of the token extraction"
+                    },
+                    "font_size": {
+                      "type": "number",
+                      "title": "Font Size",
+                      "description": "Font size in pixels",
+                      "exclusiveMinimum": 0
+                    },
+                    "font_family": {
+                      "type": "string",
+                      "title": "Font Family",
+                      "description": "Font family name (e.g., 'Inter', 'Roboto')"
+                    },
+                    "font_weight": {
+                      "type": "integer",
+                      "title": "Font Weight",
+                      "maximum": 900,
+                      "minimum": 100,
+                      "description": "Font weight (100-900)"
+                    },
+                    "line_height": {
+                      "type": "number",
+                      "title": "Line Height",
+                      "description": "Line height in pixels"
+                    },
+                    "usage_count": {
+                      "type": "integer",
+                      "title": "Usage Count",
+                      "default": 0,
+                      "minimum": 0,
+                      "description": "Number of times this token appears in the design"
+                    },
+                    "letter_spacing": {
+                      "type": "number",
+                      "title": "Letter Spacing",
+                      "description": "Letter spacing in pixels"
+                    },
+                    "text_transform": {
+                      "enum": [
+                        "ORIGINAL",
+                        "UPPER",
+                        "LOWER",
+                        "TITLE",
+                        "SMALL_CAPS",
+                        "SMALL_CAPS_FORCED"
+                      ],
+                      "type": "string",
+                      "title": "Text Transform",
+                      "description": "Text case transformation"
+                    }
+                  },
+                  "description": "A typography design token."
+                },
+                "title": "Typography",
+                "description": "List of typography design tokens"
+              },
+              "total_tokens": {
+                "type": "integer",
+                "title": "Total Tokens",
+                "minimum": 0,
+                "description": "Total number of design tokens extracted"
+              },
+              "border_radius": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "title": "BorderRadiusToken",
+                  "required": [
+                    "name",
+                    "value",
+                    "source"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "title": "Name",
+                      "description": "Name of the border radius token"
+                    },
+                    "value": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "object",
+                          "title": "CornerRadii",
+                          "properties": {
+                            "top_left": {
+                              "type": "number",
+                              "title": "Top Left",
+                              "default": 0,
+                              "minimum": 0,
+                              "description": "Top-left corner radius"
+                            },
+                            "top_right": {
+                              "type": "number",
+                              "title": "Top Right",
+                              "default": 0,
+                              "minimum": 0,
+                              "description": "Top-right corner radius"
+                            },
+                            "bottom_left": {
+                              "type": "number",
+                              "title": "Bottom Left",
+                              "default": 0,
+                              "minimum": 0,
+                              "description": "Bottom-left corner radius"
+                            },
+                            "bottom_right": {
+                              "type": "number",
+                              "title": "Bottom Right",
+                              "default": 0,
+                              "minimum": 0,
+                              "description": "Bottom-right corner radius"
+                            }
+                          },
+                          "description": "Individual corner radius values in pixels."
+                        }
+                      ],
+                      "title": "Value",
+                      "description": "Single radius value in pixels or individual corner radii"
+                    },
+                    "source": {
+                      "enum": [
+                        "style",
+                        "variable",
+                        "extracted"
+                      ],
+                      "type": "string",
+                      "title": "Source",
+                      "description": "Source of the token extraction"
+                    },
+                    "usage_count": {
+                      "type": "integer",
+                      "title": "Usage Count",
+                      "default": 0,
+                      "minimum": 0,
+                      "description": "Number of times this token appears in the design"
+                    }
+                  },
+                  "description": "A border radius token."
+                },
+                "title": "Border Radius",
+                "description": "List of border radius design tokens"
+              },
+              "composio_execution_message": {
+                "type": "string",
+                "title": "Composio Execution Message",
+                "description": "Message about execution issues or warnings"
+              }
+            },
+            "description": "Design tokens object obtained from the FIGMA_EXTRACT_DESIGN_TOKENS action output. Contains colors, typography, spacing, border_radius, shadows, total_tokens, and sources.",
+            "additionalProperties": false
+          },
+          "config_format": {
+            "type": "string",
+            "title": "Config Format",
+            "default": "ts",
+            "description": "Output format: 'ts' for TypeScript or 'js' for JavaScript"
+          },
+          "include_font_imports": {
+            "type": "boolean",
+            "title": "Include Font Imports",
+            "default": true,
+            "description": "Include @import statements for Google Fonts"
+          }
+        },
+        "description": "Request to convert design tokens to Tailwind config.\n\nPREREQUISITE: First call FIGMA_EXTRACT_DESIGN_TOKENS with a Figma file_key\nto obtain the DesignTokens object, then pass that output as the 'tokens' parameter here."
+      }
+    },
+    {
+      "slug": "FIGMA_DISCOVER_FIGMA_RESOURCES",
+      "name": "Discover Figma Resources",
+      "description": "Smart Figma resource discovery - extract IDs from any Figma URL. Supports all URL formats: /file/, /design/, /board/, /proto/, /slides/ Example: figma.com/board/ABC123/Name → file_key=ABC123 Discovery workflow: team_id → projects → files → nodes Use extracted IDs with GetFileJson, DetectBackground, etc.",
+      "version": "20261010_00",
+      "tags": [
+        "Discovery",
+        "Navigation",
+        "Resources",
+        "URLs",
+        "openWorldHint",
+        "readOnlyHint",
+        "Important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DiscoverFigmaResourcesRequest",
+        "properties": {
+          "team_id": {
+            "type": "string",
+            "title": "Team Id",
+            "description": "Team ID to list all projects from. Get this from team URL: https://www.figma.com/files/team/YOUR_TEAM_ID/Team-Name. Returns list of projects with IDs and names. Cannot be inferred from user identity or FIGMA_GET_CURRENT_USER; must come from a team URL or be provided directly."
+          },
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "description": "File key to extract all node IDs from. Get this from file URL (figma.com/file/FILE_KEY/...) or from project files list. Returns hierarchical list of all nodes with IDs, names, types, and paths."
+          },
+          "figma_url": {
+            "type": "string",
+            "title": "Figma Url",
+            "description": "Full Figma URL to extract file_key, node_id, and team_id from. Works with any Figma URL format:\n• File: https://www.figma.com/file/ABC123/Design-Name\n• Design: https://www.figma.com/design/ABC123/Design-Name\n• Board: https://www.figma.com/board/ABC123/Board-Name\n• Prototype: https://www.figma.com/proto/ABC123/Prototype-Name\n• Slides: https://www.figma.com/slides/ABC123/Slide-Name\n• With node: https://www.figma.com/file/ABC123/Design?node-id=123:456\n• Team: https://www.figma.com/files/team/123456/Team-Name\nThis is the easiest way to get all IDs you need! Node IDs in URLs use hyphens (123-456) but Figma JSON uses colons (123:456) — convert format when passing to other tools. If extracted_ids.file_key returns null, parse it manually from the path segment after /file/, /design/, /board/, /proto/, or /slides/."
+          },
+          "max_depth": {
+            "type": "integer",
+            "title": "Max Depth",
+            "default": 2,
+            "description": "Maximum tree depth to traverse when discovering nodes. 2=pages+frames, 3=pages+frames+components, etc. Higher values find more nodes but take longer. Responses at depth 4+ or broad file_key traversal can exceed 20k tokens with significant latency; cap at 2–3 and target specific CANVAS or FRAME node IDs to limit response size."
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project ID to list all files from. Get this from project URL or from team projects list. Returns files with keys, names, and thumbnails."
+          }
+        },
+        "description": "Request to discover Figma resources and extract IDs automatically."
+      }
+    },
+    {
+      "slug": "FIGMA_DOWNLOAD_FIGMA_IMAGES",
+      "name": "Download Figma Images",
+      "description": "Download images from Figma file nodes. Renders specified nodes as images and downloads them. Supports PNG, SVG, JPG, and PDF formats. REQUIRED PARAMETERS: - file_key (string): The Figma file key from the URL - images (array): List of objects, each containing: - node_id (string, required): The node ID to export (e.g., \"1:2\") - file_name (string, required): Output filename with extension (e.g., \"logo.png\") - format (string, optional): One of 'png', 'svg', 'jpg', 'pdf'. Defaults to 'png' Example usage: { \"file_key\": \"abc123XYZ\", \"images\": [ {\"node_id\": \"1:2\", \"file_name\": \"logo.png\", \"format\": \"png\"} ] } To find node IDs, use FIGMA_GET_FILE_JSON or look in Figma URLs after 'node-id='. NOTE: Returned image URLs expire shortly after generation — download them immediately.",
+      "version": "20261010_00",
+      "tags": [
+        "Assets",
+        "Download",
+        "Export",
+        "Files",
+        "Images",
+        "openWorldHint",
+        "readOnlyHint",
+        "PNG",
+        "SVG",
+        "JPG",
+        "PDF",
+        "Graphics",
+        "Media",
+        "Content",
+        "important"
+      ],
+      "deprecated": false,
+      "returnsHostedFile": true,
+      "input": {
+        "type": "object",
+        "title": "DownloadFigmaImagesRequest",
+        "required": [
+          "file_key",
+          "images"
+        ],
+        "properties": {
+          "scale": {
+            "type": "number",
+            "title": "Scale",
+            "default": 2,
+            "description": "Image scaling factor for PNG/JPG exports (0.01 to 4). Default is 2 for retina quality. Ignored for SVG/PDF. Exports are capped at ~32 megapixels; reduce scale or split large nodes to avoid hitting this limit."
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ImageDownloadRequest",
+              "required": [
+                "node_id",
+                "file_name"
+              ],
+              "properties": {
+                "format": {
+                  "type": "string",
+                  "title": "Format",
+                  "default": "png",
+                  "description": "Image format to export. Supported values: 'png', 'svg', 'jpg', 'pdf'. Defaults to 'png'."
+                },
+                "node_id": {
+                  "type": "string",
+                  "title": "Node Id",
+                  "description": "REQUIRED. The Figma node ID to render as an image. Node IDs are found in Figma URLs after 'node-id=' (e.g., '1:2', '123:456'). You can also get node IDs by using the FIGMA_GET_FILE_JSON action."
+                },
+                "file_name": {
+                  "type": "string",
+                  "title": "File Name",
+                  "description": "REQUIRED. The output filename with extension for the downloaded image (e.g., 'logo.png', 'header-image.svg', 'icon.jpg')."
+                }
+              },
+              "description": "Individual image download request specifying which node to render and how to save it.\n\nExample:\n    {\"node_id\": \"1:2\", \"file_name\": \"logo.png\", \"format\": \"png\"}"
+            },
+            "title": "Images",
+            "description": "REQUIRED. A list of image download requests. Each item must be an object with 'node_id' (string, required), 'file_name' (string, required), and optionally 'format' (string, defaults to 'png'). Example: [{\"node_id\": \"1:2\", \"file_name\": \"logo.png\"}]"
+          },
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "description": "REQUIRED. The Figma file key extracted from a Figma URL. For URL 'https://www.figma.com/file/abc123XYZ/MyDesign', the file_key is 'abc123XYZ'. This identifies which Figma file to download images from."
+          },
+          "svg_include_id": {
+            "type": "boolean",
+            "title": "Svg Include Id",
+            "default": false,
+            "description": "For SVG exports only: include element IDs in the SVG output. Defaults to false."
+          },
+          "svg_outline_text": {
+            "type": "boolean",
+            "title": "Svg Outline Text",
+            "default": true,
+            "description": "For SVG exports only: convert text to paths for accurate rendering. Defaults to true."
+          },
+          "svg_simplify_stroke": {
+            "type": "boolean",
+            "title": "Svg Simplify Stroke",
+            "default": true,
+            "description": "For SVG exports only: simplify strokes for cleaner SVG output. Defaults to true."
+          }
+        },
+        "description": "Request to download images from a Figma file.\n\nREQUIRED PARAMETERS:\n- file_key: The Figma file key (string)\n- images: List of image download requests (array of objects)\n\nExample request:\n    {\n        \"file_key\": \"abc123XYZ\",\n        \"images\": [\n            {\"node_id\": \"1:2\", \"file_name\": \"logo.png\", \"format\": \"png\"},\n            {\"node_id\": \"3:4\", \"file_name\": \"icon.svg\", \"format\": \"svg\"}\n        ]\n    }"
+      }
+    },
+    {
+      "slug": "FIGMA_EXTRACT_DESIGN_TOKENS",
+      "name": "Extract design tokens",
+      "description": "Extract design tokens from Figma files by combining styles, variables, and node-extracted values. Only values defined as Figma styles or variables are captured — any design values not encoded as styles/variables are silently omitted. Requires `file_variables:read` scope and a Figma plan that supports variables for full output; if variables return empty, supplement with FIGMA_GET_LOCAL_VARIABLES.",
+      "version": "20261010_00",
+      "tags": [
+        "Design Tokens",
+        "Extraction",
+        "Styles",
+        "Variables",
+        "openWorldHint",
+        "readOnlyHint",
+        "Theme",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ExtractDesignTokensRequest",
+        "required": [
+          "file_key"
+        ],
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "description": "The Figma file key (e.g., 'aA1b2Cd3E4F5g6H7i8J9k0L'). Extract from Figma URLs like figma.com/file/FILE_KEY/... or use FIGMA_DISCOVER_FIGMA_RESOURCES to find file keys"
+          },
+          "include_variables": {
+            "type": "boolean",
+            "title": "Include Variables",
+            "default": false,
+            "description": "Include variables in extraction. Even with this enabled, modes and scopes may be incomplete; use FIGMA_GET_LOCAL_VARIABLES for full semantic token coverage including variable modes and aliases."
+          },
+          "extract_from_nodes": {
+            "type": "boolean",
+            "title": "Extract From Nodes",
+            "default": true,
+            "description": "Extract tokens from node properties"
+          },
+          "include_local_styles": {
+            "type": "boolean",
+            "title": "Include Local Styles",
+            "default": true,
+            "description": "Include local styles in extraction"
+          }
+        },
+        "description": "Request to extract design tokens."
+      }
+    },
+    {
+      "slug": "FIGMA_EXTRACT_PROTOTYPE_INTERACTIONS",
+      "name": "Extract Prototype Interactions",
+      "description": "Extract prototype interactions and animations from Figma files. Required parameter: - file_key: The Figma file key extracted from a URL like 'https://www.figma.com/file/ABC123xyz/MyFile' (the 'ABC123xyz' part) Analyzes the prototype data to extract: - User interactions (clicks, hovers, etc.) - Transition animations - Component variant states - User flows and navigation",
+      "version": "20261010_00",
+      "tags": [
+        "Animations",
+        "Flows",
+        "Interactions",
+        "Prototypes",
+        "UX",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ExtractPrototypeInteractionsRequest",
+        "required": [
+          "file_key"
+        ],
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "description": "Required. The unique file key from a Figma URL. To find it: from a URL like 'https://www.figma.com/file/ABC123xyz/MyFileName' or 'https://www.figma.com/design/ABC123xyz/MyFileName', extract the alphanumeric string after '/file/' or '/design/' (e.g., 'ABC123xyz'). This is typically 22 alphanumeric characters."
+          },
+          "analyze_components": {
+            "type": "boolean",
+            "title": "Analyze Components",
+            "default": true,
+            "description": "Extract component variant states"
+          },
+          "include_animations": {
+            "type": "boolean",
+            "title": "Include Animations",
+            "default": true,
+            "description": "Include detailed animation data"
+          }
+        },
+        "description": "Request to extract prototype interactions.\n\nNote: file_key is required and must be extracted from the Figma file URL."
+      }
+    },
+    {
+      "slug": "FIGMA_GET_COMMENTS_IN_A_FILE",
+      "name": "Get comments in a file",
+      "description": "Retrieves all comments from an existing Figma file, identified by a valid `file_key`, returning details like content, author, position, and reactions, with an option for Markdown formatted content.",
+      "version": "20261010_00",
+      "tags": [
+        "Comments",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCommentsInAFileRequest",
+        "required": [
+          "file_key"
+        ],
+        "properties": {
+          "as_md": {
+            "type": "boolean",
+            "title": "As Md",
+            "examples": [
+              "true",
+              "false"
+            ],
+            "description": "If true, comment content will be returned in Markdown format where applicable (e.g., for links, bold text). Defaults to false, returning rich text structure."
+          },
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "examples": [
+              "jV2jZ7r9H6F1kY8LwQ3n",
+              "sFp4Y7dX9aB2oM0cK1eL"
+            ],
+            "description": "Identifier for the Figma file from which to retrieve comments. This can be a file key (a unique string identifying a file) or a branch key. To obtain a branch key, use the `GET /v1/files/:key` endpoint with the `branch_data` query parameter."
+          }
+        },
+        "description": "Request schema for `GetCommentsInAFile` action. Specifies the file and formatting options for retrieving comments."
+      }
+    },
+    {
+      "slug": "FIGMA_GET_COMPONENT",
+      "name": "Get component (Deprecated)",
+      "description": "DEPRECATED: Use FIGMA_GET_FILE_NODES instead. Get component data with automatic simplification. Returns clean, AI-friendly component structure.",
+      "version": "20261010_00",
+      "tags": [
+        "Components",
+        "Data",
+        "Nodes",
+        "openWorldHint",
+        "readOnlyHint",
+        "important",
+        "deprecated"
+      ],
+      "deprecated": true,
+      "input": {
+        "type": "object",
+        "title": "GetComponentRequest",
+        "required": [
+          "file_key",
+          "node_id"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "title": "Node Id",
+            "description": "ID of the component node. Must be a component node ID specifically (not a frame or page ID); pass verbatim from sources like FIGMA_GET_FILE_COMPONENTS."
+          },
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "description": "File key that contains the component"
+          },
+          "response_detail": {
+            "enum": [
+              "minimal",
+              "full"
+            ],
+            "type": "string",
+            "title": "Response Detail",
+            "default": "minimal",
+            "description": "Level of detail in the response. 'minimal' (default) simplifies component data for AI consumption. 'full' returns the raw Figma API response."
+          }
+        },
+        "description": "Request for getting component data."
+      }
+    },
+    {
+      "slug": "FIGMA_GET_COMPONENT2",
+      "name": "Get component",
+      "description": "Fetches metadata for a specific component using its unique identifier. Use when you need to retrieve published component details from a team library.",
+      "version": "20261010_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint",
+        "important",
+        "Components"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetComponent2Request",
+        "required": [
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key",
+            "examples": [
+              "dbe971cca11feeb98c3c74357bdc4d20678f2f88"
+            ],
+            "description": "The unique identifier of the component."
+          }
+        },
+        "description": "Request schema for retrieving a Figma component by its unique key."
+      }
+    },
+    {
+      "slug": "FIGMA_GET_CURRENT_USER",
+      "name": "Get current user",
+      "description": "Retrieves detailed information for the currently authenticated Figma user.",
+      "version": "20261010_00",
+      "tags": [
+        "Users",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCurrentUserRequest",
+        "properties": {},
+        "description": "Request for `GetCurrentUser`; no parameters are needed."
+      }
+    },
+    {
+      "slug": "FIGMA_GET_FILE_COMPONENT_SETS",
+      "name": "Get file component sets",
+      "description": "Retrieves all published component sets from the specified Figma main file (file_key must not be for a branch).",
+      "version": "20261010_00",
+      "tags": [
+        "Component Sets",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFileComponentSetsRequest",
+        "required": [
+          "file_key"
+        ],
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "examples": [
+              "ABC123xyz"
+            ],
+            "description": "Key of the Figma file. Must be a main file key (not a branch key) as component sets are published from main files. Extract from Figma URL: https://www.figma.com/design/{file_key}/... or https://www.figma.com/file/{file_key}/..."
+          }
+        },
+        "description": "Request schema for retrieving component sets from a specific Figma file."
+      }
+    },
+    {
+      "slug": "FIGMA_GET_FILE_COMPONENTS",
+      "name": "Get file components",
+      "description": "Retrieves published components from a Figma file, which must be a main file (not a branch) acting as a library.",
+      "version": "20261010_00",
+      "tags": [
+        "Components",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFileComponentsRequest",
+        "required": [
+          "file_key"
+        ],
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "examples": [
+              "your_figma_file_key"
+            ],
+            "description": "Key of the Figma file. This file must be a main file (not a branch key) that acts as a library, as components are published from main files."
+          }
+        },
+        "description": "Request to retrieve published components from a Figma file."
+      }
+    },
+    {
+      "slug": "FIGMA_GET_FILE_JSON",
+      "name": "Get file json",
+      "description": "Get Figma Design file data with automatic simplification. IMPORTANT: Only supports Design files (figma.com/design/{file_key}). FigJam board files (figma.com/board/{file_key}) and Slides files (figma.com/slides/{file_key}) are NOT supported and will return a 400 error: \"File type not supported by this endpoint\". This enhanced version automatically transforms verbose Figma JSON into clean, AI-friendly format with: - CSS-like property names - Deduplicated variables - Removed empty values - 70%+ size reduction Use simplify=False to get raw API response.",
+      "version": "20261010_00",
+      "tags": [
+        "Data",
+        "Files",
+        "JSON",
+        "Simplification",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFileJsonRequest",
+        "required": [
+          "file_key"
+        ],
+        "properties": {
+          "ids": {
+            "type": "string",
+            "title": "Ids",
+            "description": "Comma-separated node IDs to fetch specific nodes (uses /nodes endpoint). Node IDs can be extracted from Figma URLs: figma.com/design/{file_key}/{name}?node-id={node_id}. Example: '1:2,1:3' for multiple nodes. Must be a string, not an array — passing an array causes validation failure. URL node IDs use hyphens (e.g., '1-2'); convert to colons (e.g., '1:2') before passing here."
+          },
+          "depth": {
+            "type": "integer",
+            "title": "Depth",
+            "description": "Tree traversal depth (e.g., 2 for pages and top-level children). Omitting depth on large files can produce extremely large responses or timeouts; scope with `ids` and set depth to the minimum needed."
+          },
+          "version": {
+            "type": "string",
+            "title": "Version",
+            "description": "Specific version ID; current version if omitted"
+          },
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "description": "File key extracted from a Figma Design file URL. SUPPORTED: figma.com/design/{file_key}/... or figma.com/file/{file_key}/... NOT SUPPORTED: FigJam boards (figma.com/board/{file_key}) and Slides (figma.com/slides/{file_key}). Example valid key: 'abc123XYZ' from URL figma.com/design/abc123XYZ/My-Design."
+          },
+          "geometry": {
+            "type": "string",
+            "title": "Geometry",
+            "description": "Set to \"paths\" to include vector data"
+          },
+          "branch_data": {
+            "type": "boolean",
+            "title": "Branch Data",
+            "description": "Include branch metadata"
+          },
+          "plugin_data": {
+            "type": "string",
+            "title": "Plugin Data",
+            "description": "Comma-separated plugin IDs to include plugin data"
+          },
+          "response_detail": {
+            "enum": [
+              "minimal",
+              "full"
+            ],
+            "type": "string",
+            "title": "Response Detail",
+            "default": "minimal",
+            "description": "Level of detail in the response. 'minimal' (default) simplifies file data for AI consumption. 'full' returns the raw Figma API response."
+          }
+        },
+        "description": "Request schema for GetFileJson with simplification options."
+      }
+    },
+    {
+      "slug": "FIGMA_GET_FILE_METADATA",
+      "name": "Get file metadata",
+      "description": "Get Figma file metadata including name, creator, last modification details, thumbnail, and access information. Use when you need quick file overview without the full document tree.",
+      "version": "20261010_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint",
+        "important",
+        "Metadata"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFileMetadataRequest",
+        "required": [
+          "file_key"
+        ],
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "examples": [
+              "VGULlnz44R0Ooe4FZKDxlhh4",
+              "sFHgQh9dL6369o5wrZHmdR"
+            ],
+            "description": "File key to get metadata for. This can be a file key or branch key. Extract from file URL: https://www.figma.com/design/{file_key}/... or https://www.figma.com/file/{file_key}/... Use `GET /v1/files/:key` with the `branch_data` query param to get the branch key."
+          }
+        },
+        "description": "Request schema for retrieving metadata of a Figma file."
+      }
+    },
+    {
+      "slug": "FIGMA_GET_FILE_NODES",
+      "name": "Get file nodes",
+      "description": "Fetch JSON for specific node IDs from a Figma file to avoid full-file payload limits. Use when you already know target node IDs (from shallow file fetch or component listings) or when full-file JSON has hit payload limits. Prefer depth=1 for fast discovery.",
+      "version": "20261010_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Nodes"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFileNodesRequest",
+        "required": [
+          "file_key",
+          "ids"
+        ],
+        "properties": {
+          "ids": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "title": "Ids",
+            "examples": [
+              "1:5,1:6",
+              [
+                "1:5",
+                "1:6"
+              ]
+            ],
+            "description": "Node IDs to retrieve. Provide as comma-separated string (e.g., '1:5,1:6') or as list of strings (e.g., ['1:5', '1:6']). Use this when you already know target node IDs from a shallow file fetch or component/style listings."
+          },
+          "depth": {
+            "type": "integer",
+            "title": "Depth",
+            "examples": [
+              1,
+              2
+            ],
+            "description": "How deep into each requested node subtree to traverse. Use depth=1 for fast structure discovery (only immediate children), increase only when needed. Omit to get full subtree."
+          },
+          "version": {
+            "type": "string",
+            "title": "Version",
+            "examples": [
+              "1234567890"
+            ],
+            "description": "Specific version ID to retrieve. Omit for current version."
+          },
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "examples": [
+              "abc123XYZ"
+            ],
+            "description": "Figma file key or branch key extracted from URL. Example: 'abc123XYZ' from figma.com/design/abc123XYZ/My-Design."
+          },
+          "geometry": {
+            "type": "string",
+            "title": "Geometry",
+            "examples": [
+              "paths"
+            ],
+            "description": "Set to 'paths' to include vector path data in the response. Omit for standard node data without geometry."
+          },
+          "plugin_data": {
+            "type": "string",
+            "title": "Plugin Data",
+            "examples": [
+              "shared",
+              "plugin-id-1,plugin-id-2"
+            ],
+            "description": "Plugin IDs (comma-separated) or 'shared' to include plugin data. Omit to exclude plugin data."
+          }
+        },
+        "description": "Request schema for GetFileNodes."
+      }
+    },
+    {
+      "slug": "FIGMA_GET_FILE_STYLES",
+      "name": "Get file styles",
+      "description": "Retrieves a list of published styles (like colors, text attributes, effects, and layout grids) from a specified main Figma file (not a branch).",
+      "version": "20261010_00",
+      "tags": [
+        "Styles",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFileStylesRequest",
+        "required": [
+          "file_key"
+        ],
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "examples": [
+              "VGULlnz44R0Ooe4FZKDxlhh4"
+            ],
+            "description": "Key of the main Figma file (not a branch) from which to retrieve published styles. Extract the file_key from the Figma URL: figma.com/design/{file_key}/... or figma.com/file/{file_key}/... Note: This endpoint only returns PUBLISHED styles from team libraries. For local/unpublished styles, use FIGMA_GET_FILE_JSON instead."
+          }
+        },
+        "description": "Request to retrieve styles from a Figma file."
+      }
+    },
+    {
+      "slug": "FIGMA_GET_FILES_IN_A_PROJECT",
+      "name": "Get files in a project",
+      "description": "Fetches a list of files in a Figma project, optionally including branch metadata.",
+      "version": "20261010_00",
+      "tags": [
+        "Projects",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFilesInAProjectRequest",
+        "required": [
+          "project_id"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "examples": [
+              "PJ7b3k2N5"
+            ],
+            "description": "Identifier of the Figma project, typically found in its URL."
+          },
+          "branch_data": {
+            "type": "boolean",
+            "title": "Branch Data",
+            "default": false,
+            "examples": [
+              "true",
+              "false"
+            ],
+            "description": "If true, includes metadata for branches of main files."
+          }
+        },
+        "description": "Defines the parameters needed to retrieve a list of files from a specified Figma project."
+      }
+    },
+    {
+      "slug": "FIGMA_GET_LOCAL_VARIABLES",
+      "name": "Get local variables",
+      "description": "Retrieves all local/remote variables for a Figma file/branch; crucial for obtaining mode-specific values which `/v1/files/{file_key}/variables/published` omits.",
+      "version": "20261010_00",
+      "tags": [
+        "Variables",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetLocalVariablesRequest",
+        "required": [
+          "file_key"
+        ],
+        "properties": {
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "examples": [
+              "your_file_key",
+              "your_branch_key"
+            ],
+            "description": "Key of the Figma file or branch. Can be a standard file key or a branch-specific key (to obtain a branch key, use `GET /v1/files/:key` with the `branch_data` query parameter)."
+          }
+        },
+        "description": "Request schema for `GetLocalVariables`"
+      }
+    },
+    {
+      "slug": "FIGMA_GET_PROJECTS_IN_A_TEAM",
+      "name": "Get projects in a team",
+      "description": "Retrieves projects within a specified Figma team that are visible to the authenticated user.",
+      "version": "20261010_00",
+      "tags": [
+        "Projects",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetProjectsInATeamRequest",
+        "required": [
+          "team_id"
+        ],
+        "properties": {
+          "team_id": {
+            "type": "string",
+            "title": "Team Id",
+            "examples": [
+              "8765432109876543210"
+            ],
+            "description": "Identifier of the Figma team from which to list projects. Note: The `team_id` cannot be programmatically obtained solely from a user token. To find a `team_id`, navigate to a team page you are a member of in Figma. The `team_id` will be present in the URL, typically formatted as `https://www.figma.com/files/team/YOUR_TEAM_ID/Your_Team_Name`."
+          }
+        },
+        "description": "Request schema for `GetProjectsInATeam`"
+      }
+    },
+    {
+      "slug": "FIGMA_GET_VERSIONS_OF_A_FILE",
+      "name": "Get versions of a file",
+      "description": "Retrieves the version history for a Figma file or branch, as specified by its `file_key`.",
+      "version": "20261010_00",
+      "tags": [
+        "Files",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetVersionsOfAFileRequest",
+        "required": [
+          "file_key"
+        ],
+        "properties": {
+          "after": {
+            "type": "integer",
+            "title": "After",
+            "examples": [
+              "1588291200",
+              "1590969600"
+            ],
+            "description": "Version ID for pagination; retrieves versions created strictly after this ID."
+          },
+          "before": {
+            "type": "integer",
+            "title": "Before",
+            "examples": [
+              "1609459200",
+              "1612137600"
+            ],
+            "description": "Version ID for pagination; retrieves versions created strictly before this ID."
+          },
+          "file_key": {
+            "type": "string",
+            "title": "File Key",
+            "examples": [
+              "sFHgQh9dL6369o5wrZHmdR",
+              "ABC123xyz"
+            ],
+            "description": "The key of the Figma file or branch from which to retrieve the version history. Extract from file URL: https://www.figma.com/design/{file_key}/... or https://www.figma.com/file/{file_key}/... For branch keys, use `GET /v1/files/:key` with the `branch_data` query param to obtain it. The authenticated user must have access to the file; otherwise a 404 'Not found' error is returned."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "examples": [
+              "30",
+              "50"
+            ],
+            "description": "Number of version items per page. The API defaults to 30 if this parameter is not sent."
+          }
+        },
+        "description": "Request schema for retrieving the version history of a Figma file."
+      }
+    }
+  ]
+}

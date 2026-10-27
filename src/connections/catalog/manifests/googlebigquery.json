@@ -1,0 +1,1245 @@
+{
+  "toolkit": "googlebigquery",
+  "version": "20260721_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Google BigQuery",
+  "description": "Browse projects, datasets, tables, schemas, and rows, read finished query results, and create datasets and tables.",
+  "securityDescription": "Google sign-in opens through Composio. Agents act as the signed-in Google account and can browse the BigQuery projects, datasets, tables, schemas, rows, jobs, routines, and models it can read. Reading rows lists table data directly, which BigQuery does not bill as a query. With write access, Agents can create datasets, tables, and views, edit descriptions and table settings, and restore a recently deleted dataset. Agents cannot run SQL, queries, or jobs, insert, load, copy, or export data, delete anything, set tables or partitions to expire, shorten time travel, change storage billing, create routines or materialized views, publish listings, or change who can access a dataset.",
+  "preset": {
+    "category": "data",
+    "accent": "#669DF6",
+    "aliases": [
+      "BigQuery"
+    ]
+  },
+  "validationCapability": "googlebigquery.list_projects",
+  "review": {
+    "add": [
+      "GOOGLEBIGQUERY_GET_BIGQUERY_MODEL",
+      "GOOGLEBIGQUERY_GET_ROUTINE",
+      "GOOGLEBIGQUERY_LIST_ROUTINES"
+    ],
+    "drop": {
+      "GOOGLEBIGQUERY_CREATE_DATAEXCHANGES_LISTINGS": "Publishes a dataset to an Analytics Hub exchange that other organizations can subscribe to.",
+      "GOOGLEBIGQUERY_CREATE_ROUTINE": "A routine's SQL body can change or delete data whenever someone calls it.",
+      "GOOGLEBIGQUERY_DELETE_DATASET": "Deletes a dataset and, with deleteContents, every table in it.",
+      "GOOGLEBIGQUERY_DELETE_MODEL": "Deletes a trained model.",
+      "GOOGLEBIGQUERY_DELETE_TABLE": "Deletes a table and its data.",
+      "GOOGLEBIGQUERY_INSERT_ALL": "Streams rows into a table; streamed rows cannot be removed without DML.",
+      "GOOGLEBIGQUERY_INSERT_JOB": "Starts query, load, copy, and extract jobs, which can run DML, bill query costs, or export a table.",
+      "GOOGLEBIGQUERY_INSERT_JOB_WITH_UPLOAD": "Loads a file into a table, which can append to or overwrite its data.",
+      "GOOGLEBIGQUERY_UPDATE_DATASET": "Replaces the whole dataset resource, so fields the Agent omits, such as its access list, can be reset; the patch tool makes the same edits.",
+      "GOOGLEBIGQUERY_UPDATE_TABLE": "Replaces the whole table resource and can set it to expire; the patch tool makes the same edits."
+    },
+    "allowArguments": {},
+    "withholdArguments": {
+      "GOOGLEBIGQUERY_CREATE_DATASET": {
+        "defaultPartitionExpirationMs": "Deletes the table or partitions when the time passes.",
+        "defaultTableExpirationMs": "Deletes the table or partitions when the time passes."
+      },
+      "GOOGLEBIGQUERY_CREATE_TABLE": {
+        "expirationTime": "Deletes the table or partitions when the time passes.",
+        "materializedView": "A materialized view refreshes on a schedule and bills query costs.",
+        "timePartitioning.expirationMs": "Deletes the table or partitions when the time passes."
+      },
+      "GOOGLEBIGQUERY_GET_QUERY_RESULTS": {
+        "alt": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "callback": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "prettyPrint": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "quotaUser": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "uploadType": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "upload_protocol": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "xgafv": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results."
+      },
+      "GOOGLEBIGQUERY_PATCH_DATASET": {
+        "defaultPartitionExpirationMs": "Deletes the table or partitions when the time passes.",
+        "defaultTableExpirationMs": "Deletes the table or partitions when the time passes.",
+        "maxTimeTravelHours": "Shortens how long changed or deleted data stays recoverable.",
+        "storageBillingModel": "Changes how the dataset's storage is billed."
+      },
+      "GOOGLEBIGQUERY_PATCH_MODEL": {
+        "expirationTime": "Deletes the model when the time passes."
+      },
+      "GOOGLEBIGQUERY_PATCH_TABLE": {
+        "expirationTime": "Deletes the table when the time passes."
+      }
+    }
+  },
+  "capabilities": [
+    {
+      "id": "googlebigquery.create_dataset",
+      "tool": "GOOGLEBIGQUERY_CREATE_DATASET",
+      "toolName": "googlebigquery_create_dataset",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to create a new BigQuery dataset with explicit location, labels, and description using the BigQuery Datasets API. Use when the workflow needs to set up a staging/warehouse dataset and correctness of region is critical to avoid downstream job location mismatches. Surfaces 409 Already Exists errors cleanly without retrying.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Google BigQuery: Create BigQuery Dataset",
+      "withheldArguments": {
+        "access": "changes sharing, visibility, permissions, membership, or who acts",
+        "labels": "unsupported schema",
+        "defaultTableExpirationMs": "reviewer: Deletes the table or partitions when the time passes.",
+        "defaultPartitionExpirationMs": "reviewer: Deletes the table or partitions when the time passes."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Geographic location where the dataset should reside. This is CRITICAL to avoid location-related query/job errors. Examples: 'US', 'EU', 'us-central1', 'europe-west1'."
+          },
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The dataset ID. Must be unique within the project. Use alphanumeric characters, underscores, or hyphens."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The project ID where the dataset will be created. This is used in the URL path, not in the request body."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A description of the dataset. Use this to document the dataset's purpose and contents."
+          },
+          "friendly_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A user-friendly name for the dataset. This is a descriptive label that appears in the BigQuery UI."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id",
+          "location"
+        ],
+        "description": "Request model for creating a BigQuery dataset."
+      }
+    },
+    {
+      "id": "googlebigquery.create_table",
+      "tool": "GOOGLEBIGQUERY_CREATE_TABLE",
+      "toolName": "googlebigquery_create_table",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to create a new, empty table in a BigQuery dataset. Use when setting up data infrastructure for standard tables, external tables, views, or materialized views. Supports partitioning, clustering, and encryption configuration.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Google BigQuery: Create BigQuery Table",
+      "withheldArguments": {
+        "labels": "unsupported schema",
+        "expirationTime": "reviewer: Deletes the table or partitions when the time passes.",
+        "materializedView": "reviewer: A materialized view refreshes on a schedule and bills query costs.",
+        "timePartitioning.expirationMs": "reviewer: Deletes the table or partitions when the time passes.",
+        "externalDataConfiguration.schema.fields[].mode": "unsupported schema",
+        "externalDataConfiguration.schema": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "view": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The SQL query that BigQuery executes when the view is referenced."
+              },
+              "useLegacySql": {
+                "type": "boolean",
+                "description": "Use BigQuery's legacy SQL. Default is true. If false, uses GoogleSQL (standard SQL)."
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "description": "Logical view definition."
+          },
+          "schema": {
+            "type": "object",
+            "properties": {
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "mode": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "enum": [
+                        "NULLABLE",
+                        "REQUIRED",
+                        "REPEATED"
+                      ],
+                      "description": "Field mode for table schema fields."
+                    },
+                    "name": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "The field name. Must contain only letters, numbers, and underscores, and start with a letter or underscore."
+                    },
+                    "type": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "enum": [
+                        "STRING",
+                        "BYTES",
+                        "INTEGER",
+                        "INT64",
+                        "FLOAT",
+                        "FLOAT64",
+                        "NUMERIC",
+                        "BIGNUMERIC",
+                        "BOOLEAN",
+                        "BOOL",
+                        "TIMESTAMP",
+                        "DATE",
+                        "TIME",
+                        "DATETIME",
+                        "GEOGRAPHY",
+                        "RECORD",
+                        "STRUCT",
+                        "JSON"
+                      ],
+                      "description": "The field data type. Common types: STRING, INTEGER/INT64, FLOAT/FLOAT64, BOOLEAN/BOOL, TIMESTAMP, DATE, RECORD/STRUCT."
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "A description of the field to document its purpose."
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "type"
+                  ],
+                  "description": "Schema definition for a table field."
+                },
+                "maxItems": 100,
+                "description": "List of fields (columns) in the table. Each field must have a name and type."
+              }
+            },
+            "required": [
+              "fields"
+            ],
+            "description": "Schema of a table defining its fields/columns."
+          },
+          "clustering": {
+            "type": "object",
+            "properties": {
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "maxItems": 100,
+                "description": "One or more fields on which data should be clustered. Only top-level, non-repeated, simple-type fields are supported. Order by filtering importance."
+              }
+            },
+            "required": [
+              "fields"
+            ],
+            "description": "Clustering configuration for a table."
+          },
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The dataset ID where the table will be created. Used in the URL path."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The project ID where the table will be created. Used in the URL path."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A user-friendly description of the table."
+          },
+          "friendlyName": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A descriptive name for the table shown in the BigQuery UI."
+          },
+          "tableReference": {
+            "type": "object",
+            "properties": {
+              "tableId": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The table ID. Must contain only letters, numbers, and underscores. Max 1024 characters."
+              },
+              "datasetId": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The dataset ID containing the table."
+              },
+              "projectId": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The project ID containing the table."
+              }
+            },
+            "required": [
+              "projectId",
+              "datasetId",
+              "tableId"
+            ],
+            "description": "Reference identifying the table. Must match project_id and dataset_id from the path."
+          },
+          "defaultCollation": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Default collation for new STRING fields. Options: 'und:ci' (case insensitive), '' (case sensitive, default)."
+          },
+          "timePartitioning": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The partitioning type. Supported values: DAY, HOUR, MONTH, YEAR."
+              },
+              "field": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The field to partition by. If not set, the table is partitioned by pseudo column '_PARTITIONTIME'. Must be a top-level TIMESTAMP or DATE field."
+              },
+              "requirePartitionFilter": {
+                "type": "boolean",
+                "description": "If true, queries over this table require a partition filter."
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "description": "Time-based partitioning configuration for a table."
+          },
+          "rangePartitioning": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The field to partition by. Must be a top-level NULLABLE/REQUIRED INTEGER/INT64 field."
+              },
+              "range": {
+                "type": "object",
+                "properties": {
+                  "end": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The end of range partitioning, exclusive."
+                  },
+                  "start": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The start of range partitioning, inclusive."
+                  },
+                  "interval": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The width of each range within the partition."
+                  }
+                },
+                "required": [
+                  "start",
+                  "end",
+                  "interval"
+                ],
+                "description": "The range partitioning specification defining start, end, and interval."
+              }
+            },
+            "required": [
+              "field",
+              "range"
+            ],
+            "description": "Range-based partitioning configuration for a table."
+          },
+          "requirePartitionFilter": {
+            "type": "boolean",
+            "description": "If true, queries over this table require a partition filter for partition elimination."
+          },
+          "encryptionConfiguration": {
+            "type": "object",
+            "properties": {
+              "kmsKeyName": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Cloud KMS encryption key name that will be used to protect the table. The BigQuery Service Account must have access to this key."
+              }
+            },
+            "description": "Encryption configuration for a table."
+          },
+          "externalDataConfiguration": {
+            "type": "object",
+            "properties": {
+              "autodetect": {
+                "type": "boolean",
+                "description": "Try to detect schema and format options automatically. Explicitly specified options will be honored."
+              },
+              "sourceUris": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "maxItems": 100,
+                "description": "The fully-qualified URIs pointing to external data. For Cloud Storage: each URI can contain one '*' wildcard after the bucket name."
+              },
+              "sourceFormat": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The data format. Common values: CSV, NEWLINE_DELIMITED_JSON, AVRO, PARQUET, ORC, GOOGLE_SHEETS."
+              }
+            },
+            "required": [
+              "sourceUris",
+              "sourceFormat"
+            ],
+            "description": "Configuration for external data sources."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id",
+          "tableReference"
+        ],
+        "description": "Request model for creating a BigQuery table."
+      }
+    },
+    {
+      "id": "googlebigquery.get_bigquery_model",
+      "tool": "GOOGLEBIGQUERY_GET_BIGQUERY_MODEL",
+      "toolName": "googlebigquery_get_bigquery_model",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a specific BigQuery ML model resource by model ID. Use when you need detailed information about a trained machine learning model including its configuration, training runs, hyperparameters, and evaluation metrics.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Model ID of the requested model."
+          },
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Dataset ID of the requested model."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Project ID of the requested model."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id",
+          "model_id"
+        ]
+      }
+    },
+    {
+      "id": "googlebigquery.get_dataset",
+      "tool": "GOOGLEBIGQUERY_GET_DATASET",
+      "toolName": "googlebigquery_get_dataset",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve BigQuery dataset metadata including location via the datasets.get API. Use this before creating jobs/queries if the workflow has been failing with location mismatch to confirm the dataset's region and correct the job location accordingly.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Dataset ID of the requested dataset."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Project ID of the requested dataset."
+          },
+          "dataset_view": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "DATASET_VIEW_UNSPECIFIED",
+              "METADATA",
+              "ACL",
+              "FULL"
+            ],
+            "description": "Optional view specifying which dataset information to return. DATASET_VIEW_UNSPECIFIED defaults to FULL. METADATA returns only metadata. ACL returns only access control. FULL returns both metadata and ACL."
+          },
+          "access_policy_version": {
+            "type": "integer",
+            "description": "Version of access policy schema to fetch. Valid values: 0, 1, 3. Use version 3 for conditional access policy bindings. If unset, defaults to version 1."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id"
+        ]
+      }
+    },
+    {
+      "id": "googlebigquery.get_job",
+      "tool": "GOOGLEBIGQUERY_GET_JOB",
+      "toolName": "googlebigquery_get_job",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve information about a specific BigQuery job. Returns job configuration, status, and statistics. Use this to check job status after running queries or to get details about job execution.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Job ID of the requested job."
+          },
+          "location": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The geographic location of the job. You must specify the location to run the job for the following scenarios: - If the location to run a job is not in the `us` or the `eu` multi-regional location - If the job's location is in a single region (for example, `us-central1`) For more information, see https://cloud.google.com/bigquery/docs/locations#specifying_your_location."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Project ID of the requested job."
+          }
+        },
+        "required": [
+          "project_id",
+          "job_id"
+        ]
+      }
+    },
+    {
+      "id": "googlebigquery.get_query_results",
+      "tool": "GOOGLEBIGQUERY_GET_QUERY_RESULTS",
+      "toolName": "googlebigquery_get_query_results",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get the results of a BigQuery query job via RPC. Use this to retrieve results after running a query, or to check job completion status and fetch paginated results.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "alt": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "key": "carries a credential the model would supply itself",
+        "xgafv": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "callback": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "quotaUser": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "uploadType": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "oauth_token": "carries a credential the model would supply itself",
+        "prettyPrint": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "access_token": "carries a credential the model would supply itself",
+        "upload_protocol": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Job ID of the query job."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Selector specifying which fields to include in a partial response. Optional."
+          },
+          "location": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The geographic location of the job. You must specify the location to run the job for the following scenarios: - If the location to run a job is not in the `us` or the `eu` multi-regional location - If the job's location is in a single region (for example, `us-central1`). For more information, see https://cloud.google.com/bigquery/docs/locations#specifying_your_location. Optional."
+          },
+          "pageToken": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Page token, returned by a previous call, to request the next page of results. Optional."
+          },
+          "projectId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Project ID of the query job."
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "description": "Optional: Specifies the maximum amount of time, in milliseconds, that the client is willing to wait for the query to complete. By default, this limit is 10 seconds (10,000 milliseconds). If the query is complete, the jobComplete field in the response is true. If the query has not yet completed, jobComplete is false. You can request a longer timeout period in the timeoutMs field."
+          },
+          "maxResults": {
+            "type": "integer",
+            "description": "Maximum number of results to read. Optional."
+          },
+          "startIndex": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Zero-based index of the starting row. Optional."
+          },
+          "formatOptions.useInt64Timestamp": {
+            "type": "boolean",
+            "description": "Optional. Output timestamp as usec int64. Default is false."
+          }
+        },
+        "required": [
+          "projectId",
+          "jobId"
+        ]
+      }
+    },
+    {
+      "id": "googlebigquery.get_routine",
+      "tool": "GOOGLEBIGQUERY_GET_ROUTINE",
+      "toolName": "googlebigquery_get_routine",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a BigQuery routine (user-defined function or stored procedure) by its ID. Use to inspect routine definitions, arguments, return types, and metadata.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "read_mask": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If set, only the Routine fields in the field mask are returned in the response. If unset, all Routine fields are returned."
+          },
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Dataset ID of the requested routine."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Project ID of the requested routine."
+          },
+          "routine_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Routine ID of the requested routine."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id",
+          "routine_id"
+        ]
+      }
+    },
+    {
+      "id": "googlebigquery.get_table_schema",
+      "tool": "GOOGLEBIGQUERY_GET_TABLE_SCHEMA",
+      "toolName": "googlebigquery_get_table_schema",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to fetch a BigQuery table's schema and metadata without querying row data. Use before generating SQL queries to avoid column name typos and confirm field types and nullable modes. This is especially useful when INFORMATION_SCHEMA access is restricted.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The table ID to retrieve schema and metadata for."
+          },
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The dataset ID containing the table."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The project ID containing the dataset."
+          },
+          "selected_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of fields to return (e.g., 'schema,numRows,type'). If not specified, returns all fields."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id",
+          "table_id"
+        ]
+      }
+    },
+    {
+      "id": "googlebigquery.list_datasets",
+      "tool": "GOOGLEBIGQUERY_LIST_DATASETS",
+      "toolName": "googlebigquery_list_datasets",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list datasets in a specific BigQuery project, including dataset locations. Use after identifying an accessible project to discover available datasets and their locations before querying. The dataset location is critical for avoiding location-related query/job errors.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "all": {
+            "type": "boolean",
+            "description": "Whether to list all datasets, including hidden ones. Defaults to false."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter datasets by label in the format 'labels.key:value'. Multiple filters can be ANDed together by connecting with a space."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Page token for pagination. Use the nextPageToken from a previous response to get the next page of results."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The project ID containing the datasets."
+          },
+          "max_results": {
+            "type": "integer",
+            "description": "Maximum number of datasets to return per page."
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
+      "id": "googlebigquery.list_jobs",
+      "tool": "GOOGLEBIGQUERY_LIST_JOBS",
+      "toolName": "googlebigquery_list_jobs",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all jobs that you started in a BigQuery project. Job information is available for a six month period after creation. Jobs are sorted in reverse chronological order by creation time. Use to monitor query execution, track job statuses, and retrieve job history.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "all_users": {
+            "type": "boolean",
+            "description": "Whether to display jobs owned by all users in the project. Default False. Requires Is Owner project role to set to true."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Page token, returned by a previous call, to request the next page of results."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Project ID of the jobs to list."
+          },
+          "projection": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "full",
+              "minimal"
+            ],
+            "description": "Restrict information returned to a set of selected fields."
+          },
+          "max_results": {
+            "type": "integer",
+            "description": "The maximum number of results to return in a single response page. Leverage the page tokens to iterate through the entire collection."
+          },
+          "state_filter": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filter for job state. Can include values like 'done', 'pending', 'running'. Multiple states can be specified."
+          },
+          "parent_job_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If set, show only child jobs of the specified parent. Otherwise, show all top-level jobs."
+          },
+          "max_creation_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Max value for job creation time, in milliseconds since the POSIX epoch. If set, only jobs created before or at this timestamp are returned."
+          },
+          "min_creation_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Min value for job creation time, in milliseconds since the POSIX epoch. If set, only jobs created after or at this timestamp are returned."
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
+      "id": "googlebigquery.list_models",
+      "tool": "GOOGLEBIGQUERY_LIST_MODELS",
+      "toolName": "googlebigquery_list_models",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all BigQuery ML models in a specified dataset. Requires READER dataset role. Use this to discover available models before getting detailed information via models.get method.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Dataset ID of the models to list."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Page token for pagination, returned by a previous call to request the next page of results."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Project ID of the models to list."
+          },
+          "max_results": {
+            "type": "integer",
+            "description": "Maximum number of models to return per page. Use page tokens to iterate through the entire collection."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id"
+        ]
+      }
+    },
+    {
+      "id": "googlebigquery.list_projects",
+      "tool": "GOOGLEBIGQUERY_LIST_PROJECTS",
+      "toolName": "googlebigquery_list_projects",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list BigQuery projects to which the user has been granted any project role. Returns projects with at least READ access. For enhanced capabilities, consider using the Resource Manager API.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Page token returned by a previous call, to request the next page of results. If not present, no further pages are available."
+          },
+          "max_results": {
+            "type": "integer",
+            "description": "Maximum number of projects to return per page. If not set, returns all results up to 50 per page. The number of projects returned may be fewer than maxResults because projects are filtered to only those with the BigQuery API enabled."
+          }
+        }
+      }
+    },
+    {
+      "id": "googlebigquery.list_routines",
+      "tool": "GOOGLEBIGQUERY_LIST_ROUTINES",
+      "toolName": "googlebigquery_list_routines",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all routines (user-defined functions and stored procedures) in a BigQuery dataset. Requires the READER dataset role. Use this to discover available routines before executing or inspecting them.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If set, then only the Routines matching this filter are returned. The supported format is `routineType:{RoutineType}`, where `{RoutineType}` is a RoutineType enum. For example: `routineType:SCALAR_FUNCTION`."
+          },
+          "readMask": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If set, then only the Routine fields in the field mask, as well as project_id, dataset_id and routine_id, are returned in the response. If unset, then the following Routine fields are returned: etag, project_id, dataset_id, routine_id, routine_type, creation_time, last_modified_time, and language."
+          },
+          "pageToken": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Page token, returned by a previous call, to request the next page of results."
+          },
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Dataset ID of the routines to list."
+          },
+          "maxResults": {
+            "type": "integer",
+            "description": "The maximum number of results to return in a single response page. Leverage the page tokens to iterate through the entire collection."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Project ID of the routines to list."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id"
+        ]
+      }
+    },
+    {
+      "id": "googlebigquery.list_table_data",
+      "tool": "GOOGLEBIGQUERY_LIST_TABLE_DATA",
+      "toolName": "googlebigquery_list_table_data",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list the content of a BigQuery table in rows via the REST API. Use this to retrieve actual data from a table without writing SQL queries. Returns paginated results with row data in the native BigQuery format.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Table ID of the table to list."
+          },
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Dataset ID of the table to list."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "To retrieve the next page of table data, set this field to the string provided in the pageToken field of the response body from your previous call to tabledata.list."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Project ID of the table to list."
+          },
+          "max_results": {
+            "type": "integer",
+            "description": "Row limit of the table. Maximum number of rows to return per page."
+          },
+          "start_index": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Start row index of the table."
+          },
+          "selected_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Subset of fields to return, supports select into sub fields. Example: selected_fields = 'a,e.d.f';"
+          },
+          "format_options_use_int64_timestamp": {
+            "type": "boolean",
+            "description": "Optional. Output timestamp as usec int64. Default is false."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id",
+          "table_id"
+        ]
+      }
+    },
+    {
+      "id": "googlebigquery.list_tables",
+      "tool": "GOOGLEBIGQUERY_LIST_TABLES",
+      "toolName": "googlebigquery_list_tables",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list tables in a BigQuery dataset via the REST API. Use this early in exploration to discover accessible tables without relying on INFORMATION_SCHEMA, especially when SQL-based metadata queries are blocked or restricted. This provides a deterministic inventory of tables even when dataset-level permissions prevent INFORMATION_SCHEMA access.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The dataset ID to list tables from."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Page token for pagination. Use the nextPageToken from a previous response to get the next page of results."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The project ID containing the dataset."
+          },
+          "max_results": {
+            "type": "integer",
+            "description": "Maximum number of tables to return per page."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id"
+        ]
+      }
+    },
+    {
+      "id": "googlebigquery.patch_dataset",
+      "tool": "GOOGLEBIGQUERY_PATCH_DATASET",
+      "toolName": "googlebigquery_patch_dataset",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update an existing BigQuery dataset using RFC5789 PATCH semantics. Only replaces fields provided in the request, leaving other fields unchanged. Use when you need to modify dataset properties like description, labels, expiration settings, or access controls without affecting other configuration.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Google BigQuery: Patch BigQuery Dataset",
+      "withheldArguments": {
+        "access[].role": "changes sharing, visibility, permissions, membership, or who acts",
+        "access[].view": "unsupported schema",
+        "access[].domain": "changes sharing, visibility, permissions, membership, or who acts",
+        "access[].dataset": "unsupported schema",
+        "access[].routine": "unsupported schema",
+        "access[].iamMember": "changes sharing, visibility, permissions, membership, or who acts",
+        "access[].userByEmail": "changes sharing, visibility, permissions, membership, or who acts",
+        "access[].groupByEmail": "changes sharing, visibility, permissions, membership, or who acts",
+        "access[].specialGroup": "changes sharing, visibility, permissions, membership, or who acts",
+        "access": "unsupported schema",
+        "labels": "unsupported schema",
+        "datasetReference.projectId": "moves the record to another container",
+        "maxTimeTravelHours": "reviewer: Shortens how long changed or deleted data stays recoverable.",
+        "linkedDatasetSource": "copies content from another record, URL, or file",
+        "storageBillingModel": "reviewer: Changes how the dataset's storage is billed.",
+        "defaultTableExpirationMs": "reviewer: Deletes the table or partitions when the time passes.",
+        "externalDatasetReference": "changes who the record belongs to or how a person is identified",
+        "defaultPartitionExpirationMs": "reviewer: Deletes the table or partitions when the time passes."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The geographic location where the dataset should reside. See https://cloud.google.com/bigquery/docs/locations for supported locations."
+          },
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Dataset ID of the dataset being updated."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Project ID of the dataset being updated."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional. A user-friendly description of the dataset."
+          },
+          "friendlyName": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional. A descriptive name for the dataset."
+          },
+          "datasetReference": {
+            "type": "object",
+            "properties": {
+              "datasetId": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The dataset ID. Must contain only letters (a-z, A-Z), numbers (0-9), or underscores (_). Maximum length is 1,024 characters."
+              }
+            },
+            "description": "Dataset reference for patching."
+          },
+          "defaultCollation": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional. Defines the default collation specification of future tables created in the dataset. Supported values: 'und:ci' (case insensitive) or '' (case sensitive)."
+          },
+          "isCaseInsensitive": {
+            "type": "boolean",
+            "description": "Optional. TRUE if the dataset and its table names are case-insensitive, otherwise FALSE."
+          },
+          "defaultRoundingMode": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ROUNDING_MODE_UNSPECIFIED",
+              "ROUND_HALF_AWAY_FROM_ZERO",
+              "ROUND_HALF_EVEN"
+            ],
+            "description": "Optional. Defines the default rounding mode specification of new tables created within this dataset."
+          },
+          "defaultEncryptionConfiguration": {
+            "type": "object",
+            "properties": {
+              "kmsKeyName": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Cloud KMS encryption key name that will be used to protect destination BigQuery table."
+              }
+            },
+            "description": "Encryption configuration for the dataset."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id"
+        ],
+        "description": "Request model for patching a BigQuery dataset using RFC5789 patch semantics."
+      }
+    },
+    {
+      "id": "googlebigquery.patch_model",
+      "tool": "GOOGLEBIGQUERY_PATCH_MODEL",
+      "toolName": "googlebigquery_patch_model",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update specific fields in an existing BigQuery ML model using PATCH semantics. Use when you need to modify model metadata like description, friendly name, labels, or expiration time without replacing the entire model resource.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Google BigQuery: Patch BigQuery ML Model",
+      "withheldArguments": {
+        "labels": "unsupported schema",
+        "expirationTime": "reviewer: Deletes the model when the time passes."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Model ID of the model to patch."
+          },
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Dataset ID of the model to patch."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Project ID of the model to patch."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional. A user-friendly description of this model."
+          },
+          "friendlyName": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional. A descriptive name for this model."
+          },
+          "encryptionConfiguration": {
+            "type": "object",
+            "properties": {
+              "kmsKeyName": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Cloud KMS encryption key name that will be used to protect destination BigQuery table."
+              }
+            },
+            "description": "Encryption configuration for the model."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id",
+          "model_id"
+        ],
+        "description": "Request model for patching a BigQuery ML model."
+      }
+    },
+    {
+      "id": "googlebigquery.patch_table",
+      "tool": "GOOGLEBIGQUERY_PATCH_TABLE",
+      "toolName": "googlebigquery_patch_table",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update specific fields in an existing BigQuery table using RFC5789 PATCH semantics. Only the fields provided in the request are updated; unspecified fields remain unchanged. Use when you need to modify table metadata like description, friendly name, labels, or expiration time without replacing the entire table resource.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Google BigQuery: Patch BigQuery Table",
+      "withheldArguments": {
+        "labels": "unsupported schema",
+        "expirationTime": "reviewer: Deletes the table when the time passes."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The table ID to update."
+          },
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The dataset ID containing the table to update."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The project ID containing the table to update."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "User-friendly description of the table. Use this to document the table's purpose and contents."
+          },
+          "friendlyName": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A descriptive name for the table that appears in the BigQuery UI."
+          },
+          "autodetect_schema": {
+            "type": "boolean",
+            "description": "When true, will autodetect schema; otherwise will keep the original schema."
+          },
+          "requirePartitionFilter": {
+            "type": "boolean",
+            "description": "If true, queries over this table require a partition filter that can be used for partition elimination."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id",
+          "table_id"
+        ],
+        "description": "Request model for patching a BigQuery table."
+      }
+    },
+    {
+      "id": "googlebigquery.undelete_dataset",
+      "tool": "GOOGLEBIGQUERY_UNDELETE_DATASET",
+      "toolName": "googlebigquery_undelete_dataset",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to undelete a BigQuery dataset within the time travel window. If a deletion time is specified, the dataset version deleted at that time is undeleted; otherwise, the most recently deleted version is restored.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Google BigQuery: Undelete BigQuery Dataset",
+      "input": {
+        "type": "object",
+        "properties": {
+          "dataset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Dataset ID of the dataset being undeleted."
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Project ID of the dataset to be undeleted."
+          },
+          "deletion_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional. The exact time when the dataset was deleted (RFC3339 format). If not specified, it will undelete the most recently deleted version."
+          }
+        },
+        "required": [
+          "project_id",
+          "dataset_id"
+        ],
+        "description": "Request model for undeleting a BigQuery dataset."
+      }
+    }
+  ]
+}

@@ -1,0 +1,2414 @@
+{
+  "toolkit": "mailchimp",
+  "version": "20261013_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Mailchimp",
+  "description": "Read audiences, contacts, campaigns, and reports, and draft campaigns and templates for a person to send.",
+  "securityDescription": "Mailchimp sign-in opens through Composio. Agents act as the signed-in Mailchimp user and can read the account's audiences, contacts, campaigns, templates, and reports. With write access, Agents can create and edit draft campaigns and templates, organize them in folders, leave campaign feedback, and add notes to contacts. A draft has no audience until a person picks one. Agents cannot send, schedule, test-send, or cancel a campaign; a person sends every campaign from Mailchimp, and a sent campaign cannot be recalled. They cannot add, subscribe, unsubscribe, tag, or delete contacts, change marketing consent, import campaign content from a URL or RSS feed, start or pause automations, or change audience, domain, or account settings.",
+  "preset": {
+    "category": "business",
+    "accent": "#FFE01B"
+  },
+  "validationCapability": "mailchimp.list_api_root_resources",
+  "review": {
+    "add": [
+      "MAILCHIMP_ADD_CAMPAIGN",
+      "MAILCHIMP_ADD_CAMPAIGN_FEEDBACK",
+      "MAILCHIMP_ADD_CAMPAIGN_FOLDER",
+      "MAILCHIMP_ADD_MEMBER_NOTE",
+      "MAILCHIMP_ADD_TEMPLATE",
+      "MAILCHIMP_ADD_TEMPLATE_FOLDER",
+      "MAILCHIMP_GET_CAMPAIGN_CONTENT",
+      "MAILCHIMP_GET_CAMPAIGN_REPORT",
+      "MAILCHIMP_GET_LIST_INFO",
+      "MAILCHIMP_GET_MEMBER_INFO",
+      "MAILCHIMP_GET_TEMPLATE_INFO",
+      "MAILCHIMP_LIST_API_ROOT_RESOURCES",
+      "MAILCHIMP_LIST_AUTOMATIONS",
+      "MAILCHIMP_LIST_CAMPAIGN_FEEDBACK",
+      "MAILCHIMP_LIST_CAMPAIGN_FOLDERS",
+      "MAILCHIMP_LIST_CAMPAIGN_REPORTS",
+      "MAILCHIMP_LIST_MEMBERS_INFO",
+      "MAILCHIMP_LIST_MEMBER_TAGS",
+      "MAILCHIMP_LIST_MERGE_FIELDS",
+      "MAILCHIMP_LIST_RECENT_MEMBER_NOTES",
+      "MAILCHIMP_LIST_SEGMENTS",
+      "MAILCHIMP_LIST_TEMPLATES",
+      "MAILCHIMP_SEARCH_CAMPAIGNS",
+      "MAILCHIMP_SET_CAMPAIGN_CONTENT",
+      "MAILCHIMP_UPDATE_CAMPAIGN_SETTINGS",
+      "MAILCHIMP_UPDATE_NOTE",
+      "MAILCHIMP_UPDATE_TEMPLATE"
+    ],
+    "drop": {
+      "MAILCHIMP_ADD_CONTACT_TO_AUDIENCE": "Records marketing consent for a new contact, and a new contact can start welcome journeys that email or text them.",
+      "MAILCHIMP_SEND_CAMPAIGN": "Emails the whole audience at once, and a sent campaign cannot be recalled.",
+      "MAILCHIMP_UPDATE_AUDIENCES_CONTACTS": "Changes a contact's marketing consent and tags, and a tag change can start journeys that email the contact."
+    },
+    "allowArguments": {
+      "MAILCHIMP_ADD_MEMBER_NOTE": [
+        "subscriber_hash"
+      ],
+      "MAILCHIMP_UPDATE_NOTE": [
+        "subscriber_hash"
+      ]
+    },
+    "withholdArguments": {
+      "MAILCHIMP_ADD_CAMPAIGN": {
+        "rss__opts__feed__url": "Pulls campaign content from an outside RSS feed."
+      },
+      "MAILCHIMP_SET_CAMPAIGN_CONTENT": {
+        "url": "Imports the campaign's HTML from an outside URL."
+      },
+      "MAILCHIMP_UPDATE_CAMPAIGN_SETTINGS": {
+        "rss__opts__feed__url": "Pulls campaign content from an outside RSS feed."
+      }
+    }
+  },
+  "capabilities": [
+    {
+      "id": "mailchimp.add_campaign",
+      "tool": "MAILCHIMP_ADD_CAMPAIGN",
+      "toolName": "mailchimp_add_campaign",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Create a new Mailchimp campaign.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Mailchimp: Add campaign",
+      "withheldArguments": {
+        "settings__reply__to": "names an address a message goes to or comes from",
+        "recipients__list__id": "names an address a message goes to or comes from",
+        "rss__opts__feed__url": "reviewer: Pulls campaign content from an outside RSS feed.",
+        "recipients__segment__opts__match": "names an address a message goes to or comes from",
+        "recipients__segment__opts__conditions": "names an address a message goes to or comes from",
+        "variate__settings__reply__to__addresses": "names an address a message goes to or comes from",
+        "recipients__segment__opts__saved__segment__id": "names an address a message goes to or comes from"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "regular",
+              "plaintext",
+              "absplit",
+              "rss",
+              "variate"
+            ],
+            "description": "There are four types of [campaigns](https://mailchimp.com/help/getting-started-with-campaigns/) you can create in Mailchimp. A/B Split campaigns have been deprecated and variate campaigns should be used instead."
+          },
+          "content_type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "template",
+              "multichannel"
+            ],
+            "description": "How the campaign\"s content is put together. The old drag and drop editor uses \"template\" while the new editor uses \"multichannel\". Defaults to template."
+          },
+          "settings__title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The title of the campaign."
+          },
+          "tracking__opens": {
+            "type": "boolean",
+            "description": "Whether to [track opens](https://mailchimp.com/help/about-open-tracking/). Defaults to `true`. Cannot be set to false for variate campaigns."
+          },
+          "settings__to__name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The campaign\"s custom \"To\" name. Typically the first name [audience field](https://mailchimp.com/help/getting-started-with-merge-tags/)."
+          },
+          "tracking__ecomm360": {
+            "type": "boolean",
+            "description": "Whether to enable e-commerce tracking."
+          },
+          "social__card__title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The title for the card. Typically the subject line of the campaign."
+          },
+          "tracking__clicktale": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The custom slug for [ClickTale](https://mailchimp.com/help/additional-tracking-options-for-campaigns/) tracking (max of 50 bytes)."
+          },
+          "rss__opts__frequency": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "daily",
+              "weekly",
+              "monthly"
+            ],
+            "description": "The frequency of the RSS Campaign."
+          },
+          "settings__folder__id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If the campaign is listed in a folder, the id for that folder."
+          },
+          "settings__from__name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The \"from\" name on the campaign (not an email address)."
+          },
+          "settings__auto__tweet": {
+            "type": "boolean",
+            "description": "Automatically tweet a link to the [campaign archive](https://mailchimp.com/help/about-email-campaign-archives-and-pages/) page when the campaign is sent."
+          },
+          "settings__inline__css": {
+            "type": "boolean",
+            "description": "Automatically inline the CSS included with the campaign content."
+          },
+          "settings__authenticate": {
+            "type": "boolean",
+            "description": "Whether Mailchimp [authenticated](https://mailchimp.com/help/about-email-authentication/) the campaign. Defaults to `true`."
+          },
+          "settings__auto__footer": {
+            "type": "boolean",
+            "description": "Automatically append Mailchimp\"s [default footer](https://mailchimp.com/help/about-campaign-footers/) to the campaign."
+          },
+          "settings__fb__comments": {
+            "type": "boolean",
+            "description": "Allows Facebook comments on the campaign (also force-enables the Campaign Archive toolbar). Defaults to `true`."
+          },
+          "settings__template__id": {
+            "type": "integer",
+            "description": "The id of the template to use."
+          },
+          "tracking__html__clicks": {
+            "type": "boolean",
+            "description": "Whether to [track clicks](https://mailchimp.com/help/enable-and-view-click-tracking/) in the HTML version of the campaign. Defaults to `true`. Cannot be set to false for variate campaigns."
+          },
+          "tracking__text__clicks": {
+            "type": "boolean",
+            "description": "Whether to [track clicks](https://mailchimp.com/help/enable-and-view-click-tracking/) in the plain-text version of the campaign. Defaults to `true`. Cannot be set to false for variate campaigns."
+          },
+          "settings__preview__text": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The preview text for the campaign."
+          },
+          "settings__subject__line": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The subject line for the campaign."
+          },
+          "settings__auto__fb__post": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "An array of [Facebook](https://mailchimp.com/help/connect-or-disconnect-the-facebook-integration/) page ids to auto-post to."
+          },
+          "social__card__image__url": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The url for the header image for the card."
+          },
+          "tracking__capsule__notes": {
+            "type": "boolean",
+            "description": "Update contact notes for a campaign based on subscriber email addresses."
+          },
+          "tracking__goal__tracking": {
+            "type": "boolean",
+            "description": "Deprecated"
+          },
+          "rss__opts__schedule__hour": {
+            "type": "integer",
+            "description": "The hour to send the campaign in local time. Acceptable hours are 0-23. For example, \"4\" would be 4am in [your account\"s default time zone](https://mailchimp.com/help/set-account-defaults/)."
+          },
+          "social__card__description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A short summary of the campaign to display."
+          },
+          "settings__use__conversation": {
+            "type": "boolean",
+            "description": "Use Mailchimp Conversation feature to manage out-of-office replies."
+          },
+          "tracking__google__analytics": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The custom slug for [Google Analytics](https://mailchimp.com/help/integrate-google-analytics-with-mailchimp/) tracking (max of 50 bytes)."
+          },
+          "tracking__salesforce__notes": {
+            "type": "boolean",
+            "description": "Update contact notes for a campaign based on subscriber email addresses."
+          },
+          "variate__settings__test__size": {
+            "type": "integer",
+            "description": "The percentage of recipients to send the test combinations to, must be a value between 10 and 100."
+          },
+          "variate__settings__wait__time": {
+            "type": "integer",
+            "description": "The number of minutes to wait before choosing the winning campaign. The value of wait_time must be greater than 0 and in whole hours, specified in minutes."
+          },
+          "rss__opts__constrain__rss__img": {
+            "type": "boolean",
+            "description": "Whether to add CSS to images in the RSS feed to constrain their width in campaigns."
+          },
+          "tracking__salesforce__campaign": {
+            "type": "boolean",
+            "description": "Create a campaign in a connected Salesforce account."
+          },
+          "variate__settings__from__names": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "The possible from names. The number of from_names provided must match the number of reply_to_addresses. If no from_names are provided, settings.from_name will be used."
+          },
+          "variate__settings__send__times": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "The possible send times to test. The times provided should be in the format YYYY-MM-DD HH:MM:SS. If send_times are provided to test, the test_size will be set to 100% and winner_criteria will be ignored."
+          },
+          "variate__settings__subject__lines": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "The possible subject lines to test. If no subject lines are provided, settings.subject_line will be used."
+          },
+          "variate__settings__winner__criteria": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "opens",
+              "clicks",
+              "manual",
+              "total_revenue"
+            ],
+            "description": "The combination that performs the best. This may be determined automatically by click rate, open rate, or total revenue -- or you may choose manually based on the reporting data you find the most valuable. For Multivariate Campaigns testing send_time, winner_criteria is ignored. For Multivariate Campaigns with \"manual\" as the winner_criteria, the winner must be chosen in the Mailchimp web application."
+          },
+          "rss__opts__schedule__weekly__send__day": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "sunday",
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday",
+              "saturday"
+            ],
+            "description": "The day of the week to send a weekly RSS Campaign."
+          },
+          "rss__opts__schedule__daily__send__friday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Fridays."
+          },
+          "rss__opts__schedule__daily__send__monday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Mondays."
+          },
+          "rss__opts__schedule__daily__send__sunday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Sundays."
+          },
+          "rss__opts__schedule__monthly__send__date": {
+            "type": "integer",
+            "description": "The day of the month to send a monthly RSS Campaign. Acceptable days are 0-31, where \"0\" is always the last day of a month. Months with fewer than the selected number of days will not have an RSS campaign sent out that day. For example, RSS Campaigns set to send on the 30th will not go out in February."
+          },
+          "rss__opts__schedule__daily__send__tuesday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Tuesdays."
+          },
+          "rss__opts__schedule__daily__send__saturday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Saturdays."
+          },
+          "rss__opts__schedule__daily__send__thursday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Thursdays."
+          },
+          "rss__opts__schedule__daily__send__wednesday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Wednesdays."
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "description": "Request schema for `AddCampaign`"
+      }
+    },
+    {
+      "id": "mailchimp.add_campaign_feedback",
+      "tool": "MAILCHIMP_ADD_CAMPAIGN_FEEDBACK",
+      "toolName": "mailchimp_add_campaign_feedback",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Add feedback on a specific Mailchimp campaign. Use this to post comments, notes, or feedback while collaborating on a campaign with your team. The feedback can be associated with a specific content block or applied to the campaign as a whole.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Mailchimp: Add Campaign Feedback",
+      "input": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The content of the feedback message. This is the text of the feedback comment."
+          },
+          "block_id": {
+            "type": "integer",
+            "description": "The block ID for the editable block that the feedback addresses. Optional - omit if providing general feedback on the campaign."
+          },
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the campaign. You can get this from the List Campaigns endpoint or when creating a campaign."
+          },
+          "is_complete": {
+            "type": "boolean",
+            "description": "Whether the feedback item is complete. Set to true to mark as resolved, false otherwise. Defaults to false if not provided."
+          }
+        },
+        "required": [
+          "campaign_id",
+          "message"
+        ],
+        "description": "Request schema for `AddCampaignFeedback`"
+      }
+    },
+    {
+      "id": "mailchimp.add_campaign_folder",
+      "tool": "MAILCHIMP_ADD_CAMPAIGN_FOLDER",
+      "toolName": "mailchimp_add_campaign_folder",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Create a new campaign folder to organize email campaigns in Mailchimp. Campaign folders help organize your email marketing campaigns into logical groups. Returns the created folder's ID, name, and initial campaign count (0).",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Mailchimp: Add campaign folder",
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name for the new campaign folder. This is used to organize campaigns in the Mailchimp interface."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Request schema for `AddCampaignFolder`"
+      }
+    },
+    {
+      "id": "mailchimp.add_member_note",
+      "tool": "MAILCHIMP_ADD_MEMBER_NOTE",
+      "toolName": "mailchimp_add_member_note",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Add a new note for a specific subscriber in a Mailchimp list (audience). Notes are useful for keeping internal records about contacts, such as conversation history, preferences, or other relevant information.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Mailchimp: Add member note",
+      "input": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The content of the note to add to the member. Note length is limited to 1,000 characters."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the list (audience)."
+          },
+          "subscriber_hash": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The MD5 hash of the lowercase version of the list member's email address. Alternatively, you can provide the member's email address or contact_id directly."
+          }
+        },
+        "required": [
+          "list_id",
+          "subscriber_hash",
+          "note"
+        ],
+        "description": "Request schema for `AddMemberNote`"
+      }
+    },
+    {
+      "id": "mailchimp.add_template",
+      "tool": "MAILCHIMP_ADD_TEMPLATE",
+      "toolName": "mailchimp_add_template",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Create a new email template in the Mailchimp account. Templates can be used to create consistent email campaigns. Only Classic (HTML) templates are supported through this API endpoint. The template HTML can include Mailchimp merge tags (e.g., *|FNAME|*) for personalization.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Mailchimp: Add template",
+      "input": {
+        "type": "object",
+        "properties": {
+          "html": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The raw HTML content for the template. Supports Mailchimp Template Language for dynamic content. Must be valid HTML. Example: '<html><body><h1>Hello *|FNAME|*</h1></body></html>'"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the template. Must be unique within the account."
+          },
+          "folder_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the folder to store the template in. If not provided, the template will not be assigned to any folder."
+          }
+        },
+        "required": [
+          "name",
+          "html"
+        ],
+        "description": "Request schema for `AddTemplate`"
+      }
+    },
+    {
+      "id": "mailchimp.add_template_folder",
+      "tool": "MAILCHIMP_ADD_TEMPLATE_FOLDER",
+      "toolName": "mailchimp_add_template_folder",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Create a new template folder in Mailchimp. Template folders help organize your email templates. Use this action to create a new folder, then add templates to it using the folder's ID.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Mailchimp: Add Template Folder",
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the template folder. This will be used to organize your templates within Mailchimp."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Request schema for `AddTemplateFolder`"
+      }
+    },
+    {
+      "id": "mailchimp.get_audiences_contacts",
+      "tool": "MAILCHIMP_GET_AUDIENCES_CONTACTS",
+      "toolName": "mailchimp_get_audiences_contacts",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get a list of omni-channel contacts for a given audience. Use when you need to retrieve contacts from a Mailchimp audience with optional filtering and pagination.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "The number of records to return. Default value is 10. Maximum value is 1000."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Paginate through a collection of records by setting the cursor parameter to a next_cursor attribute returned by a previous request. Default value fetches the first page of results."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "sort_dir": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "description": "Enum for sort_dir parameter"
+          },
+          "sort_field": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created_at",
+              "updated_at"
+            ],
+            "description": "Enum for sort_field parameter"
+          },
+          "audience_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the audience."
+          },
+          "created_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restricts the response to contacts created after the specified time (exclusive). Uses ISO 8601 format: 2025-04-23T15:41:36+00:00."
+          },
+          "updated_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restricts the response to contacts updated after the specified time (exclusive). Uses ISO 8601 format: 2025-04-23T15:41:36+00:00."
+          },
+          "created_before": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restricts the response to contacts created at or before the specified time (inclusive). Uses ISO 8601 format: 2025-04-23T15:41:36+00:00."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          },
+          "updated_before": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restricts the response to contacts updated at or before the specified time (inclusive). Uses ISO 8601 format: 2025-04-23T15:41:36+00:00."
+          }
+        },
+        "required": [
+          "audience_id"
+        ],
+        "description": "Request schema for `GetAudiencesContacts`"
+      }
+    },
+    {
+      "id": "mailchimp.get_audiences_contacts_detail",
+      "tool": "MAILCHIMP_GET_AUDIENCES_CONTACTS_DETAIL",
+      "toolName": "mailchimp_get_audiences_contacts_detail",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a specific omni-channel contact from a Mailchimp audience by their ID or channel hash. Use when you need detailed information about a contact including email/SMS channels, merge fields, tags, and subscription status.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "contact_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A unique identifier for the contact, which can be a Mailchimp contact ID or a channel hash. A channel hash must follow the format email:[md5_hash] (where the hash is the MD5 of the lowercased email address) or sms:[sha256_hash] (where the hash is the SHA256 of the E.164-formatted phone number)."
+          },
+          "audience_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the audience."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          }
+        },
+        "required": [
+          "audience_id",
+          "contact_id"
+        ],
+        "description": "Request schema for GetAudiencesContactsDetail"
+      }
+    },
+    {
+      "id": "mailchimp.get_campaign_content",
+      "tool": "MAILCHIMP_GET_CAMPAIGN_CONTENT",
+      "toolName": "mailchimp_get_campaign_content",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get the HTML and plain-text content for a campaign.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique id for the campaign."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "description": "Request schema for `GetCampaignContent`"
+      }
+    },
+    {
+      "id": "mailchimp.get_campaign_info",
+      "tool": "MAILCHIMP_GET_CAMPAIGN_INFO",
+      "toolName": "mailchimp_get_campaign_info",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get information about a specific campaign.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of fields to return. Reference parameters of sub-objects with dot notation. Example: ['id', 'status', 'settings.title', 'recipients.list_id']. If not specified, all fields are returned."
+          },
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique id for the campaign."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of fields to exclude from the response. Reference parameters of sub-objects with dot notation. Example: ['_links', 'tracking']. Cannot be used together with 'fields'."
+          },
+          "include_resend_shortcut_eligibility": {
+            "type": "boolean",
+            "description": "Return the `resend_shortcut_eligibility` field in the response, which tells you if the campaign is eligible for the various Campaign Resend Shortcuts offered."
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "description": "Request schema for `GetCampaignInfo`"
+      }
+    },
+    {
+      "id": "mailchimp.get_campaign_report",
+      "tool": "MAILCHIMP_GET_CAMPAIGN_REPORT",
+      "toolName": "mailchimp_get_campaign_report",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieve detailed performance report for a Mailchimp campaign. Returns analytics including email delivery stats (sent, bounced), engagement metrics (opens, clicks), and e-commerce data (orders, revenue). Works for both sent campaigns (with actual data) and draft campaigns (returns zeros).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation (e.g., 'opens.opens_total,clicks.click_rate')."
+          },
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID of the sent campaign to retrieve the report for."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation (e.g., 'industry_stats,timeseries')."
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "description": "Request schema for `GetCampaignReport`"
+      }
+    },
+    {
+      "id": "mailchimp.get_list_info",
+      "tool": "MAILCHIMP_GET_LIST_INFO",
+      "toolName": "mailchimp_get_list_info",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get information about a specific list in your Mailchimp account. Results include list members who have signed up but haven't confirmed their subscription yet and unsubscribed or cleaned.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the list."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          },
+          "include_total_contacts": {
+            "type": "boolean",
+            "description": "Return the total_contacts field in the stats response, which contains an approximate count of all contacts in any state."
+          }
+        },
+        "required": [
+          "list_id"
+        ],
+        "description": "Request schema for `GetListInfo`"
+      }
+    },
+    {
+      "id": "mailchimp.get_lists_info",
+      "tool": "MAILCHIMP_GET_LISTS_INFO",
+      "toolName": "mailchimp_get_lists_info",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get information about all lists in the account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "The number of records to return. Default value is 10. Maximum value is 1000"
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict results to lists that include a specific subscriber\"s email address."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Used for [pagination](https://mailchimp.com/developer/marketing/docs/methods-parameters/#pagination), this it the number of records from a collection to skip. Default value is 0."
+          },
+          "sort_dir": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "description": "Determines the order direction for sorted results."
+          },
+          "sort_field": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "date_created"
+            ],
+            "description": "Returns files sorted by the specified field."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          },
+          "since_date_created": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict results to lists created after the set date. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "before_date_created": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict response to lists created before the set date. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "has_ecommerce_store": {
+            "type": "boolean",
+            "description": "Restrict results to lists that contain an active, connected, undeleted ecommerce store."
+          },
+          "include_total_contacts": {
+            "type": "boolean",
+            "description": "Return the total_contacts field in the stats response, which contains an approximate count of all contacts in any state."
+          },
+          "since_campaign_last_sent": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict results to lists created after the last campaign send date. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "before_campaign_last_sent": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict results to lists created before the last campaign send date. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          }
+        },
+        "description": "Request schema for `GetListsInfo`"
+      }
+    },
+    {
+      "id": "mailchimp.get_member_info",
+      "tool": "MAILCHIMP_GET_MEMBER_INFO",
+      "toolName": "mailchimp_get_member_info",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get information about a specific list member, including a currently subscribed, unsubscribed, or bounced member.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "fields": "unsupported schema",
+        "exclude_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the list (audience). Can be found via the lists endpoint."
+          },
+          "subscriber_hash": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The MD5 hash of the lowercase version of the list member's email address. This endpoint also accepts the member's email address directly or their contact_id."
+          }
+        },
+        "required": [
+          "list_id",
+          "subscriber_hash"
+        ],
+        "description": "Request schema for `GetMemberInfo`"
+      }
+    },
+    {
+      "id": "mailchimp.get_template_info",
+      "tool": "MAILCHIMP_GET_TEMPLATE_INFO",
+      "toolName": "mailchimp_get_template_info",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get information about a specific template.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation. Example: 'id,name,type' or 'id,name,thumbnail'."
+          },
+          "template_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique id for the template. Can be obtained from the list_templates action."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation. Example: '_links' to exclude HATEOAS links."
+          }
+        },
+        "required": [
+          "template_id"
+        ],
+        "description": "Request schema for `GetTemplateInfo`"
+      }
+    },
+    {
+      "id": "mailchimp.list_api_root_resources",
+      "tool": "MAILCHIMP_LIST_API_ROOT_RESOURCES",
+      "toolName": "mailchimp_list_api_root_resources",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get Mailchimp account details and links to all available API resources. Returns account information including account ID, name, email, contact details, pricing plan, and subscriber count, along with navigation links to other API endpoints like lists, campaigns, automations, templates, and more.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of fields to include in the response. Use dot notation for nested fields (e.g., 'contact.company'). Available fields include: account_id, account_name, email, first_name, last_name, username, role, member_since, pricing_plan_type, account_timezone, contact, total_subscribers, _links."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of fields to exclude from the response. Use dot notation for nested fields (e.g., 'contact.company'). Commonly excluded: _links (to reduce response size)."
+          }
+        },
+        "description": "Request schema for `ListApiRootResources`"
+      }
+    },
+    {
+      "id": "mailchimp.list_automations",
+      "tool": "MAILCHIMP_LIST_AUTOMATIONS",
+      "toolName": "mailchimp_list_automations",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get a summary of an account's classic automations.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "The number of records to return. Default value is 10. Maximum value is 1000"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Used for [pagination](https://mailchimp.com/developer/marketing/docs/methods-parameters/#pagination), this it the number of records from a collection to skip. Default value is 0."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "save",
+              "paused",
+              "sending"
+            ],
+            "description": "Restrict the results to automations with the specified status."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          },
+          "since_start_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict the response to automations started after this time. Uses the ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "before_start_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict the response to automations started before this time. Uses the ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "since_create_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict the response to automations created after this time. Uses the ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "before_create_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict the response to automations created before this time. Uses the ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          }
+        },
+        "description": "Request schema for `ListAutomations`"
+      }
+    },
+    {
+      "id": "mailchimp.list_campaign_feedback",
+      "tool": "MAILCHIMP_LIST_CAMPAIGN_FEEDBACK",
+      "toolName": "mailchimp_list_campaign_feedback",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get team feedback while you're working together on a Mailchimp campaign.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of fields to include in the response. Use dot notation for nested fields (e.g., 'feedback.message', 'feedback.feedback_id', 'total_items'). If not specified, all fields are returned."
+          },
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier for the campaign. This is a 10-character alphanumeric string (e.g., 'cdf16ea7a1'). You can obtain campaign IDs from the list campaigns action."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of fields to exclude from the response. Use dot notation for nested fields (e.g., 'feedback._links', '_links'). Useful for reducing response size."
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "description": "Request schema for `ListCampaignFeedback`"
+      }
+    },
+    {
+      "id": "mailchimp.list_campaign_folders",
+      "tool": "MAILCHIMP_LIST_CAMPAIGN_FOLDERS",
+      "toolName": "mailchimp_list_campaign_folders",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get all folders used to organize campaigns.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "The number of records to return. Default value is 10. Maximum value is 1000"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Used for [pagination](https://mailchimp.com/developer/marketing/docs/methods-parameters/#pagination), this it the number of records from a collection to skip. Default value is 0."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          }
+        },
+        "description": "Request schema for `ListCampaignFolders`"
+      }
+    },
+    {
+      "id": "mailchimp.list_campaign_reports",
+      "tool": "MAILCHIMP_LIST_CAMPAIGN_REPORTS",
+      "toolName": "mailchimp_list_campaign_reports",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieve analytics reports for sent email campaigns. Returns performance metrics including opens, clicks, bounces, unsubscribes, and e-commerce data for campaigns that have been sent.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "regular",
+              "plaintext",
+              "absplit",
+              "rss",
+              "variate"
+            ],
+            "description": "Filter by campaign type. Options: 'regular' (standard email), 'plaintext' (text-only), 'absplit' (A/B test), 'rss' (RSS-driven), 'variate' (multivariate test)."
+          },
+          "count": {
+            "type": "integer",
+            "description": "Number of campaign reports to return per page. Default: 10, Maximum: 1000."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of fields to include in response (e.g., ['reports.id', 'reports.campaign_title', 'total_items']). Use dot notation for nested fields."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Number of records to skip for pagination. Default: 0. Use with 'count' to paginate through results."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of fields to exclude from response (e.g., ['_links']). Use dot notation for nested fields."
+          },
+          "since_send_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict the response to campaigns sent after the set time. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "before_send_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict the response to campaigns sent before the set time. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          }
+        },
+        "description": "Request schema for `ListCampaignReports`"
+      }
+    },
+    {
+      "id": "mailchimp.list_campaigns",
+      "tool": "MAILCHIMP_LIST_CAMPAIGNS",
+      "toolName": "mailchimp_list_campaigns",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get all campaigns in an account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "regular",
+              "plaintext",
+              "absplit",
+              "rss",
+              "variate"
+            ],
+            "description": "The campaign type."
+          },
+          "count": {
+            "type": "integer",
+            "description": "The number of records to return. Default value is 10. Maximum value is 1000"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Used for [pagination](https://mailchimp.com/developer/marketing/docs/methods-parameters/#pagination), this it the number of records from a collection to skip. Default value is 0."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "save",
+              "paused",
+              "schedule",
+              "sending",
+              "sent"
+            ],
+            "description": "The status of the campaign."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique id for the list."
+          },
+          "sort_dir": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "description": "Determines the order direction for sorted results."
+          },
+          "folder_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique folder id."
+          },
+          "member_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Retrieve campaigns sent to a particular list member. Member ID is The MD5 hash of the lowercase version of the list member’s email address."
+          },
+          "sort_field": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "create_time",
+              "send_time"
+            ],
+            "description": "Returns files sorted by the specified field."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          },
+          "since_send_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict the response to campaigns sent after the set time. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "before_send_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict the response to campaigns sent before the set time. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "since_create_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict the response to campaigns created after the set time. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "before_create_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict the response to campaigns created before the set time. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "include_resend_shortcut_eligibility": {
+            "type": "boolean",
+            "description": "Return the `resend_shortcut_eligibility` field in the response, which tells you if the campaign is eligible for the various Campaign Resend Shortcuts offered."
+          }
+        },
+        "description": "Request schema for `ListCampaigns`"
+      }
+    },
+    {
+      "id": "mailchimp.list_member_tags",
+      "tool": "MAILCHIMP_LIST_MEMBER_TAGS",
+      "toolName": "mailchimp_list_member_tags",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get the tags on a list member.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "The number of records to return. Default value is 10. Maximum value is 1000"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Used for [pagination](https://mailchimp.com/developer/marketing/docs/methods-parameters/#pagination), this it the number of records from a collection to skip. Default value is 0."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the list."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          },
+          "subscriber_hash": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The MD5 hash of the lowercase version of the list member\"s email address. This endpoint also accepts a list member\"s email address or contact_id."
+          }
+        },
+        "required": [
+          "list_id",
+          "subscriber_hash"
+        ],
+        "description": "Request schema for `ListMemberTags`"
+      }
+    },
+    {
+      "id": "mailchimp.list_members_info",
+      "tool": "MAILCHIMP_LIST_MEMBERS_INFO",
+      "toolName": "mailchimp_list_members_info",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get information about members in a specific Mailchimp list.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "The number of records to return. Default value is 10. Maximum value is 1000"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Used for [pagination](https://mailchimp.com/developer/marketing/docs/methods-parameters/#pagination), this it the number of records from a collection to skip. Default value is 0."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "subscribed",
+              "unsubscribed",
+              "cleaned",
+              "pending",
+              "transactional",
+              "archived"
+            ],
+            "description": "The subscriber\"s status."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the list."
+          },
+          "sort_dir": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "description": "Determines the order direction for sorted results."
+          },
+          "vip_only": {
+            "type": "boolean",
+            "description": "A filter to return only the list\"s VIP members. Passing `true` will restrict results to VIP list members, passing `false` will return all list members."
+          },
+          "email_type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The email type."
+          },
+          "sort_field": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "timestamp_opt",
+              "timestamp_signup",
+              "last_changed"
+            ],
+            "description": "Returns files sorted by the specified field."
+          },
+          "interest_ids": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Used to filter list members by interests. Must be accompanied by interest_category_id and interest_match. The value must be a comma separated list of interest ids present for any supplied interest categories."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          },
+          "interest_match": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "any",
+              "all",
+              "none"
+            ],
+            "description": "Used to filter list members by interests. Must be accompanied by interest_category_id and interest_ids. \"any\" will match a member with any of the interest supplied, \"all\" will only match members with every interest supplied, and \"none\" will match members without any of the interest supplied."
+          },
+          "unique_email_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A unique identifier for the email address across all Mailchimp lists."
+          },
+          "since_last_changed": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict results to subscribers whose information changed after the set timeframe. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "unsubscribed_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter subscribers by those unsubscribed since a specific date. Using any status other than unsubscribed with this filter will result in an error."
+          },
+          "before_last_changed": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict results to subscribers whose information changed before the set timeframe. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "since_last_campaign": {
+            "type": "boolean",
+            "description": "Filter subscribers by those subscribed/unsubscribed/pending/cleaned since last email campaign send. Member status is required to use this filter."
+          },
+          "since_timestamp_opt": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict results to subscribers who opted-in after the set timeframe. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "before_timestamp_opt": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict results to subscribers who opted-in before the set timeframe. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "interest_category_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique id for the interest category."
+          }
+        },
+        "required": [
+          "list_id"
+        ],
+        "description": "Request schema for `ListMembersInfo`"
+      }
+    },
+    {
+      "id": "mailchimp.list_merge_fields",
+      "tool": "MAILCHIMP_LIST_MERGE_FIELDS",
+      "toolName": "mailchimp_list_merge_fields",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get a list of all merge fields for an audience.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The merge field type."
+          },
+          "count": {
+            "type": "integer",
+            "description": "The number of records to return. Default value is 10. Maximum value is 1000"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Used for [pagination](https://mailchimp.com/developer/marketing/docs/methods-parameters/#pagination), this it the number of records from a collection to skip. Default value is 0."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the list."
+          },
+          "required": {
+            "type": "boolean",
+            "description": "Whether it\"s a required merge field."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          }
+        },
+        "required": [
+          "list_id"
+        ],
+        "description": "Request schema for `ListMergeFields`"
+      }
+    },
+    {
+      "id": "mailchimp.list_recent_activity",
+      "tool": "MAILCHIMP_LIST_RECENT_ACTIVITY",
+      "toolName": "mailchimp_list_recent_activity",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get up to the previous 180 days of daily detailed aggregated activity stats for a list, not including Automation activity.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "The number of activity records to return. Default value is 10. Maximum value is 1000."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of fields to return. Reference parameters of sub-objects with dot notation (e.g., ['activity.day', 'activity.subs', 'total_items'])."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Used for pagination, this is the number of records from a collection to skip. Default value is 0."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the Mailchimp audience/list (e.g., 'af9d6415f0')."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of fields to exclude. Reference parameters of sub-objects with dot notation (e.g., ['_links'])."
+          }
+        },
+        "required": [
+          "list_id"
+        ],
+        "description": "Request schema for `ListRecentActivity`"
+      }
+    },
+    {
+      "id": "mailchimp.list_recent_member_notes",
+      "tool": "MAILCHIMP_LIST_RECENT_MEMBER_NOTES",
+      "toolName": "mailchimp_list_recent_member_notes",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get recent notes for a specific list member.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "The number of records to return. Default value is 10. Maximum value is 1000"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of fields to return. Use dot notation for nested fields (e.g., 'notes.id', 'notes.note', 'notes.created_at'). If not specified, all fields are returned."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Used for [pagination](https://mailchimp.com/developer/marketing/docs/methods-parameters/#pagination), this it the number of records from a collection to skip. Default value is 0."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the list."
+          },
+          "sort_dir": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "description": "Sort direction. 'ASC' for ascending (oldest first) or 'DESC' for descending (newest first)."
+          },
+          "sort_field": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created_at",
+              "updated_at",
+              "note_id"
+            ],
+            "description": "Field to sort notes by. Options: 'created_at', 'updated_at', or 'note_id'."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of fields to exclude from the response. Use dot notation for nested fields (e.g., 'notes._links')."
+          },
+          "subscriber_hash": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The MD5 hash of the lowercase version of the list member's email address. This value is also available as the 'id' field when listing members."
+          }
+        },
+        "required": [
+          "list_id",
+          "subscriber_hash"
+        ],
+        "description": "Request schema for `ListRecentMemberNotes`"
+      }
+    },
+    {
+      "id": "mailchimp.list_segments",
+      "tool": "MAILCHIMP_LIST_SEGMENTS",
+      "toolName": "mailchimp_list_segments",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get information about all available segments for a specific list.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Limit results based on segment type."
+          },
+          "count": {
+            "type": "integer",
+            "description": "The number of records to return. Default value is 10. Maximum value is 1000"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Used for [pagination](https://mailchimp.com/developer/marketing/docs/methods-parameters/#pagination), this it the number of records from a collection to skip. Default value is 0."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the list."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          },
+          "include_cleaned": {
+            "type": "boolean",
+            "description": "Include cleaned members in response"
+          },
+          "since_created_at": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict results to segments created after the set time. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "since_updated_at": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict results to segments update after the set time. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "before_created_at": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict results to segments created before the set time. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "before_updated_at": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict results to segments update before the set time. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "include_unsubscribed": {
+            "type": "boolean",
+            "description": "Include unsubscribed members in response"
+          },
+          "include_transactional": {
+            "type": "boolean",
+            "description": "Include transactional members in response"
+          }
+        },
+        "required": [
+          "list_id"
+        ],
+        "description": "Request schema for `ListSegments`"
+      }
+    },
+    {
+      "id": "mailchimp.list_templates",
+      "tool": "MAILCHIMP_LIST_TEMPLATES",
+      "toolName": "mailchimp_list_templates",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get a list of an account's available templates.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Limit results based on template type."
+          },
+          "count": {
+            "type": "integer",
+            "description": "The number of records to return. Default value is 10. Maximum value is 1000"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Used for [pagination](https://mailchimp.com/developer/marketing/docs/methods-parameters/#pagination), this it the number of records from a collection to skip. Default value is 0."
+          },
+          "category": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Limit results based on category."
+          },
+          "sort_dir": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "description": "Determines the order direction for sorted results."
+          },
+          "folder_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique folder id."
+          },
+          "created_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Mailchimp account user who created the template."
+          },
+          "sort_field": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "date_created",
+              "date_edited",
+              "name"
+            ],
+            "description": "Returns user templates sorted by the specified field."
+          },
+          "content_type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "html",
+              "template",
+              "multichannel"
+            ],
+            "description": "Limit results based on how the template\"s content is put together. Only templates of type `user` can be filtered by `content_type`. If you want to retrieve saved templates created with the legacy email editor, then filter `content_type` to `template`. If you\"d rather pull your saved templates for the new editor, filter to `multichannel`. For code your own templates, filter to `html`."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          },
+          "since_date_created": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict the response to templates created after the set date. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          },
+          "before_date_created": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Restrict the response to templates created before the set date. Uses ISO 8601 time format: 2015-10-21T15:41:36+00:00."
+          }
+        },
+        "description": "Request schema for `ListTemplates`"
+      }
+    },
+    {
+      "id": "mailchimp.search_campaigns",
+      "tool": "MAILCHIMP_SEARCH_CAMPAIGNS",
+      "toolName": "mailchimp_search_campaigns",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search all campaigns for the specified query terms. This action searches across campaign titles, subject lines, and content to find campaigns matching the provided query. Returns detailed campaign information including settings, tracking configuration, recipients, and status. Use the 'fields' parameter to limit response data or 'exclude_fields' to remove unnecessary fields like '_links' for cleaner responses.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The search query used to filter campaigns. Searches across campaign titles, subject lines, and other campaign content. Returns campaigns that match the specified query terms."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of fields to return in the response. Use dot notation to reference nested fields (e.g., 'results.campaign.id', 'results.campaign.settings.title'). If not specified, all fields are returned."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of fields to exclude from the response. Use dot notation to reference nested fields (e.g., 'results.campaign._links'). Useful for reducing response size by removing unnecessary data."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "description": "Request schema for `SearchCampaigns`"
+      }
+    },
+    {
+      "id": "mailchimp.search_members",
+      "tool": "MAILCHIMP_SEARCH_MEMBERS",
+      "toolName": "mailchimp_search_members",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search for list members. This search can be restricted to a specific list, or can be used to search across all lists in an account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The search query used to filter results. Query should be a valid email, or a string representing a contact\"s first or last name."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to return. Reference parameters of sub-objects with dot notation."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique id for the list. If omitted, search will be performed across all lists in the account."
+          },
+          "exclude_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of fields to exclude. Reference parameters of sub-objects with dot notation."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "description": "Request schema for `SearchMembers`"
+      }
+    },
+    {
+      "id": "mailchimp.set_campaign_content",
+      "tool": "MAILCHIMP_SET_CAMPAIGN_CONTENT",
+      "toolName": "mailchimp_set_campaign_content",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Set the content for a campaign.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Mailchimp: Set campaign content",
+      "withheldArguments": {
+        "url": "reviewer: Imports the campaign's HTML from an outside URL.",
+        "variate_contents": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "html": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The raw HTML for the campaign."
+          },
+          "plain_text": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The plain-text portion of the campaign. If left unspecified, we\"ll generate this automatically."
+          },
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique id for the campaign."
+          },
+          "template__id": {
+            "type": "integer",
+            "description": "The id of the template to use."
+          },
+          "archive__archive__type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "zip",
+              "tar.gz",
+              "tar.bz2",
+              "tar",
+              "tgz",
+              "tbz"
+            ],
+            "description": "The type of encoded file. Defaults to zip."
+          },
+          "archive__archive__content": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The base64-encoded representation of the archive file."
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "description": "Request schema for `SetCampaignContent`"
+      }
+    },
+    {
+      "id": "mailchimp.update_campaign_settings",
+      "tool": "MAILCHIMP_UPDATE_CAMPAIGN_SETTINGS",
+      "toolName": "mailchimp_update_campaign_settings",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Update some or all of the settings for a specific campaign.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Mailchimp: Update campaign settings",
+      "withheldArguments": {
+        "settings__reply__to": "names an address a message goes to or comes from",
+        "recipients__list__id": "names an address a message goes to or comes from",
+        "rss__opts__feed__url": "reviewer: Pulls campaign content from an outside RSS feed.",
+        "settings__folder__id": "moves the record to another container",
+        "recipients__segment__opts__match": "names an address a message goes to or comes from",
+        "recipients__segment__opts__conditions": "names an address a message goes to or comes from",
+        "variate__settings__reply__to__addresses": "names an address a message goes to or comes from",
+        "recipients__segment__opts__saved__segment__id": "names an address a message goes to or comes from",
+        "recipients__segment__opts__prebuilt__segment__id": "names an address a message goes to or comes from"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique id for the campaign."
+          },
+          "settings__title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The title of the campaign."
+          },
+          "tracking__opens": {
+            "type": "boolean",
+            "description": "Whether to [track opens](https://mailchimp.com/help/about-open-tracking/). Defaults to `true`. Cannot be set to false for variate campaigns."
+          },
+          "settings__to__name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The campaign\"s custom \"To\" name. Typically the first name [audience field](https://mailchimp.com/help/getting-started-with-merge-tags/)."
+          },
+          "tracking__ecomm360": {
+            "type": "boolean",
+            "description": "Whether to enable e-commerce tracking."
+          },
+          "social__card__title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The title for the card. Typically the subject line of the campaign."
+          },
+          "tracking__clicktale": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The custom slug for [ClickTale](https://mailchimp.com/help/additional-tracking-options-for-campaigns/) tracking (max of 50 bytes)."
+          },
+          "rss__opts__frequency": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "daily",
+              "weekly",
+              "monthly"
+            ],
+            "description": "The frequency of the RSS Campaign."
+          },
+          "settings__from__name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The \"from\" name on the campaign (not an email address)."
+          },
+          "settings__auto__tweet": {
+            "type": "boolean",
+            "description": "Automatically tweet a link to the [campaign archive](https://mailchimp.com/help/about-email-campaign-archives-and-pages/) page when the campaign is sent."
+          },
+          "settings__inline__css": {
+            "type": "boolean",
+            "description": "Automatically inline the CSS included with the campaign content."
+          },
+          "settings__authenticate": {
+            "type": "boolean",
+            "description": "Whether Mailchimp [authenticated](https://mailchimp.com/help/about-email-authentication/) the campaign. Defaults to `true`."
+          },
+          "settings__auto__footer": {
+            "type": "boolean",
+            "description": "Automatically append Mailchimp\"s [default footer](https://mailchimp.com/help/about-campaign-footers/) to the campaign."
+          },
+          "settings__fb__comments": {
+            "type": "boolean",
+            "description": "Allows Facebook comments on the campaign (also force-enables the Campaign Archive toolbar). Defaults to `true`."
+          },
+          "settings__template__id": {
+            "type": "integer",
+            "description": "The id of the template to use."
+          },
+          "tracking__html__clicks": {
+            "type": "boolean",
+            "description": "Whether to [track clicks](https://mailchimp.com/help/enable-and-view-click-tracking/) in the HTML version of the campaign. Defaults to `true`. Cannot be set to false for variate campaigns."
+          },
+          "tracking__text__clicks": {
+            "type": "boolean",
+            "description": "Whether to [track clicks](https://mailchimp.com/help/enable-and-view-click-tracking/) in the plain-text version of the campaign. Defaults to `true`. Cannot be set to false for variate campaigns."
+          },
+          "settings__preview__text": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The preview text for the campaign."
+          },
+          "settings__subject__line": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The subject line for the campaign."
+          },
+          "settings__auto__fb__post": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "An array of [Facebook](https://mailchimp.com/help/connect-or-disconnect-the-facebook-integration/) page ids to auto-post to."
+          },
+          "social__card__image__url": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The url for the header image for the card."
+          },
+          "tracking__capsule__notes": {
+            "type": "boolean",
+            "description": "Update contact notes for a campaign based on subscriber email addresses."
+          },
+          "tracking__goal__tracking": {
+            "type": "boolean",
+            "description": "Deprecated"
+          },
+          "rss__opts__schedule__hour": {
+            "type": "integer",
+            "description": "The hour to send the campaign in local time. Acceptable hours are 0-23. For example, \"4\" would be 4am in [your account\"s default time zone](https://mailchimp.com/help/set-account-defaults/)."
+          },
+          "social__card__description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A short summary of the campaign to display."
+          },
+          "settings__use__conversation": {
+            "type": "boolean",
+            "description": "Use Mailchimp Conversation feature to manage out-of-office replies."
+          },
+          "tracking__google__analytics": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The custom slug for [Google Analytics](https://mailchimp.com/help/integrate-google-analytics-with-mailchimp/) tracking (max of 50 bytes)."
+          },
+          "tracking__salesforce__notes": {
+            "type": "boolean",
+            "description": "Update contact notes for a campaign based on subscriber email addresses."
+          },
+          "variate__settings__test__size": {
+            "type": "integer",
+            "description": "The percentage of recipients to send the test combinations to, must be a value between 10 and 100."
+          },
+          "variate__settings__wait__time": {
+            "type": "integer",
+            "description": "The number of minutes to wait before choosing the winning campaign. The value of wait_time must be greater than 0 and in whole hours, specified in minutes."
+          },
+          "rss__opts__constrain__rss__img": {
+            "type": "boolean",
+            "description": "Whether to add CSS to images in the RSS feed to constrain their width in campaigns."
+          },
+          "tracking__salesforce__campaign": {
+            "type": "boolean",
+            "description": "Create a campaign in a connected Salesforce account."
+          },
+          "variate__settings__from__names": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "The possible from names. The number of from_names provided must match the number of reply_to_addresses. If no from_names are provided, settings.from_name will be used."
+          },
+          "variate__settings__send__times": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "The possible send times to test. The times provided should be in the format YYYY-MM-DD HH:MM:SS. If send_times are provided to test, the test_size will be set to 100% and winner_criteria will be ignored."
+          },
+          "variate__settings__subject__lines": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "The possible subject lines to test. If no subject lines are provided, settings.subject_line will be used."
+          },
+          "variate__settings__winner__criteria": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "opens",
+              "clicks",
+              "manual",
+              "total_revenue"
+            ],
+            "description": "The combination that performs the best. This may be determined automatically by click rate, open rate, or total revenue -- or you may choose manually based on the reporting data you find the most valuable. For Multivariate Campaigns testing send_time, winner_criteria is ignored. For Multivariate Campaigns with \"manual\" as the winner_criteria, the winner must be chosen in the Mailchimp web application."
+          },
+          "rss__opts__schedule__weekly__send__day": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "sunday",
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday",
+              "saturday"
+            ],
+            "description": "The day of the week to send a weekly RSS Campaign."
+          },
+          "rss__opts__schedule__daily__send__friday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Fridays."
+          },
+          "rss__opts__schedule__daily__send__monday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Mondays."
+          },
+          "rss__opts__schedule__daily__send__sunday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Sundays."
+          },
+          "rss__opts__schedule__monthly__send__date": {
+            "type": "integer",
+            "description": "The day of the month to send a monthly RSS Campaign. Acceptable days are 0-31, where \"0\" is always the last day of a month. Months with fewer than the selected number of days will not have an RSS campaign sent out that day. For example, RSS Campaigns set to send on the 30th will not go out in February."
+          },
+          "rss__opts__schedule__daily__send__tuesday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Tuesdays."
+          },
+          "rss__opts__schedule__daily__send__saturday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Saturdays."
+          },
+          "rss__opts__schedule__daily__send__thursday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Thursdays."
+          },
+          "rss__opts__schedule__daily__send__wednesday": {
+            "type": "boolean",
+            "description": "Sends the daily RSS Campaign on Wednesdays."
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "description": "Request schema for `UpdateCampaignSettings`"
+      }
+    },
+    {
+      "id": "mailchimp.update_note",
+      "tool": "MAILCHIMP_UPDATE_NOTE",
+      "toolName": "mailchimp_update_note",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Update a specific note for a specific list member.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Mailchimp: Update note",
+      "input": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The content of the note. Note length is limited to 1,000 characters."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the list."
+          },
+          "note_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The id for the note."
+          },
+          "subscriber_hash": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The MD5 hash of the lowercase version of the list member's email address. This endpoint also accepts the member's email address or contact_id."
+          }
+        },
+        "required": [
+          "list_id",
+          "subscriber_hash",
+          "note_id"
+        ],
+        "description": "Request schema for `UpdateNote`"
+      }
+    },
+    {
+      "id": "mailchimp.update_template",
+      "tool": "MAILCHIMP_UPDATE_TEMPLATE",
+      "toolName": "mailchimp_update_template",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Update the name, HTML, or `folder_id` of an existing template.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Mailchimp: Update template",
+      "withheldArguments": {
+        "folder_id": "moves the record to another container"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "html": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The raw HTML for the template. Supports the Mailchimp Template Language (e.g., *|FNAME|*, *|LNAME|*) for personalization. See: https://mailchimp.com/help/getting-started-with-mailchimps-template-language/"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the template."
+          },
+          "template_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique id for the template."
+          }
+        },
+        "required": [
+          "template_id",
+          "name",
+          "html"
+        ],
+        "description": "Request schema for `UpdateTemplate`"
+      }
+    }
+  ]
+}

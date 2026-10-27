@@ -1,12 +1,19 @@
 import * as v from 'valibot';
 
 import bitbucket from './manifests/bitbucket.json' with { type: 'json' };
+import box from './manifests/box.json' with { type: 'json' };
+import dropbox from './manifests/dropbox.json' with { type: 'json' };
 import excel from './manifests/excel.json' with { type: 'json' };
+import figma from './manifests/figma.json' with { type: 'json' };
 import freshdesk from './manifests/freshdesk.json' with { type: 'json' };
 import github from './manifests/github.json' with { type: 'json' };
+import googlebigquery from './manifests/googlebigquery.json' with { type: 'json' };
+import mailchimp from './manifests/mailchimp.json' with { type: 'json' };
 import oneDrive from './manifests/one_drive.json' with { type: 'json' };
 import outlook from './manifests/outlook.json' with { type: 'json' };
 import pagerduty from './manifests/pagerduty.json' with { type: 'json' };
+import pipedrive from './manifests/pipedrive.json' with { type: 'json' };
+import quickbooks from './manifests/quickbooks.json' with { type: 'json' };
 import salesforce from './manifests/salesforce.json' with { type: 'json' };
 import sharePoint from './manifests/share_point.json' with { type: 'json' };
 import type {
@@ -91,12 +98,19 @@ export interface ComposioManifest {
   label: string;
   description: string;
   securityDescription: string;
-  preset: { category: 'project' | 'dev' | 'data' | 'search' | 'docs' | 'business'; accent: string };
+  preset: {
+    category: 'project' | 'dev' | 'data' | 'search' | 'docs' | 'business';
+    accent: string;
+    /** Other names a person might call the connector, such as "BigQuery" for Google BigQuery. */
+    aliases?: string[] | undefined;
+  };
   validationCapability: string;
   review: {
     add: string[];
     drop: Record<string, string>;
     allowArguments: Record<string, string[]>;
+    /** Arguments no rule withholds that the reviewer keeps from the model, with the reason. */
+    withholdArguments?: Record<string, Record<string, string>> | undefined;
   };
   capabilities: ComposioManifestCapability[];
 }
@@ -125,12 +139,14 @@ const ManifestShape = v.strictObject({
   preset: v.strictObject({
     category: v.picklist(['project', 'dev', 'data', 'search', 'docs', 'business']),
     accent: v.pipe(v.string(), v.regex(/^#[0-9A-F]{6}$/)),
+    aliases: v.optional(v.pipe(v.array(Text(80)), v.minLength(1), v.maxLength(4))),
   }),
   validationCapability: Text(192),
   review: v.strictObject({
     add: v.array(ToolSlug),
     drop: v.record(ToolSlug, Text(240)),
     allowArguments: v.record(ToolSlug, v.pipe(v.array(Text(200)), v.minLength(1))),
+    withholdArguments: v.optional(v.record(ToolSlug, v.record(Text(200), Text(240)))),
   }),
   capabilities: v.pipe(v.array(v.strictObject({
     id: Text(192),
@@ -236,12 +252,19 @@ export function compileComposioManifest(manifest: ComposioManifest): ManagedConn
 
 export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
   bitbucket,
+  box,
+  dropbox,
   excel,
+  figma,
   freshdesk,
   github,
+  googlebigquery,
+  mailchimp,
   oneDrive,
   outlook,
   pagerduty,
+  pipedrive,
+  quickbooks,
   salesforce,
   sharePoint,
 ].map((value) => parseComposioManifest(value));
