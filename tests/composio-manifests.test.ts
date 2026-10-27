@@ -1485,6 +1485,21 @@ test('a validation capability may need input only when validationArguments suppl
   }
 });
 
+test('a draft names a validationArguments key the validation capability no longer accepts', () => {
+  const getUser = (properties: Record<string, unknown>) => [tool('ACME_GET_USER', ['readOnlyHint'], {
+    type: 'object', properties: { user_id: { type: 'string', maxLength: 64 }, ...properties }, required: ['user_id'],
+  })];
+  const validationArguments = { user_id: 'me', detail: 'full' };
+  const before = getUser({ detail: { type: 'string', enum: ['basic', 'full'] } });
+  const { manifest } = draftComposioManifest({ ...snapshot(before), tools: before }, undefined, { validationArguments });
+  assert.deepEqual(manifest.validationArguments, validationArguments);
+
+  const after = getUser({});
+  const stale = /validationArguments names detail, which ACME_GET_USER input does not accept/;
+  assert.throws(() => draftComposioManifest({ ...snapshot(after), tools: after }, manifest), stale);
+  assert.throws(() => draftComposioManifest({ ...snapshot(after), tools: after }, undefined, { validationArguments }), stale);
+});
+
 test('update tools lose requester and identity arguments; create tools keep them except email addresses', () => {
   const contact = {
     type: 'object',

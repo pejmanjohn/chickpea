@@ -691,6 +691,10 @@ export function draftComposioManifest(
     throw new Error(`${toolkit} has no read tool whose required input validationArguments supply; ` +
       'pass fixed arguments with --validation-arguments');
   }
+  const stale = Object.keys(validationArguments ?? {}).filter((argument) => !(argument in validation.input.properties));
+  if (stale.length > 0) {
+    throw new Error(`validationArguments names ${stale.join(', ')}, which ${validation.tool} input does not accept`);
+  }
   report.validationCapability = validation.id;
   if (validationArguments) report.validationArguments = validationArguments;
   const manifest: ComposioManifest = {
