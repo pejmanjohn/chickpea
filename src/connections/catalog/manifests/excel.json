@@ -36,9 +36,6 @@
       "description": "Create a new table in a worksheet using the Microsoft Graph API.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Excel: Add Table",
-      "withheldArguments": {
-        "drive_id": "changes sharing, visibility, permissions, membership, or who acts"
-      },
       "input": {
         "type": "object",
         "properties": {
@@ -51,6 +48,11 @@
             "type": "string",
             "maxLength": 20000,
             "description": "The ID of the Excel workbook (drive item) where the table will be created."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional drive ID. Required for application-level permissions (s2s_oauth). If not provided, uses /me/drive endpoint for delegated auth. Use EXCEL_LIST_FILES or ONE_DRIVE_GET_DRIVE_ROOT to get the drive ID."
           },
           "worksheet": {
             "type": "string",
@@ -83,9 +85,6 @@
       "description": "Add a row to a table using Microsoft Graph API.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Excel: Add Table Row",
-      "withheldArguments": {
-        "drive_id": "changes sharing, visibility, permissions, membership, or who acts"
-      },
       "input": {
         "type": "object",
         "properties": {
@@ -124,6 +123,11 @@
             "maxLength": 20000,
             "description": "The ID of the Excel file (drive item) containing the table."
           },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive containing the Excel file. Use 'me' for the user's default OneDrive (delegated auth), or provide a specific drive ID for SharePoint sites or when using application permissions."
+          },
           "table_id": {
             "type": "string",
             "maxLength": 20000,
@@ -151,9 +155,6 @@
       "description": "Add a new worksheet to an Excel workbook using Microsoft Graph API.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Excel: Add Worksheet",
-      "withheldArguments": {
-        "drive_id": "changes sharing, visibility, permissions, membership, or who acts"
-      },
       "input": {
         "type": "object",
         "properties": {
@@ -166,6 +167,11 @@
             "type": "string",
             "maxLength": 20000,
             "description": "The ID of the Excel file (drive item) to add a worksheet to."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive containing the Excel file. If not provided, will attempt to use 'me' for delegated permissions."
           },
           "session_id": {
             "type": "string",
@@ -232,9 +238,6 @@
       "description": "Create a session for an Excel workbook using Microsoft Graph API.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Excel: Create Excel Session",
-      "withheldArguments": {
-        "drive_id": "changes sharing, visibility, permissions, membership, or who acts"
-      },
       "input": {
         "type": "object",
         "properties": {
@@ -242,6 +245,11 @@
             "type": "string",
             "maxLength": 20000,
             "description": "The OneDrive drive item ID of the Excel file (.xlsx). Drive-item IDs are opaque, immutable identifiers (Microsoft Graph does not document a fixed format). Get a valid item ID from the EXCEL_LIST_FILES action."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional drive ID. Required for application-level permissions (s2s_oauth). If not provided, uses /me/drive endpoint for delegated auth."
           },
           "persist_changes": {
             "type": "boolean",
@@ -588,9 +596,6 @@
       "description": "Update a range in a worksheet using Microsoft Graph API.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Excel: Update Range",
-      "withheldArguments": {
-        "drive_id": "changes sharing, visibility, permissions, membership, or who acts"
-      },
       "input": {
         "type": "object",
         "properties": {
@@ -629,6 +634,11 @@
             "type": "string",
             "maxLength": 20000,
             "description": "The ID of the Excel file (drive item) containing the worksheet."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional drive ID. If provided, uses /drives/{drive_id}/items/{item_id} endpoint (required for application permissions). If not provided, uses /me/drive/items/{item_id} endpoint (for delegated permissions)."
           },
           "session_id": {
             "type": "string",

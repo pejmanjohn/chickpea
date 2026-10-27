@@ -417,6 +417,63 @@ test('write tools lose file and copy-source arguments but keep a plain source fi
   }
 });
 
+test('write tools lose options that replace an existing item, and a tool that replaces by default needs review', () => {
+  const name = { type: 'string' };
+  const { manifest, report } = draftComposioManifest(snapshot([
+    tool('ACME_CREATE_FOLDER', ['createHint'], {
+      type: 'object',
+      properties: {
+        name,
+        conflict_behavior: { type: 'string', enum: ['fail', 'rename', 'replace'], default: 'rename' },
+        on_conflict: { anyOf: [{ type: 'string', enum: ['skip', 'Overwrite'] }, { type: 'null' }] },
+        sort: { type: 'string', enum: ['name', 'size'] },
+      },
+      required: ['name'],
+    }),
+    tool('ACME_UPLOAD_FILE', ['createHint'], {
+      type: 'object',
+      properties: { name, overwrite: { type: 'boolean', default: true } },
+      required: ['name'],
+    }),
+    tool('ACME_LIST_FOLDERS', ['readOnlyHint'], {
+      type: 'object',
+      properties: { conflict_behavior: { type: 'string', enum: ['fail', 'replace'] } },
+    }),
+  ]));
+  const folder = manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_CREATE_FOLDER')!;
+
+  assert.deepEqual(Object.keys(folder.input.properties), ['name', 'sort']);
+  assert.deepEqual(folder.withheldArguments, {
+    conflict_behavior: 'can replace an existing item',
+    on_conflict: 'can replace an existing item',
+  });
+  assert.equal(folder.effect, 'reversible_write');
+  assert.equal(lanes(manifest).ACME_UPLOAD_FILE, undefined);
+  assert.match(report.excluded.find(({ tool: slug }) => slug === 'ACME_UPLOAD_FILE')!.reason,
+    /^administrative: argument overwrite can replace an existing item by default/);
+  assert.ok('conflict_behavior' in manifest.capabilities
+    .find(({ tool: slug }) => slug === 'ACME_LIST_FOLDERS')!.input.properties);
+});
+
+test('a description that names the caller\'s OAuth grant does not withhold an argument', () => {
+  const { manifest } = draftComposioManifest(snapshot([
+    tool('ACME_UPDATE_RANGE', ['updateHint'], {
+      type: 'object',
+      properties: {
+        item_id: { type: 'string' },
+        drive_id: { type: 'string', description: 'Optional drive ID. Required for application-level permissions (s2s_oauth).' },
+        session_id: { type: 'string', description: 'Workbook session. Uses delegated permissions when omitted.' },
+        audience: { type: 'string', description: 'Sets the permissions other people get on the workbook.' },
+      },
+      required: ['item_id'],
+    }),
+  ]));
+  const range = manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_UPDATE_RANGE')!;
+
+  assert.deepEqual(Object.keys(range.input.properties), ['item_id', 'drive_id', 'session_id']);
+  assert.deepEqual(Object.keys(range.withheldArguments!), ['audience']);
+});
+
 test('a write that needs a permission argument is administrative and needs an explicit reviewer opt-in', () => {
   const share = tool('ACME_SHARE_BOARD', ['updateHint'], {
     type: 'object',

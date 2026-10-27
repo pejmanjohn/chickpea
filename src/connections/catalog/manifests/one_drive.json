@@ -6,7 +6,7 @@
   },
   "label": "OneDrive",
   "description": "Find, read, and create files and folders, and update Excel workbooks stored in OneDrive.",
-  "securityDescription": "Microsoft sign-in opens through Composio. Agents can read the files, folders, and SharePoint content the connected account can reach, including who an item is shared with. With write access, Agents can create text files and folders, rename items or edit their descriptions, restore items from the recycle bin to their original folder, and edit cells, formats, and tables in Excel workbooks. A new text file can replace a file of the same name; OneDrive keeps the earlier version in its version history. Agents cannot share items, create or redeem sharing or preview links, change permissions, move or copy items, check files in or out, or delete anything.",
+  "securityDescription": "Microsoft sign-in opens through Composio. Agents can read the files, folders, and SharePoint content the connected account can reach, including who an item is shared with. With write access, Agents can create text files and folders, rename items or edit their descriptions, restore items from the recycle bin to their original folder, and edit cells, formats, and tables in Excel workbooks. Agents cannot replace existing files or folders, share items, create or redeem sharing or preview links, change permissions, move or copy items, check files in or out, or delete anything.",
   "preset": {
     "category": "docs",
     "accent": "#0364B8"
@@ -1506,7 +1506,8 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "OneDrive: Create folder",
       "withheldArguments": {
-        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "conflict_behavior": "can replace an existing item"
       },
       "input": {
         "type": "object",
@@ -1525,16 +1526,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "ID or full path of the parent folder for the new folder. Paths must start from the root (e.g., '/Documents/Reports'). If an ID is provided, it refers to an existing folder's unique ID. Examples: ['/Projects/Alpha', 'folder_id_12345ABC', '/']"
-          },
-          "conflict_behavior": {
-            "type": "string",
-            "maxLength": 20000,
-            "enum": [
-              "fail",
-              "rename",
-              "replace"
-            ],
-            "description": "How Microsoft Graph should handle a folder name conflict in the target parent folder. Use 'fail' to return an error, 'rename' to create a uniquely renamed folder, or 'replace' to replace the existing item when supported by Graph."
           }
         },
         "required": [
@@ -1552,7 +1543,8 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "OneDrive: Create a new text file",
       "withheldArguments": {
-        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "conflict_behavior": "can replace an existing item"
       },
       "input": {
         "type": "object",
@@ -1571,16 +1563,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "The plain text content to be written into the new file. For very large text bodies, the request may fail or truncate; split large content across multiple files if needed."
-          },
-          "conflict_behavior": {
-            "type": "string",
-            "maxLength": 20000,
-            "enum": [
-              "fail",
-              "replace",
-              "rename"
-            ],
-            "description": "How to handle conflicts when a file with the same name already exists. 'fail' (default) returns an error if the file exists, 'replace' overwrites the existing file, 'rename' creates a new file with an incremented name (e.g., 'file 1.txt')."
           }
         },
         "required": [
