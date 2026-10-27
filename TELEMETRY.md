@@ -43,7 +43,7 @@ Unknown event names and properties are discarded by a closed runtime allowlist. 
 - No names, email addresses, usernames, organization names, hostnames, URLs, IP-derived location, headers, tokens, credentials, or secrets.
 - No browser events, page views, clicks, session recordings, cookies, device fingerprint, or person profiles.
 
-Self-hosted Chickpea never stores conversation copies for its maintainers. Chickpea Cloud's "Help improve Chickpea" setting is separate and is described in its privacy policy. A host that serves Chickpea to others may add one script of its own to Chickpea's pages; standalone Chickpea adds none.
+Self-hosted Chickpea never stores conversation copies for its maintainers. Chickpea Cloud's "Help improve Chickpea" setting is separate and is described in its privacy policy. A host that serves Chickpea to others may add one script of its own to Chickpea's pages; standalone Chickpea adds none. Such a host may also install a port that Chickpea tells, with the installation ID only, when an interactive turn settles as succeeded; standalone Chickpea has none.
 
 ## Anonymous installation identity
 

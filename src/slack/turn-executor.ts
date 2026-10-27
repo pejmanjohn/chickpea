@@ -7,6 +7,8 @@ import type {
 } from '../config/state-rpc.ts';
 import type { TurnLatencyContext } from '../observability/runtime-latency.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
+import { reportInteractiveDelivery } from '../config/hosted-activity.ts';
+import { installationScopeOf } from '../config/installation-scope.ts';
 import { readSandboxTurnProgress, type CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
 import { slackTurnSandboxKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -569,6 +571,8 @@ export async function executeTurnJob(
         // Teammates this reply asked, once it is recorded as delivered. A
         // stopped run, or one someone tried to stop, asks nobody.
         if (outcome !== 'stopped' && !raced) await agentAsks.flush(outcome);
+        const scope = installationScopeOf(ports.env);
+        if (outcome === 'succeeded' && scope) await reportInteractiveDelivery(scope.installationId);
       },
       onDeferredTerminal: async () => {
         deferredTerminal = true;

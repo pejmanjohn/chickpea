@@ -1,6 +1,6 @@
 /**
- * Tells a deployment serving many installations each time Core delivers a
- * successful interactive reply for one of them, so the host can record that
+ * Tells a deployment serving many installations each time an interactive
+ * turn for one of them settles as succeeded, so the host can record that
  * activity in its own registry. Standalone never has one.
  *
  * The host installs one port once, at module scope. Core awaits each report
@@ -18,6 +18,7 @@ let port: HostedActivityPort | undefined;
 let clock: () => number = Date.now;
 let loggedAt = Number.NEGATIVE_INFINITY;
 
+/** The composition seam: the host's port, installed once at module scope; undefined removes it. */
 export function configureHostedActivity(next: HostedActivityPort | undefined): void {
   port = next;
 }
