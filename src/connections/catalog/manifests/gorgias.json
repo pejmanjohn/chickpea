@@ -1,0 +1,806 @@
+{
+  "toolkit": "gorgias",
+  "version": "20260918_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Gorgias",
+  "description": "Read support tickets, messages, and customers, and update ticket status, priority, and tags.",
+  "securityDescription": "Gorgias sign-in opens through Composio, which asks for the helpdesk's Gorgias subdomain. Agents act as the signed-in Gorgias user and can read tickets, messages, customers, tags, views, custom field values, teams, and helpdesk users. With write access, Agents can change a ticket's status, subject, priority, and language, add and remove ticket tags, and create customers and edit their names. Closing a ticket can send the customer a satisfaction survey when the helpdesk has surveys turned on, and the helpdesk's rules can act on these changes, as they do for changes people make. Agents cannot reply to customers or send any message, create tickets, add internal notes, assign tickets, move a ticket to another customer, set or change a customer's email addresses or phone numbers, delete or merge anything, or change rules, macros, views, teams, users, integrations, or account settings.",
+  "preset": {
+    "category": "business",
+    "accent": "#000000"
+  },
+  "validationCapability": "gorgias.get_account",
+  "review": {
+    "add": [
+      "GORGIAS_ADD_TICKET_TAGS",
+      "GORGIAS_CREATE_CUSTOMER",
+      "GORGIAS_GET_ACCOUNT",
+      "GORGIAS_GET_CUSTOMER",
+      "GORGIAS_GET_TEAM",
+      "GORGIAS_GET_TICKET",
+      "GORGIAS_GET_TICKET_MESSAGE",
+      "GORGIAS_LIST_CUSTOMERS",
+      "GORGIAS_LIST_CUSTOMER_FIELD_VALUES",
+      "GORGIAS_LIST_MESSAGES",
+      "GORGIAS_LIST_TAGS",
+      "GORGIAS_LIST_TICKETS",
+      "GORGIAS_LIST_TICKET_FIELD_VALUES",
+      "GORGIAS_LIST_TICKET_TAGS",
+      "GORGIAS_LIST_USERS",
+      "GORGIAS_LIST_VIEWS",
+      "GORGIAS_LIST_VIEW_ITEMS",
+      "GORGIAS_REMOVE_TICKET_TAGS",
+      "GORGIAS_UPDATE_CUSTOMER",
+      "GORGIAS_UPDATE_TICKET"
+    ],
+    "drop": {},
+    "allowArguments": {},
+    "withholdArguments": {
+      "GORGIAS_CREATE_CUSTOMER": {
+        "channels": "Channels carry email addresses and phone numbers, which become where replies go."
+      },
+      "GORGIAS_UPDATE_CUSTOMER": {
+        "channels": "Changes a customer's email addresses and phone numbers, which redirects replies on their tickets."
+      },
+      "GORGIAS_UPDATE_TICKET": {
+        "customer_id": "Moves the ticket to another customer, who would then receive its replies."
+      }
+    }
+  },
+  "capabilities": [
+    {
+      "id": "gorgias.add_ticket_tags",
+      "tool": "GORGIAS_ADD_TICKET_TAGS",
+      "toolName": "gorgias_add_ticket_tags",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Adds tags to a ticket in Gorgias.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Gorgias: Add Ticket Tags",
+      "input": {
+        "type": "object",
+        "properties": {
+          "tag_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "description": "List of tag IDs to add to the ticket"
+          },
+          "ticket_id": {
+            "type": "integer",
+            "description": "The ID of the ticket"
+          }
+        },
+        "required": [
+          "ticket_id",
+          "tag_ids"
+        ]
+      }
+    },
+    {
+      "id": "gorgias.create_customer",
+      "tool": "GORGIAS_CREATE_CUSTOMER",
+      "toolName": "gorgias_create_customer",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new customer in Gorgias.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Gorgias: Create Customer",
+      "withheldArguments": {
+        "data": "unsupported schema",
+        "email": "names an address a message goes to or comes from",
+        "address": "unsupported schema",
+        "channels": "reviewer: Channels carry email addresses and phone numbers, which become where replies go."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The customer's full name"
+          },
+          "external_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "External identifier for the customer"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "id": "gorgias.get_account",
+      "tool": "GORGIAS_GET_ACCOUNT",
+      "toolName": "gorgias_get_account",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves your Gorgias account information.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "id": "gorgias.get_customer",
+      "tool": "GORGIAS_GET_CUSTOMER",
+      "toolName": "gorgias_get_customer",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific customer from Gorgias.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "integer",
+            "description": "The ID of the customer to retrieve"
+          }
+        },
+        "required": [
+          "customer_id"
+        ]
+      }
+    },
+    {
+      "id": "gorgias.get_team",
+      "tool": "GORGIAS_GET_TEAM",
+      "toolName": "gorgias_get_team",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific team from Gorgias.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "team_id": {
+            "type": "integer",
+            "description": "The ID of the team to retrieve"
+          }
+        },
+        "required": [
+          "team_id"
+        ]
+      }
+    },
+    {
+      "id": "gorgias.get_ticket",
+      "tool": "GORGIAS_GET_TICKET",
+      "toolName": "gorgias_get_ticket",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific ticket from Gorgias.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "integer",
+            "description": "The ID of the ticket to retrieve"
+          }
+        },
+        "required": [
+          "ticket_id"
+        ]
+      }
+    },
+    {
+      "id": "gorgias.get_ticket_message",
+      "tool": "GORGIAS_GET_TICKET_MESSAGE",
+      "toolName": "gorgias_get_ticket_message",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves one message from a Gorgias ticket. Reference: https://developers.gorgias.com/reference/get-ticket-message",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "ID of the ticket containing the message"
+          },
+          "message_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "ID of the message to retrieve"
+          }
+        },
+        "required": [
+          "ticket_id",
+          "message_id"
+        ]
+      }
+    },
+    {
+      "id": "gorgias.list_customer_field_values",
+      "tool": "GORGIAS_LIST_CUSTOMER_FIELD_VALUES",
+      "toolName": "gorgias_list_customer_field_values",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists all field values for a customer in Gorgias.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "integer",
+            "description": "The ID of the customer"
+          }
+        },
+        "required": [
+          "customer_id"
+        ]
+      }
+    },
+    {
+      "id": "gorgias.list_customers",
+      "tool": "GORGIAS_LIST_CUSTOMERS",
+      "toolName": "gorgias_list_customers",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists customers in Gorgias with various filtering options.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter customers by name"
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter customers by email address"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of customers to return per page (1-100, default: 30)"
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination cursor from meta.next_cursor of previous response"
+          },
+          "order_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field to order results by. Note: Valid values must be discovered via API testing. Common values like 'created_datetime' may not be accepted."
+          },
+          "external_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter customers by external ID"
+          }
+        }
+      }
+    },
+    {
+      "id": "gorgias.list_messages",
+      "tool": "GORGIAS_LIST_MESSAGES",
+      "toolName": "gorgias_list_messages",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists messages in Gorgias, optionally filtered by ticket. Reference: https://developers.gorgias.com/reference/list-messages",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Maximum number of messages to return (1-100)"
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination cursor from meta.next_cursor or meta.prev_cursor"
+          },
+          "order_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created_datetime:asc",
+              "created_datetime:desc"
+            ],
+            "description": "Order messages by creation time"
+          },
+          "ticket_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Filter messages by the associated ticket ID"
+          }
+        }
+      }
+    },
+    {
+      "id": "gorgias.list_tags",
+      "tool": "GORGIAS_LIST_TAGS",
+      "toolName": "gorgias_list_tags",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists workspace tags independently of any ticket. Reference: https://developers.gorgias.com/reference/list-tags",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Maximum number of tags to return (1-100)"
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination cursor from meta.next_cursor or meta.prev_cursor"
+          },
+          "search": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Match tag names containing this text, case-insensitively"
+          },
+          "order_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created_datetime:asc",
+              "created_datetime:desc",
+              "name:asc",
+              "name:desc",
+              "usage:asc,name:asc",
+              "usage:desc,name:desc"
+            ],
+            "description": "Attribute and direction used to order tags"
+          }
+        }
+      }
+    },
+    {
+      "id": "gorgias.list_teams",
+      "tool": "GORGIAS_LIST_TEAMS",
+      "toolName": "gorgias_list_teams",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists teams in Gorgias.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of teams to return per page (default: 20, max: 100)."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Cursor for pagination. Use the value of 'meta.next_cursor' from a previous response to fetch the next page."
+          }
+        }
+      }
+    },
+    {
+      "id": "gorgias.list_ticket_field_values",
+      "tool": "GORGIAS_LIST_TICKET_FIELD_VALUES",
+      "toolName": "gorgias_list_ticket_field_values",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists all field values for a ticket in Gorgias.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "integer",
+            "description": "The ID of the ticket"
+          }
+        },
+        "required": [
+          "ticket_id"
+        ]
+      }
+    },
+    {
+      "id": "gorgias.list_ticket_tags",
+      "tool": "GORGIAS_LIST_TICKET_TAGS",
+      "toolName": "gorgias_list_ticket_tags",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists all tags for a ticket in Gorgias.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "integer",
+            "description": "The ID of the ticket"
+          }
+        },
+        "required": [
+          "ticket_id"
+        ]
+      }
+    },
+    {
+      "id": "gorgias.list_tickets",
+      "tool": "GORGIAS_LIST_TICKETS",
+      "toolName": "gorgias_list_tickets",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists tickets in Gorgias with various filtering options.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Maximum number of tickets to return"
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Cursor value indicating position in the list of all tickets for pagination. Use next_cursor or prev_cursor from previous response."
+          },
+          "rule_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Apply filters from a rule to ticket selection"
+          },
+          "trashed": {
+            "type": "boolean",
+            "description": "Whether to include removed tickets in results"
+          },
+          "view_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Apply filters from a predefined view to ticket selection"
+          },
+          "order_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created_datetime:asc",
+              "created_datetime:desc",
+              "updated_datetime:asc",
+              "updated_datetime:desc"
+            ],
+            "description": "Sort order for tickets"
+          },
+          "ticket_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Select specific tickets by their identifiers (1-100 IDs)"
+          },
+          "customer_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Filter tickets by customer ID"
+          },
+          "external_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Identifier from external systems for ticket lookup"
+          }
+        }
+      }
+    },
+    {
+      "id": "gorgias.list_users",
+      "tool": "GORGIAS_LIST_USERS",
+      "toolName": "gorgias_list_users",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists helpdesk users with optional role and identity filters. Reference: https://developers.gorgias.com/reference/list-users",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter users by email address"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Maximum number of users to return (1-100)"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "admin",
+                "agent",
+                "basic-agent",
+                "bot",
+                "internal-agent",
+                "lite-agent",
+                "observer-agent"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Roles to include in the results"
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination cursor from a previous list-users request"
+          },
+          "search": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Match users by name or email address"
+          },
+          "order_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created_datetime:asc",
+              "created_datetime:desc",
+              "name:asc",
+              "name:desc",
+              "email:asc",
+              "email:desc",
+              "role.name:asc",
+              "role.name:desc"
+            ],
+            "description": "Attribute and direction used to order users"
+          },
+          "external_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter users by their external-system ID"
+          },
+          "available_first": {
+            "type": "boolean",
+            "description": "Return available users before non-available users"
+          }
+        }
+      }
+    },
+    {
+      "id": "gorgias.list_view_items",
+      "tool": "GORGIAS_LIST_VIEW_ITEMS",
+      "toolName": "gorgias_list_view_items",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists tickets matching a saved Gorgias view. Reference: https://developers.gorgias.com/reference/list-view-items",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Maximum number of view items to return (1-100)"
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination cursor from the current_cursor value or an item link"
+          },
+          "view_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "ID of the view whose items to list"
+          },
+          "order_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created_datetime:asc",
+              "created_datetime:desc",
+              "updated_datetime:asc",
+              "updated_datetime:desc",
+              "last_message_datetime:asc",
+              "last_message_datetime:desc",
+              "last_received_message_datetime:asc",
+              "last_received_message_datetime:desc",
+              "closed_datetime:asc",
+              "closed_datetime:desc",
+              "snooze_datetime:asc",
+              "snooze_datetime:desc",
+              "priority:asc",
+              "priority:desc"
+            ],
+            "description": "Ticket attribute and direction used to order the view items"
+          },
+          "direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "prev",
+              "next"
+            ],
+            "description": "Return items before (prev) or after (next) the cursor"
+          },
+          "ignored_item": {
+            "type": "integer",
+            "description": "ID of an item to omit from the returned page"
+          }
+        },
+        "required": [
+          "view_id"
+        ]
+      }
+    },
+    {
+      "id": "gorgias.list_views",
+      "tool": "GORGIAS_LIST_VIEWS",
+      "toolName": "gorgias_list_views",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists saved ticket views, optionally filtered by category. Reference: https://developers.gorgias.com/reference/list-views",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Maximum number of views to return (1-100)"
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination cursor from meta.next_cursor or meta.prev_cursor"
+          },
+          "category": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "system",
+              "user"
+            ],
+            "description": "Filter views by system-managed or user-created category"
+          },
+          "order_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created_datetime:asc",
+              "created_datetime:desc"
+            ],
+            "description": "Order views by creation time"
+          }
+        }
+      }
+    },
+    {
+      "id": "gorgias.remove_ticket_tags",
+      "tool": "GORGIAS_REMOVE_TICKET_TAGS",
+      "toolName": "gorgias_remove_ticket_tags",
+      "lane": "write",
+      "effect": "destructive",
+      "description": "Removes tags from a ticket in Gorgias.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Gorgias: Remove Ticket Tags",
+      "input": {
+        "type": "object",
+        "properties": {
+          "tag_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "description": "List of tag IDs to remove from the ticket"
+          },
+          "ticket_id": {
+            "type": "integer",
+            "description": "The ID of the ticket"
+          }
+        },
+        "required": [
+          "ticket_id",
+          "tag_ids"
+        ]
+      }
+    },
+    {
+      "id": "gorgias.update_customer",
+      "tool": "GORGIAS_UPDATE_CUSTOMER",
+      "toolName": "gorgias_update_customer",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing customer in Gorgias.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Gorgias: Update Customer",
+      "withheldArguments": {
+        "data": "unsupported schema",
+        "email": "names an address a message goes to or comes from",
+        "address": "unsupported schema",
+        "channels": "reviewer: Changes a customer's email addresses and phone numbers, which redirects replies on their tickets.",
+        "external_id": "changes who the record belongs to or how a person is identified"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The customer's full name"
+          },
+          "customer_id": {
+            "type": "integer",
+            "description": "The ID of the customer to update"
+          }
+        },
+        "required": [
+          "customer_id"
+        ]
+      }
+    },
+    {
+      "id": "gorgias.update_ticket",
+      "tool": "GORGIAS_UPDATE_TICKET",
+      "toolName": "gorgias_update_ticket",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing ticket in Gorgias.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Gorgias: Update Ticket",
+      "withheldArguments": {
+        "meta": "unsupported schema",
+        "customer_id": "reviewer: Moves the ticket to another customer, who would then receive its replies.",
+        "external_id": "changes who the record belongs to or how a person is identified",
+        "assignee_team_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "assignee_user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The status of the ticket"
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The subject of the ticket"
+          },
+          "language": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The language of the ticket"
+          },
+          "priority": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The priority of the ticket"
+          },
+          "ticket_id": {
+            "type": "integer",
+            "description": "The ID of the ticket to update"
+          }
+        },
+        "required": [
+          "ticket_id"
+        ]
+      }
+    }
+  ]
+}

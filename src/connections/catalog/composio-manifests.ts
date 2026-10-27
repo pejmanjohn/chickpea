@@ -3,6 +3,8 @@ import * as v from 'valibot';
 import bitbucket from './manifests/bitbucket.json' with { type: 'json' };
 import box from './manifests/box.json' with { type: 'json' };
 import cal from './manifests/cal.json' with { type: 'json' };
+import canva from './manifests/canva.json' with { type: 'json' };
+import contentful from './manifests/contentful.json' with { type: 'json' };
 import dropbox from './manifests/dropbox.json' with { type: 'json' };
 import dynamics365 from './manifests/dynamics365.json' with { type: 'json' };
 import excel from './manifests/excel.json' with { type: 'json' };
@@ -12,6 +14,9 @@ import github from './manifests/github.json' with { type: 'json' };
 import googlebigquery from './manifests/googlebigquery.json' with { type: 'json' };
 import googlemeet from './manifests/googlemeet.json' with { type: 'json' };
 import googletasks from './manifests/googletasks.json' with { type: 'json' };
+import gorgias from './manifests/gorgias.json' with { type: 'json' };
+import klaviyo from './manifests/klaviyo.json' with { type: 'json' };
+import linkedin from './manifests/linkedin.json' with { type: 'json' };
 import mailchimp from './manifests/mailchimp.json' with { type: 'json' };
 import microsoftTeams from './manifests/microsoft_teams.json' with { type: 'json' };
 import oneDrive from './manifests/one_drive.json' with { type: 'json' };
@@ -20,8 +25,11 @@ import pagerduty from './manifests/pagerduty.json' with { type: 'json' };
 import pipedrive from './manifests/pipedrive.json' with { type: 'json' };
 import quickbooks from './manifests/quickbooks.json' with { type: 'json' };
 import salesforce from './manifests/salesforce.json' with { type: 'json' };
+import semrush from './manifests/semrush.json' with { type: 'json' };
 import sharePoint from './manifests/share_point.json' with { type: 'json' };
+import square from './manifests/square.json' with { type: 'json' };
 import webex from './manifests/webex.json' with { type: 'json' };
+import wrike from './manifests/wrike.json' with { type: 'json' };
 import zoho from './manifests/zoho.json' with { type: 'json' };
 import type {
   ManagedAccessLane,
@@ -261,6 +269,8 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
   bitbucket,
   box,
   cal,
+  canva,
+  contentful,
   dropbox,
   dynamics365,
   excel,
@@ -270,6 +280,9 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
   googlebigquery,
   googlemeet,
   googletasks,
+  gorgias,
+  klaviyo,
+  linkedin,
   mailchimp,
   microsoftTeams,
   oneDrive,
@@ -278,8 +291,11 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
   pipedrive,
   quickbooks,
   salesforce,
+  semrush,
   sharePoint,
+  square,
   webex,
+  wrike,
   zoho,
 ].map((value) => parseComposioManifest(value));
 

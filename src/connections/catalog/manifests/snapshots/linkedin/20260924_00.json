@@ -1,0 +1,647 @@
+{
+  "toolkit": {
+    "slug": "linkedin",
+    "name": "LinkedIn",
+    "version": "20260924_00",
+    "description": "LinkedIn is a professional networking platform enabling job seekers, companies, and thought leaders to connect, share content, and discover business opportunities",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      }
+    ],
+    "currentUserEndpoint": "https://api.linkedin.com/v2/userinfo"
+  },
+  "tools": [
+    {
+      "slug": "LINKEDIN_CREATE_ARTICLE_OR_URL_SHARE",
+      "name": "Create article or URL share",
+      "description": "Tool to create an article or URL share on LinkedIn using the UGC Posts API. Use when you need to share a link with optional commentary on LinkedIn. Supports sharing URLs as articles with customizable visibility settings.",
+      "version": "20260924_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "ugc_posts_creation",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateArticleOrUrlShareRequest",
+        "required": [
+          "author",
+          "specificContent",
+          "visibility"
+        ],
+        "properties": {
+          "author": {
+            "type": "string",
+            "title": "Author",
+            "pattern": "^urn:li:(person|organization):[A-Za-z0-9_-]+$",
+            "examples": [
+              "urn:li:person:F6kGF1Uduq",
+              "urn:li:organization:123456"
+            ],
+            "description": "URN of the author (person or organization). For a person: 'urn:li:person:{id}'. For an organization: 'urn:li:organization:{id}'. Use GET_MY_INFO action to get your person ID."
+          },
+          "visibility": {
+            "type": "object",
+            "title": "Visibility",
+            "required": [
+              "com.linkedin.ugc.MemberNetworkVisibility"
+            ],
+            "properties": {
+              "com.linkedin.ugc.MemberNetworkVisibility": {
+                "enum": [
+                  "PUBLIC",
+                  "CONNECTIONS",
+                  "LOGGED_IN"
+                ],
+                "type": "string",
+                "title": "Com.Linkedin.Ugc.Member Network Visibility",
+                "description": "Visibility level for the post. Use 'PUBLIC' to make visible to everyone, 'CONNECTIONS' for connections only, or 'LOGGED_IN' for signed-in members."
+              }
+            },
+            "description": "Visibility settings for the post. Controls who can see the shared content.",
+            "additionalProperties": false
+          },
+          "lifecycleState": {
+            "enum": [
+              "PUBLISHED",
+              "DRAFT"
+            ],
+            "type": "string",
+            "title": "Lifecycle State",
+            "default": "PUBLISHED",
+            "description": "State of the post. Use 'PUBLISHED' to post immediately or 'DRAFT' to save as draft."
+          },
+          "specificContent": {
+            "type": "object",
+            "title": "Specific Content",
+            "required": [
+              "com.linkedin.ugc.ShareContent"
+            ],
+            "properties": {
+              "com.linkedin.ugc.ShareContent": {
+                "type": "object",
+                "title": "Com.Linkedin.Ugc.Share Content",
+                "required": [
+                  "shareCommentary",
+                  "shareMediaCategory",
+                  "media"
+                ],
+                "properties": {
+                  "media": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "title": "MediaItem",
+                      "required": [
+                        "originalUrl"
+                      ],
+                      "properties": {
+                        "title": {
+                          "type": "object",
+                          "title": "TitleOrDescription",
+                          "required": [
+                            "text"
+                          ],
+                          "properties": {
+                            "text": {
+                              "type": "string",
+                              "title": "Text",
+                              "description": "The text content."
+                            }
+                          },
+                          "description": "Title or description text object.",
+                          "additionalProperties": false
+                        },
+                        "status": {
+                          "type": "string",
+                          "title": "Status",
+                          "default": "READY",
+                          "examples": [
+                            "READY"
+                          ],
+                          "description": "Status of the media. Use 'READY' for URL shares."
+                        },
+                        "description": {
+                          "type": "object",
+                          "title": "TitleOrDescription",
+                          "required": [
+                            "text"
+                          ],
+                          "properties": {
+                            "text": {
+                              "type": "string",
+                              "title": "Text",
+                              "description": "The text content."
+                            }
+                          },
+                          "description": "Title or description text object.",
+                          "additionalProperties": false
+                        },
+                        "originalUrl": {
+                          "type": "string",
+                          "title": "Original Url",
+                          "examples": [
+                            "https://learn.microsoft.com/en-us/linkedin/",
+                            "https://example.com/article"
+                          ],
+                          "description": "The URL to be shared. Must be a valid HTTP or HTTPS URL."
+                        }
+                      },
+                      "description": "Media item for article or URL share."
+                    },
+                    "title": "Media",
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "description": "Array of media items to share. For article/URL shares, include one MediaItem with the URL."
+                  },
+                  "shareCommentary": {
+                    "type": "object",
+                    "title": "Share Commentary",
+                    "description": "Commentary text to accompany the shared URL. Required by the API even if empty (e.g. {'text': ''}). Should be a dict with 'text' key.",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "shareMediaCategory": {
+                    "enum": [
+                      "ARTICLE",
+                      "NONE"
+                    ],
+                    "type": "string",
+                    "title": "Share Media Category",
+                    "description": "Media category for the share. Use 'ARTICLE' for URL shares, 'NONE' for text-only posts."
+                  }
+                },
+                "description": "Share content configuration for article or URL shares.",
+                "additionalProperties": false
+              }
+            },
+            "description": "Container for the share content including URL, commentary, and media category.",
+            "additionalProperties": false
+          }
+        },
+        "description": "Request model for creating an article or URL share on LinkedIn."
+      }
+    },
+    {
+      "slug": "LINKEDIN_GET_COMPANY_INFO",
+      "name": "Get company info",
+      "description": "Retrieves organizations where the authenticated user has specific roles (ACLs), to determine their management or content posting capabilities for LinkedIn company pages.",
+      "version": "20260924_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCompanyInfoRequest",
+        "properties": {
+          "role": {
+            "enum": [
+              "ADMINISTRATOR",
+              "DIRECT_SPONSORED_CONTENT_POSTER"
+            ],
+            "type": "string",
+            "title": "Role",
+            "default": "ADMINISTRATOR",
+            "examples": [
+              "ADMINISTRATOR",
+              "DIRECT_SPONSORED_CONTENT_POSTER"
+            ],
+            "description": "The specific role to filter organization ACLs by."
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 10,
+            "maximum": 100,
+            "minimum": 1,
+            "examples": [
+              "10",
+              "50",
+              "100"
+            ],
+            "description": "The number of organization ACLs to return per page."
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "minimum": 0,
+            "examples": [
+              "0",
+              "10",
+              "20"
+            ],
+            "description": "The starting index for pagination, representing the number of initial ACLs to skip."
+          },
+          "state": {
+            "enum": [
+              "APPROVED",
+              "REQUESTED"
+            ],
+            "type": "string",
+            "title": "State",
+            "default": "APPROVED",
+            "examples": [
+              "APPROVED",
+              "REQUESTED"
+            ],
+            "description": "The approval state of the role to filter by."
+          }
+        },
+        "description": "Parameters for listing organizations where the authenticated user has specific roles and permissions (ACLs)."
+      }
+    },
+    {
+      "slug": "LINKEDIN_GET_MY_INFO",
+      "name": "Get my info",
+      "description": "Fetches the authenticated LinkedIn user's profile information including name, headline, profile picture, and other profile details.",
+      "version": "20260924_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetMyInfoRequest",
+        "properties": {}
+      }
+    },
+    {
+      "slug": "LINKEDIN_GET_NETWORK_SIZE",
+      "name": "Get network size",
+      "description": "Tool to retrieve the follower count for a LinkedIn organization. Use when you need to get the number of members following a specific company or organization on LinkedIn.",
+      "version": "20260924_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint",
+        "analytics"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetNetworkSizeRequest",
+        "required": [
+          "organization_id"
+        ],
+        "properties": {
+          "edgeType": {
+            "enum": [
+              "COMPANY_FOLLOWED_BY_MEMBER"
+            ],
+            "type": "string",
+            "title": "Edge Type",
+            "default": "COMPANY_FOLLOWED_BY_MEMBER",
+            "description": "The type of network relationship to count. Use COMPANY_FOLLOWED_BY_MEMBER to get follower count."
+          },
+          "organization_id": {
+            "type": "string",
+            "title": "Organization Id",
+            "pattern": "^[0-9]+$",
+            "examples": [
+              "3803",
+              "79988552"
+            ],
+            "description": "The unique identifier for the LinkedIn organization. This is the numeric ID from the organization URN (e.g., for 'urn:li:organization:3803', use '3803')."
+          }
+        },
+        "description": "Parameters for retrieving organization follower count."
+      }
+    },
+    {
+      "slug": "LINKEDIN_GET_ORG_PAGE_STATS",
+      "name": "Get organization page statistics",
+      "description": "Tool to retrieve page statistics for a LinkedIn organization page. Use when you need engagement metrics like page views and custom button clicks. Supports both lifetime statistics (all-time data segmented by demographics) and time-bound statistics (aggregate data for specific time ranges). Requires rw_organization_admin permission with ADMINISTRATOR role for the organization.",
+      "version": "20260924_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint",
+        "analytics"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetOrgPageStatsRequest",
+        "required": [
+          "organization"
+        ],
+        "properties": {
+          "organization": {
+            "type": "string",
+            "title": "Organization",
+            "examples": [
+              "urn:li:organization:2414183"
+            ],
+            "description": "Organization URN in format urn:li:organization:{id}. Example: urn:li:organization:2414183"
+          },
+          "timeRangeEnd": {
+            "type": "integer",
+            "title": "Time Range End",
+            "examples": [
+              1552003200000
+            ],
+            "description": "Inclusive ending timestamp in milliseconds since epoch. Only required for time-bound statistics. Omit for lifetime statistics."
+          },
+          "timeRangeStart": {
+            "type": "integer",
+            "title": "Time Range Start",
+            "examples": [
+              1551398400000
+            ],
+            "description": "Exclusive starting timestamp in milliseconds since epoch. Only required for time-bound statistics. Omit for lifetime statistics."
+          },
+          "timeGranularityType": {
+            "enum": [
+              "DAY",
+              "MONTH"
+            ],
+            "type": "string",
+            "title": "TimeGranularityType",
+            "description": "Granularity of the statistics. Use DAY for daily statistics or MONTH for monthly statistics. Only required for time-bound statistics. Omit for lifetime statistics."
+          }
+        },
+        "description": "Request parameters for retrieving organization page statistics from LinkedIn."
+      }
+    },
+    {
+      "slug": "LINKEDIN_GET_PERSON",
+      "name": "Get person profile",
+      "description": "Retrieves a LinkedIn member's profile information by their person ID. Returns lite profile fields (name, profile picture) by default, or basic profile fields (including headline and vanity name) with appropriate permissions.",
+      "version": "20260924_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "content_retrieval"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetPersonRequest",
+        "required": [
+          "person_id"
+        ],
+        "properties": {
+          "person_id": {
+            "type": "string",
+            "title": "Person Id",
+            "examples": [
+              "yrZCpj2Z12",
+              "F6kGF1Uduq"
+            ],
+            "description": "The unique identifier of the LinkedIn member. Note: Each member id is unique to the context of your application only."
+          }
+        }
+      }
+    },
+    {
+      "slug": "LINKEDIN_GET_POST_CONTENT",
+      "name": "Get post content",
+      "description": "Tool to retrieve detailed post content including text, images, videos, and metadata from LinkedIn by post URN. Use when you need to fetch the full content and details of a specific LinkedIn post.",
+      "version": "20260924_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "content_retrieval"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetPostContentRequest",
+        "required": [
+          "post_id"
+        ],
+        "properties": {
+          "post_id": {
+            "type": "string",
+            "title": "Post Id",
+            "examples": [
+              "urn:li:ugcPost:7428263313739988992",
+              "urn:li:share:7123456789012345678"
+            ],
+            "description": "Post URN identifier in the format 'urn:li:ugcPost:{id}' or 'urn:li:share:{id}'. Can also be URL-encoded. Example: 'urn:li:ugcPost:7428263313739988992'"
+          }
+        },
+        "description": "Request parameters for retrieving post content by URN."
+      }
+    },
+    {
+      "slug": "LINKEDIN_GET_SHARE_STATS",
+      "name": "Get share statistics",
+      "description": "Retrieves share statistics for a LinkedIn organization, including impressions, clicks, likes, comments, and shares. Use to analyze content performance for an organization page. Optionally filter by time intervals to get time-bound statistics.",
+      "version": "20260924_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint",
+        "analytics"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetShareStatsRequest",
+        "required": [
+          "organizational_entity"
+        ],
+        "properties": {
+          "time_intervals": {
+            "type": "string",
+            "title": "Time Intervals",
+            "examples": [
+              "(timeRange:(start:1634018799000,end:1634623599000),timeGranularityType:DAY)",
+              "(timeRange:(start:1609459200000,end:1612137600000),timeGranularityType:WEEK)"
+            ],
+            "description": "Time-bound statistics filter in RestLi 2.0 complex object format. Specify time range and granularity as: '(timeRange:(start:<start_timestamp>,end:<end_timestamp>),timeGranularityType:<GRANULARITY>)' where timestamps are in milliseconds since epoch and GRANULARITY is one of: DAY, WEEK, MONTH. Example: '(timeRange:(start:1634018799000,end:1634623599000),timeGranularityType:DAY)'. If omitted, returns lifetime statistics."
+          },
+          "organizational_entity": {
+            "type": "string",
+            "title": "Organizational Entity",
+            "examples": [
+              "urn:li:organization:2414183",
+              "urn:li:organization:123456"
+            ],
+            "description": "The URN of the organization to retrieve share statistics for. Must be in the format 'urn:li:organization:<id>' where <id> is the organization ID (e.g., 'urn:li:organization:2414183'). Get organization IDs using the GET_COMPANY_INFO action."
+          }
+        },
+        "description": "Request parameters for retrieving share statistics for an organization."
+      }
+    },
+    {
+      "slug": "LINKEDIN_INITIALIZE_IMAGE_UPLOAD",
+      "name": "Initialize image upload",
+      "description": "Tool to initialize an image upload to LinkedIn and return a presigned upload URL plus the resulting image URN. Use when you need to prepare an image upload for LinkedIn posts. After calling this tool, upload the image bytes to the returned upload_url via PUT request, then use the image URN in CREATE_LINKED_IN_POST action.",
+      "version": "20260924_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "media_upload",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "InitializeImageUploadRequest",
+        "required": [
+          "owner"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "title": "Owner",
+            "examples": [
+              "urn:li:person:F6kGF1Uduq",
+              "urn:li:organization:987654321"
+            ],
+            "description": "Owner URN (person or organization) that will own the uploaded image. Must be in the format 'urn:li:person:{id}' for personal posts or 'urn:li:organization:{id}' for organization posts. Use the GET_MY_INFO action to retrieve the person ID."
+          }
+        },
+        "description": "Request parameters for initializing an image upload."
+      }
+    },
+    {
+      "slug": "LINKEDIN_LIST_REACTIONS",
+      "name": "List reactions on entity",
+      "description": "Retrieves reactions (likes, celebrations, etc.) on a LinkedIn entity such as a share, post, or comment. Use when you need to see who reacted to content and what type of reactions were used.",
+      "version": "20260924_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint",
+        "analytics"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListReactionsRequest",
+        "required": [
+          "entity"
+        ],
+        "properties": {
+          "sort": {
+            "enum": [
+              "CHRONOLOGICAL",
+              "REVERSE_CHRONOLOGICAL",
+              "RELEVANCE"
+            ],
+            "type": "string",
+            "title": "Sort",
+            "default": "REVERSE_CHRONOLOGICAL",
+            "description": "Sort order for reactions. CHRONOLOGICAL sorts by created date ascending, REVERSE_CHRONOLOGICAL sorts by created date descending (default), RELEVANCE sorts by relevance to the viewer."
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 10,
+            "maximum": 100,
+            "minimum": 1,
+            "description": "Number of reactions to return per page."
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 0,
+            "minimum": 0,
+            "description": "Starting index for pagination (number of reactions to skip)."
+          },
+          "entity": {
+            "type": "string",
+            "title": "Entity",
+            "examples": [
+              "urn:li:activity:7067167295080394752",
+              "urn:li:share:7021942390034694144",
+              "urn:li:ugcPost:7021942390034694144",
+              "urn:li:comment:(activity:7019389037459226624,7021942390034694144)"
+            ],
+            "description": "The URN of the entity (share, post, or comment) to get reactions for. Format: 'urn:li:share:{id}', 'urn:li:ugcPost:{id}', 'urn:li:activity:{id}', or 'urn:li:comment:(activity:{activityId},{commentId})'. Do not URL-encode this value."
+          }
+        }
+      }
+    },
+    {
+      "slug": "LINKEDIN_REGISTER_IMAGE_UPLOAD",
+      "name": "Register image upload",
+      "description": "Tool to initialize a native LinkedIn image upload for feed shares and return a presigned upload URL plus the resulting digital media asset URN. Use when you need to upload an image to attach to a LinkedIn post. After calling this tool, upload the image bytes to the returned upload_url, then use the asset_urn in LINKEDIN_CREATE_LINKED_IN_POST.",
+      "version": "20260924_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "media_upload",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RegisterImageUploadRequest",
+        "required": [
+          "owner_urn"
+        ],
+        "properties": {
+          "recipe": {
+            "type": "string",
+            "title": "Recipe",
+            "default": "urn:li:digitalmediaRecipe:feedshare-image",
+            "examples": [
+              "urn:li:digitalmediaRecipe:feedshare-image",
+              "urn:li:digitalmediaRecipe:companyUpdate-article-image"
+            ],
+            "description": "The digital media recipe URN specifying the processing recipe for the image. Default is 'urn:li:digitalmediaRecipe:feedshare-image' for feed share images (works with a person or organization owner). Other recipes like 'companyUpdate-article-image' are for ads/campaign content and require an Ad Account or Organization owner, not a person - using them with a person owner returns 403 Forbidden."
+          },
+          "owner_urn": {
+            "type": "string",
+            "title": "Owner Urn",
+            "examples": [
+              "urn:li:person:123456789",
+              "urn:li:organization:987654321"
+            ],
+            "description": "URN of the owner entity that will own the uploaded image. Must be in the format 'urn:li:person:{id}' for personal posts or 'urn:li:organization:{id}' for organization posts. Use the GET_USER_INFO action to retrieve the person ID."
+          },
+          "supported_upload_mechanism": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Upload Mechanism",
+            "examples": [
+              [
+                "SYNCHRONOUS_UPLOAD"
+              ],
+              [
+                "MULTIPART_UPLOAD"
+              ]
+            ],
+            "description": "Array of supported upload mechanisms. If not specified, LinkedIn will return the default mechanism (typically SYNCHRONOUS_UPLOAD)."
+          }
+        },
+        "description": "Request parameters for registering an image upload."
+      }
+    },
+    {
+      "slug": "LINKEDIN_WHO_AM_I",
+      "name": "Who Am I",
+      "description": "Return the identity (name, email) of the connected LinkedIn account.",
+      "version": "20260924_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "auth"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "WhoAmIRequest",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

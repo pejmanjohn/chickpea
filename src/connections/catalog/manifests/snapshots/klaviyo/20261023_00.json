@@ -1,0 +1,3932 @@
+{
+  "toolkit": {
+    "slug": "klaviyo",
+    "name": "Klaviyo",
+    "version": "20261023_00",
+    "description": "Klaviyo is a data-driven email and SMS marketing platform that allows e-commerce brands to deliver targeted messages, track conversions, and scale customer relationships",
+    "managedAuthSchemes": [],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      },
+      {
+        "mode": "API_KEY",
+        "fields": [
+          "generic_api_key"
+        ]
+      }
+    ],
+    "currentUserEndpoint": "https://a.klaviyo.com/api/accounts"
+  },
+  "tools": [
+    {
+      "slug": "KLAVIYO_ADD_PROFILE_TO_LIST",
+      "name": "Add Profile to List",
+      "description": "Add profiles to a Klaviyo list by profile IDs or email addresses. This action subscribes profiles to a marketing list, which is ideal for giving marketing consent. You can add up to 1000 profiles per call using either their Klaviyo profile IDs or email addresses. Rate limits: 10/s burst, 150/m steady. Required scopes: `lists:write` and `profiles:write`. Preconditions: - Either profile_ids or emails must be provided (not both) - Maximum 1000 profiles per call - Email addresses must be valid format - The list must exist and be accessible",
+      "version": "20261023_00",
+      "tags": [
+        "Lists",
+        "important",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddProfileToListRequest",
+        "required": [
+          "list_id"
+        ],
+        "properties": {
+          "emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Emails",
+            "examples": [
+              [
+                "user1@example.com",
+                "user2@example.com"
+              ]
+            ],
+            "description": "List of email addresses to add to the list (alternative to profile_ids)"
+          },
+          "list_id": {
+            "type": "string",
+            "title": "List Id",
+            "examples": [
+              "QRXm9k"
+            ],
+            "description": "The ID of the list to add profiles to"
+          },
+          "profile_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Profile Ids",
+            "examples": [
+              [
+                "01HS3XYN7G7XS49CA9VR8TV123",
+                "01J4PBK0HYDM23RCPV9JFRHE2Y"
+              ]
+            ],
+            "description": "List of profile IDs to add to the list (max 1000 per call)"
+          }
+        },
+        "description": "Request schema for `AddProfileToList`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_ASSIGN_CAMPAIGN_MESSAGE_TEMPLATE",
+      "name": "Assign campaign message template",
+      "description": "Creates a non-reusable version of the template and assigns it to the message.<br><br>*Rate limits*:<br>Burst: `10/s`<br>Steady: `150/m` **Scopes:** `campaigns:write`",
+      "version": "20261023_00",
+      "tags": [
+        "Campaigns",
+        "openWorldHint",
+        "updateHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AssignCampaignMessageTemplateRequest",
+        "required": [
+          "data__id",
+          "data__relationships__template__data__id"
+        ],
+        "properties": {
+          "data__id": {
+            "type": "string",
+            "title": "Data  Id",
+            "description": "The unique identifier of the campaign message to assign the template to. Obtained from campaign creation or get campaign messages endpoints."
+          },
+          "data__type": {
+            "enum": [
+              "campaign-message"
+            ],
+            "type": "string",
+            "title": "Data  Type",
+            "default": "campaign-message",
+            "description": "Resource type for the campaign message. Must be 'campaign-message'."
+          },
+          "data__relationships__template__data__id": {
+            "type": "string",
+            "title": "Data  Relationships  Template  Data  Id",
+            "description": "The unique identifier of the template to assign to the campaign message. A non-reusable clone of this template will be created and linked to the message."
+          },
+          "data__relationships__template__data__type": {
+            "enum": [
+              "template"
+            ],
+            "type": "string",
+            "title": "Data  Relationships  Template  Data  Type",
+            "default": "template",
+            "description": "Resource type for the template. Must be 'template'."
+          }
+        },
+        "description": "Request schema for `AssignCampaignMessageTemplate`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_CANCEL_CAMPAIGN_SEND",
+      "name": "Cancel Campaign Send",
+      "description": "Cancel or revert a campaign send job. Use 'cancel' to permanently stop a campaign (status becomes CANCELED), or 'revert' to return it to DRAFT for editing. This action modifies a campaign send job that is currently queued or sending. The cancel action is irreversible and sets the status to CANCELED. The revert action returns the campaign to DRAFT status, allowing further modifications. Rate limits: 10/s burst, 150/m steady. Required scope: `campaigns:write`. Preconditions: - Valid API key with campaigns:write scope - Campaign send job ID must exist and be accessible - Campaign must be in a state that allows cancellation (queued or sending)",
+      "version": "20261023_00",
+      "tags": [
+        "important",
+        "destructiveHint",
+        "Campaigns",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CancelCampaignSendRequest",
+        "required": [
+          "campaign_send_job_id"
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "cancel",
+              "revert"
+            ],
+            "type": "string",
+            "title": "Action",
+            "default": "cancel",
+            "description": "The action to perform. 'cancel' permanently cancels the campaign (status becomes CANCELED, irreversible). 'revert' returns the campaign to DRAFT status for further editing."
+          },
+          "campaign_send_job_id": {
+            "type": "string",
+            "title": "Campaign Send Job Id",
+            "examples": [
+              "01KFTA19C27H8M8CVX876YPT2T"
+            ],
+            "description": "The unique identifier of the campaign send job to cancel or revert. This is the ID returned when creating a campaign send job."
+          }
+        },
+        "description": "Request schema for `CancelCampaignSend`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_CREATE_CAMPAIGN_RECIPIENT_ESTIMATION_JOB",
+      "name": "Create Campaign Recipient Estimation Job",
+      "description": "Start an asynchronous task to estimate the number of recipients for a campaign. This action creates a background job that calculates how many profiles would receive the campaign based on its current audience settings. Use the job ID returned to track progress with the 'Get Campaign Recipient Estimation Job' action, and get the final count via 'Get Campaign Recipient Estimation' action. Rate limits: 10/s burst, 150/m steady. Required scope: `campaigns:write`. Preconditions: - Valid API key with campaigns:write scope - Campaign ID must exist and be accessible - Campaign must have audience settings configured",
+      "version": "20261023_00",
+      "tags": [
+        "Campaigns",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateCampaignRecipientEstimationJobRequest",
+        "required": [
+          "campaign_id"
+        ],
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id",
+            "examples": [
+              "01GDDKASAP8TKDDA2GRZDSVP4H"
+            ],
+            "description": "The ID of the campaign to perform recipient estimation for"
+          }
+        },
+        "description": "Request schema for `CreateCampaignRecipientEstimationJob`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_CREATE_EVENT",
+      "name": "Create event",
+      "description": "Create or update a profile event with minimum identifiers and metric name. Success means validation, not completion. Burst limit: 350/s, Steady: 3500/m. Scope required: `events:write`.",
+      "version": "20261023_00",
+      "tags": [
+        "Events",
+        "important",
+        "openWorldHint",
+        "createHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateEventRequest",
+        "properties": {
+          "data__type": {
+            "enum": [
+              "event"
+            ],
+            "type": "string",
+            "title": "TypeEnm",
+            "description": "Type"
+          },
+          "data__attributes__time": {
+            "type": "string",
+            "title": "Data  Attributes  Time",
+            "format": "date-time",
+            "description": "When this event occurred. By default, the time the request was received will be used. The time is truncated to the second. The time must be after the year 2000 and can only be up to 1 year in the future. "
+          },
+          "data__attributes__value": {
+            "type": "integer",
+            "title": "Data  Attributes  Value",
+            "description": "A numeric, monetary value to associate with this event. For example, the dollar amount of a purchase. "
+          },
+          "data__attributes__properties": {
+            "type": "object",
+            "title": "Data  Attributes  Properties",
+            "description": "Custom properties of the event. Use this to store additional data about the event. Non-object properties can be used for creating segments. Use the '$extra' key for non-segmentable values like HTML templates. Defaults to an empty object if not provided. ",
+            "additionalProperties": true
+          },
+          "data__attributes__unique__id": {
+            "type": "string",
+            "title": "Data  Attributes  Unique  Id",
+            "description": "A unique identifier for an event. If the unique_id is repeated for the same profile and metric, only the first processed event will be recorded. If this is not present, this will use the time to the second. Using the default, this limits only one event per profile per second. "
+          },
+          "data__attributes__value__currency": {
+            "type": "string",
+            "title": "Data  Attributes  Value  Currency",
+            "description": "The ISO 4217 currency code of the value associated with the event."
+          },
+          "data__attributes__profile__data__id": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Id",
+            "description": "Primary key that uniquely identifies this profile. Generated by Klaviyo."
+          },
+          "data__attributes__metric__data__type": {
+            "enum": [
+              "metric"
+            ],
+            "type": "string",
+            "title": "TypeEnm1",
+            "description": "Type"
+          },
+          "data__attributes__profile__data__type": {
+            "enum": [
+              "profile"
+            ],
+            "type": "string",
+            "title": "TypeEnm2",
+            "description": "Type"
+          },
+          "data__attributes__metric__data__attributes__name": {
+            "type": "string",
+            "title": "Data  Attributes  Metric  Data  Attributes  Name",
+            "description": "Name of the event. Must be less than 128 characters."
+          },
+          "data__attributes__profile__data__attributes____kx": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes    Kx",
+            "description": "Also known as the `exchange_id`, this is an encrypted identifier used for identifying a profile by Klaviyo\"s web tracking. You can use this field as a filter when retrieving profiles via the Get Profiles endpoint. "
+          },
+          "data__attributes__profile__data__attributes__email": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  Email",
+            "description": "Individual\"s email address"
+          },
+          "data__attributes__profile__data__attributes__image": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  Image",
+            "description": "URL pointing to the location of a profile image"
+          },
+          "data__attributes__profile__data__attributes__title": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  Title",
+            "description": "Individual\"s job title"
+          },
+          "data__attributes__metric__data__attributes__service": {
+            "type": "string",
+            "title": "Data  Attributes  Metric  Data  Attributes  Service",
+            "description": "This is for advanced usage. For api requests, this should use the default, which is set to api. "
+          },
+          "data__attrs__profile__data__attrs__location__address1": {
+            "type": "string",
+            "title": "Data  Attrs  Profile  Data  Attrs  Location  Address1",
+            "description": "First line of street address"
+          },
+          "data__attrs__profile__data__attrs__location__address2": {
+            "type": "string",
+            "title": "Data  Attrs  Profile  Data  Attrs  Location  Address2",
+            "description": "Second line of street address"
+          },
+          "data__attrs__profile__data__attrs__location__latitude": {
+            "type": "string",
+            "title": "Data  Attrs  Profile  Data  Attrs  Location  Latitude",
+            "description": "Latitude coordinate. We recommend providing a precision of four decimal places. "
+          },
+          "data__attrs__profile__data__attrs__location__timezone": {
+            "type": "string",
+            "title": "Data  Attrs  Profile  Data  Attrs  Location  Timezone",
+            "description": "Time zone name. We recommend using time zones from the IANA Time Zone Database. "
+          },
+          "data__attrs__profile__data__attrs__location__longitude": {
+            "type": "string",
+            "title": "Data  Attrs  Profile  Data  Attrs  Location  Longitude",
+            "description": "Longitude coordinate. We recommend providing a precision of four decimal places. "
+          },
+          "data__attributes__profile__data__attributes__last__name": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  Last  Name",
+            "description": "Individual\"s last name"
+          },
+          "data__attributes__profile__data__attributes__first__name": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  First  Name",
+            "description": "Individual\"s first name"
+          },
+          "data__attributes__profile__data__attributes__external__id": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  External  Id",
+            "description": "A unique identifier used by customers to associate Klaviyo profiles with profiles in an external system, such as a point-of-sale system. Format varies based on the external system. "
+          },
+          "data__attributes__profile__data__attributes__location__ip": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  Location  Ip",
+            "description": "IP Address"
+          },
+          "data__attributes__profile__data__attributes__organization": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  Organization",
+            "description": "Name of the company or organization within the company for whom the individual works "
+          },
+          "data__attributes__profile__data__attributes__anonymous__id": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  Anonymous  Id",
+            "description": "Anonymous Id"
+          },
+          "data__attributes__profile__data__attributes__location__zip": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  Location  Zip",
+            "description": "Zip code"
+          },
+          "data__attributes__profile__data__attributes__phone__number": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  Phone  Number",
+            "description": "Individual\"s phone number in E.164 format"
+          },
+          "data__attributes__profile__data__attributes__location__city": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  Location  City",
+            "description": "City name"
+          },
+          "data__attrs__profile__data__attrs__meta__patch__props__unset": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Data  Attrs  Profile  Data  Attrs  Meta  Patch  Props  Unset",
+            "description": "Remove a key or keys (and their values) completely from properties"
+          },
+          "data__attributes__profile__data__attributes__location__region": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  Location  Region",
+            "description": "Region within a country, such as state or province"
+          },
+          "data__attributes__profile__data__attributes__location__country": {
+            "type": "string",
+            "title": "Data  Attributes  Profile  Data  Attributes  Location  Country",
+            "description": "Country name"
+          }
+        },
+        "description": "Request schema for `CreateEvent`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_CREATE_LIST",
+      "name": "Create list",
+      "description": "Create a new list.<br><br>*Rate limits*:<br>Burst: `10/s`<br>Steady: `150/m`<br>Daily: `100/d` **Scopes:** `lists:write`",
+      "version": "20261023_00",
+      "tags": [
+        "Lists",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateListRequest",
+        "properties": {
+          "data__type": {
+            "enum": [
+              "list"
+            ],
+            "type": "string",
+            "title": "TypeEnm",
+            "description": "Type"
+          },
+          "data__attributes__name": {
+            "type": "string",
+            "title": "Data  Attributes  Name",
+            "description": "A helpful name to label the list"
+          }
+        },
+        "description": "Request schema for `CreateList`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_CREATE_OR_UPDATE_PROFILE",
+      "name": "Create or Update Profile",
+      "description": "Create or update a profile in Klaviyo with the given attributes. This action allows you to create a new profile or update an existing one if it already exists (based on email or other identifiers). Returns 201 for creation, 200 for update. Empty fields are cleared with `null`; omitted fields remain unchanged. Rate limits: 75/s burst, 700/m steady. Required scope: `profiles:write`. Preconditions: - At least one identifier (email, phone_number, external_id, or anonymous_id) must be provided - Email must be in valid format if provided - Phone number must be in E.164 format if provided",
+      "version": "20261023_00",
+      "tags": [
+        "Profiles",
+        "important",
+        "openWorldHint",
+        "createHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateOrUpdateProfileRequest",
+        "properties": {
+          "city": {
+            "type": "string",
+            "title": "City",
+            "examples": [
+              "New York"
+            ],
+            "description": "City name"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "examples": [
+              "user@example.com"
+            ],
+            "description": "Individual's email address"
+          },
+          "image": {
+            "type": "string",
+            "title": "Image",
+            "examples": [
+              "https://example.com/image.jpg"
+            ],
+            "description": "URL pointing to the location of a profile image"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Software Engineer"
+            ],
+            "description": "Individual's job title"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region",
+            "examples": [
+              "NY"
+            ],
+            "description": "Region within a country, such as state or province"
+          },
+          "country": {
+            "type": "string",
+            "title": "Country",
+            "examples": [
+              "United States"
+            ],
+            "description": "Country name"
+          },
+          "address1": {
+            "type": "string",
+            "title": "Address1",
+            "examples": [
+              "123 Main St"
+            ],
+            "description": "First line of street address"
+          },
+          "address2": {
+            "type": "string",
+            "title": "Address2",
+            "examples": [
+              "Apt 4B"
+            ],
+            "description": "Second line of street address"
+          },
+          "latitude": {
+            "type": "string",
+            "title": "Latitude",
+            "examples": [
+              "40.7128"
+            ],
+            "description": "Latitude coordinate. We recommend providing a precision of four decimal places."
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone",
+            "examples": [
+              "America/New_York"
+            ],
+            "description": "Time zone name. We recommend using time zones from the IANA Time Zone Database."
+          },
+          "zip_code": {
+            "type": "string",
+            "title": "Zip Code",
+            "examples": [
+              "10001"
+            ],
+            "description": "Zip code"
+          },
+          "last_name": {
+            "type": "string",
+            "title": "Last Name",
+            "examples": [
+              "Doe"
+            ],
+            "description": "Individual's last name"
+          },
+          "longitude": {
+            "type": "string",
+            "title": "Longitude",
+            "examples": [
+              "-74.0060"
+            ],
+            "description": "Longitude coordinate. We recommend providing a precision of four decimal places."
+          },
+          "first_name": {
+            "type": "string",
+            "title": "First Name",
+            "examples": [
+              "John"
+            ],
+            "description": "Individual's first name"
+          },
+          "properties": {
+            "type": "object",
+            "title": "Properties",
+            "examples": [
+              {
+                "loyalty_tier": "gold",
+                "favorite_color": "blue"
+              }
+            ],
+            "description": "Custom properties to associate with the profile",
+            "additionalProperties": true
+          },
+          "external_id": {
+            "type": "string",
+            "title": "External Id",
+            "examples": [
+              "customer_123"
+            ],
+            "description": "A unique identifier used by customers to associate Klaviyo profiles with profiles in an external system"
+          },
+          "anonymous_id": {
+            "type": "string",
+            "title": "Anonymous Id",
+            "description": "Id that can be used to identify a profile when other identifiers are not available"
+          },
+          "organization": {
+            "type": "string",
+            "title": "Organization",
+            "examples": [
+              "Example Corp"
+            ],
+            "description": "Name of the company or organization within the company for whom the individual works"
+          },
+          "phone_number": {
+            "type": "string",
+            "title": "Phone Number",
+            "examples": [
+              "+1234567890"
+            ],
+            "description": "Individual's phone number in E.164 format"
+          }
+        },
+        "description": "Request schema for `CreateOrUpdateProfile`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_CREATE_PROFILE",
+      "name": "Create profile",
+      "description": "Create a new profile.<br><br>*Rate limits*:<br>Burst: `75/s`<br>Steady: `700/m` **Scopes:** `profiles:write`",
+      "version": "20261023_00",
+      "tags": [
+        "Profiles",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateProfileRequest",
+        "properties": {
+          "data__type": {
+            "enum": [
+              "profile"
+            ],
+            "type": "string",
+            "title": "TypeEnm",
+            "description": "Type"
+          },
+          "data__attributes__email": {
+            "type": "string",
+            "title": "Data  Attributes  Email",
+            "description": "Individual\"s email address"
+          },
+          "data__attributes__image": {
+            "type": "string",
+            "title": "Data  Attributes  Image",
+            "description": "URL pointing to the location of a profile image"
+          },
+          "data__attributes__title": {
+            "type": "string",
+            "title": "Data  Attributes  Title",
+            "description": "Individual\"s job title"
+          },
+          "data__attributes__last__name": {
+            "type": "string",
+            "title": "Data  Attributes  Last  Name",
+            "description": "Individual\"s last name"
+          },
+          "data__attributes__first__name": {
+            "type": "string",
+            "title": "Data  Attributes  First  Name",
+            "description": "Individual\"s first name"
+          },
+          "data__attributes__external__id": {
+            "type": "string",
+            "title": "Data  Attributes  External  Id",
+            "description": "A unique identifier used by customers to associate Klaviyo profiles with profiles in an external system, such as a point-of-sale system. Format varies based on the external system. "
+          },
+          "data__attributes__location__ip": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Ip",
+            "description": "IP Address"
+          },
+          "data__attributes__organization": {
+            "type": "string",
+            "title": "Data  Attributes  Organization",
+            "description": "Name of the company or organization within the company for whom the individual works "
+          },
+          "data__attributes__location__zip": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Zip",
+            "description": "Zip code"
+          },
+          "data__attributes__phone__number": {
+            "type": "string",
+            "title": "Data  Attributes  Phone  Number",
+            "description": "Individual\"s phone number in E.164 format"
+          },
+          "data__attributes__location__city": {
+            "type": "string",
+            "title": "Data  Attributes  Location  City",
+            "description": "City name"
+          },
+          "data__attributes__location__region": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Region",
+            "description": "Region within a country, such as state or province"
+          },
+          "data__attributes__location__country": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Country",
+            "description": "Country name"
+          },
+          "data__attributes__location__address1": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Address1",
+            "description": "First line of street address"
+          },
+          "data__attributes__location__address2": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Address2",
+            "description": "Second line of street address"
+          },
+          "data__attributes__location__latitude": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Latitude",
+            "description": "Latitude coordinate. We recommend providing a precision of four decimal places. "
+          },
+          "data__attributes__location__timezone": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Timezone",
+            "description": "Time zone name. We recommend using time zones from the IANA Time Zone Database. "
+          },
+          "data__attributes__location__longitude": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Longitude",
+            "description": "Longitude coordinate. We recommend providing a precision of four decimal places. "
+          }
+        },
+        "description": "Request schema for `CreateProfile`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_CREATE_TEMPLATE",
+      "name": "Create template",
+      "description": "Summary: Custom HTML templates can be created unless an account reaches 1,000 template limit. Use sparse fieldsets to request specific fields. Rate limits are 10 per second and 150 per minute. Requires 'templates:write' scope.",
+      "version": "20261023_00",
+      "tags": [
+        "Templates",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateTemplateRequest",
+        "properties": {
+          "data__type": {
+            "enum": [
+              "template"
+            ],
+            "type": "string",
+            "title": "TypeEnm",
+            "description": "Type"
+          },
+          "data__attributes__html": {
+            "type": "string",
+            "title": "Data  Attributes  Html",
+            "description": "The HTML contents of the template"
+          },
+          "data__attributes__name": {
+            "type": "string",
+            "title": "Data  Attributes  Name",
+            "description": "The name of the template"
+          },
+          "data__attributes__text": {
+            "type": "string",
+            "title": "Data  Attributes  Text",
+            "description": "The plaintext version of the template"
+          },
+          "data__attributes__editor__type": {
+            "type": "string",
+            "title": "Data  Attributes  Editor  Type",
+            "description": "Restricted to CODE"
+          }
+        },
+        "description": "Request schema for `CreateTemplate`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_ACCOUNTS",
+      "name": "Get accounts",
+      "description": "Use a private API key to fetch an associated account's details like contact info, timezone, and currency, as well as validate the key. Rate limit: 1 request/second, 15 requests/minute. Scope required: `accounts:read`.",
+      "version": "20261023_00",
+      "tags": [
+        "Accounts",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAccountsRequest",
+        "properties": {
+          "fields__account": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "test_account",
+                "contact_information",
+                "contact_information.default_sender_name",
+                "contact_information.default_sender_email",
+                "contact_information.website_url",
+                "contact_information.organization_name",
+                "contact_information.street_address",
+                "contact_information.street_address.address1",
+                "contact_information.street_address.address2",
+                "contact_information.street_address.city",
+                "contact_information.street_address.region",
+                "contact_information.street_address.country",
+                "contact_information.street_address.zip",
+                "industry",
+                "timezone",
+                "preferred_currency",
+                "public_api_key",
+                "locale"
+              ],
+              "type": "string",
+              "title": "FieldsAccountEnm"
+            },
+            "title": "Fields  Account",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetAccounts`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_BULK_DELETE_CATALOG_ITEMS_JOB",
+      "name": "Get Bulk Delete Catalog Items Job",
+      "description": "Get a catalog item bulk delete job with the given job ID. Use this to check the status and progress of a bulk delete operation for catalog items. Rate limits: 350/s burst, 3500/m steady. Required scope: `catalogs:read`. Preconditions: - Valid API key with catalogs:read scope - Job ID must exist and be accessible",
+      "version": "20261023_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Bulk Operations"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetBulkDeleteCatalogItemsJobRequest",
+        "required": [
+          "job_id"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id",
+            "examples": [
+              "01KHENTZKM2X0HAX9Q52AB3QAF"
+            ],
+            "description": "The unique identifier for the bulk delete job to retrieve"
+          }
+        },
+        "description": "Request schema for `GetBulkDeleteCatalogItemsJob`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_BULK_UPDATE_CATEGORIES_JOB",
+      "name": "Get Bulk Update Categories Job",
+      "description": "Retrieve a catalog category bulk update job by its ID from Klaviyo. This action fetches the status and details of a bulk update job for catalog categories, including progress metrics (total, completed, failed counts) and optionally the related category resources. Use this to track the progress of bulk category update operations. Rate limits: 350/s burst, 3500/m steady. Required scope: `catalogs:read`. Preconditions: - Valid API key with catalogs:read scope - Job ID must exist and be accessible",
+      "version": "20261023_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Bulk Operations"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetBulkUpdateCategoriesJobRequest",
+        "required": [
+          "job_id"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id",
+            "examples": [
+              "01KHENY78Y4RKXCP7WC1DWBVG3"
+            ],
+            "description": "The unique identifier for the bulk update categories job"
+          },
+          "include_categories": {
+            "type": "boolean",
+            "title": "Include Categories",
+            "default": false,
+            "description": "Whether to include related category data in the response"
+          }
+        },
+        "description": "Request schema for `GetBulkUpdateCategoriesJob`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_CAMPAIGN",
+      "name": "Get Campaign",
+      "description": "Retrieve a specific campaign by its ID from Klaviyo. This action fetches detailed information about a single campaign including its name, status, audience settings, send strategy, and optionally related messages and tags. Rate limits: 10/s burst, 150/m steady. Required scope: `campaigns:read`. Preconditions: - Valid API key with campaigns:read scope - Campaign ID must exist and be accessible",
+      "version": "20261023_00",
+      "tags": [
+        "Campaigns",
+        "important",
+        "openWorldHint",
+        "readOnly",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCampaignRequest",
+        "required": [
+          "campaign_id"
+        ],
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id",
+            "examples": [
+              "01GDDKASAP8TKDDA2GRZDSVP4H"
+            ],
+            "description": "The campaign ID to retrieve"
+          },
+          "include_tags": {
+            "type": "boolean",
+            "title": "Include Tags",
+            "default": false,
+            "description": "Whether to include tags in the response"
+          },
+          "include_messages": {
+            "type": "boolean",
+            "title": "Include Messages",
+            "default": false,
+            "description": "Whether to include campaign messages in the response"
+          }
+        },
+        "description": "Request schema for `GetCampaign`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_CAMPAIGN_CAMPAIGN_MESSAGES",
+      "name": "Get campaign campaign messages",
+      "description": "Return all messages that belong to the given campaign.<br><br>*Rate limits*:<br>Burst: `10/s`<br>Steady: `150/m` **Scopes:** `campaigns:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Campaigns",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCampaignCampaignMessagesRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The unique identifier of the campaign to retrieve messages for. You can obtain campaign IDs using the Get Campaigns action."
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "campaign",
+                "template"
+              ],
+              "type": "string",
+              "title": "IncludeEnm"
+            },
+            "title": "Include",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#relationships "
+          },
+          "fields__campaign": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "status",
+                "archived",
+                "audiences",
+                "audiences.included",
+                "audiences.excluded",
+                "send_options",
+                "tracking_options",
+                "send_strategy",
+                "send_strategy.method",
+                "send_strategy.options_static",
+                "send_strategy.options_static.datetime",
+                "send_strategy.options_static.is_local",
+                "send_strategy.options_static.send_past_recipients_immediately",
+                "send_strategy.options_throttled",
+                "send_strategy.options_throttled.datetime",
+                "send_strategy.options_throttled.throttle_percentage",
+                "send_strategy.options_sto",
+                "send_strategy.options_sto.date",
+                "created_at",
+                "scheduled_at",
+                "updated_at",
+                "send_time"
+              ],
+              "type": "string",
+              "title": "FieldsCampaignEnm"
+            },
+            "title": "Fields  Campaign",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__template": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "editor_type",
+                "html",
+                "text",
+                "created",
+                "updated"
+              ],
+              "type": "string",
+              "title": "FieldsTemplateEnm"
+            },
+            "title": "Fields  Template",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__campaign__message": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "label",
+                "channel",
+                "content",
+                "send_times",
+                "render_options",
+                "render_options.shorten_links",
+                "render_options.add_org_prefix",
+                "render_options.add_info_link",
+                "render_options.add_opt_out_language",
+                "created_at",
+                "updated_at"
+              ],
+              "type": "string",
+              "title": "FieldsCampaignMessageEnm"
+            },
+            "title": "Fields  Campaign  Message",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetCampaignCampaignMessages`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_CAMPAIGN_MESSAGE",
+      "name": "Get campaign message",
+      "description": "Returns a specific message based on a required id.<br><br>*Rate limits*:<br>Burst: `10/s`<br>Steady: `150/m` **Scopes:** `campaigns:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Campaigns",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCampaignMessageRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The message ID to be retrieved"
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "campaign",
+                "template"
+              ],
+              "type": "string",
+              "title": "IncludeEnm"
+            },
+            "title": "Include",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#relationships "
+          },
+          "fields__campaign": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "status",
+                "archived",
+                "audiences",
+                "audiences.included",
+                "audiences.excluded",
+                "send_options",
+                "tracking_options",
+                "send_strategy",
+                "send_strategy.method",
+                "send_strategy.options_static",
+                "send_strategy.options_static.datetime",
+                "send_strategy.options_static.is_local",
+                "send_strategy.options_static.send_past_recipients_immediately",
+                "send_strategy.options_throttled",
+                "send_strategy.options_throttled.datetime",
+                "send_strategy.options_throttled.throttle_percentage",
+                "send_strategy.options_sto",
+                "send_strategy.options_sto.date",
+                "created_at",
+                "scheduled_at",
+                "updated_at",
+                "send_time"
+              ],
+              "type": "string",
+              "title": "FieldsCampaignEnm"
+            },
+            "title": "Fields  Campaign",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__template": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "editor_type",
+                "html",
+                "text",
+                "created",
+                "updated"
+              ],
+              "type": "string",
+              "title": "FieldsTemplateEnm"
+            },
+            "title": "Fields  Template",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__campaign__message": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "id",
+                "label",
+                "channel",
+                "content",
+                "send_times",
+                "render_options",
+                "created_at",
+                "updated_at",
+                "render_options.shorten_links",
+                "render_options.add_org_prefix",
+                "render_options.add_info_link",
+                "render_options.add_opt_out_language",
+                "content.subject",
+                "content.preview_text",
+                "content.from_email",
+                "content.from_label",
+                "content.reply_to_email",
+                "content.cc_email",
+                "content.bcc_email",
+                "content.body",
+                "content.title",
+                "content.notification_type",
+                "content.dynamic_image",
+                "content.play_sound",
+                "content.badge",
+                "content.on_open"
+              ],
+              "type": "string",
+              "title": "FieldsCampaignMessageEnm"
+            },
+            "title": "Fields  Campaign  Message",
+            "description": "Sparse fieldset filter for campaign message attributes. Top-level fields: id, label, channel, content, send_times, render_options, created_at, updated_at. Nested content fields for email: content.subject, content.preview_text, content.from_email, content.from_label, content.reply_to_email, content.cc_email, content.bcc_email. Nested content fields for SMS/push: content.body, content.title. Nested render_options fields (SMS): render_options.shorten_links, render_options.add_org_prefix, render_options.add_info_link, render_options.add_opt_out_language."
+          }
+        },
+        "description": "Request schema for `GetCampaignMessage`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_CAMPAIGN_RECIPIENT_ESTIMATION",
+      "name": "Get campaign recipient estimation",
+      "description": "Get estimated recipients for a given campaign ID using `Create Campaign Recipient Estimation Job`. Rate limits are 10/s burst and 150/m steady. Required scope: `campaigns:read`.",
+      "version": "20261023_00",
+      "tags": [
+        "Campaigns",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCampaignRecipientEstimationRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The ID of the campaign for which to get the estimated number of recipients "
+          },
+          "fields__campaign__recipient__estimation": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "estimated_recipient_count"
+              ],
+              "type": "string",
+              "title": "FieldsCampaignRecipientEstimationEnm"
+            },
+            "title": "Fields  Campaign  Recipient  Estimation",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetCampaignRecipientEstimation`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_CAMPAIGNS",
+      "name": "Get Campaigns",
+      "description": "Retrieve campaigns from your Klaviyo account. This action allows you to fetch campaigns with optional filtering and sorting. Klaviyo requires specifying a channel (email or sms) to list campaigns. You can add additional filters for status, name, creation date, and other attributes. Results are paginated with a default of 10 campaigns per page. Rate limits: 10/s burst, 150/m steady. Required scope: `campaigns:read`. Preconditions: - Valid API key with campaigns:read scope - Channel must be specified (email or sms) - Additional filter syntax must be valid if provided",
+      "version": "20261023_00",
+      "tags": [
+        "Campaigns",
+        "important",
+        "openWorldHint",
+        "readOnly",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCampaignsRequest",
+        "properties": {
+          "sort": {
+            "enum": [
+              "created_at",
+              "-created_at",
+              "id",
+              "-id",
+              "name",
+              "-name",
+              "scheduled_at",
+              "-scheduled_at",
+              "updated_at",
+              "-updated_at"
+            ],
+            "type": "string",
+            "title": "SortOptions",
+            "description": "Klaviyo API sort options - note the _at suffix is required for time-based fields."
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "examples": [
+              "equals(status,\"draft\")",
+              "equals(name,\"Newsletter\")"
+            ],
+            "description": "Additional filter for campaigns. Will be combined with the required channel filter. Example: 'equals(status,\"draft\")' Malformed or overly complex filters trigger 4xx errors; use simple single-condition filters."
+          },
+          "channel": {
+            "enum": [
+              "email",
+              "sms"
+            ],
+            "type": "string",
+            "title": "Channel",
+            "default": "email",
+            "description": "Campaign channel to filter by (email or sms). Required by Klaviyo API."
+          },
+          "page_cursor": {
+            "type": "string",
+            "title": "Page Cursor",
+            "description": "Cursor for pagination to get the next page of results Iterate using `links.next` until it returns null to retrieve all results."
+          },
+          "include_archived": {
+            "type": "boolean",
+            "title": "Include Archived",
+            "default": false,
+            "description": "Whether to include archived campaigns in the results"
+          }
+        },
+        "description": "Request schema for `GetCampaigns`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_EVENT",
+      "name": "Get event",
+      "description": "Get an event with the given event ID.<br><br>*Rate limits*:<br>Burst: `10/s`<br>Steady: `150/m` **Scopes:** `events:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Events",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetEventRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "ID of the event"
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "attributions",
+                "metric",
+                "profile"
+              ],
+              "type": "string",
+              "title": "IncludeEnm"
+            },
+            "title": "Include",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#relationships "
+          },
+          "fields__event": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "timestamp",
+                "event_properties",
+                "datetime",
+                "uuid"
+              ],
+              "type": "string",
+              "title": "FieldsEventEnm"
+            },
+            "title": "Fields  Event",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__metric": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "created",
+                "updated",
+                "integration"
+              ],
+              "type": "string",
+              "title": "FieldsMetricEnm"
+            },
+            "title": "Fields  Metric",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__profile": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "email",
+                "phone_number",
+                "external_id",
+                "first_name",
+                "last_name",
+                "organization",
+                "locale",
+                "title",
+                "image",
+                "created",
+                "updated",
+                "last_event_date",
+                "location",
+                "location.address1",
+                "location.address2",
+                "location.city",
+                "location.country",
+                "location.latitude",
+                "location.longitude",
+                "location.region",
+                "location.zip",
+                "location.timezone",
+                "location.ip",
+                "properties"
+              ],
+              "type": "string",
+              "title": "FieldsProfileEnm"
+            },
+            "title": "Fields  Profile",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetEvent`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_EVENTS",
+      "name": "Get events",
+      "description": "Get all events in an account Requests can be sorted by the following fields: `datetime`, `timestamp` Returns a maximum of 200 events per page.<br><br>*Rate limits*:<br>Burst: `350/s`<br>Steady: `3500/m` **Scopes:** `events:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Events",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetEventsRequest",
+        "properties": {
+          "sort": {
+            "enum": [
+              "datetime",
+              "-datetime",
+              "timestamp",
+              "-timestamp"
+            ],
+            "type": "string",
+            "title": "SortEnm",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sorting "
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "Filter events using Klaviyo filter syntax. IMPORTANT: Only the following fields are filterable for events: datetime, metric_id, profile, profile_id, timestamp. Fields like '$attributed_campaign' and other event properties are NOT filterable and will result in a 400 error. Allowed field(s)/operator(s): `metric_id`: `equals` - The metric_id must be a 6-character alphanumeric ID (e.g., 'Vatr8j'), NOT a metric name like 'Opened Email'. Use the Get Metrics endpoint (KLAVIYO_GET_METRICS) to retrieve valid metric IDs for your account. `profile_id`: `equals` - The profile_id must be a valid Klaviyo profile ID. `profile`: `has` - Check if profile exists. `datetime`: `greater-or-equal`, `greater-than`, `less-or-equal`, `less-than` - Use ISO 8601 format (e.g., '2024-01-01T00:00:00Z'). `timestamp`: `greater-or-equal`, `greater-than`, `less-or-equal`, `less-than` - Unix timestamp. Example: equals(metric_id,\"Vatr8j\"),greater-than(datetime,2024-01-01T00:00:00Z). For more information: https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#filtering"
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "attributions",
+                "metric",
+                "profile"
+              ],
+              "type": "string",
+              "title": "IncludeEnm"
+            },
+            "title": "Include",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#relationships "
+          },
+          "page__cursor": {
+            "type": "string",
+            "title": "Page  Cursor",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#pagination "
+          },
+          "fields__event": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "timestamp",
+                "event_properties",
+                "datetime",
+                "uuid",
+                "id"
+              ],
+              "type": "string",
+              "title": "FieldsEventEnm"
+            },
+            "title": "Fields  Event",
+            "description": "Sparse fieldsets to select specific event fields. Valid values: 'timestamp', 'event_properties', 'datetime', 'uuid', 'id'. Note: 'metric_id' and 'profile_id' are filter parameters (use the 'filter' param), not sparse fieldset values. Use 'event_properties' (not 'properties') for event custom properties. For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets"
+          },
+          "fields__metric": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "created",
+                "updated",
+                "integration"
+              ],
+              "type": "string",
+              "title": "FieldsMetricEnm"
+            },
+            "title": "Fields  Metric",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__profile": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "email",
+                "phone_number",
+                "external_id",
+                "first_name",
+                "last_name",
+                "organization",
+                "locale",
+                "title",
+                "image",
+                "created",
+                "updated",
+                "last_event_date",
+                "location",
+                "location.address1",
+                "location.address2",
+                "location.city",
+                "location.country",
+                "location.latitude",
+                "location.longitude",
+                "location.region",
+                "location.zip",
+                "location.timezone",
+                "location.ip",
+                "properties"
+              ],
+              "type": "string",
+              "title": "FieldsProfileEnm"
+            },
+            "title": "Fields  Profile",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetEvents`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_FLOW",
+      "name": "Get flow",
+      "description": "Get a flow with the given flow ID.<br><br>*Rate limits*:<br>Burst: `3/s`<br>Steady: `60/m` **Scopes:** `flows:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Flows",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFlowRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The unique identifier of the flow to retrieve. Flow IDs can be obtained from the Get Flows endpoint."
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "flow-actions",
+                "tags"
+              ],
+              "type": "string",
+              "title": "IncludeEnm"
+            },
+            "title": "Include",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#relationships "
+          },
+          "fields__tag": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name"
+              ],
+              "type": "string",
+              "title": "FieldsTagEnm"
+            },
+            "title": "Fields  Tag",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__flow": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "status",
+                "archived",
+                "created",
+                "updated",
+                "trigger_type"
+              ],
+              "type": "string",
+              "title": "FieldsFlowEnm"
+            },
+            "title": "Fields  Flow",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__flow__action": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "action_type",
+                "status",
+                "created",
+                "updated",
+                "settings",
+                "tracking_options",
+                "send_options",
+                "send_options.use_smart_sending",
+                "send_options.is_transactional",
+                "render_options",
+                "render_options.shorten_links",
+                "render_options.add_org_prefix",
+                "render_options.add_info_link",
+                "render_options.add_opt_out_language"
+              ],
+              "type": "string",
+              "title": "FieldsFlowActionEnm"
+            },
+            "title": "Fields  Flow  Action",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetFlow`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_FLOW_ACTION_MESSAGES",
+      "name": "Get flow action messages",
+      "description": "Retrieve up to 50 flow messages per request by action ID, sortable by various fields, with ascending/descending options, and paginated using `page[size]` and `page[number]`. Rate limits: 3/s burst, 60/m steady. Scope required: `flows:read`.",
+      "version": "20261023_00",
+      "tags": [
+        "Flows",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFlowActionMessagesRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The unique identifier of the flow action to retrieve messages for. Flow action IDs can be obtained from the Get Flow Actions endpoint."
+          },
+          "sort": {
+            "enum": [
+              "created",
+              "-created",
+              "id",
+              "-id",
+              "name",
+              "-name",
+              "updated",
+              "-updated"
+            ],
+            "type": "string",
+            "title": "SortEnm",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sorting "
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#filtering<br>Allowed field(s)/operator(s):<br>`id`: `any`<br>`name`: `contains`, `ends-with`, `equals`, `starts-with`<br>`created`: `equals`, `greater-or-equal`, `greater-than`, `less-or-equal`, `less-than`<br>`updated`: `equals`, `greater-or-equal`, `greater-than`, `less-or-equal`, `less-than` "
+          },
+          "page__size": {
+            "type": "integer",
+            "title": "Page  Size",
+            "default": 50,
+            "description": "Default: 50. Min: 1. Max: 100."
+          },
+          "fields__flow__message": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "channel",
+                "content",
+                "created",
+                "updated"
+              ],
+              "type": "string",
+              "title": "FieldsFlowMessageEnm"
+            },
+            "title": "Fields  Flow  Message",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetFlowActionMessages`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_FLOW_FLOW_ACTIONS",
+      "name": "Get flow flow actions",
+      "description": "Get all flow actions associated with the given flow ID. Returns a maximum of 50 flow actions per request, which can be paginated with cursor-based pagination.<br><br>*Rate limits*:<br>Burst: `3/s`<br>Steady: `60/m` **Scopes:** `flows:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Flows",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFlowFlowActionsRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The unique identifier of the flow to retrieve flow actions for. Flow IDs can be obtained from the Get Flows endpoint."
+          },
+          "sort": {
+            "enum": [
+              "action_type",
+              "-action_type",
+              "created",
+              "-created",
+              "id",
+              "-id",
+              "status",
+              "-status",
+              "updated",
+              "-updated"
+            ],
+            "type": "string",
+            "title": "SortEnm",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sorting "
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#filtering<br>Allowed field(s)/operator(s):<br>`id`: `any`<br>`action_type`: `any`, `equals` (valid values: BOOLEAN_BRANCH, SEND_EMAIL, UPDATE_CUSTOMER, <PERSON>, TIME_DELAY, BACK_IN_STOCK_DELAY, COUNTDOWN_DELAY, SEND_SMS, SEND_NOTIFICATION_MESSAGE, WEBHOOK, AB_TEST)<br>`status`: `equals`<br>`created`: `equals`, `greater-or-equal`, `greater-than`, `less-or-equal`, `less-than`<br>`updated`: `equals`, `greater-or-equal`, `greater-than`, `less-or-equal`, `less-than` "
+          },
+          "page__size": {
+            "type": "integer",
+            "title": "Page  Size",
+            "default": 50,
+            "description": "Default: 50. Min: 1. Max: 50."
+          },
+          "page__cursor": {
+            "type": "string",
+            "title": "Page  Cursor",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#pagination "
+          },
+          "fields__flow__action": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "action_type",
+                "status",
+                "created",
+                "updated",
+                "settings",
+                "tracking_options",
+                "send_options",
+                "send_options.use_smart_sending",
+                "send_options.is_transactional",
+                "render_options",
+                "render_options.shorten_links",
+                "render_options.add_org_prefix",
+                "render_options.add_info_link",
+                "render_options.add_opt_out_language"
+              ],
+              "type": "string",
+              "title": "FieldsFlowActionEnm"
+            },
+            "title": "Fields  Flow  Action",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetFlowFlowActions`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_FLOW_MESSAGE",
+      "name": "Get flow message",
+      "description": "Get the flow message of a flow with the given message ID.<br><br>*Rate limits*:<br>Burst: `3/s`<br>Steady: `60/m` **Scopes:** `flows:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Flows",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFlowMessageRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The flow message ID. Flow messages are associated with EMAIL or SMS actions within flows. Obtain flow message IDs via the Get Flow Action Messages endpoint using a flow action ID of type SEND_EMAIL or SEND_SMS."
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "flow-action",
+                "template"
+              ],
+              "type": "string",
+              "title": "IncludeEnm"
+            },
+            "title": "Include",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#relationships "
+          },
+          "fields__template": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "editor_type",
+                "html",
+                "text",
+                "created",
+                "updated"
+              ],
+              "type": "string",
+              "title": "FieldsTemplateEnm"
+            },
+            "title": "Fields  Template",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__flow__action": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "action_type",
+                "status",
+                "created",
+                "updated",
+                "settings",
+                "tracking_options",
+                "send_options",
+                "send_options.use_smart_sending",
+                "send_options.is_transactional",
+                "render_options",
+                "render_options.shorten_links",
+                "render_options.add_org_prefix",
+                "render_options.add_info_link",
+                "render_options.add_opt_out_language"
+              ],
+              "type": "string",
+              "title": "FieldsFlowActionEnm"
+            },
+            "title": "Fields  Flow  Action",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__flow__message": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "channel",
+                "content",
+                "created",
+                "updated"
+              ],
+              "type": "string",
+              "title": "FieldsFlowMessageEnm"
+            },
+            "title": "Fields  Flow  Message",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetFlowMessage`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_FLOWS",
+      "name": "Get flows",
+      "description": "Get all flows in an account. Returns a maximum of 50 flows per request, which can be paginated with cursor-based pagination.<br><br>*Rate limits*:<br>Burst: `3/s`<br>Steady: `60/m` **Scopes:** `flows:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Flows",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFlowsRequest",
+        "properties": {
+          "sort": {
+            "enum": [
+              "created",
+              "-created",
+              "id",
+              "-id",
+              "name",
+              "-name",
+              "status",
+              "-status",
+              "trigger_type",
+              "-trigger_type",
+              "updated",
+              "-updated"
+            ],
+            "type": "string",
+            "title": "SortEnm",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sorting "
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "Filter syntax uses function format: `operator(field,\"value\")`. **String values MUST be quoted.** Examples: `equals(status,\"live\")`, `contains(name,\"welcome\")`, `any(id,[\"ID1\",\"ID2\"])`. Allowed field(s)/operator(s): `id`: `any`; `name`: `contains`, `ends-with`, `equals`, `starts-with`; `status`: `equals`; `archived`: `equals`; `created`: `equals`, `greater-or-equal`, `greater-than`, `less-or-equal`, `less-than`; `updated`: `equals`, `greater-or-equal`, `greater-than`, `less-or-equal`, `less-than`; `trigger_type`: `equals`. For more information visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#filtering"
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "flow-actions",
+                "tags"
+              ],
+              "type": "string",
+              "title": "IncludeEnm"
+            },
+            "title": "Include",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#relationships "
+          },
+          "page__size": {
+            "type": "integer",
+            "title": "Page  Size",
+            "default": 50,
+            "maximum": 50,
+            "minimum": 1,
+            "description": "Number of flows to return per page."
+          },
+          "fields__tag": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name"
+              ],
+              "type": "string",
+              "title": "FieldsTagEnm"
+            },
+            "title": "Fields  Tag",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__flow": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "status",
+                "archived",
+                "created",
+                "updated",
+                "trigger_type"
+              ],
+              "type": "string",
+              "title": "FieldsFlowEnm"
+            },
+            "title": "Fields  Flow",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "page__cursor": {
+            "type": "string",
+            "title": "Page  Cursor",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#pagination "
+          },
+          "fields__flow__action": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "action_type",
+                "status",
+                "created",
+                "updated",
+                "settings",
+                "tracking_options",
+                "send_options",
+                "send_options.use_smart_sending",
+                "send_options.is_transactional",
+                "render_options",
+                "render_options.shorten_links",
+                "render_options.add_org_prefix",
+                "render_options.add_info_link",
+                "render_options.add_opt_out_language"
+              ],
+              "type": "string",
+              "title": "FieldsFlowActionEnm"
+            },
+            "title": "Fields  Flow  Action",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetFlows`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_LIST",
+      "name": "Get list",
+      "description": "API allows 75 req/sec and 700 req/min, but with 'profile_count' param, it's 1 req/sec and 15 req/min. 'lists:read' scope needed. See developer guide for details.",
+      "version": "20261023_00",
+      "tags": [
+        "Lists",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetListRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Primary key that uniquely identifies this list. Generated by Klaviyo."
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "tags"
+              ],
+              "type": "string",
+              "title": "IncludeEnm"
+            },
+            "title": "Include",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#relationships "
+          },
+          "fields__tag": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name"
+              ],
+              "type": "string",
+              "title": "FieldsTagEnm"
+            },
+            "title": "Fields  Tag",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__list": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "created",
+                "updated",
+                "opt_in_process",
+                "profile_count"
+              ],
+              "type": "string",
+              "title": "FieldsListEnm"
+            },
+            "title": "Fields  List",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "additional__fields__list": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "profile_count"
+              ],
+              "type": "string",
+              "title": "AdditionalFieldsListEnm"
+            },
+            "title": "Additional  Fields  List",
+            "description": "Request additional fields not included by default in the response. Supported values: \"profile_count\" "
+          }
+        },
+        "description": "Request schema for `GetList`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_LIST_PROFILES",
+      "name": "Get list profiles",
+      "description": "Retrieve profiles in a list by ID, filterable by email/phone/push token/join date, sortable by join date. Regular rate limit: 75/s, 700/m; with predictive analytics: 10/s, 150/m. Details at Klaviyo guide. Scopes required: lists:read, profiles:read.",
+      "version": "20261023_00",
+      "tags": [
+        "Lists",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetListProfilesRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The unique identifier of the Klaviyo list to retrieve profiles from. Example: 'Y6nRLr'"
+          },
+          "sort": {
+            "enum": [
+              "joined_group_at",
+              "-joined_group_at"
+            ],
+            "type": "string",
+            "title": "SortEnm",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sorting "
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#filtering<br>Allowed field(s)/operator(s):<br>`email`: `any`, `equals`<br>`phone_number`: `any`, `equals`<br>`push_token`: `any`, `equals`<br>`_kx`: `equals`<br>`joined_group_at`: `greater-or-equal`, `greater-than`, `less-or-equal`, `less-than` "
+          },
+          "page__size": {
+            "type": "integer",
+            "title": "Page  Size",
+            "default": 20,
+            "description": "Default: 20. Min: 1. Max: 100."
+          },
+          "page__cursor": {
+            "type": "string",
+            "title": "Page  Cursor",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#pagination "
+          },
+          "fields__profile": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "email",
+                "phone_number",
+                "external_id",
+                "first_name",
+                "last_name",
+                "organization",
+                "locale",
+                "title",
+                "image",
+                "created",
+                "updated",
+                "last_event_date",
+                "location",
+                "location.address1",
+                "location.address2",
+                "location.city",
+                "location.country",
+                "location.latitude",
+                "location.longitude",
+                "location.region",
+                "location.zip",
+                "location.timezone",
+                "location.ip",
+                "properties",
+                "joined_group_at",
+                "subscriptions",
+                "subscriptions.email",
+                "subscriptions.email.marketing",
+                "subscriptions.email.marketing.can_receive_email_marketing",
+                "subscriptions.email.marketing.consent",
+                "subscriptions.email.marketing.consent_timestamp",
+                "subscriptions.email.marketing.last_updated",
+                "subscriptions.email.marketing.method",
+                "subscriptions.email.marketing.method_detail",
+                "subscriptions.email.marketing.custom_method_detail",
+                "subscriptions.email.marketing.double_optin",
+                "subscriptions.email.marketing.suppression",
+                "subscriptions.email.marketing.list_suppressions",
+                "subscriptions.sms",
+                "subscriptions.sms.marketing",
+                "subscriptions.sms.marketing.can_receive_sms_marketing",
+                "subscriptions.sms.marketing.consent",
+                "subscriptions.sms.marketing.consent_timestamp",
+                "subscriptions.sms.marketing.method",
+                "subscriptions.sms.marketing.method_detail",
+                "subscriptions.sms.marketing.last_updated",
+                "predictive_analytics",
+                "predictive_analytics.historic_clv",
+                "predictive_analytics.predicted_clv",
+                "predictive_analytics.total_clv",
+                "predictive_analytics.historic_number_of_orders",
+                "predictive_analytics.predicted_number_of_orders",
+                "predictive_analytics.average_days_between_orders",
+                "predictive_analytics.average_order_value",
+                "predictive_analytics.churn_probability",
+                "predictive_analytics.expected_date_of_next_order"
+              ],
+              "type": "string",
+              "title": "FieldsProfileEnm"
+            },
+            "title": "Fields  Profile",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "additional__fields__profile": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "subscriptions",
+                "predictive_analytics"
+              ],
+              "type": "string",
+              "title": "AdditionalFieldsProfileEnm"
+            },
+            "title": "Additional  Fields  Profile",
+            "description": "Request additional fields not included by default in the response. Supported values: \"subscriptions\", \"predictive_analytics\" "
+          }
+        },
+        "description": "Request schema for `GetListProfiles`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_LISTS",
+      "name": "Get Lists",
+      "description": "Retrieve marketing lists from your Klaviyo account. This action allows you to fetch lists with optional filtering and sorting. You can filter by name, creation date, and other attributes. Results are paginated with a default of 10 lists per page. Rate limits: 75/s burst, 700/m steady. Required scope: `lists:read`. Preconditions: - Valid API key with lists:read scope - Filter syntax must be valid if provided",
+      "version": "20261023_00",
+      "tags": [
+        "Lists",
+        "important",
+        "openWorldHint",
+        "readOnly",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetListsRequest",
+        "properties": {
+          "sort": {
+            "enum": [
+              "created",
+              "-created",
+              "id",
+              "-id",
+              "name",
+              "-name",
+              "updated",
+              "-updated"
+            ],
+            "type": "string",
+            "title": "Sort",
+            "default": "name",
+            "description": "Sort lists by field (add '-' prefix for descending order)"
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "examples": [
+              "equals(name,\"Newsletter\")",
+              "greater-than(created,\"2024-01-01\")"
+            ],
+            "description": "Filter lists by name, creation date, etc. Example: 'equals(name,\"Newsletter\")'"
+          },
+          "page_cursor": {
+            "type": "string",
+            "title": "Page Cursor",
+            "description": "Cursor for pagination to get the next page of results"
+          },
+          "include_tags": {
+            "type": "boolean",
+            "title": "Include Tags",
+            "default": false,
+            "description": "Whether to include tags associated with the lists"
+          }
+        },
+        "description": "Request schema for `GetLists`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_METRIC",
+      "name": "Get metric",
+      "description": "Get a metric with the given metric ID.<br><br>*Rate limits*:<br>Burst: `10/s`<br>Steady: `150/m` **Scopes:** `metrics:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Metrics",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetMetricRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Metric ID"
+          },
+          "fields__metric": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "created",
+                "updated",
+                "integration"
+              ],
+              "type": "string",
+              "title": "FieldsMetricEnm"
+            },
+            "title": "Fields  Metric",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetMetric`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_METRICS",
+      "name": "Get metrics",
+      "description": "Get all metrics in an account. Requests can be filtered by the following fields: integration `name`, integration `category` Returns a maximum of 200 results per page.<br><br>*Rate limits*:<br>Burst: `10/s`<br>Steady: `150/m` **Scopes:** `metrics:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Metrics",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetMetricsRequest",
+        "properties": {
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "Filter metrics by integration fields only. IMPORTANT: The metric's own 'name' field is NOT filterable. Only integration fields can be filtered. Allowed fields and operators: `integration.name` with `equals`, `integration.category` with `equals`. Example: equals(integration.name,'Klaviyo') or equals(integration.category,'Internal'). For more information visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#filtering"
+          },
+          "page__cursor": {
+            "type": "string",
+            "title": "Page  Cursor",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#pagination "
+          },
+          "fields__metric": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "created",
+                "updated",
+                "integration"
+              ],
+              "type": "string",
+              "title": "FieldsMetricEnm"
+            },
+            "title": "Fields  Metric",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetMetrics`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_PROFILE",
+      "name": "Get profile",
+      "description": "Get the profile with the given profile ID.<br><br>*Rate limits*:<br>Burst: `75/s`<br>Steady: `700/m` **Scopes:** `profiles:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Profiles",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetProfileRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": ""
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "lists",
+                "segments"
+              ],
+              "type": "string",
+              "title": "IncludeEnm"
+            },
+            "title": "Include",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#relationships "
+          },
+          "fields__list": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "created",
+                "updated",
+                "opt_in_process"
+              ],
+              "type": "string",
+              "title": "FieldsListEnm"
+            },
+            "title": "Fields  List",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__profile": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "email",
+                "phone_number",
+                "external_id",
+                "first_name",
+                "last_name",
+                "organization",
+                "locale",
+                "title",
+                "image",
+                "created",
+                "updated",
+                "last_event_date",
+                "location",
+                "location.address1",
+                "location.address2",
+                "location.city",
+                "location.country",
+                "location.latitude",
+                "location.longitude",
+                "location.region",
+                "location.zip",
+                "location.timezone",
+                "location.ip",
+                "properties",
+                "subscriptions",
+                "subscriptions.email",
+                "subscriptions.email.marketing",
+                "subscriptions.email.marketing.can_receive_email_marketing",
+                "subscriptions.email.marketing.consent",
+                "subscriptions.email.marketing.consent_timestamp",
+                "subscriptions.email.marketing.last_updated",
+                "subscriptions.email.marketing.method",
+                "subscriptions.email.marketing.method_detail",
+                "subscriptions.email.marketing.custom_method_detail",
+                "subscriptions.email.marketing.double_optin",
+                "subscriptions.email.marketing.suppression",
+                "subscriptions.email.marketing.list_suppressions",
+                "subscriptions.sms",
+                "subscriptions.sms.marketing",
+                "subscriptions.sms.marketing.can_receive_sms_marketing",
+                "subscriptions.sms.marketing.consent",
+                "subscriptions.sms.marketing.consent_timestamp",
+                "subscriptions.sms.marketing.method",
+                "subscriptions.sms.marketing.method_detail",
+                "subscriptions.sms.marketing.last_updated",
+                "predictive_analytics",
+                "predictive_analytics.historic_clv",
+                "predictive_analytics.predicted_clv",
+                "predictive_analytics.total_clv",
+                "predictive_analytics.historic_number_of_orders",
+                "predictive_analytics.predicted_number_of_orders",
+                "predictive_analytics.average_days_between_orders",
+                "predictive_analytics.average_order_value",
+                "predictive_analytics.churn_probability",
+                "predictive_analytics.expected_date_of_next_order"
+              ],
+              "type": "string",
+              "title": "FieldsProfileEnm"
+            },
+            "title": "Fields  Profile",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "fields__segment": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "definition",
+                "definition.condition_groups",
+                "created",
+                "updated",
+                "is_active",
+                "is_processing",
+                "is_starred"
+              ],
+              "type": "string",
+              "title": "FieldsSegmentEnm"
+            },
+            "title": "Fields  Segment",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "additional__fields__profile": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "subscriptions",
+                "predictive_analytics"
+              ],
+              "type": "string",
+              "title": "AdditionalFieldsProfileEnm"
+            },
+            "title": "Additional  Fields  Profile",
+            "description": "Request additional fields not included by default in the response. Supported values: \"subscriptions\", \"predictive_analytics\" "
+          }
+        },
+        "description": "Request schema for `GetProfile`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_PROFILE_LISTS",
+      "name": "Get profile lists",
+      "description": "Get list memberships for a profile with the given profile ID.<br><br>*Rate limits*:<br>Burst: `3/s`<br>Steady: `60/m` **Scopes:** `lists:read` `profiles:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Profiles",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetProfileListsRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The unique identifier of the profile to retrieve list memberships for. This is a Klaviyo profile ID (e.g., '01KFT7HBHVKV3D25581YVCNAJN')."
+          },
+          "fields__list": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "created",
+                "updated",
+                "opt_in_process"
+              ],
+              "type": "string",
+              "title": "FieldsListEnm"
+            },
+            "title": "Fields  List",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "page__cursor": {
+            "type": "string",
+            "title": "Page  Cursor",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#pagination "
+          }
+        },
+        "description": "Request schema for `GetProfileLists`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_PROFILE_SEGMENTS",
+      "name": "Get profile segments",
+      "description": "Get segment memberships for a profile with the given profile ID.<br><br>*Rate limits*:<br>Burst: `3/s`<br>Steady: `60/m` **Scopes:** `profiles:read` `segments:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Profiles",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetProfileSegmentsRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": ""
+          },
+          "fields__segment": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "definition",
+                "definition.condition_groups",
+                "created",
+                "updated",
+                "is_active",
+                "is_processing",
+                "is_starred"
+              ],
+              "type": "string",
+              "title": "FieldsSegmentEnm"
+            },
+            "title": "Fields  Segment",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetProfileSegments`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_PROFILES",
+      "name": "Get Profiles",
+      "description": "Retrieve profiles from your Klaviyo account. This action allows you to fetch profiles with optional filtering and sorting. You can filter by email, external_id, creation date, and other attributes. Results are paginated with a configurable page size. Rate limits: 75/s burst, 700/m steady (lower with predictive_analytics). Required scope: `profiles:read`. Preconditions: - Valid API key with profiles:read scope - Filter syntax must be valid if provided - Page size must be between 1 and 100",
+      "version": "20261023_00",
+      "tags": [
+        "Profiles",
+        "important",
+        "openWorldHint",
+        "readOnly",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetProfilesRequest",
+        "properties": {
+          "sort": {
+            "enum": [
+              "created",
+              "-created",
+              "email",
+              "-email",
+              "id",
+              "-id",
+              "updated",
+              "-updated"
+            ],
+            "type": "string",
+            "title": "Sort",
+            "default": "-created",
+            "description": "Sort profiles by field (add '-' prefix for descending order)"
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "examples": [
+              "equals(email,\"user@example.com\")",
+              "equals(external_id,\"customer_123\")",
+              "greater-than(created,\"2024-01-01\")"
+            ],
+            "description": "Filter profiles by email, external_id, created date, etc. Example: 'equals(email,\"user@example.com\")' Prefer specific filters (email, external_id) over broad queries to reduce response size. Multi-condition filters are more error-prone than single-condition filters."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "description": "Number of profiles to return per page (1-100)"
+          },
+          "page_cursor": {
+            "type": "string",
+            "title": "Page Cursor",
+            "description": "Cursor for pagination to get the next page of results"
+          },
+          "include_subscriptions": {
+            "type": "boolean",
+            "title": "Include Subscriptions",
+            "default": false,
+            "description": "Whether to include subscription information in the response"
+          },
+          "include_predictive_analytics": {
+            "type": "boolean",
+            "title": "Include Predictive Analytics",
+            "default": false,
+            "description": "Whether to include predictive analytics data (note: this may reduce rate limits)"
+          }
+        },
+        "description": "Request schema for `GetProfiles`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_SEGMENT",
+      "name": "Get segment",
+      "description": "Fetch a segment by ID with default rates of 75/s and 700/m, or with `additional-fields` at 1/s and 15/m. For details, visit the provided guide. Required scope: `segments:read`.",
+      "version": "20261023_00",
+      "tags": [
+        "Segments",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSegmentRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The unique identifier of the segment to retrieve. This ID is returned when creating segments or listing segments via the API."
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "tags"
+              ],
+              "type": "string",
+              "title": "IncludeEnm"
+            },
+            "title": "Include",
+            "description": "Include related resources in the response. Set to ['tags'] to include tag objects associated with this segment. When included, the full tag objects will appear in an 'included' array in the response."
+          },
+          "fields__tag": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name"
+              ],
+              "type": "string",
+              "title": "FieldsTagEnm"
+            },
+            "title": "Fields  Tag",
+            "description": "Specify which tag fields to include in the response when using include=['tags']. Available fields: 'name'. If not specified, all tag fields are returned."
+          },
+          "fields__segment": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "definition",
+                "definition.condition_groups",
+                "created",
+                "updated",
+                "is_active",
+                "is_processing",
+                "is_starred",
+                "profile_count"
+              ],
+              "type": "string",
+              "title": "FieldsSegmentEnm"
+            },
+            "title": "Fields  Segment",
+            "description": "Specify which segment fields to include in the response using sparse fieldsets. Available fields: 'name', 'definition', 'definition.condition_groups', 'created', 'updated', 'is_active', 'is_processing', 'is_starred', 'profile_count'. If not specified, all fields are returned."
+          },
+          "additional__fields__segment": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "profile_count"
+              ],
+              "type": "string",
+              "title": "AdditionalFieldsSegmentEnm"
+            },
+            "title": "Additional  Fields  Segment",
+            "description": "Request additional fields not included by default in the response. Supported values: \"profile_count\" "
+          }
+        },
+        "description": "Request schema for `GetSegment`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_SEGMENT_PROFILES",
+      "name": "Get segment profiles",
+      "description": "Retrieve profiles in a segment by ID, filtering by email, phone, token, or join date, and sorting by join date. Rate limit: 75/s burst, 700/m steady. Requires profiles:read and segments:read scopes.",
+      "version": "20261023_00",
+      "tags": [
+        "Segments",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSegmentProfilesRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": ""
+          },
+          "sort": {
+            "enum": [
+              "joined_group_at",
+              "-joined_group_at"
+            ],
+            "type": "string",
+            "title": "SortEnm",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sorting "
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#filtering<br>Allowed field(s)/operator(s):<br>`email`: `any`, `equals`<br>`phone_number`: `any`, `equals`<br>`push_token`: `any`, `equals`<br>`_kx`: `equals`<br>`joined_group_at`: `greater-or-equal`, `greater-than`, `less-or-equal`, `less-than` "
+          },
+          "page__size": {
+            "type": "integer",
+            "title": "Page  Size",
+            "default": 20,
+            "description": "Default: 20. Min: 1. Max: 100."
+          },
+          "page__cursor": {
+            "type": "string",
+            "title": "Page  Cursor",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#pagination "
+          },
+          "fields__profile": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "email",
+                "phone_number",
+                "external_id",
+                "first_name",
+                "last_name",
+                "organization",
+                "locale",
+                "title",
+                "image",
+                "created",
+                "updated",
+                "last_event_date",
+                "location",
+                "location.address1",
+                "location.address2",
+                "location.city",
+                "location.country",
+                "location.latitude",
+                "location.longitude",
+                "location.region",
+                "location.zip",
+                "location.timezone",
+                "location.ip",
+                "properties",
+                "joined_group_at",
+                "subscriptions",
+                "subscriptions.email",
+                "subscriptions.email.marketing",
+                "subscriptions.email.marketing.can_receive_email_marketing",
+                "subscriptions.email.marketing.consent",
+                "subscriptions.email.marketing.consent_timestamp",
+                "subscriptions.email.marketing.last_updated",
+                "subscriptions.email.marketing.method",
+                "subscriptions.email.marketing.method_detail",
+                "subscriptions.email.marketing.custom_method_detail",
+                "subscriptions.email.marketing.double_optin",
+                "subscriptions.email.marketing.suppression",
+                "subscriptions.email.marketing.list_suppressions",
+                "subscriptions.sms",
+                "subscriptions.sms.marketing",
+                "subscriptions.sms.marketing.can_receive_sms_marketing",
+                "subscriptions.sms.marketing.consent",
+                "subscriptions.sms.marketing.consent_timestamp",
+                "subscriptions.sms.marketing.method",
+                "subscriptions.sms.marketing.method_detail",
+                "subscriptions.sms.marketing.last_updated",
+                "predictive_analytics",
+                "predictive_analytics.historic_clv",
+                "predictive_analytics.predicted_clv",
+                "predictive_analytics.total_clv",
+                "predictive_analytics.historic_number_of_orders",
+                "predictive_analytics.predicted_number_of_orders",
+                "predictive_analytics.average_days_between_orders",
+                "predictive_analytics.average_order_value",
+                "predictive_analytics.churn_probability",
+                "predictive_analytics.expected_date_of_next_order"
+              ],
+              "type": "string",
+              "title": "FieldsProfileEnm"
+            },
+            "title": "Fields  Profile",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "additional__fields__profile": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "subscriptions",
+                "predictive_analytics"
+              ],
+              "type": "string",
+              "title": "AdditionalFieldsProfileEnm"
+            },
+            "title": "Additional  Fields  Profile",
+            "description": "Request additional fields not included by default in the response. Supported values: \"subscriptions\", \"predictive_analytics\" "
+          }
+        },
+        "description": "Request schema for `GetSegmentProfiles`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_SEGMENTS",
+      "name": "Get segments",
+      "description": "Fetch segments from an account with filters like `name`, `created`, and `updated`. Max 10 results/page. Rate limits are 75/s burst, 700/m steady. Requires `segments:read` scope.",
+      "version": "20261023_00",
+      "tags": [
+        "Segments",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSegmentsRequest",
+        "properties": {
+          "sort": {
+            "enum": [
+              "created",
+              "-created",
+              "id",
+              "-id",
+              "name",
+              "-name",
+              "updated",
+              "-updated"
+            ],
+            "type": "string",
+            "title": "SortEnm",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sorting "
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#filtering<br>Allowed field(s)/operator(s):<br>`name`: `any`, `equals`<br>`id`: `any`, `equals`<br>`created`: `greater-than`<br>`updated`: `greater-than`<br>`is_active`: `any`, `equals`<br>`is_starred`: `equals` "
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "tags"
+              ],
+              "type": "string",
+              "title": "IncludeEnm"
+            },
+            "title": "Include",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#relationships "
+          },
+          "fields__tag": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name"
+              ],
+              "type": "string",
+              "title": "FieldsTagEnm"
+            },
+            "title": "Fields  Tag",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "page__cursor": {
+            "type": "string",
+            "title": "Page  Cursor",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#pagination "
+          },
+          "fields__segment": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "definition",
+                "definition.condition_groups",
+                "created",
+                "updated",
+                "is_active",
+                "is_processing",
+                "is_starred"
+              ],
+              "type": "string",
+              "title": "FieldsSegmentEnm"
+            },
+            "title": "Fields  Segment",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetSegments`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_TAGS",
+      "name": "Get tags",
+      "description": "Retrieve up to 50 account tags at once, filterable/sortable by name or id, with cursor pagination. Rate limits: 3/s burst, 60/m steady. Requires `tags:read` scope.",
+      "version": "20261023_00",
+      "tags": [
+        "Tags",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTagsRequest",
+        "properties": {
+          "sort": {
+            "enum": [
+              "id",
+              "-id",
+              "name",
+              "-name"
+            ],
+            "type": "string",
+            "title": "SortEnm",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sorting "
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#filtering<br>Allowed field(s)/operator(s):<br>`name`: `contains`, `ends-with`, `equals`, `starts-with` "
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "tag-group"
+              ],
+              "type": "string",
+              "title": "IncludeEnm"
+            },
+            "title": "Include",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#relationships "
+          },
+          "fields__tag": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name"
+              ],
+              "type": "string",
+              "title": "FieldsTagEnm"
+            },
+            "title": "Fields  Tag",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          },
+          "page__cursor": {
+            "type": "string",
+            "title": "Page  Cursor",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#pagination "
+          },
+          "fields__tag__group": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "exclusive",
+                "default"
+              ],
+              "type": "string",
+              "title": "FieldsTagGroupEnm"
+            },
+            "title": "Fields  Tag  Group",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetTags`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_TEMPLATE",
+      "name": "Get template",
+      "description": "Get a template with the given template ID.<br><br>*Rate limits*:<br>Burst: `10/s`<br>Steady: `150/m` **Scopes:** `templates:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Templates",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTemplateRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The unique identifier of the template to retrieve (e.g., 'Rz66gr')."
+          },
+          "fields__template": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "editor_type",
+                "html",
+                "text",
+                "created",
+                "updated"
+              ],
+              "type": "string",
+              "title": "FieldsTemplateEnm"
+            },
+            "title": "Fields  Template",
+            "description": "Sparse fieldsets to request only specific template attributes. Available fields: name, editor_type, html, text, created, updated. If not provided, all fields are returned."
+          }
+        },
+        "description": "Request schema for `GetTemplate`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_GET_TEMPLATES",
+      "name": "Get templates",
+      "description": "Retrieve account templates with sorting options (`id`, `name`, `created`, `updated`). Limit of 10 results per page, rate limits at 10/s burst and 150/m steady. Requires `templates:read` scope.",
+      "version": "20261023_00",
+      "tags": [
+        "Templates",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTemplatesRequest",
+        "properties": {
+          "sort": {
+            "enum": [
+              "created",
+              "-created",
+              "id",
+              "-id",
+              "name",
+              "-name",
+              "updated",
+              "-updated"
+            ],
+            "type": "string",
+            "title": "SortEnm",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sorting "
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#filtering<br>Allowed field(s)/operator(s):<br>`id`: `any`, `equals`<br>`name`: `any`, `equals`<br>`created`: `equals`, `greater-or-equal`, `greater-than`, `less-or-equal`, `less-than`<br>`updated`: `equals`, `greater-or-equal`, `greater-than`, `less-or-equal`, `less-than` "
+          },
+          "page__cursor": {
+            "type": "string",
+            "title": "Page  Cursor",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#pagination "
+          },
+          "fields__template": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "name",
+                "editor_type",
+                "html",
+                "text",
+                "created",
+                "updated"
+              ],
+              "type": "string",
+              "title": "FieldsTemplateEnm"
+            },
+            "title": "Fields  Template",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#sparse-fieldsets "
+          }
+        },
+        "description": "Request schema for `GetTemplates`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_QUERY_CAMPAIGN_VALUES",
+      "name": "Query campaign values",
+      "description": "Returns the requested campaign analytics values data<br><br>*Rate limits*:<br>Burst: `1/s`<br>Steady: `2/m`<br>Daily: `225/d` **Scopes:** `campaigns:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Reporting",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "QueryCampaignValuesRequest",
+        "required": [
+          "data__attributes__conversion__metric__id"
+        ],
+        "properties": {
+          "data__type": {
+            "enum": [
+              "campaign-values-report"
+            ],
+            "type": "string",
+            "title": "Data  Type",
+            "default": "campaign-values-report",
+            "description": "Resource type for the campaign values report request. Must be 'campaign-values-report'."
+          },
+          "page_cursor": {
+            "type": "string",
+            "title": "Page Cursor",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#pagination "
+          },
+          "data__attributes__filter": {
+            "type": "string",
+            "title": "Data  Attributes  Filter",
+            "description": "API filter string (not an array) used to filter the query. Example: equals(campaign_id,\"01GMRWDSA0ARTAKE1SFX8JGXAY\"). Allowed filters: campaign_id. Allowed operators: equals, contains-any. Only one filter can be used per attribute, only AND can be used as a combination operator. Max of 100 campaign IDs per contains-any filter."
+          },
+          "data__attributes__timeframe": {
+            "type": "object",
+            "title": "Data  Attributes  Timeframe",
+            "description": "The timeframe to query for data within (max 1 year). Supports two formats: 1) Predefined key: {'key': 'last_12_months'} - valid keys include 'last_12_months', 'last_30_days', 'last_7_days', 'this_month', 'last_month', etc. 2) Custom date range: {'start': '2024-01-01T00:00:00+00:00', 'end': '2024-12-31T23:59:59+00:00'} using ISO 8601 timestamps.",
+            "additionalProperties": true
+          },
+          "data__attributes__statistics": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "average_order_value",
+                "bounce_rate",
+                "bounced",
+                "bounced_or_failed",
+                "bounced_or_failed_rate",
+                "click_rate",
+                "click_to_open_rate",
+                "clicks",
+                "clicks_unique",
+                "conversion_rate",
+                "conversion_uniques",
+                "conversion_value",
+                "conversions",
+                "delivered",
+                "delivery_rate",
+                "failed",
+                "failed_rate",
+                "open_rate",
+                "opens",
+                "opens_unique",
+                "recipients",
+                "revenue_per_recipient",
+                "spam_complaint_rate",
+                "spam_complaints",
+                "unsubscribe_rate",
+                "unsubscribe_uniques",
+                "unsubscribes",
+                "message_segment_count_sum",
+                "text_message_credit_usage_amount",
+                "text_message_roi",
+                "text_message_spend"
+              ],
+              "type": "string",
+              "title": "StatisticsEnm"
+            },
+            "title": "Data  Attributes  Statistics",
+            "description": "List of statistics to query for. All rate statistics will be returned in fractional form [0.0, 1.0]. Common aliases are supported: 'average_open_rate' maps to 'open_rate', 'count_opened' maps to 'opens', 'count_sent' maps to 'recipients'. "
+          },
+          "data__attributes__conversion__metric__id": {
+            "type": "string",
+            "title": "Data  Attributes  Conversion  Metric  Id",
+            "description": "Required. ID of the metric for calculating conversion-based statistics (e.g., 'Placed Order' metric). Use Get Metrics API to find valid metric IDs. Note: Use purchase/order event metrics (not engagement metrics like 'Opened Email') to avoid 'does not support querying for values data' errors."
+          }
+        },
+        "description": "Request schema for `QueryCampaignValues`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_QUERY_FLOW_VALUES",
+      "name": "Query flow values",
+      "description": "Returns the requested flow analytics values data<br><br>*Rate limits*:<br>Burst: `1/s`<br>Steady: `2/m`<br>Daily: `225/d` **Scopes:** `flows:read`",
+      "version": "20261023_00",
+      "tags": [
+        "Reporting",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "QueryFlowValuesRequest",
+        "required": [
+          "data__attributes__conversion_metric_id"
+        ],
+        "properties": {
+          "data__type": {
+            "enum": [
+              "flow-values-report"
+            ],
+            "type": "string",
+            "title": "Data  Type",
+            "default": "flow-values-report",
+            "description": "Resource type for the flow values report request. Must be 'flow-values-report'."
+          },
+          "page_cursor": {
+            "type": "string",
+            "title": "Page Cursor",
+            "description": "For more information please visit https://developers.klaviyo.com/en/v2024-07-15/reference/api-overview#pagination "
+          },
+          "data__attributes__filter": {
+            "type": "string",
+            "title": "Data  Attributes  Filter",
+            "description": "Filter string to narrow results. Accepts either a plain filter string like 'equals(send_channel,\"email\")' or a JSON-encoded array like '[\"equals(flow_id,\"ABC123\")\"]' (which will be automatically converted). Supported filters: flow_id, send_channel, flow_message_id. Supported operators: equals (for SINGLE value, e.g., 'equals(flow_id,\"ABC123\")'), contains-any (for MULTIPLE values, e.g., 'contains-any(flow_id,[\"ABC123\",\"DEF456\"])'). Only one filter per attribute, only AND for combining. Max 100 messages per ANY filter. For send_channel: email, push-notification, or sms."
+          },
+          "data__attributes__timeframe": {
+            "type": "object",
+            "title": "Data  Attributes  Timeframe",
+            "description": "The timeframe to query for data within. Max length is 1 year. IMPORTANT: 'key' and 'start'/'end' are mutually exclusive - use EITHER a predefined key like {'key': 'last_30_days'} OR custom date ranges like {'start': '2024-01-01T00:00:00Z', 'end': '2024-12-31T23:59:59Z'}, but never combine them. Available predefined keys: last_7_days, last_30_days, last_90_days, last_365_days, this_week, this_month, this_quarter, this_year, last_week, last_month, last_quarter, last_year.",
+            "additionalProperties": true
+          },
+          "data__attributes__statistics": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "average_order_value",
+                "bounce_rate",
+                "bounced",
+                "bounced_or_failed",
+                "bounced_or_failed_rate",
+                "click_rate",
+                "click_to_open_rate",
+                "clicks",
+                "clicks_unique",
+                "conversion_rate",
+                "conversion_uniques",
+                "conversion_value",
+                "conversions",
+                "delivered",
+                "delivery_rate",
+                "failed",
+                "failed_rate",
+                "open_rate",
+                "opens",
+                "opens_unique",
+                "recipients",
+                "revenue_per_recipient",
+                "spam_complaint_rate",
+                "spam_complaints",
+                "unsubscribe_rate",
+                "unsubscribe_uniques",
+                "unsubscribes"
+              ],
+              "type": "string",
+              "title": "StatisticsEnm"
+            },
+            "title": "Data  Attributes  Statistics",
+            "description": "List of statistics to query for. All rate statistics will be returned in fractional form [0.0, 1.0]. Common aliases are supported: 'average_open_rate' maps to 'open_rate', 'count_opened' maps to 'opens', 'count_sent' maps to 'recipients'. "
+          },
+          "data__attributes__conversion_metric_id": {
+            "type": "string",
+            "title": "Data  Attributes  Conversion Metric Id",
+            "description": "ID of the conversion metric (e.g., 'Placed Order' metric ID) required for ALL flow values report queries. This metric is used for calculating conversion-based statistics, but the endpoint will return all requested statistics regardless of conversion status. For example, 'opens' will include all opens whether or not they resulted in conversions. Get metric IDs from the Get Metrics endpoint."
+          }
+        },
+        "description": "Request schema for `QueryFlowValues`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_QUERY_METRIC_AGGREGATES",
+      "name": "Query metric aggregates",
+      "description": "The Klaviyo endpoint fetches metric events, handling JSON requests for custom data queries, sorting, and filtering; offers grouping and time-based filters; requires adherence to rate limits (3 requests per second, 60 per minute) under 'metrics:read'.",
+      "version": "20261023_00",
+      "tags": [
+        "Metrics",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "QueryMetricAggregatesRequest",
+        "properties": {
+          "data__type": {
+            "enum": [
+              "metric-aggregate"
+            ],
+            "type": "string",
+            "title": "TypeEnm",
+            "description": "Type"
+          },
+          "data__attributes__by": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "$attributed_channel",
+                "$attributed_flow",
+                "$attributed_message",
+                "$attributed_variation",
+                "$campaign_channel",
+                "$flow",
+                "$flow_channel",
+                "$message",
+                "$message_send_cohort",
+                "$variation",
+                "$variation_send_cohort",
+                "Bot Click",
+                "Bounce Type",
+                "Campaign Name",
+                "Client Canonical",
+                "Client Name",
+                "Client Type",
+                "Email Domain",
+                "Failure Source",
+                "Failure Type",
+                "From Number",
+                "From Phone Region",
+                "Inbox Provider",
+                "List",
+                "Message Name",
+                "Message Type",
+                "Method",
+                "Subject",
+                "To Number",
+                "To Phone Region",
+                "URL",
+                "form_id"
+              ],
+              "type": "string",
+              "title": "ByEnm"
+            },
+            "title": "Data  Attributes  By",
+            "description": "Optional attribute(s) used for partitioning by the aggregation function"
+          },
+          "data__attributes__sort": {
+            "enum": [
+              "$attributed_channel",
+              "-$attributed_channel",
+              "$attributed_flow",
+              "-$attributed_flow",
+              "$attributed_message",
+              "-$attributed_message",
+              "$attributed_variation",
+              "-$attributed_variation",
+              "$campaign_channel",
+              "-$campaign_channel",
+              "$flow",
+              "-$flow",
+              "$flow_channel",
+              "-$flow_channel",
+              "$message",
+              "-$message",
+              "$message_send_cohort",
+              "-$message_send_cohort",
+              "$variation",
+              "-$variation",
+              "$variation_send_cohort",
+              "-$variation_send_cohort",
+              "Bot Click",
+              "-Bot Click",
+              "Bounce Type",
+              "-Bounce Type",
+              "Campaign Name",
+              "-Campaign Name",
+              "Client Canonical",
+              "-Client Canonical",
+              "Client Name",
+              "-Client Name",
+              "Client Type",
+              "-Client Type",
+              "Email Domain",
+              "-Email Domain",
+              "Failure Source",
+              "-Failure Source",
+              "Failure Type",
+              "-Failure Type",
+              "From Number",
+              "-From Number",
+              "From Phone Region",
+              "-From Phone Region",
+              "Inbox Provider",
+              "-Inbox Provider",
+              "List",
+              "-List",
+              "Message Name",
+              "-Message Name",
+              "Message Type",
+              "-Message Type",
+              "Method",
+              "-Method",
+              "Subject",
+              "-Subject",
+              "To Number",
+              "-To Number",
+              "To Phone Region",
+              "-To Phone Region",
+              "URL",
+              "-URL",
+              "count",
+              "-count",
+              "form_id",
+              "-form_id",
+              "sum_value",
+              "-sum_value",
+              "unique",
+              "-unique"
+            ],
+            "type": "string",
+            "title": "SortEnm",
+            "description": "Provide a sort key (e.g. -$message)"
+          },
+          "data__attributes__filter": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Data  Attributes  Filter",
+            "description": "List of filter strings for querying metric aggregates. Each filter uses function syntax: operator(field,value). TIME RANGE (REQUIRED): Must use 'datetime' (not $attributed_time) for time filtering with ISO 8601 format (YYYY-MM-DDTHH:MM:SS). Typically requires both: 'greater-or-equal(datetime,START_TIME)' and 'less-than(datetime,END_TIME)'. Maximum time range: 1 year (365 days). ADDITIONAL FILTERS (OPTIONAL): Can filter by metric attributes using $ prefix (e.g., $message, $flow, $attributed_flow). Supported operators: equals, not, any. Examples: ['greater-or-equal(datetime,2024-01-15T00:00:00)', 'less-than(datetime,2024-02-15T00:00:00)'] or with attribute filter: ['greater-or-equal(datetime,2024-01-01T00:00:00)', 'less-than(datetime,2024-12-31T00:00:00)', 'equals($message,\"MSG_ID\")']"
+          },
+          "data__attributes__interval": {
+            "enum": [
+              "day",
+              "hour",
+              "month",
+              "week"
+            ],
+            "type": "string",
+            "title": "Data  Attributes  Interval",
+            "default": "day",
+            "description": "Aggregation interval, e.g. \"hour\", \"day\", \"week\", \"month\""
+          },
+          "data__attributes__timezone": {
+            "type": "string",
+            "title": "Data  Attributes  Timezone",
+            "default": "UTC",
+            "description": "The timezone used for processing the query, e.g. `\"America/New_York\"`.             This field is validated against a list of common timezones from the [IANA Time Zone Database](https://www.iana.org/time-zones).             While most are supported, a few notable exceptions are `Factory`, `Europe/Kyiv` and `Pacific/Kanton`. This field is case-sensitive. "
+          },
+          "data__attributes__timeframe": {
+            "type": "object",
+            "title": "Data  Attributes  Timeframe",
+            "description": "Convenient timeframe parameter with 'start' and 'end' datetime values in ISO 8601 format (YYYY-MM-DDTHH:MM:SS). If provided, this will automatically be converted to the required filter format. The maximum allowed time range is 1 year (365 days). Example: {'start': '2024-01-15T00:00:00', 'end': '2025-01-15T00:00:00'}",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "data__attributes__metric__id": {
+            "type": "string",
+            "title": "Data  Attributes  Metric  Id",
+            "description": "The metric ID used in the aggregation."
+          },
+          "data__attributes__page__size": {
+            "type": "integer",
+            "title": "Data  Attributes  Page  Size",
+            "default": 500,
+            "description": "Alter the maximum number of returned rows in a single page of aggregation results "
+          },
+          "data__attributes__measurements": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "count",
+                "sum_value",
+                "unique"
+              ],
+              "type": "string",
+              "title": "MeasurementsEnm"
+            },
+            "title": "Data  Attributes  Measurements",
+            "description": "Measurement key, e.g. `unique`, `sum_value`, `count`"
+          },
+          "data__attributes__page__cursor": {
+            "type": "string",
+            "title": "Data  Attributes  Page  Cursor",
+            "description": "Optional pagination cursor to iterate over large result sets"
+          },
+          "data__attributes__return__fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Data  Attributes  Return  Fields",
+            "description": "Provide fields to limit the returned data"
+          }
+        },
+        "description": "Request schema for `QueryMetricAggregates`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_UPDATE_CAMPAIGN",
+      "name": "Update Campaign",
+      "description": "Update a campaign with the specified attributes. This action allows you to modify campaign settings including name, audiences, and send strategy. Only the fields you provide will be updated; others remain unchanged. Rate limits: 10/s burst, 150/m steady. Required scope: `campaigns:write`. Preconditions: - Valid API key with campaigns:write scope - Campaign ID must exist and be accessible - Campaign must be in a state that allows updates (usually draft status) - Send strategy options must match the selected method",
+      "version": "20261023_00",
+      "tags": [
+        "Campaigns",
+        "destructive",
+        "important",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateCampaignRequest",
+        "required": [
+          "campaign_id"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Monthly Newsletter",
+              "Black Friday Sale"
+            ],
+            "description": "The campaign name"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id",
+            "examples": [
+              "01GDDKASAP8TKDDA2GRZDSVP4H"
+            ],
+            "description": "The unique identifier of the campaign to update. Use GET /api/campaigns to list available campaigns."
+          },
+          "send_options": {
+            "type": "object",
+            "title": "Send Options",
+            "examples": [
+              {
+                "use_smart_sending": true
+              }
+            ],
+            "description": "Additional send options (advanced use)",
+            "additionalProperties": true
+          },
+          "sto_send_date": {
+            "type": "string",
+            "title": "Sto Send Date",
+            "examples": [
+              "2024-12-25"
+            ],
+            "description": "Date to send on for Smart Send Time (YYYY-MM-DD format)"
+          },
+          "tracking_options": {
+            "type": "object",
+            "title": "Tracking Options",
+            "examples": [
+              {
+                "is_tracking_opens": true,
+                "is_tracking_clicks": true
+              }
+            ],
+            "description": "Tracking options for the campaign",
+            "additionalProperties": true
+          },
+          "excluded_audiences": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Excluded Audiences",
+            "examples": [
+              [
+                "V5QaLV"
+              ]
+            ],
+            "description": "List of list/segment IDs to exclude from audiences"
+          },
+          "included_audiences": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Included Audiences",
+            "examples": [
+              [
+                "QRXm9k",
+                "RuYpKX"
+              ]
+            ],
+            "description": "List of list/segment IDs to include as audiences"
+          },
+          "throttle_percentage": {
+            "enum": [
+              10,
+              11,
+              13,
+              14,
+              17,
+              20,
+              25,
+              33,
+              50
+            ],
+            "type": "integer",
+            "title": "Throttle Percentage",
+            "description": "Percentage of recipients to send to per hour. Valid values: 10, 11, 13, 14, 17, 20, 25, 33, 50. Required when send_strategy_method is 'throttled'."
+          },
+          "send_strategy_method": {
+            "enum": [
+              "static",
+              "throttled",
+              "immediate",
+              "smart_send_time"
+            ],
+            "type": "string",
+            "title": "Send Strategy Method",
+            "description": "Method for sending the campaign. Options: 'static' (scheduled time), 'throttled' (gradual sending), 'immediate' (send now), 'smart_send_time' (AI-optimized timing)"
+          },
+          "static_send_datetime": {
+            "type": "string",
+            "title": "Static Send Datetime",
+            "format": "date-time",
+            "description": "When to send the campaign (for static strategy)"
+          },
+          "throttled_send_datetime": {
+            "type": "string",
+            "title": "Throttled Send Datetime",
+            "format": "date-time",
+            "description": "When to start sending the campaign (for throttled strategy)"
+          },
+          "static_is_local_timezone": {
+            "type": "boolean",
+            "title": "Static Is Local Timezone",
+            "default": false,
+            "description": "Whether to send in recipients' local timezones"
+          },
+          "static_send_past_recipients_immediately": {
+            "type": "boolean",
+            "title": "Static Send Past Recipients Immediately",
+            "default": false,
+            "description": "Whether to send immediately to recipients in past timezones. Only valid when static_is_local_timezone is True."
+          }
+        },
+        "description": "Request schema for `UpdateCampaign`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_UPDATE_LIST",
+      "name": "Update list",
+      "description": "Update the name of a list with the given list ID.<br><br>*Rate limits*:<br>Burst: `10/s`<br>Steady: `150/m` **Scopes:** `lists:write`",
+      "version": "20261023_00",
+      "tags": [
+        "Lists",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateListRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Primary key that uniquely identifies this list. Generated by Klaviyo."
+          },
+          "data__id": {
+            "type": "string",
+            "title": "Data  Id",
+            "description": "Primary key that uniquely identifies this list. Generated by Klaviyo."
+          },
+          "data__type": {
+            "enum": [
+              "list"
+            ],
+            "type": "string",
+            "title": "TypeEnm",
+            "description": "Type"
+          },
+          "data__attributes__name": {
+            "type": "string",
+            "title": "Data  Attributes  Name",
+            "description": "A helpful name to label the list"
+          }
+        },
+        "description": "Request schema for `UpdateList`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_UPDATE_PROFILE",
+      "name": "Update profile",
+      "description": "Update profiles with the provided ID. Setting fields to `null` clears them; omitting fields retains existing data. Rate limits: 75/s burst, 700/m steady. Required scope: `profiles:write`.",
+      "version": "20261023_00",
+      "tags": [
+        "Profiles",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateProfileRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Primary key that uniquely identifies this profile. Generated by Klaviyo."
+          },
+          "data__id": {
+            "type": "string",
+            "title": "Data  Id",
+            "description": "Primary key that uniquely identifies this profile. Generated by Klaviyo."
+          },
+          "data__type": {
+            "enum": [
+              "profile"
+            ],
+            "type": "string",
+            "title": "Data  Type",
+            "default": "profile",
+            "description": "Resource type. Must be 'profile'."
+          },
+          "data__attributes__email": {
+            "type": "string",
+            "title": "Data  Attributes  Email",
+            "description": "Individual's email address"
+          },
+          "data__attributes__image": {
+            "type": "string",
+            "title": "Data  Attributes  Image",
+            "description": "URL pointing to the location of a profile image"
+          },
+          "data__attributes__title": {
+            "type": "string",
+            "title": "Data  Attributes  Title",
+            "description": "Individual's job title"
+          },
+          "data__attributes__last__name": {
+            "type": "string",
+            "title": "Data  Attributes  Last  Name",
+            "description": "Individual's last name"
+          },
+          "data__attributes__first__name": {
+            "type": "string",
+            "title": "Data  Attributes  First  Name",
+            "description": "Individual's first name"
+          },
+          "data__attributes__external__id": {
+            "type": "string",
+            "title": "Data  Attributes  External  Id",
+            "description": "A unique identifier used by customers to associate Klaviyo profiles with profiles in an external system, such as a point-of-sale system. Format varies based on the external system. "
+          },
+          "data__attributes__location__ip": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Ip",
+            "description": "IP Address"
+          },
+          "data__attributes__organization": {
+            "type": "string",
+            "title": "Data  Attributes  Organization",
+            "description": "Name of the company or organization within the company for whom the individual works "
+          },
+          "data__attributes__anonymous__id": {
+            "type": "string",
+            "title": "Data  Attributes  Anonymous  Id",
+            "description": "Anonymous identifier for tracking profiles before they are identified with an email or external ID"
+          },
+          "data__attributes__location__zip": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Zip",
+            "description": "Zip code"
+          },
+          "data__attributes__phone__number": {
+            "type": "string",
+            "title": "Data  Attributes  Phone  Number",
+            "description": "Individual's phone number in E.164 format (e.g., +15005550006)"
+          },
+          "data__attributes__location__city": {
+            "type": "string",
+            "title": "Data  Attributes  Location  City",
+            "description": "City name"
+          },
+          "data__attributes__location__region": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Region",
+            "description": "Region within a country, such as state or province"
+          },
+          "data__attributes__location__country": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Country",
+            "description": "Country name"
+          },
+          "data__attributes__location__address1": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Address1",
+            "description": "First line of street address"
+          },
+          "data__attributes__location__address2": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Address2",
+            "description": "Second line of street address"
+          },
+          "data__attributes__location__latitude": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Latitude",
+            "description": "Latitude coordinate. We recommend providing a precision of four decimal places. "
+          },
+          "data__attributes__location__timezone": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Timezone",
+            "description": "Time zone name. We recommend using time zones from the IANA Time Zone Database. "
+          },
+          "data__meta__patch__properties__unset": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Data  Meta  Patch  Properties  Unset",
+            "description": "Remove a key or keys (and their values) completely from properties"
+          },
+          "data__attributes__location__longitude": {
+            "type": "string",
+            "title": "Data  Attributes  Location  Longitude",
+            "description": "Longitude coordinate. We recommend providing a precision of four decimal places. "
+          }
+        },
+        "description": "Request schema for `UpdateProfile`"
+      }
+    },
+    {
+      "slug": "KLAVIYO_UPDATE_TEMPLATE",
+      "name": "Update template",
+      "description": "Update an existing email template by ID. Supports updating name, HTML content, and plaintext content. Note: This action only works with CODE editor type templates; drag & drop templates cannot be updated via API. Rate limits: Burst 10/s, Steady 150/m. Requires 'templates:write' scope.",
+      "version": "20261023_00",
+      "tags": [
+        "Templates",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateTemplateRequest",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The unique identifier of the template to update. Used in the URL path."
+          },
+          "data__id": {
+            "type": "string",
+            "title": "Data  Id",
+            "description": "The template ID in the request body. Must match the 'id' path parameter."
+          },
+          "data__type": {
+            "enum": [
+              "template"
+            ],
+            "type": "string",
+            "title": "TypeEnm",
+            "description": "Resource type identifier. Must be 'template'."
+          },
+          "data__attributes__html": {
+            "type": "string",
+            "title": "Data  Attributes  Html",
+            "description": "The new HTML content for the template. Only works with CODE editor type templates, not drag & drop templates."
+          },
+          "data__attributes__name": {
+            "type": "string",
+            "title": "Data  Attributes  Name",
+            "description": "The new name for the template. Optional - only include if updating the name."
+          },
+          "data__attributes__text": {
+            "type": "string",
+            "title": "Data  Attributes  Text",
+            "description": "The new plaintext version of the template. This is the fallback content for email clients that don't support HTML."
+          }
+        },
+        "description": "Request schema for `UpdateTemplate`"
+      }
+    }
+  ]
+}

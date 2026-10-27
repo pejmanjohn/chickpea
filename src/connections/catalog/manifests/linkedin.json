@@ -1,0 +1,291 @@
+{
+  "toolkit": "linkedin",
+  "version": "20260924_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "LinkedIn",
+  "description": "Read your LinkedIn profile, posts, and the follower and post statistics of company pages you manage.",
+  "securityDescription": "LinkedIn sign-in opens through Composio. Agents can read the signed-in person's own profile, a member profile or post by its ID, reactions on a post, the company pages that person administers, and those pages' follower counts, page statistics, and post statistics. This connector is read-only. Agents cannot post, comment, react, upload media, message anyone, or change the profile or a company page.",
+  "preset": {
+    "category": "business",
+    "accent": "#0A66C2"
+  },
+  "validationCapability": "linkedin.who_am_i",
+  "review": {
+    "add": [
+      "LINKEDIN_GET_COMPANY_INFO",
+      "LINKEDIN_GET_MY_INFO",
+      "LINKEDIN_GET_NETWORK_SIZE",
+      "LINKEDIN_GET_ORG_PAGE_STATS",
+      "LINKEDIN_GET_SHARE_STATS",
+      "LINKEDIN_LIST_REACTIONS"
+    ],
+    "drop": {
+      "LINKEDIN_CREATE_ARTICLE_OR_URL_SHARE": "Publishes to the person's network or the public as them or a page they manage; the author is any URN the caller names, and a post cannot be held as a draft.",
+      "LINKEDIN_INITIALIZE_IMAGE_UPLOAD": "Only prepares media for a post, and posting is not included.",
+      "LINKEDIN_REGISTER_IMAGE_UPLOAD": "Only prepares media for a post, and posting is not included."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "linkedin.get_company_info",
+      "tool": "LINKEDIN_GET_COMPANY_INFO",
+      "toolName": "linkedin_get_company_info",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves organizations where the authenticated user has specific roles (ACLs), to determine their management or content posting capabilities for LinkedIn company pages.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ADMINISTRATOR",
+              "DIRECT_SPONSORED_CONTENT_POSTER"
+            ],
+            "description": "The specific role to filter organization ACLs by."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of organization ACLs to return per page."
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The starting index for pagination, representing the number of initial ACLs to skip."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "APPROVED",
+              "REQUESTED"
+            ],
+            "description": "The approval state of the role to filter by."
+          }
+        },
+        "description": "Parameters for listing organizations where the authenticated user has specific roles and permissions (ACLs)."
+      }
+    },
+    {
+      "id": "linkedin.get_my_info",
+      "tool": "LINKEDIN_GET_MY_INFO",
+      "toolName": "linkedin_get_my_info",
+      "lane": "read",
+      "effect": "read",
+      "description": "Fetches the authenticated LinkedIn user's profile information including name, headline, profile picture, and other profile details.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "id": "linkedin.get_network_size",
+      "tool": "LINKEDIN_GET_NETWORK_SIZE",
+      "toolName": "linkedin_get_network_size",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the follower count for a LinkedIn organization. Use when you need to get the number of members following a specific company or organization on LinkedIn.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "edgeType": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "COMPANY_FOLLOWED_BY_MEMBER"
+            ],
+            "description": "The type of network relationship to count. Use COMPANY_FOLLOWED_BY_MEMBER to get follower count."
+          },
+          "organization_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier for the LinkedIn organization. This is the numeric ID from the organization URN (e.g., for 'urn:li:organization:3803', use '3803')."
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "description": "Parameters for retrieving organization follower count."
+      }
+    },
+    {
+      "id": "linkedin.get_org_page_stats",
+      "tool": "LINKEDIN_GET_ORG_PAGE_STATS",
+      "toolName": "linkedin_get_org_page_stats",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve page statistics for a LinkedIn organization page. Use when you need engagement metrics like page views and custom button clicks. Supports both lifetime statistics (all-time data segmented by demographics) and time-bound statistics (aggregate data for specific time ranges). Requires rw_organization_admin permission with ADMINISTRATOR role for the organization.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "organization": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Organization URN in format urn:li:organization:{id}. Example: urn:li:organization:2414183"
+          },
+          "timeRangeEnd": {
+            "type": "integer",
+            "description": "Inclusive ending timestamp in milliseconds since epoch. Only required for time-bound statistics. Omit for lifetime statistics."
+          },
+          "timeRangeStart": {
+            "type": "integer",
+            "description": "Exclusive starting timestamp in milliseconds since epoch. Only required for time-bound statistics. Omit for lifetime statistics."
+          },
+          "timeGranularityType": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "DAY",
+              "MONTH"
+            ],
+            "description": "Granularity of the statistics. Use DAY for daily statistics or MONTH for monthly statistics. Only required for time-bound statistics. Omit for lifetime statistics."
+          }
+        },
+        "required": [
+          "organization"
+        ],
+        "description": "Request parameters for retrieving organization page statistics from LinkedIn."
+      }
+    },
+    {
+      "id": "linkedin.get_person",
+      "tool": "LINKEDIN_GET_PERSON",
+      "toolName": "linkedin_get_person",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a LinkedIn member's profile information by their person ID. Returns lite profile fields (name, profile picture) by default, or basic profile fields (including headline and vanity name) with appropriate permissions.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "person_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the LinkedIn member. Note: Each member id is unique to the context of your application only."
+          }
+        },
+        "required": [
+          "person_id"
+        ]
+      }
+    },
+    {
+      "id": "linkedin.get_post_content",
+      "tool": "LINKEDIN_GET_POST_CONTENT",
+      "toolName": "linkedin_get_post_content",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve detailed post content including text, images, videos, and metadata from LinkedIn by post URN. Use when you need to fetch the full content and details of a specific LinkedIn post.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "post_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Post URN identifier in the format 'urn:li:ugcPost:{id}' or 'urn:li:share:{id}'. Can also be URL-encoded. Example: 'urn:li:ugcPost:7428263313739988992'"
+          }
+        },
+        "required": [
+          "post_id"
+        ],
+        "description": "Request parameters for retrieving post content by URN."
+      }
+    },
+    {
+      "id": "linkedin.get_share_stats",
+      "tool": "LINKEDIN_GET_SHARE_STATS",
+      "toolName": "linkedin_get_share_stats",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves share statistics for a LinkedIn organization, including impressions, clicks, likes, comments, and shares. Use to analyze content performance for an organization page. Optionally filter by time intervals to get time-bound statistics.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "time_intervals": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Time-bound statistics filter in RestLi 2.0 complex object format. Specify time range and granularity as: '(timeRange:(start:<start_timestamp>,end:<end_timestamp>),timeGranularityType:<GRANULARITY>)' where timestamps are in milliseconds since epoch and GRANULARITY is one of: DAY, WEEK, MONTH. Example: '(timeRange:(start:1634018799000,end:1634623599000),timeGranularityType:DAY)'. If omitted, returns lifetime statistics."
+          },
+          "organizational_entity": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The URN of the organization to retrieve share statistics for. Must be in the format 'urn:li:organization:<id>' where <id> is the organization ID (e.g., 'urn:li:organization:2414183'). Get organization IDs using the GET_COMPANY_INFO action."
+          }
+        },
+        "required": [
+          "organizational_entity"
+        ],
+        "description": "Request parameters for retrieving share statistics for an organization."
+      }
+    },
+    {
+      "id": "linkedin.list_reactions",
+      "tool": "LINKEDIN_LIST_REACTIONS",
+      "toolName": "linkedin_list_reactions",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves reactions (likes, celebrations, etc.) on a LinkedIn entity such as a share, post, or comment. Use when you need to see who reacted to content and what type of reactions were used.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "CHRONOLOGICAL",
+              "REVERSE_CHRONOLOGICAL",
+              "RELEVANCE"
+            ],
+            "description": "Sort order for reactions. CHRONOLOGICAL sorts by created date ascending, REVERSE_CHRONOLOGICAL sorts by created date descending (default), RELEVANCE sorts by relevance to the viewer."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of reactions to return per page."
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Starting index for pagination (number of reactions to skip)."
+          },
+          "entity": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The URN of the entity (share, post, or comment) to get reactions for. Format: 'urn:li:share:{id}', 'urn:li:ugcPost:{id}', 'urn:li:activity:{id}', or 'urn:li:comment:(activity:{activityId},{commentId})'. Do not URL-encode this value."
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      }
+    },
+    {
+      "id": "linkedin.who_am_i",
+      "tool": "LINKEDIN_WHO_AM_I",
+      "toolName": "linkedin_who_am_i",
+      "lane": "read",
+      "effect": "read",
+      "description": "Return the identity (name, email) of the connected LinkedIn account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

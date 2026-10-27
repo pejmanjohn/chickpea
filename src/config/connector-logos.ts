@@ -497,5 +497,61 @@ export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
   "zoho": {
     "svg": "<svg viewBox=\"0 0 296 296\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\"><path fill=\"#006EB9\" d=\"m204.26,239.24c-24.19,0-46.98-9.37-64.17-26.38l-50.24-50.24c-5.85-5.85-9.06-13.63-9.03-21.9.03-8.27,3.28-16.03,9.16-21.84,12.02-11.88,31.53-11.82,43.48.13l46.01,46.01c5.39,5.39,14.18,5.41,19.59.05,2.65-2.62,4.11-6.11,4.12-9.84.01-3.72-1.43-7.23-4.07-9.86l-50.17-50.17c-14.02-13.87-32.64-21.51-52.38-21.45-20.14.05-38.94,7.96-52.94,22.27-14.02,14.33-21.52,33.32-21.12,53.47.79,40.11,34.09,72.75,74.23,72.75,7.18,0,14.27-1.02,21.08-3.03,4.5-1.33,9.23,1.24,10.55,5.74,1.33,4.5-1.24,9.23-5.74,10.56-8.37,2.47-17.08,3.73-25.89,3.73-49.33,0-90.25-40.11-91.22-89.41-.49-24.75,8.73-48.08,25.96-65.69,17.22-17.6,40.32-27.33,65.05-27.38,24.15-.06,47.14,9.31,64.39,26.38l50.22,50.22c5.85,5.86,9.07,13.64,9.05,21.92-.02,8.28-3.28,16.05-9.16,21.87-12.04,11.91-31.58,11.86-43.56-.12l-46.01-46.01c-5.37-5.37-14.12-5.39-19.52-.06-2.64,2.61-4.1,6.09-4.11,9.81-.01,3.71,1.43,7.21,4.05,9.83l50.19,50.2c13.97,13.82,32.52,21.45,52.2,21.45,40.9,0,74.21-33.27,74.25-74.17.02-19.82-7.7-38.48-21.74-52.54-14.04-14.06-32.69-21.8-52.51-21.8-6.32,0-12.59.79-18.65,2.36-.88.23-1.76.47-2.63.73-4.5,1.34-9.23-1.22-10.57-5.71-1.34-4.5,1.22-9.23,5.71-10.57,1.07-.32,2.15-.62,3.23-.9,7.44-1.92,15.15-2.9,22.9-2.9,24.36,0,47.28,9.51,64.53,26.78,17.25,17.27,26.74,40.2,26.71,64.56-.05,50.26-40.99,91.14-91.24,91.14Z\"/></svg>",
     "full": true
+  },
+  // Official Wrike product mark: the green chevron icon cropped from the site header logo (wordmark removed). Embedded for self-hosted/offline rendering.
+  // Source: https://www.wrike.com/ (retrieved 2026-10-27).
+  // Asset: https://www.wrike.com/tp/static/assets/img/header-v2/wrike-logo-light-v2.svg
+  "wrike": {
+    "svg": "<svg viewBox=\"-3.5 5.9 42 42\" xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\"><path d=\"m8.203 23.97c1.692 0 2.489.309 3.713 1.525l6.57 6.523c.195.193.234.27.273.386.02.038.02.096.02.135 0 .038 0 .096-.02.135-.039.115-.078.193-.272.386l-4.49 4.477c-.195.193-.273.232-.39.27-.038.02-.097.02-.136.02-.038 0-.097 0-.136-.02-.116-.038-.194-.077-.388-.27l-12.733-12.64c-.37-.367-.234-.927.388-.927zm18.546-7.97c-1.691 0-2.488.309-3.713 1.525l-6.57 6.522c-.195.193-.234.27-.273.386-.02.039-.02.097-.02.135 0 .039 0 .097.02.135.04.116.078.194.272.387l4.491 4.457c.194.193.272.232.389.27.039.02.097.02.136.02s.097 0 .136-.02c.116-.038.194-.077.389-.27l12.733-12.64c.369-.367.233-.926-.39-.926h-7.6z\" fill=\"#00E05C\"/></svg>",
+    "full": true
+  },
+  // Official Canva app icon (apple-touch icon, full-bleed gradient tile), bundled unchanged for self-hosted/offline rendering. Canva publishes no SVG of the icon, only the wide wordmark.
+  // Source: https://www.canva.com/ (retrieved 2026-10-27).
+  // Asset: https://static.canva.com/domain-assets/canva/static/images/apple-touch-180x180-1.png
+  "canva": {
+    "svg": "<img src=\"/connectors/canva.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Square mark (the LogoJewel icon inlined in the site header), filled black as on the site. Embedded for self-hosted/offline rendering.
+  // Source: https://squareup.com/us/en (retrieved 2026-10-27).
+  // Asset: inline SVG (class LogoJewel, viewBox 994.6 x 995.7) in the page HTML; no separate asset URL
+  "square": {
+    "svg": "<svg viewBox=\"0 0 994.6 995.7\" xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\"><path d=\"M828.4,0H166.2C74.4,0,0,74.4,0,166.2v662.2c0,91.8,74.4,166.2,166.2,166.2h662.2 c91.8,0,166.2-74.4,166.2-166.2V166.2C994.6,74.4,920.2,0,828.4,0z M813.8,761.3c0,29-23.5,52.5-52.5,52.5h-528 c-29,0-52.5-23.5-52.5-52.5v-528c0-29,23.5-52.5,52.5-52.5h528c29,0,52.5,23.5,52.5,52.5V761.3z M391.8,632.3 c-16.7,0-30.1-13.5-30.1-30.2V391.3c0-16.7,13.4-30.3,30.1-30.3h211.1c16.6,0,30.1,13.5,30.1,30.3V602c0,16.7-13.5,30.2-30.1,30.2 H391.8z\" fill=\"#000\"/></svg>",
+    "full": true
+  },
+  // Official Gorgias product mark: the speech-box icon cropped from the site logo (wordmark removed). Embedded for self-hosted/offline rendering.
+  // Source: https://www.gorgias.com/ (retrieved 2026-10-27).
+  // Asset: https://cdn.prod.website-files.com/5e4ff204e7b6f80e402d407a/669a5ab4a69be50c3a94800a_Gorgias%20Logo%20-%20Black.svg
+  "gorgias": {
+    "svg": "<svg viewBox=\"-4.6 -2.44 42 42\" xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\"><path d=\"M29.9703 8.77433H24.6131V3.41003C24.6131 1.83553 23.3393 0.560059 21.7669 0.560059H2.84619C1.27378 0.560059 0 1.83553 0 3.41003V30.5702C0 32.1447 1.27378 33.4202 2.84619 33.4202H27.3466L29.9977 36.0749C30.3085 36.3861 30.726 36.5601 31.1648 36.5601C32.076 36.5601 32.8165 35.8216 32.8165 34.9062V11.6243C32.8165 10.0498 31.5427 8.77433 29.9703 8.77433ZM30.083 30.6801H2.73344V3.29713H21.8766V8.77433H11.0495C9.47713 8.77433 8.20336 10.0498 8.20336 11.6243V22.356C8.20336 23.9305 9.47713 25.2059 11.0495 25.2059H21.7669C23.3393 25.2059 24.6131 23.9305 24.6131 22.356V11.5145H30.083V30.6831V30.6801ZM21.8797 11.5114V22.4658H10.9398V11.5114H21.8797Z\" fill=\"#000\"/></svg>",
+    "full": true
+  },
+  // Official Contentful mark (full-color), bundled unchanged in color and geometry for self-hosted/offline rendering.
+  // Source: https://www.contentful.com/ (retrieved 2026-10-27).
+  // Asset: https://images-www.contentful.com/jtqsy5pye0zd/35rNv3yejrHH3zFxgOzwMv/5feff551cbfec3380c7f30eda0d7b744/Logo.svg
+  "contentful": {
+    "svg": "<svg viewBox=\"0 0 80 80\" xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\"><path d=\"M31.3383 13.6374C33.8106 16.1097 34.7627 19.7261 33.8106 23.0945C36.8589 21.2623 40.3474 20.3022 43.8998 20.3022H43.9718C49.1964 20.3182 54.197 22.4144 57.8695 26.1269C60.8138 29.2232 65.7104 29.3433 68.7988 26.3989C71.8951 23.4546 72.0152 18.558 69.0708 15.4696C68.9988 15.3896 68.9188 15.3176 68.8388 15.2376C62.278 8.60478 53.3409 4.86033 44.0118 4.84433H43.8758C36.891 4.82833 30.0661 6.90858 24.2734 10.813H24.4895C27.0578 10.813 29.5141 11.8292 31.3303 13.6454L31.3383 13.6374Z\" fill=\"#1770E6\"/><path d=\"M63.2228 51.7217C61.1825 51.7217 59.2223 52.5298 57.7741 53.9619C54.0937 57.6264 49.1091 59.6826 43.9085 59.6826H43.8365C40.276 59.6826 36.7796 58.6985 33.7393 56.8423C33.9713 57.6824 34.0833 58.5545 34.0833 59.4266C34.0833 64.7632 29.7548 69.0917 24.4181 69.0917H24.1621C29.9468 73.0282 36.7796 75.1485 43.7805 75.1565H43.9165C53.1976 75.1725 62.1027 71.5 68.6714 64.9472C71.7038 61.9389 71.7198 57.0423 68.7194 54.01C67.2713 52.5458 65.287 51.7217 63.2308 51.7217H63.2228Z\" fill=\"#E44F20\"/><path d=\"M17.5772 52.5862C19.3854 50.77 21.8497 49.7459 24.418 49.7539C25.3061 49.7539 26.1862 49.8739 27.0343 50.1139C23.2738 43.8652 23.2898 36.0482 27.0743 29.8155C21.9217 31.2317 16.601 28.1993 15.1849 23.0467C14.9528 22.2066 14.8408 21.3425 14.8408 20.4784V20.2144C6.75186 32.0958 6.71985 47.7056 14.7448 59.627V59.427C14.7448 56.8587 15.7529 54.4024 17.5772 52.5862Z\" fill=\"#FFDA00\"/><path d=\"M24.5055 12.5254C22.3052 12.5254 20.7691 13.4375 18.9048 15.3017C17.1286 17.0779 16.5685 18.6301 16.5605 20.4783C16.5605 24.8709 20.121 28.4233 24.5135 28.4233C28.906 28.4233 32.4585 24.8629 32.4585 20.4703C32.4585 16.0858 28.898 12.5254 24.5135 12.5254H24.5055Z\" fill=\"#1770E6\"/><path d=\"M16.4492 59.4346C16.4492 61.6268 17.3613 63.171 19.2256 65.0352C21.0018 66.8115 22.5539 67.3795 24.4022 67.3795C28.7787 67.3635 32.3151 63.8111 32.2991 59.4346C32.2831 55.0581 28.7307 51.5216 24.3542 51.5377C19.9856 51.5537 16.4572 55.0901 16.4572 59.4586V59.4346H16.4492Z\" fill=\"#E44F20\"/></svg>",
+    "full": true
+  },
+  // Official LinkedIn favicon mark (blue tile with the white 'in'), style classes inlined as fill attributes. Embedded for self-hosted/offline rendering.
+  // Source: https://www.linkedin.com/ (retrieved 2026-10-27).
+  // Asset: https://static.licdn.com/aero-v1/sc/h/akt4ae504epesldzj74dzred8
+  "linkedin": {
+    "svg": "<svg viewBox=\"4 4 56 56\" xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\"><path d=\"M55.92,4H8.08A4.08,4.08,0,0,0,4,8.08V55.92A4.08,4.08,0,0,0,8.08,60H55.92A4.08,4.08,0,0,0,60,55.92V8.08A4.08,4.08,0,0,0,55.92,4ZM20,52H12V25h8ZM16,20.7a4.7,4.7,0,0,1,0-9.4h0a4.7,4.7,0,0,1,0,9.4ZM52,52H44V37.81c0-4.31-2.73-6.11-5-6.11a5.82,5.82,0,0,0-6,6.21V52H25V25h7.53v3.79h.11c.8-1.64,4.44-4.37,9.13-4.37S52,27.59,52,35.76Z\" fill=\"#0A66C2\"/><path d=\"M52,35.76V52H44V37.81c0-4.31-2.73-6.11-5-6.11a5.82,5.82,0,0,0-6,6.21V52H25V25h7.53v3.79h.11c.8-1.64,4.44-4.37,9.13-4.37S52,27.59,52,35.76ZM16,11.3A4.7,4.7,0,1,0,20.7,16,4.69,4.69,0,0,0,16,11.3ZM12,52h8V25H12Z\" fill=\"#FFF\"/></svg>",
+    "full": true
+  },
+  // Official Klaviyo flag mark (path inlined in the help center header; fill #232426 sampled from the official favicon PNG), centered in a square viewBox. Embedded for self-hosted/offline rendering.
+  // Source: https://help.klaviyo.com/hc/en-us (retrieved 2026-10-27).
+  // Asset: inline SVG (class klaviyoFlag, viewBox 0 0 266 178) in the page HTML; color from https://www.klaviyo.com/icons/icon-512x512.png
+  "klaviyo": {
+    "svg": "<svg viewBox=\"-25 -69 316 316\" xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\"><path d=\"M266 178H0V0h266l-55.835 89z\" fill=\"#232426\"/></svg>",
+    "full": true
+  },
+  // Official Semrush favicon mark. Embedded for self-hosted/offline rendering.
+  // Source: https://www.semrush.com/ (retrieved 2026-10-27).
+  // Asset: https://www.semrush.com/__static__/favicon.37cab19e6995.svg
+  "semrush": {
+    "svg": "<svg viewBox=\"-4.5 -4.5 56 56\" xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\"><path d=\"M32.54 9c-2.22 0-4.65.81-7.35 2.23L11 19h12L0 31h25l-13 7.06L32.9 38c7.84-.2 14.1-6.6 14.1-14.5S40.5 9 32.54 9\" fill=\"#C190FF\"/></svg>",
+    "full": true
   }
 };

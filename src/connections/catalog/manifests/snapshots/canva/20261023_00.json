@@ -1,0 +1,2553 @@
+{
+  "toolkit": {
+    "slug": "canva",
+    "name": "Canva",
+    "version": "20261023_00",
+    "description": "Canva offers a drag-and-drop design suite for creating social media graphics, presentations, and marketing materials with prebuilt templates and a vast element library",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      }
+    ],
+    "currentUserEndpoint": "https://api.canva.com/rest/v1/users/me"
+  },
+  "tools": [
+    {
+      "slug": "CANVA_ACCESS_USER_SPECIFIC_BRAND_TEMPLATES_LIST",
+      "name": "Access user specific brand templates list",
+      "description": "Lists brand templates available to users on plans with brand-template access, such as Canva Pro, Canva Teams, or Canva Enterprise. Returns one page of template metadata, including IDs and titles. Follow the response's continuation token to retrieve additional pages. Dataset definitions are available from CANVA_RETRIEVE_BRAND_TEMPLATE_DATASET_DEFINITION.",
+      "version": "20261023_00",
+      "tags": [
+        "brand_template",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AccessUserSpecificBrandTemplatesListRequest",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "description": "The number of brand templates to return (1-100, default 25)."
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "Lets you search the brand templates available to the user using a search term or terms. "
+          },
+          "dataset": {
+            "enum": [
+              "any",
+              "non_empty"
+            ],
+            "type": "string",
+            "title": "DatasetEnm",
+            "description": "Filter the list of brand templates based on the brand templates' dataset definitions. Brand templates with dataset definitions are mainly used with the Autofill APIs. This can be one of the following: - `any`: (Default) Brand templates with and without dataset definitions. - `non_empty`: Brand templates with one or more data fields defined."
+          },
+          "sort_by": {
+            "enum": [
+              "relevance",
+              "modified_descending",
+              "modified_ascending",
+              "title_descending",
+              "title_ascending"
+            ],
+            "type": "string",
+            "title": "SortByEnm",
+            "description": "Sort the list of brand templates. This can be one of the following: - `relevance`: (Default) Sort results using a relevance algorithm. - `modified_descending`: Sort results by the date last modified in descending order. - `modified_ascending`: Sort results by the date last modified in ascending order. - `title_descending`: Sort results by title in descending order. - `title_ascending`: Sort results by title in ascending order. "
+          },
+          "ownership": {
+            "enum": [
+              "any",
+              "owned",
+              "shared"
+            ],
+            "type": "string",
+            "title": "OwnershipEnm",
+            "description": "Filter the list of brand templates based on the user\"s ownership of the brand templates. This can be one of the following: - `any`: (Default) Brand templates owned by and shared with the user. - `owned`: Brand templates owned by the user. - `shared`: Brand templates shared with the user. "
+          },
+          "continuation": {
+            "type": "string",
+            "title": "Continuation",
+            "description": "If the success response contains a continuation token, the user has access to more brand templates you can list. You can use this token as a query parameter and retrieve more templates from the list, for example `/v1/brand-templates?continuation={continuation}`. To retrieve all the brand templates available to the user, you might need to make multiple requests. IMPORTANT: This token is an opaque value returned by the API. You must use it exactly as returned from a previous API response. Do not manually construct or modify continuation tokens."
+          }
+        },
+        "description": "Request schema for `AccessUserSpecificBrandTemplatesList`"
+      }
+    },
+    {
+      "slug": "CANVA_CREATE_ASSET_UPLOAD_JOB",
+      "name": "Create Asset Upload Job",
+      "description": "Uploads an asset file to the user's Canva content library. This endpoint initiates an asynchronous upload job for images or videos. Returns a job ID to track the upload progress. Once complete, the asset can be used in designs, referenced by its asset ID, and managed through other asset endpoints. IMPORTANT: This is an async operation. Use CANVA_FETCH_ASSET_UPLOAD_JOB_STATUS to poll the job status until it reaches 'success' or 'failed' status.",
+      "version": "20261023_00",
+      "tags": [
+        "asset",
+        "openWorldHint",
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateAssetUploadJobRequest",
+        "required": [
+          "file",
+          "name"
+        ],
+        "properties": {
+          "file": {
+            "type": "object",
+            "title": "FileUploadable",
+            "required": [
+              "name",
+              "mimetype",
+              "s3key"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "title": "Name",
+                "examples": [
+                  "document.pdf",
+                  "image.jpg",
+                  "report.docx"
+                ],
+                "description": "The filename that will be used when uploading the file to the destination service"
+              },
+              "s3key": {
+                "type": "string",
+                "title": "S3Key",
+                "examples": [
+                  "47563/gmail/GET_ATTACHMENT/response/12345"
+                ],
+                "description": "The S3 key of a publicly accessible file, typically returned from a previous download action that stored the file in S3. This key references an existing file that can be uploaded to another service."
+              },
+              "mimetype": {
+                "type": "string",
+                "title": "Mimetype",
+                "examples": [
+                  "application/pdf",
+                  "image/jpeg",
+                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ],
+                "description": "The MIME type of the file"
+              }
+            },
+            "description": "Image or video file to upload directly to Canva. Direct upload is the path for large files and for videos larger than the URL-upload limit. No duplicate detection: uploading the same file creates a new asset.",
+            "file_uploadable": true,
+            "additionalProperties": false
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Display name for the asset (maximum 50 characters). The name can be changed later with the Update asset API."
+          }
+        },
+        "description": "Request schema to upload an asset to a user's content library.\n\nCanva expects an application/octet-stream body and an Asset-Upload-Metadata\nheader containing the upload metadata."
+      }
+    },
+    {
+      "slug": "CANVA_CREATE_CANVA_DESIGN_EXPORT_JOB",
+      "name": "Create Canva Design Export Job (Deprecated)",
+      "description": "DEPRECATED: Use CANVA_POST_EXPORTS instead. Exports a Canva design to various file formats. This endpoint initiates an asynchronous export job for designs. Supports image formats (PNG, JPG, GIF), documents (PDF, PPTX), and video (MP4). Each format has specific configuration options like dimensions, quality, and page selection. IMPORTANT: This is an async operation. Use GET_DESIGN_EXPORT_JOB_RESULT to poll the job status until completion and retrieve the download URLs for the exported files.",
+      "version": "20261023_00",
+      "tags": [
+        "export",
+        "openWorldHint",
+        "important",
+        "deprecated",
+        "readOnlyHint"
+      ],
+      "deprecated": true,
+      "input": {
+        "type": "object",
+        "title": "CreateCanvaDesignExportJobRequest",
+        "required": [
+          "design_id",
+          "format"
+        ],
+        "properties": {
+          "format": {
+            "oneOf": [
+              {
+                "type": "object",
+                "title": "PngFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "png",
+                    "title": "Type",
+                    "description": "The export format type"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "Specific page numbers to export (1-indexed). Omit to export all pages."
+                  },
+                  "width": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "maximum": 25000,
+                        "minimum": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Width",
+                    "default": null,
+                    "description": "Export width in pixels (40-25000). One dimension preserves aspect ratio; if both conflict with it, Canva uses the larger dimension. Free-plan fixed designs cannot be upscaled beyond 1.125x."
+                  },
+                  "height": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "maximum": 25000,
+                        "minimum": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Height",
+                    "default": null,
+                    "description": "Export height in pixels (40-25000). One dimension preserves aspect ratio; if both conflict with it, Canva uses the larger dimension. Free-plan fixed designs cannot be upscaled beyond 1.125x."
+                  },
+                  "lossless": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Lossless",
+                    "default": null,
+                    "description": "If true (default), PNG is exported without compression. If false, uses lossy compression (Pro/Enterprise only)."
+                  },
+                  "export_quality": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "regular",
+                          "pro"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Export Quality",
+                    "default": null,
+                    "description": "Export quality. A pro export can fail when the design has unpurchased premium elements and the user has not purchased them or lacks a premium-feature plan."
+                  },
+                  "as_single_image": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "As Single Image",
+                    "default": null,
+                    "description": "If true, merges multi-page designs into a single image. Default is false."
+                  },
+                  "transparent_background": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Transparent Background",
+                    "default": null,
+                    "description": "If true, exports with transparent background (Pro/Enterprise only). Default is false."
+                  }
+                },
+                "description": "PNG export format configuration."
+              },
+              {
+                "type": "object",
+                "title": "JpgFormat",
+                "required": [
+                  "type",
+                  "quality"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "jpg",
+                    "title": "Type",
+                    "description": "The export format type"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "Specific page numbers to export (1-indexed). Omit to export all pages."
+                  },
+                  "width": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "maximum": 25000,
+                        "minimum": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Width",
+                    "default": null,
+                    "description": "Export width in pixels (40-25000). One dimension preserves aspect ratio; if both conflict with it, Canva uses the larger dimension. Free-plan fixed designs cannot be upscaled beyond 1.125x."
+                  },
+                  "height": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "maximum": 25000,
+                        "minimum": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Height",
+                    "default": null,
+                    "description": "Export height in pixels (40-25000). One dimension preserves aspect ratio; if both conflict with it, Canva uses the larger dimension. Free-plan fixed designs cannot be upscaled beyond 1.125x."
+                  },
+                  "quality": {
+                    "type": "integer",
+                    "title": "Quality",
+                    "maximum": 100,
+                    "minimum": 1,
+                    "description": "JPEG compression quality (1-100). Lower values create smaller files with more artifacts."
+                  },
+                  "export_quality": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "regular",
+                          "pro"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Export Quality",
+                    "default": null,
+                    "description": "Export quality. A pro export can fail when the design has unpurchased premium elements and the user has not purchased them or lacks a premium-feature plan."
+                  }
+                },
+                "description": "JPG export format configuration."
+              },
+              {
+                "type": "object",
+                "title": "PdfFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "size": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "a4",
+                          "a3",
+                          "letter",
+                          "legal"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Size",
+                    "default": null,
+                    "description": "Paper size for PDF export (only applies to Canva Docs)."
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "pdf",
+                    "title": "Type",
+                    "description": "The export format type"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "Specific page numbers to export (1-indexed). Omit to export all pages."
+                  },
+                  "export_quality": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "regular",
+                          "pro"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Export Quality",
+                    "default": null,
+                    "description": "Export quality. A pro export can fail when the design has unpurchased premium elements and the user has not purchased them or lacks a premium-feature plan."
+                  }
+                },
+                "description": "PDF export format configuration."
+              },
+              {
+                "type": "object",
+                "title": "GifFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "gif",
+                    "title": "Type",
+                    "description": "The export format type"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "Specific page numbers to export (1-indexed). Omit to export all pages."
+                  },
+                  "width": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "maximum": 25000,
+                        "minimum": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Width",
+                    "default": null,
+                    "description": "Export width in pixels (40-25000). One dimension preserves aspect ratio; if both conflict with it, Canva uses the larger dimension."
+                  },
+                  "height": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "maximum": 25000,
+                        "minimum": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Height",
+                    "default": null,
+                    "description": "Export height in pixels (40-25000). One dimension preserves aspect ratio; if both conflict with it, Canva uses the larger dimension."
+                  },
+                  "export_quality": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "regular",
+                          "pro"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Export Quality",
+                    "default": null,
+                    "description": "Export quality. A pro export can fail when the design has unpurchased premium elements and the user has not purchased them or lacks a premium-feature plan."
+                  }
+                },
+                "description": "GIF export format configuration."
+              },
+              {
+                "type": "object",
+                "title": "Mp4Format",
+                "required": [
+                  "type",
+                  "quality"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "mp4",
+                    "title": "Type",
+                    "description": "The export format type"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "Specific page numbers to export (1-indexed). Omit to export all pages."
+                  },
+                  "quality": {
+                    "enum": [
+                      "horizontal_480p",
+                      "horizontal_720p",
+                      "horizontal_1080p",
+                      "horizontal_4k",
+                      "vertical_480p",
+                      "vertical_720p",
+                      "vertical_1080p",
+                      "vertical_4k"
+                    ],
+                    "type": "string",
+                    "title": "Quality",
+                    "description": "Video quality and orientation."
+                  },
+                  "export_quality": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "regular",
+                          "pro"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Export Quality",
+                    "default": null,
+                    "description": "Export quality. A pro export can fail when the design has unpurchased premium elements and the user has not purchased them or lacks a premium-feature plan."
+                  }
+                },
+                "description": "MP4 video export format configuration."
+              },
+              {
+                "type": "object",
+                "title": "PptxFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "pptx",
+                    "title": "Type",
+                    "description": "The export format type"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "Specific page numbers to export (1-indexed). Omit to export all pages."
+                  }
+                },
+                "description": "PowerPoint (PPTX) export format configuration."
+              },
+              {
+                "type": "object",
+                "title": "HtmlBundleFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "html_bundle",
+                    "title": "Type",
+                    "description": "Export as an HTML bundle"
+                  }
+                },
+                "description": "HTML bundle export configuration for supported Canva Docs."
+              },
+              {
+                "type": "object",
+                "title": "HtmlStandaloneFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "html_standalone",
+                    "title": "Type",
+                    "description": "Export as a standalone HTML document"
+                  }
+                },
+                "description": "Standalone HTML export configuration for supported Canva Docs."
+              },
+              {
+                "type": "object",
+                "title": "CsvFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "csv",
+                    "title": "Type",
+                    "description": "Export as CSV"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "Specific page numbers to export (1-indexed). Omit to export all pages."
+                  }
+                },
+                "description": "CSV export configuration for designs with tabular data."
+              }
+            ],
+            "title": "Format",
+            "examples": [
+              {
+                "type": "png"
+              },
+              {
+                "type": "jpg",
+                "quality": 85
+              },
+              {
+                "type": "pdf"
+              },
+              {
+                "type": "gif"
+              },
+              {
+                "type": "mp4",
+                "quality": "horizontal_1080p"
+              },
+              {
+                "type": "pptx"
+              }
+            ],
+            "description": "Export format configuration. Set 'type' to one of: 'png', 'jpg', 'pdf', 'gif', 'mp4', 'pptx', 'html_bundle', 'html_standalone', or 'csv'.",
+            "discriminator": {
+              "mapping": {
+                "csv": "#/$defs/CsvFormat",
+                "gif": "#/$defs/GifFormat",
+                "jpg": "#/$defs/JpgFormat",
+                "mp4": "#/$defs/Mp4Format",
+                "pdf": "#/$defs/PdfFormat",
+                "png": "#/$defs/PngFormat",
+                "pptx": "#/$defs/PptxFormat",
+                "html_bundle": "#/$defs/HtmlBundleFormat",
+                "html_standalone": "#/$defs/HtmlStandaloneFormat"
+              },
+              "propertyName": "type"
+            }
+          },
+          "design_id": {
+            "type": "string",
+            "title": "Design Id",
+            "examples": [
+              "DAGkg05ZH5w",
+              "DAGz4y3LDFI"
+            ],
+            "minLength": 1,
+            "description": "The design ID to export"
+          }
+        },
+        "description": "Request to export a Canva design to a file format."
+      }
+    },
+    {
+      "slug": "CANVA_CREATE_CANVA_DESIGN_WITH_OPTIONAL_ASSET",
+      "name": "Create canva design with optional asset (Deprecated)",
+      "description": "DEPRECATED: Use CANVA_POST_DESIGNS instead. Creates a new Canva design with specified dimensions or from an asset. This endpoint creates a design using either a preset type (doc, email, presentation, whiteboard), custom dimensions, or by importing an image asset. Returns the design ID, URLs for editing and viewing, owner info, and metadata. The design can be immediately accessed and edited.",
+      "version": "20261023_00",
+      "tags": [
+        "design",
+        "openWorldHint",
+        "important",
+        "deprecated",
+        "createHint"
+      ],
+      "deprecated": true,
+      "input": {
+        "type": "object",
+        "title": "CreateCanvaDesignWithOptionalAssetRequest",
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "My Holiday Presentation",
+              "Q4 Marketing Report",
+              "Social Media Templates"
+            ],
+            "description": "Design title (1-255 chars). Appears in Canva UI and design lists."
+          },
+          "asset_id": {
+            "type": "string",
+            "title": "Asset Id",
+            "examples": [
+              "Msd59349ff"
+            ],
+            "description": "Image asset ID to create design from. Optional if design_type provided. IMPORTANT: Only image assets are supported - video and PDF assets will be rejected by the API with error 'asset_id must belong to an image asset'. Asset IDs are opaque strings with no guaranteed format. To verify an asset is an image before using it here, call CANVA_RETRIEVE_ASSET_METADATA_BY_ID and check that the 'type' field equals 'image'. To upload a new image asset, use CANVA_CREATE_URL_ASSET_UPLOAD_JOB or CANVA_CREATE_ASSET_UPLOAD_JOB."
+          },
+          "design_type": {
+            "type": "object",
+            "title": "Design Type",
+            "examples": [
+              {
+                "name": "presentation",
+                "type": "preset"
+              },
+              {
+                "type": "custom",
+                "width": 1080,
+                "height": 1350
+              }
+            ],
+            "description": "Design dimensions configuration. Optional if asset_id provided. Must be a dictionary with 'type' field.\n\nTwo options:\n1. Preset: {'type': 'preset', 'name': 'doc'|'email'|'whiteboard'|'presentation'}\n2. Custom: {'type': 'custom', 'width': 1080, 'height': 1920}\n\nType must be either 'preset' or 'custom'. For preset, name must be one of: doc, email, whiteboard, presentation. For custom, width and height must be between 40-8000 pixels and their product must not exceed 25,000,000 pixels.",
+            "additionalProperties": true
+          }
+        },
+        "description": "Request schema for `CreateCanvaDesignWithOptionalAsset`\n\nConditional requirements:\n- At least one of 'design_type' or 'asset_id' must be provided.\n- When 'design_type.type' = 'preset', 'design_type.name' must be one of: doc, email, whiteboard, presentation.\n- 'asset_id' ONLY supports IMAGE assets. Video/PDF assets will be rejected by the API.\n\nIMPORTANT: Before passing an asset_id, use CANVA_RETRIEVE_ASSET_METADATA_BY_ID to verify\nthe asset's 'type' field equals 'image'. Asset IDs are opaque strings - there is no way\nto determine asset type from the ID format alone.\n\nYou can either provide a preset/custom design_type or create from an image asset."
+      }
+    },
+    {
+      "slug": "CANVA_CREATE_DESIGN_COMMENT_IN_PREVIEW_API",
+      "name": "Create design comment in preview api (Deprecated)",
+      "description": "DEPRECATED: Use CANVA_POST_DESIGNS_DESIGNID_COMMENTS instead. Creates a new comment thread on a Canva design using Canva's deprecated Create comment API. This preview API allows adding text comments to designs for collaboration and feedback. Returns the created comment with ID, author info, and timestamp. Comments can be replied to using the comment reply endpoint.",
+      "version": "20261023_00",
+      "tags": [
+        "comment",
+        "openWorldHint",
+        "important",
+        "createHint",
+        "deprecated"
+      ],
+      "deprecated": true,
+      "input": {
+        "type": "object",
+        "title": "CreateDesignCommentInPreviewApiRequest",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "examples": [
+              "Great design! Love the color scheme.",
+              "Please update the logo size",
+              "[oUXYegJ3p0L71iGeQqomaw:oBXYeud9amEnco9k3EsBAY] Can you review this?"
+            ],
+            "maxLength": 2048,
+            "minLength": 1,
+            "description": "Comment text (1-2048 chars). Mention users with [user_id:team_id]. No markdown support. Comments appear unpinned - users must view 'All pages' to see them."
+          },
+          "design_id": {
+            "type": "string",
+            "title": "Design Id",
+            "examples": [
+              "DAGz4y3LDFI",
+              "DAFVztcvd9z"
+            ],
+            "description": "Design ID to attach comment to"
+          },
+          "assignee_id": {
+            "type": "string",
+            "title": "Assignee Id",
+            "examples": [
+              "oUXYegJ3p0L71iGeQqomaw"
+            ],
+            "description": "User ID to assign this comment to. If provided, you must also mention this user in the message text using format [user_id:team_id]."
+          },
+          "attached_to": {
+            "type": "object",
+            "title": "AttachedTo",
+            "required": [
+              "type",
+              "design_id"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "title": "Type",
+                "examples": [
+                  "design"
+                ],
+                "description": "Type of target (always 'design' for design-level comments)"
+              },
+              "design_id": {
+                "type": "string",
+                "title": "Design Id",
+                "examples": [
+                  "DAGz4y3LDFI",
+                  "DAFVztcvd9z"
+                ],
+                "description": "Design ID to attach comment to"
+              }
+            },
+            "description": "Target reference for comment attachment",
+            "additionalProperties": false
+          }
+        },
+        "description": "Request schema for `CreateDesignCommentInPreviewApi`"
+      }
+    },
+    {
+      "slug": "CANVA_CREATE_DESIGN_IMPORT_JOB",
+      "name": "Create Design Import Job",
+      "description": "Imports an external file as a new Canva design. This endpoint converts documents (PDF, Word, PowerPoint, Excel) and design files (PSD, AI) into editable Canva designs. The import runs asynchronously and returns a job ID to track progress and retrieve the created design. IMPORTANT: This is an async operation. Use CANVA_RETRIEVE_DESIGN_IMPORT_JOB_STATUS to poll the job status until it reaches 'success' or 'failed' to get the final design ID.",
+      "version": "20261023_00",
+      "tags": [
+        "design_import",
+        "openWorldHint",
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateDesignImportJobRequest",
+        "required": [
+          "file",
+          "title"
+        ],
+        "properties": {
+          "file": {
+            "type": "object",
+            "title": "FileUploadable",
+            "required": [
+              "name",
+              "mimetype",
+              "s3key"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "title": "Name",
+                "examples": [
+                  "document.pdf",
+                  "image.jpg",
+                  "report.docx"
+                ],
+                "description": "The filename that will be used when uploading the file to the destination service"
+              },
+              "s3key": {
+                "type": "string",
+                "title": "S3Key",
+                "examples": [
+                  "47563/gmail/GET_ATTACHMENT/response/12345"
+                ],
+                "description": "The S3 key of a publicly accessible file, typically returned from a previous download action that stored the file in S3. This key references an existing file that can be uploaded to another service."
+              },
+              "mimetype": {
+                "type": "string",
+                "title": "Mimetype",
+                "examples": [
+                  "application/pdf",
+                  "image/jpeg",
+                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ],
+                "description": "The MIME type of the file"
+              }
+            },
+            "description": "Document or design file to import. Supported formats: AI, PSD, Affinity (.af, .afdesign, .afphoto, .afpub), Keynote, Numbers, Pages, XLS/XLSX, PPT/PPTX, DOC/DOCX, ODG, ODP, ODS, ODT, and PDF.",
+            "file_uploadable": true,
+            "additionalProperties": false
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Title for the imported design (maximum 50 characters). Shows in Canva UI and design lists."
+          },
+          "mime_type": {
+            "type": "string",
+            "title": "Mime Type",
+            "description": "Optional MIME type override. It is normalized to a lowercase media type without parameters. If omitted, Canva attempts to detect the file type automatically."
+          }
+        },
+        "description": "Request schema for starting a Canva design import job.\n\nCanva expects the binary file in the request body (application/octet-stream)\nand an Import-Metadata header with a small JSON payload."
+      }
+    },
+    {
+      "slug": "CANVA_CREATE_DESIGN_RESIZE_JOB",
+      "name": "Create Design Resize Job",
+      "description": "Creates a resized copy of an existing design (Canva Pro/Enterprise only). This endpoint creates a new design with different dimensions from an existing one. The resize operation runs asynchronously and preserves content where possible. Returns a job ID to track progress and retrieve the new design once complete. IMPORTANT: This is an async operation. Use CANVA_RETRIEVE_DESIGN_RESIZE_JOB_STATUS to poll the job status until completion to get the resized design ID and access URLs.",
+      "version": "20261023_00",
+      "tags": [
+        "resizes",
+        "openWorldHint",
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateDesignResizeJobRequest",
+        "required": [
+          "design_id",
+          "design_type"
+        ],
+        "properties": {
+          "design_id": {
+            "type": "string",
+            "title": "Design Id",
+            "description": "The source design ID"
+          },
+          "design_type": {
+            "oneOf": [
+              {
+                "type": "object",
+                "title": "PresetDesignType",
+                "required": [
+                  "type",
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "enum": [
+                      "whiteboard",
+                      "presentation"
+                    ],
+                    "type": "string",
+                    "title": "Name",
+                    "description": "Preset resize target: 'whiteboard' or 'presentation'. Canva docs cannot be resize targets."
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "preset",
+                    "title": "Type",
+                    "description": "Must be 'preset' for predefined design types"
+                  }
+                },
+                "description": "Preset design type using predefined Canva templates."
+              },
+              {
+                "type": "object",
+                "title": "CustomDesignType",
+                "required": [
+                  "type",
+                  "width",
+                  "height"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "custom",
+                    "title": "Type",
+                    "description": "Must be 'custom' for user-specified dimensions"
+                  },
+                  "width": {
+                    "type": "integer",
+                    "title": "Width",
+                    "maximum": 8000,
+                    "minimum": 40,
+                    "description": "Width in pixels (40-8000)"
+                  },
+                  "height": {
+                    "type": "integer",
+                    "title": "Height",
+                    "maximum": 8000,
+                    "minimum": 40,
+                    "description": "Height in pixels (40-8000)"
+                  }
+                },
+                "description": "Custom design type with user-specified dimensions."
+              }
+            ],
+            "title": "Design Type",
+            "description": "Target design type configuration",
+            "discriminator": {
+              "mapping": {
+                "custom": "#/$defs/CustomDesignType",
+                "preset": "#/$defs/PresetDesignType"
+              },
+              "propertyName": "type"
+            }
+          }
+        },
+        "description": "Start an async job to create a resized copy of a design.\n\nEither provide a preset design type or custom dimensions."
+      }
+    },
+    {
+      "slug": "CANVA_CREATE_URL_ASSET_UPLOAD_JOB",
+      "name": "Create URL Asset Upload Job",
+      "description": "Tool to create an asynchronous Canva asset import job from a public URL. Use when you need to import an asset into Canva directly from a publicly accessible URL without S3 choreography.",
+      "version": "20261023_00",
+      "tags": [
+        "asset",
+        "openWorldHint",
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateUrlAssetUploadJobRequest",
+        "required": [
+          "name",
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "maxLength": 2048,
+            "minLength": 8,
+            "description": "Publicly accessible HTTPS URL of the file to import (8-2048 characters). Canva rejects non-HTTPS URLs."
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "Asset name (1-255 characters)."
+          }
+        },
+        "description": "Parameters to start a URL-based asset upload job in Canva."
+      }
+    },
+    {
+      "slug": "CANVA_FETCH_ASSET_UPLOAD_JOB_STATUS",
+      "name": "Fetch asset upload job status",
+      "description": "Polls for asset upload job completion status. Use this after CANVA_CREATE_ASSET_UPLOAD_JOB to check the upload progress. Repeatedly call this endpoint until a 'success' or 'failed' status is received to get the final asset ID and metadata. IMPORTANT: This tool is ONLY for direct file upload jobs (CANVA_CREATE_ASSET_UPLOAD_JOB). Do NOT use this for URL import jobs created by CANVA_CREATE_URL_ASSET_UPLOAD_JOB - those use a different API endpoint. Use CANVA_GET_URL_ASSET_UPLOADS_JOBID to poll URL asset upload job status.",
+      "version": "20261023_00",
+      "tags": [
+        "asset",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "FetchAssetUploadJobStatusRequest",
+        "required": [
+          "jobId"
+        ],
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "title": "Job Id",
+            "minLength": 1,
+            "description": "The asset upload job ID returned by CANVA_CREATE_ASSET_UPLOAD_JOB or CANVA_POST_ASSET_UPLOADS. This is the 'id' field from the job object in the response. IMPORTANT: This tool does NOT work for job IDs from CANVA_CREATE_URL_ASSET_UPLOAD_JOB (URL import jobs use a different endpoint - use CANVA_GET_URL_ASSET_UPLOADS_JOBID instead)."
+          }
+        },
+        "description": "Request schema for `FetchAssetUploadJobStatus`"
+      }
+    },
+    {
+      "slug": "CANVA_FETCH_CURRENT_USER_DETAILS",
+      "name": "Fetch current user details",
+      "description": "Returns the User ID and Team ID associated with the provided access token. Use CANVA_RETRIEVE_USER_PROFILE_DATA to retrieve the user's display name.",
+      "version": "20261023_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "user",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "FetchCurrentUserDetailsRequest",
+        "properties": {},
+        "description": "Request schema for `FetchCurrentUserDetails`"
+      }
+    },
+    {
+      "slug": "CANVA_FETCH_DESIGN_METADATA_AND_ACCESS_INFORMATION",
+      "name": "Fetch design metadata and access information",
+      "description": "Gets the metadata for a design. This includes owner information, URLs for editing and viewing, and thumbnail information.",
+      "version": "20261023_00",
+      "tags": [
+        "design",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "FetchDesignMetadataAndAccessInformationRequest",
+        "required": [
+          "designId"
+        ],
+        "properties": {
+          "designId": {
+            "type": "string",
+            "title": "Design Id",
+            "pattern": "^[a-zA-Z0-9_-]+$",
+            "maxLength": 50,
+            "minLength": 1,
+            "description": "The design ID (1-50 letters, numbers, underscores, or hyphens), for example DAFVztcvd9z."
+          }
+        },
+        "description": "Request schema for `FetchDesignMetadataAndAccessInformation`"
+      }
+    },
+    {
+      "slug": "CANVA_GET_DESIGN_EXPORT_JOB_RESULT",
+      "name": "Get design export job result",
+      "description": "Polls for design export job completion status. Use this after CANVA_CREATE_CANVA_DESIGN_EXPORT_JOB to check the export progress. Call this endpoint repeatedly until the job is complete to receive download links for the exported design pages. Download URLs expire after 24 hours.",
+      "version": "20261023_00",
+      "tags": [
+        "export",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetDesignExportJobResultRequest",
+        "required": [
+          "exportId"
+        ],
+        "properties": {
+          "exportId": {
+            "type": "string",
+            "title": "Export Id",
+            "description": "The export job ID."
+          }
+        },
+        "description": "Request schema for `GetDesignExportJobResult`"
+      }
+    },
+    {
+      "slug": "CANVA_GET_DESIGN_GENERATION_JOB",
+      "name": "Get design generation job",
+      "description": "Retrieve a design generation job created by the same user and integration. Call repeatedly until the returned status reaches `success` or `failed`. The user must have Canva's `design_generation` capability. Jobs expire 24 hours after creation, and only the creating user, integration, and team can retrieve them.",
+      "version": "20261023_00",
+      "tags": [
+        "design_generation",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetDesignGenerationJobRequest",
+        "required": [
+          "job_id"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id",
+            "description": "Public design-generation job ID returned when the job was created."
+          }
+        },
+        "description": "Request schema for `GetDesignGenerationJob`."
+      }
+    },
+    {
+      "slug": "CANVA_GET_DESIGNS_DESIGNID_EXPORT_FORMATS",
+      "name": "Get design export formats",
+      "description": "Lists available file formats for exporting a design. Use this to check which export formats (PDF, JPG, PNG, SVG, PPTX, GIF, MP4, HTML bundle, standalone HTML, and CSV) are supported for a specific design.",
+      "version": "20261023_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "exports_and_formats"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetDesignsDesignidExportFormatsRequest",
+        "required": [
+          "designId"
+        ],
+        "properties": {
+          "designId": {
+            "type": "string",
+            "title": "Design Id",
+            "description": "The design ID."
+          }
+        },
+        "description": "Request schema for `GetDesignsDesignidExportFormats`"
+      }
+    },
+    {
+      "slug": "CANVA_GET_URL_ASSET_UPLOADS_JOBID",
+      "name": "Get URL asset upload job status",
+      "description": "Tool to retrieve the status and result of a URL-based asset upload job. Use this after creating a URL asset upload job to check progress and retrieve the uploaded asset ID when successful.",
+      "version": "20261023_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "media_ingestion_uploads_and_imports"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetUrlAssetUploadsJobidRequest",
+        "required": [
+          "jobId"
+        ],
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "title": "Job Id",
+            "description": "The asset upload job identifier."
+          }
+        },
+        "description": "Request schema for `GetUrlAssetUploadsJobid`"
+      }
+    },
+    {
+      "slug": "CANVA_GET_URL_IMPORTS_JOBID",
+      "name": "Get URL import job status",
+      "description": "Polls for URL import job completion status. Use this after creating a URL import job to check the import progress. Repeatedly call this endpoint until a 'success' or 'failed' status is received to get the final imported design ID and metadata.",
+      "version": "20261023_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "media_ingestion_uploads_and_imports"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetUrlImportsJobidRequest",
+        "required": [
+          "jobId"
+        ],
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "title": "Job Id",
+            "description": "The URL import job ID."
+          }
+        },
+        "description": "Request schema for `GetUrlImportsJobid`"
+      }
+    },
+    {
+      "slug": "CANVA_GET_USERS_ME_CAPABILITIES",
+      "name": "Get user capabilities",
+      "description": "Lists the API capabilities for the user account associated with the provided access token. Use when you need to check what features are available based on the user's Canva plan.",
+      "version": "20261023_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "collaboration_and_permissions"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetUsersMeCapabilitiesRequest",
+        "properties": {},
+        "description": "Request schema for `GetUsersMeCapabilities`"
+      }
+    },
+    {
+      "slug": "CANVA_LIST_FOLDER_ITEMS_BY_TYPE_WITH_SORTING",
+      "name": "List folder items by type with sorting",
+      "description": "Lists folder items, including folders, designs, image assets, and brand templates. Brand templates are returned only when explicitly requested in `item_types` and the user's plan supports them. Video assets are currently not returned.",
+      "version": "20261023_00",
+      "tags": [
+        "folder",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListFolderItemsByTypeWithSortingRequest",
+        "required": [
+          "folderId"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "description": "The number of folder items to return (1-100, default 50)."
+          },
+          "sort_by": {
+            "enum": [
+              "created_ascending",
+              "created_descending",
+              "modified_ascending",
+              "modified_descending",
+              "title_ascending",
+              "title_descending"
+            ],
+            "type": "string",
+            "title": "Sort By",
+            "default": "modified_descending",
+            "description": "Sort the list of folder items. This can be one of the following: - `created_ascending`: Sort results by creation date, in ascending order. - `created_descending`: Sort results by creation date, in descending order. - `modified_ascending`: Sort results by the last modified date, in ascending order. - `modified_descending`: (Default) Sort results by the last modified date, in descending order. - `title_ascending`: Sort results by title, in ascending order. The title is either the `name` field for a folder or asset, or the `title` field for a design. - `title_descending`: Sort results by title, in descending order. The title is either the `name` field for a folder or asset, or the `title` field for a design. "
+          },
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "description": "The folder ID. Must be a non-empty string. Use 'root' to list items in the root folder."
+          },
+          "item_types": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "brand_template",
+                "design",
+                "folder",
+                "image"
+              ],
+              "type": "string",
+              "title": "ItemTypesEnm"
+            },
+            "title": "Item Types",
+            "description": "Filter the folder items to only return specified types. The available types are: `brand_template`, `design`, `folder`, and `image`. To filter for more than one item type, provide a comma- delimited list. "
+          },
+          "pin_status": {
+            "enum": [
+              "any",
+              "pinned"
+            ],
+            "type": "string",
+            "title": "Pin Status",
+            "default": "any",
+            "description": "Filter by pinned status: 'any' returns all items and 'pinned' returns only pinned items."
+          },
+          "continuation": {
+            "type": "string",
+            "title": "Continuation",
+            "description": "If the success response contains a continuation token, the folder contains more items you can list. You can use this token as a query parameter and retrieve more items from the list, for example `/v1/folders/{folderId}/items?continuation={continuation}`. To retrieve all the items in a folder, you might need to make multiple requests. "
+          }
+        },
+        "description": "Request schema for `ListFolderItemsByTypeWithSorting`"
+      }
+    },
+    {
+      "slug": "CANVA_LIST_USER_DESIGNS",
+      "name": "List User Designs",
+      "description": "Provides a summary of Canva user designs, includes search filtering, and allows showing both self-created and shared designs with sorting options.",
+      "version": "20261023_00",
+      "tags": [
+        "design",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListUserDesignsRequest",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "description": "The number of designs to return. Minimum 1, maximum 100, default 25."
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "maxLength": 255,
+            "description": "Lets you search the user\"s designs, and designs shared with the user, using a search term or terms. "
+          },
+          "sort_by": {
+            "enum": [
+              "relevance",
+              "modified_descending",
+              "modified_ascending",
+              "title_descending",
+              "title_ascending"
+            ],
+            "type": "string",
+            "title": "SortByEnm",
+            "description": "Sort the list of designs. This can be one of the following: - `relevance`: (Default) Sort results using a relevance algorithm. - `modified_descending`: Sort results by the date last modified in descending order. - `modified_ascending`: Sort results by the date last modified in ascending order. - `title_descending`: Sort results by title in descending order. - `title_ascending`: Sort results by title in ascending order. "
+          },
+          "ownership": {
+            "enum": [
+              "any",
+              "owned",
+              "shared"
+            ],
+            "type": "string",
+            "title": "OwnershipEnm",
+            "description": "Filter the list of designs based on the user\"s ownership of the designs. This can be one of the following: - `owned`: Designs owned by the user. - `shared`: Designs shared with the user. - `any`: Designs owned by and shared with the user. "
+          },
+          "continuation": {
+            "type": "string",
+            "title": "Continuation",
+            "description": "If the success response contains a continuation token, the list contains more designs you can list. You can use this token as a query parameter and retrieve more designs from the list, for example `/v1/designs?continuation={continuation}`. To retrieve all of a user\"s designs, you might need to make multiple requests. Pass a valid token or omit this parameter entirely. Empty strings are not accepted by the API."
+          }
+        },
+        "description": "Request schema for `ListUserDesigns`"
+      }
+    },
+    {
+      "slug": "CANVA_POST_DESIGNS",
+      "name": "Create new Canva design",
+      "description": "Creates a Canva design with a preset type, custom dimensions, an existing design, or a brand template. Copying designs and using brand templates are Canva preview features. Optionally insert an image asset when using a preset or custom type. Returns design ID, edit/view URLs, and metadata.",
+      "version": "20261023_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "design_creation_and_organization",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PostDesignsRequest",
+        "properties": {
+          "type": {
+            "enum": [
+              "type_and_asset",
+              "design",
+              "brand_template"
+            ],
+            "type": "string",
+            "title": "Type",
+            "description": "Creation mode. Omit or use 'type_and_asset' for a preset/custom design or asset; use 'design' to copy a design; use 'brand_template' to copy a brand template. The copy modes are Canva preview features."
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Test Design Created by API",
+              "My Holiday Presentation",
+              "Q4 Marketing Report"
+            ],
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "Design name (1-255 characters). Appears in Canva UI and design lists."
+          },
+          "asset_id": {
+            "type": "string",
+            "title": "Asset Id",
+            "examples": [
+              "Msd59349ff",
+              "Abc12345xy"
+            ],
+            "description": "Image asset ID to insert into the design. Currently supports image assets only. Must be a valid asset ID from a previously uploaded asset."
+          },
+          "design_id": {
+            "type": "string",
+            "title": "Design Id",
+            "examples": [
+              "DAFVztcvd9z"
+            ],
+            "minLength": 1,
+            "description": "ID of the existing Canva design to copy when type is 'design'"
+          },
+          "design_type": {
+            "anyOf": [
+              {
+                "type": "object",
+                "title": "DesignTypePreset",
+                "required": [
+                  "type",
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "enum": [
+                      "doc",
+                      "email",
+                      "whiteboard",
+                      "presentation"
+                    ],
+                    "type": "string",
+                    "title": "Name",
+                    "examples": [
+                      "doc",
+                      "email",
+                      "presentation",
+                      "whiteboard"
+                    ],
+                    "description": "Preset design type name. Options: doc, email, whiteboard, or presentation"
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "preset",
+                    "title": "Type",
+                    "examples": [
+                      "preset"
+                    ],
+                    "description": "Must be 'preset' for preset design types"
+                  }
+                },
+                "description": "Preset design type configuration."
+              },
+              {
+                "type": "object",
+                "title": "DesignTypeCustom",
+                "required": [
+                  "type",
+                  "width",
+                  "height"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "custom",
+                    "title": "Type",
+                    "examples": [
+                      "custom"
+                    ],
+                    "description": "Must be 'custom' for custom dimension designs"
+                  },
+                  "width": {
+                    "type": "integer",
+                    "title": "Width",
+                    "maximum": 8000,
+                    "minimum": 40,
+                    "examples": [
+                      1080,
+                      1920
+                    ],
+                    "description": "Width in pixels (40-8000)"
+                  },
+                  "height": {
+                    "type": "integer",
+                    "title": "Height",
+                    "maximum": 8000,
+                    "minimum": 40,
+                    "examples": [
+                      1350,
+                      1080
+                    ],
+                    "description": "Height in pixels (40-8000)"
+                  }
+                },
+                "description": "Custom dimensions design type configuration."
+              }
+            ],
+            "title": "Design Type",
+            "examples": [
+              "presentation",
+              "doc",
+              "email",
+              "whiteboard",
+              {
+                "name": "doc",
+                "type": "preset"
+              },
+              {
+                "name": "presentation",
+                "type": "preset"
+              },
+              {
+                "type": "custom",
+                "width": 1080,
+                "height": 1920
+              }
+            ],
+            "description": "Design type configuration. Can be a preset name string ('doc', 'email', 'whiteboard', 'presentation') which will be auto-converted to the required format, or a nested object for preset (e.g., {'type': 'preset', 'name': 'presentation'}) or custom dimensions (e.g., {'type': 'custom', 'width': 1080, 'height': 1920})"
+          },
+          "page_numbers": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "title": "Page Numbers",
+            "examples": [
+              [
+                1,
+                3
+              ]
+            ],
+            "minItems": 1,
+            "description": "One-based page numbers to copy from a design or brand template. If omitted, all pages are copied."
+          },
+          "brand_template_id": {
+            "type": "string",
+            "title": "Brand Template Id",
+            "examples": [
+              "DEAFVztcvd9z"
+            ],
+            "minLength": 1,
+            "description": "ID of the Canva brand template to copy when type is 'brand_template'"
+          }
+        },
+        "description": "Request schema for creating a Canva design in one of three modes."
+      }
+    },
+    {
+      "slug": "CANVA_POST_EXPORTS",
+      "name": "Start design export job",
+      "description": "Starts a new asynchronous job to export a Canva design file. Use when exporting designs to various formats (PDF, JPG, PNG, GIF, PPTX, MP4, CSV, and HTML). Returns a job ID that can be used to poll for completion status and download URLs. IMPORTANT: Format compatibility varies by design type. Before exporting, use the CANVA_GET_DESIGNS_DESIGNID_EXPORT_FORMATS action to check which formats are supported for the specific design. Attempting to export in an unsupported format will result in a 400 error (e.g., 'png export not supported for this design type').",
+      "version": "20261023_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "exports_and_formats",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PostExportsRequest",
+        "required": [
+          "design_id",
+          "format"
+        ],
+        "properties": {
+          "format": {
+            "anyOf": [
+              {
+                "type": "object",
+                "title": "PdfFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "size": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "a4",
+                          "a3",
+                          "letter",
+                          "legal"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Size",
+                    "default": null,
+                    "description": "Paper size (only for Canva Docs)"
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "pdf",
+                    "title": "Type",
+                    "description": "Export format type"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "List of page numbers to export (1-indexed). Omit for all pages."
+                  },
+                  "export_quality": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "regular",
+                          "pro"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Export Quality",
+                    "default": null,
+                    "description": "Export quality. A pro export can fail when the design has unpurchased premium elements and the user has not purchased them or lacks a premium-feature plan."
+                  }
+                },
+                "description": "PDF export format configuration."
+              },
+              {
+                "type": "object",
+                "title": "JpgFormat",
+                "required": [
+                  "type",
+                  "quality"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "jpg",
+                    "title": "Type",
+                    "description": "Export format type"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "List of page numbers to export (1-indexed). Omit for all pages."
+                  },
+                  "width": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "maximum": 25000,
+                        "minimum": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Width",
+                    "default": null,
+                    "description": "Width in pixels (40-25000). If only one dimension set, maintains aspect ratio."
+                  },
+                  "height": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "maximum": 25000,
+                        "minimum": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Height",
+                    "default": null,
+                    "description": "Height in pixels (40-25000). If only one dimension set, maintains aspect ratio."
+                  },
+                  "quality": {
+                    "type": "integer",
+                    "title": "Quality",
+                    "maximum": 100,
+                    "minimum": 1,
+                    "examples": [
+                      80
+                    ],
+                    "description": "JPEG quality (1-100). Lower = smaller file, more artifacts."
+                  },
+                  "export_quality": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "regular",
+                          "pro"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Export Quality",
+                    "default": null,
+                    "description": "Export quality. A pro export can fail when the design has unpurchased premium elements and the user has not purchased them or lacks a premium-feature plan."
+                  }
+                },
+                "description": "JPG export format configuration."
+              },
+              {
+                "type": "object",
+                "title": "PngFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "png",
+                    "title": "Type",
+                    "description": "Export format type"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "List of page numbers to export (1-indexed). Omit for all pages."
+                  },
+                  "width": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "maximum": 25000,
+                        "minimum": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Width",
+                    "default": null,
+                    "description": "Width in pixels (40-25000). If only one dimension set, maintains aspect ratio."
+                  },
+                  "height": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "maximum": 25000,
+                        "minimum": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Height",
+                    "default": null,
+                    "description": "Height in pixels (40-25000). If only one dimension set, maintains aspect ratio."
+                  },
+                  "lossless": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Lossless",
+                    "default": null,
+                    "description": "Whether to use lossless compression. Default true. False for lossy (Pro/Enterprise only)."
+                  },
+                  "export_quality": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "regular",
+                          "pro"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Export Quality",
+                    "default": null,
+                    "description": "Export quality. A pro export can fail when the design has unpurchased premium elements and the user has not purchased them or lacks a premium-feature plan."
+                  },
+                  "as_single_image": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "As Single Image",
+                    "default": null,
+                    "description": "Whether to merge a multi-page design into one image."
+                  },
+                  "transparent_background": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Transparent Background",
+                    "default": null,
+                    "description": "Whether to export with a transparent background."
+                  }
+                },
+                "description": "PNG export format configuration. Not supported for all design types - check compatibility first."
+              },
+              {
+                "type": "object",
+                "title": "GifFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "gif",
+                    "title": "Type",
+                    "description": "Export format type"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "List of page numbers to export (1-indexed). Omit for all pages."
+                  },
+                  "width": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "maximum": 25000,
+                        "minimum": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Width",
+                    "default": null,
+                    "description": "Width in pixels (40-25000)"
+                  },
+                  "height": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "maximum": 25000,
+                        "minimum": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Height",
+                    "default": null,
+                    "description": "Height in pixels (40-25000)"
+                  },
+                  "export_quality": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "regular",
+                          "pro"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Export Quality",
+                    "default": null,
+                    "description": "Export quality. A pro export can fail when the design has unpurchased premium elements and the user has not purchased them or lacks a premium-feature plan."
+                  }
+                },
+                "description": "GIF export format configuration."
+              },
+              {
+                "type": "object",
+                "title": "PptxFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "pptx",
+                    "title": "Type",
+                    "description": "Export format type"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "List of page numbers to export (1-indexed). Omit for all pages."
+                  },
+                  "export_quality": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "regular",
+                          "pro"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Export Quality",
+                    "default": null,
+                    "description": "Export quality. A pro export can fail when the design has unpurchased premium elements and the user has not purchased them or lacks a premium-feature plan."
+                  }
+                },
+                "description": "PPTX export format configuration."
+              },
+              {
+                "type": "object",
+                "title": "Mp4Format",
+                "required": [
+                  "type",
+                  "quality"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "mp4",
+                    "title": "Type",
+                    "description": "Export format type"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "List of page numbers to export (1-indexed). Omit for all pages."
+                  },
+                  "quality": {
+                    "enum": [
+                      "horizontal_480p",
+                      "horizontal_720p",
+                      "horizontal_1080p",
+                      "horizontal_4k",
+                      "vertical_480p",
+                      "vertical_720p",
+                      "vertical_1080p",
+                      "vertical_4k"
+                    ],
+                    "type": "string",
+                    "title": "Quality",
+                    "examples": [
+                      "horizontal_1080p"
+                    ],
+                    "description": "Video quality setting"
+                  },
+                  "export_quality": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "regular",
+                          "pro"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Export Quality",
+                    "default": null,
+                    "description": "Export quality. A pro export can fail when the design has unpurchased premium elements and the user has not purchased them or lacks a premium-feature plan."
+                  }
+                },
+                "description": "MP4 export format configuration."
+              },
+              {
+                "type": "object",
+                "title": "HtmlBundleFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "html_bundle",
+                    "title": "Type",
+                    "description": "Export as an HTML bundle"
+                  }
+                },
+                "description": "HTML bundle export configuration for supported Canva Docs."
+              },
+              {
+                "type": "object",
+                "title": "HtmlStandaloneFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "html_standalone",
+                    "title": "Type",
+                    "description": "Export as a standalone HTML document"
+                  }
+                },
+                "description": "Standalone HTML export configuration for supported Canva Docs."
+              },
+              {
+                "type": "object",
+                "title": "CsvFormat",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "csv",
+                    "title": "Type",
+                    "description": "Export as CSV"
+                  },
+                  "pages": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Pages",
+                    "default": null,
+                    "description": "List of page numbers to export (1-indexed). Omit for all pages."
+                  }
+                },
+                "description": "CSV export configuration for designs with tabular data."
+              }
+            ],
+            "title": "Format",
+            "examples": [
+              {
+                "size": "a4",
+                "type": "pdf"
+              },
+              {
+                "type": "jpg",
+                "quality": 80
+              },
+              {
+                "type": "png"
+              }
+            ],
+            "description": "Export format configuration. Specify the format type and format-specific options. Exported files remain available for download for 24 hours. IMPORTANT: Not all formats are supported for all design types. Use GET /v1/designs/{designId}/export-formats to check which formats are supported for a specific design before exporting. If you request an unsupported format, the API will return a 400 error."
+          },
+          "design_id": {
+            "type": "string",
+            "title": "Design Id",
+            "examples": [
+              "DAGkg05ZH5w",
+              "DAGz4y3LDFI"
+            ],
+            "description": "The identifier of the design to export (e.g., 'DAGz4y3LDFI')"
+          }
+        },
+        "description": "Request to export a Canva design to a file format."
+      }
+    },
+    {
+      "slug": "CANVA_POST_FOLDERS",
+      "name": "Create folder",
+      "description": "Tool to create a folder in Canva. Use when you need to organize designs, assets, or create nested folder structures in a user's projects or uploads folder.",
+      "version": "20261023_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "design_creation_and_organization",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PostFoldersRequest",
+        "required": [
+          "name",
+          "parent_folder_id"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Marketing Assets",
+              "Q1 2024 Designs",
+              "Brand Templates"
+            ],
+            "description": "The display name for the new folder. Must be 1-255 characters. Duplicate names are allowed."
+          },
+          "parent_folder_id": {
+            "type": "string",
+            "title": "Parent Folder Id",
+            "examples": [
+              "root",
+              "uploads",
+              "FAF2lZpam2Y"
+            ],
+            "description": "The ID of the destination location. Use 'root' for top-level projects, 'uploads' for the uploads folder, or a specific folder ID to nest within another folder. Must be 1-50 characters."
+          }
+        },
+        "description": "Request schema for creating a folder in Canva."
+      }
+    },
+    {
+      "slug": "CANVA_POST_URL_IMPORTS",
+      "name": "Create URL Import Job",
+      "description": "Tool to start an asynchronous job to import an external file from a URL as a new design in Canva. Use when you need to import a design from a publicly accessible URL. This is an async operation; poll the job status using the job ID until it reaches 'success' or 'failed'.",
+      "version": "20261023_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "media_ingestion_uploads_and_imports",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PostUrlImportsRequest",
+        "required": [
+          "title",
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "examples": [
+              "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+            ],
+            "maxLength": 2048,
+            "minLength": 1,
+            "description": "The URL of the file to import. This URL must be accessible from the internet and be publicly available (1-2048 characters)."
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "My Imported Design",
+              "Test Import Design"
+            ],
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "Name assigned to the imported design (1-255 characters)."
+          },
+          "mime_type": {
+            "type": "string",
+            "title": "Mime Type",
+            "examples": [
+              "application/pdf",
+              "application/vnd.apple.keynote"
+            ],
+            "maxLength": 100,
+            "minLength": 1,
+            "description": "Supported design-import MIME type (for example, 'application/pdf' or 'application/vnd.apple.keynote'). It is normalized to a lowercase media type without parameters. Canva attempts automatic detection if omitted or empty (1-100 characters when provided)."
+          }
+        },
+        "description": "Parameters to start a URL-based design import job in Canva."
+      }
+    },
+    {
+      "slug": "CANVA_RETRIEVE_ASSET_METADATA_BY_ID",
+      "name": "Retrieve asset metadata by id",
+      "description": "You can retrieve the metadata of an asset by specifying its `assetId`.",
+      "version": "20261023_00",
+      "tags": [
+        "asset",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RetrieveAssetMetadataByIdRequest",
+        "required": [
+          "assetId"
+        ],
+        "properties": {
+          "assetId": {
+            "type": "string",
+            "title": "Asset Id",
+            "description": "The ID of the asset."
+          }
+        },
+        "description": "Request schema for `RetrieveAssetMetadataById`"
+      }
+    },
+    {
+      "slug": "CANVA_RETRIEVE_CANVA_ENTERPRISE_BRAND_TEMPLATE_METADATA",
+      "name": "Retrieve brand template metadata",
+      "description": "Retrieves metadata for a brand template. Available to users on plans with brand-template access, such as Canva Pro, Canva Teams, or Canva Enterprise.",
+      "version": "20261023_00",
+      "tags": [
+        "brand_template",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RetrieveCanvaEnterpriseBrandTemplateMetadataRequest",
+        "required": [
+          "brandTemplateId"
+        ],
+        "properties": {
+          "brandTemplateId": {
+            "type": "string",
+            "title": "Brand Template Id",
+            "description": "The brand template ID."
+          }
+        },
+        "description": "Request schema for `RetrieveCanvaEnterpriseBrandTemplateMetadata`"
+      }
+    },
+    {
+      "slug": "CANVA_RETRIEVE_DESIGN_IMPORT_JOB_STATUS",
+      "name": "Retrieve design import job status",
+      "description": "Polls for design import job completion status. Use this after CANVA_CREATE_DESIGN_IMPORT_JOB to check the import progress. Repeatedly call this endpoint until a 'success' or 'failed' status is received to get the final imported design ID and metadata.",
+      "version": "20261023_00",
+      "tags": [
+        "design_import",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RetrieveDesignImportJobStatusRequest",
+        "required": [
+          "jobId"
+        ],
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "title": "Job Id",
+            "description": "The design import job ID."
+          }
+        },
+        "description": "Request schema for `RetrieveDesignImportJobStatus`"
+      }
+    },
+    {
+      "slug": "CANVA_RETRIEVE_DESIGN_RESIZE_JOB_STATUS",
+      "name": "Retrieve Design Resize Job Status",
+      "description": "Retrieves the status and results of a design resize job. Polls for design resize job completion status. Use this after CANVA_CREATE_DESIGN_RESIZE_JOB to check the resize progress. Keep polling until status is 'success' or 'failed'. Successful jobs include the new design ID and temporary access URLs.",
+      "version": "20261023_00",
+      "tags": [
+        "resizes",
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RetrieveDesignResizeJobStatusRequest",
+        "required": [
+          "job_id"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id",
+            "examples": [
+              "ab12c345-6789-0def-1234-567890abcdef"
+            ],
+            "description": "The resize job ID returned from create resize job endpoint"
+          }
+        },
+        "description": "Request to get the status of a design resize job."
+      }
+    },
+    {
+      "slug": "CANVA_RETRIEVE_FOLDER_DETAILS_BY_ID",
+      "name": "Retrieve folder details by id",
+      "description": "Gets the name and other details of a folder using a folder's `folderID`.",
+      "version": "20261023_00",
+      "tags": [
+        "folder",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RetrieveFolderDetailsByIdRequest",
+        "required": [
+          "folderId"
+        ],
+        "properties": {
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "description": "The folder ID."
+          }
+        },
+        "description": "Request schema for `RetrieveFolderDetailsById`"
+      }
+    },
+    {
+      "slug": "CANVA_UPDATE_FOLDER_DETAILS_BY_ID",
+      "name": "Update folder details by id",
+      "description": "Updates a folder's details using its `folderID`. Currently, you can only update a folder's name.",
+      "version": "20261023_00",
+      "tags": [
+        "folder",
+        "idempotentHint",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateFolderDetailsByIdRequest",
+        "required": [
+          "folderId",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "The folder name, as shown in the Canva UI (1-255 characters)."
+          },
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "description": "The folder ID."
+          }
+        },
+        "description": "Request schema for `UpdateFolderDetailsById`"
+      }
+    },
+    {
+      "slug": "CANVA_WHO_AM_I",
+      "name": "Who Am I",
+      "description": "Return the identity (display name) of the connected Canva account.",
+      "version": "20261023_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "auth"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "WhoAmIRequest",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

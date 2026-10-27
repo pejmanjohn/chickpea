@@ -1,0 +1,1510 @@
+{
+  "toolkit": "square",
+  "version": "20260721_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Square",
+  "description": "Look up customers, orders, payments, catalog items, and inventory, and create or update customer profiles.",
+  "securityDescription": "Square sign-in opens through Composio. Agents act as the signed-in Square seller and can read customers, customer groups and segments, orders, payments, refunds, invoices, catalog items, inventory counts, locations, bookings, subscriptions, loyalty accounts, and team members. With write access, Agents can create and update customer profiles, including names, companies, addresses, notes, and birthdays. A new customer can carry a phone number. Agents cannot set or change a customer's email address or change their phone number, charge cards, take or refund payments, create, pay, or change orders or invoices, change catalog items, prices, or inventory, change bookings or locations, read cards on file, delete anything, or manage team members or settings.",
+  "preset": {
+    "category": "business",
+    "accent": "#000000"
+  },
+  "validationCapability": "square.list_merchants",
+  "review": {
+    "add": [
+      "SQUARE_GET_INVOICE",
+      "SQUARE_LIST_INVOICES",
+      "SQUARE_RETRIEVE_CUSTOMER_GROUP",
+      "SQUARE_RETRIEVE_CUSTOMER_SEGMENT",
+      "SQUARE_RETRIEVE_ORDER"
+    ],
+    "drop": {
+      "SQUARE_CREATE_BATCH_INVENTORY_CHANGES": "Changes stock counts that the register and online store sell against.",
+      "SQUARE_CREATE_LOCATION": "A location is a business unit for payments, payouts, and staff; adding one is account administration.",
+      "SQUARE_LIST_CARDS": "Cards on file are customers' payment instruments; no read task needs them.",
+      "SQUARE_UPDATE_BOOKING": "Changing an appointment notifies the customer.",
+      "SQUARE_UPDATE_LOCATION": "Changes the business name, contact details, and hours customers see on receipts and online.",
+      "SQUARE_UPSERT_CATALOG_OBJECT": "Catalog items set prices at the register and online, and every item field is outside the bounded schema."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "square.create_customer",
+      "tool": "SQUARE_CREATE_CUSTOMER",
+      "toolName": "square_create_customer",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to create a new customer profile in Square. Use when you need to add a customer to the Square account. At least one of given_name, family_name, company_name, email_address, or phone_number is required.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Square: Create Customer",
+      "withheldArguments": {
+        "email_address": "names an address a message goes to or comes from"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A custom note associated with the customer profile."
+          },
+          "address": {
+            "type": "object",
+            "properties": {
+              "country": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The address's country, in the two-letter format of ISO 3166 (e.g., US, FR)."
+              },
+              "locality": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The city or town of the address."
+              },
+              "last_name": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Optional last name when it's representing recipient."
+              },
+              "first_name": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Optional first name when it's representing recipient."
+              },
+              "postal_code": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The address's postal code."
+              },
+              "sublocality": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A civil region within the address's locality, if any."
+              },
+              "sublocality_2": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A civil region within the address's sublocality, if any."
+              },
+              "sublocality_3": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A civil region within the address's sublocality_2, if any."
+              },
+              "address_line_1": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The first line of the address. Includes street number and building name."
+              },
+              "address_line_2": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The second line of the address, if any."
+              },
+              "address_line_3": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The third line of the address, if any."
+              },
+              "administrative_district_level_1": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A civil entity within the address's country. In the US, this is the state."
+              },
+              "administrative_district_level_2": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A civil entity within the address's administrative_district_level_1. In the US, this is the county."
+              },
+              "administrative_district_level_3": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A civil entity within the address's administrative_district_level_2, if any."
+              }
+            },
+            "description": "Represents a physical postal address."
+          },
+          "tax_ids": {
+            "type": "object",
+            "properties": {
+              "eu_vat": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The EU VAT identification number for the customer."
+              }
+            },
+            "description": "Tax ID information for EU/UK sellers."
+          },
+          "birthday": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The birthday associated with the customer profile. Format: YYYY-MM-DD or MM-DD. Returns as YYYY-MM-DD."
+          },
+          "nickname": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "A nickname for the customer profile."
+          },
+          "given_name": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "The given name (first name) associated with the customer profile. At least one of given_name, family_name, company_name, email_address, or phone_number is required."
+          },
+          "family_name": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "The family name (last name) associated with the customer profile. At least one of given_name, family_name, company_name, email_address, or phone_number is required."
+          },
+          "company_name": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "A business name associated with the customer profile. At least one of given_name, family_name, company_name, email_address, or phone_number is required."
+          },
+          "phone_number": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The phone number associated with the customer profile. Should be 9-16 digits, with optional '+' prefix. At least one of given_name, family_name, company_name, email_address, or phone_number is required."
+          },
+          "reference_id": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "An optional second ID used to associate the customer profile with an entity in another system."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A unique key to ensure idempotent request processing. Recommended for all create operations."
+          }
+        },
+        "description": "Parameters for creating a new customer profile. At least one of given_name, family_name, company_name, email_address, or phone_number is required."
+      }
+    },
+    {
+      "id": "square.get_booking",
+      "tool": "SQUARE_GET_BOOKING",
+      "toolName": "square_get_booking",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information about a specific Square booking by its ID. Returns the complete booking object including appointment segments, customer notes, seller notes, location details, creator information, and current status. Use this action when you need to view or verify booking details for a known booking ID, check appointment times, or retrieve information about services and team members assigned to the booking. Required permission: APPOINTMENTS_READ (buyer-level) or both APPOINTMENTS_ALL_READ and APPOINTMENTS_READ (seller-level).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "booking_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the booking to retrieve. This is the unique Square-generated booking identifier."
+          }
+        },
+        "required": [
+          "booking_id"
+        ],
+        "description": "Parameters required to retrieve a specific booking by ID."
+      }
+    },
+    {
+      "id": "square.get_current_merchant",
+      "tool": "SQUARE_GET_CURRENT_MERCHANT",
+      "toolName": "square_get_current_merchant",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve merchant information associated with the access token using Square's GraphQL API. Use when you need to obtain the merchant ID required for other GraphQL queries, or to get merchant details like business name, status, currency, and main location.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Parameters for retrieving current merchant information via GraphQL. No parameters required - uses the access token to identify the merchant."
+      }
+    },
+    {
+      "id": "square.get_invoice",
+      "tool": "SQUARE_GET_INVOICE",
+      "toolName": "square_get_invoice",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information about a specific Square invoice by its ID. Returns the complete invoice object including payment requests, recipient details, accepted payment methods, custom fields, attachments, and current status. Use this when you need to view or verify invoice details for a known invoice ID. Required permission: INVOICES_READ",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "invoice_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Square-assigned ID of the invoice to retrieve. Format: 'inv:0-' followed by an alphanumeric string."
+          }
+        },
+        "required": [
+          "invoice_id"
+        ],
+        "description": "Parameters for retrieving an invoice by ID."
+      }
+    },
+    {
+      "id": "square.get_loyalty_account",
+      "tool": "SQUARE_GET_LOYALTY_ACCOUNT",
+      "toolName": "square_get_loyalty_account",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve detailed information about a specific Square loyalty account by ID. Use when you need to fetch loyalty account data including balance, lifetime points, customer association, and point expiration schedules. This action provides read-only access to loyalty program membership details.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the loyalty account to retrieve. This is the unique Square-generated loyalty account identifier."
+          }
+        },
+        "required": [
+          "account_id"
+        ],
+        "description": "Parameters required to retrieve a specific loyalty account by ID."
+      }
+    },
+    {
+      "id": "square.get_merchant",
+      "tool": "SQUARE_GET_MERCHANT",
+      "toolName": "square_get_merchant",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve detailed information about a specific Square merchant by ID. Use when you need to fetch merchant profile data including business name, country, currency, and main location ID. Use 'me' as the merchant_id to retrieve the currently authenticated merchant.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "merchant_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the merchant to retrieve. Use 'me' to retrieve the merchant that is currently accessible to this call."
+          }
+        },
+        "required": [
+          "merchant_id"
+        ],
+        "description": "Parameters for retrieving a specific merchant by ID."
+      }
+    },
+    {
+      "id": "square.get_refund",
+      "tool": "SQUARE_GET_REFUND",
+      "toolName": "square_get_refund",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific payment refund by its unique ID from Square. Returns complete refund details including amount, status, associated payment and order IDs, and refund destination information. Use this action when you need to retrieve detailed information about a specific refund, such as verifying refund status, checking refund amounts, or accessing refund metadata for reconciliation or customer service purposes.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "refund_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique ID for the desired PaymentRefund. You can obtain refund IDs from the List Payment Refunds endpoint or from refund creation responses."
+          }
+        },
+        "required": [
+          "refund_id"
+        ],
+        "description": "Parameters for retrieving a refund from Square."
+      }
+    },
+    {
+      "id": "square.get_subscription",
+      "tool": "SQUARE_GET_SUBSCRIPTION",
+      "toolName": "square_get_subscription",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information about a specific Square customer subscription by its ID. Use this action when you need to fetch subscription details including status, billing information, plan variation, associated customer, and scheduled actions. Returns comprehensive subscription data including payment information, invoices, phases, and configured actions. Required permission: SUBSCRIPTIONS_READ.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "include": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional parameter to include related information. Supported value: 'actions' to include scheduled actions on the subscription. Beta feature."
+          },
+          "subscription_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Square-assigned ID of the subscription to retrieve. This is the unique identifier for the subscription."
+          }
+        },
+        "required": [
+          "subscription_id"
+        ],
+        "description": "Parameters required to retrieve a specific subscription by ID."
+      }
+    },
+    {
+      "id": "square.get_team_member",
+      "tool": "SQUARE_GET_TEAM_MEMBER",
+      "toolName": "square_get_team_member",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve detailed information about a specific Square team member by ID. Use when you need to fetch team member profile data including name, contact information, location assignments, and wage settings.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "team_member_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the team member to retrieve. This is the unique Square-generated team member identifier."
+          }
+        },
+        "required": [
+          "team_member_id"
+        ],
+        "description": "Parameters required to retrieve a specific team member by ID."
+      }
+    },
+    {
+      "id": "square.list_channels",
+      "tool": "SQUARE_LIST_CHANNELS",
+      "toolName": "square_list_channels",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list requested channels from Square. Use when you need to retrieve channel information for a specific reference type, reference ID, or status.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of results to return. When not provided the returned results will be capped at 100 channels."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Cursor to fetch the next result. Pagination cursor returned by a previous call to this endpoint."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Status of channel. Filter channels by their status (e.g., ACTIVE, INACTIVE)."
+          },
+          "reference_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of reference associated to channel. Filter channels by the reference ID."
+          },
+          "reference_type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Type of reference associated to channel. Filter channels by the reference type."
+          }
+        },
+        "description": "Parameters for listing channels from Square."
+      }
+    },
+    {
+      "id": "square.list_customer_groups",
+      "tool": "SQUARE_LIST_CUSTOMER_GROUPS",
+      "toolName": "square_list_customer_groups",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the list of customer groups of a business. Use when you need to discover customer group IDs or list all customer groups for segmentation and targeting purposes.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "The maximum number of results to return in a single page. This limit is advisory. The response might contain more or fewer results. If the limit is less than 1 or greater than 50, Square returns a 400 VALUE_TOO_LOW or 400 VALUE_TOO_HIGH error. The default value is 50."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A pagination cursor returned by a previous call to this endpoint. Provide this cursor to retrieve the next set of results for your original query. For more information, see Pagination."
+          }
+        },
+        "description": "Parameters for listing customer groups from Square."
+      }
+    },
+    {
+      "id": "square.list_customer_segments",
+      "tool": "SQUARE_LIST_CUSTOMER_SEGMENTS",
+      "toolName": "square_list_customer_segments",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the list of customer segments of a business. Use when you need to discover customer segment IDs for targeting or filtering customer groups in Square.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "The maximum number of results to return in a single page. This limit is advisory. The response might contain more or fewer results. If the specified limit is less than 1 or greater than 50, Square returns a 400 VALUE_TOO_LOW or 400 VALUE_TOO_HIGH error. The default value is 50. For more information, see Pagination (https://developer.squareup.com/docs/build-basics/common-api-patterns/pagination)."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A pagination cursor returned by previous calls to ListCustomerSegments. This cursor is used to retrieve the next set of query results. For more information, see Pagination (https://developer.squareup.com/docs/build-basics/common-api-patterns/pagination)."
+          }
+        },
+        "description": "Parameters for listing customer segments from Square."
+      }
+    },
+    {
+      "id": "square.list_customers",
+      "tool": "SQUARE_LIST_CUSTOMERS",
+      "toolName": "square_list_customers",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve customer profiles associated with a Square account. Use when you need to list customers for CRM, reporting, or customer management purposes. Only returns profiles with public information (given_name, family_name, company_name, email_address, or phone_number).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "boolean",
+            "description": "Indicates whether to return the total count of customers in the count field of the response. The default value is false."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The maximum number of results to return in a single page (1-100). If the specified limit is less than 1 or greater than 100, Square returns a 400 VALUE_TOO_LOW or 400 VALUE_TOO_HIGH error. The default value is 100."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A pagination cursor returned by a previous call to this endpoint. Provide this cursor to retrieve the next set of results for your original query."
+          },
+          "sort_field": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "DEFAULT",
+              "CREATED_AT"
+            ],
+            "description": "Enum for customer sort field options."
+          },
+          "sort_order": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASC",
+              "DESC"
+            ],
+            "description": "Enum for sort order options."
+          }
+        },
+        "description": "Parameters for listing customer profiles from Square."
+      }
+    },
+    {
+      "id": "square.list_invoices",
+      "tool": "SQUARE_LIST_INVOICES",
+      "toolName": "square_list_invoices",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list invoices for a Square location.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "description": "Maximum number of invoices to return (1-200). Defaults to Square's default if unset."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination cursor from a previous ListInvoices call; use to fetch the next page."
+          },
+          "location_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Square location ID for which to list invoices."
+          }
+        },
+        "required": [
+          "location_id"
+        ],
+        "description": "Parameters for listing invoices for a specific location."
+      }
+    },
+    {
+      "id": "square.list_locations",
+      "tool": "SQUARE_LIST_LOCATIONS",
+      "toolName": "square_list_locations",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all business locations from a Square account. Use when you need to discover available location IDs for other Square API calls that require location_id parameter (like listing invoices or payments).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Parameters for listing business locations from Square. No parameters required - returns all locations."
+      }
+    },
+    {
+      "id": "square.list_merchants",
+      "tool": "SQUARE_LIST_MERCHANTS",
+      "toolName": "square_list_merchants",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve merchant account information associated with the access token. Use when you need to get merchant profile details including business name, country, currency, and main location ID.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "description": "The cursor generated by the previous response. Provide this cursor to retrieve the next set of results."
+          }
+        },
+        "description": "Parameters for listing merchants from Square."
+      }
+    },
+    {
+      "id": "square.list_payments",
+      "tool": "SQUARE_LIST_PAYMENTS",
+      "toolName": "square_list_payments",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list payments by location and time range to enable reconciliation and net sales reporting from Square POS. Use when you need to retrieve payment records for reporting, analytics, or reconciliation purposes.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Maximum number of payments to return per page (1-100). Defaults to 100."
+          },
+          "total": {
+            "type": "integer",
+            "description": "Filter by exact amount in the smallest currency unit (e.g., cents for USD) in total_money for a payment."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination cursor returned by a previous call to this endpoint. Use to fetch the next page of results."
+          },
+          "last_4": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by the last four digits of a payment card."
+          },
+          "end_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Indicates the end of the time range to retrieve payments for, in RFC 3339 format (e.g., '2024-12-31T23:59:59Z'). Defaults to current time if not provided."
+          },
+          "begin_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Indicates the start of the time range to retrieve payments for, in RFC 3339 format (e.g., '2024-01-01T00:00:00Z'). Defaults to one year prior to current time if not provided."
+          },
+          "card_brand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by brand of the payment card (e.g., 'VISA', 'MASTERCARD', 'AMEX')."
+          },
+          "sort_field": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field to use for sorting results (e.g., 'CREATED_AT'). Defaults to CREATED_AT."
+          },
+          "sort_order": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Sort direction for results: 'ASC' (oldest first) or 'DESC' (newest first). Defaults to DESC."
+          },
+          "location_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Limit results to the location supplied. If not provided, defaults to the main location."
+          },
+          "offline_end_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "End of the time range for offline payments, in RFC 3339 format."
+          },
+          "is_offline_payment": {
+            "type": "boolean",
+            "description": "Whether the payment was taken offline or not."
+          },
+          "offline_begin_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Start of the time range for offline payments, in RFC 3339 format."
+          },
+          "updated_at_end_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "End of the time range to retrieve payments for based on updated_at field, in RFC 3339 format."
+          },
+          "updated_at_begin_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Start of the time range to retrieve payments for based on updated_at field, in RFC 3339 format."
+          }
+        },
+        "description": "Parameters for listing payments from Square."
+      }
+    },
+    {
+      "id": "square.list_subscriptions",
+      "tool": "SQUARE_LIST_SUBSCRIPTIONS",
+      "toolName": "square_list_subscriptions",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search and list Square customer billing subscriptions. Use this action when you need to retrieve subscription information for customers, filter subscriptions by location, or view all active subscriptions. Results are ordered chronologically by subscription creation date.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of results to return per page (minimum: 1). Default: 25."
+          },
+          "query": {
+            "type": "object",
+            "properties": {
+              "filter": {
+                "type": "object",
+                "properties": {
+                  "customer_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 20000
+                    },
+                    "maxItems": 100,
+                    "description": "A filter to select subscriptions based on the subscribing customer IDs. Provide a list of customer IDs to filter by."
+                  },
+                  "location_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 20000
+                    },
+                    "maxItems": 100,
+                    "description": "A filter to select subscriptions based on the location. Provide a list of location IDs to filter by."
+                  },
+                  "source_names": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 20000
+                    },
+                    "maxItems": 100,
+                    "description": "A filter to select subscriptions based on the source application. This field is in Beta and may be subject to changes."
+                  }
+                },
+                "description": "Filtering criteria for subscription search."
+              }
+            },
+            "description": "Query parameters for filtering subscriptions."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination cursor returned by a previous call. Use to retrieve the next set of results."
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Related information to include in the response. This is a Beta feature; currently supports 'actions' value to include scheduled subscription actions."
+          }
+        },
+        "description": "Parameters for listing and searching billing subscriptions in Square."
+      }
+    },
+    {
+      "id": "square.retrieve_bulk_customers",
+      "tool": "SQUARE_RETRIEVE_BULK_CUSTOMERS",
+      "toolName": "square_retrieve_bulk_customers",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve multiple customer profiles in a single request. Use when you need to efficiently fetch up to 100 customer profiles by their IDs.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "customer_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "The IDs of the customer profiles to retrieve. Must contain between 1 and 100 customer IDs. Provide the Square-assigned unique identifiers for each customer you want to retrieve."
+          }
+        },
+        "required": [
+          "customer_ids"
+        ],
+        "description": "Parameters for bulk retrieving customer profiles by their IDs."
+      }
+    },
+    {
+      "id": "square.retrieve_customer",
+      "tool": "SQUARE_RETRIEVE_CUSTOMER",
+      "toolName": "square_retrieve_customer",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve detailed information about a specific Square customer by ID. Use when you need to fetch customer profile data including contact information, preferences, and group memberships.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the customer to retrieve. This is the unique Square-generated customer identifier."
+          }
+        },
+        "required": [
+          "customer_id"
+        ],
+        "description": "Parameters required to retrieve a specific customer by ID."
+      }
+    },
+    {
+      "id": "square.retrieve_customer_group",
+      "tool": "SQUARE_RETRIEVE_CUSTOMER_GROUP",
+      "toolName": "square_retrieve_customer_group",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a specific Square customer group by ID. Use when you need to fetch details about a customer group including its name and timestamps.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the customer group to retrieve. This is a unique Square-assigned identifier."
+          }
+        },
+        "required": [
+          "group_id"
+        ],
+        "description": "Parameters required to retrieve a specific customer group by its ID."
+      }
+    },
+    {
+      "id": "square.retrieve_customer_segment",
+      "tool": "SQUARE_RETRIEVE_CUSTOMER_SEGMENT",
+      "toolName": "square_retrieve_customer_segment",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a specific customer segment by its ID. Use when you need to get details about a customer segment including its name and timestamps.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "segment_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Square-issued ID of the customer segment to retrieve. This is a unique identifier for the segment (e.g., 'MLBN7K732KMAD.CARDS_ON_FILE'). You can obtain segment IDs from the List Customer Segments endpoint."
+          }
+        },
+        "required": [
+          "segment_id"
+        ],
+        "description": "Parameters required to retrieve a specific customer segment by its ID."
+      }
+    },
+    {
+      "id": "square.retrieve_inventory_changes",
+      "tool": "SQUARE_RETRIEVE_INVENTORY_CHANGES",
+      "toolName": "square_retrieve_inventory_changes",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the inventory change history for a catalog object at specified locations. Returns adjustments, physical counts, and transfers sorted by occurrence timestamp (newest first). Use this action when you need to track inventory movements, audit stock changes, or reconcile inventory discrepancies for a specific catalog item.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A pagination cursor returned by a previous call to this endpoint. Provide this to retrieve the next set of results for the original query."
+          },
+          "location_ids": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Location IDs to look up as a comma-separated list. An empty value queries all locations."
+          },
+          "catalog_object_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Square-generated ID of the CatalogObject to retrieve inventory changes for. This is typically an ITEM_VARIATION ID."
+          }
+        },
+        "required": [
+          "catalog_object_id"
+        ],
+        "description": "Parameters required to retrieve inventory change history for a catalog object."
+      }
+    },
+    {
+      "id": "square.retrieve_inventory_counts_batch",
+      "tool": "SQUARE_RETRIEVE_INVENTORY_COUNTS_BATCH",
+      "toolName": "square_retrieve_inventory_counts_batch",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieve inventory counts for multiple catalog objects and locations in a single batch request. Use this action when you need to efficiently check inventory levels across multiple item variations, locations, or states. The endpoint supports filtering by catalog objects, locations, states, and time ranges, making it ideal for inventory sync operations and reporting.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of inventory count records to return per page. Must be between 1 and 1000. Defaults to 25."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination cursor returned by a previous call to this endpoint. Provide this to retrieve the next page of results."
+          },
+          "states": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "CUSTOM",
+                "IN_STOCK",
+                "SOLD",
+                "RETURNED_BY_CUSTOMER",
+                "RESERVED_FOR_SALE",
+                "SOLD_ONLINE",
+                "ORDERED_FROM_VENDOR",
+                "RECEIVED_FROM_VENDOR",
+                "IN_TRANSIT_TO",
+                "NONE",
+                "WASTE",
+                "UNLINKED_RETURN",
+                "COMPOSED",
+                "DECOMPOSED",
+                "SUPPORTED_BY_NEWER_VERSION",
+                "IN_TRANSIT"
+              ],
+              "description": "Valid inventory states for filtering inventory counts."
+            },
+            "maxItems": 100,
+            "description": "Filter results by inventory states. Provide one or more inventory states to filter by. Note: NONE, SOLD, and UNLINKED_RETURN states are ignored by this filter."
+          },
+          "location_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filter results by location IDs. Provide Square-assigned location IDs to retrieve inventory counts for specific locations only. If not provided, returns counts for all locations."
+          },
+          "updated_after": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter to return inventory counts updated after this timestamp, in RFC 3339 format (e.g., '2024-01-01T00:00:00Z'). Useful for syncing inventory changes since a specific time."
+          },
+          "catalog_object_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filter results by catalog object IDs. Provide Square-assigned IDs for the catalog objects (item variations or items) you want to retrieve inventory counts for. Maximum 1000 IDs."
+          }
+        },
+        "description": "Parameters for batch retrieving inventory counts for multiple variations and locations."
+      }
+    },
+    {
+      "id": "square.retrieve_location",
+      "tool": "SQUARE_RETRIEVE_LOCATION",
+      "toolName": "square_retrieve_location",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve detailed information about a specific Square location by ID. Use when you need to get complete details about a specific location, including address, business hours, contact information, and capabilities.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "location_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the location to retrieve. Specify the string 'main' to return the main location, or provide a specific location ID obtained from the List Locations endpoint."
+          }
+        },
+        "required": [
+          "location_id"
+        ],
+        "description": "Parameters required to retrieve a specific location by its ID."
+      }
+    },
+    {
+      "id": "square.retrieve_order",
+      "tool": "SQUARE_RETRIEVE_ORDER",
+      "toolName": "square_retrieve_order",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information about a specific Square order by its ID. Use this tool when you need to: - Fetch complete details of an order including line items, pricing, taxes, and discounts - Check order status and fulfillment information - View payment tenders and refunds associated with an order - Access order metadata and timestamps Requires: ORDERS_READ permission scope.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "order_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique Square-generated ID of the order to retrieve. This is typically a long alphanumeric string (e.g., 'CAISENgvlJ6jLWAzERDzjyHVybY'). You can obtain order IDs from the Search Orders endpoint or from webhook notifications."
+          }
+        },
+        "required": [
+          "order_id"
+        ],
+        "description": "Parameters required to retrieve a specific order by its ID."
+      }
+    },
+    {
+      "id": "square.search_catalog_objects",
+      "tool": "SQUARE_SEARCH_CATALOG_OBJECTS",
+      "toolName": "square_search_catalog_objects",
+      "lane": "read",
+      "effect": "read",
+      "description": "Searches for catalog objects (items, categories, taxes, discounts, etc.) in the Square catalog. Use this action when you need to find specific catalog items by name, SKU, category, or other attributes, or when retrieving the entire catalog with filtering and sorting options. Supports full-text search, exact matching, prefix matching, range queries, and complex combinations of filters.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of results to return per page. This is advisory only; Square may return more or fewer results. Maximum: 1000. Default: 25."
+          },
+          "query": {
+            "type": "object",
+            "properties": {
+              "set_query": {
+                "type": "object",
+                "properties": {
+                  "attribute_name": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The name of the attribute to be searched. Supported attributes include name, description, abbreviation, upc, sku, caption, and display_name."
+                  },
+                  "attribute_values": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 20000
+                    },
+                    "maxItems": 100,
+                    "description": "The list of attribute values to match. Value matching is case insensitive."
+                  }
+                },
+                "required": [
+                  "attribute_name",
+                  "attribute_values"
+                ],
+                "description": "Query filter to match any of the specified attribute values."
+              },
+              "text_query": {
+                "type": "object",
+                "properties": {
+                  "keywords": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 20000
+                    },
+                    "maxItems": 100,
+                    "description": "List of search keywords. Objects must contain all keywords (AND logic) in their searchable attributes, though order doesn't matter."
+                  }
+                },
+                "required": [
+                  "keywords"
+                ],
+                "description": "Query filter for full-text search across searchable attributes."
+              },
+              "exact_query": {
+                "type": "object",
+                "properties": {
+                  "attribute_name": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The name of the attribute to be searched. Supported attributes include name, description, abbreviation, upc, sku, caption, and display_name."
+                  },
+                  "attribute_value": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The desired value of the search attribute. Value matching is case insensitive."
+                  }
+                },
+                "required": [
+                  "attribute_name",
+                  "attribute_value"
+                ],
+                "description": "Query filter for exact attribute matching (case insensitive)."
+              },
+              "range_query": {
+                "type": "object",
+                "properties": {
+                  "attribute_name": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The name of the attribute to be searched. This must be a numeric attribute."
+                  },
+                  "attribute_max_value": {
+                    "type": "integer",
+                    "description": "The maximum value of the range (inclusive). If not specified, there is no upper bound."
+                  },
+                  "attribute_min_value": {
+                    "type": "integer",
+                    "description": "The minimum value of the range (inclusive). If not specified, there is no lower bound."
+                  }
+                },
+                "required": [
+                  "attribute_name"
+                ],
+                "description": "Query filter for numeric ranges on attribute values."
+              },
+              "prefix_query": {
+                "type": "object",
+                "properties": {
+                  "attribute_name": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The name of the attribute to be searched. Supported attributes include name, description, abbreviation, upc, sku, caption, and display_name."
+                  },
+                  "attribute_prefix": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The prefix string to match against attribute values."
+                  }
+                },
+                "required": [
+                  "attribute_name",
+                  "attribute_prefix"
+                ],
+                "description": "Query filter for prefix matching on attribute values."
+              },
+              "sorted_attribute_query": {
+                "type": "object",
+                "properties": {
+                  "sort_order": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The sort order. Valid values: ASC (ascending), DESC (descending). Default: ASC."
+                  },
+                  "attribute_name": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The name of the attribute to sort by."
+                  },
+                  "initial_attribute_value": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The first attribute value to return. Used with cursor for pagination."
+                  }
+                },
+                "required": [
+                  "attribute_name"
+                ],
+                "description": "Query to sort results by a specified attribute."
+              }
+            },
+            "description": "Composite query for filtering and sorting catalog objects."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination cursor returned by a previous call. Use to retrieve the next set of results."
+          },
+          "begin_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Return objects modified after this RFC 3339 timestamp (exclusive). Use for incremental sync."
+          },
+          "object_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "The desired catalog object types to include in the result. If not specified, all object types may be returned. Common types include: ITEM, ITEM_VARIATION, CATEGORY, DISCOUNT, TAX, MODIFIER, MODIFIER_LIST, IMAGE, MEASUREMENT_UNIT, ITEM_OPTION, PRICING_RULE, PRODUCT_SET, TIME_PERIOD, SUBSCRIPTION_PLAN, CUSTOM_ATTRIBUTE_DEFINITION, QUICK_AMOUNT_SETTINGS."
+          },
+          "include_deleted_objects": {
+            "type": "boolean",
+            "description": "If true, returns deleted objects with is_deleted set to true. Cannot be true simultaneously with include_category_path_to_root. Default: false."
+          },
+          "include_related_objects": {
+            "type": "boolean",
+            "description": "If true, includes related objects referenced by the result objects (one level deep). For example, if an ITEM is returned, its variations are included. Default: false."
+          },
+          "include_category_path_to_root": {
+            "type": "boolean",
+            "description": "If true, includes the path_to_root field in category objects showing the hierarchy from root to the category. Cannot be true with include_deleted_objects. Default: false."
+          }
+        },
+        "description": "Parameters for searching catalog objects in Square."
+      }
+    },
+    {
+      "id": "square.search_customers",
+      "tool": "SQUARE_SEARCH_CUSTOMERS",
+      "toolName": "square_search_customers",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search customer profiles in Square Customer Directory. Use when you need to find customers by email, phone, creation date, or other filters. Returns paginated results with optional total count.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "query.filter.group_ids": "unsupported schema",
+        "query.filter.created_at": "unsupported schema",
+        "query.filter.updated_at": "unsupported schema",
+        "query.filter.phone_number": "unsupported schema",
+        "query.filter.reference_id": "unsupported schema",
+        "query.filter.email_address": "unsupported schema",
+        "query.filter.creation_source": "unsupported schema",
+        "query.filter.custom_attribute": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "boolean",
+            "description": "Whether to return the total count of matching customers in the response. Default: false."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Maximum number of results to return per page (1-100). Default: 100."
+          },
+          "query": {
+            "type": "object",
+            "properties": {
+              "sort": {
+                "type": "object",
+                "properties": {
+                  "field": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The field to sort by. Valid values: CREATED_AT, UPDATED_AT, DEFAULT (alphabetically by given_name and family_name)."
+                  },
+                  "order": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The sort order. Valid values: ASC (ascending), DESC (descending)."
+                  }
+                },
+                "description": "Sorting criteria for customer search results."
+              },
+              "filter": {
+                "type": "object",
+                "properties": {
+                  "segment_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 20000
+                    },
+                    "maxItems": 100,
+                    "description": "Filter by segment membership. Include customers in any of the specified segments."
+                  }
+                },
+                "description": "Filtering criteria for customer search."
+              }
+            },
+            "description": "Query parameters for filtering and sorting customers."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination cursor returned by a previous call. Use to retrieve the next set of results."
+          }
+        },
+        "description": "Parameters for searching customer profiles in Square."
+      }
+    },
+    {
+      "id": "square.search_orders",
+      "tool": "SQUARE_SEARCH_ORDERS",
+      "toolName": "square_search_orders",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search orders across one or more Square locations with filters. Use when you need to find orders within a date range, by state, by customer, or other criteria. This is the primary way Square exposes 'list orders for a date range' functionality.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "query.filter.state_filter": "unsupported schema",
+        "query.filter.source_filter": "unsupported schema",
+        "query.filter.customer_filter": "unsupported schema",
+        "query.filter.fulfillment_filter": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of results to return per page. Default: 500, Maximum: 1000."
+          },
+          "query": {
+            "type": "object",
+            "properties": {
+              "sort": {
+                "type": "object",
+                "properties": {
+                  "sort_field": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "enum": [
+                      "CREATED_AT",
+                      "UPDATED_AT",
+                      "CLOSED_AT"
+                    ],
+                    "description": "The field to sort by."
+                  },
+                  "sort_order": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "enum": [
+                      "ASC",
+                      "DESC"
+                    ],
+                    "description": "The sort order. Default: DESC."
+                  }
+                },
+                "required": [
+                  "sort_field"
+                ],
+                "description": "Sorting criteria for search results."
+              },
+              "filter": {
+                "type": "object",
+                "properties": {
+                  "date_time_filter": {
+                    "type": "object",
+                    "properties": {
+                      "end_at": {
+                        "type": "string",
+                        "maxLength": 20000,
+                        "description": "The end time for the date filter in RFC 3339 format (e.g., '2024-12-31T23:59:59Z'). If not specified, the filter ends at the current date and time."
+                      },
+                      "start_at": {
+                        "type": "string",
+                        "maxLength": 20000,
+                        "description": "The start time for the date filter in RFC 3339 format (e.g., '2024-01-01T00:00:00Z'). If not specified, the filter starts from the earliest available date."
+                      }
+                    },
+                    "description": "Filter for a date time range."
+                  }
+                },
+                "description": "Filtering criteria for searching orders."
+              }
+            },
+            "description": "Query parameters for filtering and sorting orders."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A pagination cursor returned by a previous call to this endpoint. Provide this cursor to retrieve the next set of results for your original query."
+          },
+          "location_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "The location IDs for the orders to query. All locations must belong to the same merchant. Maximum: 10 location IDs."
+          },
+          "return_entries": {
+            "type": "boolean",
+            "description": "Controls the format of the search results. If true, returns OrderEntry objects (lightweight with just order_id, location_id, version). If false, returns complete Order objects with full details. Default: false."
+          }
+        },
+        "required": [
+          "location_ids"
+        ],
+        "description": "Parameters for searching orders across one or more Square locations."
+      }
+    },
+    {
+      "id": "square.update_customer",
+      "tool": "SQUARE_UPDATE_CUSTOMER",
+      "toolName": "square_update_customer",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update an existing Square customer profile. Use when you need to modify customer details like name, email, address, or phone number. Supports sparse updates: only include fields you want to change, null values will remove fields. Include the version field for optimistic concurrency control.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Square: Update Customer",
+      "withheldArguments": {
+        "phone_number": "changes who the record belongs to or how a person is identified",
+        "email_address": "names an address a message goes to or comes from"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A custom note associated with the customer profile."
+          },
+          "address": {
+            "type": "object",
+            "properties": {
+              "country": {
+                "type": "string",
+                "maxLength": 2,
+                "minLength": 2,
+                "description": "Two-letter ISO 3166 country code (e.g., US, FR)."
+              },
+              "locality": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The city or town of the address."
+              },
+              "last_name": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Optional last name when it's representing recipient."
+              },
+              "first_name": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Optional first name when it's representing recipient."
+              },
+              "postal_code": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The address's postal code."
+              },
+              "sublocality": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A civil region within the address's locality, if any."
+              },
+              "sublocality_2": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A civil region within the address's sublocality, if any."
+              },
+              "sublocality_3": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A civil region within the address's sublocality_2, if any."
+              },
+              "address_line_1": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The first line of the address. Provides street number and name details."
+              },
+              "address_line_2": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The second line of the address, if any."
+              },
+              "address_line_3": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The third line of the address, if any."
+              },
+              "administrative_district_level_1": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Civil entity (state in US) within country."
+              },
+              "administrative_district_level_2": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Civil entity (county in US) within level 1."
+              },
+              "administrative_district_level_3": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A civil entity within the address's administrative_district_level_2, if any."
+              }
+            },
+            "description": "Physical address with sparse update support."
+          },
+          "tax_ids": {
+            "type": "object",
+            "properties": {
+              "eu_vat": {
+                "type": "string",
+                "maxLength": 20,
+                "description": "The EU VAT identification number for the customer (e.g., IE3426675K). Contains alphanumeric characters only. Max 20 characters."
+              }
+            },
+            "description": "Tax ID for EU/UK sellers only."
+          },
+          "version": {
+            "type": "integer",
+            "description": "Current customer profile version for optimistic concurrency control. Get this from a previous retrieve/search customer call."
+          },
+          "birthday": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Birthday in date format: YYYY-MM-DD or MM-DD."
+          },
+          "nickname": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "A nickname for the customer profile. Max 100 characters."
+          },
+          "given_name": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "The given name (first name) associated with the customer profile. Max 300 characters."
+          },
+          "customer_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the customer to update."
+          },
+          "family_name": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "The family name (last name) associated with the customer profile. Max 300 characters."
+          },
+          "company_name": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "A business name associated with the customer profile. Max 500 characters."
+          },
+          "reference_id": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "An optional second ID used to associate the customer profile with an entity in another system. Max 100 characters."
+          }
+        },
+        "required": [
+          "customer_id"
+        ],
+        "description": "Parameters for updating an existing Square customer profile."
+      }
+    }
+  ]
+}
