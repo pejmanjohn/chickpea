@@ -279,6 +279,8 @@ export const allowedBinaryFiles = new Map([
   [exportPath('assets', 'connectors', 'fathom.png'), '6c724fc21164caa5262adc675db0410af3324f45dce3c35bc6755bb2ed495446'],
   [exportPath('assets', 'connectors', 'otter.png'), 'c3c1e1bd914136b91d541da523a65b0ae02bfe4602530356b5187f1139adacae'],
   [exportPath('assets', 'connectors', 'read-ai.png'), 'fe8f0534b7675156e58b7985bf3a6c3ca5337dcac444235b022183cd57f4a69c'],
+  [exportPath('assets', 'connectors', 'attio.png'), '9264485c51b8be828781a2ee9e14a596552d0e9a4371d53e215fa990e5dbac29'],
+  [exportPath('assets', 'connectors', 'apollo.png'), '25ae17edffd848672eceaca705a64de7e7e5226db6d81a8a89208c8def07064f'],
   [
     exportPath('assets', 'chickpea-mark.png'),
     '84864d6d3323f7d9d5491a139c0e9e0b0d92b1e076c742d5f4d50e75148b65fb',

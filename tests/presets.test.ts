@@ -107,7 +107,7 @@ test('managed Google analytics presets reference the official product-icon binar
 
 test('preset lanes classify the existing MCP catalog, the API additions, and both', () => {
   const existingMcpPresets = CONNECTOR_PRESETS.filter((preset) => !API_PRESET_IDS.has(preset.id));
-  assert.equal(existingMcpPresets.length, 48);
+  assert.equal(existingMcpPresets.length, 53);
   for (const preset of existingMcpPresets) {
     assert.deepEqual(presetLanes(preset), { mcp: true, api: false }, preset.id);
   }
@@ -356,6 +356,15 @@ test('vendor-hosted OAuth MCP presets request the scopes their servers advertise
     todoist: { url: 'https://ai.todoist.net/mcp', scope: 'data:read_write' },
     webflow: { url: 'https://mcp.webflow.com/mcp' },
     wix: { url: 'https://mcp.wix.com/mcp', scope: 'offline_access' },
+    apollo: {
+      url: 'https://mcp.apollo.io/mcp',
+      scope:
+        'read_user_profile app_scopes people_bulk_match organizations_bulk_enrich organizations_enrich people_match webhook_result_read mixed_people_api_search organizations_job_posting mixed_companies_search organizations_search contact_write contact_update contacts_search contact_read account_write account_update context_center_read context_center_write emailer_campaigns_search emailer_campaigns_create emailer_campaigns_update emailer_campaigns_approve emailer_campaigns_add_contact_ids emailer_campaigns_remove_or_stop_contact_ids emailer_schedules_list emailer_messages_search emailer_messages_create emailer_messages_send_now emailer_messages_email_send_status emailer_messages_get_content emailer_campaigns_activity_feed report_sync agent_task email_accounts_list custom_objects_write custom_objects_read custom_field_write opportunity_write opportunities_list opportunity_read tasks_create tasks_list email_account_purchase_list email_account_purchase_create domain_purchase_list domain_purchase_create domain_authentication_status waterfall_enrichments phone_call_write phone_call_update phone_call_search account_bulk_create contacts_bulk_create api_usage_stats_read credit_usage_stats_read users_list custom_fields_list conversation_intelligence_search conversation_intelligence_show tags_list lists_create lists_update lists_add_entities lists_remove_entities website_visitor_domain_tracker_read website_visitor_domain_tracker_update website_visitor_domain_tracker_send_install_email website_visitor_domain_tracker_install_script website_visitors_read emailer_campaign_read',
+    },
+    attio: { url: 'https://mcp.attio.com/mcp', scope: 'openid offline_access mcp' },
+    clickup: { url: 'https://mcp.clickup.com/mcp', scope: 'read write' },
+    gitlab: { url: 'https://gitlab.com/api/v4/mcp', scope: 'mcp' },
+    miro: { url: 'https://mcp.miro.com/', scope: 'boards:read boards:write' },
   };
   for (const [id, { url, scope }] of Object.entries(reviewed)) {
     const preset = getConnectorPreset(id);
