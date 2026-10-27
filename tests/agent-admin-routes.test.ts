@@ -1179,7 +1179,7 @@ test('provider settings use admin.configure and deployment ownership blocks brow
       impact: { accounts: number; schedules: number };
     };
     assert.equal(adminStatusBody.canConfigure, true);
-    assert.equal(adminStatusBody.catalog.length, 36);
+    assert.equal(adminStatusBody.catalog.length, 43);
     assert.deepEqual(adminStatusBody.impact, { accounts: 0, schedules: 0 });
 
     const memberEnv = {
@@ -1203,7 +1203,7 @@ test('provider settings use admin.configure and deployment ownership blocks brow
       provider: Record<string, unknown>;
     };
     assert.equal(memberStatusBody.canConfigure, false);
-    assert.equal(memberStatusBody.catalog.length, 36);
+    assert.equal(memberStatusBody.catalog.length, 43);
     assert.equal('impact' in memberStatusBody, false);
     assert.equal(
       'lastSetupResult' in memberStatusBody.provider,
@@ -4050,6 +4050,8 @@ test('the connection catalog reports managed readiness per toolkit and lane', as
       'bitbucket',
       'box',
       'cal',
+      'canva',
+      'contentful',
       'dropbox',
       'dynamics365',
       'excel',
@@ -4059,6 +4061,8 @@ test('the connection catalog reports managed readiness per toolkit and lane', as
       'googlebigquery',
       'googlemeet',
       'googletasks',
+      'gorgias',
+      'klaviyo',
       'mailchimp',
       'microsoft_teams',
       'one_drive',
@@ -4067,8 +4071,11 @@ test('the connection catalog reports managed readiness per toolkit and lane', as
       'pipedrive',
       'quickbooks',
       'salesforce',
+      'semrush',
       'share_point',
+      'square',
       'webex',
+      'wrike',
       'zoho',
     ]);
     assert.deepEqual(body.managedConnectors.catalog[0]?.access, {

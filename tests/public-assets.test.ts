@@ -57,7 +57,7 @@ test('existing onboarding URLs still return the same static bytes', async () => 
 test('raster connector icons reference served static assets rather than data URLs', async () => {
   const app = createPublicAssetRoutes();
   const raster = Object.values(CONNECTOR_LOGOS).filter((logo) => logo.raster);
-  assert.equal(raster.length, 35);
+  assert.equal(raster.length, 36);
   for (const logo of raster) {
     const src = logo.svg.match(/src="([^"]+)"/)?.[1];
     assert.ok(src);

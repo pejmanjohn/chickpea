@@ -8974,7 +8974,7 @@ test('Agent connection setup retains the complete preset catalog', async () => {
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    94,
+    101,
   );
 });
 
@@ -9294,7 +9294,7 @@ test('legacy Google access does not hide fresh Google connection presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 94);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 101);
 });
 
 test('every catalog connector opens an Agent-owned setup flow', async () => {
@@ -9318,6 +9318,8 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
           managedCatalogFixture('bitbucket-managed', 'bitbucket', 'Bitbucket'),
           managedCatalogFixture('box-managed', 'box', 'Box'),
           managedCatalogFixture('cal-managed', 'cal', 'Cal.com'),
+          managedCatalogFixture('canva-managed', 'canva', 'Canva'),
+          managedCatalogFixture('contentful-managed', 'contentful', 'Contentful'),
           managedCatalogFixture('dropbox-managed', 'dropbox', 'Dropbox'),
           managedCatalogFixture('dynamics365-managed', 'dynamics365', 'Dynamics 365'),
           managedCatalogFixture('excel-managed', 'excel', 'Excel'),
@@ -9327,6 +9329,8 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
           managedCatalogFixture('googlebigquery-managed', 'googlebigquery', 'Google BigQuery'),
           managedCatalogFixture('googlemeet-managed', 'googlemeet', 'Google Meet'),
           managedCatalogFixture('googletasks-managed', 'googletasks', 'Google Tasks'),
+          managedCatalogFixture('gorgias-managed', 'gorgias', 'Gorgias'),
+          managedCatalogFixture('klaviyo-managed', 'klaviyo', 'Klaviyo'),
           managedCatalogFixture('mailchimp-managed', 'mailchimp', 'Mailchimp'),
           managedCatalogFixture('microsoft-teams-managed', 'microsoft_teams', 'Microsoft Teams'),
           managedCatalogFixture('one-drive-managed', 'one_drive', 'OneDrive'),
@@ -9335,8 +9339,11 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
           managedCatalogFixture('pipedrive-managed', 'pipedrive', 'Pipedrive'),
           managedCatalogFixture('quickbooks-managed', 'quickbooks', 'QuickBooks'),
           managedCatalogFixture('salesforce-managed', 'salesforce', 'Salesforce'),
+          managedCatalogFixture('semrush-managed', 'semrush', 'Semrush'),
           managedCatalogFixture('share-point-managed', 'share_point', 'SharePoint'),
+          managedCatalogFixture('square-managed', 'square', 'Square'),
           managedCatalogFixture('webex-managed', 'webex', 'Webex'),
+          managedCatalogFixture('wrike-managed', 'wrike', 'Wrike'),
           managedCatalogFixture('zoho-managed', 'zoho', 'Zoho CRM'),
         ],
       },
@@ -9362,7 +9369,7 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 94);
+  assert.equal(presetIds.length, 101);
 });
 
 test('Agent-owned Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {

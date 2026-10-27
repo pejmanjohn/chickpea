@@ -104,8 +104,9 @@ const ACTING = /(?:^|_)(?:select_(?:user|admin|member)|as_user|as_admin|act_as|o
 /**
  * A token, key, or password the model would type in itself, such as Box's
  * download `access_token`. Pagination tokens and record keys are not credentials,
- * an ID such as Cal.com's `credentialId` names a record, and a boolean such as
- * `is_passcode_required` carries no secret.
+ * a name ending in an ID such as Cal.com's `credentialId` names a record unless its
+ * description calls it a token, and a boolean such as `is_passcode_required`
+ * carries no secret.
  */
 const CREDENTIAL = /(?:^|_)(?:access_token|oauth_token|auth_token|id_token|refresh_token|api_token|session_token|sas_token|api_key|apikey|app_key|bearer|authorization|client_secret|secrets?|password|passwd|passcode|credentials?|private_key|jwt)(?:_|$)/;
 const CREDENTIAL_DESCRIPTION =
@@ -127,8 +128,10 @@ const LINK_VALUES = new Set([...LINK_TOKENS, 'presigned']);
 const LINK_MINT_DESCRIPTION = new RegExp([
   String.raw`\b(?:temporary|public|shareable|pre-?signed|signed|expiring|pre-?authenticated)\s+(?:[\w()-]+\s+){0,2}(?:urls?|links?)\b`,
   String.raw`\b(?:urls?|links?)\s+(?:that\s+|which\s+)?(?:will\s+|may\s+)?(?:expires?|(?:is|are)\s+external)\b`,
-  String.raw`\bvalid\s+for\s+\d+\s+(?:seconds?|minutes?|hours?|days?)\b`,
-  String.raw`\b(?:short-lived|time-limited|unauthenticated)\b`,
+  String.raw`\b(?:urls?|links?)\s+(?:is|are)\s+(?:temporary|valid)\b`,
+  String.raw`\bvalid\s+for\s+\w+\s+(?:seconds?|minutes?|hours?|days?)\b`,
+  String.raw`\bexpires?\s+(?:after|in|within)\b`,
+  String.raw`\b(?:short-lived|time-limited|unauthenticated|pre-?signed)\b`,
 ].join('|'), 'i');
 
 /**
@@ -210,9 +213,9 @@ function anyToolWithheldReason(name: string, schema: unknown): string | undefine
   const tokens = argumentTokens(name);
   const joined = tokens.join('_');
   if (ACTING.test(joined)) return WITHHELD_ACTING;
-  const carriesValue = !['id', 'ids'].includes(tokens.at(-1) ?? '') &&
-    !(isPlainObject(schema) && schema.type === 'boolean');
-  if (carriesValue && (CREDENTIAL.test(joined) || CREDENTIAL_DESCRIPTION.test(descriptionOf(schema)))) {
+  const boolean = isPlainObject(schema) && schema.type === 'boolean';
+  const carriesValue = !['id', 'ids'].includes(tokens.at(-1) ?? '') && !boolean;
+  if ((carriesValue && CREDENTIAL.test(joined)) || (!boolean && CREDENTIAL_DESCRIPTION.test(descriptionOf(schema)))) {
     return WITHHELD_CREDENTIAL;
   }
   return mintsLink(name) || enumValues(schema).some(linkValue) ? WITHHELD_LINK : undefined;

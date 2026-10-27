@@ -1,0 +1,3945 @@
+{
+  "toolkit": {
+    "slug": "wrike",
+    "name": "Wrike",
+    "version": "20261010_00",
+    "description": "Wrike is a project management and collaboration tool offering customizable workflows, Gantt charts, reporting, and resource management to boost team productivity",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      }
+    ],
+    "currentUserEndpoint": "https://www.wrike.com/api/v4/account"
+  },
+  "tools": [
+    {
+      "slug": "WRIKE_COPY_FOLDER",
+      "name": "Copy folder",
+      "description": "Copies a Wrike folder synchronously to a specified parent location with customizable options. Use when duplicating folder structures, optionally copying descriptions, responsibles, custom fields, statuses, and rescheduling tasks.",
+      "version": "20261010_00",
+      "tags": [
+        "Folder & Projects",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CopyFolderRequest",
+        "required": [
+          "folderId",
+          "title",
+          "parent"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Copy of Marketing Campaign",
+              "Project Alpha - Copy"
+            ],
+            "description": "The title for the copied folder."
+          },
+          "parent": {
+            "type": "string",
+            "title": "Parent",
+            "examples": [
+              "IEAGTXR7I4IHGDEF",
+              "MQAAAAECjpki"
+            ],
+            "maxLength": 256,
+            "description": "The ID of the parent folder where the copy will be placed. Must be a valid Wrike folder ID."
+          },
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "examples": [
+              "IEAGTXR7I4IHGABC",
+              "MQAAAAECjxm7"
+            ],
+            "maxLength": 256,
+            "description": "The ID of the folder to copy. Must be a valid Wrike folder ID."
+          },
+          "entryLimit": {
+            "type": "integer",
+            "title": "Entry Limit",
+            "minimum": 1,
+            "examples": [
+              100,
+              50
+            ],
+            "description": "Maximum number of tasks/folders/projects to copy. Use this to limit the scope of the copy operation. If not specified, all entries will be copied."
+          },
+          "copyParents": {
+            "type": "boolean",
+            "title": "Copy Parents",
+            "description": "If true, copies the parent folder hierarchy from the original folder. Defaults to false if not specified."
+          },
+          "copyStatuses": {
+            "type": "boolean",
+            "title": "Copy Statuses",
+            "description": "If true, copies statuses from the original folder to the new folder. Defaults to false if not specified."
+          },
+          "rescheduleMode": {
+            "type": "string",
+            "title": "Reschedule Mode",
+            "examples": [
+              "Start",
+              "End"
+            ],
+            "description": "Reschedule mode for tasks in the copied folder. Valid values: 'Start' (reschedule based on start date) or 'End' (reschedule based on end date). Only used when rescheduledDate is provided."
+          },
+          "addResponsibles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Add Responsibles",
+            "examples": [
+              [
+                "KUAJ25LC",
+                "KUAJ25LD"
+              ]
+            ],
+            "description": "List of user IDs to add as responsibles to the copied folder. These users will be assigned to the new folder regardless of the copyResponsibles setting."
+          },
+          "rescheduledDate": {
+            "type": "string",
+            "title": "Rescheduled Date",
+            "examples": [
+              "2024-12-31",
+              "2025-01-15"
+            ],
+            "description": "Date for rescheduling tasks in the copied folder. Must be in ISO 8601 format (e.g., '2024-12-31'). Used with rescheduleMode to adjust task dates."
+          },
+          "copyCustomFields": {
+            "type": "boolean",
+            "title": "Copy Custom Fields",
+            "description": "If true, copies custom fields from the original folder to the new folder. Defaults to false if not specified."
+          },
+          "copyDescriptions": {
+            "type": "boolean",
+            "title": "Copy Descriptions",
+            "description": "If true, copies descriptions from the original folder to the new folder. Defaults to false if not specified."
+          },
+          "copyResponsibles": {
+            "type": "boolean",
+            "title": "Copy Responsibles",
+            "description": "If true, copies assignees/responsibles from the original folder to the new folder. Defaults to false if not specified."
+          },
+          "copyCustomStatuses": {
+            "type": "boolean",
+            "title": "Copy Custom Statuses",
+            "description": "If true, copies custom statuses from the original folder to the new folder. Defaults to false if not specified."
+          },
+          "removeResponsibles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Remove Responsibles",
+            "examples": [
+              [
+                "KUAJ25LE",
+                "KUAJ25LF"
+              ]
+            ],
+            "description": "List of user IDs to remove from responsibles in the copied folder. These users will not be assigned to the new folder even if present in the original."
+          }
+        },
+        "description": "Request schema for copying a folder in Wrike."
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_ACCOUNT_WEBHOOKS",
+      "name": "Create account webhooks",
+      "description": "Creates a webhook for the current account to receive notifications about changes. Use when you need to set up real-time event notifications for tasks, folders, or other Wrike objects.",
+      "version": "20261010_00",
+      "tags": [
+        "Webhooks",
+        "important",
+        "Accounts",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateAccountWebhooksRequest",
+        "required": [
+          "hookUrl"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Events",
+            "examples": [
+              [
+                "TaskCreated",
+                "TaskDeleted"
+              ],
+              [
+                "AttachmentAdded",
+                "AttachmentDeleted"
+              ]
+            ],
+            "description": "Array of event types to listen for (e.g., TaskCreated, TaskDeleted, FolderCreated). If omitted, all events are received."
+          },
+          "secret": {
+            "type": "string",
+            "title": "Secret",
+            "examples": [
+              "my-secret-key-123"
+            ],
+            "description": "Client secret for event authenticity verification. Used to validate that webhook events are genuinely from Wrike."
+          },
+          "hookUrl": {
+            "type": "string",
+            "title": "Hook Url",
+            "examples": [
+              "https://webhook.site/test-endpoint",
+              "https://api.example.com/wrike/webhooks"
+            ],
+            "description": "URL of the server that will receive the webhook payload. Must be a valid HTTPS URL."
+          },
+          "customItemTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Custom Item Types",
+            "examples": [
+              [
+                "IEAGIITRKQAYHYM4",
+                "IEAGIITRKQAYHYM5"
+              ]
+            ],
+            "description": "Array of Custom Item Type IDs to limit webhooks to specific CIT changes. Only events related to these CITs will trigger the webhook."
+          },
+          "parameterisedEvents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ParameterisedEvent",
+              "required": [
+                "event"
+              ],
+              "properties": {
+                "event": {
+                  "type": "string",
+                  "title": "Event",
+                  "examples": [
+                    "TaskCreated",
+                    "TaskDeleted",
+                    "FolderCreated"
+                  ],
+                  "description": "Event type to listen for (e.g., TaskCreated, TaskDeleted, FolderCreated)"
+                },
+                "fields": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Fields",
+                  "examples": [
+                    [
+                      "title",
+                      "status",
+                      "responsibleIds"
+                    ]
+                  ],
+                  "description": "List of standard field names to include in webhook payload for this event type"
+                },
+                "customFields": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Custom Fields",
+                  "examples": [
+                    [
+                      "IEAGIITRKQAYHYM4",
+                      "IEAGIITRKQAYHYM5"
+                    ]
+                  ],
+                  "description": "List of custom field IDs to include in webhook payload for this event type"
+                }
+              },
+              "description": "Configuration for filtering specific event types with customizable fields."
+            },
+            "title": "Parameterised Events",
+            "examples": [
+              [
+                {
+                  "event": "TaskCreated",
+                  "fields": [
+                    "title",
+                    "status"
+                  ],
+                  "customFields": [
+                    "IEAGIITRKQAYHYM4"
+                  ]
+                }
+              ]
+            ],
+            "description": "Array of objects for filtering events with customizable fields. Each object specifies event type, custom fields, and standard fields to include."
+          }
+        },
+        "description": "Request parameters for creating a webhook for the current Wrike account."
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_ASSETS",
+      "name": "Create equipment asset",
+      "description": "Tool to create equipment/asset in Wrike. Use when you need to add new equipment or assets to track in the system.",
+      "version": "20261010_00",
+      "tags": [
+        "Assets",
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateAssetsRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Test Equipment",
+              "Laptop Dell XPS 15",
+              "Conference Room Projector"
+            ],
+            "description": "The name of the equipment/asset to create."
+          }
+        },
+        "description": "Request parameters for creating an equipment asset in Wrike."
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_CUSTOMFIELD",
+      "name": "Create custom field",
+      "description": "Tool to create a new custom field in Wrike. Use when you need to define a new custom field for tasks, folders, or projects.",
+      "version": "20261010_00",
+      "tags": [
+        "Custom Fields",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateCustomfieldRequest",
+        "required": [
+          "title",
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "Text",
+              "DropDown",
+              "Numeric",
+              "Currency",
+              "Percentage",
+              "Date",
+              "Duration",
+              "Checkbox",
+              "Contacts",
+              "Multiple"
+            ],
+            "type": "string",
+            "title": "Type",
+            "examples": [
+              "Text",
+              "Numeric",
+              "DropDown"
+            ],
+            "description": "Type of the custom field. Determines what kind of data can be stored in this field."
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Project Status",
+              "Budget Amount",
+              "Due Date"
+            ],
+            "description": "Title of the custom field to create"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Values",
+            "examples": [
+              [
+                "Low",
+                "Medium",
+                "High"
+              ],
+              [
+                "Option A",
+                "Option B"
+              ]
+            ],
+            "description": "Array of predefined option values for DropDown and Multiple type custom fields."
+          },
+          "shareds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Shareds",
+            "examples": [
+              [
+                "KUAABBBBC",
+                "KUAABBBBF"
+              ]
+            ],
+            "description": "List of user IDs to share the custom field with. Empty list means not shared with anyone."
+          },
+          "spaceId": {
+            "type": "string",
+            "title": "Space Id",
+            "examples": [
+              "IEAABBBBICCCCCCCC"
+            ],
+            "description": "Space ID to create the custom field in. If not specified, creates an account-level custom field."
+          },
+          "contacts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Contacts",
+            "examples": [
+              [
+                "KUAABBBBC",
+                "KUAABBBBF"
+              ]
+            ],
+            "description": "Array of contact IDs representing allowed users or invitations for Contacts type custom fields."
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency",
+            "examples": [
+              "USD",
+              "EUR",
+              "GBP"
+            ],
+            "description": "Currency code for Currency type fields (e.g., USD, EUR, GBP). Defaults to USD if not specified."
+          },
+          "readOnly": {
+            "type": "boolean",
+            "title": "Read Only",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Whether the custom field is read-only. Defaults to false."
+          },
+          "aggregation": {
+            "enum": [
+              "None",
+              "Sum",
+              "Average"
+            ],
+            "type": "string",
+            "title": "Aggregation",
+            "examples": [
+              "Sum",
+              "Average",
+              "None"
+            ],
+            "description": "Aggregation type for custom fields."
+          },
+          "decimalPlaces": {
+            "type": "integer",
+            "title": "Decimal Places",
+            "minimum": 0,
+            "examples": [
+              2,
+              0
+            ],
+            "description": "Number of decimal places for Numeric, Percentage, and Currency types. Defaults to 2 if not specified."
+          },
+          "inheritanceType": {
+            "enum": [
+              "All",
+              "Folders",
+              "Projects"
+            ],
+            "type": "string",
+            "title": "InheritanceType",
+            "examples": [
+              "All",
+              "Folders",
+              "Projects"
+            ],
+            "description": "Inheritance type for custom fields."
+          },
+          "allowOtherValues": {
+            "type": "boolean",
+            "title": "Allow Other Values",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Whether users can enter custom values beyond predefined options for DropDown type. Defaults to true."
+          },
+          "useThousandsSeparator": {
+            "type": "boolean",
+            "title": "Use Thousands Separator",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Whether to use thousands separator for Numeric type fields. Defaults to false."
+          }
+        }
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_FOLDER",
+      "name": "Create a folder",
+      "description": "Creates a new Wrike subfolder within the specified `folderId`, optionally as a project if `customItemTypeId` is given; the folder is auto-shared with its creator.",
+      "version": "20261010_00",
+      "tags": [
+        "Folder & Projects",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateFolderRequest",
+        "required": [
+          "folderId",
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "New Project Alpha",
+              "Q4 Marketing Campaign"
+            ],
+            "description": "The title for the new folder."
+          },
+          "shareds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Shareds",
+            "examples": [
+              [
+                "KUAHGSZC",
+                "user@example.com"
+              ]
+            ],
+            "description": "A list of user IDs or invited user emails to share the folder with."
+          },
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "examples": [
+              "IEAGTXR7I4IHGABC"
+            ],
+            "description": "The unique identifier of the parent folder where the new subfolder will be created."
+          },
+          "metadata": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "CreateFoldermetadataRequest",
+              "required": [
+                "key"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "title": "Key",
+                  "examples": [
+                    "environment",
+                    "owner"
+                  ],
+                  "description": "Metadata key."
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "examples": [
+                    "staging",
+                    "qa-team"
+                  ],
+                  "description": "Metadata value."
+                }
+              },
+              "description": "A single metadata entry for a folder. Wrike typically expects a key-value pair."
+            },
+            "title": "Metadata",
+            "examples": [
+              "[{\"key\": \"ProjectGoal\", \"value\": \"Launch Q1\"}]"
+            ],
+            "description": "A list of metadata entries (key-value pairs) to associate with the newly created folder."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "Folder for all marketing assets related to the Q4 campaign."
+            ],
+            "description": "An optional description for the new folder."
+          },
+          "customFields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "CreateFoldercustomFieldsRequest",
+              "required": [
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "title": "Id",
+                  "examples": [
+                    "IEAGWOSFJUAKDDY3"
+                  ],
+                  "description": "Custom field identifier."
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "examples": [
+                    "Value A"
+                  ],
+                  "description": "Custom field value. Pass null to clear the field."
+                }
+              },
+              "description": "A custom field for folder creation. Wrike typically expects an ID and value."
+            },
+            "title": "Custom Fields",
+            "examples": [
+              "[{\"id\": \"IEAGTXR7KQNUDFFF\", \"value\": \"In Progress\"}]"
+            ],
+            "description": "A list of custom field entries (ID and value) to set for the new folder."
+          },
+          "customColumns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Custom Columns",
+            "examples": [
+              [
+                "IEAGTXR7KQNUDFFF",
+                "IEAGTXR7KQNUGGGG"
+              ]
+            ],
+            "description": "A list of custom field IDs to be associated with the folder as columns. These typically control the visibility and order of custom fields in a table view."
+          },
+          "userAccessRoles": {
+            "type": "object",
+            "title": "User Access Roles",
+            "examples": [
+              "{\"KUAHGSZC\": \"Editor\", \"KUAHGSZD\": \"Full\"}"
+            ],
+            "description": "A dictionary mapping user IDs to their access roles for this folder (e.g., 'Editor', 'Limited', 'Full', 'Owner'). The key is the user ID and the value is the access role name.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "withInvitations": {
+            "type": "boolean",
+            "title": "With Invitations",
+            "examples": [
+              true
+            ],
+            "description": "A boolean flag indicating whether to include invited (pending) users in the 'ownerIds' and 'sharedIds' lists in the response."
+          },
+          "customItemTypeId": {
+            "type": "string",
+            "title": "Custom Item Type Id",
+            "examples": [
+              "IEAGTXR7JUABAAAA"
+            ],
+            "description": "The ID of a Custom Item Type. If provided, the created folder will be a project based on this type."
+          },
+          "plainTextCustomFields": {
+            "type": "boolean",
+            "title": "Plain Text Custom Fields",
+            "examples": [
+              true
+            ],
+            "description": "A boolean flag. If true, HTML tags will be stripped from custom field values."
+          }
+        },
+        "description": "Request schema for creating a new folder."
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_FOLDER_BOOKING",
+      "name": "Create folder booking",
+      "description": "Tool to create a booking in a Wrike folder. Use when you need to allocate resources (users or placeholders) to a folder for a specific date range. Either responsibleId or responsiblePlaceholderId must be provided, and bookingDates must include at least two of: startDate, finishDate, or duration.",
+      "version": "20261010_00",
+      "tags": [
+        "Bookings",
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateFolderBookingRequest",
+        "required": [
+          "folderId",
+          "bookingDates"
+        ],
+        "properties": {
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "examples": [
+              "IEAGIITRJA76OO5C",
+              "MQAAAAECjxbG"
+            ],
+            "description": "Unique identifier of the folder to create the booking in"
+          },
+          "bookingDates": {
+            "type": "object",
+            "title": "Booking Dates",
+            "properties": {
+              "duration": {
+                "type": "integer",
+                "title": "Duration",
+                "minimum": 1,
+                "examples": [
+                  5,
+                  10,
+                  20
+                ],
+                "description": "Duration in working days"
+              },
+              "startDate": {
+                "type": "string",
+                "title": "Start Date",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "examples": [
+                  "2026-02-17",
+                  "2026-03-01"
+                ],
+                "description": "Start date in YYYY-MM-DD format"
+              },
+              "finishDate": {
+                "type": "string",
+                "title": "Finish Date",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "examples": [
+                  "2026-02-28",
+                  "2026-03-31"
+                ],
+                "description": "Finish date in YYYY-MM-DD format"
+              },
+              "workOnWeekends": {
+                "type": "boolean",
+                "title": "Work On Weekends",
+                "examples": [
+                  true,
+                  false
+                ],
+                "description": "Whether to include weekends in the booking"
+              }
+            },
+            "description": "Object containing booking date information. Must include two of: startDate, finishDate, or duration.",
+            "additionalProperties": false
+          },
+          "responsibleId": {
+            "type": "string",
+            "title": "Responsible Id",
+            "examples": [
+              "KUAWZ3UC",
+              "KUAJ25LD"
+            ],
+            "description": "Contact ID of the user responsible for this booking. Either responsibleId or responsiblePlaceholderId must be provided."
+          },
+          "effortAllocation": {
+            "type": "object",
+            "title": "EffortAllocation",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "title": "Mode",
+                "examples": [
+                  "Basic",
+                  "Flexible"
+                ],
+                "description": "Effort allocation mode (e.g., 'Basic' or 'Flexible')"
+              },
+              "totalEffort": {
+                "type": "integer",
+                "title": "Total Effort",
+                "minimum": 0,
+                "examples": [
+                  40,
+                  80,
+                  160
+                ],
+                "description": "Total effort in hours"
+              }
+            },
+            "description": "Effort allocation details for the booking.",
+            "additionalProperties": false
+          },
+          "responsiblePlaceholderId": {
+            "type": "string",
+            "title": "Responsible Placeholder Id",
+            "examples": [
+              "IEAGIITRJU76OOCP"
+            ],
+            "description": "Placeholder ID if booking is for a placeholder resource instead of a user. Either responsibleId or responsiblePlaceholderId must be provided."
+          }
+        },
+        "description": "Request parameters for creating a booking in a folder."
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_FOLDERS_APPROVALS",
+      "name": "Create approval in folder",
+      "description": "Tool to create a new approval in a Wrike folder. Use when you need to create an approval workflow for folder content review.",
+      "version": "20261010_00",
+      "tags": [
+        "Approvals",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateFoldersApprovalsRequest",
+        "required": [
+          "folderId"
+        ],
+        "properties": {
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "examples": [
+              "IEAG2Y72I4LAAAAA"
+            ],
+            "description": "The unique identifier of the folder where the approval will be created"
+          }
+        }
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_FOLDERS_COMMENTS",
+      "name": "Create folder comment",
+      "description": "Creates a new comment on a specified Wrike folder. Use when adding feedback, updates, or notes to a folder.",
+      "version": "20261010_00",
+      "tags": [
+        "Comments",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateFoldersCommentsRequest",
+        "required": [
+          "folderId",
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "examples": [
+              "This is a test comment created via API.",
+              "Great progress on this folder!"
+            ],
+            "description": "The comment text content. HTML format is accepted with limited tags."
+          },
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "examples": [
+              "IEAGTXR7I4IHGABC",
+              "MQAAAAECj2JY"
+            ],
+            "description": "The unique identifier of the folder to add the comment to."
+          }
+        },
+        "description": "Request schema for creating a comment on a Wrike folder."
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_INVITATION",
+      "name": "Create invitation",
+      "description": "Invites a user to a Wrike workspace by email, optionally with name, specifying EITHER `userTypeId` OR a combination of `role`/`external`; custom email subject/message available for paid accounts.",
+      "version": "20261010_00",
+      "tags": [
+        "Invitations",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateInvitationRequest",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "Collaborator",
+              "User"
+            ],
+            "type": "string",
+            "title": "RoleEnum",
+            "examples": [
+              "User",
+              "Collaborator"
+            ],
+            "description": "Valid values for the Wrike invitation role parameter."
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "examples": [
+              "new.user@example.com",
+              "team.member@company.com"
+            ],
+            "description": "Email address of the user to invite."
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "examples": [
+              "Hello, please join our project on Wrike!"
+            ],
+            "description": "Custom message body for the invitation email (paid Wrike accounts only)."
+          },
+          "subject": {
+            "type": "string",
+            "title": "Subject",
+            "examples": [
+              "Invitation to join our Wrike workspace"
+            ],
+            "description": "Custom subject for the invitation email (paid Wrike accounts only)."
+          },
+          "external": {
+            "type": "boolean",
+            "title": "External",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "Flags invited user as external. Cannot be used if `userTypeId` is specified. Can be combined with `role`."
+          },
+          "lastName": {
+            "type": "string",
+            "title": "Last Name",
+            "examples": [
+              "Doe"
+            ],
+            "description": "Last name of the invited user."
+          },
+          "firstName": {
+            "type": "string",
+            "title": "First Name",
+            "examples": [
+              "John"
+            ],
+            "description": "First name of the invited user."
+          },
+          "userTypeId": {
+            "type": "string",
+            "title": "User Type Id",
+            "examples": [
+              "someUserTypeId"
+            ],
+            "description": "ID of the user type to assign (e.g., Admin, Regular User, External User). Cannot be used if `role` or `external` is specified."
+          }
+        },
+        "description": "Request schema for `CreateInvitation`"
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_SPACE_WEBHOOK",
+      "name": "Create space webhook",
+      "description": "Tool to create a webhook on a Wrike space for receiving notifications about changes to tasks, folders, and projects. Use when you need to set up event-driven integrations for space-level changes.",
+      "version": "20261010_00",
+      "tags": [
+        "Webhooks",
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateSpaceWebhookRequest",
+        "required": [
+          "space_id",
+          "hook_url"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Events",
+            "examples": [
+              [
+                "TaskCreated",
+                "TaskTitleChanged"
+              ],
+              [
+                "AttachmentAdded",
+                "AttachmentDeleted"
+              ]
+            ],
+            "description": "List of specific event types to subscribe to. If omitted, all events are received. Examples: AttachmentAdded, AttachmentDeleted, TaskCreated, TaskTitleChanged, etc."
+          },
+          "secret": {
+            "type": "string",
+            "title": "Secret",
+            "examples": [
+              "my-secret-key-12345"
+            ],
+            "description": "Client secret for verifying event authenticity and securing webhook payloads."
+          },
+          "hook_url": {
+            "type": "string",
+            "title": "Hook Url",
+            "examples": [
+              "https://webhook.site/test-wrike-webhook"
+            ],
+            "description": "URL of the server endpoint that will receive the webhook payload notifications."
+          },
+          "space_id": {
+            "type": "string",
+            "title": "Space Id",
+            "pattern": "^[A-Za-z0-9]+$",
+            "examples": [
+              "IEAAABC6JAAAABAS"
+            ],
+            "description": "Unique identifier of the space to create the webhook for."
+          },
+          "recursive": {
+            "type": "boolean",
+            "title": "Recursive",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "If true, monitor subfolders and subprojects throughout the space hierarchy. Default is false."
+          }
+        },
+        "description": "Request parameters for creating a webhook on a Wrike space."
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_TASK",
+      "name": "Create task in folder",
+      "description": "Creates a new task in a specified Wrike folder; if setting priority with `priorityBefore` or `priorityAfter`, the referenced task must be in the same folder or project.",
+      "version": "20261010_00",
+      "tags": [
+        "Tasks",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateTaskRequest",
+        "required": [
+          "folderId",
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Finalize Q3 budget report",
+              "Develop new marketing campaign"
+            ],
+            "description": "Title of the task."
+          },
+          "follow": {
+            "type": "boolean",
+            "title": "Follow",
+            "examples": [
+              "true",
+              "false"
+            ],
+            "description": "If `True`, the creator automatically follows the task."
+          },
+          "status": {
+            "enum": [
+              "Active",
+              "Cancelled",
+              "Completed",
+              "Deferred"
+            ],
+            "type": "string",
+            "title": "Status",
+            "default": "Active",
+            "examples": [
+              "Active",
+              "Completed"
+            ],
+            "description": "Status of the task. Note: This feature may not be available on the Team plan."
+          },
+          "parents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Parents",
+            "examples": [
+              [
+                "IEAGIITRJA76OO5A",
+                "IEAGIITRJA76OO5B"
+              ]
+            ],
+            "description": "List of parent folder IDs for the task. Cannot include the recycleBinId."
+          },
+          "shareds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Shareds",
+            "examples": [
+              [
+                "KUAJ25LD",
+                "KUAJ25LE"
+              ],
+              [
+                "invt9z9a9zzzzz9a9z9z9z9z9z9z9z9z"
+              ]
+            ],
+            "description": "List of user or invitation IDs to share the task with; creator is auto-shared."
+          },
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "examples": [
+              "IEAGIITRJA76OO5C"
+            ],
+            "description": "Unique identifier of the folder where the task will be created."
+          },
+          "metadata": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "CreateTaskmetadataRequest",
+              "required": [
+                "key",
+                "value"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "title": "Key",
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "examples": [
+                    "project_id",
+                    "reference_number"
+                  ],
+                  "description": "The key for the metadata item."
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "examples": [
+                    "alpha-launch",
+                    "PO-12345"
+                  ],
+                  "description": "The value associated with the metadata key."
+                }
+              },
+              "description": "A single metadata key-value pair for a task."
+            },
+            "title": "Metadata",
+            "examples": [
+              "[{\"key\": \"project_code\", \"value\": \"Alpha\"}, {\"key\": \"external_ref\", \"value\": \"REF123\"}]"
+            ],
+            "description": "List of key-value metadata pairs for the task. Each item requires 'key' and 'value'."
+          },
+          "followers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Followers",
+            "examples": [
+              [
+                "KUAJ25LH",
+                "KUAJ25LI"
+              ]
+            ],
+            "description": "List of user IDs to be added as task followers."
+          },
+          "importance": {
+            "enum": [
+              "High",
+              "Low",
+              "Normal"
+            ],
+            "type": "string",
+            "title": "Importance",
+            "default": "Normal",
+            "examples": [
+              "High",
+              "Normal",
+              "Low"
+            ],
+            "description": "Importance level of the task."
+          },
+          "superTasks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Super Tasks",
+            "examples": [
+              [
+                "IEAGIITRJA76OO5X",
+                "IEAGIITRJA76OO5Y"
+              ]
+            ],
+            "description": "List of task IDs to which this new task will be a subtask."
+          },
+          "billingType": {
+            "enum": [
+              "Billable",
+              "NonBillable",
+              "NonBillableAddToProjectReports"
+            ],
+            "type": "string",
+            "title": "BillingtypeEnm0",
+            "examples": [
+              "Billable",
+              "NonBillable"
+            ],
+            "description": "Billing type for the task's timelogs."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "Review all department submissions and compile the final report.",
+              "Create a comprehensive plan for the new product launch."
+            ],
+            "description": "Detailed description of the task."
+          },
+          "customFields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "CreateTaskcustomFieldsRequest",
+              "required": [
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "title": "Id",
+                  "examples": [
+                    "IEAGWTJBJUAKHBTY"
+                  ],
+                  "description": "Custom field identifier."
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "examples": [
+                    "Sample value"
+                  ],
+                  "description": "Custom field value. Pass null to clear the field."
+                }
+              },
+              "description": "Specifies custom field data. Each entry in a `customFields` list should be an object with 'id' and 'value', e.g., `{\"id\": \"custom_field_id\", \"value\": \"custom_field_value\"}`."
+            },
+            "title": "Custom Fields",
+            "examples": [
+              "[{\"id\": \"IEAGIITRJU76OOCL\", \"value\": \"Value For CF\"}, {\"id\": \"IEAGIITRJU76OOCM\", \"value\": \"Another Value\"}]"
+            ],
+            "description": "List of custom fields for the task. Each item requires `id` (custom field ID) and `value`. Refer to Wrike API documentation for value formatting based on type."
+          },
+          "customStatus": {
+            "type": "string",
+            "title": "Custom Status",
+            "examples": [
+              "IEAGIITRJU76OOCQ"
+            ],
+            "description": "Unique ID of a custom status for the task."
+          },
+          "responsibles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Responsibles",
+            "examples": [
+              [
+                "KUAJ25LF",
+                "KUAJ25LG"
+              ]
+            ],
+            "description": "List of user or invitation IDs to be assigned as responsible for the task."
+          },
+          "priorityAfter": {
+            "type": "string",
+            "title": "Priority After",
+            "examples": [
+              "IEAGIITRKZ76OO5D"
+            ],
+            "description": "ID of an existing task to place the new task after in the list."
+          },
+          "priorityBefore": {
+            "type": "string",
+            "title": "Priority Before",
+            "examples": [
+              "IEAGIITRKZ76OO5C"
+            ],
+            "description": "ID of an existing task to place the new task before in the list."
+          },
+          "withInvitations": {
+            "type": "boolean",
+            "title": "With Invitations",
+            "examples": [
+              "true",
+              "false"
+            ],
+            "description": "If `True`, include invited (unregistered) users in response's `shareds` and `responsibles`."
+          },
+          "customItemTypeId": {
+            "type": "string",
+            "title": "Custom Item Type Id",
+            "examples": [
+              "IEAGIITRI476OOAA"
+            ],
+            "description": "Unique ID of a Custom Item Type to use as a template for the task; task inherits its properties."
+          },
+          "plainTextCustomFields": {
+            "type": "boolean",
+            "title": "Plain Text Custom Fields",
+            "examples": [
+              "true",
+              "false"
+            ],
+            "description": "If `True`, HTML tags will be stripped from custom field values before saving."
+          },
+          "responsiblePlaceholders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Responsible Placeholders",
+            "examples": [
+              [
+                "IEAGIITRJU76OOCP"
+              ]
+            ],
+            "description": "List of placeholder IDs (Job Roles) to be assigned as responsible for the task."
+          }
+        },
+        "description": "Parameters for creating a new task in a Wrike folder."
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_TASK_COMMENT",
+      "name": "Create task comment",
+      "description": "Tool to create a new comment on a Wrike task. Use when you need to add a comment or note to a task.",
+      "version": "20261010_00",
+      "tags": [
+        "Comments",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateTaskCommentRequest",
+        "required": [
+          "taskId",
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "examples": [
+              "This is a test comment created via the API",
+              "Great progress on this task!",
+              "<p>Review completed. <b>Approved</b></p>"
+            ],
+            "description": "Comment text content. Supports HTML formatting with limited tags. Use HTML syntax for @mentions."
+          },
+          "taskId": {
+            "type": "string",
+            "title": "Task Id",
+            "examples": [
+              "IEAGIITRKQAYHYM4",
+              "MAAAAAECjuHe"
+            ],
+            "description": "The ID of the task to add a comment to."
+          }
+        },
+        "description": "Request schema for creating a comment on a Wrike task."
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_TASKS_DEPENDENCIES",
+      "name": "Create task dependency",
+      "description": "Tool to create a new dependency relationship between Wrike tasks. Use when you need to establish that one task must be completed before another can start or finish. Both tasks must have Planned scheduling type (not Backlog) for dependencies to work.",
+      "version": "20261010_00",
+      "tags": [
+        "Dependencies",
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateTasksDependenciesRequest",
+        "required": [
+          "taskId",
+          "predecessorId",
+          "relationType"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "title": "Task Id",
+            "examples": [
+              "IEAGWTJBK4GQWXD5",
+              "MAAAAAEE1ljX"
+            ],
+            "description": "The ID of the successor task (the task that depends on another). Must have Planned scheduling type (not Backlog)."
+          },
+          "relationType": {
+            "enum": [
+              "FinishToStart",
+              "FinishToFinish",
+              "StartToStart",
+              "StartToFinish"
+            ],
+            "type": "string",
+            "title": "Relation Type",
+            "description": "The type of dependency relationship between tasks"
+          },
+          "predecessorId": {
+            "type": "string",
+            "title": "Predecessor Id",
+            "examples": [
+              "IEAGWTJBK4GQWXD4",
+              "MAAAAAEE1ljC"
+            ],
+            "description": "The ID of the predecessor task (the task that must be completed before the successor). Must have Planned scheduling type (not Backlog)."
+          }
+        },
+        "description": "Request schema for creating a Wrike task dependency."
+      }
+    },
+    {
+      "slug": "WRIKE_CREATE_WORKFLOWS",
+      "name": "Create workflows",
+      "description": "Tool to create a new custom workflow in Wrike. Use when you need to create a new workflow with a specific name.",
+      "version": "20261010_00",
+      "tags": [
+        "Workflows",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateWorkflowsRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Test Workflow Created via API",
+              "Development Workflow"
+            ],
+            "description": "Name of the workflow to create"
+          }
+        }
+      }
+    },
+    {
+      "slug": "WRIKE_FETCH_ALL_TASKS",
+      "name": "Fetch all tasks",
+      "description": "Fetches tasks from a Wrike account, allowing filtering by status, due date, and subfolder inclusion, with customizable response fields and pagination.",
+      "version": "20261010_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "tasks"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "FetchAllTasksRequest",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "examples": [
+              "[\"responsibleIds\", \"sharedIds\", \"authorIds\", \"followerIds\"]",
+              "[\"description\", \"briefDescription\", \"responsibleIds\", \"sharedIds\", \"metadata\"]"
+            ],
+            "description": "A list of field names to include for each task in the response. Author-related fields: 'responsibleIds' (assigned users), 'sharedIds' (users task is shared with), 'authorIds' (task creators), 'followerIds' (task followers). Other common fields: 'description', 'briefDescription', 'parentIds', 'superParentIds'. Custom fields can also be requested by their ID. If omitted, a default set of fields is returned. To include metadata in the response, add 'metadata' to this list."
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "examples": [
+              "Active",
+              "Completed",
+              "Deferred",
+              "Cancelled"
+            ],
+            "description": "Filter tasks by their status. Only tasks matching the specified status will be returned (e.g., Active, Completed)."
+          },
+          "due_date": {
+            "type": "object",
+            "title": "DueDateFilter",
+            "properties": {
+              "end": {
+                "type": "string",
+                "title": "End",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2})?$",
+                "examples": [
+                  "2024-03-31",
+                  "2024-03-31T23:59:59"
+                ],
+                "description": "End date for a due date range filter. Tasks due on or before this date will be included."
+              },
+              "equal": {
+                "type": "string",
+                "title": "Equal",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2})?$",
+                "examples": [
+                  "2023-12-15",
+                  "2023-12-15T00:00:00"
+                ],
+                "description": "Exact due date to filter tasks by. If provided, this overrides 'start' and 'end' date filters."
+              },
+              "start": {
+                "type": "string",
+                "title": "Start",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2})?$",
+                "examples": [
+                  "2023-01-01",
+                  "2023-01-01T00:00:00"
+                ],
+                "description": "Start date for a due date range filter. Tasks due on or after this date will be included."
+              }
+            },
+            "description": "Filter tasks by due date. Use 'equal' for an exact date match (yyyy-MM-dd), or 'start' and/or 'end' to define a date range (yyyy-MM-dd). If 'equal' is provided, 'start' and 'end' are ignored.",
+            "additionalProperties": false
+          },
+          "metadata": {
+            "type": "object",
+            "title": "Metadata",
+            "examples": [
+              {
+                "department": "marketing"
+              }
+            ],
+            "description": "Filter tasks by a single metadata key-value pair. Provide a dict with exactly one entry, e.g. {\"department\": \"marketing\"}. The Wrike API does not support filtering on multiple metadata pairs in a single request.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "maximum": 100,
+            "minimum": 1,
+            "examples": [
+              "10",
+              "20",
+              "50",
+              "100"
+            ],
+            "description": "The number of tasks to return per page. Use with nextPageToken from the response to paginate; serialize requests across pages to avoid rate limit errors."
+          },
+          "descendants": {
+            "type": "boolean",
+            "title": "Descendants",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "If true, tasks from all subfolders and subprojects are included. If false, only tasks from the specified folder/project are returned."
+          },
+          "resolve_user_names": {
+            "type": "boolean",
+            "title": "Resolve User Names",
+            "default": true,
+            "description": "If true, automatically adds all user-related fields (authorIds, responsibleIds, sharedIds, followerIds) to the request and resolves user IDs to include user names and details directly in each task."
+          }
+        }
+      }
+    },
+    {
+      "slug": "WRIKE_GET_ACCOUNT_INFORMATION",
+      "name": "Get account information",
+      "description": "Retrieves detailed Wrike account information, where the response content is influenced by selected fields, account subscription, and user permissions.",
+      "version": "20261010_00",
+      "tags": [
+        "Accounts",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAccountInformationRequest",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "metadata",
+                "customFields",
+                "subscription"
+              ],
+              "type": "string"
+            },
+            "title": "Fields",
+            "examples": [
+              [
+                "subscription"
+              ],
+              [
+                "metadata",
+                "customFields"
+              ]
+            ],
+            "description": "Optional fields to include in the response. Valid values are: 'metadata' (account metadata), 'customFields' (custom fields defined in the account), 'subscription' (subscription details including type, status, and user limit). If omitted, only default account fields are returned."
+          }
+        },
+        "description": "Request schema for `GetAccountInformation`"
+      }
+    },
+    {
+      "slug": "WRIKE_GET_ALL_CUSTOM_FIELDS",
+      "name": "Get all custom fields",
+      "description": "Retrieves all custom field definitions (including ID, name, type, and settings) from the Wrike account; this returns the definitions themselves, not their specific values on Wrike items, and is useful for obtaining custom field IDs.",
+      "version": "20261010_00",
+      "tags": [
+        "Custom Fields",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAllCustomFieldsRequest",
+        "properties": {},
+        "description": "Request schema for `GetAllCustomFields`"
+      }
+    },
+    {
+      "slug": "WRIKE_GET_CONTACTS",
+      "name": "Get contacts",
+      "description": "Retrieves a list of Wrike contacts (e.g., team members, clients, collaborators); response includes contact details but not their detailed task or project involvement.",
+      "version": "20261010_00",
+      "tags": [
+        "Contacts",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetContactsRequest",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "customFields",
+                "metadata"
+              ],
+              "type": "string",
+              "title": "ContactOptionalField",
+              "description": "Valid optional fields for the contacts endpoint."
+            },
+            "title": "Fields",
+            "examples": [
+              [
+                "customFields"
+              ],
+              [
+                "customFields",
+                "metadata"
+              ]
+            ],
+            "description": "List of optional fields to include in the response. Valid values are 'customFields' (to include user custom fields) and 'metadata' (to include metadata). Standard contact properties (firstName, lastName, email, etc.) are always returned by default."
+          },
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted",
+            "examples": [
+              "true",
+              "false"
+            ],
+            "description": "Filter by deletion status: `true` for deleted, `false` or omitted (default) for active contacts."
+          },
+          "metadata": {
+            "type": "object",
+            "title": "Metadata",
+            "examples": [
+              {
+                "customKey": "customValue"
+              },
+              {
+                "externalId": "user123"
+              }
+            ],
+            "description": "Filter contacts by metadata. Provide a single key-value pair to find contacts matching that exact metadata entry. Only the first key-value pair will be used if multiple are provided.",
+            "additionalProperties": true
+          }
+        },
+        "description": "Parameters to filter and customize the retrieved list of Wrike contacts."
+      }
+    },
+    {
+      "slug": "WRIKE_GET_CUSTOM_ITEM_TYPES",
+      "name": "Get custom item types",
+      "description": "Tool to retrieve all custom item types from Wrike. Use when you need to discover available custom item type definitions for creating work items or understanding the custom item type structure.",
+      "version": "20261010_00",
+      "tags": [
+        "Custom Item Types",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCustomItemTypesRequest",
+        "properties": {},
+        "description": "Request schema for retrieving all custom item types.\n\nThis endpoint requires no parameters as it returns all custom item types\naccessible to the authorized user."
+      }
+    },
+    {
+      "slug": "WRIKE_GET_FOLDERS",
+      "name": "Get folders",
+      "description": "Retrieves folders and/or projects from Wrike, with filters; when using `nextPageToken`, all other filter parameters must match the initial request.",
+      "version": "20261010_00",
+      "tags": [
+        "Folder & Projects",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFoldersRequest",
+        "properties": {
+          "fields": {
+            "type": "string",
+            "title": "Fields",
+            "examples": [
+              "[\"attachmentCount\", \"hasAttachments\"]",
+              "[\"customFields\", \"metadata\", \"space\"]"
+            ],
+            "description": "JSON array string of optional fields to include in the response for each folder. Only works when query returns 'folders' kind (not 'folderTree'). Valid field values: 'attachmentCount', 'briefDescription', 'customColumnIds', 'customFields', 'hasAttachments', 'metadata', 'space'. Note: 'sharedIds' is NOT a valid field value - it's already included in the default response. Example: '[\"customFields\", \"metadata\"]'"
+          },
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted",
+            "description": "True to retrieve folders from the Recycle Bin; false or omitted to retrieve from Root."
+          },
+          "project": {
+            "type": "boolean",
+            "title": "Project",
+            "description": "Filter by entity type: true for projects, false for folders. If omitted, both are returned."
+          },
+          "metadata": {
+            "type": "object",
+            "title": "Metadata",
+            "examples": [
+              {
+                "key": "environment",
+                "value": "prod"
+              }
+            ],
+            "properties": {},
+            "description": "Filter folders by a single metadata entry. Must be a dict with exactly two keys: 'key' (metadata key) and 'value' (metadata value).",
+            "additionalProperties": true
+          },
+          "pageSize": {
+            "type": "integer",
+            "title": "Page Size",
+            "description": "Maximum number of folders per page (1-1000). Only \"folders\" kind is supported for pagination. Not supported when descendants=true (which returns \"folderTree\" kind). Cannot be used together with descendants=true or nextPageToken with descendants=true."
+          },
+          "permalink": {
+            "type": "string",
+            "title": "Permalink",
+            "examples": [
+              "https://www.wrike.com/open.htm?id=123456789&acc=987654321"
+            ],
+            "description": "Folder permalink for an exact match."
+          },
+          "descendants": {
+            "type": "boolean",
+            "title": "Descendants",
+            "default": true,
+            "description": "Include all descendant folders in the search scope; false to search only within the specified folder(s)."
+          },
+          "updatedDate": {
+            "type": "object",
+            "title": "Updated Date",
+            "examples": [
+              {
+                "end": "2023-12-31T23:59:59Z",
+                "start": "2023-01-01T00:00:00Z"
+              },
+              {
+                "equal": "2023-06-15T12:00:00Z"
+              }
+            ],
+            "properties": {},
+            "description": "Filter folders by their last updated date. Provide a dictionary object (not a JSON string) with 'start', 'end', or 'equal' keys. Date format: yyyy-MM-dd'T'HH:mm:ss'Z' or yyyy-MM-dd'T'HH:mm:ssXXX.",
+            "additionalProperties": true
+          },
+          "customFields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "GetFolderscustomFieldsRequest",
+              "properties": {},
+              "description": "Specifies custom field filters for `GetFolders`, adhering to Wrike API's structure (e.g., 'id' and 'value', or 'id', 'comparator', 'value').",
+              "additionalProperties": true
+            },
+            "title": "Custom Fields",
+            "description": "Filter folders by custom field values. Provide a list of filters, each specifying the custom field ID and value, or ID, comparator, and value. Example: `[{\"id\": \"IEAGAAAAKZ7A____\", \"value\": \"Value\"}]`."
+          },
+          "contractTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Contract Types",
+            "examples": [
+              [
+                "TypeA",
+                "TypeB"
+              ]
+            ],
+            "description": "Filter folders by a list of contract type IDs."
+          },
+          "nextPageToken": {
+            "type": "string",
+            "title": "Next Page Token",
+            "description": "Pagination token from a previous response to retrieve the next page. All other filter parameters must match the initial request. Only supported when kind=\"folders\" (not supported for \"folderTree\"). Not supported when descendants=true (which returns \"folderTree\" kind)."
+          },
+          "customItemTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Custom Item Types",
+            "examples": [
+              [
+                "TypeId1",
+                "TypeId2"
+              ]
+            ],
+            "description": "Filter by a list of custom item type IDs. Standard types like 'project' or 'folder' IDs are not allowed."
+          },
+          "withInvitations": {
+            "type": "boolean",
+            "title": "With Invitations",
+            "description": "Include invitations in the 'sharedIds' list of the response."
+          },
+          "plainTextCustomFields": {
+            "type": "boolean",
+            "title": "Plain Text Custom Fields",
+            "description": "True to strip HTML tags from custom field values in the response."
+          }
+        },
+        "description": "Request schema for `GetFolders`"
+      }
+    },
+    {
+      "slug": "WRIKE_GET_FOLDERS_BY_IDS",
+      "name": "Get folders by IDs",
+      "description": "Tool to retrieve multiple Wrike folders by their IDs. Use when you need to fetch details for specific folders using comma-separated folder IDs.",
+      "version": "20261010_00",
+      "tags": [
+        "Folder & Projects",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFoldersByIdsRequest",
+        "required": [
+          "folder_ids"
+        ],
+        "properties": {
+          "folder_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Folder Ids",
+            "examples": [
+              [
+                "IEAAAAAAKUAAAAAA",
+                "IEAAAAAAKUAAAAAB"
+              ],
+              [
+                "IEAAAAAAKUAAAAAA"
+              ]
+            ],
+            "minItems": 1,
+            "description": "List of folder IDs to retrieve. Each ID should be a valid Wrike folder identifier (e.g., 'IEAAAAAAKUAAAAAA'). The endpoint returns comprehensive folder details including metadata and customFields by default."
+          }
+        },
+        "description": "Request schema for getting folders by their IDs."
+      }
+    },
+    {
+      "slug": "WRIKE_GET_FOLDERS_COMMENTS",
+      "name": "Get folder comments",
+      "description": "Tool to retrieve comments from a specific Wrike folder. Use when you need to fetch all comments associated with a folder.",
+      "version": "20261010_00",
+      "tags": [
+        "Comments",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFoldersCommentsRequest",
+        "required": [
+          "folderId"
+        ],
+        "properties": {
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "examples": [
+              "IEAAAAAAKUAAAAAA",
+              "MQAAAAECj2JY"
+            ],
+            "description": "The ID of the folder to retrieve comments from. This should be a valid Wrike folder identifier (e.g., 'IEAAAAAAKUAAAAAA')."
+          },
+          "plainText": {
+            "type": "boolean",
+            "title": "Plain Text",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "If true, returns comments without HTML formatting tags. Default is false."
+          }
+        },
+        "description": "Request schema for getting comments from a folder."
+      }
+    },
+    {
+      "slug": "WRIKE_GET_FOLDERS_TASKS",
+      "name": "Get folder tasks",
+      "description": "Query tasks within a specific folder. Use this to retrieve all tasks contained in a folder, with optional filtering by status, due date, and metadata.",
+      "version": "20261010_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "tasks"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetFoldersTasksRequest",
+        "required": [
+          "folder_id"
+        ],
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "examples": [
+              [
+                "responsibleIds",
+                "sharedIds",
+                "authorIds",
+                "followerIds"
+              ],
+              [
+                "description",
+                "briefDescription",
+                "responsibleIds",
+                "metadata"
+              ]
+            ],
+            "description": "Optional fields to include in the response. Valid fields: authorIds, hasAttachments, attachmentCount, parentIds, superParentIds, sharedIds, responsibleIds, description, briefDescription, recurrent, superTaskIds, subTaskIds, dependencyIds, metadata, customFields, followerIds, effortAllocation, billingType. Note: 'title', 'status', 'permalink' and other core fields are always returned and cannot be requested via this parameter."
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "examples": [
+              "Active",
+              "Completed",
+              "Deferred",
+              "Cancelled"
+            ],
+            "description": "Filter tasks by their status. Only tasks matching the specified status will be returned (e.g., Active, Completed)."
+          },
+          "due_date": {
+            "type": "object",
+            "title": "DueDateFilter",
+            "properties": {
+              "end": {
+                "type": "string",
+                "title": "End",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2})?$",
+                "examples": [
+                  "2024-03-31",
+                  "2024-03-31T23:59:59"
+                ],
+                "description": "End date for a due date range filter. Tasks due on or before this date will be included."
+              },
+              "equal": {
+                "type": "string",
+                "title": "Equal",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2})?$",
+                "examples": [
+                  "2023-12-15",
+                  "2023-12-15T00:00:00"
+                ],
+                "description": "Exact due date to filter tasks by. If provided, this overrides 'start' and 'end' date filters."
+              },
+              "start": {
+                "type": "string",
+                "title": "Start",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2})?$",
+                "examples": [
+                  "2023-01-01",
+                  "2023-01-01T00:00:00"
+                ],
+                "description": "Start date for a due date range filter. Tasks due on or after this date will be included."
+              }
+            },
+            "description": "Filter tasks by due date. Use 'equal' for an exact date match (yyyy-MM-dd), or 'start' and/or 'end' to define a date range (yyyy-MM-dd). If 'equal' is provided, 'start' and 'end' are ignored.",
+            "additionalProperties": false
+          },
+          "metadata": {
+            "type": "object",
+            "title": "Metadata",
+            "examples": [
+              {
+                "region": "us",
+                "department": "marketing"
+              }
+            ],
+            "description": "Filter tasks by metadata key-value pairs. Provide a dict of key-value pairs, e.g. {\"department\": \"marketing\", \"region\": \"us\"}. All pairs must match (AND logic).",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "folder_id": {
+            "type": "string",
+            "title": "Folder Id",
+            "examples": [
+              "IEAGTXRI",
+              "MQAAAAECjpki"
+            ],
+            "description": "The Wrike folder ID to query tasks from. This is an opaque text string (e.g., 'IEAGTXRI') from which to retrieve tasks. Max 256 characters."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "maximum": 100,
+            "minimum": 1,
+            "examples": [
+              "10",
+              "20",
+              "50",
+              "100"
+            ],
+            "description": "The number of tasks to return per page."
+          },
+          "descendants": {
+            "type": "boolean",
+            "title": "Descendants",
+            "examples": [
+              true,
+              false
+            ],
+            "description": "If true, tasks from all subfolders are included. If false, only tasks from the specified folder are returned."
+          }
+        }
+      }
+    },
+    {
+      "slug": "WRIKE_GET_INFORMATION_ABOUT_SPECIFIC_CONTACT",
+      "name": "Get specific contact information",
+      "description": "Retrieves detailed information for a specific Wrike contact using their unique `contactId`, optionally including `metadata` and `customFields` if specified in the `fields` parameter.",
+      "version": "20261010_00",
+      "tags": [
+        "Contacts",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetInformationAboutSpecificContactRequest",
+        "required": [
+          "contactId"
+        ],
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "metadata",
+                "customFields"
+              ],
+              "type": "string",
+              "title": "ContactOptionalField",
+              "description": "Valid optional fields for the Wrike contact endpoint."
+            },
+            "title": "Fields",
+            "examples": [
+              [
+                "metadata",
+                "customFields"
+              ]
+            ],
+            "description": "Optional list of specific fields to include. Valid values: 'metadata', 'customFields'. Returns default fields if omitted."
+          },
+          "contactId": {
+            "type": "string",
+            "title": "Contact Id",
+            "examples": [
+              "IEAGAAAAACQYAEAB"
+            ],
+            "description": "The unique identifier of the contact to retrieve information for."
+          }
+        },
+        "description": "Request schema for `GetInformationAboutSpecificContact`"
+      }
+    },
+    {
+      "slug": "WRIKE_GET_SPACE",
+      "name": "Get space by ID",
+      "description": "Tool to retrieve details for a single Wrike space by spaceId. Use when you need to fetch complete information about a specific space, typically after listing spaces to select one.",
+      "version": "20261010_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Spaces"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSpaceRequest",
+        "required": [
+          "spaceId"
+        ],
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "examples": [
+              [
+                "accessType",
+                "archived"
+              ],
+              [
+                "members",
+                "guestRoleId"
+              ]
+            ],
+            "description": "A list of optional field names to include in the response. Common fields include: 'accessType', 'archived', 'members', 'guestRoleId', etc. If omitted, a default set of fields will be returned."
+          },
+          "spaceId": {
+            "type": "string",
+            "title": "Space Id",
+            "examples": [
+              "IEAG2Y72I4LAAAAA"
+            ],
+            "description": "The unique identifier of the Wrike space to retrieve. This is an alphanumeric string (e.g., 'IEAG2Y72I4LAAAAA')."
+          }
+        },
+        "description": "Request schema for retrieving a specific space by its unique identifier."
+      }
+    },
+    {
+      "slug": "WRIKE_GET_SPACE_FOLDERS",
+      "name": "Get space folders",
+      "description": "Tool to retrieve the folder tree for a specific Wrike space. Use when you need to list all folders and projects within a space, optionally filtered by project type, authors, owners, title, or custom statuses.",
+      "version": "20261010_00",
+      "tags": [
+        "Folder & Projects",
+        "openWorldHint",
+        "readOnlyHint",
+        "Spaces"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSpaceFoldersRequest",
+        "required": [
+          "spaceId"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Marketing",
+              "Q1 2024"
+            ],
+            "description": "Filter folders by title. Returns folders whose title contains the specified string (case-insensitive)."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "examples": [
+              [
+                "customFields",
+                "metadata"
+              ],
+              [
+                "hasAttachments",
+                "space"
+              ]
+            ],
+            "description": "Optional fields to include in response. Valid values: 'attachmentCount', 'briefDescription', 'customColumnIds', 'customFields', 'hasAttachments', 'metadata', 'space'."
+          },
+          "owners": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Owners",
+            "examples": [
+              [
+                "KUAAAA7L"
+              ],
+              [
+                "KUAAAA7L",
+                "KUAAAA8M"
+              ]
+            ],
+            "description": "Filter folders by owner IDs. Only returns folders owned by the specified user IDs."
+          },
+          "authors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Authors",
+            "examples": [
+              [
+                "KUAAAA7L"
+              ],
+              [
+                "KUAAAA7L",
+                "KUAAAA8M"
+              ]
+            ],
+            "description": "Filter folders by author IDs. Only returns folders created by the specified user IDs."
+          },
+          "project": {
+            "type": "boolean",
+            "title": "Project",
+            "description": "Filter by project type - true for projects only, false for folders only. If omitted, returns both folders and projects."
+          },
+          "spaceId": {
+            "type": "string",
+            "title": "Space Id",
+            "examples": [
+              "IEAG2Y72I4LAAAAA",
+              "MQAAAAECjxZu"
+            ],
+            "description": "The unique identifier of the Wrike space to retrieve folders from. This is an alphanumeric string (e.g., 'IEAG2Y72I4LAAAAA')."
+          },
+          "customStatuses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Custom Statuses",
+            "examples": [
+              [
+                "JMAAAAAAI7777777"
+              ],
+              [
+                "JMAAAAAAI7777777",
+                "JMAAAAAAI8888888"
+              ]
+            ],
+            "description": "Filter folders by custom workflow status IDs. Only returns folders with the specified custom status IDs."
+          }
+        },
+        "description": "Request schema for retrieving folders from a specific space."
+      }
+    },
+    {
+      "slug": "WRIKE_GET_SPACES_TASKS",
+      "name": "Get spaces tasks",
+      "description": "Tool to query tasks within a specific Wrike space. Use when you need to retrieve tasks from a particular space, with optional filtering by status, importance, title, and other criteria.",
+      "version": "20261010_00",
+      "tags": [
+        "Tasks",
+        "Spaces",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSpacesTasksRequest",
+        "required": [
+          "spaceId"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Project Review Meeting"
+            ],
+            "description": "Title filter for exact match. Only tasks with this exact title will be returned."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "examples": [
+              [
+                "authorIds",
+                "responsibleIds",
+                "description"
+              ],
+              [
+                "customFields",
+                "hasAttachments",
+                "attachmentCount"
+              ]
+            ],
+            "description": "Array of optional fields to include in the response. Valid fields: authorIds, hasAttachments, attachmentCount, parentIds, superParentIds, sharedIds, responsibleIds, description, briefDescription, recurrent, superTaskIds, subTaskIds, dependencyIds, customFields, metadata."
+          },
+          "status": {
+            "enum": [
+              "Active",
+              "Completed",
+              "Deferred",
+              "Cancelled"
+            ],
+            "type": "string",
+            "title": "TaskStatus",
+            "description": "Task status values."
+          },
+          "spaceId": {
+            "type": "string",
+            "title": "Space Id",
+            "examples": [
+              "IEAAAAAQIMBUGKSI"
+            ],
+            "description": "The ID of the space to query tasks from. Use the ListSpaces action to discover valid spaceIds."
+          },
+          "subTasks": {
+            "type": "boolean",
+            "title": "Sub Tasks",
+            "description": "Include subtasks in the response. If true, subtasks will be included alongside parent tasks."
+          },
+          "sortField": {
+            "type": "string",
+            "title": "Sort Field",
+            "examples": [
+              "CreatedDate",
+              "UpdatedDate",
+              "DueDate"
+            ],
+            "description": "Field to sort the results by. Common values: CreatedDate, UpdatedDate, CompletedDate, DueDate, Title, Status, Importance."
+          },
+          "sortOrder": {
+            "enum": [
+              "Asc",
+              "Desc"
+            ],
+            "type": "string",
+            "title": "SortOrder",
+            "description": "Sort order values."
+          },
+          "importance": {
+            "enum": [
+              "High",
+              "Normal",
+              "Low"
+            ],
+            "type": "string",
+            "title": "TaskImportance",
+            "description": "Task importance values."
+          },
+          "descendants": {
+            "type": "boolean",
+            "title": "Descendants",
+            "description": "Query tasks in that folder and its subfolders. If true, tasks from all subfolders are included."
+          }
+        },
+        "description": "Request schema for querying tasks in a specific space."
+      }
+    },
+    {
+      "slug": "WRIKE_GET_SPACES_WORKFLOWS",
+      "name": "Get space workflows",
+      "description": "Tool to query workflows for a specific Wrike space. Use when you need to retrieve the list of available workflows and their custom statuses for a space.",
+      "version": "20261010_00",
+      "tags": [
+        "Workflows",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSpacesWorkflowsRequest",
+        "required": [
+          "spaceId"
+        ],
+        "properties": {
+          "spaceId": {
+            "type": "string",
+            "title": "Space Id",
+            "examples": [
+              "IEAG2Y72I4LAAAAA",
+              "MQAAAAECjxZu"
+            ],
+            "description": "The unique identifier of the space to query workflows for. This is an alphanumeric string (e.g., 'IEAG2Y72I4LAAAAA'). Use the List Spaces action to discover valid spaceIds."
+          }
+        },
+        "description": "Request schema for querying workflows for a specific space."
+      }
+    },
+    {
+      "slug": "WRIKE_GET_TASK_BY_ID",
+      "name": "Get task by id",
+      "description": "Retrieves read-only detailed information for a specific Wrike task by its unique ID, optionally allowing specification of fields to include in the response.",
+      "version": "20261010_00",
+      "tags": [
+        "Tasks",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTaskByIdRequest",
+        "required": [
+          "taskId"
+        ],
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "examples": [
+              [
+                "attachmentCount"
+              ],
+              [
+                "effortAllocation",
+                "attachmentCount"
+              ]
+            ],
+            "description": "List of optional fields to include in the response (e.g., ['attachmentCount']). Valid fields include: attachmentCount, effortAllocation, billingType, etc. Note: customFields are returned by default for single task queries and should NOT be specified in this parameter. If not provided, a default set of fields (including customFields) will be returned."
+          },
+          "taskId": {
+            "type": "string",
+            "title": "Task Id",
+            "examples": [
+              "IEAGTXRUKQPN7777"
+            ],
+            "description": "The Wrike API task ID to retrieve. This is an opaque text string (e.g., 'IEAGTXRUKQPN7777') - do not rely on format patterns. Max 256 characters. Note: Phone numbers, numeric-only strings, or other non-Wrike task ID formats are not valid."
+          }
+        },
+        "description": "Request schema for retrieving a specific task by its unique identifier."
+      }
+    },
+    {
+      "slug": "WRIKE_GET_TASK_DEPENDENCIES",
+      "name": "Get task dependencies",
+      "description": "Retrieves all dependency relationships for a specific task. Use when you need to see which tasks the specified task depends on (predecessors) or which tasks depend on it (successors).",
+      "version": "20261010_00",
+      "tags": [
+        "Tasks",
+        "Dependencies",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTaskDependenciesRequest",
+        "required": [
+          "taskId"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "title": "Task Id",
+            "examples": [
+              "IEAGTXRUKQPN7777",
+              "MAAAAAECjuGr"
+            ],
+            "description": "The unique identifier of the task to retrieve dependencies for. This is a Wrike task ID (e.g., 'IEAGTXRUKQPN7777')."
+          }
+        },
+        "description": "Request schema for retrieving dependencies of a specific task."
+      }
+    },
+    {
+      "slug": "WRIKE_GET_TASKS_COMMENTS",
+      "name": "Get task comments",
+      "description": "Tool to retrieve all comments from a specific Wrike task. Use when you need to fetch comments associated with a task.",
+      "version": "20261010_00",
+      "tags": [
+        "Tasks",
+        "Comments",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTasksCommentsRequest",
+        "required": [
+          "taskId"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "title": "Task Id",
+            "examples": [
+              "IEAGTXRUKQPN7777",
+              "MAAAAAECjxbJ"
+            ],
+            "description": "The unique identifier of the task to retrieve comments from. This is a Wrike task ID (e.g., 'IEAGTXRUKQPN7777')."
+          },
+          "plainText": {
+            "type": "boolean",
+            "title": "Plain Text",
+            "description": "If true, returns comment text as plain text without HTML formatting. If false or omitted, returns HTML-formatted text."
+          }
+        },
+        "description": "Request schema for retrieving comments from a specific task."
+      }
+    },
+    {
+      "slug": "WRIKE_GET_TASKS_ROLLUPS",
+      "name": "Get task rollups",
+      "description": "Tool to query rollup settings for a specific task. Use when you need to retrieve the rollup configuration that determines how custom field values are aggregated from subtasks.",
+      "version": "20261010_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Tasks"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTasksRollupsRequest",
+        "required": [
+          "taskId"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "title": "Task Id",
+            "examples": [
+              "MAAAAAECjzae",
+              "IEAG2Y72I4LAAAAA"
+            ],
+            "description": "The unique identifier of the task whose rollup settings you want to retrieve. This is an alphanumeric string (e.g., 'MAAAAAECjzae')."
+          }
+        },
+        "description": "Request schema for retrieving rollup settings for a specific task."
+      }
+    },
+    {
+      "slug": "WRIKE_LIST_SPACES",
+      "name": "List spaces",
+      "description": "Tool to list spaces the authorized user can access. Use when you need to discover valid spaceIds for downstream space-scoped operations like listing space blueprints.",
+      "version": "20261010_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Spaces"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListSpacesRequest",
+        "properties": {
+          "withInvitations": {
+            "type": "boolean",
+            "title": "With Invitations",
+            "description": "Include pending invitations in the 'sharedIds' list of the response."
+          }
+        }
+      }
+    },
+    {
+      "slug": "WRIKE_LIST_SUBFOLDERS_BY_FOLDER_ID",
+      "name": "List subfolders by folder id",
+      "description": "Lists subfolders (metadata only, not their contents) for an existing Wrike folder specified by `folderId`, supporting recursive descent, filtering, and pagination.",
+      "version": "20261010_00",
+      "tags": [
+        "Folder & Projects",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListSubfoldersByFolderIdRequest",
+        "required": [
+          "folderId"
+        ],
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "metadata",
+                "customFields",
+                "description",
+                "briefDescription",
+                "contractType",
+                "hasAttachments",
+                "attachmentCount"
+              ],
+              "type": "string",
+              "title": "SubfoldersOptionalField",
+              "description": "Valid optional field names for the Wrike list subfolders endpoint."
+            },
+            "title": "Fields",
+            "examples": [
+              [
+                "metadata",
+                "customFields"
+              ],
+              [
+                "description"
+              ]
+            ],
+            "description": "Optional fields to include in the response for each folder. Valid values: 'metadata', 'customFields', 'description', 'briefDescription', 'contractType', 'hasAttachments', 'attachmentCount'."
+          },
+          "project": {
+            "type": "boolean",
+            "title": "Project",
+            "description": "Set true for projects only, false for regular folders only; omit for both or API default."
+          },
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "examples": [
+              "IEADQWJAJMEODQWI"
+            ],
+            "description": "ID of the parent folder."
+          },
+          "metadata": {
+            "type": "object",
+            "title": "Metadata",
+            "examples": [
+              "{\"department\": \"marketing\", \"status\": \"active\"}"
+            ],
+            "description": "Filters folders by metadata using a dictionary of key-value pairs for exact match.",
+            "additionalProperties": true
+          },
+          "pageSize": {
+            "type": "integer",
+            "title": "Page Size",
+            "examples": [
+              "100",
+              "500",
+              "1000"
+            ],
+            "description": "Maximum folders per page (API default e.g., 100, max 1000)."
+          },
+          "permalink": {
+            "type": "string",
+            "title": "Permalink",
+            "examples": [
+              "https://app-eu.wrike.com/open.htm?id=123456789"
+            ],
+            "description": "Permalink for an exact match search of the folder to fetch subfolders from."
+          },
+          "descendants": {
+            "type": "boolean",
+            "title": "Descendants",
+            "default": true,
+            "description": "Set to true to include all descendant subfolders; false for direct children only."
+          },
+          "updatedDate": {
+            "type": "object",
+            "title": "Updated Date",
+            "examples": [
+              "{\"start\": \"2023-01-01T00:00:00Z\", \"end\": \"2023-01-31T23:59:59Z\"}",
+              "{\"equalTo\": \"2023-03-15\"}"
+            ],
+            "description": "Filters folders by last updated date using comparators (e.g., 'LessThan', 'EqualTo') or a date range ('start', 'end' keys). Dates: 'yyyy-MM-dd' or 'yyyy-MM-ddTHH:mm:ssZ'.",
+            "additionalProperties": true
+          },
+          "customFields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ListSubfoldersByFolderIdcustomFieldsRequest",
+              "properties": {},
+              "description": "Defines a filter criterion for a custom field, requiring a structure like `{'id': 'fieldId', 'comparator': 'EqualTo', 'value': 'matchValue'}` as per Wrike API documentation."
+            },
+            "title": "Custom Fields",
+            "examples": [
+              "[{\"id\": \"IEADQWJAKCV47SNO\", \"comparator\": \"EqualTo\", \"value\": \"In Progress\"}]"
+            ],
+            "description": "Filters folders by custom field values using a list of filter objects (e.g., `{'id': 'customFieldId', 'comparator': 'EqualTo', 'value': 'FieldValue'}`). Refer to Wrike API documentation for detailed structure."
+          },
+          "contractTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Contract Types",
+            "examples": [
+              "Billable",
+              "FixedPrice",
+              "NonBillable"
+            ],
+            "description": "Filters projects by contract type names; mainly used when `project` is true."
+          },
+          "nextPageToken": {
+            "type": "string",
+            "title": "Next Page Token",
+            "examples": [
+              " nextPageTokenValue "
+            ],
+            "description": "Token from a previous response's `nextPageToken` field for pagination; other filters should match the initial request."
+          },
+          "customItemTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Custom Item Types",
+            "examples": [
+              "IEADQWJAKCTYPEID1",
+              "IEADQWJAKCTYPEID2"
+            ],
+            "description": "Filters by a list of custom item type IDs (standard types like 'Project' or 'Folder' are not applicable)."
+          },
+          "withInvitations": {
+            "type": "boolean",
+            "title": "With Invitations",
+            "description": "If true, includes invited (but not yet accepted) users in `sharedIds` of returned folders."
+          },
+          "plainTextCustomFields": {
+            "type": "boolean",
+            "title": "Plain Text Custom Fields",
+            "description": "If true, strips HTML tags from custom field values in the response."
+          }
+        },
+        "description": "Request schema for listing subfolders within a specific folder, with filtering and pagination."
+      }
+    },
+    {
+      "slug": "WRIKE_MODIFY_ACCOUNT",
+      "name": "Update account metadata",
+      "description": "Updates or adds custom key-value metadata to the Wrike account, useful for integrations, storing app-specific data, or mapping external system identifiers.",
+      "version": "20261010_00",
+      "tags": [
+        "Accounts",
+        "idempotentHint",
+        "important",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ModifyAccountRequest",
+        "properties": {
+          "metadata": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ModifyAccountmetadataRequest",
+              "required": [
+                "key",
+                "value"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "title": "Key",
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "examples": [
+                    "external-system-id",
+                    "app_config_version",
+                    "custom_Data_1"
+                  ],
+                  "description": "The metadata key. Must be less than 50 characters and consist of alphanumeric characters, underscores, or hyphens (matches regex pattern: `^[A-Za-z0-9_-]+$`)."
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "examples": [
+                    "\"integration_user_X\"",
+                    "\"{\\\"setting\\\": \\\"enabled\\\", \\\"feature_flag\\\": true}\"",
+                    "\"12345\"",
+                    "\"true\"",
+                    "\"null\""
+                  ],
+                  "description": "The metadata value. Must be a JSON-compatible string and less than 1000 characters. To remove an existing metadata entry, provide the JSON string `\"null\"` as its value."
+                }
+              },
+              "description": "Request schema for `ModifyAccountmetadata`"
+            },
+            "title": "Metadata",
+            "description": "A list of metadata key-value pairs to update or add to the account. Metadata entries are isolated on a per-client (application) basis. If an empty list is provided or the field is omitted, no metadata changes will occur."
+          }
+        },
+        "description": "Request schema for `ModifyAccount`"
+      }
+    },
+    {
+      "slug": "WRIKE_MODIFY_FOLDER",
+      "name": "Modify folder attributes",
+      "description": "Modifies an existing Wrike folder: updates title, description, parents (not root/recycle bin), sharing, metadata, custom fields/columns; restores, converts to project, or manages access roles.",
+      "version": "20261010_00",
+      "tags": [
+        "Folder & Projects",
+        "important",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ModifyFolderRequest",
+        "required": [
+          "folderId"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Project Alpha Q3 Planning",
+              "Marketing Assets"
+            ],
+            "description": "The new title for the folder."
+          },
+          "restore": {
+            "type": "boolean",
+            "title": "Restore",
+            "description": "Set to true to restore the folder if it is currently in the Recycled Bin."
+          },
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "examples": [
+              "IEAGPYACI4MKNUGJ",
+              "MQAAAAECjxZu"
+            ],
+            "maxLength": 256,
+            "description": "Unique identifier of the folder to be modified. Must be a valid Wrike API v4 folder ID (alphanumeric string, max 256 characters). Treat as an opaque identifier - do not validate format patterns."
+          },
+          "metadata": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ModifyFoldermetadataRequest",
+              "required": [
+                "key"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "title": "Key",
+                  "examples": [
+                    "postmanTestKey"
+                  ],
+                  "description": "Metadata key."
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "examples": [
+                    "postmanTestValue"
+                  ],
+                  "description": "Metadata value."
+                }
+              },
+              "description": "A single metadata item for updating the folder, typically a key-value pair defined by Wrike's metadata fields."
+            },
+            "title": "Metadata",
+            "description": "List of metadata entries (key-value pairs) to update for the folder."
+          },
+          "addParents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Add Parents",
+            "examples": [
+              [
+                "IEAGPYACI4MKNUGJ",
+                "IEAGPYACI4MKNUGK"
+              ]
+            ],
+            "description": "Parent folder IDs to add. Must be from the same Wrike account and not be rootFolderId or recycleBinId."
+          },
+          "addShareds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Add Shareds",
+            "examples": [
+              [
+                "KUAJ25LC",
+                "KUAJ25LD"
+              ]
+            ],
+            "description": "A list of user IDs or invitation IDs with whom to share the folder."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "Contains all documents and tasks related to Q3 planning for Project Alpha."
+            ],
+            "description": "The new description for the folder."
+          },
+          "customFields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ModifyFoldercustomFieldsRequest",
+              "required": [
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "title": "Id",
+                  "examples": [
+                    "IEAGWOSFJUAKDDY3"
+                  ],
+                  "description": "Custom field identifier."
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "examples": [
+                    "Postman value 1"
+                  ],
+                  "description": "Custom field value. Pass null to clear the field."
+                }
+              },
+              "description": "A single custom field to update or delete, identified by its 'id'. Provide a 'value', or null to clear it."
+            },
+            "title": "Custom Fields",
+            "description": "Custom fields to update or delete. Each object needs an 'id' and 'value'; pass the ID with a null value to clear."
+          },
+          "customColumns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Custom Columns",
+            "examples": [
+              [
+                "IEAGPYACI4MKNUGJCF",
+                "IEAGPYACI4MKNUGKCF"
+              ]
+            ],
+            "description": "A list of custom field IDs to be displayed as columns for this folder in the Wrike interface."
+          },
+          "removeParents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Remove Parents",
+            "examples": [
+              [
+                "IEAGPYACI4MKNUGH"
+              ]
+            ],
+            "description": "Parent folder IDs to remove. Must be from the same Wrike account and not be rootFolderId or recycleBinId."
+          },
+          "removeShareds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Remove Shareds",
+            "examples": [
+              [
+                "KUAJ25LE"
+              ]
+            ],
+            "description": "A list of user IDs or invitation IDs from whom to unshare the folder."
+          },
+          "addAccessRoles": {
+            "type": "object",
+            "title": "Add Access Roles",
+            "description": "User IDs mapped to Wrike access roles (e.g., 'Full', 'Editor', 'Limited', 'Read Only') to assign for this folder. Example: `{\"KUAJ25LC\": \"Editor\", \"KUAJ25LD\": \"Full\"}`.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "withInvitations": {
+            "type": "boolean",
+            "title": "With Invitations",
+            "description": "Set to true to include pending invitations in the 'ownerIds' and 'sharedIds' lists within the response."
+          },
+          "removeAccessRoles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Remove Access Roles",
+            "examples": [
+              [
+                "KUAJ25LE",
+                "KUAJ25LF"
+              ]
+            ],
+            "description": "A list of user IDs whose specific access roles for this folder should be revoked."
+          },
+          "clearCustomColumns": {
+            "type": "boolean",
+            "title": "Clear Custom Columns",
+            "description": "Set to true to remove all custom field column associations from this folder."
+          },
+          "plainTextCustomFields": {
+            "type": "boolean",
+            "title": "Plain Text Custom Fields",
+            "description": "Set to true to strip any HTML tags from custom field values during the update operation, saving them as plain text."
+          },
+          "convertToCustomItemType": {
+            "type": "string",
+            "title": "Convert To Custom Item Type",
+            "examples": [
+              "IEAGPYACI4MKNUGPCIT"
+            ],
+            "description": "The ID of a Custom Item Type. If provided, the folder will be converted into a project of this specified custom item type."
+          }
+        },
+        "description": "Request to modify attributes of a specified folder."
+      }
+    },
+    {
+      "slug": "WRIKE_MODIFY_TASK",
+      "name": "Modify task",
+      "description": "Modifies an existing Wrike task by its ID, allowing updates to attributes such as title, status, dates, assignees, and custom fields; `priorityBefore` and `priorityAfter` are mutually exclusive, and parent folder IDs for `addParents`/`removeParents` cannot be the Recycle Bin.",
+      "version": "20261010_00",
+      "tags": [
+        "Tasks",
+        "important",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ModifyTaskRequest",
+        "required": [
+          "taskId"
+        ],
+        "properties": {
+          "dates": {
+            "type": "object",
+            "title": "Dates",
+            "description": "A dictionary specifying the task's date-related attributes. Allowed keys include `type` (e.g., 'Planned', 'Actual'), `duration` (in minutes), `start` (YYYY-MM-DD), `due` (YYYY-MM-DD), and `workOnWeekends` (boolean).",
+            "additionalProperties": true
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Review Design Mockups",
+              "Finalize Q3 Report"
+            ],
+            "description": "The new title for the task."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "examples": [
+              "[\"recurrence\", \"responsibleIds\"]",
+              "[\"attachmentCount\", \"parentIds\", \"sharedIds\"]"
+            ],
+            "description": "A list of optional field names to be included in the response object. Provide a list of strings, where each string is a valid field key. For example, `[\"recurrence\", \"responsibleIds\"]`."
+          },
+          "follow": {
+            "type": "boolean",
+            "title": "Follow",
+            "description": "Set to `true` to make the current API user follow the task, or `false` to unfollow."
+          },
+          "status": {
+            "enum": [
+              "Active",
+              "Completed",
+              "Deferred",
+              "Cancelled"
+            ],
+            "type": "string",
+            "title": "StatusEnm",
+            "description": "The new status of the task. This field is not available for accounts on the Team plan."
+          },
+          "taskId": {
+            "type": "string",
+            "title": "Task Id",
+            "examples": [
+              "IEAGLFEAKRPWGRHN",
+              "IEAGLFEAKRPWGRHF"
+            ],
+            "description": "The unique identifier of the task to be modified."
+          },
+          "restore": {
+            "type": "boolean",
+            "title": "Restore",
+            "description": "Set to `true` to restore the task if it is currently in the Recycle Bin."
+          },
+          "metadata": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "MetadataRequest",
+              "required": [
+                "key",
+                "value"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "title": "Key",
+                  "examples": [
+                    "integrationID",
+                    "externalReference"
+                  ],
+                  "description": "The key of the metadata entry. Must conform to the pattern: ^[A-Za-z0-9_-]+$."
+                },
+                "value": {
+                  "type": "string",
+                  "title": "Value",
+                  "examples": [
+                    "jira-123",
+                    "https://example.com/ticket/456"
+                  ],
+                  "description": "The value associated with the metadata key."
+                }
+              },
+              "description": "Request schema for defining a metadata key-value pair."
+            },
+            "title": "Metadata",
+            "description": "A list of metadata key-value pairs to update. Providing a `null` value for an existing key's `value` will remove that entry."
+          },
+          "addParents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Add Parents",
+            "examples": [
+              "[\"IEAGLFEAJQIEAGLFEA\"]",
+              "[\"IEAGLFEAJQIEAGLFEP\", \"IEAGLFEAJQIEAGLFEQ\"]"
+            ],
+            "description": "A list of folder IDs to which the task will be added (i.e., moved into). Cannot include the Recycle Bin folder ID."
+          },
+          "addShareds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Add Shareds",
+            "examples": [
+              [
+                "KUATZ5C4"
+              ],
+              [
+                "KUATZ5C5",
+                "invt49274274asdf"
+              ]
+            ],
+            "description": "A list of user IDs or invitation IDs with whom the task will be shared."
+          },
+          "importance": {
+            "enum": [
+              "High",
+              "Normal",
+              "Low"
+            ],
+            "type": "string",
+            "title": "ImportanceEnm",
+            "description": "The new importance level of the task."
+          },
+          "billingType": {
+            "enum": [
+              "NonBillable",
+              "Billable",
+              "NonBillableAddToProjectReports"
+            ],
+            "type": "string",
+            "title": "BillingtypeEnm",
+            "description": "Specifies the billing type for the task's timelogs."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "Update the project plan with the latest timelines.",
+              "Check Trello board for new tickets, attach details here."
+            ],
+            "description": "The new detailed description for the task. Supports HTML formatting."
+          },
+          "addFollowers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Add Followers",
+            "examples": [
+              [
+                "KUATZ5C4"
+              ],
+              [
+                "KUATZ5C5",
+                "KUATZ5C6"
+              ]
+            ],
+            "description": "A list of user IDs to be added as followers to the task. Followers receive notifications about task updates."
+          },
+          "customFields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "CustomFieldsRequest",
+              "properties": {},
+              "description": "Represents an entry for updating a custom field, expected to contain `id` and `value`."
+            },
+            "title": "Custom Fields",
+            "description": "A list of custom field updates. Each object should specify the `id` of the custom field and its new `value`. To remove a custom field's value, set `value` to `null` (or an empty string for certain types). Example: `{\"id\": \"customFieldId123\", \"value\": \"newValue\"}`."
+          },
+          "customStatus": {
+            "type": "string",
+            "title": "Custom Status",
+            "examples": [
+              "IEAGLFEAJQKN7777",
+              "IEAGLFEAJQKN7778"
+            ],
+            "description": "The ID of the custom status to apply to the task. This is used when custom workflows are enabled in the Wrike account."
+          },
+          "addSuperTasks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Add Super Tasks",
+            "examples": [
+              [
+                "IEAGLFEAKRPWGRHY"
+              ],
+              [
+                "IEAGLFEAKRPWGRHW",
+                "IEAGLFEAKRPWGRIZ"
+              ]
+            ],
+            "description": "A list of task IDs that will become parent tasks to the current task, effectively making the current task a subtask of each specified task."
+          },
+          "priorityAfter": {
+            "type": "string",
+            "title": "Priority After",
+            "examples": [
+              "IEAGLFEAKRPWGRHX"
+            ],
+            "description": "The ID of an existing task after which the current task should be placed in the task list, determining its priority. Mutually exclusive with `priorityBefore`."
+          },
+          "removeParents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Remove Parents",
+            "examples": [
+              [
+                "IEAGLFEAJQIEAGLFEA"
+              ],
+              [
+                "IEAGLFEAJQIEAGLFEP"
+              ]
+            ],
+            "description": "A list of folder IDs from which the task will be removed. Cannot include the Recycle Bin folder ID."
+          },
+          "removeShareds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Remove Shareds",
+            "examples": [
+              [
+                "KUATZ5C4"
+              ],
+              [
+                "KUATZ5C5"
+              ]
+            ],
+            "description": "A list of user IDs or invitation IDs from whom the task will be unshared."
+          },
+          "priorityBefore": {
+            "type": "string",
+            "title": "Priority Before",
+            "examples": [
+              "IEAGLFEAKRPWGRHZ"
+            ],
+            "description": "The ID of an existing task before which the current task should be placed in the task list, determining its priority. Mutually exclusive with `priorityAfter`."
+          },
+          "addResponsibles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Add Responsibles",
+            "examples": [
+              [
+                "KUATZ5C4"
+              ],
+              [
+                "KUATZ5C5",
+                "invt49274274asdf"
+              ]
+            ],
+            "description": "A list of user IDs or invitation IDs to be added to the task's assignee list."
+          },
+          "withInvitations": {
+            "type": "boolean",
+            "title": "With Invitations",
+            "description": "Set to `true` to include pending invitations in the `sharedIds` and `responsibleIds` fields within the response data. Default is `false`."
+          },
+          "removeSuperTasks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Remove Super Tasks",
+            "examples": [
+              [
+                "IEAGLFEAKRPWGRHY"
+              ]
+            ],
+            "description": "A list of task IDs from which the current task will be removed as a subtask."
+          },
+          "removeResponsibles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Remove Responsibles",
+            "examples": [
+              [
+                "KUATZ5C4"
+              ],
+              [
+                "KUATZ5C5"
+              ]
+            ],
+            "description": "A list of user IDs or invitation IDs to be removed from the task's assignee list."
+          },
+          "plainTextCustomFields": {
+            "type": "boolean",
+            "title": "Plain Text Custom Fields",
+            "description": "Set to `true` to strip HTML tags from custom field values before saving. If `false`, HTML content is preserved. API defaults to `false` behavior if not provided."
+          },
+          "convertToCustomItemType": {
+            "type": "string",
+            "title": "Convert To Custom Item Type",
+            "examples": [
+              "CIT_ProjectMilestone",
+              "CIT_BugReport"
+            ],
+            "description": "The ID of a Custom Item Type to which this task should be converted. This changes the task's type and may alter its available custom fields and behavior."
+          },
+          "addResponsiblePlaceholders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Add Responsible Placeholders",
+            "examples": [
+              [
+                "PlaceholderIDMarketing"
+              ],
+              [
+                "PlaceholderIDEngTeam"
+              ]
+            ],
+            "description": "A list of placeholder IDs to be added to the task's placeholder assignee list. Placeholders represent roles or groups."
+          },
+          "removeResponsiblePlaceholders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Remove Responsible Placeholders",
+            "examples": [
+              [
+                "PlaceholderIDSupport"
+              ]
+            ],
+            "description": "A list of placeholder IDs to be removed from the task's placeholder assignee list."
+          }
+        },
+        "description": "Request schema for modifying an existing task. At least one updatable field must be provided in addition to `taskId`."
+      }
+    },
+    {
+      "slug": "WRIKE_QUERY_WORKFLOWS",
+      "name": "Query workflows",
+      "description": "Fetches a list of all workflows with their detailed information from the Wrike account; this is a read-only action and does not support pagination or filtering through its parameters.",
+      "version": "20261010_00",
+      "tags": [
+        "Workflows",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "QueryWorkflowsRequest",
+        "properties": {},
+        "description": "Request to query all Wrike workflows."
+      }
+    },
+    {
+      "slug": "WRIKE_SEARCH_EDISCOVERY",
+      "name": "Search eDiscovery",
+      "description": "Tool to perform eDiscovery search across Wrike items (folders, projects, tasks). Use when you need to find items matching specific search terms across different scopes. Supports wildcard searches and filtering by item types.",
+      "version": "20261010_00",
+      "tags": [
+        "Search",
+        "eDiscovery",
+        "important",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchEdiscoveryRequest",
+        "properties": {
+          "terms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Terms",
+            "examples": [
+              [
+                "test"
+              ],
+              [
+                "budget",
+                "Q3"
+              ]
+            ],
+            "description": "Array of search terms to look for in item titles and descriptions. Supports wildcard searches."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "examples": [
+              [
+                "folder",
+                "project"
+              ],
+              [
+                "task"
+              ]
+            ],
+            "description": "Array of item types to search within (e.g., 'folder', 'project', 'task'). If omitted, searches all types."
+          }
+        },
+        "description": "Request parameters for eDiscovery search."
+      }
+    },
+    {
+      "slug": "WRIKE_UPDATE_ASSET",
+      "name": "Update asset",
+      "description": "Tool to update a Wrike asset/equipment by ID. Use when you need to rename or modify an equipment asset in the system.",
+      "version": "20261010_00",
+      "tags": [
+        "Assets",
+        "important",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateAssetRequest",
+        "required": [
+          "assetId",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Updated Equipment Asset Name",
+              "Conference Room A",
+              "MacBook Pro"
+            ],
+            "description": "The updated name for the asset/equipment"
+          },
+          "assetId": {
+            "type": "string",
+            "title": "Asset Id",
+            "examples": [
+              "KUAXDHRT",
+              "KUAXDHS2"
+            ],
+            "description": "The unique identifier of the asset to update"
+          }
+        },
+        "description": "Request schema for updating a Wrike asset/equipment."
+      }
+    },
+    {
+      "slug": "WRIKE_UPDATE_BOOKINGS",
+      "name": "Update booking",
+      "description": "Updates a Wrike booking's date range by ID. Use when you need to reschedule a resource booking by modifying its start and finish dates.",
+      "version": "20261010_00",
+      "tags": [
+        "Bookings",
+        "important",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateBookingsRequest",
+        "required": [
+          "bookingId",
+          "bookingDates"
+        ],
+        "properties": {
+          "bookingId": {
+            "type": "string",
+            "title": "Booking Id",
+            "examples": [
+              "IEAGWTJBNYAAS2T4",
+              "IEAGLFEAKRPWGRHN"
+            ],
+            "description": "The unique identifier of the booking to update"
+          },
+          "bookingDates": {
+            "type": "object",
+            "title": "Booking Dates",
+            "required": [
+              "startDate",
+              "finishDate"
+            ],
+            "properties": {
+              "startDate": {
+                "type": "string",
+                "title": "Start Date",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "examples": [
+                  "2025-07-05",
+                  "2025-08-01"
+                ],
+                "description": "Start date of the booking in YYYY-MM-DD format"
+              },
+              "finishDate": {
+                "type": "string",
+                "title": "Finish Date",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "examples": [
+                  "2025-07-20",
+                  "2025-08-31"
+                ],
+                "description": "End date of the booking in YYYY-MM-DD format"
+              }
+            },
+            "description": "Updated booking date range with start and finish dates",
+            "additionalProperties": false
+          }
+        },
+        "description": "Request schema for updating a Wrike booking."
+      }
+    },
+    {
+      "slug": "WRIKE_UPDATE_DEPENDENCY",
+      "name": "Update dependency",
+      "description": "Tool to modify an existing Wrike dependency relationship between tasks. Use when you need to update the dependency type or change which tasks are linked.",
+      "version": "20261010_00",
+      "tags": [
+        "Dependencies",
+        "important",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateDependencyRequest",
+        "required": [
+          "dependencyId"
+        ],
+        "properties": {
+          "successorId": {
+            "type": "string",
+            "title": "Successor Id",
+            "examples": [
+              "IEAGWTJBK4GQWXD5",
+              "IEAGLFEAKRPWGRHF"
+            ],
+            "description": "The task ID that depends on the predecessor"
+          },
+          "dependencyId": {
+            "type": "string",
+            "title": "Dependency Id",
+            "examples": [
+              "MgAAAAECjuFSMwAAAAECjuGr",
+              "IEAGWTJBK4GQWXD4"
+            ],
+            "description": "The unique identifier of the dependency to modify"
+          },
+          "relationType": {
+            "enum": [
+              "FinishToStart",
+              "FinishToFinish",
+              "StartToStart",
+              "StartToFinish"
+            ],
+            "type": "string",
+            "title": "RelationType",
+            "description": "Enum for dependency relation types."
+          },
+          "predecessorId": {
+            "type": "string",
+            "title": "Predecessor Id",
+            "examples": [
+              "IEAGWTJBK4GQWXD4",
+              "IEAGLFEAKRPWGRHN"
+            ],
+            "description": "The task ID that must be completed first"
+          }
+        },
+        "description": "Request schema for updating an existing Wrike dependency."
+      }
+    },
+    {
+      "slug": "WRIKE_UPDATE_FOLDERS_ROLLUPS",
+      "name": "Update folder rollup settings",
+      "description": "Tool to update rollup settings for a folder. Use when you need to enable or disable field aggregation from descendant items.",
+      "version": "20261010_00",
+      "tags": [
+        "Folder & Projects",
+        "important",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateFoldersRollupsRequest",
+        "required": [
+          "folderId",
+          "rollups"
+        ],
+        "properties": {
+          "rollups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "RollupSetting",
+              "required": [
+                "fieldId",
+                "isEnabled"
+              ],
+              "properties": {
+                "fieldId": {
+                  "type": "string",
+                  "title": "Field Id",
+                  "examples": [
+                    "IEAGWTJBJUAKHBWH"
+                  ],
+                  "description": "The ID of the custom field for which to configure rollup settings."
+                },
+                "isEnabled": {
+                  "type": "boolean",
+                  "title": "Is Enabled",
+                  "examples": [
+                    true,
+                    false
+                  ],
+                  "description": "Whether rollup is enabled for this field. Set to true to enable aggregation of values from descendant items, false to disable."
+                }
+              },
+              "description": "A single rollup setting to update."
+            },
+            "title": "Rollups",
+            "examples": [
+              [
+                {
+                  "fieldId": "IEAGWTJBJUAKHBWH",
+                  "isEnabled": true
+                }
+              ]
+            ],
+            "minItems": 1,
+            "description": "Array of rollup settings to update. Each item specifies a fieldId and whether rollup should be enabled for that field."
+          },
+          "folderId": {
+            "type": "string",
+            "title": "Folder Id",
+            "pattern": "^[a-zA-Z0-9_.-]{1,64}$",
+            "examples": [
+              "MQAAAAECjpki",
+              "IEAGWTJBJUAKHBWH"
+            ],
+            "description": "The unique identifier of the folder for which to update rollup settings."
+          }
+        },
+        "description": "Request schema for updating folder rollup settings."
+      }
+    },
+    {
+      "slug": "WRIKE_UPDATE_WEBHOOK_STATE",
+      "name": "Update webhook state",
+      "description": "Tool to update the state of a Wrike webhook. Use when you need to re-enable a suspended webhook or suspend an active one. Wrike automatically suspends webhooks after 3 failed delivery attempts. Call this with status=Active to re-enable.",
+      "version": "20261010_00",
+      "tags": [
+        "Webhooks",
+        "important",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateWebhookStateRequest",
+        "required": [
+          "webhookId",
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "Active",
+              "Suspended"
+            ],
+            "type": "string",
+            "title": "Status",
+            "description": "Webhook state to set. Use 'Active' to re-enable a suspended webhook, or 'Suspended' to disable it"
+          },
+          "webhookId": {
+            "type": "string",
+            "title": "Webhook Id",
+            "examples": [
+              "IEAGWTJBJAAB74H7",
+              "IEAGWTJBK4GQWXD4"
+            ],
+            "description": "The unique identifier of the webhook to update"
+          }
+        },
+        "description": "Request schema for updating a webhook's state."
+      }
+    },
+    {
+      "slug": "WRIKE_UPDATE_WORKFLOW",
+      "name": "Update workflow",
+      "description": "Tool to modify an existing Wrike workflow. Use when you need to update a workflow's name or description. Requires amReadWriteWorkflow scope.",
+      "version": "20261010_00",
+      "tags": [
+        "Workflows",
+        "important",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateWorkflowRequest",
+        "required": [
+          "workflowId"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "Test Workflow Updated",
+              "Development Process"
+            ],
+            "description": "New name for the workflow"
+          },
+          "workflowId": {
+            "type": "string",
+            "title": "Workflow Id",
+            "examples": [
+              "IEAGWTJBK4GQWXD4",
+              "IEAGWTJBK4GQWXD5"
+            ],
+            "description": "The unique identifier of the workflow to modify"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "Updated workflow for development tasks"
+            ],
+            "description": "New description for the workflow"
+          }
+        },
+        "description": "Request schema for updating an existing Wrike workflow."
+      }
+    },
+    {
+      "slug": "WRIKE_UPDATE_WORKSCHEDULE_TIMESHEET_RULES",
+      "name": "Update work schedule timesheet rules",
+      "description": "Tool to update timesheet submission rules for a work schedule. Use when you need to configure or modify how timesheet submissions are validated and enforced for a specific work schedule.",
+      "version": "20261010_00",
+      "tags": [
+        "Timesheets",
+        "Work Schedules",
+        "important",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateWorkscheduleTimesheetRulesRequest",
+        "required": [
+          "workschedule_id"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "description": "Whether timesheet submission rules are enabled for this work schedule. Set to true to activate rules or false to disable them."
+          },
+          "frequency": {
+            "enum": [
+              "Day",
+              "Week"
+            ],
+            "type": "string",
+            "title": "Frequency",
+            "description": "Enum for timesheet submission frequency values."
+          },
+          "rule_type": {
+            "enum": [
+              "Hard",
+              "Soft"
+            ],
+            "type": "string",
+            "title": "RuleType",
+            "description": "Enum for timesheet submission rule type values."
+          },
+          "workschedule_id": {
+            "type": "string",
+            "title": "Workschedule Id",
+            "examples": [
+              "IEAGWTJBMIACDGI4"
+            ],
+            "description": "The ID of the work schedule to update timesheet submission rules for."
+          },
+          "track_exceptions_mode": {
+            "enum": [
+              "ActualCapacity"
+            ],
+            "type": "string",
+            "title": "TrackExceptionsMode",
+            "description": "Enum for track exceptions mode values."
+          }
+        },
+        "description": "Request schema for updating timesheet submission rules for a work schedule."
+      }
+    }
+  ]
+}

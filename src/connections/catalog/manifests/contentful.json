@@ -1,0 +1,976 @@
+{
+  "toolkit": "contentful",
+  "version": "20261015_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Contentful",
+  "description": "Read entries, assets, and content types across spaces and environments, and comment on entries.",
+  "securityDescription": "Contentful sign-in opens through Composio. Agents act as the signed-in Contentful user and can read the spaces, environments, entries, assets, content types, locales, releases, version history, and taxonomy that user can reach. With write access, Agents can comment on entries and restore an archived entry to draft. A comment is visible to everyone who can open the entry. Agents cannot create, edit, publish, unpublish, archive, or delete entries or assets, change content types, locales, tags, or editor layouts, create spaces or environments, assign tasks, schedule releases, read API keys, app secrets, or webhook logs, or manage roles, memberships, webhooks, or apps.",
+  "preset": {
+    "category": "docs",
+    "accent": "#1770E6"
+  },
+  "validationCapability": "contentful.get_users_me",
+  "review": {
+    "add": [
+      "CONTENTFUL_CREATE_SPACES_ENVIRONMENTS_ENTRIES_COMMENTS",
+      "CONTENTFUL_GET_CONTENT_TYPE_SNAPSHOTS",
+      "CONTENTFUL_GET_ENTRY_SNAPSHOTS"
+    ],
+    "drop": {
+      "CONTENTFUL_CREATE_CONTENT_TYPE": "Changes the content model that every editor and delivery client relies on.",
+      "CONTENTFUL_CREATE_ENTRY_TASK": "Assigns work to a named space member, who is notified; other connectors do not assign.",
+      "CONTENTFUL_CREATE_ENVIRONMENT": "Copies a whole environment and counts against the space's plan limit.",
+      "CONTENTFUL_CREATE_LOCALE": "Locales are space configuration that changes every entry's editable fields.",
+      "CONTENTFUL_CREATE_SPACE": "A new space can add to the organization's bill.",
+      "CONTENTFUL_CREATE_SPACES_ENVIRONMENTS_EXTENSIONS": "A UI extension runs custom code in every editor's browser.",
+      "CONTENTFUL_GET_APP_BUNDLE": "App development metadata; not content.",
+      "CONTENTFUL_GET_APP_DEFINITION": "App development metadata; not content.",
+      "CONTENTFUL_GET_EDITOR_INTERFACE": "Editor layout configuration; not content.",
+      "CONTENTFUL_GET_ORGANIZATIONS_AI_PROVIDERS": "Organization AI provider configuration; not content.",
+      "CONTENTFUL_GET_ORGANIZATIONS_APP_ACTIONS_CATEGORIES": "App development metadata; not content.",
+      "CONTENTFUL_GET_ORGANIZATIONS_APP_DEFINITIONS_SIGNING_SECRET": "Returns an app signing secret.",
+      "CONTENTFUL_GET_ORGANIZATIONS_APP_DEF_EVENT_SUBSCRIPTION": "App event subscriptions name delivery URLs; not content.",
+      "CONTENTFUL_GET_ORGANIZATIONS_ENABLEMENTS": "Organization feature administration; not content.",
+      "CONTENTFUL_GET_ORGANIZATIONS_ROLES": "Role and permission administration; not content.",
+      "CONTENTFUL_GET_ORGANIZATIONS_SECURITY_CONTACTS": "Organization security contacts; not content.",
+      "CONTENTFUL_GET_ORGANIZATION_ACCESS_GRANT": "Organization access administration; not content.",
+      "CONTENTFUL_GET_SPACES_API_KEYS": "Returns Content Delivery API access tokens.",
+      "CONTENTFUL_GET_SPACES_ENVIRONMENTS_APP_INSTALLATIONS": "App installation parameters can hold credentials.",
+      "CONTENTFUL_GET_SPACE_MEMBERSHIPS": "Membership and role administration; not content.",
+      "CONTENTFUL_GET_WEBHOOK_CALLS": "Webhook call logs carry request bodies and headers sent to outside URLs.",
+      "CONTENTFUL_LIST_SPACES_ROLES": "Role and permission administration; not content.",
+      "CONTENTFUL_LIST_WEBHOOKS": "Webhook definitions name outside URLs and headers; not content.",
+      "CONTENTFUL_PROCESS_ASSET": "Processes an uploaded file, and asset upload is not included.",
+      "CONTENTFUL_QUERY_ASSET_COLLECTION": "Needs a Content Delivery API token, a credential withheld from the model; the fallback to a token from the connection is unverified for OAuth sign-in.",
+      "CONTENTFUL_QUERY_GRAPHQL_CONTENT_TYPE_COLLECTION": "Needs a Content Delivery API token, a credential withheld from the model; the fallback to a token from the connection is unverified for OAuth sign-in.",
+      "CONTENTFUL_UPDATE_CONTENT_TYPE": "Changes the content model that every editor and delivery client relies on.",
+      "CONTENTFUL_UPDATE_EDITOR_INTERFACE": "Changes the editing layout for everyone in the space.",
+      "CONTENTFUL_UPDATE_LOCALE": "Locale settings control which languages the delivery API serves.",
+      "CONTENTFUL_UPDATE_SPACE": "Renames the space for everyone in it; space administration.",
+      "CONTENTFUL_UPDATE_SPACES_ENVIRONMENTS_TAGS": "Tags cannot be applied to entries without an entry update tool, and tag administration is not content work."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "contentful.create_spaces_environments_entries_comments",
+      "tool": "CONTENTFUL_CREATE_SPACES_ENVIRONMENTS_ENTRIES_COMMENTS",
+      "toolName": "contentful_create_spaces_environments_entries_comments",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Tool to create a comment on an entry in Contentful. Use when you need to add a comment to a specific entry. Returns the created comment with status 'active' by default.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Contentful: Create Entry Comment",
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "The comment text content to create"
+          },
+          "entry_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the entry to comment on"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the entry"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment containing the entry (typically 'master')"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id",
+          "entry_id",
+          "body"
+        ],
+        "description": "Request model for creating an entry comment in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_asset",
+      "tool": "CONTENTFUL_GET_ASSET",
+      "toolName": "contentful_get_asset",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a single asset from a Contentful environment by its ID. Use when you need to get details about a specific asset including its file information, metadata, and publication status.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the asset to retrieve"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the asset"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment containing the asset (typically 'master')"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id",
+          "asset_id"
+        ],
+        "description": "Request model for getting an asset in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_content_type_snapshot",
+      "tool": "CONTENTFUL_GET_CONTENT_TYPE_SNAPSHOT",
+      "toolName": "contentful_get_content_type_snapshot",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a snapshot of a content type by snapshot ID. Use when you need to view the state of a content type at a specific point in time. Snapshots are only available for content types in the master environment.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the content type"
+          },
+          "snapshot_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the snapshot to retrieve"
+          },
+          "content_type_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the content type to retrieve snapshot for"
+          }
+        },
+        "required": [
+          "space_id",
+          "content_type_id",
+          "snapshot_id"
+        ],
+        "description": "Request model for getting a snapshot of a content type in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_content_type_snapshots",
+      "tool": "CONTENTFUL_GET_CONTENT_TYPE_SNAPSHOTS",
+      "toolName": "contentful_get_content_type_snapshots",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get all snapshots of a content type in Contentful. Use when you need to retrieve the history of changes made to a content type structure.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of snapshots to skip for pagination"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of snapshots to return (default: 100, max: 1000)"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the content type"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment (typically 'master')"
+          },
+          "content_type_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the content type to retrieve snapshots for"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id",
+          "content_type_id"
+        ],
+        "description": "Request model for getting all snapshots of a content type."
+      }
+    },
+    {
+      "id": "contentful.get_content_types",
+      "tool": "CONTENTFUL_GET_CONTENT_TYPES",
+      "toolName": "contentful_get_content_types",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all content types in a Contentful environment. Use this to discover the structure and fields defined for different content types. Content types define the schema for entries and are essential for understanding what data can be stored in the environment.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of content types to skip for pagination"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of content types to return (default: 100, max: 1000)"
+          },
+          "order": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Order content types by field (e.g. 'sys.createdAt' or '-sys.createdAt' for descending)"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the content types"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment containing the content types (typically 'master')"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id"
+        ],
+        "description": "Request model for getting all content types in a Contentful environment."
+      }
+    },
+    {
+      "id": "contentful.get_entry",
+      "tool": "CONTENTFUL_GET_ENTRY",
+      "toolName": "contentful_get_entry",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a single entry from a Contentful space environment by its ID. Use this action when you need to get details about a specific entry including its content, metadata, and publication status. Returns all localized and unpublished content from the Content Management API.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "locale": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specify locale for localized content (e.g., 'en-US', 'de-DE')"
+          },
+          "include": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Number of levels to resolve linked entries and assets (0-10, default: 1)"
+          },
+          "entry_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the entry to retrieve"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the entry"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment containing the entry (typically 'master')"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id",
+          "entry_id"
+        ],
+        "description": "Request model for getting a single entry in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_entry_comment",
+      "tool": "CONTENTFUL_GET_ENTRY_COMMENT",
+      "toolName": "contentful_get_entry_comment",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a specific comment from an entry in Contentful. Use when you need to get details of a comment including its body, status, author, and metadata.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "entry_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the entry containing the comment"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the entry"
+          },
+          "comment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the comment to retrieve"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment containing the entry (typically 'master')"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id",
+          "entry_id",
+          "comment_id"
+        ],
+        "description": "Request model for getting an entry comment in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_entry_references",
+      "tool": "CONTENTFUL_GET_ENTRY_REFERENCES",
+      "toolName": "contentful_get_entry_references",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve references to a specific entry in Contentful. Use when you need to find all entries that reference a particular entry. The include parameter controls how many levels of nested references are returned.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "include": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Level of referenced content to include in the response (0-10). Higher values include more nested references."
+          },
+          "entry_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the entry to get references for"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the entry"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment containing the entry (typically 'master')"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id",
+          "entry_id",
+          "include"
+        ],
+        "description": "Request model for getting entry references in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_entry_snapshots",
+      "tool": "CONTENTFUL_GET_ENTRY_SNAPSHOTS",
+      "toolName": "contentful_get_entry_snapshots",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get all snapshots of an entry in Contentful. Use when you need to retrieve the history of changes made to an entry.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of snapshots to skip for pagination"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of snapshots to return (default: 100, max: 1000)"
+          },
+          "entry_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the entry to retrieve snapshots for"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the entry"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment (typically 'master')"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id",
+          "entry_id"
+        ],
+        "description": "Request model for getting all snapshots of an entry."
+      }
+    },
+    {
+      "id": "contentful.get_environment",
+      "tool": "CONTENTFUL_GET_ENVIRONMENT",
+      "toolName": "contentful_get_environment",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details of a specific environment by its ID within a space. Use when you need information about a single environment in Contentful.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the environment"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment to retrieve"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id"
+        ],
+        "description": "Request model for getting a single environment in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_organization",
+      "tool": "CONTENTFUL_GET_ORGANIZATION",
+      "toolName": "contentful_get_organization",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves details of a specific organization by its ID. Use this when you need to get information about an organization that an admin or owner has access to.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "organization_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "The ID of the organization to retrieve"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "description": "Request model for getting an organization in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_organizations",
+      "tool": "CONTENTFUL_GET_ORGANIZATIONS",
+      "toolName": "contentful_get_organizations",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get all organizations an account has access to in Contentful. Use when you need to list available organizations for the authenticated user.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of organizations to skip for pagination"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of organizations to return (default: 100, max: 1000)"
+          }
+        },
+        "description": "Request model for getting organizations in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_organizations_taxonomy_concept_schemes",
+      "tool": "CONTENTFUL_GET_ORGANIZATIONS_TAXONOMY_CONCEPT_SCHEMES",
+      "toolName": "contentful_get_organizations_taxonomy_concept_schemes",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all taxonomy concept schemes from an organization. Use when you need to list or discover the taxonomy structure and concept schemes available in an organization.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of concept schemes to skip for pagination"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of concept schemes to return (default: 100, max: 1000)"
+          },
+          "organization_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "The ID of the organization to retrieve concept schemes from"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "description": "Request model for getting taxonomy concept schemes in an organization."
+      }
+    },
+    {
+      "id": "contentful.get_organizations_taxonomy_concepts",
+      "tool": "CONTENTFUL_GET_ORGANIZATIONS_TAXONOMY_CONCEPTS",
+      "toolName": "contentful_get_organizations_taxonomy_concepts",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all taxonomy concepts for an organization in Contentful. Use this to list concepts that can be used to classify and organize content within the organization.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of concepts to skip for pagination"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of concepts to return (default: 100, max: 1000)"
+          },
+          "organization_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "The organization ID to retrieve taxonomy concepts from"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "description": "Request model for getting taxonomy concepts for an organization in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_release",
+      "tool": "CONTENTFUL_GET_RELEASE",
+      "toolName": "contentful_get_release",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get a single release by ID from Contentful. Use when you need to retrieve details about a specific release including its entities, metadata, and archive status.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the release"
+          },
+          "releases_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the release to retrieve"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment containing the release (typically 'master')"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id",
+          "releases_id"
+        ],
+        "description": "Request model for getting a single release from Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_space",
+      "tool": "CONTENTFUL_GET_SPACE",
+      "toolName": "contentful_get_space",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves metadata of a specific space by its ID. Returns space-level details only (name, locales, sys fields) — not entries, content types, or assets. The returned sys.version is required for subsequent CONTENTFUL_UPDATE_SPACE calls to avoid version conflict errors.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space to retrieve"
+          }
+        },
+        "required": [
+          "space_id"
+        ],
+        "description": "Request model for getting a single space in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_spaces_environments",
+      "tool": "CONTENTFUL_GET_SPACES_ENVIRONMENTS",
+      "toolName": "contentful_get_spaces_environments",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all environments of a space in Contentful. Use this to list all environments (including the master environment) within a specific space.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space to get environments from"
+          }
+        },
+        "required": [
+          "space_id"
+        ],
+        "description": "Request model for getting all environments of a space in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_spaces_environments_assets",
+      "tool": "CONTENTFUL_GET_SPACES_ENVIRONMENTS_ASSETS",
+      "toolName": "contentful_get_spaces_environments_assets",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all assets from a specific environment in a Contentful space. Use this to list and browse assets like images, videos, and documents. Supports pagination and ordering for large asset collections.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of assets to skip for pagination"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of assets to return (default: 100, max: 1000)"
+          },
+          "order": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Order assets by field (e.g. 'sys.createdAt' or '-sys.createdAt' for descending)"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the assets"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment containing the assets (typically 'master')"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id"
+        ],
+        "description": "Request model for getting all assets of a space environment in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_spaces_environments_locales",
+      "tool": "CONTENTFUL_GET_SPACES_ENVIRONMENTS_LOCALES",
+      "toolName": "contentful_get_spaces_environments_locales",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all locales of a space environment in Contentful. Use when you need to list all available locales including their codes, names, default status, and fallback configurations.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space to get locales from"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment to get locales from (typically 'master')"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id"
+        ],
+        "description": "Request model for getting all locales of a space in Contentful."
+      }
+    },
+    {
+      "id": "contentful.get_users_me",
+      "tool": "CONTENTFUL_GET_USERS_ME",
+      "toolName": "contentful_get_users_me",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve information about the currently authenticated user. Use when you need to get details about the user making the API calls, such as their profile information, email, or account status.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request model for getting the authenticated user in Contentful."
+      }
+    },
+    {
+      "id": "contentful.list_entries",
+      "tool": "CONTENTFUL_LIST_ENTRIES",
+      "toolName": "contentful_list_entries",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all entries from a Contentful space environment. Use when you need to list, search, or filter content entries. Supports pagination, sorting, field selection, and filtering by content type or custom fields.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of entries to skip for pagination"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of entries to return per page (default: 100, max: 1000)"
+          },
+          "order": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Sort results by a specified field (e.g., 'sys.createdAt' or '-fields.name' for reverse order)"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Full-text search query to filter entries"
+          },
+          "locale": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Retrieve content in specified language/region code"
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of specific fields to return (e.g., 'sys.id,fields.title'). Supports depth of 2 levels maximum."
+          },
+          "include": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Number of levels to resolve linked entries and assets (0-10, default: 1)"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the entries"
+          },
+          "content_type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter entries by content type ID. Required when filtering by custom fields."
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment containing the entries (typically 'master')"
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id"
+        ],
+        "description": "Request model for listing entries in a Contentful space environment."
+      }
+    },
+    {
+      "id": "contentful.list_environments",
+      "tool": "CONTENTFUL_LIST_ENVIRONMENTS",
+      "toolName": "contentful_list_environments",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists all environments of a space in Contentful, including the master environment and any custom environments. Use this action when you need to discover available environments within a space for content management operations. Supports pagination for spaces with many environments.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of environments to skip for pagination (default: 0)"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of environments to return per page (default: 25, max: 1000)"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space to list environments from"
+          }
+        },
+        "required": [
+          "space_id"
+        ],
+        "description": "Request model for listing all environments of a space in Contentful."
+      }
+    },
+    {
+      "id": "contentful.list_spaces",
+      "tool": "CONTENTFUL_LIST_SPACES",
+      "toolName": "contentful_list_spaces",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists all spaces that the authenticated user has access to in Contentful. This is a fundamental operation needed before performing any other content management actions since most operations require a space ID. To paginate, increment `skip` by `limit` across successive calls; stop when the returned count is less than `limit`.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of spaces to skip for pagination"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of spaces to return (default: 100, max: 1000)"
+          },
+          "order": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Order spaces by field (e.g. 'sys.createdAt' or '-sys.createdAt')"
+          }
+        },
+        "description": "Request model for listing spaces in Contentful."
+      }
+    },
+    {
+      "id": "contentful.unarchive_entry",
+      "tool": "CONTENTFUL_UNARCHIVE_ENTRY",
+      "toolName": "contentful_unarchive_entry",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to unarchive an entry in Contentful, restoring it to active status. Use when you need to restore an archived entry to make it available for editing and publishing. The entry must be currently archived. You may need to provide the X-Contentful-Version header matching the entry's current version.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Contentful: Unarchive Entry",
+      "input": {
+        "type": "object",
+        "properties": {
+          "entry_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the entry to unarchive"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the space containing the entry"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "description": "ID of the environment containing the entry (typically 'master')"
+          },
+          "X-Contentful-Version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Version of the entry to unarchive. Required for version control. Use the current version number of the entry."
+          }
+        },
+        "required": [
+          "space_id",
+          "environment_id",
+          "entry_id"
+        ],
+        "description": "Request model for unarchiving an entry in Contentful."
+      }
+    }
+  ]
+}

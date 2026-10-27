@@ -1,0 +1,1282 @@
+{
+  "toolkit": "wrike",
+  "version": "20261010_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Wrike",
+  "description": "Find tasks, folders, and projects, and create, update, and comment on tasks.",
+  "securityDescription": "Wrike sign-in opens through Composio. Agents act as the signed-in Wrike user and can read the spaces, folders, projects, tasks, comments, workflows, custom fields, and contacts that user can see. With write access, Agents can create a task in one folder or project they choose, edit a task's title, description, status, importance, custom status, and job-role placeholders, follow a task, restore a task from the Recycle Bin, and comment on tasks. A comment is visible to everyone who can see the task, and an @mention notifies that person. Agents cannot assign tasks to people, share tasks or add followers, add a task to more folders or projects or under another task, move a task to another folder, project, or parent task, change an existing task's dates or custom fields, delete anything, create or change folders, projects, workflows, custom fields, bookings, approvals, or webhooks, or manage users, groups, invitations, or account settings.",
+  "preset": {
+    "category": "project",
+    "accent": "#00E05C"
+  },
+  "validationCapability": "wrike.get_account_information",
+  "review": {
+    "add": [
+      "WRIKE_CREATE_TASK_COMMENT",
+      "WRIKE_FETCH_ALL_TASKS",
+      "WRIKE_GET_CONTACTS",
+      "WRIKE_GET_FOLDERS",
+      "WRIKE_GET_FOLDERS_BY_IDS",
+      "WRIKE_GET_FOLDERS_COMMENTS",
+      "WRIKE_GET_FOLDERS_TASKS",
+      "WRIKE_GET_SPACES_TASKS",
+      "WRIKE_GET_SPACES_WORKFLOWS",
+      "WRIKE_GET_SPACE_FOLDERS",
+      "WRIKE_GET_TASKS_COMMENTS",
+      "WRIKE_GET_TASK_BY_ID",
+      "WRIKE_GET_TASK_DEPENDENCIES",
+      "WRIKE_LIST_SUBFOLDERS_BY_FOLDER_ID"
+    ],
+    "drop": {
+      "WRIKE_COPY_FOLDER": "Copies a whole folder tree, optionally with its assignees and sharing, into any parent; writes stay at one task.",
+      "WRIKE_CREATE_ASSETS": "Equipment and asset records are resource-management setup, not task work.",
+      "WRIKE_CREATE_CUSTOMFIELD": "Adds an account-wide custom field that every space and user sees.",
+      "WRIKE_CREATE_FOLDER": "A new folder or project inherits its parent's sharing and is shared with its creator; writes stay at one task.",
+      "WRIKE_CREATE_FOLDERS_APPROVALS": "Requests approval from named approvers, who are notified.",
+      "WRIKE_CREATE_FOLDER_BOOKING": "Books people or job roles onto a project, which changes their workload and schedule.",
+      "WRIKE_CREATE_TASKS_DEPENDENCIES": "Links tasks so Wrike can reschedule dependents, and the connector cannot remove a dependency.",
+      "WRIKE_CREATE_WORKFLOWS": "Workflows are account-wide status configuration.",
+      "WRIKE_MODIFY_ACCOUNT": "Changes account-level metadata that integrations rely on.",
+      "WRIKE_MODIFY_FOLDER": "Can move a folder or project to another parent, which changes who can see it and every task inside.",
+      "WRIKE_UPDATE_ASSET": "Equipment and asset records are resource-management setup, not task work.",
+      "WRIKE_UPDATE_BOOKINGS": "Reschedules a person's or job role's booking, which changes their workload.",
+      "WRIKE_UPDATE_DEPENDENCY": "Changing a dependency can reschedule dependent tasks.",
+      "WRIKE_UPDATE_FOLDERS_ROLLUPS": "Rollups are folder configuration that changes reported values for everyone.",
+      "WRIKE_UPDATE_WORKFLOW": "Workflows are account-wide status configuration.",
+      "WRIKE_UPDATE_WORKSCHEDULE_TIMESHEET_RULES": "Timesheet submission rules are account administration."
+    },
+    "allowArguments": {},
+    "withholdArguments": {
+      "WRIKE_CREATE_TASK": {
+        "parents": "Adds the new task to more folders or projects, which shares it with everyone who can see them.",
+        "superTasks": "Makes the new task a subtask of other tasks, as addSuperTasks would on modify task."
+      },
+      "WRIKE_MODIFY_TASK": {
+        "addParents": "Adds the task to another folder or project, which shares it with everyone who can see that folder.",
+        "addSuperTasks": "Moves the task under another task.",
+        "convertToCustomItemType": "Changes the item's type, which can change its fields and workflow.",
+        "removeParents": "Removes the task from a folder or project, which changes who can see it.",
+        "removeSuperTasks": "Moves the task out from under its parent task."
+      }
+    }
+  },
+  "capabilities": [
+    {
+      "id": "wrike.create_task",
+      "tool": "WRIKE_CREATE_TASK",
+      "toolName": "wrike_create_task",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new task in a specified Wrike folder; if setting priority with `priorityBefore` or `priorityAfter`, the referenced task must be in the same folder or project.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Wrike: Create task in folder",
+      "withheldArguments": {
+        "parents": "reviewer: Adds the new task to more folders or projects, which shares it with everyone who can see them.",
+        "shareds": "changes sharing, visibility, permissions, membership, or who acts",
+        "followers": "changes sharing, visibility, permissions, membership, or who acts",
+        "superTasks": "reviewer: Makes the new task a subtask of other tasks, as addSuperTasks would on modify task.",
+        "responsibles": "changes sharing, visibility, permissions, membership, or who acts",
+        "withInvitations": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Title of the task."
+          },
+          "follow": {
+            "type": "boolean",
+            "description": "If `True`, the creator automatically follows the task."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "Active",
+              "Cancelled",
+              "Completed",
+              "Deferred"
+            ],
+            "description": "Status of the task. Note: This feature may not be available on the Team plan."
+          },
+          "folderId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier of the folder where the task will be created."
+          },
+          "metadata": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The key for the metadata item."
+                },
+                "value": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The value associated with the metadata key."
+                }
+              },
+              "required": [
+                "key",
+                "value"
+              ],
+              "description": "A single metadata key-value pair for a task."
+            },
+            "maxItems": 100,
+            "description": "List of key-value metadata pairs for the task. Each item requires 'key' and 'value'."
+          },
+          "importance": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "High",
+              "Low",
+              "Normal"
+            ],
+            "description": "Importance level of the task."
+          },
+          "billingType": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "Billable",
+              "NonBillable",
+              "NonBillableAddToProjectReports"
+            ],
+            "description": "Billing type for the task's timelogs."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Detailed description of the task."
+          },
+          "customFields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "Custom field identifier."
+                },
+                "value": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "Custom field value. Pass null to clear the field."
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "description": "Specifies custom field data. Each entry in a `customFields` list should be an object with 'id' and 'value', e.g., `{\"id\": \"custom_field_id\", \"value\": \"custom_field_value\"}`."
+            },
+            "maxItems": 100,
+            "description": "List of custom fields for the task. Each item requires `id` (custom field ID) and `value`. Refer to Wrike API documentation for value formatting based on type."
+          },
+          "customStatus": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique ID of a custom status for the task."
+          },
+          "priorityAfter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of an existing task to place the new task after in the list."
+          },
+          "priorityBefore": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of an existing task to place the new task before in the list."
+          },
+          "customItemTypeId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique ID of a Custom Item Type to use as a template for the task; task inherits its properties."
+          },
+          "plainTextCustomFields": {
+            "type": "boolean",
+            "description": "If `True`, HTML tags will be stripped from custom field values before saving."
+          },
+          "responsiblePlaceholders": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of placeholder IDs (Job Roles) to be assigned as responsible for the task."
+          }
+        },
+        "required": [
+          "folderId",
+          "title"
+        ],
+        "description": "Parameters for creating a new task in a Wrike folder."
+      }
+    },
+    {
+      "id": "wrike.create_task_comment",
+      "tool": "WRIKE_CREATE_TASK_COMMENT",
+      "toolName": "wrike_create_task_comment",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Tool to create a new comment on a Wrike task. Use when you need to add a comment or note to a task.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Wrike: Create task comment",
+      "input": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comment text content. Supports HTML formatting with limited tags. Use HTML syntax for @mentions."
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the task to add a comment to."
+          }
+        },
+        "required": [
+          "taskId",
+          "text"
+        ],
+        "description": "Request schema for creating a comment on a Wrike task."
+      }
+    },
+    {
+      "id": "wrike.fetch_all_tasks",
+      "tool": "WRIKE_FETCH_ALL_TASKS",
+      "toolName": "wrike_fetch_all_tasks",
+      "lane": "read",
+      "effect": "read",
+      "description": "Fetches tasks from a Wrike account, allowing filtering by status, due date, and subfolder inclusion, with customizable response fields and pagination.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "metadata": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of field names to include for each task in the response. Author-related fields: 'responsibleIds' (assigned users), 'sharedIds' (users task is shared with), 'authorIds' (task creators), 'followerIds' (task followers). Other common fields: 'description', 'briefDescription', 'parentIds', 'superParentIds'. Custom fields can also be requested by their ID. If omitted, a default set of fields is returned. To include metadata in the response, add 'metadata' to this list."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter tasks by their status. Only tasks matching the specified status will be returned (e.g., Active, Completed)."
+          },
+          "due_date": {
+            "type": "object",
+            "properties": {
+              "end": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "End date for a due date range filter. Tasks due on or before this date will be included."
+              },
+              "equal": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Exact due date to filter tasks by. If provided, this overrides 'start' and 'end' date filters."
+              },
+              "start": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Start date for a due date range filter. Tasks due on or after this date will be included."
+              }
+            },
+            "description": "Filter tasks by due date. Use 'equal' for an exact date match (yyyy-MM-dd), or 'start' and/or 'end' to define a date range (yyyy-MM-dd). If 'equal' is provided, 'start' and 'end' are ignored."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of tasks to return per page. Use with nextPageToken from the response to paginate; serialize requests across pages to avoid rate limit errors."
+          },
+          "descendants": {
+            "type": "boolean",
+            "description": "If true, tasks from all subfolders and subprojects are included. If false, only tasks from the specified folder/project are returned."
+          },
+          "resolve_user_names": {
+            "type": "boolean",
+            "description": "If true, automatically adds all user-related fields (authorIds, responsibleIds, sharedIds, followerIds) to the request and resolves user IDs to include user names and details directly in each task."
+          }
+        }
+      }
+    },
+    {
+      "id": "wrike.get_account_information",
+      "tool": "WRIKE_GET_ACCOUNT_INFORMATION",
+      "toolName": "wrike_get_account_information",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed Wrike account information, where the response content is influenced by selected fields, account subscription, and user permissions.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "metadata",
+                "customFields",
+                "subscription"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Optional fields to include in the response. Valid values are: 'metadata' (account metadata), 'customFields' (custom fields defined in the account), 'subscription' (subscription details including type, status, and user limit). If omitted, only default account fields are returned."
+          }
+        },
+        "description": "Request schema for `GetAccountInformation`"
+      }
+    },
+    {
+      "id": "wrike.get_all_custom_fields",
+      "tool": "WRIKE_GET_ALL_CUSTOM_FIELDS",
+      "toolName": "wrike_get_all_custom_fields",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all custom field definitions (including ID, name, type, and settings) from the Wrike account; this returns the definitions themselves, not their specific values on Wrike items, and is useful for obtaining custom field IDs.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request schema for `GetAllCustomFields`"
+      }
+    },
+    {
+      "id": "wrike.get_contacts",
+      "tool": "WRIKE_GET_CONTACTS",
+      "toolName": "wrike_get_contacts",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of Wrike contacts (e.g., team members, clients, collaborators); response includes contact details but not their detailed task or project involvement.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "metadata": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "customFields",
+                "metadata"
+              ],
+              "description": "Valid optional fields for the contacts endpoint."
+            },
+            "maxItems": 100,
+            "description": "List of optional fields to include in the response. Valid values are 'customFields' (to include user custom fields) and 'metadata' (to include metadata). Standard contact properties (firstName, lastName, email, etc.) are always returned by default."
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "Filter by deletion status: `true` for deleted, `false` or omitted (default) for active contacts."
+          }
+        },
+        "description": "Parameters to filter and customize the retrieved list of Wrike contacts."
+      }
+    },
+    {
+      "id": "wrike.get_custom_item_types",
+      "tool": "WRIKE_GET_CUSTOM_ITEM_TYPES",
+      "toolName": "wrike_get_custom_item_types",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all custom item types from Wrike. Use when you need to discover available custom item type definitions for creating work items or understanding the custom item type structure.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request schema for retrieving all custom item types. This endpoint requires no parameters as it returns all custom item types accessible to the authorized user."
+      }
+    },
+    {
+      "id": "wrike.get_folders",
+      "tool": "WRIKE_GET_FOLDERS",
+      "toolName": "wrike_get_folders",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves folders and/or projects from Wrike, with filters; when using `nextPageToken`, all other filter parameters must match the initial request.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "metadata": "unsupported schema",
+        "updatedDate": "unsupported schema",
+        "customFields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "JSON array string of optional fields to include in the response for each folder. Only works when query returns 'folders' kind (not 'folderTree'). Valid field values: 'attachmentCount', 'briefDescription', 'customColumnIds', 'customFields', 'hasAttachments', 'metadata', 'space'. Note: 'sharedIds' is NOT a valid field value - it's already included in the default response. Example: '[\"customFields\", \"metadata\"]'"
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "True to retrieve folders from the Recycle Bin; false or omitted to retrieve from Root."
+          },
+          "project": {
+            "type": "boolean",
+            "description": "Filter by entity type: true for projects, false for folders. If omitted, both are returned."
+          },
+          "pageSize": {
+            "type": "integer",
+            "description": "Maximum number of folders per page (1-1000). Only \"folders\" kind is supported for pagination. Not supported when descendants=true (which returns \"folderTree\" kind). Cannot be used together with descendants=true or nextPageToken with descendants=true."
+          },
+          "permalink": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Folder permalink for an exact match."
+          },
+          "descendants": {
+            "type": "boolean",
+            "description": "Include all descendant folders in the search scope; false to search only within the specified folder(s)."
+          },
+          "contractTypes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filter folders by a list of contract type IDs."
+          },
+          "nextPageToken": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination token from a previous response to retrieve the next page. All other filter parameters must match the initial request. Only supported when kind=\"folders\" (not supported for \"folderTree\"). Not supported when descendants=true (which returns \"folderTree\" kind)."
+          },
+          "customItemTypes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filter by a list of custom item type IDs. Standard types like 'project' or 'folder' IDs are not allowed."
+          },
+          "withInvitations": {
+            "type": "boolean",
+            "description": "Include invitations in the 'sharedIds' list of the response."
+          },
+          "plainTextCustomFields": {
+            "type": "boolean",
+            "description": "True to strip HTML tags from custom field values in the response."
+          }
+        },
+        "description": "Request schema for `GetFolders`"
+      }
+    },
+    {
+      "id": "wrike.get_folders_by_ids",
+      "tool": "WRIKE_GET_FOLDERS_BY_IDS",
+      "toolName": "wrike_get_folders_by_ids",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve multiple Wrike folders by their IDs. Use when you need to fetch details for specific folders using comma-separated folder IDs.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "folder_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "List of folder IDs to retrieve. Each ID should be a valid Wrike folder identifier (e.g., 'IEAAAAAAKUAAAAAA'). The endpoint returns comprehensive folder details including metadata and customFields by default."
+          }
+        },
+        "required": [
+          "folder_ids"
+        ],
+        "description": "Request schema for getting folders by their IDs."
+      }
+    },
+    {
+      "id": "wrike.get_folders_comments",
+      "tool": "WRIKE_GET_FOLDERS_COMMENTS",
+      "toolName": "wrike_get_folders_comments",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve comments from a specific Wrike folder. Use when you need to fetch all comments associated with a folder.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "folderId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the folder to retrieve comments from. This should be a valid Wrike folder identifier (e.g., 'IEAAAAAAKUAAAAAA')."
+          },
+          "plainText": {
+            "type": "boolean",
+            "description": "If true, returns comments without HTML formatting tags. Default is false."
+          }
+        },
+        "required": [
+          "folderId"
+        ],
+        "description": "Request schema for getting comments from a folder."
+      }
+    },
+    {
+      "id": "wrike.get_folders_tasks",
+      "tool": "WRIKE_GET_FOLDERS_TASKS",
+      "toolName": "wrike_get_folders_tasks",
+      "lane": "read",
+      "effect": "read",
+      "description": "Query tasks within a specific folder. Use this to retrieve all tasks contained in a folder, with optional filtering by status, due date, and metadata.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "metadata": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional fields to include in the response. Valid fields: authorIds, hasAttachments, attachmentCount, parentIds, superParentIds, sharedIds, responsibleIds, description, briefDescription, recurrent, superTaskIds, subTaskIds, dependencyIds, metadata, customFields, followerIds, effortAllocation, billingType. Note: 'title', 'status', 'permalink' and other core fields are always returned and cannot be requested via this parameter."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter tasks by their status. Only tasks matching the specified status will be returned (e.g., Active, Completed)."
+          },
+          "due_date": {
+            "type": "object",
+            "properties": {
+              "end": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "End date for a due date range filter. Tasks due on or before this date will be included."
+              },
+              "equal": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Exact due date to filter tasks by. If provided, this overrides 'start' and 'end' date filters."
+              },
+              "start": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Start date for a due date range filter. Tasks due on or after this date will be included."
+              }
+            },
+            "description": "Filter tasks by due date. Use 'equal' for an exact date match (yyyy-MM-dd), or 'start' and/or 'end' to define a date range (yyyy-MM-dd). If 'equal' is provided, 'start' and 'end' are ignored."
+          },
+          "folder_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Wrike folder ID to query tasks from. This is an opaque text string (e.g., 'IEAGTXRI') from which to retrieve tasks. Max 256 characters."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of tasks to return per page."
+          },
+          "descendants": {
+            "type": "boolean",
+            "description": "If true, tasks from all subfolders are included. If false, only tasks from the specified folder are returned."
+          }
+        },
+        "required": [
+          "folder_id"
+        ]
+      }
+    },
+    {
+      "id": "wrike.get_information_about_specific_contact",
+      "tool": "WRIKE_GET_INFORMATION_ABOUT_SPECIFIC_CONTACT",
+      "toolName": "wrike_get_information_about_specific_contact",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information for a specific Wrike contact using their unique `contactId`, optionally including `metadata` and `customFields` if specified in the `fields` parameter.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "metadata",
+                "customFields"
+              ],
+              "description": "Valid optional fields for the Wrike contact endpoint."
+            },
+            "maxItems": 100,
+            "description": "Optional list of specific fields to include. Valid values: 'metadata', 'customFields'. Returns default fields if omitted."
+          },
+          "contactId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the contact to retrieve information for."
+          }
+        },
+        "required": [
+          "contactId"
+        ],
+        "description": "Request schema for `GetInformationAboutSpecificContact`"
+      }
+    },
+    {
+      "id": "wrike.get_space",
+      "tool": "WRIKE_GET_SPACE",
+      "toolName": "wrike_get_space",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details for a single Wrike space by spaceId. Use when you need to fetch complete information about a specific space, typically after listing spaces to select one.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of optional field names to include in the response. Common fields include: 'accessType', 'archived', 'members', 'guestRoleId', etc. If omitted, a default set of fields will be returned."
+          },
+          "spaceId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the Wrike space to retrieve. This is an alphanumeric string (e.g., 'IEAG2Y72I4LAAAAA')."
+          }
+        },
+        "required": [
+          "spaceId"
+        ],
+        "description": "Request schema for retrieving a specific space by its unique identifier."
+      }
+    },
+    {
+      "id": "wrike.get_space_folders",
+      "tool": "WRIKE_GET_SPACE_FOLDERS",
+      "toolName": "wrike_get_space_folders",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the folder tree for a specific Wrike space. Use when you need to list all folders and projects within a space, optionally filtered by project type, authors, owners, title, or custom statuses.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter folders by title. Returns folders whose title contains the specified string (case-insensitive)."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional fields to include in response. Valid values: 'attachmentCount', 'briefDescription', 'customColumnIds', 'customFields', 'hasAttachments', 'metadata', 'space'."
+          },
+          "owners": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filter folders by owner IDs. Only returns folders owned by the specified user IDs."
+          },
+          "authors": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filter folders by author IDs. Only returns folders created by the specified user IDs."
+          },
+          "project": {
+            "type": "boolean",
+            "description": "Filter by project type - true for projects only, false for folders only. If omitted, returns both folders and projects."
+          },
+          "spaceId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the Wrike space to retrieve folders from. This is an alphanumeric string (e.g., 'IEAG2Y72I4LAAAAA')."
+          },
+          "customStatuses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filter folders by custom workflow status IDs. Only returns folders with the specified custom status IDs."
+          }
+        },
+        "required": [
+          "spaceId"
+        ],
+        "description": "Request schema for retrieving folders from a specific space."
+      }
+    },
+    {
+      "id": "wrike.get_spaces_tasks",
+      "tool": "WRIKE_GET_SPACES_TASKS",
+      "toolName": "wrike_get_spaces_tasks",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to query tasks within a specific Wrike space. Use when you need to retrieve tasks from a particular space, with optional filtering by status, importance, title, and other criteria.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Title filter for exact match. Only tasks with this exact title will be returned."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Array of optional fields to include in the response. Valid fields: authorIds, hasAttachments, attachmentCount, parentIds, superParentIds, sharedIds, responsibleIds, description, briefDescription, recurrent, superTaskIds, subTaskIds, dependencyIds, customFields, metadata."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "Active",
+              "Completed",
+              "Deferred",
+              "Cancelled"
+            ],
+            "description": "Task status values."
+          },
+          "spaceId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the space to query tasks from. Use the ListSpaces action to discover valid spaceIds."
+          },
+          "subTasks": {
+            "type": "boolean",
+            "description": "Include subtasks in the response. If true, subtasks will be included alongside parent tasks."
+          },
+          "sortField": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field to sort the results by. Common values: CreatedDate, UpdatedDate, CompletedDate, DueDate, Title, Status, Importance."
+          },
+          "sortOrder": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "Asc",
+              "Desc"
+            ],
+            "description": "Sort order values."
+          },
+          "importance": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "High",
+              "Normal",
+              "Low"
+            ],
+            "description": "Task importance values."
+          },
+          "descendants": {
+            "type": "boolean",
+            "description": "Query tasks in that folder and its subfolders. If true, tasks from all subfolders are included."
+          }
+        },
+        "required": [
+          "spaceId"
+        ],
+        "description": "Request schema for querying tasks in a specific space."
+      }
+    },
+    {
+      "id": "wrike.get_spaces_workflows",
+      "tool": "WRIKE_GET_SPACES_WORKFLOWS",
+      "toolName": "wrike_get_spaces_workflows",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to query workflows for a specific Wrike space. Use when you need to retrieve the list of available workflows and their custom statuses for a space.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "spaceId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the space to query workflows for. This is an alphanumeric string (e.g., 'IEAG2Y72I4LAAAAA'). Use the List Spaces action to discover valid spaceIds."
+          }
+        },
+        "required": [
+          "spaceId"
+        ],
+        "description": "Request schema for querying workflows for a specific space."
+      }
+    },
+    {
+      "id": "wrike.get_task_by_id",
+      "tool": "WRIKE_GET_TASK_BY_ID",
+      "toolName": "wrike_get_task_by_id",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves read-only detailed information for a specific Wrike task by its unique ID, optionally allowing specification of fields to include in the response.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of optional fields to include in the response (e.g., ['attachmentCount']). Valid fields include: attachmentCount, effortAllocation, billingType, etc. Note: customFields are returned by default for single task queries and should NOT be specified in this parameter. If not provided, a default set of fields (including customFields) will be returned."
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Wrike API task ID to retrieve. This is an opaque text string (e.g., 'IEAGTXRUKQPN7777') - do not rely on format patterns. Max 256 characters. Note: Phone numbers, numeric-only strings, or other non-Wrike task ID formats are not valid."
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "description": "Request schema for retrieving a specific task by its unique identifier."
+      }
+    },
+    {
+      "id": "wrike.get_task_dependencies",
+      "tool": "WRIKE_GET_TASK_DEPENDENCIES",
+      "toolName": "wrike_get_task_dependencies",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all dependency relationships for a specific task. Use when you need to see which tasks the specified task depends on (predecessors) or which tasks depend on it (successors).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the task to retrieve dependencies for. This is a Wrike task ID (e.g., 'IEAGTXRUKQPN7777')."
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "description": "Request schema for retrieving dependencies of a specific task."
+      }
+    },
+    {
+      "id": "wrike.get_tasks_comments",
+      "tool": "WRIKE_GET_TASKS_COMMENTS",
+      "toolName": "wrike_get_tasks_comments",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all comments from a specific Wrike task. Use when you need to fetch comments associated with a task.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the task to retrieve comments from. This is a Wrike task ID (e.g., 'IEAGTXRUKQPN7777')."
+          },
+          "plainText": {
+            "type": "boolean",
+            "description": "If true, returns comment text as plain text without HTML formatting. If false or omitted, returns HTML-formatted text."
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "description": "Request schema for retrieving comments from a specific task."
+      }
+    },
+    {
+      "id": "wrike.get_tasks_rollups",
+      "tool": "WRIKE_GET_TASKS_ROLLUPS",
+      "toolName": "wrike_get_tasks_rollups",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to query rollup settings for a specific task. Use when you need to retrieve the rollup configuration that determines how custom field values are aggregated from subtasks.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the task whose rollup settings you want to retrieve. This is an alphanumeric string (e.g., 'MAAAAAECjzae')."
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "description": "Request schema for retrieving rollup settings for a specific task."
+      }
+    },
+    {
+      "id": "wrike.list_spaces",
+      "tool": "WRIKE_LIST_SPACES",
+      "toolName": "wrike_list_spaces",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list spaces the authorized user can access. Use when you need to discover valid spaceIds for downstream space-scoped operations like listing space blueprints.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "withInvitations": {
+            "type": "boolean",
+            "description": "Include pending invitations in the 'sharedIds' list of the response."
+          }
+        }
+      }
+    },
+    {
+      "id": "wrike.list_subfolders_by_folder_id",
+      "tool": "WRIKE_LIST_SUBFOLDERS_BY_FOLDER_ID",
+      "toolName": "wrike_list_subfolders_by_folder_id",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists subfolders (metadata only, not their contents) for an existing Wrike folder specified by `folderId`, supporting recursive descent, filtering, and pagination.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "metadata": "unsupported schema",
+        "updatedDate": "unsupported schema",
+        "customFields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "metadata",
+                "customFields",
+                "description",
+                "briefDescription",
+                "contractType",
+                "hasAttachments",
+                "attachmentCount"
+              ],
+              "description": "Valid optional field names for the Wrike list subfolders endpoint."
+            },
+            "maxItems": 100,
+            "description": "Optional fields to include in the response for each folder. Valid values: 'metadata', 'customFields', 'description', 'briefDescription', 'contractType', 'hasAttachments', 'attachmentCount'."
+          },
+          "project": {
+            "type": "boolean",
+            "description": "Set true for projects only, false for regular folders only; omit for both or API default."
+          },
+          "folderId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the parent folder."
+          },
+          "pageSize": {
+            "type": "integer",
+            "description": "Maximum folders per page (API default e.g., 100, max 1000)."
+          },
+          "permalink": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Permalink for an exact match search of the folder to fetch subfolders from."
+          },
+          "descendants": {
+            "type": "boolean",
+            "description": "Set to true to include all descendant subfolders; false for direct children only."
+          },
+          "contractTypes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filters projects by contract type names; mainly used when `project` is true."
+          },
+          "nextPageToken": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Token from a previous response's `nextPageToken` field for pagination; other filters should match the initial request."
+          },
+          "customItemTypes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filters by a list of custom item type IDs (standard types like 'Project' or 'Folder' are not applicable)."
+          },
+          "withInvitations": {
+            "type": "boolean",
+            "description": "If true, includes invited (but not yet accepted) users in `sharedIds` of returned folders."
+          },
+          "plainTextCustomFields": {
+            "type": "boolean",
+            "description": "If true, strips HTML tags from custom field values in the response."
+          }
+        },
+        "required": [
+          "folderId"
+        ],
+        "description": "Request schema for listing subfolders within a specific folder, with filtering and pagination."
+      }
+    },
+    {
+      "id": "wrike.modify_task",
+      "tool": "WRIKE_MODIFY_TASK",
+      "toolName": "wrike_modify_task",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Modifies an existing Wrike task by its ID, allowing updates to attributes such as title, status, dates, assignees, and custom fields; `priorityBefore` and `priorityAfter` are mutually exclusive, and parent folder IDs for `addParents`/`removeParents` cannot be the Recycle Bin.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Wrike: Modify task",
+      "withheldArguments": {
+        "dates": "unsupported schema",
+        "addParents": "reviewer: Adds the task to another folder or project, which shares it with everyone who can see that folder.",
+        "addShareds": "changes sharing, visibility, permissions, membership, or who acts",
+        "addFollowers": "changes sharing, visibility, permissions, membership, or who acts",
+        "customFields": "unsupported schema",
+        "addSuperTasks": "reviewer: Moves the task under another task.",
+        "removeParents": "reviewer: Removes the task from a folder or project, which changes who can see it.",
+        "removeShareds": "changes sharing, visibility, permissions, membership, or who acts",
+        "addResponsibles": "changes sharing, visibility, permissions, membership, or who acts",
+        "withInvitations": "changes sharing, visibility, permissions, membership, or who acts",
+        "removeSuperTasks": "reviewer: Moves the task out from under its parent task.",
+        "removeResponsibles": "changes sharing, visibility, permissions, membership, or who acts",
+        "convertToCustomItemType": "reviewer: Changes the item's type, which can change its fields and workflow."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The new title for the task."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of optional field names to be included in the response object. Provide a list of strings, where each string is a valid field key. For example, `[\"recurrence\", \"responsibleIds\"]`."
+          },
+          "follow": {
+            "type": "boolean",
+            "description": "Set to `true` to make the current API user follow the task, or `false` to unfollow."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "Active",
+              "Completed",
+              "Deferred",
+              "Cancelled"
+            ],
+            "description": "The new status of the task. This field is not available for accounts on the Team plan."
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the task to be modified."
+          },
+          "restore": {
+            "type": "boolean",
+            "description": "Set to `true` to restore the task if it is currently in the Recycle Bin."
+          },
+          "metadata": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The key of the metadata entry. Must conform to the pattern: ^[A-Za-z0-9_-]+$."
+                },
+                "value": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The value associated with the metadata key."
+                }
+              },
+              "required": [
+                "key",
+                "value"
+              ],
+              "description": "Request schema for defining a metadata key-value pair."
+            },
+            "maxItems": 100,
+            "description": "A list of metadata key-value pairs to update. Providing a `null` value for an existing key's `value` will remove that entry."
+          },
+          "importance": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "High",
+              "Normal",
+              "Low"
+            ],
+            "description": "The new importance level of the task."
+          },
+          "billingType": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "NonBillable",
+              "Billable",
+              "NonBillableAddToProjectReports"
+            ],
+            "description": "Specifies the billing type for the task's timelogs."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The new detailed description for the task. Supports HTML formatting."
+          },
+          "customStatus": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the custom status to apply to the task. This is used when custom workflows are enabled in the Wrike account."
+          },
+          "priorityAfter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of an existing task after which the current task should be placed in the task list, determining its priority. Mutually exclusive with `priorityBefore`."
+          },
+          "priorityBefore": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of an existing task before which the current task should be placed in the task list, determining its priority. Mutually exclusive with `priorityAfter`."
+          },
+          "plainTextCustomFields": {
+            "type": "boolean",
+            "description": "Set to `true` to strip HTML tags from custom field values before saving. If `false`, HTML content is preserved. API defaults to `false` behavior if not provided."
+          },
+          "addResponsiblePlaceholders": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of placeholder IDs to be added to the task's placeholder assignee list. Placeholders represent roles or groups."
+          },
+          "removeResponsiblePlaceholders": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of placeholder IDs to be removed from the task's placeholder assignee list."
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "description": "Request schema for modifying an existing task. At least one updatable field must be provided in addition to `taskId`."
+      }
+    },
+    {
+      "id": "wrike.query_workflows",
+      "tool": "WRIKE_QUERY_WORKFLOWS",
+      "toolName": "wrike_query_workflows",
+      "lane": "read",
+      "effect": "read",
+      "description": "Fetches a list of all workflows with their detailed information from the Wrike account; this is a read-only action and does not support pagination or filtering through its parameters.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request to query all Wrike workflows."
+      }
+    },
+    {
+      "id": "wrike.search_ediscovery",
+      "tool": "WRIKE_SEARCH_EDISCOVERY",
+      "toolName": "wrike_search_ediscovery",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to perform eDiscovery search across Wrike items (folders, projects, tasks). Use when you need to find items matching specific search terms across different scopes. Supports wildcard searches and filtering by item types.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "terms": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Array of search terms to look for in item titles and descriptions. Supports wildcard searches."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Array of item types to search within (e.g., 'folder', 'project', 'task'). If omitted, searches all types."
+          }
+        },
+        "description": "Request parameters for eDiscovery search."
+      }
+    }
+  ]
+}

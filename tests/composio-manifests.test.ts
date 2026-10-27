@@ -14,6 +14,7 @@ import {
   type ComposioManifest,
 } from '../src/connections/catalog/composio-manifests.ts';
 import googleMaps from '../src/connections/catalog/manifests/google_maps.json' with { type: 'json' };
+import linkedin from '../src/connections/catalog/manifests/linkedin.json' with { type: 'json' };
 import trello from '../src/connections/catalog/manifests/trello.json' with { type: 'json' };
 import { MANAGED_CONNECTOR_CATALOG, createManagedConnectorCatalog } from '../src/connections/catalog/index.ts';
 import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
@@ -64,7 +65,10 @@ function lanes(manifest: ComposioManifest): Record<string, string> {
   return Object.fromEntries(manifest.capabilities.map(({ tool: slug, lane }) => [slug, lane]));
 }
 
-const PILOT_MANIFESTS = [...COMPOSIO_MANIFESTS, parseComposioManifest(googleMaps), parseComposioManifest(trello)];
+const PILOT_MANIFESTS = [
+  ...COMPOSIO_MANIFESTS,
+  ...[googleMaps, linkedin, trello].map((value) => parseComposioManifest(value)),
+];
 
 const pilotManifest = (toolkit: string) => structuredClone(
   PILOT_MANIFESTS.find((manifest) => manifest.toolkit === toolkit)!,
@@ -249,6 +253,7 @@ test('no tool takes a credential from the model, and a tool that needs one is ex
         header: text('Your api-key.'),
         auth: text('An API token for the workspace.'),
         cookie: text('A session token from the browser.'),
+        token_id: text('The API token to use.'),
         credentialId: { type: 'integer', description: 'The numeric identifier for the credential of a connected calendar.' },
         is_passcode_required: { type: 'boolean', description: 'Whether joining needs a passcode.' },
       },
@@ -263,6 +268,7 @@ test('no tool takes a credential from the model, and a tool that needs one is ex
   assert.deepEqual(Object.keys(capability('ACME_GET_SESSION').input.properties), ['credentialId', 'is_passcode_required']);
   assert.deepEqual(Object.keys(capability('ACME_GET_SESSION').withheldArguments!), [
     'token', 'api_token', 'apiToken', 'session_token', 'app_key', 'sas_token', 'jwt', 'passcode', 'header', 'auth', 'cookie',
+    'token_id',
   ]);
   assert.deepEqual(Object.keys(capability('ACME_GET_FILE').input.properties), [
     'file_id', 'page_token', 'pageToken', 'skip_token', 'delta_token', 'token', 'file_key', 'templateKey',
@@ -285,7 +291,12 @@ test('a read that returns expiring, signed, or outside-hosted URLs is excluded, 
     read('ACME_GET_ATTACHMENT', 'Returns an expiring download link for the attachment.'),
     read('ACME_GET_EMBED', 'Returns a pre-authenticated URL for an embedded view.'),
     read('ACME_GET_EXPORT', 'Returns a download URL which expires after an hour.'),
-    read('ACME_GET_RECORDING', 'Returns the recording location. The link is valid for 15 minutes.'),
+    read('ACME_GET_RECORDING', 'Returns the recording location, valid for 15 minutes.'),
+    read('ACME_GET_CLIP', 'Returns the clip location, valid for an hour.'),
+    read('ACME_GET_LOGO', 'Returns the logo. The returned URL is valid until the session ends.'),
+    read('ACME_GET_COVER', 'Returns the cover image. Its URLs are temporary.'),
+    read('ACME_GET_OBJECT', 'Returns a presigned address for the object.'),
+    read('ACME_GET_TICKET', 'Returns a download ticket that expires in 10 minutes.'),
     read('ACME_GET_SNAPSHOT', 'Returns a short-lived address for the snapshot.'),
     read('ACME_GET_REPORT', 'Returns a time-limited address for the report.'),
     read('ACME_GET_BADGE', 'Returns an unauthenticated address for the badge image.'),
@@ -296,6 +307,11 @@ test('a read that returns expiring, signed, or outside-hosted URLs is excluded, 
   assert.deepEqual(lanes(manifest), { ACME_LIST_PAGES: 'read', ACME_WHO_AM_I: 'read' });
   assert.match(reason('ACME_GET_EXPORT'), /read lint hit "URL which expires"/);
   assert.match(reason('ACME_GET_RECORDING'), /read lint hit "valid for 15 minutes"/);
+  assert.match(reason('ACME_GET_CLIP'), /read lint hit "valid for an hour"/);
+  assert.match(reason('ACME_GET_LOGO'), /read lint hit "URL is valid"/);
+  assert.match(reason('ACME_GET_COVER'), /read lint hit "URLs are temporary"/);
+  assert.match(reason('ACME_GET_OBJECT'), /read lint hit "presigned"/);
+  assert.match(reason('ACME_GET_TICKET'), /read lint hit "expires in"/);
   assert.match(reason('ACME_GET_SNAPSHOT'), /read lint hit "short-lived"/);
   assert.match(reason('ACME_GET_REPORT'), /read lint hit "time-limited"/);
   assert.match(reason('ACME_GET_BADGE'), /read lint hit "unauthenticated"/);
@@ -782,9 +798,21 @@ test('reviewed manifests keep expiry, import, credential, and system arguments f
       .map((argument) => ['dynamics365', 'DYNAMICS365_CREATE_ANNOTATION', argument] as [string, string, string]),
     ['googletasks', 'GOOGLETASKS_INSERT_TASK', 'deleted'],
     ['googletasks', 'GOOGLETASKS_PATCH_TASK', 'deleted'],
+    ['gorgias', 'GORGIAS_CREATE_CUSTOMER', 'channels'],
+    ['gorgias', 'GORGIAS_UPDATE_CUSTOMER', 'channels'],
+    ['gorgias', 'GORGIAS_UPDATE_TICKET', 'customer_id'],
+    ...['excluded_audiences', 'included_audiences', 'send_strategy_method', 'static_is_local_timezone',
+      'static_send_datetime', 'sto_send_date', 'throttle_percentage', 'throttled_send_datetime']
+      .map((argument) => ['klaviyo', 'KLAVIYO_UPDATE_CAMPAIGN', argument] as [string, string, string]),
+    ['klaviyo', 'KLAVIYO_UPDATE_PROFILE', 'data__attributes__anonymous__id'],
+    ['klaviyo', 'KLAVIYO_UPDATE_PROFILE', 'data__meta__patch__properties__unset'],
     ['microsoft_teams', 'MICROSOFT_TEAMS_CREATE_MEETING', 'chat_info'],
     ['microsoft_teams', 'MICROSOFT_TEAMS_CREATE_MEETING', 'lobby_bypass_settings'],
     ['trello', 'TRELLO_GET_MEMBERS_BY_ID_MEMBER', 'tokens'],
+    ['wrike', 'WRIKE_CREATE_TASK', 'parents'],
+    ['wrike', 'WRIKE_CREATE_TASK', 'superTasks'],
+    ...['addParents', 'addSuperTasks', 'convertToCustomItemType', 'removeParents', 'removeSuperTasks']
+      .map((argument) => ['wrike', 'WRIKE_MODIFY_TASK', argument] as [string, string, string]),
     ...['ZOHO_CREATE_CONTACT', 'ZOHO_CREATE_DEAL', 'ZOHO_CREATE_LEAD']
       .map((slug) => ['zoho', slug, 'lar_id'] as [string, string, string]),
   ];

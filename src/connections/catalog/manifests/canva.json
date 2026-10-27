@@ -1,0 +1,598 @@
+{
+  "toolkit": "canva",
+  "version": "20261023_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Canva",
+  "description": "Find designs, folders, and brand templates, create designs from copies, templates, or imports, and organize folders.",
+  "securityDescription": "Canva sign-in opens through Composio. Agents act as the signed-in Canva user and can read that user's designs, folders, uploaded assets, and brand templates, including designs others shared with them. With write access, Agents can create a design from an existing design, a brand template, or an uploaded image, import a file or image from a public URL, and create and rename folders. A new design or folder is private unless it is created inside a shared folder. Agents cannot share, move, or delete designs or folders, export designs or create download links, upload files from a computer, comment, publish brand templates, or manage teams.",
+  "preset": {
+    "category": "docs",
+    "accent": "#00C4CC"
+  },
+  "validationCapability": "canva.fetch_current_user_details",
+  "review": {
+    "add": [
+      "CANVA_ACCESS_USER_SPECIFIC_BRAND_TEMPLATES_LIST",
+      "CANVA_LIST_FOLDER_ITEMS_BY_TYPE_WITH_SORTING",
+      "CANVA_POST_DESIGNS",
+      "CANVA_POST_FOLDERS",
+      "CANVA_POST_URL_IMPORTS",
+      "CANVA_RETRIEVE_CANVA_ENTERPRISE_BRAND_TEMPLATE_METADATA",
+      "CANVA_RETRIEVE_FOLDER_DETAILS_BY_ID",
+      "CANVA_UPDATE_FOLDER_DETAILS_BY_ID"
+    ],
+    "drop": {
+      "CANVA_FETCH_ASSET_UPLOAD_JOB_STATUS": "Polls file uploads, and the file upload tool is not included.",
+      "CANVA_GET_DESIGNS_DESIGNID_EXPORT_FORMATS": "Lists export formats, and no export tool is included.",
+      "CANVA_GET_DESIGN_EXPORT_JOB_RESULT": "Returns export download links that anyone holding them can open, and no export tool is included.",
+      "CANVA_GET_DESIGN_GENERATION_JOB": "Polls design generation, which no included tool starts.",
+      "CANVA_RETRIEVE_DESIGN_IMPORT_JOB_STATUS": "Polls file imports, and the file import tool is not included.",
+      "CANVA_RETRIEVE_DESIGN_RESIZE_JOB_STATUS": "Polls resize jobs, and the resize tool is not included."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "canva.access_user_specific_brand_templates_list",
+      "tool": "CANVA_ACCESS_USER_SPECIFIC_BRAND_TEMPLATES_LIST",
+      "toolName": "canva_access_user_specific_brand_templates_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists brand templates available to users on plans with brand-template access, such as Canva Pro, Canva Teams, or Canva Enterprise. Returns one page of template metadata, including IDs and titles. Follow the response's continuation token to retrieve additional pages. Dataset definitions are available from CANVA_RETRIEVE_BRAND_TEMPLATE_DATASET_DEFINITION.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of brand templates to return (1-100, default 25)."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lets you search the brand templates available to the user using a search term or terms."
+          },
+          "dataset": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "any",
+              "non_empty"
+            ],
+            "description": "Filter the list of brand templates based on the brand templates' dataset definitions. Brand templates with dataset definitions are mainly used with the Autofill APIs. This can be one of the following: - `any`: (Default) Brand templates with and without dataset definitions. - `non_empty`: Brand templates with one or more data fields defined."
+          },
+          "sort_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "relevance",
+              "modified_descending",
+              "modified_ascending",
+              "title_descending",
+              "title_ascending"
+            ],
+            "description": "Sort the list of brand templates. This can be one of the following: - `relevance`: (Default) Sort results using a relevance algorithm. - `modified_descending`: Sort results by the date last modified in descending order. - `modified_ascending`: Sort results by the date last modified in ascending order. - `title_descending`: Sort results by title in descending order. - `title_ascending`: Sort results by title in ascending order."
+          },
+          "ownership": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "any",
+              "owned",
+              "shared"
+            ],
+            "description": "Filter the list of brand templates based on the user\"s ownership of the brand templates. This can be one of the following: - `any`: (Default) Brand templates owned by and shared with the user. - `owned`: Brand templates owned by the user. - `shared`: Brand templates shared with the user."
+          },
+          "continuation": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If the success response contains a continuation token, the user has access to more brand templates you can list. You can use this token as a query parameter and retrieve more templates from the list, for example `/v1/brand-templates?continuation={continuation}`. To retrieve all the brand templates available to the user, you might need to make multiple requests. IMPORTANT: This token is an opaque value returned by the API. You must use it exactly as returned from a previous API response."
+          }
+        },
+        "description": "Request schema for `AccessUserSpecificBrandTemplatesList`"
+      }
+    },
+    {
+      "id": "canva.create_url_asset_upload_job",
+      "tool": "CANVA_CREATE_URL_ASSET_UPLOAD_JOB",
+      "toolName": "canva_create_url_asset_upload_job",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to create an asynchronous Canva asset import job from a public URL. Use when you need to import an asset into Canva directly from a publicly accessible URL without S3 choreography.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Canva: Create URL Asset Upload Job",
+      "input": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 8,
+            "description": "Publicly accessible HTTPS URL of the file to import (8-2048 characters). Canva rejects non-HTTPS URLs."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "Asset name (1-255 characters)."
+          }
+        },
+        "required": [
+          "name",
+          "url"
+        ],
+        "description": "Parameters to start a URL-based asset upload job in Canva."
+      }
+    },
+    {
+      "id": "canva.fetch_current_user_details",
+      "tool": "CANVA_FETCH_CURRENT_USER_DETAILS",
+      "toolName": "canva_fetch_current_user_details",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns the User ID and Team ID associated with the provided access token. Use CANVA_RETRIEVE_USER_PROFILE_DATA to retrieve the user's display name.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request schema for `FetchCurrentUserDetails`"
+      }
+    },
+    {
+      "id": "canva.fetch_design_metadata_and_access_information",
+      "tool": "CANVA_FETCH_DESIGN_METADATA_AND_ACCESS_INFORMATION",
+      "toolName": "canva_fetch_design_metadata_and_access_information",
+      "lane": "read",
+      "effect": "read",
+      "description": "Gets the metadata for a design. This includes owner information, URLs for editing and viewing, and thumbnail information.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "designId": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1,
+            "description": "The design ID (1-50 letters, numbers, underscores, or hyphens), for example DAFVztcvd9z."
+          }
+        },
+        "required": [
+          "designId"
+        ],
+        "description": "Request schema for `FetchDesignMetadataAndAccessInformation`"
+      }
+    },
+    {
+      "id": "canva.get_url_asset_uploads_jobid",
+      "tool": "CANVA_GET_URL_ASSET_UPLOADS_JOBID",
+      "toolName": "canva_get_url_asset_uploads_jobid",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the status and result of a URL-based asset upload job. Use this after creating a URL asset upload job to check progress and retrieve the uploaded asset ID when successful.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The asset upload job identifier."
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "description": "Request schema for `GetUrlAssetUploadsJobid`"
+      }
+    },
+    {
+      "id": "canva.get_url_imports_jobid",
+      "tool": "CANVA_GET_URL_IMPORTS_JOBID",
+      "toolName": "canva_get_url_imports_jobid",
+      "lane": "read",
+      "effect": "read",
+      "description": "Polls for URL import job completion status. Use this after creating a URL import job to check the import progress. Repeatedly call this endpoint until a 'success' or 'failed' status is received to get the final imported design ID and metadata.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The URL import job ID."
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "description": "Request schema for `GetUrlImportsJobid`"
+      }
+    },
+    {
+      "id": "canva.get_users_me_capabilities",
+      "tool": "CANVA_GET_USERS_ME_CAPABILITIES",
+      "toolName": "canva_get_users_me_capabilities",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists the API capabilities for the user account associated with the provided access token. Use when you need to check what features are available based on the user's Canva plan.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request schema for `GetUsersMeCapabilities`"
+      }
+    },
+    {
+      "id": "canva.list_folder_items_by_type_with_sorting",
+      "tool": "CANVA_LIST_FOLDER_ITEMS_BY_TYPE_WITH_SORTING",
+      "toolName": "canva_list_folder_items_by_type_with_sorting",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists folder items, including folders, designs, image assets, and brand templates. Brand templates are returned only when explicitly requested in `item_types` and the user's plan supports them. Video assets are currently not returned.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of folder items to return (1-100, default 50)."
+          },
+          "sort_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created_ascending",
+              "created_descending",
+              "modified_ascending",
+              "modified_descending",
+              "title_ascending",
+              "title_descending"
+            ],
+            "description": "Sort the list of folder items. This can be one of the following: - `created_ascending`: Sort results by creation date, in ascending order. - `created_descending`: Sort results by creation date, in descending order. - `modified_ascending`: Sort results by the last modified date, in ascending order. - `modified_descending`: (Default) Sort results by the last modified date, in descending order. - `title_ascending`: Sort results by title, in ascending order."
+          },
+          "folderId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The folder ID. Must be a non-empty string. Use 'root' to list items in the root folder."
+          },
+          "item_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "brand_template",
+                "design",
+                "folder",
+                "image"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Filter the folder items to only return specified types. The available types are: `brand_template`, `design`, `folder`, and `image`. To filter for more than one item type, provide a comma- delimited list."
+          },
+          "pin_status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "any",
+              "pinned"
+            ],
+            "description": "Filter by pinned status: 'any' returns all items and 'pinned' returns only pinned items."
+          },
+          "continuation": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If the success response contains a continuation token, the folder contains more items you can list. You can use this token as a query parameter and retrieve more items from the list, for example `/v1/folders/{folderId}/items?continuation={continuation}`. To retrieve all the items in a folder, you might need to make multiple requests."
+          }
+        },
+        "required": [
+          "folderId"
+        ],
+        "description": "Request schema for `ListFolderItemsByTypeWithSorting`"
+      }
+    },
+    {
+      "id": "canva.list_user_designs",
+      "tool": "CANVA_LIST_USER_DESIGNS",
+      "toolName": "canva_list_user_designs",
+      "lane": "read",
+      "effect": "read",
+      "description": "Provides a summary of Canva user designs, includes search filtering, and allows showing both self-created and shared designs with sorting options.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of designs to return. Minimum 1, maximum 100, default 25."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 255,
+            "description": "Lets you search the user\"s designs, and designs shared with the user, using a search term or terms."
+          },
+          "sort_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "relevance",
+              "modified_descending",
+              "modified_ascending",
+              "title_descending",
+              "title_ascending"
+            ],
+            "description": "Sort the list of designs. This can be one of the following: - `relevance`: (Default) Sort results using a relevance algorithm. - `modified_descending`: Sort results by the date last modified in descending order. - `modified_ascending`: Sort results by the date last modified in ascending order. - `title_descending`: Sort results by title in descending order. - `title_ascending`: Sort results by title in ascending order."
+          },
+          "ownership": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "any",
+              "owned",
+              "shared"
+            ],
+            "description": "Filter the list of designs based on the user\"s ownership of the designs. This can be one of the following: - `owned`: Designs owned by the user. - `shared`: Designs shared with the user. - `any`: Designs owned by and shared with the user."
+          },
+          "continuation": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If the success response contains a continuation token, the list contains more designs you can list. You can use this token as a query parameter and retrieve more designs from the list, for example `/v1/designs?continuation={continuation}`. To retrieve all of a user\"s designs, you might need to make multiple requests. Pass a valid token or omit this parameter entirely. Empty strings are not accepted by the API."
+          }
+        },
+        "description": "Request schema for `ListUserDesigns`"
+      }
+    },
+    {
+      "id": "canva.post_designs",
+      "tool": "CANVA_POST_DESIGNS",
+      "toolName": "canva_post_designs",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Creates a Canva design with a preset type, custom dimensions, an existing design, or a brand template. Copying designs and using brand templates are Canva preview features. Optionally insert an image asset when using a preset or custom type. Returns design ID, edit/view URLs, and metadata.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Canva: Create new Canva design",
+      "withheldArguments": {
+        "design_type": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "type_and_asset",
+              "design",
+              "brand_template"
+            ],
+            "description": "Creation mode. Omit or use 'type_and_asset' for a preset/custom design or asset; use 'design' to copy a design; use 'brand_template' to copy a brand template. The copy modes are Canva preview features."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "Design name (1-255 characters). Appears in Canva UI and design lists."
+          },
+          "asset_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Image asset ID to insert into the design. Currently supports image assets only. Must be a valid asset ID from a previously uploaded asset."
+          },
+          "design_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "ID of the existing Canva design to copy when type is 'design'"
+          },
+          "page_numbers": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "One-based page numbers to copy from a design or brand template. If omitted, all pages are copied."
+          },
+          "brand_template_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "ID of the Canva brand template to copy when type is 'brand_template'"
+          }
+        },
+        "description": "Request schema for creating a Canva design in one of three modes."
+      }
+    },
+    {
+      "id": "canva.post_folders",
+      "tool": "CANVA_POST_FOLDERS",
+      "toolName": "canva_post_folders",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Tool to create a folder in Canva. Use when you need to organize designs, assets, or create nested folder structures in a user's projects or uploads folder.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Canva: Create folder",
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The display name for the new folder. Must be 1-255 characters. Duplicate names are allowed."
+          },
+          "parent_folder_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the destination location. Use 'root' for top-level projects, 'uploads' for the uploads folder, or a specific folder ID to nest within another folder. Must be 1-50 characters."
+          }
+        },
+        "required": [
+          "name",
+          "parent_folder_id"
+        ],
+        "description": "Request schema for creating a folder in Canva."
+      }
+    },
+    {
+      "id": "canva.post_url_imports",
+      "tool": "CANVA_POST_URL_IMPORTS",
+      "toolName": "canva_post_url_imports",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Tool to start an asynchronous job to import an external file from a URL as a new design in Canva. Use when you need to import a design from a publicly accessible URL. This is an async operation; poll the job status using the job ID until it reaches 'success' or 'failed'.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Canva: Create URL Import Job",
+      "input": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "description": "The URL of the file to import. This URL must be accessible from the internet and be publicly available (1-2048 characters)."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "Name assigned to the imported design (1-255 characters)."
+          },
+          "mime_type": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "description": "Supported design-import MIME type (for example, 'application/pdf' or 'application/vnd.apple.keynote'). It is normalized to a lowercase media type without parameters. Canva attempts automatic detection if omitted or empty (1-100 characters when provided)."
+          }
+        },
+        "required": [
+          "title",
+          "url"
+        ],
+        "description": "Parameters to start a URL-based design import job in Canva."
+      }
+    },
+    {
+      "id": "canva.retrieve_asset_metadata_by_id",
+      "tool": "CANVA_RETRIEVE_ASSET_METADATA_BY_ID",
+      "toolName": "canva_retrieve_asset_metadata_by_id",
+      "lane": "read",
+      "effect": "read",
+      "description": "You can retrieve the metadata of an asset by specifying its `assetId`.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "assetId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the asset."
+          }
+        },
+        "required": [
+          "assetId"
+        ],
+        "description": "Request schema for `RetrieveAssetMetadataById`"
+      }
+    },
+    {
+      "id": "canva.retrieve_canva_enterprise_brand_template_metadata",
+      "tool": "CANVA_RETRIEVE_CANVA_ENTERPRISE_BRAND_TEMPLATE_METADATA",
+      "toolName": "canva_retrieve_canva_enterprise_brand_template_metadata",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves metadata for a brand template. Available to users on plans with brand-template access, such as Canva Pro, Canva Teams, or Canva Enterprise.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "brandTemplateId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The brand template ID."
+          }
+        },
+        "required": [
+          "brandTemplateId"
+        ],
+        "description": "Request schema for `RetrieveCanvaEnterpriseBrandTemplateMetadata`"
+      }
+    },
+    {
+      "id": "canva.retrieve_folder_details_by_id",
+      "tool": "CANVA_RETRIEVE_FOLDER_DETAILS_BY_ID",
+      "toolName": "canva_retrieve_folder_details_by_id",
+      "lane": "read",
+      "effect": "read",
+      "description": "Gets the name and other details of a folder using a folder's `folderID`.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "folderId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The folder ID."
+          }
+        },
+        "required": [
+          "folderId"
+        ],
+        "description": "Request schema for `RetrieveFolderDetailsById`"
+      }
+    },
+    {
+      "id": "canva.update_folder_details_by_id",
+      "tool": "CANVA_UPDATE_FOLDER_DETAILS_BY_ID",
+      "toolName": "canva_update_folder_details_by_id",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates a folder's details using its `folderID`. Currently, you can only update a folder's name.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Canva: Update folder details by id",
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "The folder name, as shown in the Canva UI (1-255 characters)."
+          },
+          "folderId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The folder ID."
+          }
+        },
+        "required": [
+          "folderId",
+          "name"
+        ],
+        "description": "Request schema for `UpdateFolderDetailsById`"
+      }
+    },
+    {
+      "id": "canva.who_am_i",
+      "tool": "CANVA_WHO_AM_I",
+      "toolName": "canva_who_am_i",
+      "lane": "read",
+      "effect": "read",
+      "description": "Return the identity (display name) of the connected Canva account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}
