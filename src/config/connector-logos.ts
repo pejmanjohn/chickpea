@@ -181,6 +181,9 @@ export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
   "clickhouse": {
     "svg": "<path d=\"M21.333 10H24v4h-2.667ZM16 1.335h2.667v21.33H16Zm-5.333 0h2.666v21.33h-2.666ZM0 22.665V1.335h2.667v21.33zm5.333-21.33H8v21.33H5.333Z\"/>"
   },
+  "paypal": {
+    "svg": "<path d=\"M15.607 4.653H8.941L6.645 19.251H1.82L4.862 0h7.995c3.754 0 6.375 2.294 6.473 5.513-.648-.478-2.105-.86-3.722-.86m6.57 5.546c0 3.41-3.01 6.853-6.958 6.853h-2.493L11.595 24H6.74l1.845-11.538h3.592c4.208 0 7.346-3.634 7.153-6.949a5.24 5.24 0 0 1 2.848 4.686M9.653 5.546h6.408c.907 0 1.942.222 2.363.541-.195 2.741-2.655 5.483-6.441 5.483H8.714Z\"/>"
+  },
   // Official Honeycomb touch icon, bundled unchanged for self-hosted/offline rendering.
   // Source: https://docs.honeycomb.io/ (retrieved 2026-10-26).
   // Asset: https://docs.honeycomb.io/mintlify-assets/_mintlify/favicons/honeycomb/7YUY9epdPvOVWjv6/_generated/favicon/apple-touch-icon.png
@@ -207,6 +210,48 @@ export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
   // Asset: https://amplitude.com/nextjs-public/favicon/apple-touch-icon.png
   "amplitude": {
     "svg": "<img src=\"/connectors/amplitude.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Clay site icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://app.clay.com/ (retrieved 2026-10-26).
+  // Asset: https://app.clay.com/assets/favicon-production-1OO0hkk9.png
+  "clay": {
+    "svg": "<img src=\"/connectors/clay.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Close touch icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://close.com/ (retrieved 2026-10-26).
+  // Asset: https://close.com/apple-touch-icon.png
+  "close": {
+    "svg": "<img src=\"/connectors/close.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Customer.io touch icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://customer.io/ (retrieved 2026-10-26).
+  // Asset: https://customer.io/apple-touch-icon.png
+  "customer-io": {
+    "svg": "<img src=\"/connectors/customer-io.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Mercury touch icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://mercury.com/ (retrieved 2026-10-26).
+  // Asset: https://mercury.com/apple-icon.png
+  "mercury": {
+    "svg": "<img src=\"/connectors/mercury.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Plain touch icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://app.plain.com/ (retrieved 2026-10-26).
+  // Asset: https://app.plain.com/images/prod-icons/apple-touch-icon.png
+  "plain": {
+    "svg": "<img src=\"/connectors/plain.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Pylon touch icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://www.usepylon.com/ (retrieved 2026-10-26).
+  // Asset: https://cdn.prod.website-files.com/6a2c6d7ab6674379553c0824/6a2c722c63cfe1af0f3302b7_webclip.png
+  "pylon": {
+    "svg": "<img src=\"/connectors/pylon.png\" alt=\"\">",
     "raster": true
   }
 };

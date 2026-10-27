@@ -270,6 +270,12 @@ export const allowedBinaryFiles = new Map([
   [exportPath('assets', 'connectors', 'motherduck.png'), 'ff5203442f0da13122fd95d64e68f6949d10f7686aaf2ee9a04f39a8b9e61da1'],
   [exportPath('assets', 'connectors', 'statsig.png'), '326e420db748304465618e09a827d194c1b56f0dc385441e4bf41b9ebdf1c0da'],
   [exportPath('assets', 'connectors', 'amplitude.png'), 'baeef57da0019e2a25cfb8f033bc501d7660c2fc03acb8c88f0d3e61ddf373e6'],
+  [exportPath('assets', 'connectors', 'clay.png'), 'c62a3475f0a75de9ec9f14bc59168056deb1fe51f636e9aa1b009afdee0b9b19'],
+  [exportPath('assets', 'connectors', 'close.png'), '95f6770978fe1b20f1f1e809169579db085330e4a1473be3e88dfd84070bc415'],
+  [exportPath('assets', 'connectors', 'customer-io.png'), '392c7fd16f5d8b198b5493231b7d4fb7bd80e22d8d4f4fcff453a79e0f214f3d'],
+  [exportPath('assets', 'connectors', 'mercury.png'), 'f7edf495198e57f6bcdcdebf10e2a974c59a86c87ca37bba7d2923a3bc045904'],
+  [exportPath('assets', 'connectors', 'plain.png'), '03169d9e56a5fa53deebd29ed4bb65cfe465f43779559775d166a800cc5c81b9'],
+  [exportPath('assets', 'connectors', 'pylon.png'), '992c08f0be8a53a1ab041e5f284357087aa85ed672c2a65b198b2e3bc3fff722'],
   [
     exportPath('assets', 'chickpea-mark.png'),
     '84864d6d3323f7d9d5491a139c0e9e0b0d92b1e076c742d5f4d50e75148b65fb',
