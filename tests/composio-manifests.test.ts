@@ -160,6 +160,11 @@ test('no tool, read or write, picks who it acts as or makes the provider mint a 
     tool('ACME_EXPORT_LINK', ['readOnlyHint'], {
       type: 'object', properties: { path: text(), mode: exportMode('store_and_link') }, required: ['path'],
     }),
+    tool('ACME_EXPORT_PDF', ['readOnlyHint'], {
+      type: 'object',
+      properties: { path: text(), generate_public_url: { type: 'boolean', default: true } },
+      required: ['path'],
+    }),
     {
       ...tool('ACME_RENDER_IMAGES', ['readOnlyHint'], { type: 'object', properties: { ids: text() } }),
       description: 'Render nodes as images. Returns a map of node IDs to temporary image URLs.',
@@ -184,6 +189,7 @@ test('no tool, read or write, picks who it acts as or makes the provider mint a 
     { mode: 'can make the provider mint a link anyone holding it can open' });
   assert.deepEqual(Object.keys(capability('ACME_UPDATE_DOCUMENT').input.properties), ['path', 'title']);
   assert.match(excluded('ACME_EXPORT_LINK') ?? '', /mode mints a shareable link by default/);
+  assert.match(excluded('ACME_EXPORT_PDF') ?? '', /generate_public_url mints a shareable link by default/);
   assert.match(excluded('ACME_RENDER_IMAGES') ?? '', /read lint hit "temporary image URLs"/);
   assert.match(excluded('ACME_CREATE_SHARED_LINK') ?? '', /^external_publish/);
 });

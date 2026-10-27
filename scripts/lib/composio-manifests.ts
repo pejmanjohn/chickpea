@@ -414,8 +414,8 @@ function deriveNode(
             return { unsupported: `required argument ${childWhere} is withheld by review` };
           }
           // Leaving out an argument whose default mints a link would still mint one.
-          if (withheld === WITHHELD_LINK && isPlainObject(child) && typeof child.default === 'string' &&
-              mintsLink(child.default)) {
+          if (withheld === WITHHELD_LINK && isPlainObject(child) &&
+              (child.default === true || (typeof child.default === 'string' && mintsLink(child.default)))) {
             return { unsupported: `${childWhere} mints a shareable link by default` };
           }
           // Withholding an argument whose default overwrites would still overwrite.
