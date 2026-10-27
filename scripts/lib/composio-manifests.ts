@@ -77,7 +77,7 @@ const READ_LINT_DESCRIPTION_VERBS = new Set(`
 `.trim().split(/\s+/));
 /** A create or update hint does not make these reversible; the lint reclassifies them as destructive. */
 const IRREVERSIBLE_MARKERS =
-  /(?:^|_)((?:ARCHIVE|CANCEL|DELETE|DESTROY|ERASE|MERGE|PURGE|REMOVE|REVOKE|TRANSFER|TRASH|VOID)(?:S|D|ED)?)(?:_|$)/;
+  /(?:^|_)((?:ARCHIVE|CANCEL|DELETE|DESTROY|ERASE|MERGE|PURGE|REMOVE|REVOKE|TRANSFER|TRASH|VOID)(?:S|D|ED|LED|RED)?)(?:_|$)/;
 const IRREVERSIBLE_DESCRIPTION_VERBS = new Set(`
   archive cancel delete destroy erase merge purge remove revoke transfer trash void
 `.trim().split(/\s+/));
@@ -146,8 +146,9 @@ function withheldArgumentReason(
   if (tokens.some((token) => RECIPIENT_TOKENS.has(token) || token.startsWith('notify')) ||
       ADDRESS_LEADING_TOKENS.has(tokens[0] ?? '') || compact.includes('replyto')) return WITHHELD_RECIPIENT;
   const identifier = tokens[0] === 'id' || tokens.at(-1) === 'id' || tokens.at(-1) === 'ids';
+  // A required container ID on update usually names the record itself (company_id on update-company).
   if (update && !required && identifier && tokens.some((token) => CONTAINER_TOKENS.has(token))) return WITHHELD_MOVE;
-  if (update && !required && tokens.some((token) => IDENTITY_TOKENS.has(token))) return WITHHELD_IDENTITY;
+  if (update && tokens.some((token) => IDENTITY_TOKENS.has(token))) return WITHHELD_IDENTITY;
   return undefined;
 }
 
@@ -537,6 +538,8 @@ export async function readSnapshot(toolkit: string, version: string): Promise<Co
   return JSON.parse(await readFile(path.join(SNAPSHOT_DIRECTORY, toolkit, `${version}.json`), 'utf8')) as ComposioSnapshot;
 }
 
+const TOOL_LIST_PAGE_LIMIT = 50;
+
 /** Reads toolkit metadata from Composio with GET requests only. */
 export async function fetchComposioToolkit(
   toolkit: string,
@@ -554,18 +557,16 @@ export async function fetchComposioToolkit(
   };
   const detail = await get(`https://backend.composio.dev/api/v3/toolkits/${slug}`);
   const items: unknown[] = [];
-  const cursors = new Set<string>();
   let cursor = '';
-  do {
+  for (let pages = 0; pages < TOOL_LIST_PAGE_LIMIT; pages += 1) {
     const page = await get(`https://backend.composio.dev/api/v3/tools?toolkit_slug=${slug}&limit=1000` +
       `&toolkit_versions=latest${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
     if (!isPlainObject(page) || !Array.isArray(page.items)) throw new Error('Composio tool list is not in the expected shape');
     items.push(...page.items);
     cursor = typeof page.next_cursor === 'string' ? page.next_cursor : '';
-    if (cursors.has(cursor)) throw new Error(`Composio repeated tool list cursor ${cursor}`);
-    if (cursor) cursors.add(cursor);
-  } while (cursor);
-  return [detail, { items }];
+    if (!cursor) return [detail, { items }];
+  }
+  throw new Error(`Composio tool list did not end after ${TOOL_LIST_PAGE_LIMIT} pages; its cursor may be looping`);
 }
 
 export function snapshotFromComposio(

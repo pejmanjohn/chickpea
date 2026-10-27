@@ -64,14 +64,17 @@ test('every committed manifest matches the generator output for its pinned snaps
   assert.deepEqual(await checkComposioManifestDirectory(), []);
 });
 
-function composioCatalog(pages: Record<string, { items: unknown[]; next_cursor: string | null }>) {
+type ToolPage = { items: unknown[]; next_cursor: string | null };
+
+function composioCatalog(pages: Record<string, ToolPage> | ((cursor: string) => ToolPage)) {
   const requested: string[] = [];
   const fetchImpl = (async (url: string | URL | Request) => {
     const address = new URL(String(url));
     requested.push(address.search);
+    const cursor = address.searchParams.get('cursor') ?? '';
     const body = address.pathname.endsWith('/toolkits/acme')
       ? { slug: 'acme', name: 'Acme', meta: { version: VERSION, description: '' }, composio_managed_auth_schemes: ['OAUTH2'] }
-      : pages[address.searchParams.get('cursor') ?? ''];
+      : typeof pages === 'function' ? pages(cursor) : pages[cursor];
     return new Response(JSON.stringify(body), { status: 200 });
   }) as typeof fetch;
   return { fetchImpl, requested };
@@ -96,11 +99,15 @@ test('the snapshot fetch follows the tool list cursor to the last page', async (
 });
 
 test('the snapshot fetch fails instead of looping on a cursor that never ends', async () => {
-  const { fetchImpl } = composioCatalog({
+  const repeating = composioCatalog({
     '': { items: [listed('ACME_WHO_AM_I')], next_cursor: 'again' },
     again: { items: [], next_cursor: 'again' },
   });
-  await assert.rejects(fetchComposioToolkit('acme', 'test-key', fetchImpl), /cursor/);
+  await assert.rejects(fetchComposioToolkit('acme', 'test-key', repeating.fetchImpl), /did not end/);
+
+  const endless = composioCatalog((cursor) => ({ items: [], next_cursor: `${cursor}x` }));
+  await assert.rejects(fetchComposioToolkit('acme', 'test-key', endless.fetchImpl), /did not end/);
+  assert.ok(endless.requested.length < 100, `${endless.requested.length} requests`);
 });
 
 test('a read-tagged tool whose name or description writes is excluded, never placed in the read lane', () => {
@@ -167,6 +174,7 @@ test('a create or update tool whose name or description is irreversible is destr
     tool('ACME_VOID_RECEIPT', ['updateHint']),
     tool('ACME_CANCEL_BOOKING', ['updateHint']),
     tool('ACME_DELETE_DRAFT', ['createHint']),
+    tool('ACME_SET_BOOKING_CANCELLED', ['updateHint']),
     { ...tool('ACME_UPDATE_RECORD_STATE', ['updateHint']), description: 'Archives a record so it no longer appears.' },
     tool('ACME_UPDATE_NOTE', ['updateHint']),
   ];
@@ -178,6 +186,7 @@ test('a create or update tool whose name or description is irreversible is destr
     { tool: 'ACME_DELETE_DRAFT', verb: 'DELETE' },
     { tool: 'ACME_MERGE_TICKETS', verb: 'MERGE' },
     { tool: 'ACME_MOVE_NOTE_TO_TRASH', verb: 'TRASH' },
+    { tool: 'ACME_SET_BOOKING_CANCELLED', verb: 'CANCELLED' },
     { tool: 'ACME_UPDATE_RECORD_STATE', verb: 'archive' },
     { tool: 'ACME_VOID_RECEIPT', verb: 'VOID' },
   ]);
@@ -606,6 +615,19 @@ test('update tools lose requester and identity arguments; create tools keep them
   assert.deepEqual(properties('ACME_CREATE_CONTACT'), ['id', 'name', 'mobile', 'requester_id', 'unique_external_id']);
 });
 
+test('an update tool whose required argument changes the requester is administrative and needs review', () => {
+  const { manifest, report } = draftComposioManifest(snapshot([
+    tool('ACME_UPDATE_TICKET_REQUESTER', ['updateHint'], {
+      type: 'object',
+      properties: { ticket_id: { type: 'integer' }, requester_id: { type: 'integer' } },
+      required: ['ticket_id', 'requester_id'],
+    }),
+  ]));
+  assert.equal(manifest.capabilities.some(({ tool: slug }) => slug === 'ACME_UPDATE_TICKET_REQUESTER'), false);
+  assert.match(report.excluded.find(({ tool: slug }) => slug === 'ACME_UPDATE_TICKET_REQUESTER')!.reason,
+    /^administrative: required argument requester_id /);
+});
+
 test('write tools lose domain, assignee, follower, owner, and webhook arguments', () => {
   const text = { type: 'string' };
   const list = { type: 'array', items: text };
@@ -740,6 +762,7 @@ test('a list move fails closed when the card lookup is empty, shaped differently
     ['board id two data levels down', () => ({ data: { data: { data: { idBoard: 'board_a' } } } }), board],
     ['failed lookup that still carries a body',
       () => ({ data: { idBoard: 'board_a' }, error: 'Card not found', successful: false }), board],
+    ['unsuccessful lookup with no error text', () => ({ data: { idBoard: 'board_a' }, successful: false }), board],
     ['lookup that throws', () => { throw new Error('socket hang up'); }, board],
     ['both lookups empty', () => ({ data: {} }), {}],
   ];
