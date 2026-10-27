@@ -670,3 +670,52 @@ test('moving a card to a list on another board is rejected before the write disp
   });
   assert.deepEqual(calls, ['TRELLO_UPDATE_CARDS_BY_ID_CARD']);
 });
+
+type CardLookup = () => { data: Record<string, unknown>; error?: string; successful?: boolean };
+
+function cardLookupProvider(card: CardLookup, list: Record<string, unknown>, calls: string[]) {
+  return new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    getConnectedAccount: async () => { throw new Error('status unavailable'); },
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: {
+        async execute(slug) {
+          calls.push(slug);
+          if (slug === 'TRELLO_GET_CARDS_BY_ID_CARD') return { error: null, successful: true, ...card() };
+          if (slug === 'TRELLO_GET_LISTS_BOARD_BY_ID_LIST') return { data: list, error: null, successful: true };
+          return { data: { id: 'card' }, error: null, successful: true };
+        },
+      },
+    }),
+  });
+}
+
+test('a list move fails closed when the card lookup is empty, shaped differently, or fails', async () => {
+  const board = { id: 'board_a' };
+  const cases: Array<[string, CardLookup, Record<string, unknown>]> = [
+    ['empty card body', () => ({ data: {} }), board],
+    ['board id under another key', () => ({ data: { card: { idBoard: 'board_a' } } }), board],
+    ['board id two data levels down', () => ({ data: { data: { data: { idBoard: 'board_a' } } } }), board],
+    ['failed lookup that still carries a body',
+      () => ({ data: { idBoard: 'board_a' }, error: 'Card not found', successful: false }), board],
+    ['lookup that throws', () => { throw new Error('socket hang up'); }, board],
+    ['both lookups empty', () => ({ data: {} }), {}],
+  ];
+
+  for (const [name, card, list] of cases) {
+    const calls: string[] = [];
+    await assert.rejects(
+      cardLookupProvider(card, list, calls).execute({
+        policy: CARD_POLICY,
+        capability: 'trello.update_cards_by_id_card',
+        arguments: { idCard: 'c'.repeat(24), idList: 'l'.repeat(24) },
+      }),
+      (error: unknown) => error instanceof ManagedProviderRequestError &&
+        error.code === 'validation_failed' && error.metadata.capabilityToolDispatched === false,
+      name,
+    );
+    assert.ok(calls.includes('TRELLO_GET_CARDS_BY_ID_CARD'), name);
+    assert.equal(calls.includes('TRELLO_UPDATE_CARDS_BY_ID_CARD'), false, name);
+  }
+});
