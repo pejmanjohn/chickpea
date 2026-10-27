@@ -27,6 +27,7 @@ import { invalidateProviderModelCache } from '../src/config/provider-models.ts';
 import { SettingsStoreLogic, SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { IdentityStoreLogic } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { currentImagePrice } from '../src/images/request-record.ts';
@@ -892,7 +893,7 @@ test('standalone is unchanged: its state object starts nothing at an Owner claim
   assert.deepEqual(receiptOutbox(db), [], 'standalone introduces its Owner from first-Owner activation instead');
 
   // Standalone's own setup lands its Owner in onboarding; plain Admin stays Admin.
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   await beginOnboardingJourney(settings);

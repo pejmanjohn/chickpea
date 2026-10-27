@@ -5,6 +5,7 @@ import { createAdminRoutes } from '../src/admin/routes.ts';
 import { InstallationContextError, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { ManagementActorContext } from '../src/management/types.ts';
@@ -42,7 +43,7 @@ function agent(id: string): Omit<CustomAgentConfig, 'revision'> {
 }
 
 function stores(t: TestContext) {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const identity = new SqliteIdentityStore(':memory:');
   t.after(() => {

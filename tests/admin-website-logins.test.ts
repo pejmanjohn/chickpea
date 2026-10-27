@@ -13,6 +13,7 @@ import {
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
@@ -40,7 +41,7 @@ const PRINCIPALS = { owner, admin, ana, bo } as const;
 type Who = keyof typeof PRINCIPALS;
 
 function fixture() {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const settings = new SqliteSettingsStore(':memory:');
   const deps: WebsiteLoginDependencies = {
     store: settings,

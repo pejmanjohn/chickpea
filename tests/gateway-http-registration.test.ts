@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {SqliteSettingsStore} from '../src/config/settings-store.ts';
 import {SqliteConfigStore} from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import {generateCredentialKeyring} from '../src/slack/credential-keyring.ts';
 import {GatewayDeploymentClient,GATEWAY_BINDING_SETTING} from '../src/slack/gateway/client.ts';
 import {GATEWAY_HTTP_SETTING,parseHttpDeliveryState} from '../src/slack/gateway/http-delivery.ts';
@@ -9,7 +10,7 @@ import {loadOrCreateGatewayDeploymentIdentity,verifyGatewayRequestSignature} fro
 
 const origin='https://worker.account.workers.dev';
 async function fixture(loss?:'prepare'|'activate'|'rollback'){
- const settings=new SqliteSettingsStore(':memory:');const config=new SqliteConfigStore(':memory:');const keyring=generateCredentialKeyring('test');
+ const settings=new SqliteSettingsStore(':memory:');const config=new SqliteConfigStore(':memory:', agentRoutineDeletion);const keyring=generateCredentialKeyring('test');
  const identity=await loadOrCreateGatewayDeploymentIdentity({settings,keyring});
  const binding={bindingId:'binding',workspaceId:'T_TEST',appId:'A_TEST',deploymentId:identity.deploymentId,clientId:'client',botUserId:'U_BOT',installerSlackUserId:'U_OWNER',sessionUrl:'wss://gateway.test/session',installedAt:1};
  await settings.setSetting(GATEWAY_BINDING_SETTING,JSON.stringify(binding));

@@ -22,7 +22,7 @@ import { executeRoutineOccurrence } from '../src/routines/execution.ts';
 import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import { prepareRoutinePrompt } from '../src/routines/prompt.ts';
 import type { RoutineRuntimeAccess } from '../src/routines/runtime.ts';
-import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineDefinition, RoutineDestination, RoutineRun } from '../src/routines/types.ts';
 
 /** A hosted routine occurrence is copied once it settles, unless its Channel is shared. */
@@ -197,7 +197,7 @@ async function activateDirectRoutine(
   direct: { statePath: string; destination: DirectDestination },
 ): Promise<void> {
   const { destination } = direct;
-  const config = new SqliteConfigStore(direct.statePath, { agents: [] });
+  const config = new SqliteConfigStore(direct.statePath, agentRoutineDeletion, { agents: [] });
   try {
     await config.createAgent({
       ...CONFIG.agent, lifecycle: 'active', creatorMembershipId: destination.ownerMembershipId,

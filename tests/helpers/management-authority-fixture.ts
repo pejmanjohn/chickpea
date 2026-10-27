@@ -18,7 +18,7 @@ import type {
   ManagementApplyResult,
   ManagementOperation,
 } from '../../src/management/types.ts';
-import { RoutineStoreLogic, SqliteRoutineStore } from '../../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../../src/routines/store.ts';
 import type { SlackChannel } from '../../src/slack/transport/types.ts';
 import { SqliteWorkStore } from '../../src/work/store.ts';
 import { createSlackOwner } from './slack-owner.ts';
@@ -81,7 +81,7 @@ export async function authorityFixture(
     authenticationSurface: 'better_auth',
     reasonCode: 'authority_gaps_test',
   });
-  const config = new SqliteConfigStore(statePath, { agents: [] }, (db) => new RoutineStoreLogic(db));
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   const routines = new SqliteRoutineStore(statePath, () => NOW);
   const work = new SqliteWorkStore(statePath);
   const management = new SqliteManagementStore(':memory:');

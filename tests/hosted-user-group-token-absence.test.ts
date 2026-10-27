@@ -7,6 +7,7 @@ import type { AuthPrincipal } from '../src/auth/types.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityResolution } from '../src/identity/types.ts';
@@ -129,7 +130,7 @@ function ownerPrincipal(owner: IdentityResolution): AuthPrincipal {
 
 async function hostedAdmin(t: TestContext) {
   const env = scopeInstallationEnv(HOSTED, { installationId: 'inst_w16_admin' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const identity = new SqliteIdentityStore(':memory:');
   t.after(() => {

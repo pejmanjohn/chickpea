@@ -6,6 +6,7 @@ import app from '../src/app.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { SLACK_RECOVERY_CALLBACK_PATH } from '../src/slack/app-manifest.ts';
@@ -65,7 +66,7 @@ test('under installation tenancy every standalone-only surface is not found, bef
 
 test('on standalone the same surfaces reach their handlers exactly as before', async () => {
   const identity = new SqliteIdentityStore(':memory:');
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     const routes = adminWith({ identity, store, settings });

@@ -20,6 +20,7 @@ import {
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore, type SettingsPatch } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { MANAGED_CONNECTOR_CATALOG, composioManifest } from '../src/connections/catalog/index.ts';
@@ -248,7 +249,7 @@ async function installation(
   installationId: string,
   envOverrides: Record<string, unknown> = {},
 ): Promise<Installation> {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const agent = await config.createAgent({
     id: 'agent_shared',
@@ -785,7 +786,7 @@ function hostedAdmin(
   overrides: Parameters<typeof createAdminRoutes>[0] = {},
   envOverrides: Record<string, unknown> = {},
 ) {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const app = new Hono();
   const members = {

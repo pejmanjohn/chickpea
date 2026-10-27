@@ -7,6 +7,7 @@ import type { AuthPrincipal } from '../src/auth/types.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { IdentityStore, RecordIdentityAuthAuditInput } from '../src/identity/types.ts';
 import { configureRunReview, type RunReviewPort } from '../src/review/port.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
@@ -49,7 +50,7 @@ function admin(t: TestContext, options: {
     getUser: async (id: string) => ({ id, slackTeamId: 'T_TEST', slackUserId: `U_${id.toUpperCase()}`, displayName: null }),
     recordAuthAudit: async (input: RecordIdentityAuthAuditInput) => { audits.push(input); },
   } as unknown as IdentityStore;
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   t.after(() => { configureRunReview(undefined); config.close(); settings.close(); usage.close(); });

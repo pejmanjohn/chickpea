@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
@@ -128,7 +129,7 @@ async function fixture(options: {
     input: { actor: AuthPrincipal; workspaceId: string; channelId: string; agentId: string },
   ) => ReturnType<AgentPresenceReconciler['publish']>;
 } = {}) {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const transport = new FakePrivateSlackTransport();
   let now = NOW;

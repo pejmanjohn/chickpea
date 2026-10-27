@@ -14,7 +14,7 @@ import type { AuthPrincipal } from '../src/auth/types.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { RoutineService } from '../src/routines/service.ts';
 import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
-import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineDefinitionContent } from '../src/routines/types.ts';
 import type { SlackTransport } from '../src/slack/transport/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
@@ -100,7 +100,7 @@ async function seedActiveRoutine(store: SqliteRoutineStore, routineId: string, n
 test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and controllable', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-')), 'state.db');
   const routines = new SqliteRoutineStore(path);
-  const config = new SqliteConfigStore(path, { agents: [] });
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(path);
   const work = new SqliteWorkStore(path);
   try {
@@ -400,7 +400,7 @@ test('direct schedules are absent from shared list, detail, and mutation surface
   const routines = new SqliteRoutineStore(path, () => NOW);
   const work = new SqliteWorkStore(path, { now: () => NOW });
   const usage = new SqliteUsageStore(path, () => NOW);
-  const config = new SqliteConfigStore(path, { agents: [] });
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(path);
   const destination = {
     kind: 'direct_thread' as const,
@@ -680,7 +680,7 @@ test('private schedule projections are readable only to proven Channel members a
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-private-member-')), 'state.db');
   const routines = new SqliteRoutineStore(path);
   const work = new SqliteWorkStore(path);
-  const config = new SqliteConfigStore(path, { agents: [] });
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(path);
   const canary = 'PRIVATE_MEMBER_ROUTINE_CANARY';
   const identity = {
@@ -1052,7 +1052,7 @@ test('unknown schedule visibility stays private but remains readable to a proven
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-unknown-member-')), 'state.db');
   const routines = new SqliteRoutineStore(path);
   const work = new SqliteWorkStore(path);
-  const config = new SqliteConfigStore(path, { agents: [] });
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(path);
   const canary = 'UNKNOWN_VISIBILITY_MEMBER_CANARY';
   const identity = {
@@ -1131,7 +1131,7 @@ test('private schedule authorization fails closed with one Slack membership look
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-private-failure-')), 'state.db');
   const routines = new SqliteRoutineStore(path, () => NOW);
   const work = new SqliteWorkStore(path, { now: () => NOW });
-  const config = new SqliteConfigStore(path, { agents: [] });
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(path);
   let membershipCalls = 0;
   const sourceIdentity = {

@@ -19,6 +19,7 @@ import { OAUTH_KEEPALIVE_AGE_MS } from '../src/config/oauth-shared.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ApiConnectionConfig, McpConnectionConfig } from '../src/config/types.ts';
 import { runOAuthKeepAliveSweep } from '../src/connections/oauth-keepalive.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
@@ -91,7 +92,7 @@ function installation() {
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-credential-rollback-'));
   const path = join(dir, 'state.sqlite');
   const open = () => ({
-    config: new SqliteConfigStore(path, { agents: [] }),
+    config: new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] }),
     settings: new SqliteSettingsStore(path),
   });
   let stores = open();

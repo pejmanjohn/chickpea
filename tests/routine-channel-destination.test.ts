@@ -6,7 +6,7 @@ import { WorkspaceManagementService } from '../src/management/service.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import { invokeSlackScheduleAction } from '../src/management/slack-schedule-actions.ts';
 import { resolveSlackManagementActor } from '../src/management/slack-tools.ts';
-import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
@@ -15,7 +15,7 @@ const NOW = Date.UTC(2026, 7, 27, 18);
 
 test('Channel creation separates request thread from saved delivery and edits preserve that destination', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const routines = new SqliteRoutineStore(':memory:', () => NOW);
   try {
@@ -144,7 +144,7 @@ test('Channel creation separates request thread from saved delivery and edits pr
 
 test('a schedule is saved with the person\'s request as its source, and an ask cannot save one directly', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const routines = new SqliteRoutineStore(':memory:', () => NOW);
   try {

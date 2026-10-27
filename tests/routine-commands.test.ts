@@ -16,7 +16,7 @@ import { normalizeRoutineSchedule } from '../src/routines/schedule.ts';
 import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import type { RoutineCapability } from '../src/routines/scheduler-adapter.ts';
 import { RoutineService } from '../src/routines/service.ts';
-import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineDefinition, RoutineStore } from '../src/routines/types.ts';
 import { SLACK_MENTION_BREAK } from '../src/slack/message-format.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
@@ -193,7 +193,7 @@ test('only a cross-channel Routine list is requester-only', () => {
 test('read-only exact commands do not open process-global identity state', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-routine-command-identity-'));
   const store = new SqliteRoutineStore(':memory:', () => NOW);
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     await withEnv({ SLACK_STATE_DB_PATH: dir }, async () => {
       const dependencies = {
@@ -301,7 +301,7 @@ test('exact DM commands need no deployment flag and stay scoped across threads',
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-direct-routine-commands-'));
   const path = join(dir, 'state.db');
   const store = new SqliteRoutineStore(path, () => NOW);
-  const config = new SqliteConfigStore(path, { agents: [] });
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   try {
     const supportAgent = await config.createAgent({
       id: 'agent_direct_support', name: 'Direct support', instructions: 'Help.', enabled: true,
@@ -516,7 +516,7 @@ test('a clone whose required connection the member no longer holds writes nothin
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-clone-connection-'));
   const path = join(dir, 'state.db');
   const store = new SqliteRoutineStore(path, () => NOW);
-  const config = new SqliteConfigStore(path, { agents: [] });
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   const identity = new SqliteIdentityStore(':memory:');
   try {
     const owner = await createSlackOwner(identity, { teamId: 'T_TEST', userId: 'U_MEMBER', suffix: 'clone_connection' });
@@ -600,7 +600,7 @@ test('a disabled routine shows no next run in the exact list and detail', async 
 
 test('a saved request reads a user-group mention as the group\'s name', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     await config.createAgent({
       id: 'agent_support', name: 'Support', instructions: 'Help.', enabled: true, lifecycle: 'active',

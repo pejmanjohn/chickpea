@@ -12,6 +12,7 @@ import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { UnknownAgentError } from '../src/config/errors.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
@@ -636,7 +637,7 @@ function harness(
   backing: { store?: SqliteConfigStore; settings?: SqliteSettingsStore } = {},
   principal?: AuthPrincipal,
 ) {
-  const store = backing.store ?? new SqliteConfigStore(':memory:');
+  const store = backing.store ?? new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const settings = backing.settings ?? new SqliteSettingsStore(':memory:');
   const sourceIdentity = identity();
   const authority = testAdminAuthority(TOKEN, undefined, sourceIdentity, principal);
@@ -2670,7 +2671,7 @@ test('retargeting and same-id reset retire only the affected static credentials'
 });
 
 test('an MCP secret write that loses a concurrent policy race is scrubbed', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let releaseWrite: (() => void) | undefined;
   let reachedWrite: (() => void) | undefined;
@@ -3525,7 +3526,7 @@ test('an unsaved same-origin MCP retarget cannot borrow the saved bearer credent
 });
 
 test('a completed older MCP write cannot delete a newer same-incarnation credential', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const originalGetAgent = store.getAgent.bind(store);
   let readCount = 0;
@@ -5554,7 +5555,7 @@ test('revoking an Agent-owned API OAuth account deletes its client and token set
 });
 
 test('Channel use does not expose a non-editor Agent in Admin', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const identities = new SqliteIdentityStore(':memory:');
   const transport = new FakeTransport();
@@ -5984,7 +5985,7 @@ test('workspace Members cannot use legacy connector authority from a creator-onl
     correlationId: 'request_test_member',
     machine: false,
   };
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const agentId = 'agent_other_creator';
   const mcpConnectionId = 'legacy-mcp';

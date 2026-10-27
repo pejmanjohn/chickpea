@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { ConfigStoreLogic } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import {
   closeNodeStateStores,
   getNodeGatewayInboxStore,
@@ -199,7 +200,7 @@ test('Node gateway admission rejects cross-workspace, replaced, and revoked auth
 
     const db = openStateDb(path);
     try {
-      const config = new ConfigStoreLogic(db);
+      const config = new ConfigStoreLogic(db, agentRoutineDeletion);
       const current = config.getWorkspaceInstallation('T_TEST')!;
       config.updateWorkspaceInstallation('T_TEST', { health: 'revoked' }, current.revision);
     } finally {
@@ -488,7 +489,7 @@ function seedGatewayBinding(path: string): void {
   const db = openStateDb(path);
   try {
     const binding = gatewayBinding();
-    const config = new ConfigStoreLogic(db);
+    const config = new ConfigStoreLogic(db, agentRoutineDeletion);
     const installation = config.ensureWorkspaceInstallation({
       workspaceId: binding.workspaceId,
       transportMode: 'gateway',

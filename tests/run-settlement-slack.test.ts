@@ -23,6 +23,7 @@ import {
 } from '../src/config/platform-funding.ts';
 import { closeNodeStateStores, type PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import {
   AgentPromptFailure,
@@ -115,7 +116,7 @@ async function turnState(t: TestContext): Promise<void> {
     });
     rmSync(directory, { recursive: true, force: true });
   });
-  const config = new SqliteConfigStore(statePath, { agents: [] });
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   await config.createAgent(ASSIGNMENT.agent);
   const installation = await config.ensureWorkspaceInstallation({
     workspaceId: TEAM, transportMode: 'direct', defaultAgentId: ASSIGNMENT.agentId,

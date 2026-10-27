@@ -9,6 +9,7 @@ import {
 import { InstallationContextError, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { SettingsPatch } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ConnectionAccount } from '../src/config/types.ts';
 import {
   ComposioPlatformConfigurationError,
@@ -90,7 +91,7 @@ function principal(installationId: string): string {
 
 /** One installation with colliding local IDs: the same Agent, account and schedule IDs as its neighbour. */
 async function installation(t: TestContext, installationId: string, accounts: number, prepared: { generation: number; lineage: string }) {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   t.after(() => config.close());
   await config.createAgent({
     id: 'agent_shared', name: 'Mail', instructions: 'Help with mail.', enabled: true,
@@ -220,7 +221,7 @@ test('a missing or pending platform record refuses before any inspection; standa
   const settings = new PlatformSettings();
   configureComposioPlatformSettings(() => settings);
   t.after(() => configureComposioPlatformSettings(undefined));
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   t.after(() => config.close());
   const env = scopeInstallationEnv({ ...DEPLOYMENT, COMPOSIO_API_KEY: OLD_KEY }, { installationId: 'inst_rec_a' });
   const inspect = async () => { throw new Error('nothing is inspected'); };

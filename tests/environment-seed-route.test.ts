@@ -12,6 +12,7 @@ import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { resolveConnectionAccountSecret } from '../src/config/connector-secrets.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -37,7 +38,7 @@ function qaAgent(): CustomAgentConfig {
 }
 
 test('the seed route creates a token connection as the workspace owner and is idempotent', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [qaAgent()] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [qaAgent()] });
   const settings = new SqliteSettingsStore(':memory:');
   const identity = new SqliteIdentityStore(':memory:');
   const backend = new NodeBetterAuthBackend(':memory:');
@@ -121,7 +122,7 @@ test('the seed route creates a token connection as the workspace owner and is id
 });
 
 async function seededLane(agents: CustomAgentConfig[]) {
-  const store = new SqliteConfigStore(':memory:', { agents });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents });
   const settings = new SqliteSettingsStore(':memory:');
   const identity = new SqliteIdentityStore(':memory:');
   const backend = new NodeBetterAuthBackend(':memory:');

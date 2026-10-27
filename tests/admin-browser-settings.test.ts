@@ -8,6 +8,7 @@ import { verifyBrowserbaseApiKey } from '../src/browser/browserbase.ts';
 import { recordBrowserSessionUsage } from '../src/browser/settings.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { withEnv } from './helpers/env.ts';
 import { fakeFetch } from './helpers/fake-cdp-socket.ts';
@@ -32,7 +33,7 @@ async function withBrowserAdmin(
   run: (app: Hono, settings: SqliteSettingsStore, keysChecked: () => string[]) => Promise<void>,
 ): Promise<void> {
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   app.route('/', createAdminRoutes({ store: config, settings, ...testAdminAuthority(ADMIN_TOKEN) }));
   const { calls, fetchImpl } = fakeFetch((call) => {

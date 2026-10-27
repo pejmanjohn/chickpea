@@ -20,6 +20,7 @@ import { resolveInstallationEnv } from '../src/config/installation-lookup.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { identityError } from '../src/identity/errors.ts';
 import type { AuthControl, IdentityStore } from '../src/identity/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
@@ -51,7 +52,7 @@ function counted<T extends object>(target: T, calls: string[], prefix: string): 
 async function signedInAdmin(lacking: readonly string[] = []) {
   const identity = new SqliteIdentityStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const backend = new NodeBetterAuthBackend(':memory:');
   const environment = { backend, baseURL: ORIGIN, secret: SECRET };
   const signedIn = await activateInstallerOwner({
@@ -266,7 +267,7 @@ async function hostedSignedInAdmin(t: TestContext, options: { hostReadsLogin: bo
   const installation = { organizationId: 'org_acme', installationId: 'inst_acme' };
   const identity = new SqliteIdentityStore(':memory:', { installation: () => installation });
   const settings = new SqliteSettingsStore(':memory:');
-  const config_ = new SqliteConfigStore(':memory:', { agents: [] });
+  const config_ = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   t.after(async () => {
     identity.close();
     settings.close();
@@ -408,7 +409,7 @@ test('a routed session serves only a request presenting the same cookie', { time
   app.route('/', createAdminRoutes({
     identity,
     settings: new SqliteSettingsStore(':memory:'),
-    store: new SqliteConfigStore(':memory:', { agents: [] }),
+    store: new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] }),
   }));
   const bare = await app.fetch(new Request(`${HOSTED_ORIGIN}/admin/api/providers`), routed.env);
   assert.equal(bare.status, 401);

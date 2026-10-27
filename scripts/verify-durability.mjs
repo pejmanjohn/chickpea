@@ -158,7 +158,7 @@ async function firstWireAfter(index, timeoutMs = 15_000) {
 const { FakeSlackBackend } = await loadFake();
 const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
 const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
-const { SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
+const { agentRoutineDeletion, SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
 const { hashRoutineValue } = await loadTsModule('src/routines/ids.ts');
 const backend = new FakeSlackBackend({
   slack: {
@@ -383,7 +383,7 @@ try {
 
       // A config-only open stands in for rollback code that knows nothing about
       // the additive memory tables: it must boot and leave them untouched.
-      const configOnly = new SqliteConfigStore(memoryPath, { agents: [], grants: [] });
+      const configOnly = new SqliteConfigStore(memoryPath, agentRoutineDeletion, { agents: [], grants: [] });
       await configOnly.listAgents();
       configOnly.close();
 

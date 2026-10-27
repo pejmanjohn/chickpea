@@ -15,6 +15,7 @@ import {
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { ConnectionAccountAlreadyBoundError } from '../src/config/errors.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import {
   ConnectionAccountService,
 } from '../src/connections/store.ts';
@@ -278,7 +279,7 @@ test('active connection actor rejects stale workspace, access, and exact identit
 });
 
 test('a connection account cannot be bound to a second Agent', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
   const productEvents: unknown[] = [];
@@ -355,7 +356,7 @@ test('a connection account cannot be bound to a second Agent', async () => {
 });
 
 test('Agent-scoped creation rolls back its account, binding, and staged secret together', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
   const service = new ConnectionAccountService({
@@ -402,7 +403,7 @@ test('Agent-scoped creation rolls back its account, binding, and staged secret t
 });
 
 test('personal accounts resolve only for their owner and language selects a unique label', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
   const service = new ConnectionAccountService({ config, settings, randomId: () => `id${++nextId}` });
@@ -808,7 +809,7 @@ test('broad and service-specific native Google accounts retain their legacy grou
 });
 
 test('a member-owned binding never substitutes another member unbound account', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
   const service = new ConnectionAccountService({ config, settings, randomId: () => `id${++nextId}` });
@@ -1213,7 +1214,7 @@ test('foreign managed resource templates never project an unbound member account
 });
 
 test('personal MCP accounts cannot substitute a different credential header policy', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
   const service = new ConnectionAccountService({ config, settings, randomId: () => `header${++nextId}` });
@@ -1264,7 +1265,7 @@ test('personal MCP accounts cannot substitute a different credential header poli
 });
 
 test('revocation and retry keep the exact schedule dependency after tombstoning the secret', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
   const service = new ConnectionAccountService({ config, settings, randomId: () => `id${++nextId}` });
@@ -1469,7 +1470,7 @@ test('OAuth continuation repair prunes a pending entry that expired before autho
 });
 
 test('missing actor account starts one account-owned OAuth flow from the Agent provider capability', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
   const service = new ConnectionAccountService({ config, settings, randomId: () => `seed${++nextId}` });

@@ -9,6 +9,7 @@ import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { agentTeammateHandles, agentTeammateInstructions } from '../src/config/effective-config.ts';
 import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 import {
   AGENT_ASK_PAUSE_TEXT,
@@ -302,7 +303,7 @@ test('teammate instructions name whom an Agent can ask and how', () => {
 });
 
 async function routingFixture() {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const support = await store.createAgent(agentInput('agent_support', 'Support', 'support'));
   const finance = await store.createAgent(agentInput('agent_finance', 'Finance', 'finance'));
   const legal = await store.createAgent(agentInput('agent_legal', 'Legal', 'legal'));

@@ -8,6 +8,7 @@ import {
 } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import {
   HOSTED_SLACK_INSTALLATION_ID,
   WORKSPACE_SLACK_INSTALLATION_ID,
@@ -57,7 +58,7 @@ const ENV = scopeInstallationEnv(HOSTED, { installationId: 'inst_tenant_a' });
 
 function installation(t: TestContext) {
   const identity = new SqliteIdentityStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => {
     identity.close();

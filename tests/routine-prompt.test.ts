@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { WebClient } from '@slack/web-api';
 import { createFlueContext } from '@flue/runtime/internal';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 
 import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
 import { CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME } from '../src/agents/names.ts';
@@ -135,7 +136,7 @@ test('a private routine hydrates only its stored thread with the saved task as a
 });
 
 test('scheduled thread prompts recover bounded admitted corrections', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const threadTs = '1785000000.000100';
   const scheduledFor = 1_785_001_000_000;
   const scheduled = { id: 'routine_context', workspaceId: 'T_TEST', channelId: 'D_TEST',

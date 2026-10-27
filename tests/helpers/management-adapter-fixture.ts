@@ -19,7 +19,7 @@ import type {
   ManagementOperation,
 } from '../../src/management/types.ts';
 import { SqliteMemoryStateStore } from '../../src/memory/store.ts';
-import { SqliteRoutineStore } from '../../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../../src/routines/store.ts';
 import { createSlackOwner } from './slack-owner.ts';
 
 /** The tools every open MCP server offers in this fixture unless a test supplies its own discovery. */
@@ -58,7 +58,7 @@ export async function createManagementAdapterFixture(
     betterAuthUserId: `ba_user_${suffix}_admin`,
     betterAuthMembershipId: `ba_member_${suffix}_admin`,
   });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const memory = new SqliteMemoryStateStore(':memory:', () => now);
   const routines = new SqliteRoutineStore(':memory:', () => now);

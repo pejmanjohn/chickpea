@@ -25,6 +25,7 @@ import {
 } from '../src/config/mcp-secrets.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -166,7 +167,7 @@ test('under tenancy the coding sandbox install, uninstall and settings routes ar
 
 test('the retired Outbound access route is not found in either mode, and its setting is neither read nor written', async (t) => {
   const settings = new SqliteSettingsStore(':memory:');
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   t.after(() => { settings.close(); store.close(); });
   const routes = createAdminRoutes({ store, settings, ...testAdminAuthority('egress-retired-token') });
   const headers = { ...testAdminHeaders('egress-retired-token'), 'content-type': 'application/json' };
@@ -198,7 +199,7 @@ test('under tenancy no turn or occurrence is offered the browser, even with a de
 
 test('the hosted Admin page tells its client the browser is not offered and the deployment is not self-hosted; standalone\'s says both are', async (t) => {
   const settings = new SqliteSettingsStore(':memory:');
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   t.after(() => { settings.close(); store.close(); });
   const routes = createAdminRoutes({ store, settings, ...testAdminAuthority('feature-guard-token') });
   const page = async (env?: Record<string, unknown>) => (await routes.request('http://localhost/admin', {

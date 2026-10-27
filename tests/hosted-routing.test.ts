@@ -37,6 +37,7 @@ import { installationScopeOf, scopeInstallationEnv } from '../src/config/install
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { holdUntilResponseEnds } from '../src/http/response-lifetime.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { startPostgresTestCluster, type PostgresTestClusterStart } from './helpers/postgres-cluster.ts';
@@ -231,7 +232,7 @@ async function hostedDeployment(t: TestContext) {
     const key = installationScopeOf(env)!.installationId;
     let app = adminApps.get(key);
     if (!app) {
-      const store = new SqliteConfigStore(':memory:', { agents: [] });
+      const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
       const settings = new SqliteSettingsStore(':memory:');
       defer(() => { store.close(); settings.close(); });
       app = createAdminRoutes({ identity: storeOf(env), store, settings });
@@ -326,7 +327,7 @@ test('a session and an MCP token reach only their own installation; nothing the 
   }
   const crossAdmin = await createAdminRoutes({
     identity: hosted.storeOf(betaEnv),
-    store: new SqliteConfigStore(':memory:', { agents: [] }),
+    store: new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] }),
     settings: new SqliteSettingsStore(':memory:'),
   }).fetch(hosted.adminRequest('/admin/api/team', acme.ownerCookie), withHostedLogin(betaEnv, acmeRoute.login));
   assert.equal(crossAdmin.status, 401);
@@ -730,7 +731,7 @@ test('a routed request carries its session and stored principal, for its own ins
   }) as PlatformEnv;
   const crossAdmin = await createAdminRoutes({
     identity: hosted.storeOf(betaEnv),
-    store: new SqliteConfigStore(':memory:', { agents: [] }),
+    store: new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] }),
     settings: new SqliteSettingsStore(':memory:'),
   }).fetch(hosted.adminRequest('/admin/api/team', acme.ownerCookie), confused);
   assert.equal(crossAdmin.status, 401);

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { AgentPresenceError, agentPresenceRecovery } from '../src/slack/agent-presence/errors.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
@@ -95,7 +96,7 @@ function agent(): CustomAgentConfig {
 async function agentPublishedWhereSlackRefusesTheBot(t: TestContext) {
   t.mock.method(console, 'warn', () => undefined);
   t.mock.method(console, 'info', () => undefined);
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   t.after(() => config.close());
   const slack = new FakeSlackWorkspace();
   slack.refusals.bot['usergroups.disable'] = 'permission_denied';

@@ -11,6 +11,7 @@ import {
   CONFIG_SCHEMA_VERSION,
   ConfigStoreLogic,
 } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import {
   ModelRoleRevisionConflictError,
   WorkspaceModelDefaultRevisionConflictError,
@@ -130,7 +131,7 @@ test('fresh config state installs the exact Agent-first schema marker atomically
     };
 
     assert.throws(
-      () => new ConfigStoreLogic(interrupted, { agents: [] }),
+      () => new ConfigStoreLogic(interrupted, agentRoutineDeletion, { agents: [] }),
       /simulated schema interruption/,
     );
     assert.deepEqual(
@@ -138,7 +139,7 @@ test('fresh config state installs the exact Agent-first schema marker atomically
       [],
     );
 
-    new ConfigStoreLogic(interrupted, { agents: [] });
+    new ConfigStoreLogic(interrupted, agentRoutineDeletion, { agents: [] });
     assert.equal(
       db.get("SELECT value FROM config_meta WHERE key = 'schema_version'")?.value,
       String(CONFIG_SCHEMA_VERSION),
@@ -153,7 +154,7 @@ test('fresh config state installs the exact Agent-first schema marker atomically
 
     // A second target-neutral construction is a no-op and uses no PRAGMA-only
     // migration behavior, matching Durable Object SQLite's StateDb contract.
-    new ConfigStoreLogic(interrupted, { agents: [] });
+    new ConfigStoreLogic(interrupted, agentRoutineDeletion, { agents: [] });
   } finally {
     db.close();
   }
@@ -166,7 +167,7 @@ test('legacy numeric config ledgers fail closed before Agent-first tables are in
     db.run("INSERT INTO config_meta (key, value) VALUES ('schema_version', '11')");
 
     assert.throws(
-      () => new ConfigStoreLogic(db, { agents: [] }),
+      () => new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] }),
       /incompatible pre-Agent config state; use a fresh deployment/,
     );
     assert.equal(
@@ -189,7 +190,7 @@ test('an exact numeric version without the Agent-first marker is never accepted'
     );
 
     assert.throws(
-      () => new ConfigStoreLogic(db, { agents: [] }),
+      () => new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] }),
       /incompatible pre-Agent config state; use a fresh deployment/,
     );
   } finally {
@@ -229,7 +230,7 @@ test('prelaunch marked state with inert Channel behavior columns remains writabl
       'already-seeded',
     );
 
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     assert.deepEqual(store.putChannel({
       workspaceId: 'TACME',
       channelId: 'CNEW',
@@ -260,7 +261,7 @@ test('schema 12 receives additive Chickpea contracts without changing its baseli
   const db = openStateDb(':memory:');
   try {
     installSchema12Fixture(db);
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
 
     assert.equal(
       db.get('SELECT value FROM config_meta WHERE key = ?', 'schema_version')?.value,
@@ -322,7 +323,7 @@ test('schema 12 receives additive Chickpea contracts without changing its baseli
       modelDefault: store.getWorkspaceModelDefault('TACME'),
       route: store.getAgentThreadRoute('TACME', 'D1', '100.1'),
     });
-    const reopened = new ConfigStoreLogic(db, { agents: [] });
+    const reopened = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     assert.equal(JSON.stringify({
       agents: reopened.listAgents(),
       modelDefault: reopened.getWorkspaceModelDefault('TACME'),
@@ -382,7 +383,7 @@ test('the credential-binding migration replaces every preexisting internal ref',
       );
     }
 
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const migrated = store.getAgent('agent_default');
     const mcpRef = migrated.mcpServers[0]?.credentialRef;
     const apiRef = migrated.apiConnections[0]?.credentialRef;
@@ -424,7 +425,7 @@ test('the credential-binding migration replaces every preexisting internal ref',
       CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
     ));
 
-    const reopened = new ConfigStoreLogic(db, { agents: [] }).getAgent('agent_default');
+    const reopened = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] }).getAgent('agent_default');
     assert.equal(reopened.mcpServers[0]?.credentialRef, mcpRef);
     assert.equal(reopened.apiConnections[0]?.credentialRef, apiRef);
   } finally {
@@ -491,7 +492,7 @@ test('credential migration preserves connection-account OAuth keys when an Agent
       );
     }
 
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     assert.equal(store.getAgent(collisionId).id, collisionId);
     for (const key of protectedKeys) {
       assert.ok(db.get('SELECT 1 AS present FROM app_settings WHERE key = ?', key), key);
@@ -564,12 +565,12 @@ test('the first start removes every legacy Agent secret, including those of dele
     installSchema12Fixture(db);
     seedAppSettings(db, [...LEGACY_AGENT_SECRET_KEYS, ...NON_LEGACY_SECRET_KEYS]);
 
-    new ConfigStoreLogic(db, { agents: [] });
+    new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     assert.deepEqual(settingKeys(db), [...NON_LEGACY_SECRET_KEYS].sort());
     assert.ok(appliedMigrations(db).some(({ id }) => id === CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION));
 
     const before = JSON.stringify({ keys: settingKeys(db), migrations: appliedMigrations(db) });
-    new ConfigStoreLogic(db, { agents: [] });
+    new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     assert.equal(JSON.stringify({ keys: settingKeys(db), migrations: appliedMigrations(db) }), before);
   } finally {
     db.close();
@@ -615,7 +616,7 @@ test('every start removes the legacy Agent secrets an earlier release saved afte
   try {
     installSchema12Fixture(db);
     seedAppSettings(db, NON_LEGACY_SECRET_KEYS);
-    new ConfigStoreLogic(db, { agents: [] });
+    new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     // Release-candidate builds recorded the removal as a one-time step.
     db.run(
       'INSERT OR IGNORE INTO config_migrations (id, applied_at) VALUES (?, 1)',
@@ -641,7 +642,7 @@ test('every start removes the legacy Agent secrets an earlier release saved afte
 
     // Forward again. Rolling back once more and creating an Agent with the
     // same ID would otherwise show it these secrets as already saved.
-    new ConfigStoreLogic(db, { agents: [] });
+    new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     assert.deepEqual(settingKeys(db), [...NON_LEGACY_SECRET_KEYS].sort());
     assert.deepEqual(db.get(
       'SELECT applied_at FROM config_migrations WHERE id = ?',
@@ -655,7 +656,7 @@ test('every start removes the legacy Agent secrets an earlier release saved afte
 test('a fresh installation accepts v0.1.33 Agent writes, and the next start binds them', () => {
   const db = openStateDb(':memory:');
   try {
-    new ConfigStoreLogic(db, { agents: [] });
+    new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     insertV0133Agent(db, 'agent_rolled_back');
     insertV0133Agent(db, 'agent_deleted_in_admin');
     // v0.1.33's Admin deleteAgentWithMemory, whose receipt predates
@@ -668,11 +669,11 @@ test('a fresh installation accepts v0.1.33 Agent writes, and the next start bind
       'delete-in-admin', '*', 'agent_deleted_in_admin', 1,
     );
 
-    const agent = new ConfigStoreLogic(db, { agents: [] }).getAgent('agent_rolled_back');
+    const agent = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] }).getAgent('agent_rolled_back');
     assert.match(agent.credentialIncarnation ?? '', /^agent_[0-9a-f]{32}$/);
     assert.match(agent.mcpServers[0]?.credentialRef ?? '', /^connection_[0-9a-f]{32}$/);
     assert.match(agent.apiConnections[0]?.credentialRef ?? '', /^connection_[0-9a-f]{32}$/);
-    const reopened = new ConfigStoreLogic(db, { agents: [] }).getAgent('agent_rolled_back');
+    const reopened = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] }).getAgent('agent_rolled_back');
     assert.deepEqual(reopened, agent);
   } finally {
     db.close();
@@ -683,7 +684,7 @@ test('Stage 2 materializes one immutable Chickpea principal outside user-Agent l
   const db = openStateDb(':memory:');
   try {
     installSchema12Fixture(db);
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
 
     const created = store.materializeChickpeaAgent();
     const repeated = store.materializeChickpeaAgent();
@@ -721,7 +722,7 @@ test('cutover activation is atomic, preserves route owners, and supports compati
   const db = openStateDb(':memory:');
   try {
     installSchema12Fixture(db);
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
 
     const activated = store.activateChickpeaCutover({
       workspaceId: 'TACME',
@@ -793,7 +794,7 @@ test('cutover preserves uncertain and known explicit Agent pins', () => {
       'UPDATE config_agents SET configuration_generation = 2 WHERE id = ?',
       'agent_default',
     );
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const preflight = store.preflightChickpeaCutover('TACME');
 
     assert.equal(preflight.modelClassification, 'explicit_agent_pin');
@@ -820,7 +821,7 @@ test('Stage 1 captures an environment-only default exactly once', () => {
   try {
     installSchema12Fixture(db);
     db.run('UPDATE config_agents SET model = NULL WHERE id = ?', 'agent_default');
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
 
     assert.equal(store.preflightChickpeaCutover('TACME').modelClassification, 'model_missing');
     const prepared = store.prepareChickpeaCutover({
@@ -849,7 +850,7 @@ test('activation fails closed for a missing default or reserved identity collisi
   try {
     installSchema12Fixture(missingDb);
     missingDb.run('UPDATE config_agents SET model = NULL WHERE id = ?', 'agent_default');
-    const missingStore = new ConfigStoreLogic(missingDb, { agents: [] });
+    const missingStore = new ConfigStoreLogic(missingDb, agentRoutineDeletion, { agents: [] });
     assert.throws(
       () => missingStore.activateChickpeaCutover({
         workspaceId: 'TACME',
@@ -869,7 +870,7 @@ test('activation fails closed for a missing default or reserved identity collisi
   try {
     installSchema12Fixture(collisionDb);
     collisionDb.run('UPDATE config_agents SET name = ? WHERE id = ?', 'Chick pea', 'agent_default');
-    const collisionStore = new ConfigStoreLogic(collisionDb, { agents: [] });
+    const collisionStore = new ConfigStoreLogic(collisionDb, agentRoutineDeletion, { agents: [] });
     assert.deepEqual(collisionStore.preflightChickpeaCutover('TACME').collisions, [{
       agentId: 'agent_default',
       field: 'name',
@@ -893,7 +894,7 @@ test('activation fails closed for a missing default or reserved identity collisi
 test('a fresh installation creates Chickpea as its default and the keyless Workspace default atomically', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: createSeededAgents() });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: createSeededAgents() });
     assert.deepEqual(store.listUserAgents(), []);
     const installation = store.ensureWorkspaceInstallation({
       workspaceId: 'TNEW',
@@ -934,14 +935,14 @@ test('an installation whose deployment cannot run the keyless model starts with 
   const db = openStateDb(':memory:');
   const seededDb = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: createSeededAgents() });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: createSeededAgents() });
     store.ensureWorkspaceInstallation({ workspaceId: 'TKEYLESS', transportMode: 'direct', keylessModelDefault: false });
     const keyless = store.getWorkspaceModelDefault('TKEYLESS');
     assert.deepEqual(
       { modelId: keyless?.modelId, provenance: keyless?.provenance },
       { modelId: undefined, provenance: 'migration_pending' },
     );
-    const seeded = new ConfigStoreLogic(seededDb, { agents: createSeededAgents() });
+    const seeded = new ConfigStoreLogic(seededDb, agentRoutineDeletion, { agents: createSeededAgents() });
     seeded.ensureWorkspaceInstallation({ workspaceId: 'TSEEDED', transportMode: 'direct' });
     assert.equal(seeded.getWorkspaceModelDefault('TSEEDED')?.modelId, 'cloudflare/@cf/zai-org/glm-4.7-flash',
       'standalone Cloudflare keeps its keyless first run');
@@ -961,7 +962,7 @@ test('Workspace default writes use optimistic revisions', () => {
   const db = openStateDb(':memory:');
   try {
     installSchema12Fixture(db);
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
 
     const updated = store.putWorkspaceModelDefault({
       workspaceId: 'TACME',
@@ -989,7 +990,7 @@ test('Workspace default writes use optimistic revisions', () => {
 test('removing an Agent thread route also removes its private public-context rows', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: [createDemoStarterAgent()] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
     store.putAgentThreadRoute({
       workspaceId: 'T1', channelId: 'D1', threadTs: '100.1',
       agentId: 'agent_default', agentGeneration: 1,
@@ -1010,7 +1011,7 @@ test('removing an Agent thread route also removes its private public-context row
 test('the private public-context ledger prunes old rows per Slack root', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db);
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion);
     for (let index = 0; index < 205; index += 1) {
       store.putSlackPublicContext({
         workspaceId: 'T1', channelId: 'D1', rootTs: '100.1',
@@ -1029,7 +1030,7 @@ test('the private public-context ledger prunes old rows per Slack root', () => {
 test('the private public-context ledger expires inactive roots after 30 days', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db);
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion);
     store.putSlackPublicContext({
       workspaceId: 'T1', channelId: 'D1', rootTs: 'stale', messageTs: '100.1',
       role: 'human', text: 'Expired context',
@@ -1065,7 +1066,7 @@ test('the private public-context ledger expires inactive roots after 30 days', (
 test('Agent replies from an expired thread are not imported across roots before the sweep', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     store.createAgent({ id: 'agent_dm', name: 'DM', instructions: '', enabled: true, lifecycle: 'active',
       creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [],
       apiConnections: [], repositories: [] });
@@ -1087,7 +1088,7 @@ test('Agent replies from an expired thread are not imported across roots before 
 test('a private draft may hold only a pending publication grant until activation', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const draft = store.createAgent({
       id: 'agent_draft',
       name: 'Draft',
@@ -1128,7 +1129,7 @@ test('a private draft may hold only a pending publication grant until activation
 test('model role tables install additively on a fresh store and on schema 12', () => {
   const fresh = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(fresh, { agents: createSeededAgents() });
+    const store = new ConfigStoreLogic(fresh, agentRoutineDeletion, { agents: createSeededAgents() });
     store.ensureWorkspaceInstallation({ workspaceId: 'TROLE', transportMode: 'gateway' });
 
     assert.equal(
@@ -1149,7 +1150,7 @@ test('model role tables install additively on a fresh store and on schema 12', (
   const legacy = openStateDb(':memory:');
   try {
     installSchema12Fixture(legacy);
-    const store = new ConfigStoreLogic(legacy, { agents: [] });
+    const store = new ConfigStoreLogic(legacy, agentRoutineDeletion, { agents: [] });
 
     assert.equal(
       legacy.get('SELECT value FROM config_meta WHERE key = ?', 'schema_version')?.value,
@@ -1180,7 +1181,7 @@ test('model role tables install additively on a fresh store and on schema 12', (
       updatedAt: saved.updatedAt,
     });
     // Reopening runs the installer again; CREATE TABLE IF NOT EXISTS keeps the row.
-    const reopened = new ConfigStoreLogic(legacy, { agents: [] });
+    const reopened = new ConfigStoreLogic(legacy, agentRoutineDeletion, { agents: [] });
     assert.deepEqual(reopened.getWorkspaceModelRole('TACME', 'image'), saved);
   } finally {
     legacy.close();
@@ -1191,7 +1192,7 @@ test('model role writes carry their own revision and reject a stale one', () => 
   const db = openStateDb(':memory:');
   try {
     installSchema12Fixture(db);
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
 
     const first = store.putWorkspaceModelRole({
       workspaceId: 'TACME',
@@ -1233,7 +1234,7 @@ test('clearing a workspace model role keeps the revision monotonic and reads bac
   const db = openStateDb(':memory:');
   try {
     installSchema12Fixture(db);
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
 
     const set = store.putWorkspaceModelRole({
       workspaceId: 'TACME',
@@ -1279,7 +1280,7 @@ test('an Agent PATCH that fails on its role row leaves config_agents unchanged',
   const db = openStateDb(':memory:');
   try {
     installSchema12Fixture(db);
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const agent = store.getAgent('agent_default');
 
     assert.throws(
@@ -1329,7 +1330,7 @@ test('effort columns install additively and an effort lives and dies with its mo
   const db = openStateDb(':memory:');
   try {
     installSchema12Fixture(db);
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     for (const [table, column] of [
       ['config_agents', 'model_effort'],
       ['config_workspace_model_defaults', 'effort'],
@@ -1387,7 +1388,7 @@ test('website login grants install additively and pre-column Agents read as no g
   const db = openStateDb(':memory:');
   try {
     installSchema12Fixture(db);
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     assert.ok(db.all('PRAGMA table_info(config_agents)')
       .some((column) => column.name === 'website_logins_json'));
     assert.equal(
@@ -1405,7 +1406,7 @@ test('website login grants install additively and pre-column Agents read as no g
     assert.deepEqual(renamed.websiteLogins, grants);
 
     // Reopening an already-migrated store is a no-op.
-    const reopened = new ConfigStoreLogic(db, { agents: [] });
+    const reopened = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     assert.deepEqual(reopened.getAgent('agent_default').websiteLogins, grants);
   } finally {
     db.close();

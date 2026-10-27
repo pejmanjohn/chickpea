@@ -48,6 +48,7 @@ import { rotateInstallationModelCredential } from '../src/config/model-credentia
 import { invalidateProviderKeyCache } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig, RepositoryGrant } from '../src/config/types.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
@@ -424,7 +425,7 @@ function hostedAdmin(
   agents: CustomAgentConfig[] = [],
   as: { identity?: SqliteIdentityStore; principal?: AuthPrincipal } = {},
 ) {
-  const store = new SqliteConfigStore(':memory:', { agents });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { store.close(); settings.close(); });
   const app = new Hono();
@@ -713,7 +714,7 @@ test('X5 management: a repository setup finishes only through the installation\'
   const START = 1_800_100_000_000;
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'h14a-management' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { identity.close(); config.close(); management.close(); settings.close(); });
@@ -881,7 +882,7 @@ test('capability reads follow the installation\'s bindings, never a tenant-store
   port.bindings.set(INSTALLATION_B, []);
   github(t);
   const { settings } = await tenantSettings(t);
-  const config = new SqliteConfigStore(':memory:', { agents: [agent()] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [agent()] });
   t.after(() => config.close());
   const envelope = (env: Record<string, unknown>) => buildTurnEnvelope({
     plan: { agentId: 'agent-coder' } as never, settings, config, env: env as never,
@@ -965,8 +966,8 @@ test('standalone ignores an installed port: its stored App, its own installation
 // --- Import (S8) and the marker ---
 
 test('an Agent imported into another deployment carries no installation ID: each grant fails closed until re-picked', async (t) => {
-  const source = new SqliteConfigStore(':memory:', { agents: [] });
-  const target = new SqliteConfigStore(':memory:', { agents: [] });
+  const source = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const target = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   t.after(() => { source.close(); target.close(); });
   const { model: _model, ...exported } = agent([
     { id: 'repo_a', installationId: GITHUB_A, accountLogin: 'acme-a', fullName: 'acme-a/app', enabled: true },

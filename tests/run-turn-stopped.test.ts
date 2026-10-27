@@ -8,6 +8,7 @@ import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { CodingTaskStopReport } from '../src/sandbox/coding-task-stop.ts';
 import { SlackStateLogic } from '../src/slack/claim-store.ts';
@@ -554,7 +555,7 @@ let previousStatePath: string | undefined;
 before(async () => {
   previousStatePath = process.env.SLACK_STATE_DB_PATH;
   process.env.SLACK_STATE_DB_PATH = statePath;
-  const config = new SqliteConfigStore(statePath, { agents: [] });
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   await config.createAgent(assignment.agent);
   const installation = await config.ensureWorkspaceInstallation({
     workspaceId: assignment.workspaceId,

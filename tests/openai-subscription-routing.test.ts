@@ -8,6 +8,7 @@ import {
 } from '../src/config/openai-auth.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { resetModelCatalogActivationForTests } from '../src/model-catalog/catalog.ts';
 import { acceptModelCatalogCandidate } from '../src/model-catalog/store.ts';
@@ -31,7 +32,7 @@ function profile(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig 
 }
 
 test('subscription routing maps to the isolated provider without resolving the Platform key', async () => {
-  const agents = new SqliteConfigStore(':memory:', { agents: [] });
+  const agents = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const applied: string[] = [];
   let subscriptionBinds = 0;
@@ -58,7 +59,7 @@ test('subscription routing maps to the isolated provider without resolving the P
 });
 
 test('API-key routing preserves the canonical provider and never binds Subscription', async () => {
-  const agents = new SqliteConfigStore(':memory:', { agents: [] });
+  const agents = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const applied: string[] = [];
   let subscriptionBinds = 0;
@@ -102,7 +103,7 @@ test('invalid installation method state fails before either credential lane', as
 });
 
 test('a frozen OpenAI model follows the selected Subscription lane on the next construction', async () => {
-  const agents = new SqliteConfigStore(':memory:', { agents: [] });
+  const agents = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const events: string[] = [];
   try {
@@ -123,7 +124,7 @@ test('a frozen OpenAI model follows the selected Subscription lane on the next c
 });
 
 test('subscription failures and unsupported models fail closed without crossing credential lanes', async () => {
-  const agents = new SqliteConfigStore(':memory:', { agents: [] });
+  const agents = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const applied: string[] = [];
   let binds = 0;
@@ -161,7 +162,7 @@ test('subscription failures and unsupported models fail closed without crossing 
 });
 
 test('non-OpenAI models bind only their selected key-backed provider', async () => {
-  const agents = new SqliteConfigStore(':memory:', { agents: [] });
+  const agents = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const applied: string[] = [];
   try {

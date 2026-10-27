@@ -28,6 +28,7 @@ import {
 } from '../src/config/github-app.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { withEnv } from './helpers/env.ts';
@@ -328,7 +329,7 @@ test('getRepositoryInstallation rejects malformed coordinates before GitHub acce
 
 test('skill resolve route retries a private source with exact App access', async () => {
   const { pkcs8 } = rsaKeys();
-  const store = new SqliteConfigStore(':memory:', { agents: [agent()] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [agent()] });
   const settings = new SqliteSettingsStore(':memory:');
   await settings.setSetting('github.app.id', '12345');
   await settings.setSetting('github.app.private_key', pkcs8);
@@ -402,7 +403,7 @@ test('skill resolve route retries a private source with exact App access', async
 
 test('skill resolve route keeps private lookup errors deliberately ambiguous', async () => {
   const { pkcs8 } = rsaKeys();
-  const store = new SqliteConfigStore(':memory:', { agents: [agent()] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [agent()] });
   const settings = new SqliteSettingsStore(':memory:');
   await settings.setSetting('github.app.id', '12345');
   await settings.setSetting('github.app.private_key', pkcs8);
@@ -433,7 +434,7 @@ test('skill resolve route keeps private lookup errors deliberately ambiguous', a
 });
 
 test('skill resolve route does not mint a token for anonymous rate limits', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [agent()] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [agent()] });
   const settings = new SqliteSettingsStore(':memory:');
   let requests = 0;
   const fetchImpl: typeof fetch = async () => {
@@ -465,7 +466,7 @@ test('skill resolve route does not mint a token for anonymous rate limits', asyn
 
 test('standalone skill resolve keeps an anonymous rate limit even with a GitHub App that could read the repository', async () => {
   const { pkcs8 } = rsaKeys();
-  const store = new SqliteConfigStore(':memory:', { agents: [agent()] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [agent()] });
   const settings = new SqliteSettingsStore(':memory:');
   await settings.setSetting('github.app.id', '12345');
   await settings.setSetting('github.app.private_key', pkcs8);
@@ -504,7 +505,7 @@ test('standalone skill resolve keeps an anonymous rate limit even with a GitHub 
 test('skill resolve route classifies App lookup and token-mint primary rate limits', async () => {
   const { pkcs8 } = rsaKeys();
   for (const rateLimitedStep of ['lookup', 'token'] as const) {
-    const store = new SqliteConfigStore(':memory:', { agents: [agent()] });
+    const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [agent()] });
     const settings = new SqliteSettingsStore(':memory:');
     await settings.setSetting('github.app.id', '12345');
     await settings.setSetting('github.app.private_key', pkcs8);
@@ -552,7 +553,7 @@ test('skill resolve route classifies App lookup and token-mint primary rate limi
 });
 
 test('skill resolve route rejects unauthenticated requests before GitHub access', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [agent()] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [agent()] });
   const settings = new SqliteSettingsStore(':memory:');
   let requests = 0;
   const fetchImpl: typeof fetch = async () => {
@@ -739,7 +740,7 @@ test('getCachedInstallationToken refreshes inside the five-minute early-expiry w
 });
 
 test('GitHub manifest route uses the resolved request origin and requested organization', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await withEnv({ SLACK_TAG_PUBLIC_URL: undefined }, async () => {
@@ -805,7 +806,7 @@ test('GitHub manifest route uses the resolved request origin and requested organ
 });
 
 test('GitHub manifest omits the hook on non-public origins (localhost dev)', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await withEnv({ SLACK_TAG_PUBLIC_URL: undefined }, async () => {
@@ -854,7 +855,7 @@ test('GitHub setup state accepts Better Auth UUID membership IDs', async () => {
 
 test('GitHub manifest callback stores a normalized private key and redirects to Settings', async () => {
   const { pkcs1 } = rsaKeys();
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const fetchImpl: typeof fetch = async (input, init) => {
     assert.equal(String(input), `${GITHUB_API_BASE}/app-manifests/setup-code/conversions`);
@@ -905,7 +906,7 @@ test('GitHub manifest callback stores a normalized private key and redirects to 
 
 test('GitHub setup state is membership-bound, public at callback time, and consumed once under races', async () => {
   const { pkcs1 } = rsaKeys();
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const identity = new SqliteIdentityStore(':memory:');
   const owner = await createSlackOwner(identity);
@@ -981,7 +982,7 @@ test('GitHub setup state is membership-bound, public at callback time, and consu
 });
 
 test('a system-suspended sole Owner cannot exchange a GitHub manifest callback', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const identity = new SqliteIdentityStore(':memory:');
   const owner = await createSlackOwner(identity);
@@ -1037,7 +1038,7 @@ test('a system-suspended sole Owner cannot exchange a GitHub manifest callback',
 
 test('GitHub setup callback validates canonical Slack authority against the human directory', async () => {
   const { pkcs1 } = rsaKeys();
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const identity = new SqliteIdentityStore(':memory:');
   const backend = new NodeBetterAuthBackend(':memory:');
@@ -1111,7 +1112,7 @@ test('GitHub setup callback validates canonical Slack authority against the huma
 
 test('GitHub manifest callback succeeds when the App has no webhook secret', async () => {
   const { pkcs1 } = rsaKeys();
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   // A localhost dev install omits hook_attributes, so GitHub creates an App
   // with no webhook and returns webhook_secret: null. The callback must still
@@ -1157,7 +1158,7 @@ test('GitHub manifest callback succeeds when the App has no webhook secret', asy
 
 test('GitHub status isolates one failing installation instead of failing the endpoint', async () => {
   const { pkcs8 } = rsaKeys();
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   await settings.setSetting('github.app.id', '12345');
   await settings.setSetting('github.app.private_key', pkcs8);
@@ -1210,7 +1211,7 @@ test('GitHub status isolates one failing installation instead of failing the end
 });
 
 test('GitHub status stays recoverable when the stored App key is malformed', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   await settings.setSetting('github.app.id', '12345');
   await settings.setSetting('github.app.slug', 'chickpea-test');
@@ -1240,7 +1241,7 @@ test('GitHub status stays recoverable when the stored App key is malformed', asy
 
 test('GitHub status stays recoverable when the App key is rejected outright', async () => {
   const { pkcs8 } = rsaKeys();
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   await settings.setSetting('github.app.id', '12345');
   await settings.setSetting('github.app.slug', 'chickpea-test');
@@ -1271,7 +1272,7 @@ test('GitHub status stays recoverable when the App key is rejected outright', as
 });
 
 test('GitHub manifest callback refuses missing, mismatched, stale, and replayed state', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let exchanges = 0;
   const fetchImpl: typeof fetch = async () => {
@@ -1326,7 +1327,7 @@ test('GitHub manifest callback refuses missing, mismatched, stale, and replayed 
 
 test('GitHub status enumerates App installations and live repository counts', async () => {
   const { pkcs8 } = rsaKeys();
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   await settings.setSetting('github.app.id', '12345');
   await settings.setSetting('github.app.slug', 'chickpea-test');
@@ -1379,7 +1380,7 @@ test('GitHub status enumerates App installations and live repository counts', as
 
 test('GitHub App repo proxy maps fields and filters by q', async () => {
   const { pkcs8 } = rsaKeys();
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const app = await adminApp(store, settings);
   const fetchImpl: typeof fetch = async (input, init) => {
@@ -1430,7 +1431,7 @@ test('GitHub App repo proxy maps fields and filters by q', async () => {
 });
 
 test('GitHub status and disconnect routes are admin-auth gated and the legacy write route is absent', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const app = await adminApp(store, settings);
   try {
@@ -1456,7 +1457,7 @@ test('GitHub status and disconnect routes are admin-auth gated and the legacy wr
 });
 
 test('GitHub disconnect clears credentials and reports Agents with repository grants', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   await settings.setSetting('github.pat', 'github-pat-secret');
   await store.createAgent(
@@ -1490,7 +1491,7 @@ test('GitHub disconnect clears credentials and reports Agents with repository gr
 });
 
 test('agent PATCH validates and persists repository grants', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   await store.createAgent(agent());
   const app = await adminApp(store, settings);

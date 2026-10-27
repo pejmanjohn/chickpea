@@ -75,7 +75,7 @@ import {
   MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY,
 } from './types.ts';
 import { promisify } from '../state/async-facade.ts';
-import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
+import { openStateDb } from '../state/node-state-db.ts';
 import { schemaInstallRequired, type SqlParam, type StateDb } from '../state/state-db.ts';
 import { addColumnIfMissing, tableExists } from '../state/schema-links.ts';
 import { agentModelEffortAfterPatch, isModelEffort, type ModelEffort } from './model-effort.ts';
@@ -627,8 +627,8 @@ export class ConfigStoreLogic {
 
   constructor(
     private readonly db: StateDb,
+    private readonly agentRoutines: (db: StateDb) => AgentRoutineDeletion,
     seed: ConfigSeed = DEFAULT_SEED,
-    private readonly agentRoutines?: (db: StateDb) => AgentRoutineDeletion,
   ) {
     const install = schemaInstallRequired(db);
     if (install) {
@@ -709,7 +709,7 @@ export class ConfigStoreLogic {
       if (!deployment || JSON.parse(deployment).deploymentId !== input.binding.deploymentId) {
         throw new Error('Gateway binding belongs to another deployment.');
       }
-      const config = new ConfigStoreLogic(db);
+      const config = new ConfigStoreLogic(db, this.agentRoutines);
       const { binding, setup } = input;
       const different = config.listWorkspaceInstallations().find((row) => row.workspaceId !== binding.workspaceId);
       if (different) throw new Error(`This Chickpea deployment is already connected to Slack workspace ${different.workspaceId}.`);
@@ -2772,7 +2772,7 @@ export class ConfigStoreLogic {
    */
   private deleteAgentSchedules(agentId: string): void {
     if (tableExists(this.db, 'routines')) {
-      this.agentRoutines?.(this.sharedTransactionDb()).deleteAgentRoutines(agentId);
+      this.agentRoutines(this.sharedTransactionDb()).deleteAgentRoutines(agentId);
       const live = this.db.get(
         `SELECT r.id FROM routines r
          JOIN config_agent_schedule_references s ON s.schedule_id = r.id
@@ -3839,16 +3839,16 @@ export interface SqliteConfigStore extends ConfigStore {
 
 export class SqliteConfigStore {
   constructor(
-    path: string = resolveStateDbPath(),
+    path: string,
+    agentRoutines: (db: StateDb) => AgentRoutineDeletion,
     seed: ConfigSeed = DEFAULT_SEED,
-    agentRoutines?: (db: StateDb) => AgentRoutineDeletion,
   ) {
     const db = openStateDb(path);
     try {
       // The Proxy facade drops the `implements` compile check, so this typed
       // binding is the conformance assertion that keeps it: a logic method that
       // stops matching ConfigStore fails typecheck here.
-      const _conforms: ConfigStore = promisify(new ConfigStoreLogic(db, seed, agentRoutines), {
+      const _conforms: ConfigStore = promisify(new ConfigStoreLogic(db, agentRoutines, seed), {
         close: () => db.close(),
       });
       return _conforms as unknown as SqliteConfigStore;

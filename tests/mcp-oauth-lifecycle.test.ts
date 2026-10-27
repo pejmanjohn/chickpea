@@ -4,6 +4,7 @@ import { connectionAccountOAuthRef } from '../src/config/api-oauth.ts';
 import { boundMcpCredentialRef } from '../src/config/connection-credential-binding.ts';
 import { mcpOAuthSettingKeys, resolveMcpOAuthAccessToken } from '../src/config/mcp-oauth.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { mcpOAuthLifecycleDependencies } from '../src/connections/mcp-oauth-lifecycle.ts';
 import {
@@ -34,7 +35,7 @@ function tokenBundle(accessToken: string, obtainedAt: number, expiresIn: number)
 }
 
 async function fixture() {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const agentId = 'agent_triage';
   const workspaceId = 'T_MCP';

@@ -8,6 +8,7 @@ import type { WebClient } from '@slack/web-api';
 
 import { hasShownOnboardingReply } from '../src/admin/onboarding-proof.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { AgentObservationYield } from '../src/slack/flue-dispatch.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
@@ -55,7 +56,7 @@ let previousStatePath: string | undefined;
 before(async () => {
   previousStatePath = process.env.SLACK_STATE_DB_PATH;
   process.env.SLACK_STATE_DB_PATH = statePath;
-  const store = new SqliteConfigStore(statePath, { agents: [] });
+  const store = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   await store.createAgent(assignment.agent);
   const installation = await store.ensureWorkspaceInstallation({
     workspaceId: assignment.workspaceId,

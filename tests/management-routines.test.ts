@@ -9,7 +9,7 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import { RoutineService } from '../src/routines/service.ts';
-import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -25,7 +25,7 @@ test('management-created schedules accept active grant-only destinations and bin
     teamId: 'T_MANAGEMENT_ROUTINE',
     suffix: 'management-routine',
   });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const routines = new SqliteRoutineStore(':memory:', () => NOW);
   const productEvents: unknown[] = [];
@@ -451,7 +451,7 @@ test('private DM routines need no deployment flag and use trusted thread managem
     now: NOW, teamId: 'T_DIRECT_ROUTINE', userId: 'U_DIRECT_OWNER',
     suffix: 'management-direct-routine',
   });
-  const config = new SqliteConfigStore(statePath, { agents: [] });
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const routines = new SqliteRoutineStore(statePath, () => NOW);
   try {
@@ -731,7 +731,7 @@ test('identical relative DM follow-ups create fresh future schedules repeatedly'
     now, teamId: 'T_RELATIVE_ROUTINE', userId: 'U_RELATIVE_OWNER',
     suffix: 'management-relative-routine',
   });
-  const config = new SqliteConfigStore(statePath, { agents: [] });
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const routines = new SqliteRoutineStore(statePath, () => now);
   try {

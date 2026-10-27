@@ -23,6 +23,7 @@ import {
 } from '../src/config/connector-secrets.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { ConfigStoreLogic } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { MemoryStoreLogic } from '../src/memory/store.ts';
 import type { ApiConnectionConfig, McpConnectionConfig } from '../src/config/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -146,7 +147,7 @@ test('presentation and tool-selection edits retain the current credential refs',
 test('the config store owns refs and a reset or delete-readd creates a new incarnation', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const created = store.createAgent({
       id: 'agent_binding',
       name: 'Binding',
@@ -194,7 +195,7 @@ test('the config store owns refs and a reset or delete-readd creates a new incar
 test('connection requirements reject a stale same-revision delete-recreate update', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const created = store.createAgent({
       id: 'agent_setup_fence',
       name: 'Setup fence',
@@ -241,7 +242,7 @@ test('connection requirements reject a stale same-revision delete-recreate updat
 test('the update SQL CAS rejects an interposed same-revision replacement Agent', () => {
   const rawDb = openStateDb(':memory:');
   try {
-    const baseStore = new ConfigStoreLogic(rawDb, { agents: [] });
+    const baseStore = new ConfigStoreLogic(rawDb, agentRoutineDeletion, { agents: [] });
     let interpose = false;
     let originalId = '';
     let originalRevision = 0;
@@ -272,7 +273,7 @@ test('the update SQL CAS rejects an interposed same-revision replacement Agent',
       exec: (sql) => rawDb.exec(sql),
       transaction: (fn) => rawDb.transaction(fn),
     };
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const original = store.createAgent({ ...replacementInput, name: 'SQL original' });
     originalId = original.id;
     originalRevision = original.revision;
@@ -296,7 +297,7 @@ test('an Agent deletion receipt cannot replay against a replacement incarnation'
   const db = openStateDb(':memory:');
   const memoryDb = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const memory = new MemoryStoreLogic(memoryDb);
     const input = {
       id: 'agent_delete_receipt',
@@ -335,7 +336,7 @@ test('an Agent deletion receipt cannot replay against a replacement incarnation'
 test('Agent deletion removes memory atomically on the shared state database', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const memory = new MemoryStoreLogic(db);
     const created = store.createAgent({
       id: 'agent_shared_delete',
@@ -376,7 +377,7 @@ test('Agent deletion removes memory atomically on the shared state database', ()
 test('direct delete, archive, and restore fences reject same-revision replacement Agents', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const input = (id: string) => ({
       id,
       name: 'Lifecycle fence',
@@ -446,7 +447,7 @@ test('direct delete, archive, and restore fences reject same-revision replacemen
 test('stale OAuth refresh failures cannot demote replacement credential generations', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const created = store.createAgent({
       id: 'agent_oauth_demotion_fence',
       name: 'OAuth demotion fence',
@@ -507,7 +508,7 @@ test('stale OAuth refresh failures cannot demote replacement credential generati
 test('a stored key marks only its own pending credential incarnation ready', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: [] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const created = store.createAgent({
       id: 'agent_key_ready_fence',
       name: 'Key ready fence',

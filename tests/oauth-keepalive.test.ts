@@ -5,6 +5,7 @@ import { googleWorkspaceApiPolicy } from '../src/config/api-oauth-policy.ts';
 import { mcpOAuthSettingKeys } from '../src/config/mcp-oauth.ts';
 import { OAUTH_KEEPALIVE_AGE_MS } from '../src/config/oauth-shared.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { boundMcpCredentialRef } from '../src/config/connection-credential-binding.ts';
 import type { ConnectionAccount } from '../src/config/types.ts';
@@ -61,7 +62,7 @@ function mcpAccount(id: string, lifecycle: ConnectionAccount['lifecycle'] = 'rea
 }
 
 async function fixture() {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   await config.createAgent({
     id: 'agent_keep', name: 'Keep', instructions: 'Watch errors', enabled: true,

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { CONNECTION_CATALOG_PRESETS } from '../src/config/presets.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
   renderCatalogConnectionAccessReviewPage,
@@ -52,7 +53,7 @@ const setup: ManagementSetupRecord = {
 };
 
 test('BugSnag setup reviews tools without Meta account fields or permission promises', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     const agent = await config.createAgent({ id: 'agent_bugsnag', name: 'Error Guide', instructions: 'Investigate errors.', enabled: true,
       skills: [], mcpServers: [], apiConnections: [], repositories: [] });
@@ -78,7 +79,7 @@ test('BugSnag setup reviews tools without Meta account fields or permission prom
 });
 
 test('native catalog connectors use the same dedicated Agent setup surface', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     const agent = await config.createAgent({
       id: 'agent_linear',
@@ -133,7 +134,7 @@ test('native catalog connectors use the same dedicated Agent setup surface', asy
 });
 
 test('managed connector pages use the real Chickpea wordmark and approved setup and success copy', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     const agent = await config.createAgent({
       id: 'agent_sprout',
@@ -248,7 +249,7 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
 });
 
 test('managed connector owner chooser uses compact icon cards and requires a choice', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     const agent = await config.createAgent({
       id: 'agent_sprout',
@@ -275,7 +276,7 @@ test('managed connector owner chooser uses compact icon cards and requires a cho
 });
 
 test('managed connector copy and success scope stay accurate for a team Gmail handoff', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     const agent = await config.createAgent({
       id: 'agent_mailroom',

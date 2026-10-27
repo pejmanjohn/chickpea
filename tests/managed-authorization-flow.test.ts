@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { AuthorizationError } from '../src/auth/permissions.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
 import {
@@ -17,7 +18,7 @@ import {
 } from '../src/connections/managed.ts';
 
 test('managed authorization refuses a frozen handoff capability absent from the live read lane', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let authorizeCalls = 0;
   const provider: ManagedConnectionProvider = {
@@ -87,7 +88,7 @@ test('managed authorization refuses a frozen handoff capability absent from the 
 });
 
 test('managed authorization isolates scoped setup flows for the same member', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let authorizeCalls = 0;
   const provider: ManagedConnectionProvider = {
@@ -167,7 +168,7 @@ test('managed authorization isolates scoped setup flows for the same member', as
 });
 
 test('a lost final setup commit revokes the imported account', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let revokeCalls = 0;
   let commitCalls = 0;
@@ -265,7 +266,7 @@ test('a lost final setup commit revokes the imported account', async () => {
 });
 
 test('a demoted Team creator gets cleanup-only reconnect polling and cancellation', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let authorizeCalls = 0;
   let pollCalls = 0;

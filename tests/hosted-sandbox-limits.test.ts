@@ -28,6 +28,7 @@ import {
 import { resolveSandboxSettings, SANDBOX_SETTING_KEYS } from '../src/config/sandbox-settings.ts';
 import { SqliteSettingsStore, type SettingsPatch } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { SandboxEgressContext } from '../src/sandbox/cloudflare-policy.ts';
 import {
   admitSandboxContainer,
@@ -221,7 +222,7 @@ test('a host policy is kept 30 seconds per installation; a failing reader keeps 
 test('hosted Admin reads the sandbox status from the host policy, with no account notes', async (t) => {
   hostPolicy(t, () => STAGING_POLICY);
   const tenant = await contraryTenant(t);
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   t.after(() => config.close());
   const app = new Hono();
   app.route('/', createAdminRoutes({ store: config, settings: tenant, ...testAdminAuthority('h12b-token') }));

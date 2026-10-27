@@ -15,7 +15,7 @@ import { resolveSlackManagementActor } from '../src/management/slack-tools.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { ManagementError } from '../src/management/types.ts';
-import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import { scheduleActionId } from '../src/routines/ids.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
@@ -31,7 +31,7 @@ test('first-class DM actions create once, queue reactions, and run now without a
     teamId: 'T_SLACK_SCHEDULE_ACTION',
     suffix: 'slack-schedule-action',
   });
-  const config = new SqliteConfigStore(statePath, { agents: [] });
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(statePath);
   const routines = new SqliteRoutineStore(statePath, () => NOW);
   try {
@@ -246,7 +246,7 @@ test('a transient first-class action failure recovers from the durable alarm led
     teamId: 'T_SLACK_SCHEDULE_RECOVERY',
     suffix: 'slack-schedule-recovery',
   });
-  const config = new SqliteConfigStore(statePath, { agents: [] });
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(statePath);
   const routines = new SqliteRoutineStore(statePath, () => now);
   try {

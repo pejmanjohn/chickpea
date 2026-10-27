@@ -3,6 +3,7 @@ import { test, type TestContext } from 'node:test';
 
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { AgentSlackPresence } from '../src/config/types.ts';
 import { configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
@@ -37,7 +38,7 @@ function serveAgentApps(t: TestContext): void {
 }
 
 async function fixture(options: { grant?: boolean } = {}) {
-  const store = new SqliteConfigStore(':memory:', { agents: [createDemoStarterAgent()] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
   const first = await store.getAgent('agent_default');
   const base = {
     instructions: 'Help.', enabled: true, lifecycle: 'active' as const, creatorMembershipId: 'membership_owner',

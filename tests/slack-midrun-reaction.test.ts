@@ -10,6 +10,7 @@ import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { processGatewaySlackEnvelope } from '../src/channels/slack.ts';
 import { closeNodeStateStores, resolveStores, type AppStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { SlackInteractionProgress, SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
@@ -646,7 +647,7 @@ let previousStatePath: string | undefined;
 before(async () => {
   previousStatePath = process.env.SLACK_STATE_DB_PATH;
   process.env.SLACK_STATE_DB_PATH = statePath;
-  const config = new SqliteConfigStore(statePath, { agents: [] });
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   await config.createAgent(assignment.agent);
   const installation = await config.ensureWorkspaceInstallation({
     workspaceId: assignment.workspaceId,

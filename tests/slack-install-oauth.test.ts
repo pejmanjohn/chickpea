@@ -10,6 +10,7 @@ import { Hono } from 'hono';
 import { mintSetupCapability } from '../src/auth/setup-capability.mjs';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { SlackAppCreationService, openSlackSetupTransaction } from '../src/slack/app-creation.ts';
@@ -863,7 +864,7 @@ async function installFixture(options: FixtureOptions = {}) {
   const now = options.now ?? (() => NOW);
   const databasePath = options.databasePath ?? ':memory:';
   const identity = new SqliteIdentityStore(databasePath, { now });
-  const config = new SqliteConfigStore(databasePath);
+  const config = new SqliteConfigStore(databasePath, agentRoutineDeletion);
   const settings = new SqliteSettingsStore(databasePath);
   const credentials: SlackCredentialDependencies = {
     state: identity,

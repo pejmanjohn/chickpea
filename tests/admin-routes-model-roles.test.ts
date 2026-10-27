@@ -8,6 +8,7 @@ import type { AuthPrincipal } from '../src/auth/types.ts';
 import { PROVIDER_KEY_SETTING_KEYS, invalidateProviderKeyCache } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { commitOpenAiSubscriptionCredentials } from '../src/openai-subscription/credentials.ts';
 import { FAKE_PROVIDER_KEYS } from './helpers/fake-providers.ts';
@@ -26,7 +27,7 @@ function auth(): HeadersInit {
 function harness(principal?: AuthPrincipal) {
   invalidateProviderKeyCache();
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   app.route('/', createAdminRoutes({
@@ -319,7 +320,7 @@ test('a stale image role revision conflicts and returns the current value', asyn
 
 test('an Agent model needs its provider key until one is saved, and a member editing Agents may ask', async () => {
   invalidateProviderKeyCache();
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const app = new Hono();
   app.route('/', createAdminRoutes({

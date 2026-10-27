@@ -27,6 +27,7 @@ import { forgetRegisteredProvider } from '../src/config/providers.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { withEnv } from './helpers/env.ts';
@@ -49,7 +50,7 @@ function appWithProviderAdmin(): {
   // earlier test would mask this app's own credential/availability behavior.
   invalidateProviderModelCache();
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   app.route(
@@ -271,7 +272,7 @@ test('Workspace default updates are optimistic and return the current value on c
 
 test('a workspace member cannot write the Workspace default through Admin', async () => {
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:');
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   const member: AuthPrincipal = {
@@ -440,7 +441,7 @@ test('cutover operator APIs require explicit confirmation and preserve rollback 
 
 test('cutover activation fails closed when the selected provider is unavailable', async () => {
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   app.route('/', createAdminRoutes({
@@ -1045,7 +1046,7 @@ test('provider favorites seed Workers AI defaults and round-trip curated arrays'
 
 test('Workers AI can be disabled without deleting its selected models', async () => {
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   app.route('/', createAdminRoutes({
     store: config,
@@ -1138,7 +1139,7 @@ test('Workers AI can be disabled without deleting its selected models', async ()
 
 test('models endpoint applies stored provider keys before composing provider groups', async () => {
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   app.route('/', createAdminRoutes({
     store: config,

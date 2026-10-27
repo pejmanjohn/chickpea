@@ -5,6 +5,7 @@ import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { AgentAppLifecycle, AgentSlackPresence, CustomAgentConfig } from '../src/config/types.ts';
 import { type AgentSlackAppsHost, configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
 import { AgentSlackApps, type AgentAppTransport, handleAgentAppHomeAction } from '../src/slack/agent-apps/index.ts';
@@ -50,7 +51,7 @@ function agent(id: string, kind: CustomAgentConfig['kind'], slackPresence: Agent
 }
 
 async function service(t: TestContext, options: { token?: boolean; now?: number; permissionMissing?: boolean } = {}) {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   const support = await config.createAgent(agent('agent_support', 'user', presence()));
