@@ -465,6 +465,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     accent: '#000000',
     logoId: 'square',
   }, {
+    id: 'trello-managed',
+    managedToolkit: 'trello',
+    providerId: 'trello',
+    name: 'Trello',
+    description: 'Find, create, and update cards, lists, and boards the connected account can reach.',
+    category: 'project',
+    accent: '#0052CC',
+    logoId: 'trello',
+  }, {
     id: 'webex-managed',
     managedToolkit: 'webex',
     providerId: 'webex',

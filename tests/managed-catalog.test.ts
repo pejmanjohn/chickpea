@@ -68,6 +68,7 @@ test('the managed catalog retains Google Workspace contracts and adds productivi
       'semrush',
       'share_point',
       'square',
+      'trello',
       'webex',
       'wrike',
       'zoho',

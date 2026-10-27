@@ -294,6 +294,7 @@ export const allowedBinaryFiles = new Map([
   [exportPath('assets', 'connectors', 'supermetrics.png'), 'e6b3e5ca95dad5a3f01d02598e05bfb2082ece46362ae3d64438086b7e6f06b6'],
   [exportPath('assets', 'connectors', 'windsor-ai.png'), '0fd54d0fe1df834bbf86e1f738d7bdf1a26a89da9fc4e7d3b7c61e2ab2d81c57'],
   [exportPath('assets', 'connectors', 'canva.png'), '9424d7dafd5821f7dd2ea789179bcb65d8687457c350a6fbf2667601e6f8278f'],
+  [exportPath('assets', 'connectors', 'trello.png'), '1e63d58fa5a2d236d7030ff0aed03f6945bc89bdc622096cd254929bd2fbafd2'],
   [
     exportPath('assets', 'chickpea-mark.png'),
     '84864d6d3323f7d9d5491a139c0e9e0b0d92b1e076c742d5f4d50e75148b65fb',

@@ -546,5 +546,12 @@ export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
   "semrush": {
     "svg": "<svg viewBox=\"-4.5 -4.5 56 56\" xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\"><path d=\"M32.54 9c-2.22 0-4.65.81-7.35 2.23L11 19h12L0 31h25l-13 7.06L32.9 38c7.84-.2 14.1-6.6 14.1-14.5S40.5 9 32.54 9\" fill=\"#C190FF\"/></svg>",
     "full": true
+  },
+  // Official Trello site icon, served as a static raster.
+  // Source: https://trello.com/ (retrieved 2026-10-27).
+  // Asset: https://www.trello.com/favicon.ico (256 px PNG frame, scaled to 180 px)
+  "trello": {
+    "svg": "<img src=\"/connectors/trello.png\" alt=\"\">",
+    "raster": true
   }
 };

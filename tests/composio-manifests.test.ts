@@ -15,7 +15,6 @@ import {
 } from '../src/connections/catalog/composio-manifests.ts';
 import googleMaps from '../src/connections/catalog/manifests/google_maps.json' with { type: 'json' };
 import linkedin from '../src/connections/catalog/manifests/linkedin.json' with { type: 'json' };
-import trello from '../src/connections/catalog/manifests/trello.json' with { type: 'json' };
 import { MANAGED_CONNECTOR_CATALOG, createManagedConnectorCatalog } from '../src/connections/catalog/index.ts';
 import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
@@ -67,7 +66,7 @@ function lanes(manifest: ComposioManifest): Record<string, string> {
 
 const PILOT_MANIFESTS = [
   ...COMPOSIO_MANIFESTS,
-  ...[googleMaps, linkedin, trello].map((value) => parseComposioManifest(value)),
+  ...[googleMaps, linkedin].map((value) => parseComposioManifest(value)),
 ];
 
 const pilotManifest = (toolkit: string) => structuredClone(
@@ -1505,11 +1504,9 @@ const CARD_POLICY: ConnectionAccountManagedPolicy = {
 
 type ToolResult = { data: Record<string, unknown>; error?: string | null; successful?: boolean };
 
-/** Trello is held out of the catalog, so the provider executes its manifest by injection. */
 function trelloProvider(execute: (slug: string) => ToolResult, calls: string[]) {
   return new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
-    manifests: [pilotManifest('trello')],
     getConnectedAccount: async () => { throw new Error('status unavailable'); },
     createClient: async () => ({
       sessions: { async create() { throw new Error('session execution must not be used'); } },

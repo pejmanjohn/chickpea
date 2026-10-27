@@ -27,6 +27,7 @@ import salesforce from './manifests/salesforce.json' with { type: 'json' };
 import semrush from './manifests/semrush.json' with { type: 'json' };
 import sharePoint from './manifests/share_point.json' with { type: 'json' };
 import square from './manifests/square.json' with { type: 'json' };
+import trello from './manifests/trello.json' with { type: 'json' };
 import webex from './manifests/webex.json' with { type: 'json' };
 import wrike from './manifests/wrike.json' with { type: 'json' };
 import zoho from './manifests/zoho.json' with { type: 'json' };
@@ -303,6 +304,7 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
   semrush,
   sharePoint,
   square,
+  trello,
   webex,
   wrike,
   zoho,
@@ -312,7 +314,6 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
 export const HELD_COMPOSIO_MANIFESTS: Readonly<Record<string, string>> = {
   google_maps: "Every Google Maps read needs input, so validation needs validationArguments nobody has chosen and checked: geocoding needs an address, coordinates, or a place ID, and Composio's own current-user check uses a fixed place ID",
   linkedin: "Its only write, posting, publishes by default: lifecycleState defaults to PUBLISHED and visibility is required, so no withheld argument can hold a post as a draft, and every connector ships read and write tools",
-  trello: "Composio's hosted Connect Link for its managed OAuth1 config fails with \"Link session not found or expired\"",
 };
 
 function parseInputSchema(value: unknown, depth: number, where: string): ManifestInputSchema {
