@@ -12,6 +12,7 @@ import {
   connectionAccountSecretSettingKey,
   saveConnectionAccountSecret,
 } from '../src/config/connector-secrets.ts';
+import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { connectionAccountOAuthRef } from '../src/config/api-oauth.ts';
 import { GOOGLE_WORKSPACE_SCOPE_OPTIONS, googleWorkspaceApiPolicy } from '../src/config/api-oauth-policy.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
@@ -1020,6 +1021,56 @@ test('legacy Agent OAuth setup rechecks current edit authority before start and 
     config.close();
     management.close();
     settings.close();
+  }
+});
+
+test('connector setup refuses the Chickpea system Agent before issuing a sign-in link', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'system-agent-connector' });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  try {
+    await identity.updateOrganizationAuth({
+      organizationId: owner.membership.organizationId,
+      authMode: 'slack_active',
+      canonicalAdminOrigin: 'https://admin.example.com',
+    });
+    const authControl = await identity.getAuthControl();
+    assert.ok(authControl);
+    await identity.updateAuthControl({
+      expectedRevision: authControl.revision,
+      canonicalAdminOrigin: 'https://admin.example.com',
+    });
+    assert.equal((await config.materializeChickpeaAgent()).kind, 'system');
+    const service = new WorkspaceManagementService({
+      identity,
+      config,
+      management,
+      setupBaseUrl: 'http://localhost',
+      now: () => START,
+      randomId: () => 'system_agent_connector',
+      randomCapability: () => 'm'.repeat(43),
+    });
+    await assert.rejects(service.prepareConnectorSetup({
+      userId: owner.user.id,
+      membershipId: owner.membership.id,
+      organizationId: owner.membership.organizationId,
+      origin: {
+        kind: 'slack',
+        workspaceId: owner.user.slackTeamId,
+        channelId: 'D_SYSTEM_AGENT',
+        threadTs: '1800100000.000400',
+        agentId: CHICKPEA_AGENT_ID,
+      },
+    }, { agentId: CHICKPEA_AGENT_ID, connector: 'Meta Ads', ownerKind: 'member' }),
+    (error: unknown) => error instanceof ManagementError &&
+      error.code === 'invalid_request' &&
+      /Chickpea cannot hold connections/.test(error.message));
+    assert.equal(await management.getSetup('setup_system_agent_connector'), undefined);
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
   }
 });
 
