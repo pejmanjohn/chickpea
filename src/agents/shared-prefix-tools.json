@@ -1017,11 +1017,11 @@
                  "minLength": 1,
                  "maxLength": 120
                 },
-                "maxItems": 500
+                "maxItems": 64
                },
                "oauthScope": {
                 "type": "string",
-                "maxLength": 2000
+                "maxLength": 4096
                },
                "presetId": {
                 "type": "string",
@@ -1468,11 +1468,11 @@
                  "minLength": 1,
                  "maxLength": 120
                 },
-                "maxItems": 500
+                "maxItems": 64
                },
                "oauthScope": {
                 "type": "string",
-                "maxLength": 2000
+                "maxLength": 4096
                },
                "presetId": {
                 "type": "string",
@@ -3063,11 +3063,11 @@
                  "minLength": 1,
                  "maxLength": 120
                 },
-                "maxItems": 500
+                "maxItems": 64
                },
                "oauthScope": {
                 "type": "string",
-                "maxLength": 2000
+                "maxLength": 4096
                },
                "presetId": {
                 "type": "string",
@@ -3514,11 +3514,11 @@
                  "minLength": 1,
                  "maxLength": 120
                 },
-                "maxItems": 500
+                "maxItems": 64
                },
                "oauthScope": {
                 "type": "string",
-                "maxLength": 2000
+                "maxLength": 4096
                },
                "presetId": {
                 "type": "string",
