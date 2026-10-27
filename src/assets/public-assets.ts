@@ -30,6 +30,7 @@ export const PUBLIC_ASSET_PATHS = [
     'google-search-console', 'google-analytics', 'google-ads',
     'honeycomb', 'motherduck', 'statsig', 'amplitude',
     'clay', 'close', 'customer-io', 'mercury', 'plain', 'pylon',
+    'pandadoc', 'fathom', 'otter', 'read-ai',
   ].map((name) => `connectors/${name}.png`),
 ];
 const publicPaths = new Set(PUBLIC_ASSET_PATHS);

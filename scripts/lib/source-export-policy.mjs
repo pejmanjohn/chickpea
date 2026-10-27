@@ -275,6 +275,10 @@ export const allowedBinaryFiles = new Map([
   [exportPath('assets', 'connectors', 'mercury.png'), 'f7edf495198e57f6bcdcdebf10e2a974c59a86c87ca37bba7d2923a3bc045904'],
   [exportPath('assets', 'connectors', 'plain.png'), '03169d9e56a5fa53deebd29ed4bb65cfe465f43779559775d166a800cc5c81b9'],
   [exportPath('assets', 'connectors', 'pylon.png'), '992c08f0be8a53a1ab041e5f284357087aa85ed672c2a65b198b2e3bc3fff722'],
+  [exportPath('assets', 'connectors', 'pandadoc.png'), '414c407b846cb7914c22f04f32c5518191c5d8ec5e1fd7d58d119941b8098cf4'],
+  [exportPath('assets', 'connectors', 'fathom.png'), '6c724fc21164caa5262adc675db0410af3324f45dce3c35bc6755bb2ed495446'],
+  [exportPath('assets', 'connectors', 'otter.png'), 'c3c1e1bd914136b91d541da523a65b0ae02bfe4602530356b5187f1139adacae'],
+  [exportPath('assets', 'connectors', 'read-ai.png'), 'fe8f0534b7675156e58b7985bf3a6c3ca5337dcac444235b022183cd57f4a69c'],
   [
     exportPath('assets', 'chickpea-mark.png'),
     '84864d6d3323f7d9d5491a139c0e9e0b0d92b1e076c742d5f4d50e75148b65fb',

@@ -107,7 +107,7 @@ test('managed Google analytics presets reference the official product-icon binar
 
 test('preset lanes classify the existing MCP catalog, the API additions, and both', () => {
   const existingMcpPresets = CONNECTOR_PRESETS.filter((preset) => !API_PRESET_IDS.has(preset.id));
-  assert.equal(existingMcpPresets.length, 39);
+  assert.equal(existingMcpPresets.length, 48);
   for (const preset of existingMcpPresets) {
     assert.deepEqual(presetLanes(preset), { mcp: true, api: false }, preset.id);
   }
@@ -344,6 +344,18 @@ test('vendor-hosted OAuth MCP presets request the scopes their servers advertise
     paypal: { url: 'https://mcp.paypal.com/mcp' },
     plain: { url: 'https://mcp.plain.com/mcp', scope: 'openid offline_access' },
     pylon: { url: 'https://mcp.usepylon.com', scope: 'openid offline_access' },
+    calendly: { url: 'https://mcp.calendly.com', scope: 'mcp:scheduling:read mcp:scheduling:write' },
+    fathom: { url: 'https://api.fathom.ai/mcp', scope: 'mcp' },
+    lucid: { url: 'https://mcp.lucid.app/mcp', scope: 'offline_access' },
+    otter: { url: 'https://mcp.otter.ai/mcp', scope: 'profile:read conversations:read' },
+    pandadoc: {
+      url: 'https://mcp.pandadoc.com/v1/mcp',
+      scope: 'read write documents:read documents:edit documents:send',
+    },
+    'read-ai': { url: 'https://api.read.ai/mcp', scope: 'mcp:execute meeting:read offline_access' },
+    todoist: { url: 'https://ai.todoist.net/mcp', scope: 'data:read_write' },
+    webflow: { url: 'https://mcp.webflow.com/mcp' },
+    wix: { url: 'https://mcp.wix.com/mcp', scope: 'offline_access' },
   };
   for (const [id, { url, scope }] of Object.entries(reviewed)) {
     const preset = getConnectorPreset(id);
