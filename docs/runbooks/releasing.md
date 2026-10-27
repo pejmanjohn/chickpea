@@ -4,6 +4,14 @@ Releases are source tags and GitHub releases, not npm publications. Keep
 `package.json` private. Use SemVer tags such as `v0.1.0` (not `v0.01`), matching
 the package and lockfile versions. No first release is implied by these docs.
 
+## Cadence
+
+Cut a release weekly, or on request. A release is never on a feature's path,
+so no merged change waits for one. Every release follows one sequence. Open the
+release PR, run the source gates, update a QA lane in place and run the batch
+smoke there, then publish. The release PR's review runs in parallel with the
+source gates.
+
 ## Before the first release
 
 - Land release preparation through a GitHub PR or a maintainer-authorized local
@@ -145,20 +153,18 @@ Choose an approved disposable deployment and Slack workspace first. Do not use
 a production workspace or overwrite another task's environment implicitly.
 Keep identities, bindings, secrets, and evidence outside the public repository.
 
-- Install the exact candidate from a fresh public source checkout with no local
-  private files. Exercise each advertised target/lane; identify any lane that
-  was not tested rather than claiming general acceptance.
-- Complete Slack installation, first-Owner sign-in, provider/model selection,
-  and a real DM or mention that receives a reply from the candidate deployment.
-- Confirm a second user cannot access Owner-only configuration or another
-  Agent's personal connection. Check an approved connector flow if advertised.
-- Restart/redeploy and confirm sign-in, existing state, and Slack delivery still
-  work. Check retry/deduplication behavior without claiming exactly-once delivery.
-- On Cloudflare, verify an approved schedule fires and stops when paused, and
-  test the coding sandbox if that release advertises the optional profile.
-- For subsequent releases, test the documented upgrade from the prior supported
-  version and the stated recovery procedure. Do not replace upgrade testing
-  with a fresh install.
+- Update a QA lane in place from the prior release to the exact candidate.
+  Confirm Admin reports the new version with the Owner signed in and existing
+  state kept, and that a real DM or mention gets a reply from the candidate.
+- Run the batch smoke on that lane. Until a scripted smoke exists, run the
+  live-verification skill once on the candidate.
+- Only when installer or setup code changed, also install the exact candidate
+  from a fresh public source checkout with no local private files. Complete
+  Slack installation, first-Owner sign-in, provider/model selection, and a real
+  DM or mention that receives a reply.
+- Only when `release.json`'s storage generation or a migration digest changed,
+  also roll back to the prior release, confirm sign-in and Slack delivery still
+  work, and update forward again.
 - Remove only the fixtures/resources created for this acceptance run. Record
   the source commit, target/version, observed outcomes, limitations, and cleanup.
 
@@ -167,11 +173,12 @@ not replace this real Slack/Admin acceptance.
 
 ## Publish
 
-After the source gates and attended acceptance pass, prepare matching
-package/lockfile versions and release notes. Notes must cover prerequisites,
-installation links, changes, known limitations, supported upgrade origins,
-migrations, and recovery limits. For a 0.x release, state its experimental
-status and whether GitHub's prerelease flag is appropriate.
+The release PR carries matching package/lockfile versions and release notes.
+Publish only after the source gates and attended acceptance pass on it. Notes
+must cover prerequisites, installation links, changes, known limitations,
+supported upgrade origins, migrations, and recovery limits. For a 0.x release,
+state its experimental status and whether GitHub's prerelease flag is
+appropriate.
 
 Land through a PR or a maintainer-authorized local merge, rerun/confirm local
 checks on the final `main` commit, and obtain

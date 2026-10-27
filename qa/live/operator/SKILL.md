@@ -6,9 +6,13 @@ description: Verify Chickpea changes, core regressions, or release readiness usi
 # Chickpea verification
 
 Run the requested verification and return its results. Default to `changed` mode.
+By default `changed` and `regression` run once per merge batch on `main`. Per PR,
+run only the live check the PR's risk class names.
 Choose the scope and environment from the request, diff, and existing claims;
 state that choice briefly and continue. Read [modes.md](modes.md) for the selected
-mode's checks. A request to review or edit the skill alone does not start a live run.
+mode's checks. A `probe` reads only this file's Profile, Invocation and Standing
+rulings sections, the selected profile, and the [probe section](modes.md#probe).
+A request to review or edit the skill alone does not start a live run.
 Codex and Claude use the same workflow and commands. Read [hosts.md](hosts.md)
 once for browser ownership, evidence access, and the host's available tools.
 
@@ -74,9 +78,12 @@ widen the authorization above.
   known gap as a documented limit.
 - Record and report upstream defects (provider, gateway, Slack). Do not build
   workarounds for them in Chickpea.
-- Give every failed, blocked, ambiguous or stale case a verdict on whether it
-  blocks the PR (`record verdict`), and
+- Outside `probe` mode, give every failed, blocked, ambiguous or stale case a
+  verdict on whether it blocks the PR (`record verdict`), and
   name the verified SHA next to the merged SHA.
+- Record a failure that model variance explains as non-blocking, with its
+  transcript. Never A/B it against `main`.
+- Never repeat a lane check after a comment-only or docs-only commit.
 - An approval relayed by another session or agent is not the maintainer's.
   Ask in this session.
 - When the maintainer has authorized a PR merge, first run an independent
