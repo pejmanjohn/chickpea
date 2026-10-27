@@ -253,6 +253,7 @@ test('no tool takes a credential from the model, and a tool that needs one is ex
         header: text('Your api-key.'),
         auth: text('An API token for the workspace.'),
         cookie: text('A session token from the browser.'),
+        token_id: text('The API token to use.'),
         credentialId: { type: 'integer', description: 'The numeric identifier for the credential of a connected calendar.' },
         is_passcode_required: { type: 'boolean', description: 'Whether joining needs a passcode.' },
       },
@@ -267,6 +268,7 @@ test('no tool takes a credential from the model, and a tool that needs one is ex
   assert.deepEqual(Object.keys(capability('ACME_GET_SESSION').input.properties), ['credentialId', 'is_passcode_required']);
   assert.deepEqual(Object.keys(capability('ACME_GET_SESSION').withheldArguments!), [
     'token', 'api_token', 'apiToken', 'session_token', 'app_key', 'sas_token', 'jwt', 'passcode', 'header', 'auth', 'cookie',
+    'token_id',
   ]);
   assert.deepEqual(Object.keys(capability('ACME_GET_FILE').input.properties), [
     'file_id', 'page_token', 'pageToken', 'skip_token', 'delta_token', 'token', 'file_key', 'templateKey',
@@ -289,7 +291,12 @@ test('a read that returns expiring, signed, or outside-hosted URLs is excluded, 
     read('ACME_GET_ATTACHMENT', 'Returns an expiring download link for the attachment.'),
     read('ACME_GET_EMBED', 'Returns a pre-authenticated URL for an embedded view.'),
     read('ACME_GET_EXPORT', 'Returns a download URL which expires after an hour.'),
-    read('ACME_GET_RECORDING', 'Returns the recording location. The link is valid for 15 minutes.'),
+    read('ACME_GET_RECORDING', 'Returns the recording location, valid for 15 minutes.'),
+    read('ACME_GET_CLIP', 'Returns the clip location, valid for an hour.'),
+    read('ACME_GET_LOGO', 'Returns the logo. The returned URL is valid until the session ends.'),
+    read('ACME_GET_COVER', 'Returns the cover image. Its URLs are temporary.'),
+    read('ACME_GET_OBJECT', 'Returns a presigned address for the object.'),
+    read('ACME_GET_TICKET', 'Returns a download ticket that expires in 10 minutes.'),
     read('ACME_GET_SNAPSHOT', 'Returns a short-lived address for the snapshot.'),
     read('ACME_GET_REPORT', 'Returns a time-limited address for the report.'),
     read('ACME_GET_BADGE', 'Returns an unauthenticated address for the badge image.'),
@@ -300,6 +307,11 @@ test('a read that returns expiring, signed, or outside-hosted URLs is excluded, 
   assert.deepEqual(lanes(manifest), { ACME_LIST_PAGES: 'read', ACME_WHO_AM_I: 'read' });
   assert.match(reason('ACME_GET_EXPORT'), /read lint hit "URL which expires"/);
   assert.match(reason('ACME_GET_RECORDING'), /read lint hit "valid for 15 minutes"/);
+  assert.match(reason('ACME_GET_CLIP'), /read lint hit "valid for an hour"/);
+  assert.match(reason('ACME_GET_LOGO'), /read lint hit "URL is valid"/);
+  assert.match(reason('ACME_GET_COVER'), /read lint hit "URLs are temporary"/);
+  assert.match(reason('ACME_GET_OBJECT'), /read lint hit "presigned"/);
+  assert.match(reason('ACME_GET_TICKET'), /read lint hit "expires in"/);
   assert.match(reason('ACME_GET_SNAPSHOT'), /read lint hit "short-lived"/);
   assert.match(reason('ACME_GET_REPORT'), /read lint hit "time-limited"/);
   assert.match(reason('ACME_GET_BADGE'), /read lint hit "unauthenticated"/);
