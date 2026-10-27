@@ -709,3 +709,6 @@ That guide starts from the cloned folder, identifies the live installation,
 updates to the latest stable application release, and verifies Admin access
 without sending Slack test messages. Do not rerun setup, reinstall Slack, or
 recreate Cloudflare resources as an update.
+
+To remove the installation instead, follow
+[Uninstall Chickpea from Cloudflare](UNINSTALL_CHICKPEA_CLOUDFLARE.md).
