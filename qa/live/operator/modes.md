@@ -3,10 +3,10 @@
 Use `changed` by default. An explicit mode or narrower user request wins.
 These are skill workflows, separate from the dormant coordinator's typed suites.
 
-By default `changed` and `regression` run once per merge batch on `main`, after
-the batch merges and before any Chickpea Cloud pin or Core release. For
-`changed` on `main`, pass the last batch-verified commit as `--base` so the plan
-covers the whole batch. Per PR, run only the live check its
+Once per merge batch on `main`, after the batch merges and before any Chickpea
+Cloud pin or Core release, the scripted [batch smoke](smoke.md) runs. When a
+`changed` run on `main` covers a batch, pass the last batch-verified commit as
+`--base` so the plan covers the whole batch. Per PR, run only the live check its
 [risk class](../../../AGENTS.md#shipping-by-risk-class) names. That is a
 `probe`, or a `changed` run scoped to the T3 cycle or rehearsal, the T4 money
 proof, or the T0x dry run.
@@ -255,7 +255,7 @@ dependency audit, and advertised deployment profiles. This mode verifies a
 candidate; it never tags, publishes, merges, or deploys production.
 
 Update a QA lane in place from the prior release to the candidate, then run the
-core regression journeys on it as the batch smoke. Exercise installation from
+[batch smoke](smoke.md) on it. Exercise installation from
 the public-source artifact on a designated disposable target only when installer
 or setup code changed. Run a rollback cycle only when `release.json`'s storage
 generation or a migration digest changed. Report each missing actor, fixture, or

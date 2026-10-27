@@ -20,10 +20,15 @@ export const KICKOFF_SCHEMA = 'chickpea-kickoff-doctor/v1';
 
 const check = (level, text, fix) => ({ level, text, ...(fix ? { fix } : {}) });
 
-export function deployCommand(lane, profile) {
+/** The npm script that deploys a lane of this profile, or null for an unknown or split profile. */
+export function deployScript(profile) {
   if (profile !== 'core' && profile !== 'sandbox') return null;
-  const script = profile === 'sandbox' ? 'deploy:sandbox' : 'deploy';
-  return `CHICKPEA_DEPLOY_TARGET=${lane} npm run verify:host -- --wait-ms 300000 npm run ${script}`;
+  return profile === 'sandbox' ? 'deploy:sandbox' : 'deploy';
+}
+
+export function deployCommand(lane, profile) {
+  const script = deployScript(profile);
+  return script ? `CHICKPEA_DEPLOY_TARGET=${lane} npm run verify:host -- --wait-ms 300000 npm run ${script}` : null;
 }
 
 /** Facts in, verdicts out. Levels: ok, info, warn, human (needs a person), block. */

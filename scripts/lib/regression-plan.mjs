@@ -10,7 +10,7 @@ export const REGRESSION_AREAS = Object.freeze({
   releases: ['release-manifest', 'build-identity', 'release-update-check', 'support-report', 'installation-routes', 'upgrade-source', 'upgrade-installation', 'upgrade-receipt', 'upgrade', 'upgrade-baseline'],
   delivery: ['slack-admission', 'slack-thread-context', 'gateway-inbox', 'gateway-session-runner', 'flue-v2-runtime-regressions', 'file-delivery-completion', 'file-delivery-completion-runtime', 'file-delivery-streaming-runtime', 'slack-presentation-eval', 'slack-approval-intent-eval', 'slack-typed-approval', 'hosted-admission', 'hosted-object-inventory', 'hosted-object-export-erase', 'hosted-object-storage-workerd', 'hosted-pending-work'],
   agents: ['slack-approval-from-person', 'slack-typed-approval', 'management-policy', 'management-security-regression', 'management-agent-creation-welcome', 'management-agent-parity', 'slack-proposal-approval-readback', 'agent-authoring-guide', 'hosted-admission'],
-  routines: ['routine-schedule', 'routine-scheduler', 'routine-delivery', 'routine-workflow', 'routine-channel-destination', 'schedule-contract-evaluation', 'hosted-object-inventory', 'hosted-pending-work'],
+  routines: ['routine-schedule', 'routine-scheduler', 'environment-routine-due', 'routine-delivery', 'routine-workflow', 'routine-channel-destination', 'schedule-contract-evaluation', 'hosted-object-inventory', 'hosted-pending-work'],
   connections: ['connection-accounts', 'managed-authorization-flow', 'api-connection-runtime', 'managed-connections', 'hosted-managed-connections', 'hosted-connection-reconcile', 'hosted-feature-guards', 'hosted-connection-revocation'],
   memory: ['agent-memory', 'memory-runtime', 'memory-validation'],
   skills: ['skill-import', 'management-skill-import', 'connector-skills'],
@@ -24,7 +24,7 @@ export const REGRESSION_AREAS = Object.freeze({
   browser: ['browser-actions', 'browser-cdp', 'browser-logins', 'browser-mounting', 'browser-page', 'browser-provider', 'browser-settings', 'browser-tools', 'browser-totp', 'browser-turn-session', 'admin-browser-settings', 'slack-browser-action-admission'],
   usage: ['usage-cloudflare-proxy', 'usage-store-contract', 'usage-telemetry-contract', 'usage-validation', 'admin-usage-routes', 'usage/connector-usage', 'usage/interaction-capture', 'usage/interactive-capture', 'usage/pricing-catalog', 'usage/pricing-estimate', 'usage/provider-guidance', 'usage/retention', 'usage/routine-capture'],
   activity: ['activity-lifecycle', 'activity-status', 'activity-telemetry', 'admission-activity'],
-  verification: ['node-version', 'kickoff-doctor', 'lane-slack', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'verification-host', 'verification-fixtures', 'environment-registry', 'environment-preflight', 'environment-preflight-2', 'environment-preflight-3', 'environment-wait', 'qa-candidate', 'live-contract-coordinator', 'live-contract-lock', 'schedule-contract-evaluation', 'deploy-with-epilogue', 'deploy-with-epilogue-2', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
+  verification: ['node-version', 'kickoff-doctor', 'lane-slack', 'verify-smoke', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'verification-host', 'verification-fixtures', 'environment-registry', 'environment-preflight', 'environment-preflight-2', 'environment-preflight-3', 'environment-wait', 'qa-candidate', 'live-contract-coordinator', 'live-contract-lock', 'schedule-contract-evaluation', 'deploy-with-epilogue', 'deploy-with-epilogue-2', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
 });
 
 const rules = [
@@ -44,7 +44,7 @@ const rules = [
   [/^src\/(?:auth|identity)\//, ['auth']],
   [/^(?:src\/admin\/|assets\/admin-ui\/)/, ['admin']],
   [/^src\/(?:cloudflare-provider\.ts|model-compat\/|model-catalog\/)/, ['providers']],
-  [/^(?:qa\/live\/|\.(?:agents|claude)\/skills\/chickpea-live-verification\/|scripts\/(?:verify-regression\.mjs|verification-(?:record|fixtures)\.mjs|verify-qa-candidate\.mjs|verify-live-kickoff\.mjs|lane-slack\.mjs|live-test-resource-ledger\.mjs|deploy-with-epilogue\.mjs|chickpea-(?:environment|local-worker)\.mjs|lib\/(?:verification-[a-z-]+|kickoff-doctor|lane-browser-probe|slack-readback|qa-candidate|private-evidence|regression-plan|environment-[^/]+|local-worker-(?:lane|inspection))\.mjs))/, ['verification']],
+  [/^(?:qa\/live\/|\.(?:agents|claude)\/skills\/chickpea-live-verification\/|scripts\/(?:verify-regression\.mjs|verification-(?:record|fixtures)\.mjs|verify-qa-candidate\.mjs|verify-live-kickoff\.mjs|verify-smoke\.mjs|lane-slack\.mjs|live-test-resource-ledger\.mjs|deploy-with-epilogue\.mjs|chickpea-(?:environment|local-worker)\.mjs|lib\/(?:verification-[a-z-]+|kickoff-doctor|lane-browser-probe|lane-browser-tab|smoke-(?:cases|ledger)|slack-readback|qa-candidate|private-evidence|regression-plan|environment-[^/]+|local-worker-(?:lane|inspection))\.mjs))/, ['verification']],
 ];
 
 // The checks after the suite use reserved ports and their own temporary state,

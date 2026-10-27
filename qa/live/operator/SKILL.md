@@ -6,8 +6,8 @@ description: Verify Chickpea changes, core regressions, or release readiness usi
 # Chickpea verification
 
 Run the requested verification and return its results. Default to `changed` mode.
-By default `changed` and `regression` run once per merge batch on `main`. Per PR,
-run only the live check the PR's risk class names.
+Once per merge batch on `main`, the scripted [batch smoke](smoke.md) runs instead
+of a skill run. Per PR, run only the live check the PR's risk class names.
 Choose the scope and environment from the request, diff, and existing claims;
 state that choice briefly and continue. Read [modes.md](modes.md) for the selected
 mode's checks. A `probe` reads only this file's Profile, Invocation and Standing
