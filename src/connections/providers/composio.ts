@@ -17,6 +17,7 @@ import {
   HUBSPOT_OBJECT_PROPERTIES,
   HUBSPOT_OBJECT_TYPES,
 } from '../catalog/hubspot.ts';
+import { compileComposioManifest, type ComposioManifest } from '../catalog/composio-manifests.ts';
 import type {
   ManagedConnectionExecutionInput,
   ManagedConnectionExecutionResult,
@@ -183,6 +184,8 @@ interface ComposioManagedConnectionProviderOptions {
     principalRef: string;
     signal: AbortSignal;
   }) => Promise<ComposioConnectedAccount>;
+  /** Executes these manifests beside the catalog's, such as a held manifest under test. */
+  manifests?: readonly ComposioManifest[];
 }
 
 interface ComposioCapability {
@@ -1612,8 +1615,28 @@ function definiteManagedValidationFailure(
 export class ComposioManagedConnectionProvider implements ManagedConnectionProvider {
   readonly id = 'composio';
   private clientPromise: Promise<ComposioClientLike> | undefined;
+  private readonly capabilities: Readonly<Record<string, ComposioCapability>> = COMPOSIO_CAPABILITIES;
+  private readonly ambiguousWrites: ReadonlySet<string> = AMBIGUOUS_WRITE_CAPABILITIES;
+  private readonly extraManifests = new Map<string, {
+    version: string;
+    connector: ManagedConnectorDefinition;
+  }>();
 
-  constructor(private readonly options: ComposioManagedConnectionProviderOptions) {}
+  constructor(private readonly options: ComposioManagedConnectionProviderOptions) {
+    if (!options.manifests) return;
+    const extra = manifestComposioCapabilities(options.manifests);
+    this.capabilities = { ...COMPOSIO_CAPABILITIES, ...extra };
+    this.ambiguousWrites = new Set([
+      ...AMBIGUOUS_WRITE_CAPABILITIES,
+      ...Object.keys(extra).filter((id) => extra[id]!.write),
+    ]);
+    for (const manifest of options.manifests) {
+      this.extraManifests.set(manifest.toolkit, {
+        version: manifest.version,
+        connector: compileComposioManifest(manifest),
+      });
+    }
+  }
 
   availability(input: {
     toolkit: string;
@@ -1980,7 +2003,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         { remoteCallCount: 0, providerToolCallCount: 0, capabilityToolDispatched: false },
       );
     }
-    const capability = COMPOSIO_CAPABILITIES[input.capability];
+    const capability = this.capabilities[input.capability];
     if (!capability || capability.toolkit !== input.policy.toolkit) {
       throw new ManagedProviderRequestError(
         'validation_failed',
@@ -1996,7 +2019,8 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
       this.validateCapabilities(input.policy);
       // Local shape errors are actionable and must not be disguised as
       // provider failures or trigger a connected-account status probe.
-      const connector = requireToolkit(input.policy.toolkit);
+      const connector = this.extraManifests.get(input.policy.toolkit)?.connector ??
+        requireToolkit(input.policy.toolkit);
       executionArguments = injectManagedResourceArguments(
         connector,
         input.policy,
@@ -2006,7 +2030,8 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
       toolArguments = input.capability === 'youtube.videos.upload'
         ? undefined
         : capability.arguments(executionArguments);
-      providerVersion = requireToolkitVersion(capability.toolkit);
+      providerVersion = this.extraManifests.get(capability.toolkit)?.version ??
+        requireToolkitVersion(capability.toolkit);
       signal = boundedSignal(input.signal);
     } catch (error) {
       if (error instanceof ManagedProviderRequestError) throw error;
@@ -2081,7 +2106,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
       try {
         await capability.beforeDispatch?.(toolArguments, async (tool, arguments_) => {
           const result = await executeComposioTool(client, input.policy, {
-            toolkit: capability.toolkit, tool, arguments: arguments_, signal,
+            toolkit: capability.toolkit, version: providerVersion, tool, arguments: arguments_, signal,
           });
           if (result.error) throw new Error('lookup failed');
           return result.data;
@@ -2203,7 +2228,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         if (error.code === 'provider_unavailable' &&
             error.metadata.capabilityToolDispatched === true &&
             error.metadata.definiteFailure !== true &&
-            AMBIGUOUS_WRITE_CAPABILITIES.has(input.capability)) {
+            this.ambiguousWrites.has(input.capability)) {
           throw ambiguousManagedWriteFailure(
             capability.tool,
             providerVersion,
@@ -2213,7 +2238,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         throw error;
       }
       if (signal.aborted && capabilityToolDispatched &&
-          AMBIGUOUS_WRITE_CAPABILITIES.has(input.capability)) {
+          this.ambiguousWrites.has(input.capability)) {
         throw new ManagedProviderRequestError('ambiguous',
           'Composio managed write timed out and may have completed; verify before retrying',
           {
@@ -2244,7 +2269,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
           },
         );
       }
-      if (capabilityToolDispatched && AMBIGUOUS_WRITE_CAPABILITIES.has(input.capability) &&
+      if (capabilityToolDispatched && this.ambiguousWrites.has(input.capability) &&
           (httpStatus === undefined || httpStatus >= 500)) {
         throw ambiguousManagedWriteFailure(capability.tool, providerVersion, {
           remoteCallCount,
@@ -2349,7 +2374,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
 
   private validateCapabilities(policy: ConnectionAccountManagedPolicy): void {
     for (const capabilityName of policy.allowedCapabilities) {
-      const capability = COMPOSIO_CAPABILITIES[capabilityName];
+      const capability = this.capabilities[capabilityName];
       if (!capability || capability.toolkit !== policy.toolkit) {
         throw new Error('Composio capability is not supported by this managed connection');
       }
@@ -2537,6 +2562,7 @@ async function executeComposioTool(
   policy: ConnectionAccountManagedPolicy,
   input: {
     toolkit: string;
+    version?: string;
     tool: string;
     arguments: Record<string, unknown>;
     signal: AbortSignal;
@@ -2547,7 +2573,7 @@ async function executeComposioTool(
   successful?: boolean | undefined;
   logId?: string | undefined;
 }> {
-  const version = requireToolkitVersion(input.toolkit);
+  const version = input.version ?? requireToolkitVersion(input.toolkit);
   let result: {
     data: Record<string, unknown>;
     error?: string | null | undefined;
