@@ -6,7 +6,7 @@
   },
   "label": "Mailchimp",
   "description": "Read audiences, contacts, campaigns, and reports, and draft campaigns and templates for a person to send.",
-  "securityDescription": "Mailchimp sign-in opens through Composio. Agents act as the signed-in Mailchimp user and can read the account's audiences, contacts, campaigns, templates, and reports. With write access, Agents can create and edit draft campaigns and templates, organize them in folders, leave campaign feedback, and add notes to contacts. A draft has no audience until a person picks one. Agents cannot send, schedule, test-send, or cancel a campaign; a person sends every campaign from Mailchimp, and a sent campaign cannot be recalled. They cannot add, subscribe, unsubscribe, tag, or delete contacts, change marketing consent, start or pause automations, or change audience, domain, or account settings.",
+  "securityDescription": "Mailchimp sign-in opens through Composio. Agents act as the signed-in Mailchimp user and can read the account's audiences, contacts, campaigns, templates, and reports. With write access, Agents can create and edit draft campaigns and templates, organize them in folders, leave campaign feedback, and add notes to contacts. A draft has no audience until a person picks one. Agents cannot send, schedule, test-send, or cancel a campaign; a person sends every campaign from Mailchimp, and a sent campaign cannot be recalled. They cannot add, subscribe, unsubscribe, tag, or delete contacts, change marketing consent, import campaign content from a URL or RSS feed, start or pause automations, or change audience, domain, or account settings.",
   "preset": {
     "category": "business",
     "accent": "#FFE01B"
@@ -54,6 +54,17 @@
       "MAILCHIMP_UPDATE_NOTE": [
         "subscriber_hash"
       ]
+    },
+    "withholdArguments": {
+      "MAILCHIMP_ADD_CAMPAIGN": {
+        "rss__opts__feed__url": "Pulls campaign content from an outside RSS feed."
+      },
+      "MAILCHIMP_SET_CAMPAIGN_CONTENT": {
+        "url": "Imports the campaign's HTML from an outside URL."
+      },
+      "MAILCHIMP_UPDATE_CAMPAIGN_SETTINGS": {
+        "rss__opts__feed__url": "Pulls campaign content from an outside RSS feed."
+      }
     }
   },
   "capabilities": [
@@ -69,6 +80,7 @@
       "withheldArguments": {
         "settings__reply__to": "names an address a message goes to or comes from",
         "recipients__list__id": "names an address a message goes to or comes from",
+        "rss__opts__feed__url": "reviewer: Pulls campaign content from an outside RSS feed.",
         "recipients__segment__opts__match": "names an address a message goes to or comes from",
         "recipients__segment__opts__conditions": "names an address a message goes to or comes from",
         "variate__settings__reply__to__addresses": "names an address a message goes to or comes from",
@@ -125,11 +137,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "The custom slug for [ClickTale](https://mailchimp.com/help/additional-tracking-options-for-campaigns/) tracking (max of 50 bytes)."
-          },
-          "rss__opts__feed__url": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The URL for the RSS feed."
           },
           "rss__opts__frequency": {
             "type": "string",
@@ -2009,16 +2016,12 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "Mailchimp: Set campaign content",
       "withheldArguments": {
+        "url": "reviewer: Imports the campaign's HTML from an outside URL.",
         "variate_contents": "unsupported schema"
       },
       "input": {
         "type": "object",
         "properties": {
-          "url": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "When importing a campaign, the URL where the HTML lives."
-          },
           "html": {
             "type": "string",
             "maxLength": 20000,
@@ -2075,6 +2078,7 @@
       "withheldArguments": {
         "settings__reply__to": "names an address a message goes to or comes from",
         "recipients__list__id": "names an address a message goes to or comes from",
+        "rss__opts__feed__url": "reviewer: Pulls campaign content from an outside RSS feed.",
         "settings__folder__id": "moves the record to another container",
         "recipients__segment__opts__match": "names an address a message goes to or comes from",
         "recipients__segment__opts__conditions": "names an address a message goes to or comes from",
@@ -2117,11 +2121,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "The custom slug for [ClickTale](https://mailchimp.com/help/additional-tracking-options-for-campaigns/) tracking (max of 50 bytes)."
-          },
-          "rss__opts__feed__url": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The URL for the RSS feed."
           },
           "rss__opts__frequency": {
             "type": "string",

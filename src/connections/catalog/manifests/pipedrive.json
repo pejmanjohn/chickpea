@@ -10,7 +10,7 @@
   },
   "label": "Pipedrive",
   "description": "Find, create, and update deals, people, organizations, leads, activities, and notes in one Pipedrive company.",
-  "securityDescription": "Pipedrive connects with an API key and company subdomain entered on Composio's hosted page; Chickpea never receives the key. Agents act as the Pipedrive user who owns the key. With write access, Agents can create and update deals, people, organizations, leads, and activities, and add and edit notes. People are saved without email addresses or marketing consent. Agents cannot delete or merge records, change who owns a record or who can see it, add products to deals, manage pipelines, stages, users, roles, permissions, or webhooks, or send email.",
+  "securityDescription": "Pipedrive connects with an API key and company subdomain entered on Composio's hosted page; Chickpea never receives the key. Agents act as the Pipedrive user who owns the key. With write access, Agents can create and update deals, people, organizations, leads, and activities, and add and edit notes. People are saved without email addresses or marketing consent, and an update cannot change a person's phone numbers. Agents cannot delete or merge records, change who owns a record or who can see it, add products to deals, manage pipelines, stages, users, roles, permissions, or webhooks, or send email.",
   "preset": {
     "category": "business",
     "accent": "#017737"
@@ -2175,6 +2175,7 @@
       "sideEffectLabel": "Pipedrive: Update person (v2)",
       "withheldArguments": {
         "emails": "names an address a message goes to or comes from",
+        "phones": "changes who the record belongs to or how a person is identified",
         "owner_id": "changes sharing, visibility, permissions, membership, or who acts",
         "visible_to": "changes sharing, visibility, permissions, membership, or who acts",
         "marketing_status": "reviewer: Records marketing consent, which lets Pipedrive Campaigns email the person."
@@ -2194,34 +2195,6 @@
           "org_id": {
             "type": "integer",
             "description": "The ID of the organization this person belongs to"
-          },
-          "phones": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "label": {
-                  "type": "string",
-                  "maxLength": 20000,
-                  "description": "Label for the phone (e.g., work, home, mobile)"
-                },
-                "value": {
-                  "type": "string",
-                  "maxLength": 20000,
-                  "description": "The phone number"
-                },
-                "primary": {
-                  "type": "boolean",
-                  "description": "Whether this is the primary phone"
-                }
-              },
-              "required": [
-                "value"
-              ],
-              "description": "Phone item schema for person contact information."
-            },
-            "maxItems": 100,
-            "description": "Phone numbers as objects with properties: value, primary, label"
           },
           "add_time": {
             "type": "string",

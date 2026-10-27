@@ -5,8 +5,8 @@
     "mode": "managed_oauth"
   },
   "label": "Figma",
-  "description": "Read design files, components, styles, variables, and comments, render frames as images, and post comments.",
-  "securityDescription": "Figma sign-in opens through Composio. Agents act as the signed-in Figma user and can read the files, projects, components, styles, variables, and comments that user can open. With write access, Agents can post comments and replies on a file, which everyone who can open the file sees. Agents cannot edit designs or variables, delete comments, manage webhooks or dev resources, or change sharing, team, or billing settings.",
+  "description": "Read design files, components, styles, variables, and comments, and post comments.",
+  "securityDescription": "Figma sign-in opens through Composio. Agents act as the signed-in Figma user and can read the files, projects, components, styles, variables, and comments that user can open. With write access, Agents can post comments and replies on a file, which everyone who can open the file sees. Agents cannot edit designs or variables, render or export images, delete comments, manage webhooks or dev resources, or change sharing, team, or billing settings.",
   "preset": {
     "category": "docs",
     "accent": "#F24E1E"
@@ -355,76 +355,6 @@
           }
         },
         "description": "Request to discover Figma resources and extract IDs automatically."
-      }
-    },
-    {
-      "id": "figma.download_figma_images",
-      "tool": "FIGMA_DOWNLOAD_FIGMA_IMAGES",
-      "toolName": "figma_download_figma_images",
-      "lane": "read",
-      "effect": "read",
-      "description": "Download images from Figma file nodes. Renders specified nodes as images and downloads them. Supports PNG, SVG, JPG, and PDF formats. REQUIRED PARAMETERS: - file_key (string): The Figma file key from the URL - images (array): List of objects, each containing: - node_id (string, required): The node ID to export (e.g., \"1:2\") - file_name (string, required): Output filename with extension (e.g., \"logo.png\") - format (string, optional): One of 'png', 'svg', 'jpg', 'pdf'. Defaults to 'png' Example usage: { \"file_key\": \"abc123XYZ\", \"images\": [ {\"node_id\": \"1:2\", \"file_name\": \"logo.png\", \"format\": \"png\"} ] } To find node IDs, use FIGMA_GET_FILE_JSON or look in Figma URLs after 'node-id='. NOTE: Returned image URLs expire shortly after generation — download them immediately.",
-      "maxResultBytes": 65536,
-      "input": {
-        "type": "object",
-        "properties": {
-          "scale": {
-            "type": "number",
-            "description": "Image scaling factor for PNG/JPG exports (0.01 to 4). Default is 2 for retina quality. Ignored for SVG/PDF. Exports are capped at ~32 megapixels; reduce scale or split large nodes to avoid hitting this limit."
-          },
-          "images": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "format": {
-                  "type": "string",
-                  "maxLength": 20000,
-                  "description": "Image format to export. Supported values: 'png', 'svg', 'jpg', 'pdf'. Defaults to 'png'."
-                },
-                "node_id": {
-                  "type": "string",
-                  "maxLength": 20000,
-                  "description": "REQUIRED. The Figma node ID to render as an image. Node IDs are found in Figma URLs after 'node-id=' (e.g., '1:2', '123:456'). You can also get node IDs by using the FIGMA_GET_FILE_JSON action."
-                },
-                "file_name": {
-                  "type": "string",
-                  "maxLength": 20000,
-                  "description": "REQUIRED. The output filename with extension for the downloaded image (e.g., 'logo.png', 'header-image.svg', 'icon.jpg')."
-                }
-              },
-              "required": [
-                "node_id",
-                "file_name"
-              ],
-              "description": "Individual image download request specifying which node to render and how to save it. Example: {\"node_id\": \"1:2\", \"file_name\": \"logo.png\", \"format\": \"png\"}"
-            },
-            "maxItems": 100,
-            "description": "REQUIRED. A list of image download requests. Each item must be an object with 'node_id' (string, required), 'file_name' (string, required), and optionally 'format' (string, defaults to 'png'). Example: [{\"node_id\": \"1:2\", \"file_name\": \"logo.png\"}]"
-          },
-          "file_key": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "REQUIRED. The Figma file key extracted from a Figma URL. For URL 'https://www.figma.com/file/abc123XYZ/MyDesign', the file_key is 'abc123XYZ'. This identifies which Figma file to download images from."
-          },
-          "svg_include_id": {
-            "type": "boolean",
-            "description": "For SVG exports only: include element IDs in the SVG output. Defaults to false."
-          },
-          "svg_outline_text": {
-            "type": "boolean",
-            "description": "For SVG exports only: convert text to paths for accurate rendering. Defaults to true."
-          },
-          "svg_simplify_stroke": {
-            "type": "boolean",
-            "description": "For SVG exports only: simplify strokes for cleaner SVG output. Defaults to true."
-          }
-        },
-        "required": [
-          "file_key",
-          "images"
-        ],
-        "description": "Request to download images from a Figma file. REQUIRED PARAMETERS: - file_key: The Figma file key (string) - images: List of image download requests (array of objects) Example request: { \"file_key\": \"abc123XYZ\", \"images\": [ {\"node_id\": \"1:2\", \"file_name\": \"logo.png\", \"format\": \"png\"}, {\"node_id\": \"3:4\", \"file_name\": \"icon.svg\", \"format\": \"svg\"} ] }"
       }
     },
     {

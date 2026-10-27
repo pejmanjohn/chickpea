@@ -15,6 +15,7 @@ import {
   MANAGED_CONNECTOR_PRESETS,
   CONNECTION_CATALOG_PRESETS,
   getConnectorPreset,
+  matchingConnectorCatalogPresets,
   presetLanes,
   resolveConnectorCatalogPreset,
   type ConnectorPreset,
@@ -232,7 +233,7 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     managedToolkit: 'box',
     providerId: 'box',
     name: 'Box',
-    description: 'Search and read files and folders, comment on files, and create and rename folders.',
+    description: 'Search files and folders, read their details and comments, comment on files, and create and rename folders.',
     category: 'docs',
     accent: '#0061D5',
     logoId: 'box',
@@ -241,7 +242,7 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     managedToolkit: 'dropbox',
     providerId: 'dropbox',
     name: 'Dropbox',
-    description: 'Search and read files and Paper docs, create folders and Paper docs, and restore earlier file versions.',
+    description: 'Search files and folders, read Paper docs as text, create folders and Paper docs, and restore earlier file versions.',
     category: 'docs',
     accent: '#0061FE',
     logoId: 'dropbox',
@@ -259,7 +260,7 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     managedToolkit: 'figma',
     providerId: 'figma',
     name: 'Figma',
-    description: 'Read design files, components, styles, variables, and comments, render frames as images, and post comments.',
+    description: 'Read design files, components, styles, variables, and comments, and post comments.',
     category: 'docs',
     accent: '#F24E1E',
     logoId: 'figma',
@@ -286,6 +287,7 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     managedToolkit: 'googlebigquery',
     providerId: 'googlebigquery',
     name: 'Google BigQuery',
+    aliases: ['BigQuery'],
     description: 'Browse projects, datasets, tables, schemas, and rows, read finished query results, and create datasets and tables.',
     category: 'data',
     accent: '#669DF6',
@@ -304,7 +306,7 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     managedToolkit: 'one_drive',
     providerId: 'one_drive',
     name: 'OneDrive',
-    description: 'Find, read, and create files and folders, and update Excel workbooks stored in OneDrive.',
+    description: 'Find files and folders, read their details, create text files and folders, and read and update Excel workbooks in OneDrive.',
     category: 'docs',
     accent: '#0364B8',
     logoId: 'one_drive',
@@ -358,7 +360,7 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     managedToolkit: 'share_point',
     providerId: 'share_point',
     name: 'SharePoint',
-    description: 'Search SharePoint sites, read files, pages, and lists, and add folders and list items.',
+    description: 'Search SharePoint sites, read file details, pages, and lists, and add folders and list items.',
     category: 'docs',
     accent: '#038387',
     logoId: 'share_point',
@@ -769,4 +771,9 @@ test('reusable connector catalog is the shared Agent-facing lookup', () => {
   assert.ok(sheets && 'managedToolkit' in sheets);
   assert.equal(sheets.managedToolkit, 'googlesheets');
   assert.equal(resolveConnectorCatalogPreset('unknown'), undefined);
+});
+
+test('a manifest connector resolves by the alias its preset declares', () => {
+  assert.deepEqual(matchingConnectorCatalogPresets('bigquery').map(({ id }) => id), ['googlebigquery-managed']);
+  assert.deepEqual(matchingConnectorCatalogPresets('Google BigQuery').map(({ id }) => id), ['googlebigquery-managed']);
 });

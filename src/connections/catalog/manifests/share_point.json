@@ -5,8 +5,8 @@
     "mode": "managed_oauth"
   },
   "label": "SharePoint",
-  "description": "Search SharePoint sites, read files, pages, and lists, and add folders and list items.",
-  "securityDescription": "Microsoft sign-in opens through Composio, which asks for the SharePoint subdomain. Agents can read the sites, document libraries, files, pages, and lists the connected account can reach. With write access, Agents can create folders, add list items, and rename folders. Agents cannot upload or overwrite files, share items or create sharing links, change permissions or site and list settings, move or copy items, publish pages, or delete anything.",
+  "description": "Search SharePoint sites, read file details, pages, and lists, and add folders and list items.",
+  "securityDescription": "Microsoft sign-in opens through Composio, which asks for the SharePoint subdomain. Agents can read the sites, document libraries, file details, pages, and lists the connected account can reach, but cannot download file contents. With write access, Agents can create folders, add list items, and rename folders. Agents cannot upload or overwrite files, share items or create sharing links, change permissions or site and list settings, move or copy items, publish pages, or delete anything.",
   "preset": {
     "category": "docs",
     "accent": "#038387"
@@ -91,34 +91,6 @@
           "folder_url",
           "values"
         ]
-      }
-    },
-    {
-      "id": "share_point.download_file_by_server_relative_url",
-      "tool": "SHARE_POINT_DOWNLOAD_FILE_BY_SERVER_RELATIVE_URL",
-      "toolName": "share_point_download_file_by_server_relative_url",
-      "lane": "read",
-      "effect": "read",
-      "description": "Tool to download a file by server-relative URL. Use when you need to fetch the raw bytes of a SharePoint file by its server-relative path.",
-      "maxResultBytes": 65536,
-      "input": {
-        "type": "object",
-        "properties": {
-          "site_name": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
-          },
-          "server_relative_url": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Server-relative URL of the file to download, starting with '/'. Can be either URL-encoded or unencoded. E.g., '/Shared Documents/report.pdf' for root site, '/sites/CustomerDocs/archive/Shared Documents/file.pdf' for a nested subsite, or '/personal/username_domain/Documents/file.docx' for personal OneDrive sites. A complete '/sites/' or '/teams/' resource path determines the owning web even when site_name is supplied."
-          }
-        },
-        "required": [
-          "server_relative_url"
-        ],
-        "description": "Request model for downloading a file by its server-relative URL."
       }
     },
     {

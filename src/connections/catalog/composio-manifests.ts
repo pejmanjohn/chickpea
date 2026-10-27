@@ -98,7 +98,12 @@ export interface ComposioManifest {
   label: string;
   description: string;
   securityDescription: string;
-  preset: { category: 'project' | 'dev' | 'data' | 'search' | 'docs' | 'business'; accent: string };
+  preset: {
+    category: 'project' | 'dev' | 'data' | 'search' | 'docs' | 'business';
+    accent: string;
+    /** Other names a person might call the connector, such as "BigQuery" for Google BigQuery. */
+    aliases?: string[] | undefined;
+  };
   validationCapability: string;
   review: {
     add: string[];
@@ -134,6 +139,7 @@ const ManifestShape = v.strictObject({
   preset: v.strictObject({
     category: v.picklist(['project', 'dev', 'data', 'search', 'docs', 'business']),
     accent: v.pipe(v.string(), v.regex(/^#[0-9A-F]{6}$/)),
+    aliases: v.optional(v.pipe(v.array(Text(80)), v.minLength(1), v.maxLength(4))),
   }),
   validationCapability: Text(192),
   review: v.strictObject({

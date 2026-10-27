@@ -6,7 +6,7 @@
   },
   "label": "Outlook",
   "description": "Search and read mail, draft and send messages, and manage calendar events, contacts, and To Do tasks.",
-  "securityDescription": "Microsoft sign-in opens through Composio. Agents can read the mail, calendars, contacts, and To Do lists the connected account can reach. With write access, Agents can send email to any address, as Gmail can, reply to a message's sender, create drafts and draft replies, send drafts, accept invitations, create and update events, mark, flag, and categorize messages, and create contacts and tasks. Agents cannot forward mail, reply to all, add CC or BCC to a reply, send as another mailbox, add or change event attendees, decline or cancel events, move, copy, or delete mail, attach files, create mail rules, or change mailbox settings.",
+  "securityDescription": "Microsoft sign-in opens through Composio. Agents can read the mail, calendars, contacts, and To Do lists the connected account can reach. With write access, Agents can send email to any address, as Gmail can, reply to a message's sender, create drafts and draft replies, send drafts, accept invitations, create and update events, mark, flag, and categorize messages, and create contacts and tasks. Agents cannot forward mail, reply to all, add CC or BCC to a reply, send as another mailbox, add or change event attendees, decline or cancel events, move, copy, or delete mail, download attachments or attach files, create mail rules, or change mailbox settings.",
   "preset": {
     "category": "business",
     "accent": "#0078D4"
@@ -606,48 +606,6 @@
         "required": [
           "todo_task_list_id",
           "title"
-        ]
-      }
-    },
-    {
-      "id": "outlook.download_outlook_attachment",
-      "tool": "OUTLOOK_DOWNLOAD_OUTLOOK_ATTACHMENT",
-      "toolName": "outlook_download_outlook_attachment",
-      "lane": "read",
-      "effect": "read",
-      "description": "Downloads a specific file attachment from an email message in a Microsoft Outlook mailbox; the attachment must contain 'contentBytes' (binary data) and not be a link or embedded item. High-volume parallel calls may trigger HTTP 429 responses; honor the Retry-After header and use exponential backoff.",
-      "maxResultBytes": 65536,
-      "input": {
-        "type": "object",
-        "properties": {
-          "user_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The user's UPN (User Principal Name) or 'me' for the authenticated user. This identifies the mailbox where the message is located."
-          },
-          "file_name": {
-            "type": "string",
-            "maxLength": 20000,
-            "minLength": 1,
-            "description": "The desired filename for the downloaded attachment. This name will be assigned to the."
-          },
-          "message_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "minLength": 1,
-            "description": "The unique identifier of the email message that contains the attachment to be downloaded. This ID is typically obtained when listing or retrieving messages."
-          },
-          "attachment_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "minLength": 1,
-            "description": "The Microsoft Graph API attachment identifier (NOT the filename). This is a base64-encoded opaque string returned in the 'id' field when listing attachments via the LIST_OUTLOOK_ATTACHMENTS action. Must be the exact value from the API response, not the attachment's display name or filename. Always use the exact attachment_id/message_id pair returned together from LIST_OUTLOOK_ATTACHMENTS — an attachment_id is bound to its specific message_id and cannot be used with a different message_id."
-          }
-        },
-        "required": [
-          "message_id",
-          "attachment_id",
-          "file_name"
         ]
       }
     },

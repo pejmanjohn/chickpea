@@ -6,10 +6,13 @@
   },
   "label": "Google BigQuery",
   "description": "Browse projects, datasets, tables, schemas, and rows, read finished query results, and create datasets and tables.",
-  "securityDescription": "Google sign-in opens through Composio. Agents act as the signed-in Google account and can browse the BigQuery projects, datasets, tables, schemas, rows, jobs, routines, and models it can read. Reading rows lists table data directly, which BigQuery does not bill as a query. With write access, Agents can create datasets, tables, and views, edit descriptions and table settings, and restore a recently deleted dataset. Agents cannot run SQL, queries, or jobs, insert, load, copy, or export data, delete anything, set tables to expire, shorten time travel, change storage billing, create routines or materialized views, publish listings, or change who can access a dataset.",
+  "securityDescription": "Google sign-in opens through Composio. Agents act as the signed-in Google account and can browse the BigQuery projects, datasets, tables, schemas, rows, jobs, routines, and models it can read. Reading rows lists table data directly, which BigQuery does not bill as a query. With write access, Agents can create datasets, tables, and views, edit descriptions and table settings, and restore a recently deleted dataset. Agents cannot run SQL, queries, or jobs, insert, load, copy, or export data, delete anything, set tables or partitions to expire, shorten time travel, change storage billing, create routines or materialized views, publish listings, or change who can access a dataset.",
   "preset": {
     "category": "data",
-    "accent": "#669DF6"
+    "accent": "#669DF6",
+    "aliases": [
+      "BigQuery"
+    ]
   },
   "validationCapability": "googlebigquery.list_projects",
   "review": {
@@ -32,10 +35,27 @@
     },
     "allowArguments": {},
     "withholdArguments": {
+      "GOOGLEBIGQUERY_CREATE_DATASET": {
+        "defaultPartitionExpirationMs": "Deletes the table or partitions when the time passes.",
+        "defaultTableExpirationMs": "Deletes the table or partitions when the time passes."
+      },
       "GOOGLEBIGQUERY_CREATE_TABLE": {
-        "materializedView": "A materialized view refreshes on a schedule and bills query costs."
+        "expirationTime": "Deletes the table or partitions when the time passes.",
+        "materializedView": "A materialized view refreshes on a schedule and bills query costs.",
+        "timePartitioning.expirationMs": "Deletes the table or partitions when the time passes."
+      },
+      "GOOGLEBIGQUERY_GET_QUERY_RESULTS": {
+        "alt": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "callback": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "prettyPrint": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "quotaUser": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "uploadType": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "upload_protocol": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "xgafv": "A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results."
       },
       "GOOGLEBIGQUERY_PATCH_DATASET": {
+        "defaultPartitionExpirationMs": "Deletes the table or partitions when the time passes.",
+        "defaultTableExpirationMs": "Deletes the table or partitions when the time passes.",
         "maxTimeTravelHours": "Shortens how long changed or deleted data stays recoverable.",
         "storageBillingModel": "Changes how the dataset's storage is billed."
       },
@@ -59,7 +79,9 @@
       "sideEffectLabel": "Google BigQuery: Create BigQuery Dataset",
       "withheldArguments": {
         "access": "changes sharing, visibility, permissions, membership, or who acts",
-        "labels": "unsupported schema"
+        "labels": "unsupported schema",
+        "defaultTableExpirationMs": "reviewer: Deletes the table or partitions when the time passes.",
+        "defaultPartitionExpirationMs": "reviewer: Deletes the table or partitions when the time passes."
       },
       "input": {
         "type": "object",
@@ -88,14 +110,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "A user-friendly name for the dataset. This is a descriptive label that appears in the BigQuery UI."
-          },
-          "defaultTableExpirationMs": {
-            "type": "integer",
-            "description": "Default lifetime of all tables in the dataset, in milliseconds. Tables will be deleted this many milliseconds after creation unless explicitly set otherwise."
-          },
-          "defaultPartitionExpirationMs": {
-            "type": "integer",
-            "description": "Default lifetime of all partitions in tables in the dataset, in milliseconds. Partitions will be deleted this many milliseconds after creation."
           }
         },
         "required": [
@@ -117,7 +131,9 @@
       "sideEffectLabel": "Google BigQuery: Create BigQuery Table",
       "withheldArguments": {
         "labels": "unsupported schema",
+        "expirationTime": "reviewer: Deletes the table or partitions when the time passes.",
         "materializedView": "reviewer: A materialized view refreshes on a schedule and bills query costs.",
+        "timePartitioning.expirationMs": "reviewer: Deletes the table or partitions when the time passes.",
         "externalDataConfiguration.schema.fields[].mode": "unsupported schema",
         "externalDataConfiguration.schema": "unsupported schema"
       },
@@ -249,11 +265,6 @@
             "maxLength": 20000,
             "description": "A descriptive name for the table shown in the BigQuery UI."
           },
-          "expirationTime": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Time when the table expires, in milliseconds since epoch. If not set, the table persists indefinitely or uses dataset default."
-          },
           "tableReference": {
             "type": "object",
             "properties": {
@@ -297,11 +308,6 @@
                 "type": "string",
                 "maxLength": 20000,
                 "description": "The field to partition by. If not set, the table is partitioned by pseudo column '_PARTITIONTIME'. Must be a top-level TIMESTAMP or DATE field."
-              },
-              "expirationMs": {
-                "type": "string",
-                "maxLength": 20000,
-                "description": "Number of milliseconds for which to keep the storage for a partition. Partitions older than this will be deleted."
               },
               "requirePartitionFilter": {
                 "type": "boolean",
@@ -524,47 +530,30 @@
       "effect": "read",
       "description": "Tool to get the results of a BigQuery query job via RPC. Use this to retrieve results after running a query, or to check job completion status and fetch paginated results.",
       "maxResultBytes": 65536,
+      "withheldArguments": {
+        "alt": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "key": "carries a credential the model would supply itself",
+        "xgafv": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "callback": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "quotaUser": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "uploadType": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "oauth_token": "carries a credential the model would supply itself",
+        "prettyPrint": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results.",
+        "access_token": "carries a credential the model would supply itself",
+        "upload_protocol": "reviewer: A Google API system parameter that changes the response format, JSONP wrapping, upload mode, or quota attribution, not the results."
+      },
       "input": {
         "type": "object",
         "properties": {
-          "alt": {
-            "type": "string",
-            "maxLength": 20000,
-            "enum": [
-              "json",
-              "media",
-              "proto"
-            ],
-            "description": "Data format for response enum."
-          },
-          "key": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "API key. Your API key identifies your project and provides you with API access, quota, and reports. Required unless you provide an OAuth 2.0 token. Optional."
-          },
           "jobId": {
             "type": "string",
             "maxLength": 20000,
             "description": "Required. Job ID of the query job."
           },
-          "xgafv": {
-            "type": "string",
-            "maxLength": 20000,
-            "enum": [
-              "1",
-              "2"
-            ],
-            "description": "V1 error format enum."
-          },
           "fields": {
             "type": "string",
             "maxLength": 20000,
             "description": "Selector specifying which fields to include in a partial response. Optional."
-          },
-          "callback": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "JSONP callback parameter. Optional."
           },
           "location": {
             "type": "string",
@@ -581,11 +570,6 @@
             "maxLength": 20000,
             "description": "Required. Project ID of the query job."
           },
-          "quotaUser": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Available to use for quota purposes for server-side applications. Can be any arbitrary string assigned to a user, but should not exceed 40 characters. Optional."
-          },
           "timeoutMs": {
             "type": "integer",
             "description": "Optional: Specifies the maximum amount of time, in milliseconds, that the client is willing to wait for the query to complete. By default, this limit is 10 seconds (10,000 milliseconds). If the query is complete, the jobComplete field in the response is true. If the query has not yet completed, jobComplete is false. You can request a longer timeout period in the timeoutMs field."
@@ -598,30 +582,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Zero-based index of the starting row. Optional."
-          },
-          "uploadType": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Legacy upload protocol for media (e.g. \"media\", \"multipart\"). Optional."
-          },
-          "oauth_token": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "OAuth 2.0 token for the current user. Optional."
-          },
-          "prettyPrint": {
-            "type": "boolean",
-            "description": "Returns response with indentations and line breaks. Optional."
-          },
-          "access_token": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "OAuth access token. Optional."
-          },
-          "upload_protocol": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Upload protocol for media (e.g. \"raw\", \"multipart\"). Optional."
           },
           "formatOptions.useInt64Timestamp": {
             "type": "boolean",
@@ -1046,7 +1006,9 @@
         "maxTimeTravelHours": "reviewer: Shortens how long changed or deleted data stays recoverable.",
         "linkedDatasetSource": "copies content from another record, URL, or file",
         "storageBillingModel": "reviewer: Changes how the dataset's storage is billed.",
-        "externalDatasetReference": "changes who the record belongs to or how a person is identified"
+        "defaultTableExpirationMs": "reviewer: Deletes the table or partitions when the time passes.",
+        "externalDatasetReference": "changes who the record belongs to or how a person is identified",
+        "defaultPartitionExpirationMs": "reviewer: Deletes the table or partitions when the time passes."
       },
       "input": {
         "type": "object",
@@ -1105,16 +1067,6 @@
               "ROUND_HALF_EVEN"
             ],
             "description": "Optional. Defines the default rounding mode specification of new tables created within this dataset."
-          },
-          "defaultTableExpirationMs": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Optional. The default lifetime of all tables in the dataset, in milliseconds. Minimum value is 3600000 (one hour). Set to 0 to clear."
-          },
-          "defaultPartitionExpirationMs": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Default partition expiration in milliseconds. When new time-partitioned tables are created, they will inherit this value."
           },
           "defaultEncryptionConfiguration": {
             "type": "object",

@@ -5,8 +5,8 @@
     "mode": "managed_oauth"
   },
   "label": "Dropbox",
-  "description": "Search and read files and Paper docs, create folders and Paper docs, and restore earlier file versions.",
-  "securityDescription": "Dropbox sign-in opens through Composio. Agents act as the signed-in Dropbox user and reach what that user can reach. With write access, Agents can create folders, create Paper docs, tag files and folders, and restore a file to an earlier version from its history. A doc created in a shared folder is visible to that folder's members. Agents cannot edit existing Paper docs, upload, move, copy, rename, or delete files or folders, create shared links, temporary links, or file requests, share folders, add or remove members, or change team, sharing, or account settings.",
+  "description": "Search files and folders, read Paper docs as text, create folders and Paper docs, and restore earlier file versions.",
+  "securityDescription": "Dropbox sign-in opens through Composio. Agents act as the signed-in Dropbox user and reach what that user can reach. They can find files and folders, read their details, and export Paper docs and Google files stored in Dropbox as text, but not download other files. With write access, Agents can create folders, create Paper docs, tag files and folders, and restore a file to an earlier version from its history. A doc created in a shared folder is visible to that folder's members. Agents cannot edit existing Paper docs, upload, move, copy, rename, or delete files or folders, create shared links, temporary links, or file requests, share folders, add or remove members, or change team, sharing, or account settings.",
   "preset": {
     "category": "docs",
     "accent": "#0061FE"
@@ -645,28 +645,6 @@
             "description": "Whether to return members who have been removed from the team. If true, includes removed members in the results."
           }
         }
-      }
-    },
-    {
-      "id": "dropbox.read_file",
-      "tool": "DROPBOX_READ_FILE",
-      "toolName": "dropbox_read_file",
-      "lane": "read",
-      "effect": "read",
-      "description": "Downloads a file from the specified Dropbox path, requiring `files.content.read` scope. Response field `file_content_bytes` is base64-encoded binary; decode before saving or passing to libraries. Bursty reads may trigger HTTP 429; honor the `Retry-After` header.",
-      "maxResultBytes": 65536,
-      "input": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The path to search in Must be a canonical Dropbox path from `path_display` or `path_lower` in API results — hand-typed paths frequently cause not-found or 409 errors. Paths in shared/team folders may become invalid if items are moved or access is revoked."
-          }
-        },
-        "required": [
-          "path"
-        ]
       }
     },
     {

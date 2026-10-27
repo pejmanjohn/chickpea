@@ -237,6 +237,7 @@ export const MANAGED_CONNECTOR_PRESETS: ManagedConnectorPreset[] = [
       managedToolkit: toolkit,
       providerId: toolkit,
       name: manifest.label,
+      ...(manifest.preset.aliases ? { aliases: manifest.preset.aliases } : {}),
       description: manifest.description,
       category: manifest.preset.category,
       accent: manifest.preset.accent,

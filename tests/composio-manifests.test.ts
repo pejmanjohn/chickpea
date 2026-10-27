@@ -194,6 +194,188 @@ test('no tool, read or write, picks who it acts as or makes the provider mint a 
   assert.match(excluded('ACME_CREATE_SHARED_LINK') ?? '', /^external_publish/);
 });
 
+test('no tool takes a credential from the model, and a tool that needs one is excluded', () => {
+  const text = (description: string) => ({ type: 'string', description });
+  const { manifest, report } = draftComposioManifest(snapshot([
+    tool('ACME_GET_FILE', ['readOnlyHint'], {
+      type: 'object',
+      properties: {
+        file_id: text('File to read.'),
+        access_token: text('Optional token that pre-authenticates the request so a link works without sign-in.'),
+        oauth_token: text('OAuth 2.0 token for the current user.'),
+        key: text('API key. Identifies your project for quota.'),
+        shared_link_password: text('Password for the shared link.'),
+        page_token: text('Opaque continuation token for the next page.'),
+        pageToken: text('Page token returned by a previous call.'),
+        skip_token: text('Skip token for paging through large result sets.'),
+        delta_token: text('Delta token from a previous call to get only changes.'),
+        token: text('A token used to retrieve a page of results or changes since a previous state.'),
+        file_key: text('File key from the design URL.'),
+        templateKey: text('The key of the metadata template used to filter results.'),
+        alert_key: text('Alert de-duplication key.'),
+        incident_key: text('Incident de-duplication key.'),
+      },
+      required: ['file_id'],
+    }),
+    tool('ACME_GET_COMPONENT', ['readOnlyHint'], {
+      type: 'object', properties: { key: text('The unique identifier of the component.') }, required: ['key'],
+    }),
+    tool('ACME_UPDATE_TABLE', ['updateHint'], {
+      type: 'object',
+      properties: {
+        table_id: text('Table to update.'),
+        kmsKeyName: text('Cloud KMS encryption key name that protects the table.'),
+        client_secret: text('Secret of the client application.'),
+      },
+      required: ['table_id'],
+    }),
+    tool('ACME_GET_EXPORT', ['readOnlyHint'], {
+      type: 'object', properties: { id: text('Export to read.'), api_key: text('Key for the export service.') },
+      required: ['id', 'api_key'],
+    }),
+  ]));
+  const capability = (slug: string) => manifest.capabilities.find(({ tool: name }) => name === slug)!;
+  const credential = 'carries a credential the model would supply itself';
+
+  assert.deepEqual(capability('ACME_GET_FILE').withheldArguments, {
+    access_token: credential, oauth_token: credential, key: credential, shared_link_password: credential,
+  });
+  assert.deepEqual(Object.keys(capability('ACME_GET_FILE').input.properties), [
+    'file_id', 'page_token', 'pageToken', 'skip_token', 'delta_token', 'token', 'file_key', 'templateKey',
+    'alert_key', 'incident_key',
+  ]);
+  assert.deepEqual(capability('ACME_GET_COMPONENT').input.required, ['key']);
+  assert.deepEqual(Object.keys(capability('ACME_UPDATE_TABLE').input.properties), ['table_id', 'kmsKeyName']);
+  assert.deepEqual(capability('ACME_UPDATE_TABLE').withheldArguments, { client_secret: credential });
+  assert.equal(report.excluded.find(({ tool: slug }) => slug === 'ACME_GET_EXPORT')?.reason,
+    `required argument api_key ${credential}`);
+});
+
+test('a read that returns expiring, signed, or outside-hosted URLs is excluded, and plain links stay', () => {
+  const read = (slug: string, description: string) => ({ ...tool(slug, ['readOnlyHint']), description });
+  const { manifest, report } = draftComposioManifest(snapshot([
+    read('ACME_DOWNLOAD_IMAGES', 'Renders nodes as images. NOTE: Returned image URLs expire shortly after generation.'),
+    read('ACME_GET_THUMBNAILS', 'Gets item thumbnails. Returned thumbnail URLs are external HTTP endpoints.'),
+    read('ACME_GET_PREVIEW', 'Gets a preview of the item. Preview links that expire must be regenerated.'),
+    read('ACME_GET_ASSET', 'Returns a signed URL for the asset.'),
+    read('ACME_GET_ATTACHMENT', 'Returns an expiring download link for the attachment.'),
+    read('ACME_GET_EMBED', 'Returns a pre-authenticated URL for an embedded view.'),
+    read('ACME_LIST_PAGES', 'Lists pages with their URLs and the links between them.'),
+  ]));
+  const reason = (slug: string) => report.excluded.find(({ tool: name }) => name === slug)?.reason ?? '';
+
+  assert.deepEqual(lanes(manifest), { ACME_LIST_PAGES: 'read', ACME_WHO_AM_I: 'read' });
+  assert.match(reason('ACME_DOWNLOAD_IMAGES'), /read lint hit "URLs expire"/);
+  assert.match(reason('ACME_GET_THUMBNAILS'), /read lint hit "URLs are external"/);
+  assert.match(reason('ACME_GET_PREVIEW'), /read lint hit "links that expire"/);
+  assert.match(reason('ACME_GET_ASSET'), /read lint hit "signed URL"/);
+  assert.match(reason('ACME_GET_ATTACHMENT'), /read lint hit "expiring download link"/);
+  assert.match(reason('ACME_GET_EMBED'), /read lint hit "pre-authenticated URL"/);
+});
+
+test('a tool whose result is a file on Composio storage is excluded, and the snapshot records which tools return one', () => {
+  const file = { type: 'object', file_downloadable: true, properties: { s3url: { type: 'string' } } };
+  const output = (content: unknown) => ({
+    type: 'object',
+    $defs: { Download: { type: 'object', properties: { content: { $ref: '#/$defs/File' } } }, File: content },
+    properties: { data: { $ref: '#/$defs/Download' } },
+  });
+  const listing = (slug: string, content: unknown) => ({
+    ...listed(slug), input_parameters: { type: 'object', properties: {} }, output_parameters: output(content),
+  });
+  const fetched = snapshotFromComposio(
+    { slug: 'acme', name: 'Acme', meta: { version: VERSION, description: '' }, composio_managed_auth_schemes: ['OAUTH2'] },
+    { items: [
+      listing('ACME_WHO_AM_I', { type: 'object', properties: { name: { type: 'string' } } }),
+      listing('ACME_READ_FILE', file),
+      listing('ACME_LIST_FILES', { type: 'array', items: { type: 'object', properties: { url: { type: 'string' } } } }),
+    ] },
+    new Set(),
+  );
+  assert.deepEqual(fetched.tools.filter((entry) => entry.returnsHostedFile).map(({ slug }) => slug), ['ACME_READ_FILE']);
+
+  const { manifest, report } = draftComposioManifest(fetched);
+  assert.deepEqual(lanes(manifest), { ACME_LIST_FILES: 'read', ACME_WHO_AM_I: 'read' });
+  assert.match(report.excluded.find(({ tool: slug }) => slug === 'ACME_READ_FILE')!.reason,
+    /^returns the file as a download URL on Composio storage/);
+});
+
+test('every committed snapshot marks the tools that return a file on Composio storage, and none ships', async () => {
+  const marked: string[] = [];
+  for (const manifest of PILOT_MANIFESTS) {
+    const pinned = await readSnapshot(manifest.toolkit, manifest.version);
+    const hosted = new Set(pinned.tools.filter((entry) => entry.returnsHostedFile).map(({ slug }) => slug));
+    marked.push(...hosted);
+    assert.deepEqual(manifest.capabilities.filter(({ tool: slug }) => hosted.has(slug)), [], manifest.toolkit);
+  }
+  assert.deepEqual(marked.sort(), [
+    'BITBUCKET_DOWNLOAD_REPOSITORY_ARCHIVE', 'BOX_DOWNLOAD_FILE', 'DROPBOX_READ_FILE', 'FIGMA_DOWNLOAD_FIGMA_IMAGES',
+    'ONE_DRIVE_DOWNLOAD_FILE', 'OUTLOOK_DOWNLOAD_OUTLOOK_ATTACHMENT', 'SALESFORCE_GET_FILE_CONTENT',
+    'SHARE_POINT_DOWNLOAD_FILE_BY_SERVER_RELATIVE_URL',
+  ]);
+});
+
+test('link, act-as, and overwrite rules see through optional wrappers, arrays, and share or download wording', () => {
+  const flag = { type: 'boolean' };
+  const { manifest, report } = draftComposioManifest(snapshot([
+    tool('ACME_SEARCH_FILES', ['readOnlyHint'], {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        include_download_url: flag,
+        get_link: flag,
+        share_link: flag,
+        include_recent_shared_links: flag,
+        format: { type: 'string', enum: ['json', 'url'] },
+        type: { type: 'string', enum: ['file', 'folder', 'web_link'] },
+        export_modes: { type: 'array', items: { type: 'string', enum: ['text', 'store_and_link'] } },
+        sudo: { type: 'string' },
+        run_as: { type: 'string' },
+        actor_id: { type: 'string' },
+      },
+    }),
+    tool('ACME_EXPORT_FILE', ['readOnlyHint'], {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        mode: { anyOf: [{ type: 'string', enum: ['text', 'store_and_link'], default: 'store_and_link' }, { type: 'null' }] },
+      },
+      required: ['path'],
+    }),
+    tool('ACME_CREATE_FOLDERS', ['createHint'], {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        conflict_modes: { type: 'array', items: { type: 'string', enum: ['skip', 'replace'] } },
+      },
+      required: ['name'],
+    }),
+  ]));
+  const capability = (slug: string) => manifest.capabilities.find(({ tool: name }) => name === slug)!;
+  const link = 'can make the provider mint a link anyone holding it can open';
+  const acting = 'picks the user, admin, or namespace the call acts as';
+
+  assert.deepEqual(Object.keys(capability('ACME_SEARCH_FILES').input.properties), ['query', 'include_recent_shared_links', 'type']);
+  assert.deepEqual(capability('ACME_SEARCH_FILES').withheldArguments, {
+    include_download_url: link, get_link: link, share_link: link, format: link, export_modes: link,
+    sudo: acting, run_as: acting, actor_id: acting,
+  });
+  assert.match(report.excluded.find(({ tool: slug }) => slug === 'ACME_EXPORT_FILE')!.reason,
+    /mode mints a shareable link by default/);
+  assert.deepEqual(capability('ACME_CREATE_FOLDERS').withheldArguments, { conflict_modes: 'can replace an existing item' });
+});
+
+test('a reviewer cannot keep a withheld argument on a read, and the error names why the rule withholds it', () => {
+  const search = tool('ACME_SEARCH_FILES', ['readOnlyHint'], {
+    type: 'object', properties: { query: { type: 'string' }, as_user: { type: 'string' } },
+  });
+  const generated = draftComposioManifest(snapshot([search]));
+  assert.throws(() => draftComposioManifest(snapshot([search]), {
+    ...generated.manifest,
+    review: { add: ['ACME_SEARCH_FILES'], drop: {}, allowArguments: { ACME_SEARCH_FILES: ['as_user'] } },
+  }), /review\.allowArguments keeps ACME_SEARCH_FILES as_user, which picks the user, admin, or namespace the call acts as; a read tool cannot keep a withheld argument/);
+});
+
 test('the check rejects a write tool hand-moved into the read lane', async () => {
   const manifest = pilotManifest('trello');
   const card = manifest.capabilities.find(({ tool: slug }) => slug === 'TRELLO_UPDATE_CARDS_BY_ID_CARD')!;
@@ -453,6 +635,85 @@ test('write tools lose sharing, permission, move, and copy arguments, and the re
     manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_UPDATE_FOLDER')!.withheldArguments,
     { parent: 'moves the record to another container' },
   );
+});
+
+test('update tools lose a destination given as an optional object, a list of parents, or a path', () => {
+  const text = { type: 'string' };
+  const { manifest } = draftComposioManifest(snapshot([
+    tool('ACME_UPDATE_ITEM', ['updateHint'], {
+      type: 'object',
+      properties: {
+        item_id: text,
+        name: text,
+        folder_name: text,
+        parent: { anyOf: [{ type: 'object', properties: { id: text } }, { type: 'null' }] },
+        parents: { type: 'array', items: text },
+        destination_folder: text,
+        parent_reference: { type: 'object', properties: { path: text } },
+      },
+      required: ['item_id'],
+    }),
+    tool('ACME_CREATE_PULL_REQUEST', ['createHint'], {
+      type: 'object', properties: { title: text, destination_branch: text }, required: ['title'],
+    }),
+  ]));
+  const capability = (slug: string) => manifest.capabilities.find(({ tool: name }) => name === slug)!;
+  const move = 'moves the record to another container';
+
+  assert.deepEqual(Object.keys(capability('ACME_UPDATE_ITEM').input.properties), ['item_id', 'name', 'folder_name']);
+  assert.deepEqual(capability('ACME_UPDATE_ITEM').withheldArguments, {
+    parent: move, parents: move, destination_folder: move, parent_reference: move,
+  });
+  assert.deepEqual(Object.keys(capability('ACME_CREATE_PULL_REQUEST').input.properties), ['title', 'destination_branch']);
+});
+
+test('update tools lose plural phone, mobile, username, and login lists', () => {
+  const list = { type: 'array', items: { type: 'string' } };
+  const person = {
+    type: 'object',
+    properties: { id: { type: 'integer' }, name: { type: 'string' }, phones: list, mobiles: list, usernames: list, logins: list },
+  };
+  const { manifest } = draftComposioManifest(snapshot([
+    tool('ACME_UPDATE_PERSON', ['updateHint'], { ...person, required: ['id'] }),
+    tool('ACME_CREATE_PERSON', ['createHint'], person),
+  ]));
+  const properties = (slug: string) =>
+    Object.keys(manifest.capabilities.find(({ tool: name }) => name === slug)!.input.properties);
+
+  assert.deepEqual(properties('ACME_UPDATE_PERSON'), ['id', 'name']);
+  assert.deepEqual(properties('ACME_CREATE_PERSON'), ['id', 'name', 'phones', 'mobiles', 'usernames', 'logins']);
+});
+
+test('reviewed manifests keep expiry, import, credential, and system arguments from the model', () => {
+  const withheld: Array<[toolkit: string, tool: string, argument: string]> = [
+    ['box', 'BOX_FIND_FILE_FOR_SHARED_LINK', 'boxapi'],
+    ['box', 'BOX_FIND_FILE_FOR_SHARED_LINK', 'shared_link_password'],
+    ['box', 'BOX_GET_FILE_INFORMATION', 'fields'],
+    ['box', 'BOX_SEARCH_FOR_CONTENT', 'fields'],
+    ['box', 'BOX_LIST_RECENTLY_ACCESSED_ITEMS', 'fields'],
+    ['googlebigquery', 'GOOGLEBIGQUERY_CREATE_TABLE', 'expirationTime'],
+    ['googlebigquery', 'GOOGLEBIGQUERY_CREATE_TABLE', 'timePartitioning.expirationMs'],
+    ['googlebigquery', 'GOOGLEBIGQUERY_CREATE_DATASET', 'defaultTableExpirationMs'],
+    ['googlebigquery', 'GOOGLEBIGQUERY_CREATE_DATASET', 'defaultPartitionExpirationMs'],
+    ['googlebigquery', 'GOOGLEBIGQUERY_PATCH_DATASET', 'defaultTableExpirationMs'],
+    ['googlebigquery', 'GOOGLEBIGQUERY_PATCH_DATASET', 'defaultPartitionExpirationMs'],
+    ...['key', 'oauth_token', 'access_token', 'callback', 'alt', 'xgafv', 'uploadType', 'upload_protocol', 'prettyPrint', 'quotaUser']
+      .map((argument) => ['googlebigquery', 'GOOGLEBIGQUERY_GET_QUERY_RESULTS', argument] as [string, string, string]),
+    ['mailchimp', 'MAILCHIMP_SET_CAMPAIGN_CONTENT', 'url'],
+    ['mailchimp', 'MAILCHIMP_UPDATE_CAMPAIGN_SETTINGS', 'rss__opts__feed__url'],
+    ['mailchimp', 'MAILCHIMP_ADD_CAMPAIGN', 'rss__opts__feed__url'],
+    ['pipedrive', 'PIPEDRIVE_UPDATE_PERSON_V2', 'phones'],
+  ];
+  const offered = (schema: unknown, path: string[]): boolean => {
+    const properties = (schema as { properties?: Record<string, unknown> }).properties ?? {};
+    const [head, ...rest] = path;
+    return head! in properties && (rest.length === 0 || offered(properties[head!], rest));
+  };
+  for (const [toolkit, slug, argument] of withheld) {
+    const capability = pilotManifest(toolkit).capabilities.find(({ tool: name }) => name === slug)!;
+    assert.equal(argument in (capability.withheldArguments ?? {}), true, `${slug}.${argument} is withheld`);
+    assert.equal(offered(capability.input, argument.split('.')), false, `${slug}.${argument} is not offered`);
+  }
 });
 
 test('write tools lose file and copy-source arguments but keep a plain source field', () => {

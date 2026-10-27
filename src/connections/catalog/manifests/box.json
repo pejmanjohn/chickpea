@@ -5,8 +5,8 @@
     "mode": "managed_oauth"
   },
   "label": "Box",
-  "description": "Search and read files and folders, comment on files, and create and rename folders.",
-  "securityDescription": "Box sign-in opens through Composio. Agents act as the signed-in Box user and reach what that user can reach. With write access, Agents can create folders, rename folders and edit their descriptions and tags, and comment on files. A comment is visible to everyone who can open the file, and a mention emails the mentioned Box user without giving them access. Agents cannot upload, move, copy, lock, or delete files or folders, create or change shared links, add collaborators, change permissions or retention, request signatures, or manage users, groups, or enterprise settings.",
+  "description": "Search files and folders, read their details and comments, comment on files, and create and rename folders.",
+  "securityDescription": "Box sign-in opens through Composio. Agents act as the signed-in Box user and can find the files and folders that user can reach and read their details and comments, but not download file contents. With write access, Agents can create folders, rename folders and edit their descriptions and tags, and comment on files. A comment is visible to everyone who can open the file, and a mention emails the mentioned Box user without giving them access. Agents cannot upload, move, copy, lock, or delete files or folders, create or change shared links, add collaborators, change permissions or retention, request signatures, or manage users, groups, or enterprise settings.",
   "preset": {
     "category": "docs",
     "accent": "#0061D5"
@@ -25,7 +25,21 @@
       "BOX_REQUEST_ACCESS_TOKEN": "Mints OAuth access tokens; credentials never reach the model.",
       "BOX_UPDATE_FILE": "Can set a retention date that cannot be shortened and a lock that blocks collaborators from editing or downloading; neither argument can be withheld."
     },
-    "allowArguments": {}
+    "allowArguments": {},
+    "withholdArguments": {
+      "BOX_FIND_FILE_FOR_SHARED_LINK": {
+        "boxapi": "Carries the shared link and its password in one header."
+      },
+      "BOX_GET_FILE_INFORMATION": {
+        "fields": "Can request expiring_embed_link, a preview URL anyone holding it can open."
+      },
+      "BOX_LIST_RECENTLY_ACCESSED_ITEMS": {
+        "fields": "Can request expiring_embed_link, a preview URL anyone holding it can open."
+      },
+      "BOX_SEARCH_FOR_CONTENT": {
+        "fields": "Can request expiring_embed_link, a preview URL anyone holding it can open."
+      }
+    }
   },
   "capabilities": [
     {
@@ -126,39 +140,6 @@
       }
     },
     {
-      "id": "box.download_file",
-      "tool": "BOX_DOWNLOAD_FILE",
-      "toolName": "box_download_file",
-      "lane": "read",
-      "effect": "read",
-      "description": "Returns the contents of a file in binary format.",
-      "maxResultBytes": 65536,
-      "input": {
-        "type": "object",
-        "properties": {
-          "file_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The unique identifier that represents a file. The ID for any file can be determined by visiting a file in the web application and copying the ID from the URL. For example, for the URL `https://*.app.box.com/files/123` the `file_id` is `123`."
-          },
-          "version": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The file version ID to download. If not specified, the current (latest) version is downloaded. File versions can be obtained via the 'List all file versions' action. The version ID is the numeric identifier of the specific file version."
-          },
-          "access_token": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "An optional access token that can be used to pre-authenticate this request, which means that a download link can be shared with a browser or a third party service without them needing to know how to handle the authentication. When using this parameter, please make sure that the access token is sufficiently scoped down to only allow read access to that file and no other files or folders."
-          }
-        },
-        "required": [
-          "file_id"
-        ],
-        "description": "Request schema for `DownloadFile`"
-      }
-    },
-    {
       "id": "box.find_file_for_shared_link",
       "tool": "BOX_FIND_FILE_FOR_SHARED_LINK",
       "toolName": "box_find_file_for_shared_link",
@@ -167,25 +148,17 @@
       "description": "Returns the file represented by a shared link. A shared file can be represented by a shared link, which can originate within the current enterprise or within another. This endpoint allows an application to retrieve information about a shared file when only given a shared link. The `shared_link_permission_options` array field can be returned by requesting it in the `fields` query parameter.",
       "maxResultBytes": 65536,
       "withheldArguments": {
-        "fields": "unsupported schema"
+        "boxapi": "reviewer: Carries the shared link and its password in one header.",
+        "fields": "unsupported schema",
+        "shared_link_password": "carries a credential the model would supply itself"
       },
       "input": {
         "type": "object",
         "properties": {
-          "boxapi": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Header value in the format `shared_link=<URL>&shared_link_password=<PASSWORD>`. If not provided, it will be constructed from `shared_link` and `shared_link_password` when available. Provide either this header or `shared_link`."
-          },
           "shared_link": {
             "type": "string",
             "maxLength": 20000,
             "description": "The shared link URL to the item (e.g., `https://app.box.com/s/abcdef`). Used to authenticate the request via the `boxapi` header. Provide either this field or `boxapi`."
-          },
-          "shared_link_password": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Password for the shared link, if the link is password-protected."
           }
         },
         "description": "Request schema for `FindFileForSharedLink`"
@@ -223,14 +196,12 @@
       "effect": "read",
       "description": "Retrieves the details about a file.",
       "maxResultBytes": 65536,
+      "withheldArguments": {
+        "fields": "reviewer: Can request expiring_embed_link, a preview URL anyone holding it can open."
+      },
       "input": {
         "type": "object",
         "properties": {
-          "fields": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "A comma-separated list of attributes to include in the response (e.g., 'name,size,created_at,modified_at'). This can be used to request fields that are not normally returned in a standard response. When specified, only the requested fields plus the base fields (id, type, etag) are returned. Common fields include: name, size, description, created_at, modified_at, path_collection, parent, sha1, shared_link, item_status, file_version."
-          },
           "file_id": {
             "type": "string",
             "maxLength": 20000,
@@ -414,21 +385,15 @@
       "effect": "read",
       "description": "Returns information about the recent items accessed by a user, either in the last 90 days or up to the last 1000 items accessed.",
       "maxResultBytes": 65536,
+      "withheldArguments": {
+        "fields": "reviewer: Can request expiring_embed_link, a preview URL anyone holding it can open."
+      },
       "input": {
         "type": "object",
         "properties": {
           "limit": {
             "type": "integer",
             "description": "The maximum number of items to return per page."
-          },
-          "fields": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested."
           },
           "marker": {
             "type": "string",
@@ -448,6 +413,7 @@
       "description": "Searches for files, folders, web links, and shared files across the users content or across the entire enterprise.",
       "maxResultBytes": 65536,
       "withheldArguments": {
+        "fields": "reviewer: Can request expiring_embed_link, a preview URL anyone holding it can open.",
         "mdfilters[].filters": "unsupported schema"
       },
       "input": {
@@ -489,15 +455,6 @@
               "user_content"
             ],
             "description": "Limits the search results to either the files that the user has access to, or to files available to the entire enterprise. The scope defaults to `user_content`, which limits the search results to content that is available to the currently authenticated user. The `enterprise_content` can be requested by an admin through our support channels."
-          },
-          "fields": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "A comma-separated list of attributes to include in the response. This can be used to request fields that are not normally returned in a standard response. Be aware that specifying this parameter will have the effect that none of the standard fields are returned in the response unless explicitly specified, instead only fields for the mini representation are returned, additional to the fields requested."
           },
           "offset": {
             "type": "integer",

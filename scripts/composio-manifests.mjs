@@ -12,6 +12,7 @@ import {
   fetchComposioToolkit,
   readSnapshot,
   renderDraftReport,
+  reviewedTools,
   snapshotFromComposio,
 } from './lib/composio-manifests.ts';
 
@@ -41,7 +42,7 @@ if (command === 'check') {
   const [detail, tools] = values.fetch
     ? await fetchComposio(toolkit)
     : await readComposioExport(values.from, toolkit);
-  const snapshot = snapshotFromComposio(detail, tools, new Set(previous?.review.add ?? []));
+  const snapshot = snapshotFromComposio(detail, tools, new Set(previous ? reviewedTools(previous) : []));
   const directory = path.join(SNAPSHOT_DIRECTORY, toolkit);
   await rm(directory, { recursive: true, force: true });
   await mkdir(directory, { recursive: true });

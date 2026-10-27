@@ -510,6 +510,7 @@
         "readOnlyHint"
       ],
       "deprecated": false,
+      "returnsHostedFile": true,
       "input": {
         "type": "object",
         "title": "DownloadFileRequest",
