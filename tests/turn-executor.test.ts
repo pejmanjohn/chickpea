@@ -3,6 +3,7 @@ import { test, type TestContext } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
 
+import { configureHostedActivity, resetHostedActivityForTests } from '../src/config/hosted-activity.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   configurePlatformFunding,
@@ -585,6 +586,35 @@ test('a delivered Channel reply hands its teammate asks over after the row is se
     if (expected) {
       assert.deepEqual(dispatched, ['agent_support:@finance Q3?']);
       assert.ok(h.calls.indexOf('markDelivered("turn_1")') < h.calls.indexOf('dispatchAgentAsks'));
+    }
+  }
+});
+
+test('a succeeded delivery on an installation tells its host once, after the row is settled; other outcomes and standalone tell nobody', async (t) => {
+  t.after(() => resetHostedActivityForTests());
+  const scoped = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_executor' });
+  const cases = [
+    ['succeeded', scoped, ['inst_executor']],
+    ['no_op', scoped, []],
+    ['failed', scoped, []],
+    ['stopped', scoped, []],
+    ['succeeded', {}, []],
+  ] as const;
+  for (const [outcome, env, expected] of cases) {
+    const label = `${outcome} on ${env === scoped ? 'an installation' : 'standalone'}`;
+    const h = fakePorts(async (options) => { await options.onDelivered?.(outcome); });
+    h.ports.env = env;
+    const reported: string[] = [];
+    configureHostedActivity({
+      interactiveDelivered: (installationId) => {
+        reported.push(installationId);
+        h.calls.push('reported');
+      },
+    });
+    assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), true, label);
+    assert.deepEqual(reported, expected, label);
+    if (expected.length) {
+      assert.deepEqual(h.calls.slice(-3), ['markDelivered("turn_1")', 'telemetry(run_completed)', 'reported'], label);
     }
   }
 });

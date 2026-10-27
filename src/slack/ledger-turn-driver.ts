@@ -1,5 +1,7 @@
 import type { WebClient } from '@slack/web-api';
 
+import { reportInteractiveDelivery } from '../config/hosted-activity.ts';
+import { installationScopeOf } from '../config/installation-scope.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { givenUpRecoveryText } from '../usage/run-settlement.ts';
@@ -305,6 +307,8 @@ export function createLedgerSlackRunHandler(
               outcome,
             });
           }
+          const scope = installationScopeOf(options.platformEnv);
+          if (outcome === 'succeeded' && scope) await reportInteractiveDelivery(scope.installationId);
         },
       });
     } catch (error) {

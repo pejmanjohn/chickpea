@@ -31,7 +31,8 @@ import {
 import type { TurnSteeringRequest, TurnStopNotice } from '../src/slack/turn-job-types.ts';
 import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
-import { installationOwnershipOf } from '../src/config/installation-scope.ts';
+import { reportInteractiveDelivery } from '../src/config/hosted-activity.ts';
+import { installationOwnershipOf, installationScopeOf } from '../src/config/installation-scope.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
 import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
@@ -449,6 +450,8 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     replayTextForTurnProgress: () => 'Pull request #12 is already open',
     recordDeliveredSlackAgentMessage() {},
     createAgentAskCollector,
+    installationScopeOf,
+    reportInteractiveDelivery,
     localAgentAskDispatcher: () => undefined,
     earliestDefined: (...values: Array<number | undefined>) =>
       values.filter((value): value is number => value !== undefined).sort((a, b) => a - b)[0],

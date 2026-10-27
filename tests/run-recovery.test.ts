@@ -5,6 +5,7 @@ import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import { isDeliveredOnboardingReply } from '../src/admin/onboarding-proof.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { configureHostedActivity, resetHostedActivityForTests } from '../src/config/hosted-activity.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   configurePlatformFunding,
@@ -1210,6 +1211,61 @@ test('a hosted ledger Run given up on in the attempt that recorded its receipt i
     assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_canary', runId: 'sub_credited' }, reason: 'evicted' }]);
   } finally {
     db.close();
+  }
+});
+
+test('a ledger turn that delivers a succeeded reply on an installation tells its host once; a failed one or a standalone one tells nobody', async (t) => {
+  t.after(() => resetHostedActivityForTests());
+  const scoped = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_canary' });
+  const cases = [
+    ['succeeded', scoped, ['inst_canary']],
+    ['failed', scoped, []],
+    ['succeeded', undefined, []],
+  ] as const;
+  for (const [outcome, platformEnv, expected] of cases) {
+    const label = `${outcome} on ${platformEnv ? 'an installation' : 'standalone'}`;
+    let clock = NOW;
+    const db = openStateDb(':memory:');
+    try {
+      const work = new WorkStoreLogic(db, { now: () => clock });
+      const turns = new TurnJobStoreLogic(db, () => clock);
+      const admission = work.admitShadowRun(prepareSubmitRun(submission('activity')));
+      turns.enqueue(turnJob(admission.run.id, 'activity'));
+      const claim = work.claimNextInteractiveRun({
+        ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+      })!;
+      const reported: string[] = [];
+      const pendingWhenReported: boolean[] = [];
+      configureHostedActivity({ interactiveDelivered: (installationId) => {
+        reported.push(installationId);
+        pendingWhenReported.push(turns.getPendingByRunId(admission.run.id) !== undefined);
+      } });
+      const handler = createLedgerSlackRunHandler({
+        work: work as unknown as WorkStore,
+        turns,
+        client: {} as WebClient,
+        ...(platformEnv ? { platformEnv } : {}),
+        executeTurn: (async (_turn, _assignment, _env, options) => {
+          const lifecycle = lifecycleFor(work, admission.run.id, claim.fencingToken, () => ++clock);
+          await lifecycle.prepareExecution('Prepared input');
+          await lifecycle.markInvoked();
+          await lifecycle.settleExecution({
+            outcome, rawStatus: `flue_${outcome}`, ...(outcome === 'failed' ? { safeFailureCode: 'agent_failed' } : {}),
+          });
+          const attemptId = await lifecycle.beforeDelivery({
+            method: 'slack_chat_post_message', approvedOutput: 'Answer', renderedPayload: '{}',
+          });
+          await lifecycle.afterDelivery({ attemptId, outcome: 'delivered', deliveryRef: 'slack:D_canary:100.002' });
+          await options?.onDelivered?.(outcome);
+        }) as LedgerSlackTurnExecutor,
+        now: () => ++clock,
+      });
+      assert.deepEqual(await handler(claim), { kind: 'completed' }, label);
+      assert.deepEqual(reported, expected, label);
+      assert.deepEqual(pendingWhenReported, expected.map(() => false), `${label}: the job is already delivered when the host hears`);
+    } finally {
+      db.close();
+    }
   }
 });
 
