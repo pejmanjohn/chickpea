@@ -330,13 +330,6 @@ export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
     "svg": "<img src=\"/connectors/adzviser.png\" alt=\"\">",
     "raster": true
   },
-  // Official Funnel site icon, bundled unchanged for self-hosted/offline rendering.
-  // Source: https://funnel.io/ (retrieved 2026-10-27).
-  // Asset: https://funnel.io/hubfs/Branding/Logos/funnel-favicon-web.png
-  "funnel": {
-    "svg": "<img src=\"/connectors/funnel.png\" alt=\"\">",
-    "raster": true
-  },
   // Official Supermetrics site icon, bundled unchanged for self-hosted/offline rendering.
   // Source: https://supermetrics.com/ (retrieved 2026-10-27).
   // Asset: https://supermetrics.com/favicon.png?v=1

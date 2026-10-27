@@ -109,7 +109,7 @@ test('managed Google analytics presets reference the official product-icon binar
 
 test('preset lanes classify the existing MCP catalog, the API additions, and both', () => {
   const existingMcpPresets = CONNECTOR_PRESETS.filter((preset) => !API_PRESET_IDS.has(preset.id));
-  assert.equal(existingMcpPresets.length, 58);
+  assert.equal(existingMcpPresets.length, 57);
   for (const preset of existingMcpPresets) {
     assert.deepEqual(presetLanes(preset), { mcp: true, api: false }, preset.id);
   }
@@ -584,7 +584,6 @@ test('vendor-hosted OAuth MCP presets request the scopes their servers advertise
     gitlab: { url: 'https://gitlab.com/api/v4/mcp', scope: 'mcp' },
     miro: { url: 'https://mcp.miro.com/', scope: 'boards:read boards:write' },
     adzviser: { url: 'https://mcp.adzviser.com/http' },
-    funnel: { url: 'https://mcp.ai.funnel.io/mcp', scope: 'openid profile email offline_access' },
     supermetrics: {
       url: 'https://mcp.supermetrics.com/mcp',
       scope:

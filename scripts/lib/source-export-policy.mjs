@@ -291,7 +291,6 @@ export const allowedBinaryFiles = new Map([
   [exportPath('assets', 'connectors', 'cal.png'), '5f5f79b1641128e25ce931f66b54bae1451bdd0bab3b7aee426635c0d03a36e4'],
   [exportPath('assets', 'connectors', 'webex.png'), 'fbb6c31d602642c5988b82f52ec0819ca7b99e71c1da91323192a8b56a71a1bc'],
   [exportPath('assets', 'connectors', 'adzviser.png'), '6d64f55d2a791ffe98dc174d735849b86ca88e8c24e19669929a875bdb39e915'],
-  [exportPath('assets', 'connectors', 'funnel.png'), 'acea2607227fb85b9cd43752761b4fc08eea0c3562da1fe14ea8a587f796fc75'],
   [exportPath('assets', 'connectors', 'supermetrics.png'), 'e6b3e5ca95dad5a3f01d02598e05bfb2082ece46362ae3d64438086b7e6f06b6'],
   [exportPath('assets', 'connectors', 'windsor-ai.png'), '0fd54d0fe1df834bbf86e1f738d7bdf1a26a89da9fc4e7d3b7c61e2ab2d81c57'],
   [

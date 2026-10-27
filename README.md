@@ -161,7 +161,7 @@ Every connection belongs to one Agent for its lifetime. A **team account** is sh
 
 Selected connection capabilities authorize the Agent to carry out the requested task. The model uses the conversation and saved instructions to determine intent, without requiring particular words or an extra confirmation merely because a tool can write. Explicit read-only permissions, preview-only requests, and saved confirmation requirements remain in force. Conversation text and API results cannot expand connection grants. The [Security Model](#security-model) has the full list.
 
-What you can connect, 95 presets in all. 36 run through a single Composio key; the other 59 go through the vendor's hosted MCP server or a direct API:
+What you can connect, 94 presets in all. 36 run through a single Composio key; the other 58 go through the vendor's hosted MCP server or a direct API:
 
 <table>
   <tr>
@@ -252,57 +252,55 @@ What you can connect, 95 presets in all. 36 run through a single Composio key; t
   </tr>
   <tr>
     <td>Fireflies</td>
-    <td>Funnel</td>
     <td>Gamma</td>
     <td><img src="https://cdn.simpleicons.org/gitlab" width="14" height="14" alt=""> GitLab</td>
     <td><img src="https://cdn.simpleicons.org/grafana" width="14" height="14" alt=""> Grafana Cloud</td>
+    <td>Granola</td>
   </tr>
   <tr>
-    <td>Granola</td>
     <td>Honeycomb</td>
     <td><img src="https://cdn.simpleicons.org/huggingface" width="14" height="14" alt=""> Hugging Face</td>
     <td>incident.io</td>
     <td><img src="https://cdn.simpleicons.org/intercom/000000/ffffff" width="14" height="14" alt=""> Intercom</td>
+    <td><img src="https://cdn.simpleicons.org/linear" width="14" height="14" alt=""> Linear</td>
   </tr>
   <tr>
-    <td><img src="https://cdn.simpleicons.org/linear" width="14" height="14" alt=""> Linear</td>
     <td><img src="https://cdn.simpleicons.org/lucid/282C33/ffffff" width="14" height="14" alt=""> Lucid</td>
     <td>LunarCrush</td>
     <td>Mercury</td>
     <td><img src="https://cdn.simpleicons.org/meta" width="14" height="14" alt=""> Meta Ads</td>
+    <td><img src="https://cdn.simpleicons.org/miro/050038/ffffff" width="14" height="14" alt=""> Miro</td>
   </tr>
   <tr>
-    <td><img src="https://cdn.simpleicons.org/miro/050038/ffffff" width="14" height="14" alt=""> Miro</td>
     <td>Monday.com</td>
     <td>MotherDuck</td>
     <td>Neon</td>
     <td><img src="https://cdn.simpleicons.org/netlify" width="14" height="14" alt=""> Netlify</td>
+    <td>Otter.ai</td>
   </tr>
   <tr>
-    <td>Otter.ai</td>
     <td>PandaDoc</td>
     <td><img src="https://cdn.simpleicons.org/paypal" width="14" height="14" alt=""> PayPal</td>
     <td>Plain</td>
     <td><img src="https://cdn.simpleicons.org/posthog" width="14" height="14" alt=""> PostHog</td>
+    <td>Pylon</td>
   </tr>
   <tr>
-    <td>Pylon</td>
     <td>Read AI</td>
     <td><img src="https://cdn.simpleicons.org/sentry/362D59/ffffff" width="14" height="14" alt=""> Sentry</td>
     <td>Statsig</td>
     <td><img src="https://cdn.simpleicons.org/stripe" width="14" height="14" alt=""> Stripe</td>
+    <td><img src="https://cdn.simpleicons.org/supabase" width="14" height="14" alt=""> Supabase</td>
   </tr>
   <tr>
-    <td><img src="https://cdn.simpleicons.org/supabase" width="14" height="14" alt=""> Supabase</td>
     <td>Supermetrics</td>
     <td><img src="https://cdn.simpleicons.org/tiktok/000000/ffffff" width="14" height="14" alt=""> TikTok Ads</td>
     <td><img src="https://cdn.simpleicons.org/todoist" width="14" height="14" alt=""> Todoist</td>
     <td><img src="https://cdn.simpleicons.org/webflow" width="14" height="14" alt=""> Webflow</td>
+    <td>Windsor.ai</td>
   </tr>
   <tr>
-    <td>Windsor.ai</td>
     <td><img src="https://cdn.simpleicons.org/wix" width="14" height="14" alt=""> Wix</td>
-    <td colspan="3"></td>
   </tr>
   <tr>
     <th colspan="5" align="left">Presets · direct HTTP API</th>

@@ -1026,20 +1026,6 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
       'Read-only. Needs your own Adzviser account with a workspace and at least one connected source. Adzviser is a paid service, and new workspaces start with a 14-day trial for $0.99.',
   },
   {
-    id: 'funnel',
-    name: 'Funnel',
-    description: 'Query the marketing data, metrics, and dimensions in your Funnel workspaces.',
-    category: 'business',
-    accent: '#013F33',
-    url: 'https://mcp.ai.funnel.io/mcp',
-    transport: 'streamable-http',
-    auth: { kind: 'oauth', scope: 'openid profile email offline_access' },
-    tokenDocsUrl: 'https://help.funnel.io/en/articles/15014203-quick-start-guide-using-funnel-mcp',
-    tokenDocsHint: 'Sign in to the Funnel account whose workspaces Chickpea should query.',
-    notes:
-      'Read-only. Needs your own Funnel account with access to at least one workspace. MCP is available on all Funnel plans. This preset connects the Global region. For an EU-region account, add a custom connection to https://mcp.eu.ai.funnel.io/mcp.',
-  },
-  {
     id: 'supermetrics',
     name: 'Supermetrics',
     description: 'Query ad, analytics, and social data, build dashboards, and create or update ad campaigns.',
