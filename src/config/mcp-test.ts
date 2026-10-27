@@ -12,6 +12,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
 import { McpBlockedUrlError } from './mcp-errors.ts';
+import { MAX_MCP_TOOLS } from './mcp-limits.ts';
 import {
   META_ADS_ACCOUNT_HELPER,
   META_ADS_FIELD_HELPER,
@@ -47,12 +48,7 @@ import type {
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 8_000;
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
-/**
- * Tools kept per server; the Admin write schemas share this bound. It must
- * cover every documented vendor server, because discovery drops whatever a
- * server lists past it.
- */
-export const MAX_MCP_TOOLS = 128;
+export { MAX_MCP_TOOLS };
 const MAX_META_DISCOVERY_RAW_TOOLS = 1_024;
 const MAX_META_DISCOVERY_PAGES = 20;
 const MAX_META_DISCOVERY_TIMEOUT_MS = 30_000;

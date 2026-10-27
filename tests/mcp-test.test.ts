@@ -1029,3 +1029,12 @@ test('connectMcp forwards the live authorization fence before transport egress',
   assert.equal(authorizationChecks, 1);
   assert.equal(outboundRequests, 0, 'revocation must stop the transport before egress');
 });
+
+test('one fully allowed MCP server plus the shared-prefix tools stays within the provider tool limit', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const shared = JSON.parse(await readFile(new URL('../src/agents/shared-prefix-tools.json', import.meta.url), 'utf8')) as { tools: unknown[] };
+  // OpenAI rejects a request with more than 128 function tools.
+  assert.ok(shared.tools.length + MAX_MCP_TOOLS <= 128, `${shared.tools.length} shared + ${MAX_MCP_TOOLS} MCP tools exceed 128`);
+  // Documented vendor servers (Apollo 52, GitLab about 51) must still fit.
+  assert.ok(MAX_MCP_TOOLS >= 56);
+});

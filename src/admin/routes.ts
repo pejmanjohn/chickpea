@@ -362,7 +362,8 @@ import {
   unstageMcpSecretCleanup,
   type ResolvedMcpSecrets,
 } from '../config/mcp-secrets.ts';
-import { discoverMcpTools, MAX_MCP_TOOLS, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
+import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
+import { MAX_MCP_OAUTH_SCOPE_LENGTH, MAX_MCP_TOOLS } from '../config/mcp-limits.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import {
   modelEffortChoiceError,
@@ -1132,9 +1133,7 @@ const skillsSchema = v.pipe(
   v.check((skills) => skillsWriteProblem(skills) === undefined, 'skills are invalid'),
 );
 
-// Stored scopes and the OAuth start routes share one bound, so any scope a
-// Connection can store can also start its sign-in.
-const oauthScopeSchema = v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4_096)));
+const oauthScopeSchema = v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(MAX_MCP_OAUTH_SCOPE_LENGTH)));
 
 // A single discovered-tool record stored on a Connection's last successful
 // test. Bounded to keep the profile row small (matches types.ts limits).
