@@ -8974,7 +8974,7 @@ test('Agent connection setup retains the complete preset catalog', async () => {
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    90,
+    94,
   );
 });
 
@@ -9294,7 +9294,7 @@ test('legacy Google access does not hide fresh Google connection presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 90);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 94);
 });
 
 test('every catalog connector opens an Agent-owned setup flow', async () => {
@@ -9362,7 +9362,7 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 90);
+  assert.equal(presetIds.length, 94);
 });
 
 test('Agent-owned Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {
@@ -10384,7 +10384,7 @@ test('a connected preset drops out of the Available gallery until it is removed'
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
   // ...other presets remain, and the Available count drops by two.
   assert.match(panel, /data-action="conn-preset" data-preset="airtable"/);
-  assert.match(panel, /<span class="gallery-head-count">53<\/span>/);
+  assert.match(panel, /<span class="gallery-head-count">57<\/span>/);
 });
 
 test('OAuth rows surface a persisted reconnect requirement instead of stale connected copy', async () => {
@@ -11166,9 +11166,9 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gallery, /data-action="conn-gallery-search"/);
   assert.equal(
     (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
-    55,
+    59,
   );
-  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">55<\/span>/);
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">59<\/span>/);
   assert.doesNotMatch(gallery, /data-preset="google-workspace"/);
   assert.doesNotMatch(gallery, /data-preset="github"/);
   assert.doesNotMatch(gallery, /data-preset="context7"/);
@@ -11287,7 +11287,7 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   for (const id of [
     'better-stack', 'clickhouse', 'datadog', 'grafana', 'netlify', 'paypal',
     'calendly', 'lucid', 'todoist', 'webflow', 'wix',
-    'clickup', 'gitlab', 'miro',
+    'clickup', 'gitlab', 'miro', 'tiktok-ads',
   ]) {
     assert.deepEqual(galleryRowShape(id), linearShape, id);
   }
@@ -11296,6 +11296,7 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
     'clay', 'close', 'customer-io', 'mercury', 'plain', 'pylon',
     'fathom', 'otter', 'pandadoc', 'read-ai',
     'apollo', 'attio',
+    'adzviser', 'supermetrics', 'windsor-ai',
   ]) {
     assert.deepEqual(galleryRowShape(id), granolaShape, id);
   }
@@ -11900,6 +11901,7 @@ test('vendor-hosted OAuth MCP presets save their server and request their own sc
     'clay', 'close', 'customer-io', 'mercury', 'paypal', 'plain', 'pylon',
     'calendly', 'fathom', 'lucid', 'otter', 'pandadoc', 'read-ai', 'todoist', 'webflow', 'wix',
     'apollo', 'attio', 'clickup', 'gitlab', 'miro',
+    'adzviser', 'supermetrics', 'tiktok-ads', 'windsor-ai',
   ];
   for (const id of ids) {
     const preset = getConnectorPreset(id);
