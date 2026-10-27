@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { test } from 'node:test';
 
 import * as v from 'valibot';
@@ -6,16 +8,18 @@ import * as v from 'valibot';
 import type { ConnectionAccountManagedPolicy } from '../src/config/types.ts';
 import {
   COMPOSIO_MANIFESTS,
+  HELD_COMPOSIO_MANIFESTS,
   compileComposioManifest,
   parseComposioManifest,
   type ComposioManifest,
 } from '../src/connections/catalog/composio-manifests.ts';
 import trello from '../src/connections/catalog/manifests/trello.json' with { type: 'json' };
-import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
+import { MANAGED_CONNECTOR_CATALOG, createManagedConnectorCatalog } from '../src/connections/catalog/index.ts';
 import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
 import { manifestComposioCapabilities } from '../src/connections/providers/composio/manifest-capabilities.ts';
 import {
+  MANIFEST_DIRECTORY,
   checkComposioManifest,
   checkComposioManifestDirectory,
   draftComposioManifest,
@@ -586,6 +590,21 @@ test('manifest connectors use the same catalog contract as hand-written ones', (
   }
   assert.equal(MANAGED_CONNECTOR_CATALOG.capabilities('freshdesk', 'read')
     .some(({ id }) => id === 'freshdesk.reply_to_ticket'), false);
+});
+
+test('every held manifest compiles into the managed catalog beside the shipped connectors', async () => {
+  for (const toolkit of Object.keys(HELD_COMPOSIO_MANIFESTS)) {
+    const manifest = parseComposioManifest(
+      JSON.parse(await readFile(path.join(MANIFEST_DIRECTORY, `${toolkit}.json`), 'utf8')),
+    );
+    const catalog = createManagedConnectorCatalog([
+      ...MANAGED_CONNECTOR_CATALOG.list(),
+      compileComposioManifest(manifest),
+    ]);
+    const connector = catalog.connector(toolkit);
+    assert.ok(connector, toolkit);
+    for (const capability of connector.capabilities) assert.ok(capability.input, capability.id);
+  }
 });
 
 const FRESHDESK_POLICY: ConnectionAccountManagedPolicy = {
