@@ -97,6 +97,8 @@ export interface ComposioManifest {
     add: string[];
     drop: Record<string, string>;
     allowArguments: Record<string, string[]>;
+    /** Arguments no rule withholds that the reviewer keeps from the model, with the reason. */
+    withholdArguments?: Record<string, Record<string, string>> | undefined;
   };
   capabilities: ComposioManifestCapability[];
 }
@@ -131,6 +133,7 @@ const ManifestShape = v.strictObject({
     add: v.array(ToolSlug),
     drop: v.record(ToolSlug, Text(240)),
     allowArguments: v.record(ToolSlug, v.pipe(v.array(Text(200)), v.minLength(1))),
+    withholdArguments: v.optional(v.record(ToolSlug, v.record(Text(200), Text(240)))),
   }),
   capabilities: v.pipe(v.array(v.strictObject({
     id: Text(192),

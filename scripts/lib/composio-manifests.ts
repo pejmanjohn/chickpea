@@ -182,7 +182,9 @@ function withheldArgumentReason(
   if ((tokens.length > 1 && tokens.at(-1) === 'source') || tokens[0]?.startsWith('file')) return WITHHELD_COPY;
   if (tokens.some((token) => RECIPIENT_TOKENS.has(token) || token.startsWith('notify')) ||
       ADDRESS_LEADING_TOKENS.has(tokens[0] ?? '') || compact.includes('replyto')) return WITHHELD_RECIPIENT;
-  const identifier = tokens[0] === 'id' || tokens.at(-1) === 'id' || tokens.at(-1) === 'ids';
+  // Box's `parent: { id }` names the destination folder as an object rather than a flat `parent_id`.
+  const identifier = tokens[0] === 'id' || tokens.at(-1) === 'id' || tokens.at(-1) === 'ids' ||
+    (isPlainObject(schema) && isPlainObject(schema.properties) && 'id' in schema.properties);
   // A required container ID on update usually names the record itself (company_id on update-company).
   if (kind === 'update' && !required && identifier && tokens.some((token) => CONTAINER_TOKENS.has(token))) {
     return WITHHELD_MOVE;
@@ -270,15 +272,19 @@ interface DeriveContext {
   write?: WriteKind;
   /** Argument paths a reviewer kept despite a withholding rule. */
   allow: ReadonlySet<string>;
+  /** Argument paths a reviewer withheld that no rule catches, with the reason. */
+  deny: ReadonlyMap<string, string>;
   withheld: Record<string, string>;
   allowedKept: string[];
 }
 
 export function deriveInputSchema(
   raw: unknown,
-  options: { write?: WriteKind; allow?: ReadonlySet<string> } = {},
+  options: { write?: WriteKind; allow?: ReadonlySet<string>; deny?: ReadonlyMap<string, string> } = {},
 ): { schema: ManifestObjectSchema; withheld: Record<string, string>; allowedKept: string[] } | { error: string } {
-  const context: DeriveContext = { ...options, allow: options.allow ?? new Set(), withheld: {}, allowedKept: [] };
+  const context: DeriveContext = {
+    ...options, allow: options.allow ?? new Set(), deny: options.deny ?? new Map(), withheld: {}, allowedKept: [],
+  };
   const derived = deriveNode(raw, 0, '', context, true);
   if ('unsupported' in derived) return { error: derived.unsupported };
   if (!('type' in derived.schema) || derived.schema.type !== 'object') return { error: 'input is not an object' };
@@ -367,10 +373,14 @@ function deriveNode(
       const properties: Record<string, ManifestInputSchema> = {};
       for (const [key, child] of source) {
         const childWhere = where ? `${where}.${key}` : key;
-        const withheld = context.write
-          ? withheldArgumentReason(key, child, required.has(key), context.write)
-          : undefined;
-        if (withheld && !context.allow.has(childWhere)) {
+        const reviewed = context.deny.get(childWhere);
+        const withheld = reviewed === undefined
+          ? context.write && withheldArgumentReason(key, child, required.has(key), context.write)
+          : `reviewer: ${reviewed}`;
+        if (withheld && (reviewed !== undefined || !context.allow.has(childWhere))) {
+          if (reviewed !== undefined && required.has(key)) {
+            return { unsupported: `required argument ${childWhere} is withheld by review` };
+          }
           // Withholding an argument whose default overwrites would still overwrite.
           const overwritesByDefault = withheld === WITHHELD_OVERWRITE && isPlainObject(child) &&
             (child.default === true || (typeof child.default === 'string' && OVERWRITE.test(child.default)));
@@ -422,6 +432,7 @@ export function draftComposioManifest(
   const add = new Set(previous?.review.add ?? []);
   const drop = previous?.review.drop ?? {};
   const allowArguments = previous?.review.allowArguments ?? {};
+  const withholdArguments = previous?.review.withholdArguments ?? {};
   const kept = new Map(previous?.capabilities.map((capability) => [capability.tool, capability]) ?? []);
   const prefix = `${toolkit.toUpperCase()}_`;
   const report: DraftReport = {
@@ -445,13 +456,19 @@ export function draftComposioManifest(
     const irreversible = 'irreversible' in classification ? classification.irreversible : undefined;
     if (irreversible) report.irreversible.push({ tool: tool.slug, verb: irreversible });
     const write = classification.lane === 'write';
+    const deny = new Map(Object.entries(withholdArguments[tool.slug] ?? {}));
     const input = deriveInputSchema(tool.input, {
       ...(write ? { write: writeKind(tool.tags) } : {}),
       allow: new Set(allowArguments[tool.slug] ?? []),
+      deny,
     });
     if ('error' in input) {
       exclude(input.error);
       continue;
+    }
+    const unmatched = [...deny.keys()].filter((argument) => !(argument in input.withheld));
+    if (unmatched.length > 0) {
+      throw new Error(`review.withholdArguments names ${tool.slug} ${unmatched.join(', ')}, which its input does not accept`);
     }
     const effect = input.allowedKept.length > 0 && classification.effect !== 'destructive'
       ? 'administrative'
@@ -512,6 +529,10 @@ export function draftComposioManifest(
       add: [...add].sort(),
       drop: Object.fromEntries(Object.entries(drop).sort()),
       allowArguments: Object.fromEntries(Object.entries(allowArguments).sort()),
+      ...(Object.keys(withholdArguments).length > 0 ? {
+        withholdArguments: Object.fromEntries(Object.entries(withholdArguments).sort()
+          .map(([slug, reasons]) => [slug, Object.fromEntries(Object.entries(reasons).sort())])),
+      } : {}),
     },
     capabilities,
   };
@@ -532,6 +553,7 @@ export function checkComposioManifest(value: unknown, snapshot: ComposioSnapshot
   const known = new Set(snapshot.tools.map(({ slug }) => slug));
   const problems = [
     ...manifest.review.add, ...Object.keys(manifest.review.drop), ...Object.keys(manifest.review.allowArguments),
+    ...Object.keys(manifest.review.withholdArguments ?? {}),
   ]
     .filter((slug) => !known.has(slug))
     .map((slug) => `${where} review names ${slug}, which the snapshot does not contain`);

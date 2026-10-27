@@ -366,6 +366,15 @@ test('write tools lose sharing, permission, move, and copy arguments, and the re
       properties: { idCard: string(), idBoard: string(), idList: string(), name: string() },
       required: ['idCard'],
     }),
+    tool('ACME_UPDATE_FOLDER', ['updateHint'], {
+      type: 'object',
+      properties: {
+        folder_id: string(),
+        name: string(),
+        parent: { type: 'object', properties: { id: string('The new parent folder.') } },
+      },
+      required: ['folder_id'],
+    }),
     tool('ACME_LIST_BOARDS', ['readOnlyHint'], {
       type: 'object',
       properties: { filter_visibility: string('Only boards with this visibility.') },
@@ -376,6 +385,7 @@ test('write tools lose sharing, permission, move, and copy arguments, and the re
 
   assert.deepEqual(properties('ACME_CREATE_BOARD'), ['name', 'idWorkspace']);
   assert.deepEqual(properties('ACME_UPDATE_CARD'), ['idCard', 'idList', 'name']);
+  assert.deepEqual(properties('ACME_UPDATE_FOLDER'), ['folder_id', 'name']);
   assert.deepEqual(properties('ACME_LIST_BOARDS'), ['filter_visibility']);
   assert.deepEqual(Object.keys(report.withheldArguments.find(({ tool: slug }) => slug === 'ACME_CREATE_BOARD')!.arguments), [
     'prefs_permissionLevel', 'prefs__comments', 'idMembers', 'idOrganization', 'idBoardSource',
@@ -383,6 +393,10 @@ test('write tools lose sharing, permission, move, and copy arguments, and the re
   assert.deepEqual(
     manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_UPDATE_CARD')!.withheldArguments,
     { idBoard: 'moves the record to another container' },
+  );
+  assert.deepEqual(
+    manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_UPDATE_FOLDER')!.withheldArguments,
+    { parent: 'moves the record to another container' },
   );
 });
 
@@ -498,6 +512,38 @@ test('a write that needs a permission argument is administrative and needs an ex
   }).manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_SHARE_BOARD')!;
   assert.equal(reviewed.effect, 'administrative');
   assert.deepEqual(reviewed.input.required, ['idBoard', 'permissionLevel']);
+});
+
+test('a reviewer withholds an argument no rule catches, and a stale or required one fails loudly', () => {
+  const update = tool('ACME_UPDATE_DEAL', ['updateHint'], {
+    type: 'object',
+    properties: {
+      id: { type: 'integer' },
+      title: { type: 'string' },
+      is_deleted: { type: 'boolean', description: 'Marks the deal as deleted.' },
+    },
+    required: ['id'],
+  });
+  const generated = draftComposioManifest(snapshot([update]));
+  const draftWith = (withholdArguments: Record<string, Record<string, string>>) =>
+    draftComposioManifest(snapshot([update]), {
+      ...generated.manifest,
+      review: { add: [], drop: {}, allowArguments: {}, withholdArguments },
+    });
+  assert.ok('is_deleted' in generated.manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_UPDATE_DEAL')!.input.properties);
+
+  const reviewed = draftWith({ ACME_UPDATE_DEAL: { is_deleted: 'Deletes the deal.' } });
+  const capability = reviewed.manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_UPDATE_DEAL')!;
+  assert.deepEqual(Object.keys(capability.input.properties), ['id', 'title']);
+  assert.deepEqual(capability.withheldArguments, { is_deleted: 'reviewer: Deletes the deal.' });
+  assert.equal(capability.effect, 'reversible_write');
+  assert.deepEqual(reviewed.manifest.review.withholdArguments, { ACME_UPDATE_DEAL: { is_deleted: 'Deletes the deal.' } });
+  assert.deepEqual(checkComposioManifest(reviewed.manifest, snapshot([update])), []);
+
+  assert.throws(() => draftWith({ ACME_UPDATE_DEAL: { archived: 'Archives the deal.' } }),
+    /names ACME_UPDATE_DEAL archived, which its input does not accept/);
+  assert.match(draftWith({ ACME_UPDATE_DEAL: { id: 'Names the deal.' } }).report.excluded
+    .find(({ tool: slug }) => slug === 'ACME_UPDATE_DEAL')!.reason, /required argument id is withheld by review/);
 });
 
 test('a write that sends to people stays out unless a reviewer adds it', () => {
