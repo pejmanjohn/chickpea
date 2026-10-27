@@ -276,6 +276,7 @@ export async function executeSlackScheduleCommand(
       assignment,
       actorMembershipId: command.actorMembershipId,
       env: undefined,
+      bindingVersion: command.routineId ? command.expectedVersion! + 1 : 1,
     }, { config: dependencies.config, identity: dependencies.identity });
     const routine = await service.save({
       ...request,

@@ -74,19 +74,24 @@ interface RoutineAuthorityCheckInput {
   assignment: ResolvedAssignment;
   actorMembershipId: string;
   env: PlatformEnv | undefined;
+  /** The routine version the save binds: 1 for a creation, the next version for an edit. */
+  bindingVersion: number;
 }
 
 /** Bind a saved schedule to the Agent and canonical member that created it. */
-export async function bindRoutineAgentAuthority(input: RoutineAuthorityCheckInput & {
+export async function bindRoutineAgentAuthority(input: Omit<RoutineAuthorityCheckInput, 'bindingVersion'> & {
   routine: RoutineDefinition;
   authorityReceiptId?: string;
   requiredConnectionAccountIds?: string[];
 }, dependencies: { config?: ConfigStore; identity?: IdentityStore } = {}): Promise<AgentScheduleReference> {
   const config = dependencies.config ?? getConfigStore(input.env);
-  const { current, destinationBindingDigest } = await checkRoutineAgentAuthority(input, dependencies);
+  const bindingVersion = input.routine.authorityBindingVersion ?? input.routine.version;
+  const { current, destinationBindingDigest } = await checkRoutineAgentAuthority(
+    { ...input, bindingVersion },
+    dependencies,
+  );
   // A save retry must not replace a later save's requirements or re-resolve
   // account choices after its own binding completed.
-  const bindingVersion = input.routine.authorityBindingVersion ?? input.routine.version;
   if (current?.boundRoutineVersion !== undefined && current.boundRoutineVersion >= bindingVersion) return current;
   const runsAsMembershipId = current?.runsAsMembershipId ?? input.actorMembershipId;
   const [accounts, bindings] = await Promise.all([
@@ -182,6 +187,11 @@ export async function checkRoutineAgentAuthority(
     }
   }
   const current = await config.getAgentScheduleReference(input.routine.id);
+  // Only a creation binds a routine that has no reference yet. A saved routine
+  // without one belongs to no Agent, and nobody's edit may claim it.
+  if (!current && input.bindingVersion > 1) {
+    throw new RoutineAuthorityError('schedule_authority_missing', 'This schedule needs an active Runs as assignment.');
+  }
   if (current && current.agentId !== input.assignment.agentId) {
     throw new RoutineAuthorityError('agent_unavailable', 'A schedule cannot silently move to another Agent.');
   }

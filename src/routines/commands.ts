@@ -424,6 +424,7 @@ async function executeRoutineCommand(
       assignment: owningAssignment,
       actorMembershipId,
       env,
+      bindingVersion: 1,
     });
     selectScheduleConnectionAccounts(
       sourceReference.requiredConnectionAccountIds,
