@@ -194,6 +194,11 @@ async function cleanUp(world) {
     const after = await read();
     report.push({ ...item, absent: after.status === 404 || after.body?.routine?.state === 'deleted' });
   }
+  // An approval that lands after its case stopped polling still names the Agent with this run's marker.
+  const listed = (await world.admin.call('GET', '/admin/api/agents')).body?.agents ?? [];
+  for (const agent of listed.filter((entry) => entry.name === `Smoke ${world.marker}`)) {
+    if (!world.cleanup.some((entry) => entry.kind === 'agent' && entry.id === agent.id)) world.cleanup.push({ kind: 'agent', id: agent.id });
+  }
   for (const item of world.cleanup.filter((entry) => entry.kind === 'agent')) {
     const agentPath = `/admin/api/agents/${encodeURIComponent(item.id)}`;
     const read = async () => { const answer = await world.admin.call('GET', agentPath); return { status: answer.status, agent: answer.body?.agent ?? answer.body }; };
