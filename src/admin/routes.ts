@@ -1505,7 +1505,7 @@ const mcpSecretsPutSchema = v.object({
 });
 
 const mcpOAuthStartSchema = v.object({
-  scope: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1024))),
+  scope: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4096))),
 });
 
 const mcpSecretsDeleteSchema = v.object({

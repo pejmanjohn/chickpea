@@ -48,6 +48,7 @@ import {
   resolveConnectorCredential,
 } from '../src/config/connector-secrets.ts';
 import type { ConnectionAccount, ConnectionAccountPolicy } from '../src/config/types.ts';
+import { getConnectorPreset } from '../src/config/presets.ts';
 import {
   agentCredentialConfigurationBinding,
   boundApiCredentialRef,
@@ -7391,6 +7392,55 @@ test('changing the Meta App ID clears an Agent-level Meta Ads authorization unde
     await assert.rejects(resolve(metaRef, META_ADS_MCP_SERVER_URL),
       (error: unknown) => error instanceof McpOAuthError && error.code === 'reauthorization_required');
     assert.equal(await resolve(linearRef, 'https://mcp.linear.app/mcp'), 'linear-access');
+  } finally { fixture.store.close(); fixture.settings.close(); }
+});
+
+test('MCP OAuth start accepts the full scope list a vendor preset requests', async () => {
+  const preset = getConnectorPreset('apollo');
+  assert.ok(preset && 'auth' in preset && preset.auth.kind === 'oauth' && preset.auth.scope && preset.url);
+  const scope = preset.auth.scope;
+  assert.ok(scope.length > 1_024, 'the regression needs a scope longer than the old limit');
+  const issuer = 'https://mcp.apollo.io';
+  const oauthFetch: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    switch (request.url) {
+      case `${issuer}/.well-known/oauth-protected-resource/mcp`:
+        return Response.json({ resource: preset.url, authorization_servers: [issuer] });
+      case `${issuer}/.well-known/oauth-authorization-server`:
+        return Response.json({
+          issuer,
+          authorization_endpoint: `${issuer}/authorize`,
+          token_endpoint: `${issuer}/token`,
+          registration_endpoint: `${issuer}/register`,
+          response_types_supported: ['code'],
+          grant_types_supported: ['authorization_code', 'refresh_token'],
+          code_challenge_methods_supported: ['S256'],
+          token_endpoint_auth_methods_supported: ['none'],
+        });
+      case `${issuer}/register`:
+        return Response.json({ ...await request.json() as Record<string, unknown>, client_id: 'registered-client' });
+    }
+    throw new Error(`Unexpected OAuth request ${request.method} ${request.url}`);
+  };
+  const fixture = harness(new FakeTransport(), { oauthFetch });
+  try {
+    const agent = await fixture.store.createAgent({
+      id: 'agent_apollo', name: 'Prospecting', instructions: 'Research accounts.', enabled: true,
+      model: 'local-stub/security', skills: [], apiConnections: [], repositories: [],
+      mcpServers: [{
+        id: 'apollo', displayName: preset.name, url: preset.url, transport: 'streamable-http',
+        authMode: 'oauth', headerNames: [], enabled: true, lifecycleStatus: 'pending', statusText: '',
+        discoveredTools: [], allowedTools: [], oauthScope: scope, presetId: 'apollo',
+      }],
+    });
+    const started = await fixture.app.request(
+      `http://localhost/admin/api/agents/${agent.id}/mcp/oauth/apollo/start`,
+      { method: 'POST', headers: auth(), body: JSON.stringify({ scope }) },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    const authorizationUrl = new URL((await started.json() as { authorizationUrl: string }).authorizationUrl);
+    assert.equal(authorizationUrl.origin + authorizationUrl.pathname, `${issuer}/authorize`);
+    assert.equal(authorizationUrl.searchParams.get('scope'), scope);
   } finally { fixture.store.close(); fixture.settings.close(); }
 });
 
