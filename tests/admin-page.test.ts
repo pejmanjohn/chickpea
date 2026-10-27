@@ -8974,7 +8974,7 @@ test('Agent connection setup retains the complete preset catalog', async () => {
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    102,
+    101,
   );
 });
 
@@ -9294,7 +9294,7 @@ test('legacy Google access does not hide fresh Google connection presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 102);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 101);
 });
 
 test('every catalog connector opens an Agent-owned setup flow', async () => {
@@ -9331,7 +9331,6 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
           managedCatalogFixture('googletasks-managed', 'googletasks', 'Google Tasks'),
           managedCatalogFixture('gorgias-managed', 'gorgias', 'Gorgias'),
           managedCatalogFixture('klaviyo-managed', 'klaviyo', 'Klaviyo'),
-          managedCatalogFixture('linkedin-managed', 'linkedin', 'LinkedIn'),
           managedCatalogFixture('mailchimp-managed', 'mailchimp', 'Mailchimp'),
           managedCatalogFixture('microsoft-teams-managed', 'microsoft_teams', 'Microsoft Teams'),
           managedCatalogFixture('one-drive-managed', 'one_drive', 'OneDrive'),
@@ -9370,7 +9369,7 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 102);
+  assert.equal(presetIds.length, 101);
 });
 
 test('Agent-owned Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {

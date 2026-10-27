@@ -161,7 +161,7 @@ Every connection belongs to one Agent for its lifetime. A **team account** is sh
 
 Selected connection capabilities authorize the Agent to carry out the requested task. The model uses the conversation and saved instructions to determine intent, without requiring particular words or an extra confirmation merely because a tool can write. Explicit read-only permissions, preview-only requests, and saved confirmation requirements remain in force. Conversation text and API results cannot expand connection grants. The [Security Model](#security-model) has the full list.
 
-What you can connect, 102 presets in all. 44 run through a single Composio key; the other 58 go through the vendor's hosted MCP server or a direct API:
+What you can connect, 101 presets in all. 43 run through a single Composio key; the other 58 go through the vendor's hosted MCP server or a direct API:
 
 <table>
   <tr>
@@ -207,24 +207,23 @@ What you can connect, 102 presets in all. 44 run through a single Composio key; 
     <td><img src="https://cdn.simpleicons.org/googletasks" width="14" height="14" alt=""> Google Tasks</td>
     <td>Gorgias</td>
     <td>Klaviyo</td>
-    <td>LinkedIn</td>
+    <td><img src="https://cdn.simpleicons.org/mailchimp/241C15/FFE01B" width="14" height="14" alt=""> Mailchimp</td>
   </tr>
   <tr>
-    <td><img src="https://cdn.simpleicons.org/mailchimp/241C15/FFE01B" width="14" height="14" alt=""> Mailchimp</td>
     <td>Microsoft Teams</td>
     <td>OneDrive</td>
     <td>Outlook</td>
     <td><img src="https://cdn.simpleicons.org/pagerduty" width="14" height="14" alt=""> PagerDuty</td>
+    <td>Pipedrive</td>
   </tr>
   <tr>
-    <td>Pipedrive</td>
     <td><img src="https://cdn.simpleicons.org/quickbooks" width="14" height="14" alt=""> QuickBooks</td>
     <td>Salesforce</td>
     <td><img src="https://cdn.simpleicons.org/semrush" width="14" height="14" alt=""> Semrush</td>
     <td>SharePoint</td>
+    <td><img src="https://cdn.simpleicons.org/square" width="14" height="14" alt=""> Square</td>
   </tr>
   <tr>
-    <td><img src="https://cdn.simpleicons.org/square" width="14" height="14" alt=""> Square</td>
     <td><img src="https://cdn.simpleicons.org/webex" width="14" height="14" alt=""> Webex</td>
     <td>Wrike</td>
     <td><img src="https://cdn.simpleicons.org/zoho" width="14" height="14" alt=""> Zoho CRM</td>

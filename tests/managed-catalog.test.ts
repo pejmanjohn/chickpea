@@ -57,7 +57,6 @@ test('the managed catalog retains Google Workspace contracts and adds productivi
       'googletasks',
       'gorgias',
       'klaviyo',
-      'linkedin',
       'mailchimp',
       'microsoft_teams',
       'one_drive',

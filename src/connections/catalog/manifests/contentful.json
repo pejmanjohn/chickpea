@@ -43,6 +43,8 @@
       "CONTENTFUL_LIST_SPACES_ROLES": "Role and permission administration; not content.",
       "CONTENTFUL_LIST_WEBHOOKS": "Webhook definitions name outside URLs and headers; not content.",
       "CONTENTFUL_PROCESS_ASSET": "Processes an uploaded file, and asset upload is not included.",
+      "CONTENTFUL_QUERY_ASSET_COLLECTION": "Needs a Content Delivery API token, a credential withheld from the model; the fallback to a token from the connection is unverified for OAuth sign-in.",
+      "CONTENTFUL_QUERY_GRAPHQL_CONTENT_TYPE_COLLECTION": "Needs a Content Delivery API token, a credential withheld from the model; the fallback to a token from the connection is unverified for OAuth sign-in.",
       "CONTENTFUL_UPDATE_CONTENT_TYPE": "Changes the content model that every editor and delivery client relies on.",
       "CONTENTFUL_UPDATE_EDITOR_INTERFACE": "Changes the editing layout for everyone in the space.",
       "CONTENTFUL_UPDATE_LOCALE": "Locale settings control which languages the delivery API serves.",
@@ -924,108 +926,6 @@
           }
         },
         "description": "Request model for listing spaces in Contentful."
-      }
-    },
-    {
-      "id": "contentful.query_asset_collection",
-      "tool": "CONTENTFUL_QUERY_ASSET_COLLECTION",
-      "toolName": "contentful_query_asset_collection",
-      "lane": "read",
-      "effect": "read",
-      "description": "Tool to retrieve multiple assets with pagination and filtering via GraphQL API. Use when you need to query assets from Contentful with advanced filtering, sorting, and locale selection. Supports preview mode and fallback locale options.",
-      "maxResultBytes": 65536,
-      "withheldArguments": {
-        "where": "unsupported schema",
-        "access_token": "carries a credential the model would supply itself"
-      },
-      "input": {
-        "type": "object",
-        "properties": {
-          "skip": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Zero-indexed offset in the collection from which items are fetched. Default is 0"
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1000,
-            "description": "Maximum number of items to fetch. Default is 100, maximum is 1000"
-          },
-          "order": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "Order specifications to apply on the collection query. Example: ['sys_firstPublishedAt_ASC', 'sys_id_DESC']"
-          },
-          "locale": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Locale for the collection items. If not set, the default locale is used. Example: 'en-US'"
-          },
-          "preview": {
-            "type": "boolean",
-            "description": "When set to true, returns non-published content. Default is false"
-          },
-          "space_id": {
-            "type": "string",
-            "maxLength": 64,
-            "minLength": 1,
-            "description": "ID of the space to query assets from"
-          },
-          "use_fallback_locale": {
-            "type": "boolean",
-            "description": "When set to false, fields without a value in the requested locale return null instead of the fallback locale. Default is true"
-          }
-        },
-        "required": [
-          "space_id"
-        ],
-        "description": "Request model for querying asset collection via GraphQL in Contentful."
-      }
-    },
-    {
-      "id": "contentful.query_graphql_content_type_collection",
-      "tool": "CONTENTFUL_QUERY_GRAPHQL_CONTENT_TYPE_COLLECTION",
-      "toolName": "contentful_query_graphql_content_type_collection",
-      "lane": "read",
-      "effect": "read",
-      "description": "Tool to query a collection of entries for a specific content type using GraphQL. Use when you need to fetch multiple entries with filtering, sorting, pagination, or preview mode. The query field name must be the camelCase content type ID with 'Collection' suffix (e.g., 'blogPostCollection').",
-      "maxResultBytes": 65536,
-      "withheldArguments": {
-        "variables": "unsupported schema",
-        "access_token": "carries a credential the model would supply itself"
-      },
-      "input": {
-        "type": "object",
-        "properties": {
-          "query": {
-            "type": "string",
-            "maxLength": 20000,
-            "minLength": 1,
-            "description": "GraphQL query string. Must be in the format: { contentTypeIdCollection { items { sys { id } fieldName } } }. The content type ID should be in camelCase with 'Collection' suffix. Example: '{ testArticleCollection { items { sys { id publishedAt } title } } }'"
-          },
-          "space_id": {
-            "type": "string",
-            "maxLength": 64,
-            "minLength": 1,
-            "description": "ID of the Contentful space"
-          },
-          "environment_id": {
-            "type": "string",
-            "maxLength": 64,
-            "minLength": 1,
-            "description": "ID of the environment (optional, omit for default environment). Use 'master' for production environment."
-          }
-        },
-        "required": [
-          "space_id",
-          "query"
-        ],
-        "description": "Request model for querying a collection of entries for a specific content type via GraphQL."
       }
     },
     {

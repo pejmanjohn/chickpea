@@ -14,6 +14,7 @@ import {
   type ComposioManifest,
 } from '../src/connections/catalog/composio-manifests.ts';
 import googleMaps from '../src/connections/catalog/manifests/google_maps.json' with { type: 'json' };
+import linkedin from '../src/connections/catalog/manifests/linkedin.json' with { type: 'json' };
 import trello from '../src/connections/catalog/manifests/trello.json' with { type: 'json' };
 import { MANAGED_CONNECTOR_CATALOG, createManagedConnectorCatalog } from '../src/connections/catalog/index.ts';
 import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
@@ -64,7 +65,10 @@ function lanes(manifest: ComposioManifest): Record<string, string> {
   return Object.fromEntries(manifest.capabilities.map(({ tool: slug, lane }) => [slug, lane]));
 }
 
-const PILOT_MANIFESTS = [...COMPOSIO_MANIFESTS, parseComposioManifest(googleMaps), parseComposioManifest(trello)];
+const PILOT_MANIFESTS = [
+  ...COMPOSIO_MANIFESTS,
+  ...[googleMaps, linkedin, trello].map((value) => parseComposioManifest(value)),
+];
 
 const pilotManifest = (toolkit: string) => structuredClone(
   PILOT_MANIFESTS.find((manifest) => manifest.toolkit === toolkit)!,
@@ -782,9 +786,21 @@ test('reviewed manifests keep expiry, import, credential, and system arguments f
       .map((argument) => ['dynamics365', 'DYNAMICS365_CREATE_ANNOTATION', argument] as [string, string, string]),
     ['googletasks', 'GOOGLETASKS_INSERT_TASK', 'deleted'],
     ['googletasks', 'GOOGLETASKS_PATCH_TASK', 'deleted'],
+    ['gorgias', 'GORGIAS_CREATE_CUSTOMER', 'channels'],
+    ['gorgias', 'GORGIAS_UPDATE_CUSTOMER', 'channels'],
+    ['gorgias', 'GORGIAS_UPDATE_TICKET', 'customer_id'],
+    ...['excluded_audiences', 'included_audiences', 'send_strategy_method', 'static_is_local_timezone',
+      'static_send_datetime', 'sto_send_date', 'throttle_percentage', 'throttled_send_datetime']
+      .map((argument) => ['klaviyo', 'KLAVIYO_UPDATE_CAMPAIGN', argument] as [string, string, string]),
+    ['klaviyo', 'KLAVIYO_UPDATE_PROFILE', 'data__attributes__anonymous__id'],
+    ['klaviyo', 'KLAVIYO_UPDATE_PROFILE', 'data__meta__patch__properties__unset'],
     ['microsoft_teams', 'MICROSOFT_TEAMS_CREATE_MEETING', 'chat_info'],
     ['microsoft_teams', 'MICROSOFT_TEAMS_CREATE_MEETING', 'lobby_bypass_settings'],
     ['trello', 'TRELLO_GET_MEMBERS_BY_ID_MEMBER', 'tokens'],
+    ['wrike', 'WRIKE_CREATE_TASK', 'parents'],
+    ['wrike', 'WRIKE_CREATE_TASK', 'superTasks'],
+    ...['addParents', 'addSuperTasks', 'convertToCustomItemType', 'removeParents', 'removeSuperTasks']
+      .map((argument) => ['wrike', 'WRIKE_MODIFY_TASK', argument] as [string, string, string]),
     ...['ZOHO_CREATE_CONTACT', 'ZOHO_CREATE_DEAL', 'ZOHO_CREATE_LEAD']
       .map((slug) => ['zoho', slug, 'lar_id'] as [string, string, string]),
   ];

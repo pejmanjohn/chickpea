@@ -6,7 +6,7 @@
   },
   "label": "Wrike",
   "description": "Find tasks, folders, and projects, and create, update, and comment on tasks.",
-  "securityDescription": "Wrike sign-in opens through Composio. Agents act as the signed-in Wrike user and can read the spaces, folders, projects, tasks, comments, workflows, custom fields, and contacts that user can see. With write access, Agents can create a task in a folder or project they choose, edit a task's title, description, status, importance, custom status, and job-role placeholders, follow a task, restore a task from the Recycle Bin, and comment on tasks. A comment is visible to everyone who can see the task, and an @mention notifies that person. Agents cannot assign tasks to people, share tasks or add followers, move a task to another folder, project, or parent task, change an existing task's dates or custom fields, delete anything, create or change folders, projects, workflows, custom fields, bookings, approvals, or webhooks, or manage users, groups, invitations, or account settings.",
+  "securityDescription": "Wrike sign-in opens through Composio. Agents act as the signed-in Wrike user and can read the spaces, folders, projects, tasks, comments, workflows, custom fields, and contacts that user can see. With write access, Agents can create a task in one folder or project they choose, edit a task's title, description, status, importance, custom status, and job-role placeholders, follow a task, restore a task from the Recycle Bin, and comment on tasks. A comment is visible to everyone who can see the task, and an @mention notifies that person. Agents cannot assign tasks to people, share tasks or add followers, add a task to more folders or projects or under another task, move a task to another folder, project, or parent task, change an existing task's dates or custom fields, delete anything, create or change folders, projects, workflows, custom fields, bookings, approvals, or webhooks, or manage users, groups, invitations, or account settings.",
   "preset": {
     "category": "project",
     "accent": "#00E05C"
@@ -49,6 +49,10 @@
     },
     "allowArguments": {},
     "withholdArguments": {
+      "WRIKE_CREATE_TASK": {
+        "parents": "Adds the new task to more folders or projects, which shares it with everyone who can see them.",
+        "superTasks": "Makes the new task a subtask of other tasks, as addSuperTasks would on modify task."
+      },
       "WRIKE_MODIFY_TASK": {
         "addParents": "Adds the task to another folder or project, which shares it with everyone who can see that folder.",
         "addSuperTasks": "Moves the task under another task.",
@@ -69,8 +73,10 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "Wrike: Create task in folder",
       "withheldArguments": {
+        "parents": "reviewer: Adds the new task to more folders or projects, which shares it with everyone who can see them.",
         "shareds": "changes sharing, visibility, permissions, membership, or who acts",
         "followers": "changes sharing, visibility, permissions, membership, or who acts",
+        "superTasks": "reviewer: Makes the new task a subtask of other tasks, as addSuperTasks would on modify task.",
         "responsibles": "changes sharing, visibility, permissions, membership, or who acts",
         "withInvitations": "changes sharing, visibility, permissions, membership, or who acts"
       },
@@ -96,15 +102,6 @@
               "Deferred"
             ],
             "description": "Status of the task. Note: This feature may not be available on the Team plan."
-          },
-          "parents": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "List of parent folder IDs for the task. Cannot include the recycleBinId."
           },
           "folderId": {
             "type": "string",
@@ -145,15 +142,6 @@
               "Normal"
             ],
             "description": "Importance level of the task."
-          },
-          "superTasks": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 20000
-            },
-            "maxItems": 100,
-            "description": "List of task IDs to which this new task will be a subtask."
           },
           "billingType": {
             "type": "string",

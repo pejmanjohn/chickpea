@@ -16,7 +16,6 @@ import googlemeet from './manifests/googlemeet.json' with { type: 'json' };
 import googletasks from './manifests/googletasks.json' with { type: 'json' };
 import gorgias from './manifests/gorgias.json' with { type: 'json' };
 import klaviyo from './manifests/klaviyo.json' with { type: 'json' };
-import linkedin from './manifests/linkedin.json' with { type: 'json' };
 import mailchimp from './manifests/mailchimp.json' with { type: 'json' };
 import microsoftTeams from './manifests/microsoft_teams.json' with { type: 'json' };
 import oneDrive from './manifests/one_drive.json' with { type: 'json' };
@@ -282,7 +281,6 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
   googletasks,
   gorgias,
   klaviyo,
-  linkedin,
   mailchimp,
   microsoftTeams,
   oneDrive,
@@ -302,6 +300,7 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
 /** Reviewed manifests the generator still checks but the catalog does not ship, with the reason. */
 export const HELD_COMPOSIO_MANIFESTS: Readonly<Record<string, string>> = {
   google_maps: "Validation runs with no arguments, and every Google Maps read needs input: geocoding needs an address, coordinates, or a place ID, and Composio's own current-user check uses a fixed place ID",
+  linkedin: "Its only write, posting, publishes by default: lifecycleState defaults to PUBLISHED and visibility is required, so no withheld argument can hold a post as a draft, and every connector ships read and write tools",
   trello: "Composio's hosted Connect Link for its managed OAuth1 config fails with \"Link session not found or expired\"",
 };
 

@@ -366,15 +366,6 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     accent: '#232426',
     logoId: 'klaviyo',
   }, {
-    id: 'linkedin-managed',
-    managedToolkit: 'linkedin',
-    providerId: 'linkedin',
-    name: 'LinkedIn',
-    description: 'Read your LinkedIn profile, posts, and the follower and post statistics of company pages you manage.',
-    category: 'business',
-    accent: '#0A66C2',
-    logoId: 'linkedin',
-  }, {
     id: 'mailchimp-managed',
     managedToolkit: 'mailchimp',
     providerId: 'mailchimp',
