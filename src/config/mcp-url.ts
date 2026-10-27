@@ -97,7 +97,7 @@ export function validateMcpUrl(raw: string): McpUrlResult {
 /**
  * The one form MCP server URLs are stored and compared in: the URL
  * `validateMcpUrl` returns, so a bare origin gains its root slash. A URL the
- * guard rejects is returned unchanged; it can never equal an accepted one.
+ * guard rejects never equals an accepted one; two rejected URLs may or may not.
  */
 export function canonicalMcpServerUrl(raw: string): string {
   const validated = validateMcpUrl(raw);

@@ -61,9 +61,16 @@ test('a bare origin and its root-slash form are the same MCP server', () => {
   assert.equal(sameMcpServerUrl('https://mcp.example.com/mcp', 'https://mcp.example.com/mcp/'), false);
 });
 
-test('a blocked MCP URL keeps the form it was stored in', () => {
-  assert.equal(canonicalMcpServerUrl('https://localhost'), 'https://localhost');
-  assert.equal(sameMcpServerUrl('https://localhost', 'https://localhost/'), false);
+test('a URL the guard rejects never equals an accepted MCP server URL', () => {
+  for (const [rejected, accepted] of [
+    ['http://mcp.example.com/mcp', 'https://mcp.example.com/mcp'],
+    ['https://user:secret@mcp.example.com', 'https://MCP.example.com.'],
+  ] as const) {
+    assert.equal(validateMcpUrl(rejected).ok, false, rejected);
+    assert.equal(sameMcpServerUrl(rejected, accepted), false, `${rejected} vs ${accepted}`);
+    assert.equal(sameMcpServerUrl(accepted, rejected), false, `${accepted} vs ${rejected}`);
+    assert.equal(validateMcpUrl(canonicalMcpServerUrl(accepted)).ok, true, `${accepted} stays accepted`);
+  }
 });
 
 test('rejects non-https schemes', () => {
