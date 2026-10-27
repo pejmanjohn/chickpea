@@ -442,7 +442,7 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     managedToolkit: 'semrush',
     providerId: 'semrush',
     name: 'Semrush',
-    description: 'Look up keyword search volume, cost per click, and difficulty in Semrush\'s regional databases.',
+    description: 'Look up keyword search volume, cost per click, and difficulty, and backlink and Authority Score summaries for domains and URLs.',
     category: 'search',
     accent: '#C190FF',
     logoId: 'semrush',

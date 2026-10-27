@@ -122,8 +122,14 @@ const LINK_MINT_TOKENS = new Set(words(`
   create direct download embed expiring generate get make mint presigned preview public share signed store
   temp temporary thumbnail
 `));
-/** Option values that return a link in place of content on their own. */
-const LINK_VALUES = new Set([...LINK_TOKENS, 'presigned']);
+/**
+ * A bare `url` or `link` value returns a link in place of content only on an
+ * argument that picks the output, such as `format` or `return_type`. Semrush's
+ * `target_type` uses `url` for the kind of target it analyzes.
+ */
+const OUTPUT_TOKENS = new Set(['delivery', 'format', 'mode', 'output', 'response', 'return']);
+const OUTPUT_DESCRIPTION =
+  /\b(?:output|response|return|result|download|export|delivery)\s+(?:format|mode|type)\b|\bhow\s+(?:the\s+)?(?:results?|content|files?|data|response)\s+(?:is|are)\s+(?:returned|delivered)\b/i;
 /** A read whose result is such a link: "temporary image URLs", "Returned image URLs expire". */
 const LINK_MINT_DESCRIPTION = new RegExp([
   String.raw`\b(?:temporary|public|shareable|pre-?signed|signed|expiring|pre-?authenticated)\s+(?:[\w()-]+\s+){0,2}(?:urls?|links?)\b`,
@@ -203,9 +209,15 @@ function mintsLink(text: string): boolean {
   return tokens.some((token) => LINK_TOKENS.has(token)) && tokens.some((token) => LINK_MINT_TOKENS.has(token));
 }
 
-/** An option value such as `store_and_link`, or a bare `url` that returns a link in place of content. */
-function linkValue(value: unknown): boolean {
-  return typeof value === 'string' && (mintsLink(value) || LINK_VALUES.has(value.trim().toLowerCase()));
+function picksOutput(name: string, schema: unknown): boolean {
+  return argumentTokens(name).some((token) => OUTPUT_TOKENS.has(token)) || OUTPUT_DESCRIPTION.test(descriptionOf(schema));
+}
+
+/** An option value such as `store_and_link` or `presigned`, or a bare `url` on an argument that picks the output. */
+function linkValue(value: unknown, picksOutputMode: boolean): boolean {
+  if (typeof value !== 'string') return false;
+  const lower = value.trim().toLowerCase();
+  return mintsLink(value) || lower === 'presigned' || (picksOutputMode && LINK_TOKENS.has(lower));
 }
 
 /** Rules for every tool, reads included: who the call acts as, credentials, and modes that mint a shareable link. */
@@ -218,7 +230,8 @@ function anyToolWithheldReason(name: string, schema: unknown): string | undefine
   if ((carriesValue && CREDENTIAL.test(joined)) || (!boolean && CREDENTIAL_DESCRIPTION.test(descriptionOf(schema)))) {
     return WITHHELD_CREDENTIAL;
   }
-  return mintsLink(name) || enumValues(schema).some(linkValue) ? WITHHELD_LINK : undefined;
+  const output = picksOutput(name, schema);
+  return mintsLink(name) || enumValues(schema).some((value) => linkValue(value, output)) ? WITHHELD_LINK : undefined;
 }
 
 /** A tool with both hints counts as a create. `other` is a delete, whose IDs name the record itself. */
@@ -467,7 +480,7 @@ function deriveNode(
           }
           const defaults = defaultValues(child);
           // Leaving out an argument whose default mints a link would still mint one.
-          if (withheld === WITHHELD_LINK && defaults.some((value) => value === true || linkValue(value))) {
+          if (withheld === WITHHELD_LINK && defaults.some((value) => value === true || linkValue(value, true))) {
             return { unsupported: `${childWhere} mints a shareable link by default`, excludesTool: true };
           }
           // Withholding an argument whose default overwrites would still overwrite.

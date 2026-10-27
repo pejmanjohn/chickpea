@@ -443,6 +443,26 @@ test('link, act-as, and overwrite rules see through optional wrappers, arrays, a
   assert.deepEqual(capability('ACME_CREATE_FOLDERS').withheldArguments, { conflict_modes: 'can replace an existing item' });
 });
 
+test('a bare url or link value is a link mode only on an argument that picks the output', () => {
+  const { manifest } = draftComposioManifest(snapshot([
+    tool('ACME_GET_AUTHORITY_PROFILE', ['readOnlyHint'], {
+      type: 'object',
+      properties: {
+        target: { type: 'string' },
+        target_type: { type: 'string', enum: ['root_domain', 'domain', 'subdomain', 'url'] },
+        by: { type: 'array', items: { type: 'string', enum: ['$flow', 'url', 'link'] } },
+        return_type: { type: 'string', enum: ['content', 'url'] },
+        kind: { type: 'string', enum: ['inline', 'link'], description: 'Chooses how the results are returned.' },
+      },
+      required: ['target', 'target_type'],
+    }),
+  ]));
+  const capability = manifest.capabilities.find(({ tool: name }) => name === 'ACME_GET_AUTHORITY_PROFILE')!;
+  const link = 'can make the provider mint a link anyone holding it can open';
+  assert.deepEqual(Object.keys(capability.input.properties), ['target', 'target_type', 'by']);
+  assert.deepEqual(capability.withheldArguments, { return_type: link, kind: link });
+});
+
 test('a reviewer cannot keep a withheld argument on a read, and the error names why the rule withholds it', () => {
   const search = tool('ACME_SEARCH_FILES', ['readOnlyHint'], {
     type: 'object', properties: { query: { type: 'string' }, as_user: { type: 'string' } },
