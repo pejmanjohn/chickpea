@@ -14,8 +14,10 @@ import type {
   ManagementRoutineSnapshot,
 } from '../src/management/types.ts';
 import { RoutineService } from '../src/routines/service.ts';
+import { executeSlackScheduleCommand } from '../src/routines/slack-command.ts';
 import {
   MEMBER_SLACK_USER,
+  NOW,
   apply,
   channelRoutine,
   chickpeaChannel,
@@ -396,3 +398,85 @@ test('another person\'s DM routine ID gets one not-found answer, whatever versio
     assert.match(answers[0]?.instruction ?? '', /The routine was not found\./);
     assert.equal((await f.routines.getRoutine(memberRoutine.id))?.state, 'active');
   }, { slackFacts: ROOMS }));
+
+/**
+ * The Owner's Channel routine on an Agent that is then archived and deleted.
+ * The member has their own Agent in the same Channel.
+ */
+async function routineOfDeletedAgent(f: Fixture) {
+  const departed = await createAgent(f, f.owner, 'agent_departed', { name: 'Departed' });
+  const helper = await createAgent(f, f.member, 'agent_helper', { name: 'Helper' });
+  await grant(f, departed.id, 'C_LOBBY');
+  await grant(f, helper.id, 'C_LOBBY');
+  const dependencies = {
+    config: f.config, routines: f.routines, identity: f.identity, schedulingAvailable: true, now: () => NOW,
+  };
+  const save = {
+    kind: 'save' as const, actionKey: 'rsaction_departed_create', itemId: 'save',
+    workspaceId: f.workspaceId, channelId: 'C_LOBBY', agentId: departed.id,
+    actorUserId: f.owner.user.id, actorMembershipId: f.owner.membership.id,
+    name: 'Lobby digest', description: '', taskText: 'Summarize the lobby.',
+    schedule: { kind: 'cron' as const, expression: '0 9 * * 1-5' }, timezone: 'UTC',
+    outputPolicy: 'post' as const, requiredConnectionAccountIds: [],
+  };
+  const { routine } = await executeSlackScheduleCommand(save, dependencies);
+  const archived = await f.config.archiveAgent(departed.id, {
+    expectedRevision: (await f.config.getAgent(departed.id)).revision,
+  });
+  assert.equal(await f.config.deleteAgentWithMemory(
+    departed.id, 'delete-departed', archived.revision, archived.credentialIncarnation!,
+  ), true);
+  return { routine, helper, save, dependencies };
+}
+
+test('deleting an archived Agent deletes its live routines and keeps their history', () =>
+  withFixture('departed-history', async (f) => {
+    const { routine } = await routineOfDeletedAgent(f);
+    assert.equal(await f.config.getAgentScheduleReference(routine.id), undefined);
+    const tombstone = await f.routines.getRoutine(routine.id);
+    assert.ok(tombstone?.deletedAt, 'the routine is deleted with its Agent');
+    assert.equal(tombstone.taskText, '', 'its saved task is scrubbed');
+    assert.equal(tombstone.nextRunAt, null, 'it never comes due again');
+    const deleted = (await f.routines.listAuditEvents({ subjectId: routine.id }))
+      .filter(({ eventType }) => eventType === 'routine.deleted');
+    assert.deepEqual(deleted.map(({ actorClass }) => actorClass), ['system'], 'the audit keeps the deletion');
+  }));
+
+test('a member cannot edit a routine whose Agent was deleted', () =>
+  withFixture('departed-edit', async (f) => {
+    const { routine, helper, save, dependencies } = await routineOfDeletedAgent(f);
+    await assert.rejects(executeSlackScheduleCommand({
+      ...save, actionKey: 'rsaction_departed_edit', routineId: routine.id,
+      expectedVersion: (await f.routines.getRoutine(routine.id))!.version, agentId: helper.id,
+      actorUserId: f.member.user.id, actorMembershipId: f.member.membership.id,
+      taskText: 'Send the lobby summary to me instead.',
+    }, dependencies));
+    assert.equal(await f.config.getAgentScheduleReference(routine.id), undefined, 'the edit claimed no Agent');
+    assert.equal((await f.routines.getRoutine(routine.id))?.taskText, '', 'the edit saved no task');
+  }));
+
+test('a member cannot run a routine whose Agent was deleted', () =>
+  withFixture('departed-run', async (f) => {
+    const { routine } = await routineOfDeletedAgent(f);
+    const ran = await apply(f, mcp(f.member), 'departed-run', [{
+      itemId: 'run', kind: 'run_routine', workspaceId: f.workspaceId, routineId: routine.id,
+    }]);
+    assert.notEqual(disposition(ran), 'applied', JSON.stringify(ran.outcomes));
+    assert.deepEqual(await f.routines.listRuns({ routineId: routine.id }), [], 'nothing was queued');
+    assert.ok((await f.routines.getRoutine(routine.id))?.deletedAt, 'no schedule can run it either');
+  }));
+
+test('a member cannot delete a routine whose Agent was deleted', () =>
+  withFixture('departed-delete', async (f) => {
+    const { routine } = await routineOfDeletedAgent(f);
+    const current = (await f.routines.getRoutine(routine.id))!;
+    const deleted = await apply(f, mcp(f.member), 'departed-delete', [{
+      itemId: 'delete', kind: 'delete_routine', workspaceId: f.workspaceId,
+      routineId: routine.id, expectedVersion: current.version,
+    }]);
+    assert.ok(!['applied', 'confirmation_required'].includes(disposition(deleted) ?? ''),
+      JSON.stringify(deleted.outcomes));
+    const deletions = (await f.routines.listAuditEvents({ subjectId: routine.id }))
+      .filter(({ eventType }) => eventType === 'routine.deleted');
+    assert.deepEqual(deletions.map(({ actorId }) => actorId), [null], 'only the Agent delete removed it');
+  }));
