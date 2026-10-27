@@ -10,7 +10,7 @@
   },
   "label": "Freshdesk",
   "description": "Find, create, and update tickets, contacts, companies, and help articles in one helpdesk.",
-  "securityDescription": "Freshdesk connects with an API key and helpdesk subdomain entered on Composio's hosted page; Chickpea never receives the key. Agents act as the Freshdesk agent who owns the key and can read what that agent can see. With write access, Agents can create and update tickets, contacts, and companies, add private notes, reply to a ticket's requester, and draft help articles. A reply reaches the ticket's requester and no one else. Agents cannot forward tickets, send outbound email, add To, CC, or BCC recipients, choose the sending address, or notify anyone about a note. Agents also cannot delete anything, change a ticket's requester or a contact's email, phone, social, or external IDs, assign tickets to agents or groups, act as another user, make notes public, publish articles, widen which tickets a contact can see, move a contact or ticket to another company or parent ticket, or manage agents, groups, roles, SLAs, or canned responses.",
+  "securityDescription": "Freshdesk connects with an API key and helpdesk subdomain entered on Composio's hosted page; Chickpea never receives the key. Agents act as the Freshdesk agent who owns the key and can read what that agent can see. With write access, Agents can create and update tickets, contacts, and companies, add private notes, reply to tickets, and draft help articles. A reply goes only to the ticket's requester, and a new ticket's requester must be an existing contact or have no email address. Agents cannot forward tickets, send outbound email, add recipients or email addresses, choose the sending address, or notify anyone about a note. They cannot delete anything, change a ticket's requester or a contact's phone, social, or external IDs, assign tickets to agents or groups, act as another user, make notes public, publish articles, widen which tickets a contact can see, move a contact or ticket to another company or parent ticket, or manage agents, groups, roles, SLAs, or canned responses.",
   "preset": {
     "category": "business",
     "accent": "#00AC4C"
@@ -43,7 +43,7 @@
       "withheldArguments": {
         "private": "changes sharing, visibility, permissions, membership, or who acts",
         "user_id": "changes sharing, visibility, permissions, membership, or who acts",
-        "notify_emails": "chooses who a message is sent to, copied to, or sent from"
+        "notify_emails": "names an address a message goes to or comes from"
       },
       "input": {
         "type": "object",
@@ -142,14 +142,16 @@
       "toolName": "freshdesk_create_ticket",
       "lane": "write",
       "effect": "reversible_write",
-      "description": "Creates a new ticket in Freshdesk. REQUIRED FIELDS: - subject and description are always required - At least ONE requester identifier is REQUIRED: requester_id, email, phone, facebook_id, twitter_id, or unique_external_id CONDITIONAL REQUIREMENTS: - If phone is provided without email, name becomes MANDATORY NOTE ON ATTACHMENTS: - attachments field expects multipart/form-data format, not file paths",
+      "description": "Creates a new ticket in Freshdesk. REQUIRED FIELDS: - subject and description are always required - At least ONE requester identifier is REQUIRED: requester_id (an existing contact; find it with a contact search first), phone, facebook_id, twitter_id, or unique_external_id. A new email address cannot be added. CONDITIONAL REQUIREMENTS: - If phone is provided for a new requester, name becomes MANDATORY NOTE ON ATTACHMENTS: - attachments field expects multipart/form-data format, not file paths",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Freshdesk: Create Ticket",
       "withheldArguments": {
+        "email": "names an address a message goes to or comes from",
         "group_id": "changes sharing, visibility, permissions, membership, or who acts",
-        "cc_emails": "chooses who a message is sent to, copied to, or sent from",
+        "cc_emails": "names an address a message goes to or comes from",
         "responder_id": "changes sharing, visibility, permissions, membership, or who acts",
         "custom_fields": "unsupported schema",
+        "email_config_id": "names an address a message goes to or comes from",
         "internal_agent_id": "changes sharing, visibility, permissions, membership, or who acts",
         "internal_group_id": "changes sharing, visibility, permissions, membership, or who acts"
       },
@@ -169,11 +171,6 @@
             },
             "maxItems": 100,
             "description": "Tags that have been associated with the ticket"
-          },
-          "email": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Email address of the requester"
           },
           "phone": {
             "type": "string",
@@ -265,10 +262,6 @@
           "requester_id": {
             "type": "integer",
             "description": "User ID of the requester"
-          },
-          "email_config_id": {
-            "type": "integer",
-            "description": "ID of email config which is used for this ticket"
           },
           "lookup_parameter": {
             "type": "string",
@@ -687,10 +680,10 @@
       "sideEffectLabel": "Freshdesk: Reply to Ticket",
       "withheldArguments": {
         "user_id": "changes sharing, visibility, permissions, membership, or who acts",
-        "cc_emails": "chooses who a message is sent to, copied to, or sent from",
-        "to_emails": "chooses who a message is sent to, copied to, or sent from",
-        "bcc_emails": "chooses who a message is sent to, copied to, or sent from",
-        "from_email": "chooses who a message is sent to, copied to, or sent from"
+        "cc_emails": "names an address a message goes to or comes from",
+        "to_emails": "names an address a message goes to or comes from",
+        "bcc_emails": "names an address a message goes to or comes from",
+        "from_email": "names an address a message goes to or comes from"
       },
       "input": {
         "type": "object",
@@ -932,12 +925,12 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "Freshdesk: Update Contact",
       "withheldArguments": {
-        "email": "changes who the record belongs to or how a person is identified",
+        "email": "names an address a message goes to or comes from",
         "phone": "changes who the record belongs to or how a person is identified",
         "mobile": "changes who the record belongs to or how a person is identified",
         "company_id": "moves the record to another container",
         "twitter_id": "changes who the record belongs to or how a person is identified",
-        "other_emails": "changes who the record belongs to or how a person is identified",
+        "other_emails": "names an address a message goes to or comes from",
         "custom_fields": "unsupported schema",
         "view_all_tickets": "changes sharing, visibility, permissions, membership, or who acts",
         "unique_external_id": "changes who the record belongs to or how a person is identified"
@@ -1004,7 +997,7 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "Freshdesk: Update Ticket",
       "withheldArguments": {
-        "email": "changes who the record belongs to or how a person is identified",
+        "email": "names an address a message goes to or comes from",
         "phone": "changes who the record belongs to or how a person is identified",
         "group_id": "changes sharing, visibility, permissions, membership, or who acts",
         "parent_id": "moves the record to another container",
@@ -1015,7 +1008,7 @@
         "requester_id": "changes who the record belongs to or how a person is identified",
         "responder_id": "changes sharing, visibility, permissions, membership, or who acts",
         "custom_fields": "unsupported schema",
-        "email_config_id": "changes who the record belongs to or how a person is identified",
+        "email_config_id": "names an address a message goes to or comes from",
         "internal_agent_id": "changes sharing, visibility, permissions, membership, or who acts",
         "internal_group_id": "changes sharing, visibility, permissions, membership, or who acts",
         "unique_external_id": "changes who the record belongs to or how a person is identified"

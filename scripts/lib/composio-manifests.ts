@@ -92,19 +92,24 @@ const CONTAINER_TOKENS = new Set(`
   account board company folder organization parent project space team workspace
 `.trim().split(/\s+/));
 const COPY_SOURCE_PREFIXES = new Set(['id', 'keep', 'url']);
+/**
+ * An email address on any write, create included, is a place mail can go: a
+ * ticket's requester receives every reply, so a free requester email on
+ * create-ticket would undo a reply bound to the requester.
+ */
 const RECIPIENT_TOKENS = new Set(`
-  attendee attendees bcc cc participant participants recipient recipients
+  attendee attendees bcc cc email emails participant participants recipient recipients
 `.trim().split(/\s+/));
 /** `to_emails`, `from_email`, and `to` address a message; `applicable_to` does not. */
 const ADDRESS_LEADING_TOKENS = new Set(['from', 'to']);
 const IDENTITY_TOKENS = new Set(`
-  email emails external facebook instagram linkedin login mobile password phone requester twitter username
+  external facebook instagram linkedin login mobile password phone requester twitter username
 `.trim().split(/\s+/));
 
 const WITHHELD_ACCESS = 'changes sharing, visibility, permissions, membership, or who acts';
 const WITHHELD_MOVE = 'moves the record to another container';
 const WITHHELD_COPY = 'copies content from another record';
-const WITHHELD_RECIPIENT = 'chooses who a message is sent to, copied to, or sent from';
+const WITHHELD_RECIPIENT = 'names an address a message goes to or comes from';
 const WITHHELD_IDENTITY = 'changes who the record belongs to or how a person is identified';
 
 /**

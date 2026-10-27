@@ -478,7 +478,7 @@ test('connection validation runs the manifest validation capability', async () =
   ]);
 });
 
-test('update tools lose requester and identity arguments while create tools keep them', () => {
+test('update tools lose requester and identity arguments; create tools keep them except email addresses', () => {
   const contact = {
     type: 'object',
     properties: {
@@ -499,9 +499,15 @@ test('update tools lose requester and identity arguments while create tools keep
     Object.keys(manifest.capabilities.find(({ tool: name }) => name === slug)!.input.properties);
 
   assert.deepEqual(properties('ACME_UPDATE_CONTACT'), ['id', 'name']);
-  assert.deepEqual(properties('ACME_CREATE_CONTACT'), [
-    'id', 'name', 'email', 'other_emails', 'mobile', 'requester_id', 'unique_external_id',
-  ]);
+  assert.deepEqual(properties('ACME_CREATE_CONTACT'), ['id', 'name', 'mobile', 'requester_id', 'unique_external_id']);
+});
+
+test('a Freshdesk ticket can only be opened for someone already in the helpdesk, so a reply cannot reach a new address', () => {
+  const create = MANAGED_CONNECTOR_CATALOG.capability('freshdesk.create_ticket')!.input;
+  const ticket = { subject: 'Printer jam', description: 'Tray 2 is stuck.' };
+  assert.equal(v.safeParse(create, { ...ticket, requester_id: 7 }).success, true);
+  assert.equal(v.safeParse(create, { ...ticket, email: 'someone@example.com' }).success, false);
+  assert.equal(v.safeParse(create, { ...ticket, requester_id: 7, email_config_id: 3 }).success, false);
 });
 
 test('the draft report names each argument that carries a precondition', async () => {
