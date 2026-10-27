@@ -1228,3 +1228,66 @@ test('cookie-style unsafe Scheduled Work controls require same-origin and idempo
     routines.close();
   }
 });
+
+test('Agent schedule delete succeeds when the Worker clock reads ahead of the state store clock', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-schedule-clock-skew-')), 'state.db');
+  // The state Durable Object runs on its own clock. The Admin route runs in
+  // the Worker, whose Date.now() here reads 1 ms ahead of the store's.
+  const routines = new SqliteRoutineStore(path, () => Date.now() - 1);
+  const work = new SqliteWorkStore(path);
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(path);
+  try {
+    await seedActiveRoutine(routines, 'routine_clock_skew', Date.now() + 3_600_000);
+    const routine = (await routines.getRoutine('routine_clock_skew'))!;
+    const agent = await config.createAgent({
+      id: 'agent_clock_skew',
+      name: 'Clock skew Agent',
+      instructions: 'Run scheduled work.',
+      enabled: true,
+      lifecycle: 'active',
+      creatorMembershipId: 'membership_test_owner',
+      editPolicy: 'all_workspace_members',
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    await config.putAgentScheduleReference({
+      boundRoutineVersion: routine.authorityBindingVersion ?? routine.version,
+      scheduleId: routine.id,
+      agentId: agent.id,
+      workspaceId: routine.workspaceId,
+      channelId: routine.channelId,
+      createdByMembershipId: 'membership_test_owner',
+      runsAsMembershipId: 'membership_test_owner',
+      authorityReceiptId: 'receipt_clock_skew',
+      requiredConnectionAccountIds: [],
+      state: 'active',
+    });
+    const app = createAdminRoutes({
+      store: config, settings, routines, work, ...testAdminAuthority(TOKEN),
+    });
+    const deleted = await app.request(
+      `http://localhost/admin/api/agents/${agent.id}/schedules/${routine.id}/control`,
+      {
+        method: 'POST',
+        headers: testAdminHeaders(TOKEN, {
+          'content-type': 'application/json',
+          'idempotency-key': 'clock-skew-delete',
+        }),
+        body: JSON.stringify({
+          action: 'delete', expectedVersion: routine.version, acknowledgeIrreversible: true,
+        }),
+      },
+    );
+    assert.equal(deleted.status, 200, await deleted.clone().text());
+    assert.equal((await deleted.json() as Record<string, any>).schedule.status, 'deleted');
+    assert.ok((await routines.getRoutine(routine.id))?.deletedAt);
+  } finally {
+    routines.close();
+    work.close();
+    config.close();
+    settings.close();
+  }
+});
