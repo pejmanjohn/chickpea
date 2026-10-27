@@ -105,7 +105,7 @@ keychain, so cookies survive and no "Restore pages?" bubble appears. It also
 passes `--disable-backgrounding-occluded-windows`,
 `--disable-renderer-backgrounding` and `--disable-background-timer-throttling`:
 without them a covered daemon window's tabs read hidden, and Admin's pollers
-stop until the window is in front. A daemon started before these flags existed
+stop until the window is in front. A minimized window still reads hidden. A daemon started before these flags existed
 keeps running without them; `stop` and `start` it while no session drives the
 lane. The maintainer signs each profile in once, in the daemon's own window. If a
 profile is signed out, ask for that one-time sign-in during the kickoff
