@@ -1,0 +1,2461 @@
+{
+  "toolkit": "github",
+  "version": "20261023_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "GitHub",
+  "description": "Read repositories and code, and open, comment on, and update issues and pull requests as your own GitHub account.",
+  "securityDescription": "GitHub sign-in opens through Composio and acts as the connected person's own GitHub account, separately from Chickpea's Repositories feature. Agents can read the repositories, code, issues, pull requests, and checks that account can reach. With write access, Agents can open, edit, label, comment on, close, and reopen issues, and open, close, reopen, and mark pull requests ready for review. Agents cannot push code, create branches or repositories, merge or approve pull requests, request reviewers, assign issues, publish releases, run workflows, read secret scanning alerts, delete anything, or change repository settings, collaborators, branch protection, secrets, webhooks, or visibility.",
+  "preset": {
+    "category": "dev",
+    "accent": "#181717"
+  },
+  "validationCapability": "github.who_am_i",
+  "review": {
+    "add": [
+      "GITHUB_ADD_LABELS_TO_AN_ISSUE",
+      "GITHUB_CLOSE_ISSUE",
+      "GITHUB_CLOSE_PULL_REQUEST",
+      "GITHUB_CREATE_AN_ISSUE",
+      "GITHUB_CREATE_AN_ISSUE_COMMENT",
+      "GITHUB_CREATE_A_PULL_REQUEST",
+      "GITHUB_GET_AN_ISSUE",
+      "GITHUB_GET_A_REPOSITORY",
+      "GITHUB_REOPEN_ISSUE",
+      "GITHUB_REOPEN_PULL_REQUEST",
+      "GITHUB_UPDATE_AN_ISSUE"
+    ],
+    "drop": {
+      "GITHUB_CREATE_REPOSITORY": "With private withheld, GitHub creates a public repository.",
+      "GITHUB_LIST_SECRET_SCANNING_ALERTS_FOR_A_REPOSITORY": "Alerts carry the leaked secret values, which stay out of model context."
+    },
+    "allowArguments": {
+      "GITHUB_ADD_LABELS_TO_AN_ISSUE": [
+        "owner"
+      ],
+      "GITHUB_CLOSE_ISSUE": [
+        "owner"
+      ],
+      "GITHUB_CLOSE_PULL_REQUEST": [
+        "owner"
+      ],
+      "GITHUB_CREATE_AN_ISSUE": [
+        "owner"
+      ],
+      "GITHUB_CREATE_AN_ISSUE_COMMENT": [
+        "owner"
+      ],
+      "GITHUB_CREATE_A_PULL_REQUEST": [
+        "owner"
+      ],
+      "GITHUB_REOPEN_ISSUE": [
+        "owner"
+      ],
+      "GITHUB_REOPEN_PULL_REQUEST": [
+        "owner"
+      ],
+      "GITHUB_UPDATE_AN_ISSUE": [
+        "owner"
+      ]
+    }
+  },
+  "capabilities": [
+    {
+      "id": "github.add_labels_to_an_issue",
+      "tool": "GITHUB_ADD_LABELS_TO_AN_ISSUE",
+      "toolName": "github_add_labels_to_an_issue",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Adds labels (provided in the request body) to a repository issue; labels that do not already exist are created.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "GitHub: Add labels to an issue",
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository name, without the `.git` extension (case-insensitive)."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Username or organization name owning the repository (case-insensitive)."
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Array of label names to add to the issue. Labels that don't exist will be created automatically."
+          },
+          "issue_number": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Positive integer that uniquely identifies the issue within the repository. Must be >= 1."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "issue_number",
+          "labels"
+        ],
+        "description": "Specifies the repository issue to which labels will be added."
+      }
+    },
+    {
+      "id": "github.check_if_pull_request_merged",
+      "tool": "GITHUB_CHECK_IF_PULL_REQUEST_MERGED",
+      "toolName": "github_check_if_pull_request_merged",
+      "lane": "read",
+      "effect": "read",
+      "description": "Checks if a pull request has been merged by querying the GitHub API. Use this action when you need to verify whether a specific pull request has been successfully merged into its target branch. The API returns a 204 status for merged PRs and 404 for unmerged PRs.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository without the .git extension. The name is not case sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository. The name is not case sensitive."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "The number that identifies the pull request."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "description": "Request schema for checking if a pull request has been merged."
+      }
+    },
+    {
+      "id": "github.close_issue",
+      "tool": "GITHUB_CLOSE_ISSUE",
+      "toolName": "github_close_issue",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Close a GitHub issue by setting its state to closed. Use this action when you need to mark an issue as resolved or no longer relevant. Optionally specify a reason for closing (completed or not_planned) to provide context.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "GitHub: Close an issue",
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository without the `.git` extension. The name is not case sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository. The name is not case sensitive."
+          },
+          "issue_number": {
+            "type": "integer",
+            "description": "The number that identifies the issue."
+          },
+          "state_reason": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "completed",
+              "not_planned"
+            ],
+            "description": "Reason for closing an issue."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "issue_number"
+        ],
+        "description": "Request schema for closing a GitHub issue"
+      }
+    },
+    {
+      "id": "github.close_pull_request",
+      "tool": "GITHUB_CLOSE_PULL_REQUEST",
+      "toolName": "github_close_pull_request",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Closes an open pull request without merging it. The pull request state is set to \"closed\" and it can be reopened later if needed. Use this action when you want to reject or abandon a pull request without merging the proposed changes into the base branch. You must have write access to the repository to close pull requests.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "GitHub: Close a pull request",
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository, without the `.git` extension. This name is not case-sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository. This name is not case-sensitive."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "The unique number that identifies the pull request within the repository."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "description": "Request schema for closing a pull request."
+      }
+    },
+    {
+      "id": "github.compare_two_commits",
+      "tool": "GITHUB_COMPARE_TWO_COMMITS",
+      "toolName": "github_compare_two_commits",
+      "lane": "read",
+      "effect": "read",
+      "description": "Compares two commit points (commits, branches, tags, or SHAs) within a repository or across forks, using `BASE...HEAD` or `OWNER:REF...OWNER:REF` format for the `basehead` parameter.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number of the results to fetch, for pagination when the number of differences (commits or files) is large."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository, without the `.git` extension. This field is not case-sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The username or organization name that owns the repository. This field is not case-sensitive."
+          },
+          "basehead": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A string specifying the base and head references to compare, in the format `BASE...HEAD`. `BASE` and `HEAD` can be branch names (e.g., `main...develop`), tag names (e.g., `v1.0.0...v1.1.0`), or commit SHAs (abbreviated or full 40-character format). Both abbreviated and full SHAs are accepted; full 40-character SHAs are recommended for reliability in large repositories. Both references must exist in the specified repository."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of results (e.g., files or commits) to return per page, with a maximum of 100, for pagination."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "basehead"
+        ],
+        "description": "Request schema for `CompareTwoCommits` action. Specifies the repository and the two commit points (base and head) to compare."
+      }
+    },
+    {
+      "id": "github.create_a_pull_request",
+      "tool": "GITHUB_CREATE_A_PULL_REQUEST",
+      "toolName": "github_create_a_pull_request",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Creates a pull request in a GitHub repository, requiring existing `base` and `head` branches; `title` or `issue` must be provided.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "GitHub: Create a pull request",
+      "input": {
+        "type": "object",
+        "properties": {
+          "base": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the branch you want the changes pulled into. This must be an existing branch on the current (target) repository. You cannot submit a pull request to one repository that requests a merge to a base branch of another repository."
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The detailed description or contents of the pull request."
+          },
+          "head": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the branch where your changes are implemented. IMPORTANT: This branch must already exist in the repository (or fork) before calling this action. You must first create the branch and push commits to it (using git or the 'Create a reference' action), then create the PR. For cross-repository pull requests, namespace `head` with the source owner and branch, like `username:branch`."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository, without the `.git` extension. This name is not case-sensitive."
+          },
+          "draft": {
+            "type": "boolean",
+            "description": "Indicates whether the pull request should be created as a draft. Draft pull requests cannot be merged until marked as ready for review."
+          },
+          "issue": {
+            "type": "integer",
+            "description": "The number of an existing issue in the repository to convert into a pull request. If provided, the issue's title and body may be used for the pull request. Required if `title` is not specified."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository. This name is not case-sensitive."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The title of the new pull request. Required unless `issue` is specified."
+          },
+          "head_repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository (e.g., 'octocat/Hello-World') where the changes in the pull request were made. This field is required for cross-repository pull requests if both the source and target repositories are owned by the same organization but are different repositories."
+          },
+          "maintainer_can_modify": {
+            "type": "boolean",
+            "description": "Indicates whether maintainers of the upstream repository can modify the pull request. This is primarily relevant for pull requests originating from forks."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "head",
+          "base"
+        ],
+        "description": "Request schema for `CreateAPullRequest`"
+      }
+    },
+    {
+      "id": "github.create_an_issue",
+      "tool": "GITHUB_CREATE_AN_ISSUE",
+      "toolName": "github_create_an_issue",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Creates a new issue in a GitHub repository, requiring the repository to exist and have issues enabled; specific fields like assignees, milestone, or labels may require push access.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "GitHub: Create an issue",
+      "withheldArguments": {
+        "assignee": "changes sharing, visibility, permissions, membership, or who acts",
+        "assignees": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The detailed textual contents of the new issue."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository, without the `.git` extension (case-insensitive). The repository must exist, be accessible, and have issues enabled."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The GitHub account owner of the repository (case-insensitive). The repository must exist and be accessible to the authenticated user."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The title for the new issue."
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Array of label names to associate with this issue (generally case-insensitive). NOTE: Only users with push access can set labels; they are silently dropped otherwise. Pass an empty list to clear all labels."
+          },
+          "milestone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the milestone to associate this issue with (e.g., \"5\"). NOTE: Only users with push access can set the milestone; it is silently dropped otherwise."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "title"
+        ],
+        "description": "Request schema for creating a new issue in a GitHub repository."
+      }
+    },
+    {
+      "id": "github.create_an_issue_comment",
+      "tool": "GITHUB_CREATE_AN_ISSUE_COMMENT",
+      "toolName": "github_create_an_issue_comment",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Creates a new comment on an existing GitHub issue or pull request within the specified repository.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "GitHub: Create an issue comment",
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comment content in GitHub Flavored Markdown."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name of the repository (without `.git` extension); not case-sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Account owner of the repository (username or organization); not case-sensitive."
+          },
+          "issue_number": {
+            "type": "integer",
+            "description": "Number identifying the issue or pull request for the comment."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "issue_number",
+          "body"
+        ],
+        "description": "Parameters to create a comment on a GitHub issue or pull request."
+      }
+    },
+    {
+      "id": "github.find_pull_requests",
+      "tool": "GITHUB_FIND_PULL_REQUESTS",
+      "toolName": "github_find_pull_requests",
+      "lane": "read",
+      "effect": "read",
+      "description": "Primary tool to find and search pull requests. Supports filtering by repository, author, state, labels, and merge status, and returns structured PR data for reliable use in workflows. GitHub search results are capped at ~1000 total items; narrow filters when totals approach this limit. `created_since`/`updated_since` filter on creation/update timestamps, not `merged_at`; apply merge-date filtering client-side.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number of results to fetch."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by specific repository. Can be provided in 'owner/repo' format (e.g., 'facebook/react'), or as just the repo name when used with the owner parameter. When owner and repo are both provided and have the same value, they are combined as 'owner/repo'. When omitted along with owner, search scope is determined by for_authenticated_user flag. The repository must exist and be accessible with your token."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "comments",
+              "reactions",
+              "interactions",
+              "created",
+              "updated"
+            ],
+            "description": "Field to sort results by. Set explicitly to 'updated' with `order=desc` when recency matters; default behavior may return best-match relevance ordering instead."
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by label name."
+          },
+          "order": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "desc",
+              "asc"
+            ],
+            "description": "Sort order (ascending or descending)."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by repository owner (user or organization). Can be used alone to search all repositories for an owner, or combined with repo parameter to specify owner and repo separately. When both owner and repo are provided, the search is scoped to 'owner/repo'. When omitted along with repo, search scope is determined by for_authenticated_user flag. The owner must exist and repositories must be accessible with your token."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional search query for PR title, description, or commit messages. Supports GitHub search syntax including label filters (e.g., 'label:bug'), logical operators (AND, OR, NOT), and text search. If not provided, PRs will be listed based on other filter parameters. Type qualifiers (type:pr, is:pr, is:issue, type:issue) are automatically normalized. When using logical operators with qualifiers like labels, the query is automatically grouped for proper parsing."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by PR state: 'open', 'closed', or 'all'."
+          },
+          "author": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by PR author username. Must be a valid GitHub username (alphanumeric characters and hyphens only, cannot start or end with hyphen). No dots or other special characters allowed."
+          },
+          "assignee": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by PR assignee username. Use '@me' for current user. Must be a valid GitHub username (alphanumeric characters and hyphens only, cannot start or end with hyphen). No dots or other special characters allowed."
+          },
+          "language": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by programming language."
+          },
+          "mentions": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by username mentioned in PR. Must be a valid GitHub username (alphanumeric characters and hyphens only, cannot start or end with hyphen). No dots or other special characters allowed."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of results per page (maximum 100). GitHub caps total search results at ~1000 items; iterate `page` until results fewer than `per_page` are returned, and add `repo`, `label`, or date filters when totals approach 1000."
+          },
+          "is_merged": {
+            "type": "boolean",
+            "description": "Filter by merge status. True for merged PRs, False for unmerged, None for all."
+          },
+          "base_branch": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by base branch name."
+          },
+          "head_branch": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by head branch name."
+          },
+          "created_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter PRs created after this date (ISO 8601 format). Provide as UTC ISO 8601 timestamp to avoid off-by-one-day errors at range boundaries. Does not filter on `merged_at`."
+          },
+          "updated_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter PRs updated after this date (ISO 8601 format)."
+          },
+          "response_detail": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "minimal",
+              "full"
+            ],
+            "description": "Level of detail in the response. 'minimal' (default) returns an optimized response for AI agents. 'full' returns the complete GitHub API response."
+          },
+          "for_authenticated_user": {
+            "type": "boolean",
+            "description": "Include private repositories accessible to the authenticated user in search results. When True without repo/owner, searches PRs involving you (author, assignee, mentions, commenter) across all accessible repos. When False without repo/owner, restricts to public repos only. When repo/owner is specified, this flag has no effect on scope. Set to True when searching private repositories; False searches all of GitHub and produces large noisy result sets."
+          }
+        },
+        "description": "Request schema for finding pull requests with AI-friendly parameters."
+      }
+    },
+    {
+      "id": "github.find_repositories",
+      "tool": "GITHUB_FIND_REPOSITORIES",
+      "toolName": "github_find_repositories",
+      "lane": "read",
+      "effect": "read",
+      "description": "AI-optimized repository search with smart filtering by language, stars, topics, and ownership. Builds intelligent search queries and returns clean, actionable repository data. Check `incomplete_results` in the response — when true, results are non-exhaustive. Search endpoints are rate-limited to ~30 requests/minute (vs. 5000/hour for general REST); apply backoff on 403/429. Total results are capped at ~1000 per query regardless of pagination.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number of results to fetch."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "stars",
+              "forks",
+              "help-wanted-issues",
+              "updated"
+            ],
+            "description": "Field to sort results by."
+          },
+          "order": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "desc",
+              "asc"
+            ],
+            "description": "Sort order (ascending or descending)."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by specific user or organization. Do NOT use this parameter if your 'query' already contains 'user:', 'org:', or 'repo:' qualifiers - they will conflict. Use either 'owner' parameter OR search qualifiers in 'query', not both."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search query for repository name, description, or README content. Accepts both 'query' and 'q' as parameter names. Supports OR operator for alternatives (e.g., 'bug OR error'). Multi-word phrases in OR expressions are automatically quoted. GitHub limits OR expressions to 6 terms maximum; queries exceeding this limit are truncated. If using GitHub qualifiers like 'repo:', 'user:', or 'org:', they must be properly formatted (e.g., 'repo:owner/name', 'user:username', 'org:orgname')."
+          },
+          "topic": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by repository topic/tag."
+          },
+          "archived": {
+            "type": "boolean",
+            "description": "Filter by archived status. None means include both."
+          },
+          "language": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by programming language."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of results per page (maximum 100). GitHub caps total results at ~1000 per query; for exhaustive searches, split by `language`, `topic`, `min_stars`/`max_stars`, or `owner`."
+          },
+          "max_stars": {
+            "type": "integer",
+            "description": "Maximum number of stars the repository should have."
+          },
+          "min_forks": {
+            "type": "integer",
+            "description": "Minimum number of forks the repository should have."
+          },
+          "min_stars": {
+            "type": "integer",
+            "description": "Minimum number of stars the repository should have."
+          },
+          "fork_filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "How to handle forks: 'include' (include forks), 'exclude' (exclude forks), 'only' (only forks)."
+          },
+          "response_detail": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "minimal",
+              "full"
+            ],
+            "description": "Level of detail in the response. 'minimal' (default) returns an optimized response for AI agents. 'full' returns the complete GitHub API response."
+          },
+          "for_authenticated_user": {
+            "type": "boolean",
+            "description": "Search only in repositories accessible to the authenticated user (including private repos). Requires token scopes `repo`/`read:org`; sparse results compared to GitHub UI typically indicate insufficient token scopes."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "description": "Request schema for finding repositories."
+      }
+    },
+    {
+      "id": "github.get_a_pull_request",
+      "tool": "GITHUB_GET_A_PULL_REQUEST",
+      "toolName": "github_get_a_pull_request",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific pull request from a GitHub repository using its owner, repository name, and pull request number.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository, without the .git extension. This value is not case sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The username of the account that owns the repository. This value is not case sensitive."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "The number that identifies the specific pull request."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "description": "Request schema for `GetAPullRequest`"
+      }
+    },
+    {
+      "id": "github.get_a_reference",
+      "tool": "GITHUB_GET_A_REFERENCE",
+      "toolName": "github_get_a_reference",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific Git reference (e.g., a branch, tag, or fully qualified like 'heads/main') from a GitHub repository. The reference must exist in the repository; use 'list_matching_references' first if unsure what references are available.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Git reference to retrieve. Must be formatted as `heads/<branch_name>` for branches, `tags/<tag_name>` for tags, or `pull/<number>/head` (or `pull/<number>/merge`) for pull requests. Simple branch names (e.g., `main`) are automatically converted to `heads/<name>`. The reference must exist in the repository; a 404 error is returned if not found. If unsure which references exist, use 'list_matching_references' or 'get_a_branch' first."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository, without the `.git` extension. This field is not case-sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The username or organization name that owns the repository. This field is not case-sensitive."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "ref"
+        ],
+        "description": "Request schema for `GetAReference`"
+      }
+    },
+    {
+      "id": "github.get_a_repository",
+      "tool": "GITHUB_GET_A_REPOSITORY",
+      "toolName": "github_get_a_repository",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information about an existing and accessible GitHub repository.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "The name of the repository, without the `.git` extension. This field is case-insensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "The username of the account that owns the repository. This field is case-insensitive."
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ],
+        "description": "Request schema for retrieving detailed information about a specific GitHub repository."
+      }
+    },
+    {
+      "id": "github.get_a_tree",
+      "tool": "GITHUB_GET_A_TREE",
+      "toolName": "github_get_a_tree",
+      "lane": "read",
+      "effect": "read",
+      "description": "Browse and list all files/directories in a GitHub repository. Efficiently retrieves the complete repository structure in a single API call when used with recursive mode. Perfect for analyzing codebase structure, finding specific files, or getting an overview of repository contents without cloning.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository name without owner or .git extension (e.g., for github.com/kubernetes/kubernetes, repo is 'kubernetes')."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository owner username or organization name (e.g., for github.com/kubernetes/kubernetes, owner is 'kubernetes')."
+          },
+          "tree_sha": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Branch name (e.g., 'main', 'master'), tag name (e.g., 'v1.0.0'), commit SHA, or tree SHA. Directory paths are NOT supported - use a branch/tag to get the full tree, then extract the directory's SHA from results."
+          },
+          "recursive": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 20000
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "description": "Set to True (or '1'/'true') to fetch the ENTIRE repository file tree recursively (all files and directories in one call). Set to False or leave empty to fetch only the top-level files/folders. For browsing or analyzing the full repository structure, use recursive=True."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "tree_sha"
+        ],
+        "description": "Request schema for `GetATree`"
+      }
+    },
+    {
+      "id": "github.get_an_issue",
+      "tool": "GITHUB_GET_AN_ISSUE",
+      "toolName": "github_get_an_issue",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information about a specific issue in a repository using the owner, repository name, and issue number.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name of the repository (without `.git` extension). Not case-sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Username of the account owning the repository. Not case-sensitive."
+          },
+          "issue_number": {
+            "type": "integer",
+            "description": "The identifying number of the issue."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "issue_number"
+        ],
+        "description": "Request schema for `GetAnIssue`"
+      }
+    },
+    {
+      "id": "github.get_check_run",
+      "tool": "GITHUB_GET_CHECK_RUN",
+      "toolName": "github_get_check_run",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information for a specific check run within a GitHub repository.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository, without the `.git` extension. This field is not case-sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The username of the account that owns the repository. This field is not case-sensitive."
+          },
+          "check_run_id": {
+            "type": "integer",
+            "description": "The unique numerical identifier of the check run."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "check_run_id"
+        ],
+        "description": "Request schema for retrieving a specific check run within a repository."
+      }
+    },
+    {
+      "id": "github.get_issue_comments",
+      "tool": "GITHUB_GET_ISSUE_COMMENTS",
+      "toolName": "github_get_issue_comments",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all comments for a specific GitHub issue in chronological order. Use this action when you need to view discussion history, analyze comment threads, or fetch comment details for a specific issue. Comments can be filtered by update time and paginated for large discussions.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number of the results to retrieve."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name of the repository, without the .git extension (case-insensitive)."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Username of the account owning the repository (case-insensitive)."
+          },
+          "since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Only show comments updated at or after this ISO 8601 timestamp (e.g., YYYY-MM-DDTHH:MM:SSZ)."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of comments to return per page (maximum 100)."
+          },
+          "issue_number": {
+            "type": "integer",
+            "description": "Number that identifies the issue."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "issue_number"
+        ],
+        "description": "Request parameters to retrieve all comments on a specific GitHub issue."
+      }
+    },
+    {
+      "id": "github.get_organization_teams",
+      "tool": "GITHUB_GET_ORGANIZATION_TEAMS",
+      "toolName": "github_get_organization_teams",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of teams for a specified GitHub organization. Use this action when you need to list all teams, find team information, or explore team structure within an organization. Requires read:org scope and returns paginated results.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "org": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The organization name. The name is not case sensitive."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The page number of the results to fetch."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of results per page (max 100)."
+          },
+          "team_type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "all",
+              "enterprise",
+              "organization"
+            ],
+            "description": "Filter teams by type: 'all' for all teams, 'enterprise' for enterprise-level teams, or 'organization' for organization-level teams."
+          }
+        },
+        "required": [
+          "org"
+        ],
+        "description": "Request schema for listing teams in a GitHub organization."
+      }
+    },
+    {
+      "id": "github.get_pull_requests",
+      "tool": "GITHUB_GET_PULL_REQUESTS",
+      "toolName": "github_get_pull_requests",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of pull requests from a repository with flexible filtering options. Use this action when you need to list all pull requests in a repository, optionally filtered by state (open, closed, all), base branch, head branch, or sort order. Returns an array of pull request objects with comprehensive details including title, state, author, labels, timestamps, and branch information.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "base": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter pulls by base branch name. Example: `gh-pages`."
+          },
+          "head": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter pulls by head user or head organization and branch name in the format of `user:ref-name` or `organization:ref-name`. For example: `github:new-script-format` or `octocat:test-branch`."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The page number of the results to fetch."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository without the `.git` extension. The name is not case sensitive."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created",
+              "updated",
+              "popularity",
+              "long-running"
+            ],
+            "description": "What to sort results by. `popularity` will sort by the number of comments. `long-running` will sort by date created and will limit the results to pull requests that have been open for more than a month and have had activity within the past month."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository. The name is not case sensitive."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "open",
+              "closed",
+              "all"
+            ],
+            "description": "Filter pull requests by state: open, closed, or all."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of results per page (max 100)."
+          },
+          "direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort direction options."
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ],
+        "description": "Request schema for GetPullRequests."
+      }
+    },
+    {
+      "id": "github.get_repository_content",
+      "tool": "GITHUB_GET_REPOSITORY_CONTENT",
+      "toolName": "github_get_repository_content",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a file's Base64 encoded content or lists a directory's contents from a GitHub repository.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the commit, branch, or tag to read from. Use this parameter to specify which branch (e.g., 'feat/godlocal-dev', 'main', 'develop'), tag (e.g., 'v1.2.0'), or commit SHA you want to access. If not provided, the repository's default branch will be used. Note: Branch names should be passed here, NOT in the path parameter."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Path to file or directory in the repository. Empty string ('') retrieves root directory contents. Leading slashes auto-stripped. CRITICAL: Do NOT pass branch names here (e.g., 'feat/godlocal-dev', 'main'). Branch names belong in the `ref` parameter. Path should be file/directory path only (e.g., 'src/main.js', 'README.md'), NOT prefixed with branch name (use 'src/main.js' not 'main/src/main.js'). File paths must include extension (e.g., 'README.md', not 'README')."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. The name of the repository, without the `.git` extension. This name is not case sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. The account owner of the repository. This name is not case sensitive. Can also accept full repository path in format 'owner/repo' - the repo part will be extracted automatically."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "path"
+        ],
+        "description": "Request schema for retrieving content from a GitHub repository."
+      }
+    },
+    {
+      "id": "github.get_repository_star_history",
+      "tool": "GITHUB_GET_REPOSITORY_STAR_HISTORY",
+      "toolName": "github_get_repository_star_history",
+      "lane": "read",
+      "effect": "read",
+      "description": "Gets one page of up to 30 privacy-safe weekly star-count records, newest first. Increase `page` to move backward in a repository's history.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Page number of weekly star history records to return, from 1 to 100."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository without the `.git` extension. The name is not case sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository. The name is not case sensitive."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "description": "Number of weekly star history records to return per page, from 1 to 30."
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ]
+      }
+    },
+    {
+      "id": "github.get_team_members",
+      "tool": "GITHUB_GET_TEAM_MEMBERS",
+      "toolName": "github_get_team_members",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of members for a specific team within an organization. Returns team members including members of child teams. Use this action when you need to see who belongs to a team, optionally filtered by their role (member or maintainer). Requires the authenticated user to have read access to the team within the organization.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "org": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The organization name. This field is not case-sensitive."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The page number of the results to fetch. Used for pagination."
+          },
+          "role": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "member",
+              "maintainer",
+              "all"
+            ],
+            "description": "Filters members returned by their role in the team. Can be 'member' for regular team members, 'maintainer' for team maintainers, or 'all' to include both."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of results per page. Maximum is 100."
+          },
+          "team_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug of the team name. This is the URL-friendly version of the team name."
+          }
+        },
+        "required": [
+          "org",
+          "team_slug"
+        ],
+        "description": "Request schema for `GetTeamMembers`"
+      }
+    },
+    {
+      "id": "github.list_branches",
+      "tool": "GITHUB_LIST_BRANCHES",
+      "toolName": "github_list_branches",
+      "lane": "read",
+      "effect": "read",
+      "description": "List branches in a GitHub repository. Returns branch names, commit information, and protection status. Use this action when you need to retrieve all branches in a repository, optionally filtered by protection status. This is useful for identifying available branches, checking which branches are protected, or preparing to create pull requests.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The page number of the results to fetch. For more information, see 'Using pagination in the REST API'."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository without the `.git` extension. The name is not case sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository. The name is not case sensitive."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of results per page (max 100). For more information, see 'Using pagination in the REST API'."
+          },
+          "protected": {
+            "type": "boolean",
+            "description": "Setting to `true` returns only branches protected by branch protections or rulesets. When set to `false`, only unprotected branches are returned. Omitting this parameter returns all branches."
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ]
+      }
+    },
+    {
+      "id": "github.list_check_runs_for_a_ref",
+      "tool": "GITHUB_LIST_CHECK_RUNS_FOR_A_REF",
+      "toolName": "github_list_check_runs_for_a_ref",
+      "lane": "read",
+      "effect": "read",
+      "description": "List GitHub check runs for a commit SHA, branch, or tag to assess CI status and conclusions. Use when you need reliable CI pass/fail signals beyond commit metadata.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The git reference - can be a commit SHA, branch name, or tag name."
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number of results to fetch."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository without .git extension. Case-insensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository (username or organization name). Case-insensitive."
+          },
+          "app_id": {
+            "type": "integer",
+            "description": "Filter by GitHub App identifier."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by completion timestamp: 'latest' returns the most recent check runs, 'all' returns all check runs."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by check run status: queued, in_progress, or completed."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of results per page, maximum 100."
+          },
+          "check_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters results to check runs with the specified name."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "ref"
+        ]
+      }
+    },
+    {
+      "id": "github.list_deployments",
+      "tool": "GITHUB_LIST_DEPLOYMENTS",
+      "toolName": "github_list_deployments",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists deployments for a specified repository; repository must exist.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by the ref name (branch, tag, or commit SHA)."
+          },
+          "sha": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by the commit SHA recorded when the deployment was created."
+          },
+          "page": {
+            "type": "integer",
+            "description": "The page number of the results to retrieve. For more information, see \"[Using pagination in the REST API](https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api).\""
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository, without the `.git` extension. This name is not case sensitive."
+          },
+          "task": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by the task name specified for the deployment."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository. This name is not case sensitive."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "The number of results to display per page (maximum 100). For more information, see \"[Using pagination in the REST API](https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api).\""
+          },
+          "environment": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by the environment name to which deployed."
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ],
+        "description": "Defines the parameters for listing deployments in a repository."
+      }
+    },
+    {
+      "id": "github.list_events_for_user",
+      "tool": "GITHUB_LIST_EVENTS_FOR_USER",
+      "toolName": "github_list_events_for_user",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists events performed by a GitHub user in reverse chronological order. If authenticated as the specified user, you will see private events; otherwise, only public events are returned. Use this action when you need to retrieve a user's activity history, such as commits, pull requests, issues, and other GitHub actions.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number of the results to fetch. For more information, see \"[Using pagination in the REST API](https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api).\""
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of events to return per page (maximum 100). For more information, see \"[Using pagination in the REST API](https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api).\""
+          },
+          "username": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The GitHub username (handle) for the user whose events you want to retrieve."
+          }
+        },
+        "required": [
+          "username"
+        ],
+        "description": "Request model for listing events performed by a GitHub user."
+      }
+    },
+    {
+      "id": "github.list_followers_of_a_user",
+      "tool": "GITHUB_LIST_FOLLOWERS_OF_A_USER",
+      "toolName": "github_list_followers_of_a_user",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists followers for a specified, existing GitHub user.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination of results (starts at 1)."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of results per page (maximum 100). Used for pagination."
+          },
+          "username": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The GitHub username (e.g., 'octocat', 'torvalds')."
+          }
+        },
+        "required": [
+          "username"
+        ],
+        "description": "Request schema for listing the followers of a specified GitHub user."
+      }
+    },
+    {
+      "id": "github.list_notifications",
+      "tool": "GITHUB_LIST_NOTIFICATIONS",
+      "toolName": "github_list_notifications",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list notification threads for the authenticated user with efficient polling support. Use when you need to fetch the user's GitHub notification inbox with filters like unread/participating/since. Returns notification threads plus polling headers (Last-Modified, ETag, X-Poll-Interval) for efficient polling. IMPORTANT: This endpoint requires a Personal Access Token (classic) with 'notifications' or 'repo' scope. It does NOT work with GitHub App tokens or fine-grained personal access tokens. If the token type is incompatible, a clear error message will be returned.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "all": {
+            "type": "boolean",
+            "description": "If true, show notifications marked as read. Default shows only unread notifications."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number of results to fetch."
+          },
+          "since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Only show notifications updated after the given ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SSZ)."
+          },
+          "before": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Only show notifications updated before the given ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SSZ)."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Number of results per page (maximum 50)."
+          },
+          "participating": {
+            "type": "boolean",
+            "description": "If true, only shows notifications in which the user is directly participating or mentioned."
+          }
+        },
+        "description": "Request parameters for listing notifications."
+      }
+    },
+    {
+      "id": "github.list_organization_members",
+      "tool": "GITHUB_LIST_ORGANIZATION_MEMBERS",
+      "toolName": "github_list_organization_members",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all members of a GitHub organization. Returns a list of users who are members of the specified organization. Use this action when you need to retrieve the list of members in an organization, optionally filtered by role (admin/member) or two-factor authentication status. Organization owners can filter by 2FA status to identify members who need to enable or upgrade their 2FA methods.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "org": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The organization name. The name is not case sensitive."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The page number of the results to fetch."
+          },
+          "role": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "all",
+              "admin",
+              "member"
+            ],
+            "description": "Role filter for organization members."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "2fa_disabled",
+              "2fa_insecure",
+              "all"
+            ],
+            "description": "Filter options for organization members."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of results per page (max 100)."
+          }
+        },
+        "required": [
+          "org"
+        ],
+        "description": "Request schema for listing organization members."
+      }
+    },
+    {
+      "id": "github.list_organizations_for_a_user",
+      "tool": "GITHUB_LIST_ORGANIZATIONS_FOR_A_USER",
+      "toolName": "github_list_organizations_for_a_user",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists public organizations for a specified GitHub user; the `username` must be a valid GitHub handle.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number of the results to fetch."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of results per page (maximum 100)."
+          },
+          "username": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "GitHub username (handle) of the user."
+          }
+        },
+        "required": [
+          "username"
+        ],
+        "description": "Lists public organizations for a specific GitHub user."
+      }
+    },
+    {
+      "id": "github.list_organizations_for_the_authenticated_user",
+      "tool": "GITHUB_LIST_ORGANIZATIONS_FOR_THE_AUTHENTICATED_USER",
+      "toolName": "github_list_organizations_for_the_authenticated_user",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists organizations the authenticated GitHub user is a member of, returning details for each organization.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "The page number of the results to retrieve, used for pagination. Default is 1."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "The number of organization results to return per page. Default is 30, maximum is 100."
+          }
+        },
+        "description": "Defines the parameters for paginating the list of organizations for the authenticated user."
+      }
+    },
+    {
+      "id": "github.list_organizations_for_user",
+      "tool": "GITHUB_LIST_ORGANIZATIONS_FOR_USER",
+      "toolName": "github_list_organizations_for_user",
+      "lane": "read",
+      "effect": "read",
+      "description": "List public organization memberships for a GitHub user. This returns all organizations where the specified user is a public member. Use this action when you need to discover which organizations a user publicly belongs to.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The page number of the results to fetch. For more information, see \"Using pagination in the REST API\"."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of results per page (max 100). For more information, see \"Using pagination in the REST API\"."
+          },
+          "username": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The handle for the GitHub user account."
+          }
+        },
+        "required": [
+          "username"
+        ],
+        "description": "Request parameters for listing organizations for a user."
+      }
+    },
+    {
+      "id": "github.list_pull_requests",
+      "tool": "GITHUB_LIST_PULL_REQUESTS",
+      "toolName": "github_list_pull_requests",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists pull requests for a GitHub repository. REQUIRES 'owner' AND 'repo' parameters - both are MANDATORY and must be provided in every call. Does NOT support filtering by assignee or date range - use GITHUB_FIND_PULL_REQUESTS instead for searching PRs by assignee, author, or across multiple repositories.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "base": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by base branch name."
+          },
+          "head": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by head user/org and branch name, e.g., `user:ref-name`."
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number for results."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "[REQUIRED - MUST BE PROVIDED] The name of the repository (without the `.git` extension). This parameter is mandatory and cannot be omitted. Example: 'Spoon-Knife' or 'vscode'. To search PRs across multiple repos, use GITHUB_FIND_PULL_REQUESTS instead."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Sorts results. Valid values: 'created', 'updated', 'popularity', 'long-running'. 'popularity' is by comment count; 'long-running' by age and recent activity."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "[REQUIRED - MUST BE PROVIDED] The GitHub username or organization name that owns the repository. This parameter is mandatory and cannot be omitted. Example: 'octocat' or 'microsoft'. To search PRs across all repos without specifying owner, use GITHUB_FIND_PULL_REQUESTS instead."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by pull request state. Valid values: 'open', 'closed', 'all'."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of results per page (maximum 100)."
+          },
+          "direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Sort direction. Valid values: 'asc', 'desc'. Defaults to 'desc' if sort is 'created' or unspecified, else 'asc'."
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ],
+        "description": "Request schema for listing pull requests in a repository. REQUIRED PARAMETERS: - owner (str): GitHub username or organization name - MUST be provided - repo (str): Repository name - MUST be provided Both 'owner' and 'repo' are mandatory fields that must be included in every request."
+      }
+    },
+    {
+      "id": "github.list_pull_requests_files",
+      "tool": "GITHUB_LIST_PULL_REQUESTS_FILES",
+      "toolName": "github_list_pull_requests_files",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists all files (including additions, modifications, and removals) associated with a specific pull request in a GitHub repository.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number of the results to retrieve for pagination."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository, without the `.git` extension. This field is not case sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository (e.g., a GitHub username or organization name). This field is not case sensitive."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of file results to return per page (max 100)."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "The numeric identifier of the pull request whose files are to be listed."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "description": "Defines the parameters required to list files for a specific pull request in a repository."
+      }
+    },
+    {
+      "id": "github.list_releases",
+      "tool": "GITHUB_LIST_RELEASES",
+      "toolName": "github_list_releases",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of all releases (published, draft, and prerelease) for a specified repository.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "The page number of the results to fetch. For more information, see \"[Using pagination in the REST API](https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api).\""
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository, without the `.git` extension. This name is not case-sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository. This name is not case-sensitive."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "The number of results to return per page. The maximum value is 100. For more information, see \"[Using pagination in the REST API](https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api).\""
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ],
+        "description": "Request schema for retrieving a list of releases for a repository."
+      }
+    },
+    {
+      "id": "github.list_repositories",
+      "tool": "GITHUB_LIST_REPOSITORIES",
+      "toolName": "github_list_repositories",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists repositories accessible to the authenticated user based on visibility, affiliation, and type filters. Returns repositories owned by the user, those they collaborate on, or those accessible through organization membership. Use this action when you need to retrieve a comprehensive list of repositories the authenticated user can access, with options to filter by visibility (public/private), affiliation (owner/collaborator/organization), or type. Supports pagination for large result sets.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number of results to fetch."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created",
+              "updated",
+              "pushed",
+              "full_name"
+            ],
+            "description": "The property to sort the results by."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "all",
+              "owner",
+              "public",
+              "private",
+              "member"
+            ],
+            "description": "Limit results to repositories of the specified type. Note: Using 'type' with 'visibility' or 'affiliation' will cause a 422 error. Use either 'type' OR 'visibility'/'affiliation', not both."
+          },
+          "since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Only show repositories updated after the given time. This is a timestamp in ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ."
+          },
+          "before": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Only show repositories updated before the given time. This is a timestamp in ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of results per page (maximum 100)."
+          },
+          "direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "The order to sort by. Default: asc when using full_name, otherwise desc."
+          },
+          "visibility": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "all",
+              "public",
+              "private"
+            ],
+            "description": "Limit results to repositories with the specified visibility (all, public, or private)."
+          },
+          "affiliation": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of values defining which repositories to include: 'owner' (repositories owned by the authenticated user), 'collaborator' (repositories where the user is a collaborator), 'organization_member' (repositories accessible through organization membership). When not specified, defaults to 'owner,collaborator,organization_member'."
+          }
+        },
+        "description": "Request schema for listing repositories for the authenticated user."
+      }
+    },
+    {
+      "id": "github.list_repositories_for_the_authenticated_user",
+      "tool": "GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER",
+      "toolName": "github_list_repositories_for_the_authenticated_user",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists repositories for the authenticated user; using 'type' with 'visibility' or 'affiliation' API parameters (not in this model) can cause a 422 error.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number of results to fetch."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created",
+              "updated",
+              "pushed",
+              "full_name"
+            ],
+            "description": "The repository property by which to sort the results."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "all",
+              "owner",
+              "public",
+              "private",
+              "member"
+            ],
+            "description": "Filters the results to repositories of the specified type."
+          },
+          "since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters for repositories updated at or after this specified time. Provide as an ISO 8601 formatted timestamp."
+          },
+          "before": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters for repositories updated before this specified time. Provide as an ISO 8601 formatted timestamp."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "The number of results to return per page (maximum 100)."
+          },
+          "direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "The direction of the sort. Defaults to `asc` when `sort` is 'full_name', and `desc` otherwise."
+          }
+        },
+        "description": "Request schema for `ListRepositoriesForTheAuthenticatedUser`"
+      }
+    },
+    {
+      "id": "github.list_repositories_starred_by_the_authenticated_user",
+      "tool": "GITHUB_LIST_REPOSITORIES_STARRED_BY_THE_AUTHENTICATED_USER",
+      "toolName": "github_list_repositories_starred_by_the_authenticated_user",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists repositories the authenticated user has starred, optionally sorted and paginated, including star creation timestamps via 'application/vnd.github.star+json' media type.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number of results (starts from 1)."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created",
+              "updated"
+            ],
+            "description": "Sorts starred repositories by 'created' (date starred) or 'updated' (date last pushed)."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of results per page (max 100). Defaults to 30."
+          },
+          "direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort direction: 'asc' (ascending) or 'desc' (descending)."
+          }
+        },
+        "description": "Request schema for `ListRepositoriesStarredByTheAuthenticatedUser`"
+      }
+    },
+    {
+      "id": "github.list_repository_contributors",
+      "tool": "GITHUB_LIST_REPOSITORY_CONTRIBUTORS",
+      "toolName": "github_list_repository_contributors",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists contributors to a specified repository, sorted by number of contributions in descending order; the repository must exist and be accessible.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "anon": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Set to '1' or 'true' to include anonymous contributors. If omitted, anonymous contributors are not included."
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number of results to retrieve (1-based indexing)."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name of the repository (without `.git` extension). Not case-sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Username of the account owning the repository. Not case-sensitive."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of contributor results per page. Maximum value is 100."
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ],
+        "description": "Defines the parameters used to list contributors for a GitHub repository."
+      }
+    },
+    {
+      "id": "github.list_repository_issues",
+      "tool": "GITHUB_LIST_REPOSITORY_ISSUES",
+      "toolName": "github_list_repository_issues",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists issues (including pull requests) from a GitHub repository. Requires BOTH 'owner' AND 'repo' parameters (e.g., owner='octocat', repo='Hello-World' for github.com/octocat/Hello-World).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number for the set of results. Refer to GitHub's REST API documentation for pagination details."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "REQUIRED. The name of the repository (without .git extension). For 'octocat/Hello-World', repo is 'Hello-World'. Not case-sensitive. Must be provided together with 'owner'."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created",
+              "updated",
+              "comments"
+            ],
+            "description": "The field to sort the results by."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter issues by type name. Use '*' for issues with any type, 'none' for issues without a type, or specify a type name."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "REQUIRED. The GitHub account owner (user or organization) of the repository. For 'octocat/Hello-World', owner is 'octocat'. Not case-sensitive. Must be provided together with 'repo'."
+          },
+          "since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters issues to include only those updated at or after the specified time. This should be a timestamp in ISO 8601 format (e.g., `YYYY-MM-DDTHH:MM:SSZ`)."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "open",
+              "closed",
+              "all"
+            ],
+            "description": "Filters issues based on their state."
+          },
+          "labels": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of label names to filter issues by. Example: 'bug,ui,@high'."
+          },
+          "creator": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter issues by the username of the user who created the issue."
+          },
+          "assignee": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter issues by assignee's username. Use 'none' for issues with no assignee, or '*' for issues assigned to any user."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of results per page (max 100). Default is 30, which matches GitHub's API default. Refer to GitHub's REST API documentation for pagination details."
+          },
+          "direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "The direction of the sort."
+          },
+          "mentioned": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter issues by a user mentioned in the issue's description or comments. Provide the username."
+          },
+          "milestone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter issues by milestone. Provide the milestone `number` as a string, '*' for issues with any milestone, or 'none' for issues without a milestone."
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ],
+        "description": "Request parameters for listing issues from a GitHub repository. IMPORTANT: GitHub repositories are identified by BOTH 'owner' AND 'repo'. For example, to list issues from 'https://github.com/octocat/Hello-World': - owner = 'octocat' (the account/organization name) - repo = 'Hello-World' (the repository name) You MUST provide both 'owner' and 'repo' - providing only 'repo' will fail."
+      }
+    },
+    {
+      "id": "github.list_repository_workflows",
+      "tool": "GITHUB_LIST_REPOSITORY_WORKFLOWS",
+      "toolName": "github_list_repository_workflows",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists all GitHub Actions workflows for a specified repository, which must exist and be accessible.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "The page number of the results to fetch."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository, without the `.git` extension. This field is not case-sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The username or organization name that owns the repository. This field is not case-sensitive."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "The number of workflow results to return per page. Maximum value is 100."
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ],
+        "description": "Request schema for listing repository workflows."
+      }
+    },
+    {
+      "id": "github.list_stargazers",
+      "tool": "GITHUB_LIST_STARGAZERS",
+      "toolName": "github_list_stargazers",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists users who have starred the specified GitHub repository, which must exist.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number of the results to fetch."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name of the repository, without the `.git` extension; case-insensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Username of the account owner (user or organization) of the repository; case-insensitive."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of results to display per page (max 100)."
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ],
+        "description": "Specifies the target repository and pagination preferences for listing stargazers."
+      }
+    },
+    {
+      "id": "github.list_starred_repositories_for_user",
+      "tool": "GITHUB_LIST_STARRED_REPOSITORIES_FOR_USER",
+      "toolName": "github_list_starred_repositories_for_user",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists public repositories that a user has starred. The list includes all public repositories starred by the specified user, sorted by when they were starred or last updated. Use this action when you need to retrieve the list of repositories a specific GitHub user has starred.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The page number of the results to fetch."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created",
+              "updated"
+            ],
+            "description": "The property to sort the results by. 'created' means when the repository was starred. 'updated' means when the repository was last pushed to."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of results per page (max 100)."
+          },
+          "username": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The handle for the GitHub user account."
+          },
+          "direction": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "The direction to sort the results by."
+          }
+        },
+        "required": [
+          "username"
+        ],
+        "description": "Request parameters for listing repositories starred by a user."
+      }
+    },
+    {
+      "id": "github.mark_pull_request_ready_for_review",
+      "tool": "GITHUB_MARK_PULL_REQUEST_READY_FOR_REVIEW",
+      "toolName": "github_mark_pull_request_ready_for_review",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Marks a draft pull request as ready for review using GitHub GraphQL API, transitioning it from draft to reviewable state. Use this action when a draft pull request has reached a stage where it is ready for team review and can potentially be merged. This action cannot be used on pull requests that are already marked as ready for review.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "GitHub: Mark pull request ready for review",
+      "input": {
+        "type": "object",
+        "properties": {
+          "pull_request_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The global Node ID of the pull request to mark as ready for review (e.g., 'PR_kwDOABCDEFGHIJK'). This is the GraphQL ID, not the numeric pull request number. You can obtain this ID from the 'node_id' field when listing or getting pull requests."
+          },
+          "client_mutation_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A unique identifier for the client performing the mutation. Used to ensure idempotency of mutations and track the request."
+          }
+        },
+        "required": [
+          "pull_request_id"
+        ],
+        "description": "Request schema for marking a pull request as ready for review via GraphQL"
+      }
+    },
+    {
+      "id": "github.reopen_issue",
+      "tool": "GITHUB_REOPEN_ISSUE",
+      "toolName": "github_reopen_issue",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Reopens a closed GitHub issue by changing its state to 'open' with state_reason 'reopened'. Use this action when you need to reopen a previously closed issue that requires further attention or work. Only users with push access to the repository can reopen issues.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "GitHub: Reopen an issue",
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository without the .git extension (case-insensitive)."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository (case-insensitive)."
+          },
+          "issue_number": {
+            "type": "integer",
+            "description": "The number that identifies the issue."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "issue_number"
+        ],
+        "description": "Request schema for reopening a closed GitHub issue."
+      }
+    },
+    {
+      "id": "github.reopen_pull_request",
+      "tool": "GITHUB_REOPEN_PULL_REQUEST",
+      "toolName": "github_reopen_pull_request",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Reopens a previously closed pull request by setting its state to 'open'. This restores the pull request to an active state where it can be reviewed, commented on, and merged. Use this action when you need to reactivate a closed pull request that was closed prematurely or needs to be reconsidered for merging.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "GitHub: Reopen Pull Request",
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the repository without the .git extension. The name is not case sensitive."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The account owner of the repository. The name is not case sensitive."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "The number that identifies the pull request."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "description": "Request schema for reopening a pull request."
+      }
+    },
+    {
+      "id": "github.search_issues",
+      "tool": "GITHUB_SEARCH_ISSUES",
+      "toolName": "github_search_issues",
+      "lane": "read",
+      "effect": "read",
+      "description": "Searches GitHub issues and pull requests using a flexible query with qualifiers, sorting, and pagination. Use this action when you need to find issues or pull requests across repositories using search criteria like author, labels, state, milestone, or date ranges. This action searches across all repositories accessible to the authenticated user unless constrained by qualifiers like repo:, user:, or org:.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search query string for issues and pull requests. Supports qualifiers: `repo:owner/repo`, `user:username`, `org:orgname`, `author:username`, `assignee:username`, `mentions:username`, `commenter:username`, `involves:username`, `label:labelname`, `milestone:title`, `state:open|closed`, `type:pr|issue`, `is:pr|issue|open|closed|merged|unmerged|locked|unlocked|draft`, `in:title|body|comments`, `created:YYYY-MM-DD`, `updated:YYYY-MM-DD`, `closed:YYYY-MM-DD`, `merged:YYYY-MM-DD`,"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number to retrieve (min 1)."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "comments",
+              "reactions",
+              "reactions-+1",
+              "reactions--1",
+              "reactions-smile",
+              "reactions-thinking_face",
+              "reactions-heart",
+              "reactions-tada",
+              "interactions",
+              "created",
+              "updated"
+            ],
+            "description": "Sort options for issue search results."
+          },
+          "order": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Order options for search results."
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of results per page (min 1, max 100)."
+          }
+        },
+        "required": [
+          "q"
+        ],
+        "description": "Request parameters for searching GitHub issues and pull requests."
+      }
+    },
+    {
+      "id": "github.update_an_issue",
+      "tool": "GITHUB_UPDATE_AN_ISSUE",
+      "toolName": "github_update_an_issue",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Updates an existing GitHub issue's title, body, state, milestone, labels, or assignees; `state_reason` is only processed if `state` also changes, and use `null` or `[]` to clear applicable fields.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "GitHub: Update an issue",
+      "withheldArguments": {
+        "assignee": "changes sharing, visibility, permissions, membership, or who acts",
+        "assignees": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "New issue body; send `null` to clear, omit to leave unchanged."
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository name, without the `.git` extension (case-insensitive)."
+          },
+          "owner": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Owner of the repository (case-insensitive)."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "open",
+              "closed"
+            ],
+            "description": "New issue state; omit to leave unchanged."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "New issue title; send `null` to clear, omit to leave unchanged."
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Replaces all existing labels. Send `[]` to remove all; omit to leave unchanged. Requires push access for changes."
+          },
+          "milestone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Milestone ID (as string) or title. Send `null` to clear; omit to leave unchanged. Numeric ID recommended."
+          },
+          "issue_number": {
+            "type": "integer",
+            "description": "Unique number identifying the issue."
+          },
+          "state_reason": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "completed",
+              "not_planned",
+              "reopened"
+            ],
+            "description": "Reason for state change, considered only if `state` also changes. Valid reasons depend on the new `state`."
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "issue_number"
+        ],
+        "description": "Updates attributes of an existing GitHub issue."
+      }
+    },
+    {
+      "id": "github.validate_credential",
+      "tool": "GITHUB_VALIDATE_CREDENTIAL",
+      "toolName": "github_validate_credential",
+      "lane": "read",
+      "effect": "read",
+      "description": "Validates GitHub API credentials by checking if they can successfully authenticate. Use this action when you need to verify that API credentials are valid and have not expired or been revoked. Returns whether the credentials are valid along with the authenticated user's username.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request schema for validating GitHub API credentials. No parameters required."
+      }
+    },
+    {
+      "id": "github.who_am_i",
+      "tool": "GITHUB_WHO_AM_I",
+      "toolName": "github_who_am_i",
+      "lane": "read",
+      "effect": "read",
+      "description": "Return the identity (login, name) of the connected GitHub account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

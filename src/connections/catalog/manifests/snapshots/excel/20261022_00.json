@@ -1,0 +1,1030 @@
+{
+  "toolkit": {
+    "slug": "excel",
+    "name": "Excel",
+    "version": "20261022_00",
+    "description": "Microsoft Excel is a powerful spreadsheet application for data analysis, calculations, and visualization, enabling users to organize and process data with formulas, charts, and pivot tables",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      },
+      {
+        "mode": "S2S_OAUTH2",
+        "fields": []
+      }
+    ],
+    "currentUserEndpoint": "https://graph.microsoft.com/v1.0/me"
+  },
+  "tools": [
+    {
+      "slug": "EXCEL_ADD_TABLE",
+      "name": "Add Table",
+      "description": "Create a new table in a worksheet using the Microsoft Graph API.",
+      "version": "20261022_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddTableRequest",
+        "required": [
+          "item_id",
+          "address",
+          "hasHeaders"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address",
+            "description": "The range address for the table. If worksheet is specified, use a range like 'A1:D4'. If worksheet is omitted, include the sheet name (e.g., 'Sheet1!A1:D4').",
+            "human_parameter_name": "Range Address",
+            "human_parameter_description": "Where the table should be created. With worksheet provided, give a range like 'A1:D4'. Without worksheet, include the sheet name like 'Sheet1!A1:D4'."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "The ID of the Excel workbook (drive item) where the table will be created.",
+            "human_parameter_name": "Item ID",
+            "human_parameter_description": "The identifier of the Excel file where you want to create the table. You can copy this ID from the file link or from a previous file listing step."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "description": "Optional drive ID. Required for application-level permissions (s2s_oauth). If not provided, uses /me/drive endpoint for delegated auth. Use EXCEL_LIST_FILES or ONE_DRIVE_GET_DRIVE_ROOT to get the drive ID.",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "The ID of the OneDrive or SharePoint drive containing the Excel file. Required when using application-level permissions. Leave blank if using delegated user authentication."
+          },
+          "worksheet": {
+            "type": "string",
+            "title": "Worksheet",
+            "description": "Worksheet name or ID. When provided, the table is created on this worksheet and the address should be a range like 'A1:D4'. When omitted, the table is created at the workbook level and the address must include the sheet name prefix (e.g., 'Sheet1!A1:D4').",
+            "human_parameter_name": "Worksheet Name or ID",
+            "human_parameter_description": "Name or ID of the worksheet to create the table on (e.g., 'Sheet1'). If omitted, include the sheet name in the address (e.g., 'Sheet1!A1:D4')."
+          },
+          "hasHeaders": {
+            "type": "boolean",
+            "title": "Has Headers",
+            "description": "Whether the first row of the range contains column headers (True) or not (False).",
+            "human_parameter_name": "Has Headers",
+            "human_parameter_description": "Set True if the first row contains column names; set False if it does not."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Workbook session ID controlling persistence.",
+            "human_parameter_name": "Session ID",
+            "human_parameter_description": "Only needed if you are using a workbook session and want changes to persist within that session."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_ADD_TABLE_ROW",
+      "name": "Add Table Row",
+      "description": "Add a row to a table using Microsoft Graph API.",
+      "version": "20261022_00",
+      "tags": [
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddTableRowRequest",
+        "required": [
+          "item_id",
+          "table_id",
+          "values"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index",
+            "description": "The 0-based index at which to insert the row. Use null or omit to append to the end (recommended).",
+            "human_parameter_name": "Insert Index",
+            "human_parameter_description": "Where to place the new row in the table. Leave this blank to add it at the end, or set a number to insert at a specific position."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "title": "Values",
+            "description": "A 2D array of values for the new row(s). Each inner array represents one row and MUST have the same number of elements as the table has columns. Use List Table Columns action to verify the table structure first.",
+            "human_parameter_name": "Row Values",
+            "human_parameter_description": "The cell values for the new row(s), as a 2D array where each inner array is one row. The number of values in each row MUST match the number of columns in the table exactly, or you'll get a dimension mismatch error."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "The ID of the Excel file (drive item) containing the table.",
+            "human_parameter_name": "Excel File ID",
+            "human_parameter_description": "The unique ID of the Excel file that contains your table. This lets us know exactly which workbook to update."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "default": "me",
+            "description": "The ID of the drive containing the Excel file. Use 'me' for the user's default OneDrive (delegated auth), or provide a specific drive ID for SharePoint sites or when using application permissions.",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "The drive where the Excel file is stored. Use 'me' for your personal OneDrive, or provide a specific drive ID for SharePoint document libraries or when using application-level authentication."
+          },
+          "table_id": {
+            "type": "string",
+            "title": "Table Id",
+            "description": "The ID of the table to add a row to.",
+            "human_parameter_name": "Table ID",
+            "human_parameter_description": "The table within the workbook where you want to add the new row. You can provide the table's name (like 'Table1') or its ID."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers.",
+            "human_parameter_name": "Session ID",
+            "human_parameter_description": "Use this only if you're working within an existing Excel session to keep changes in the same session. If you're not sure, leave it empty."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_ADD_WORKBOOK_PERMISSION",
+      "name": "Add Workbook Permission",
+      "description": "Tool to grant access to a workbook via invite. Use when you need to share a specific workbook file with designated recipients and roles.",
+      "version": "20261022_00",
+      "tags": [
+        "important",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddWorkbookPermissionRequest",
+        "required": [
+          "item_id",
+          "recipients",
+          "roles"
+        ],
+        "properties": {
+          "roles": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "read",
+                "write"
+              ],
+              "type": "string"
+            },
+            "title": "Roles",
+            "description": "Roles to grant: read or write.",
+            "human_parameter_name": "Roles",
+            "human_parameter_description": "Choose the permission level to grant: 'read' for view-only access or 'write' to allow editing."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "The ID of the drive item (Excel file) to share.",
+            "human_parameter_name": "Item ID",
+            "human_parameter_description": "Enter the ID of the workbook you want to share. You can copy it from the file's link or from a previous file search."
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Plain-text message included in the invitation (max 2000 characters).",
+            "human_parameter_name": "Message",
+            "human_parameter_description": "A short note that will be included in the invite so recipients know why you're sharing the file."
+          },
+          "site_id": {
+            "type": "string",
+            "title": "Site Id",
+            "examples": [
+              "contoso.sharepoint.com,2C712604-1370-44E7-A1F5-426573FDA80A,2D2244C3-251A-49EA-93A8-39E1C3A060FE"
+            ],
+            "description": "The ID of the SharePoint site containing the Excel file. Required for application-level auth when the file is not in the root site.",
+            "human_parameter_name": "Site ID",
+            "human_parameter_description": "The unique identifier of the SharePoint site that holds the Excel file. Required when using app-level permissions and the file is not in the root site."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "description": "The ID of the document library (drive) containing the Excel file. If not provided, the site's default drive is used.",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "The unique identifier of the document library containing the Excel file. Only needed if the file is in a non-default document library."
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "description": "Password for the invite (OneDrive Personal only).",
+            "human_parameter_name": "Password",
+            "human_parameter_description": "A password recipients must enter to open the shared link (only applies to OneDrive Personal)."
+          },
+          "recipients": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "DriveRecipient",
+              "properties": {
+                "alias": {
+                  "type": "string",
+                  "title": "Alias",
+                  "description": "A display alias for the recipient."
+                },
+                "email": {
+                  "type": "string",
+                  "title": "Email",
+                  "description": "Email address of the recipient."
+                },
+                "objectId": {
+                  "type": "string",
+                  "title": "Object Id",
+                  "description": "Azure AD object ID of an existing user or group."
+                }
+              }
+            },
+            "title": "Recipients",
+            "description": "Collection of recipients to grant access and send the invitation.",
+            "human_parameter_name": "Recipients",
+            "human_parameter_description": "The people you want to share the workbook with. Add their email addresses; you can optionally include a display name."
+          },
+          "requireSignIn": {
+            "type": "boolean",
+            "title": "Require Sign In",
+            "description": "If true, recipients must sign in to view the shared item.",
+            "human_parameter_name": "Require Sign In",
+            "human_parameter_description": "Require recipients to sign in before they can open the file. Turn this on to restrict access to verified users."
+          },
+          "sendInvitation": {
+            "type": "boolean",
+            "title": "Send Invitation",
+            "default": true,
+            "description": "If true, sends an email invitation; otherwise grants permission silently.",
+            "human_parameter_name": "Send Invitation",
+            "human_parameter_description": "Send an email invitation to recipients. Turn off to grant access without sending an email."
+          },
+          "expirationDateTime": {
+            "type": "string",
+            "title": "Expiration Date Time",
+            "format": "date-time",
+            "description": "DateTime when the granted permission will expire (ISO 8601).",
+            "human_parameter_name": "Expiration Date Time",
+            "human_parameter_description": "Set a date and time when access should automatically expire. Leave blank if you don't want the permission to end."
+          },
+          "retainInheritedPermissions": {
+            "type": "boolean",
+            "title": "Retain Inherited Permissions",
+            "default": true,
+            "description": "If true, existing inherited permissions remain; if false, existing permissions are removed on first share.",
+            "human_parameter_name": "Retain Inherited Permissions",
+            "human_parameter_description": "Keep any existing inherited permissions on the file. Turn this off to remove old permissions the first time you share."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_ADD_WORKSHEET",
+      "name": "Add Worksheet",
+      "description": "Add a new worksheet to an Excel workbook using Microsoft Graph API.",
+      "version": "20261022_00",
+      "tags": [
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AddWorksheetRequest",
+        "required": [
+          "item_id",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name of the new worksheet to add.",
+            "human_parameter_name": "Worksheet Name",
+            "human_parameter_description": "The name you want for the new sheet, like 'Q4 Report' or 'Data'. This will appear as the tab name in the workbook."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "The ID of the Excel file (drive item) to add a worksheet to.",
+            "human_parameter_name": "Excel File ID",
+            "human_parameter_description": "The file ID of the Excel workbook where you want to add the new worksheet. You can paste the ID from the file's link or use one returned by a previous step."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "description": "The ID of the drive containing the Excel file. If not provided, will attempt to use 'me' for delegated permissions.",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "The drive ID where the workbook is stored. Leave empty for user's default drive (delegated permissions) or provide the drive ID for application permissions."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers.",
+            "human_parameter_name": "Session ID",
+            "human_parameter_description": "Leave this empty unless you need to keep changes within an existing Excel session. Use the session ID from an earlier step if you want to continue that session."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_GET_RANGE",
+      "name": "Get Range",
+      "description": "Get a range from a worksheet using Microsoft Graph API.",
+      "version": "20261022_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "idempotentHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetRangeRequest",
+        "required": [
+          "item_id",
+          "worksheet_id",
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address",
+            "description": "Valid Excel range address or named range. Cell ranges: A1, A1:B2, A:A, Sheet1!A1:B2. Named ranges: must start with letter/underscore, no spaces (use underscores: Sales_Tax not Sales Tax).",
+            "human_parameter_name": "Range Address",
+            "human_parameter_description": "The cells you want to retrieve. Use Excel cell references (A1, A1:B2, A:A, Sheet1!A1:B2) or a named range (must not contain spaces - use underscores instead)."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "The ID of the Excel file (drive item) containing the worksheet.",
+            "human_parameter_name": "Item ID",
+            "human_parameter_description": "The identifier of the Excel file that contains your worksheet. You can copy this from the file's link or from a previous file search."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "description": "Optional drive ID. If provided, uses /drives/{drive_id}/items/{item_id} endpoint (required for application permissions). If not provided, uses /me/drive/items/{item_id} endpoint (for delegated permissions).",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "Optional. The ID of the drive containing the Excel file. Required when using application permissions (service-to-service auth). Leave blank when using delegated permissions (user auth)."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers.",
+            "human_parameter_name": "Session ID",
+            "human_parameter_description": "Optional. Use this if you're working within a specific Excel session to keep operations consistent. Leave blank if you're not using a session."
+          },
+          "worksheet_id": {
+            "type": "string",
+            "title": "Worksheet Id",
+            "description": "The ID or name of the worksheet (required, cannot be empty). Provide the sheet name (e.g., 'Sheet1') or its unique ID. Use the list worksheets action if you need to find available worksheet names or IDs.",
+            "human_parameter_name": "Worksheet ID",
+            "human_parameter_description": "Which sheet in the workbook you want to read from. You can provide the sheet's name (e.g., 'Sheet1') or its unique ID."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_GET_SESSION",
+      "name": "Create Excel Session",
+      "description": "Create a session for an Excel workbook using Microsoft Graph API.",
+      "version": "20261022_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateSessionRequest",
+        "required": [
+          "item_id"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "The OneDrive drive item ID of the Excel file (.xlsx). Drive-item IDs are opaque, immutable identifiers (Microsoft Graph does not document a fixed format). Get a valid item ID from the EXCEL_LIST_FILES action.",
+            "human_parameter_name": "Excel File ID",
+            "human_parameter_description": "The unique OneDrive item ID of the Excel workbook you want to create a session for. Get this from the EXCEL_LIST_FILES action."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "description": "Optional drive ID. Required for application-level permissions (s2s_oauth). If not provided, uses /me/drive endpoint for delegated auth.",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "The ID of the OneDrive or SharePoint drive containing the Excel file. Required when using application-level permissions. Leave blank if using delegated user authentication."
+          },
+          "persist_changes": {
+            "type": "boolean",
+            "title": "Persist Changes",
+            "default": true,
+            "description": "Whether changes should be persisted after the session. If false, a nonpersistent session is created.",
+            "human_parameter_name": "Persist Changes",
+            "human_parameter_description": "Choose whether edits you make in this session should be saved to the workbook. Turn this off if you want to experiment without saving changes."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_INSERT_RANGE",
+      "name": "Insert Range",
+      "description": "Tool to insert a new cell range into a worksheet, shifting existing cells down or right. Use when you need to create space for new content without overwriting.",
+      "version": "20261022_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "InsertRangeRequest",
+        "required": [
+          "item_id",
+          "worksheet_id",
+          "address",
+          "shift"
+        ],
+        "properties": {
+          "shift": {
+            "enum": [
+              "Down",
+              "Right"
+            ],
+            "type": "string",
+            "title": "Shift",
+            "examples": [
+              "Down",
+              "Right"
+            ],
+            "description": "Direction to shift cells to make space: 'Down' or 'Right'.",
+            "human_parameter_name": "Shift Direction",
+            "human_parameter_description": "Choose how to move existing cells to make room: pick 'Down' to push cells below or 'Right' to push cells to the side."
+          },
+          "address": {
+            "type": "string",
+            "title": "Address",
+            "description": "The address of the range (e.g., 'A1:B2').",
+            "human_parameter_name": "Range Address",
+            "human_parameter_description": "The cell or range address where space should be inserted, like 'A1' or 'A1:B2'. This is the starting location for the insertion."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "The ID of the Excel file (drive item) containing the worksheet.",
+            "human_parameter_name": "Excel File ID",
+            "human_parameter_description": "The unique ID of the Excel file that contains the worksheet you want to modify. You can copy this from the file's URL or from a previous file lookup."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "description": "The ID of the drive containing the Excel file. If not provided, defaults to 'me' for delegated auth or must be provided for application-only auth.",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "The drive ID where the Excel file is located. For personal OneDrive use 'me', for SharePoint provide the drive ID."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Optional workbook session ID. If provided, changes persist in that session.",
+            "human_parameter_name": "Session ID",
+            "human_parameter_description": "If you're working in a specific workbook session, paste its session ID so changes stay within that session. Leave blank if you don't use a session."
+          },
+          "worksheet_id": {
+            "type": "string",
+            "title": "Worksheet Id",
+            "description": "The ID or name of the worksheet.",
+            "human_parameter_name": "Worksheet ID or Name",
+            "human_parameter_description": "The sheet where you want to insert cells. You can provide the sheet name (like 'Sheet1') or its ID."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_LIST_FILES",
+      "name": "List Drive Files",
+      "description": "List files and folders in a drive root or specified path.",
+      "version": "20261022_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "idempotentHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListFilesRequest",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "description": "Maximum number of items to return per page (maps to $top OData query parameter).",
+            "human_parameter_name": "Max Results",
+            "human_parameter_description": "Limit the number of results returned per page. For example, enter 25 to get 25 items at a time."
+          },
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Optional folder path under root to list. E.g., 'Documents'. Must be a folder path, not a file path.",
+            "human_parameter_name": "Folder Path",
+            "human_parameter_description": "The folder inside the drive you want to list, starting from the root. For example, enter 'Documents' to list items in that folder; leave blank to list the root. Note: This must be a folder path, not a file path."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "default": "me",
+            "description": "ID of the drive (use 'me' for the user's default drive)",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "Which drive you want to browse. Use 'me' to look at your own drive, or provide a specific drive ID if browsing another drive."
+          },
+          "skip_token": {
+            "type": "string",
+            "title": "Skip Token",
+            "description": "Opaque pagination token from a previous response's next_link ($skiptoken value). Pass this to fetch the next page of results.",
+            "human_parameter_name": "Page Token",
+            "human_parameter_description": "Pagination token from a previous response to fetch the next page of results."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_LIST_TABLE_COLUMNS",
+      "name": "List Table Columns",
+      "description": "List columns in a table using Microsoft Graph API.",
+      "version": "20261022_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "idempotentHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListTableColumnsRequest",
+        "required": [
+          "item_id",
+          "table_id"
+        ],
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "minimum": 1,
+            "description": "Maximum number of items to return per page (OData $top)."
+          },
+          "skip": {
+            "type": "integer",
+            "title": "Skip",
+            "minimum": 0,
+            "description": "Number of items to skip for pagination (OData $skip)."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "The ID of the Excel file (drive item) containing the table.",
+            "human_parameter_name": "Excel File ID",
+            "human_parameter_description": "The identifier of the Excel file that contains the table you want to view. Use the file's ID from OneDrive or SharePoint, or from a previous step."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "description": "The ID of the drive containing the item. If not provided, will attempt to use 'me' for delegated auth.",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "The drive ID where the Excel file is located. Required for application permissions (s2s_oauth). Leave blank for user-delegated authentication."
+          },
+          "table_id": {
+            "type": "string",
+            "title": "Table Id",
+            "description": "The ID of the table to list columns from.",
+            "human_parameter_name": "Table ID",
+            "human_parameter_description": "The identifier of the table inside the workbook whose columns you want to list. It often looks like 'Table1' in Excel."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers.",
+            "human_parameter_name": "Session ID",
+            "human_parameter_description": "If you're already using a workbook session, provide its ID to keep operations consistent and faster. Leave this blank if you're not sure."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_LIST_TABLE_ROWS",
+      "name": "List Table Rows",
+      "description": "List rows in a table using Microsoft Graph API.",
+      "version": "20261022_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "idempotentHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListTableRowsRequest",
+        "required": [
+          "item_id",
+          "table_id"
+        ],
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "description": "Maximum number of rows to return per page (maps to $top OData query parameter). Microsoft recommends using $top and $skip for large tables.",
+            "human_parameter_name": "Max Rows",
+            "human_parameter_description": "Limit the number of rows returned. For example, enter 100 to get 100 rows at a time. Recommended for large tables."
+          },
+          "skip": {
+            "type": "integer",
+            "title": "Skip",
+            "description": "Number of rows to skip before returning results (maps to $skip OData query parameter). Use with 'top' for offset-based pagination.",
+            "human_parameter_name": "Skip Rows",
+            "human_parameter_description": "Number of rows to skip before returning results. Use with Max Rows to page through large tables (e.g., skip=100, top=100 for the second page)."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "The ID of the Excel file (drive item) containing the table.",
+            "human_parameter_name": "Excel File ID",
+            "human_parameter_description": "The Excel file that contains the table you want to read. Provide the file's ID from OneDrive or SharePoint so we know which workbook to open."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "description": "The ID of the drive containing the Excel file. If not provided, will attempt to use 'me' for delegated permissions.",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "The drive ID where the workbook is stored. Leave empty for user's default drive (delegated permissions) or provide the drive ID for application permissions."
+          },
+          "table_id": {
+            "type": "string",
+            "title": "Table Id",
+            "description": "The name or ID of the table (e.g., 'Table1', 'MyTable'). Note: this must be a valid Excel table name/ID, not a worksheet name.",
+            "human_parameter_name": "Table Name or ID",
+            "human_parameter_description": "The table inside the workbook whose rows you want to list. Provide the table's name (like 'Table1') or its unique ID. Note: This must be an actual table name/ID, not a worksheet name like 'Sheet1'. Use EXCEL_LIST_TABLES to find available table names."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers.",
+            "human_parameter_name": "Session ID",
+            "human_parameter_description": "Optional: reuse an existing workbook session to keep reads consistent with other actions. Provide the session ID if you created one earlier."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_LIST_TABLES",
+      "name": "List Tables",
+      "description": "List tables in a worksheet using Microsoft Graph API. This action retrieves information about all tables present in a specified worksheet of an Excel file. It requires the file ID and worksheet name or ID, and can optionally use a session ID for workbook operations.",
+      "version": "20261022_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "idempotentHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListTablesRequest",
+        "required": [
+          "item_id",
+          "worksheet"
+        ],
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "minimum": 1,
+            "description": "Maximum number of items to return per page (OData $top)."
+          },
+          "skip": {
+            "type": "integer",
+            "title": "Skip",
+            "minimum": 0,
+            "description": "Number of items to skip for pagination (OData $skip)."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "The ID of the Excel file (drive item) containing the worksheet.",
+            "human_parameter_name": "Excel File ID",
+            "human_parameter_description": "The unique ID of the Excel file that contains the worksheet you want to check for tables. You can get this from the file's link or from a previous file lookup step."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "description": "Optional drive ID. Required for application-level permissions (s2s_oauth). If not provided, uses /me/drive endpoint for delegated auth.",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "The ID of the OneDrive or SharePoint drive containing the Excel file. Required when using application-level permissions. Leave blank if using delegated user authentication."
+          },
+          "worksheet": {
+            "type": "string",
+            "title": "Worksheet",
+            "description": "The name or ID of the worksheet (e.g., 'Sheet1', '工作表', or '{00000000-0001-0000-0000-000000000000}'). URL encoding is handled automatically.",
+            "human_parameter_name": "Worksheet Name or ID",
+            "human_parameter_description": "The specific worksheet to search for tables, by name (e.g., 'Sheet1') or by its ID. Choose the one that contains the tables you want to list."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers.",
+            "human_parameter_name": "Session ID",
+            "human_parameter_description": "If you already opened a workbook session, paste its ID to keep this request in the same session for consistency and performance. Leave blank if you're not using sessions."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_LIST_WORKSHEETS",
+      "name": "List Worksheets",
+      "description": "List worksheets in an Excel workbook using Microsoft Graph API.",
+      "version": "20261022_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "idempotentHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListWorksheetsRequest",
+        "required": [
+          "item_id"
+        ],
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "minimum": 1,
+            "description": "Maximum number of items to return per page (OData $top)."
+          },
+          "skip": {
+            "type": "integer",
+            "title": "Skip",
+            "minimum": 0,
+            "description": "Number of items to skip for pagination (OData $skip)."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "The ID of the Excel file (drive item) to list worksheets for.",
+            "human_parameter_name": "Item ID",
+            "human_parameter_description": "The identifier of the Excel file whose worksheets you want to view. Copy the file's ID from OneDrive or use the ID returned by a previous step that listed or selected files."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "description": "The ID of the drive containing the Excel file. If not provided, will attempt to use 'me' for delegated permissions.",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "The drive ID where the workbook is stored. Leave empty for user's default drive (delegated permissions) or provide the drive ID for application permissions."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers.",
+            "human_parameter_name": "Session ID",
+            "human_parameter_description": "Use this only if you are continuing within the same Excel session as a previous step. It keeps your actions grouped together; otherwise leave it blank."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_SEARCH_FILES",
+      "name": "Search Drive Files",
+      "description": "Tool to search OneDrive drive items by query to discover Excel workbook IDs. Use when you need to find Excel files by name before performing workbook operations.",
+      "version": "20261022_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "idempotentHint",
+        "search"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchFilesRequest",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "examples": [
+              10,
+              25,
+              50
+            ],
+            "description": "Maximum number of items to return. Uses $top query parameter if supported.",
+            "human_parameter_name": "Max Results",
+            "human_parameter_description": "Limit the number of results returned. For example, enter 10 to get the first 10 matching items."
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "examples": [
+              "budget.xlsx",
+              "roster",
+              "Q1 report"
+            ],
+            "description": "Search query text to find items (e.g., filename like 'roster.xlsx' or partial name). Matches across filename, metadata, and file content.",
+            "human_parameter_name": "Search Query",
+            "human_parameter_description": "Enter the text to search for, such as a filename like 'roster.xlsx' or part of a filename. The search looks through file names, metadata, and file content."
+          },
+          "scope": {
+            "enum": [
+              "drive",
+              "root"
+            ],
+            "type": "string",
+            "title": "Scope",
+            "default": "drive",
+            "examples": [
+              "drive",
+              "root"
+            ],
+            "description": "Search scope: 'drive' searches entire drive including items shared with current user; 'root' searches within user's drive hierarchy only.",
+            "human_parameter_name": "Search Scope",
+            "human_parameter_description": "Choose where to search: 'drive' searches everywhere including files shared with you; 'root' searches only within your own drive folders."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "default": "me",
+            "examples": [
+              "me",
+              "b!drive-id"
+            ],
+            "description": "ID of the drive to search (use 'me' for the user's default drive in delegated auth, or a specific drive ID).",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "Which drive to search. Use 'me' for your own drive (delegated auth), or provide a specific drive ID."
+          },
+          "skip_token": {
+            "type": "string",
+            "title": "Skip Token",
+            "description": "Opaque pagination token from a previous response's next_link URL ($skiptoken value). Pass this to fetch the next page of search results.",
+            "human_parameter_name": "Page Token",
+            "human_parameter_description": "Pagination token from a previous search response's next_link to retrieve the next page of results."
+          },
+          "file_extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "File Extensions",
+            "examples": [
+              [
+                ".xlsx",
+                ".xlsm"
+              ],
+              [
+                ".xlsx"
+              ]
+            ],
+            "description": "Optional list of file extensions to filter results (e.g., ['.xlsx', '.xlsm']). Applied as client-side filter to results.",
+            "human_parameter_name": "File Extensions",
+            "human_parameter_description": "Optionally filter results to specific file types by providing extensions like '.xlsx' or '.xlsm'. Leave empty to see all matching files."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_UPDATE_RANGE",
+      "name": "Update Range",
+      "description": "Update a range in a worksheet using Microsoft Graph API.",
+      "version": "20261022_00",
+      "tags": [
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateRangeRequest",
+        "required": [
+          "item_id",
+          "worksheet_id",
+          "address",
+          "values"
+        ],
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "title": "Values",
+            "description": "The values to update in the range.",
+            "human_parameter_name": "Values",
+            "human_parameter_description": "The data to place into the selected cells, organized in rows and columns (e.g., [[1, 2], [3, 4]]). Make sure it matches the size of the range."
+          },
+          "address": {
+            "type": "string",
+            "title": "Address",
+            "description": "The address of the range (e.g., 'A1:B2').",
+            "human_parameter_name": "Range Address",
+            "human_parameter_description": "The cells you want to update, like A1:B2. This tells us exactly where in the sheet to write the values."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "The ID of the Excel file (drive item) containing the worksheet.",
+            "human_parameter_name": "Item ID",
+            "human_parameter_description": "The Excel file that contains the worksheet you want to edit. Use the file's Drive Item ID from OneDrive or SharePoint, or select it from a previous step."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "description": "Optional drive ID. If provided, uses /drives/{drive_id}/items/{item_id} endpoint (required for application permissions). If not provided, uses /me/drive/items/{item_id} endpoint (for delegated permissions).",
+            "human_parameter_name": "Drive ID",
+            "human_parameter_description": "Optional. The ID of the drive containing the Excel file. Required when using application permissions (service-to-service auth). Leave blank when using delegated permissions (user auth)."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Optional session ID for the workbook, obtained from the createSession API (GET_SESSION action). Must be a valid, active session ID. Leave blank if not using sessions.",
+            "human_parameter_name": "Session ID",
+            "human_parameter_description": "Keep changes within a specific workbook editing session to avoid conflicts. Obtain the session ID from the Create Excel Session action. Leave blank unless you're coordinating multiple updates within an active session."
+          },
+          "worksheet_id": {
+            "type": "string",
+            "title": "Worksheet Id",
+            "description": "The ID of the worksheet.",
+            "human_parameter_name": "Worksheet ID",
+            "human_parameter_description": "The specific sheet in the workbook where you want to update cells. Provide the worksheet's ID from the workbook or a previous step."
+          }
+        }
+      }
+    },
+    {
+      "slug": "EXCEL_WHO_AM_I",
+      "name": "Who Am I",
+      "description": "Return the identity (email, name) of the connected Excel (Microsoft) account.",
+      "version": "20261022_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "auth"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "WhoAmIRequest",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

@@ -8974,7 +8974,7 @@ test('Agent connection setup retains the complete preset catalog', async () => {
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    68,
+    76,
   );
 });
 
@@ -9294,7 +9294,7 @@ test('legacy Google access does not hide fresh Google connection presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 68);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 76);
 });
 
 test('every catalog connector opens an Agent-owned setup flow', async () => {
@@ -9315,7 +9315,15 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
           managedCatalogFixture('gong-managed', 'gong', 'Gong'),
           managedCatalogFixture('google-ads', 'googleads', 'Google Ads'),
           managedCatalogFixture('youtube-managed', 'youtube', 'YouTube'),
+          managedCatalogFixture('bitbucket-managed', 'bitbucket', 'Bitbucket'),
+          managedCatalogFixture('excel-managed', 'excel', 'Excel'),
           managedCatalogFixture('freshdesk-managed', 'freshdesk', 'Freshdesk'),
+          managedCatalogFixture('github-managed', 'github', 'GitHub'),
+          managedCatalogFixture('one-drive-managed', 'one_drive', 'OneDrive'),
+          managedCatalogFixture('outlook-managed', 'outlook', 'Outlook'),
+          managedCatalogFixture('pagerduty-managed', 'pagerduty', 'PagerDuty'),
+          managedCatalogFixture('salesforce-managed', 'salesforce', 'Salesforce'),
+          managedCatalogFixture('share-point-managed', 'share_point', 'SharePoint'),
         ],
       },
     },
@@ -9340,7 +9348,7 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 68);
+  assert.equal(presetIds.length, 76);
 });
 
 test('Agent-owned Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {

@@ -105,11 +105,18 @@ const PUBLISH = /(?:^|_)(BROADCAST|COMMENT|COMMENTS|EMAIL|EMAILS|FORWARD|INVITE|
 const ACCESS_TOKENS = new Set(words(`
   acl admin admins agent agents assignee assignees callback collaborator collaborators domain domains
   follower followers group groups guest guests member members org orgs organization organizations
-  owner owners private public responder role roles subscriber subscribers team teams user users
+  owner owners private public responder reviewer reviewers role roles subscriber subscribers team teams user users
   watcher watchers webhook webhooks
 `));
 const ACCESS_TEXT = /permission|visib|privacy|invit|selfjoin|viewall|share|membership/;
 const ACCESS_DESCRIPTION = /\b(?:permissions?|visibility|visible to|public|private|publication|publish\w*|who can|invit\w*|membership)\b/i;
+/**
+ * "Required for application-level permissions" names the caller's OAuth grant, not who can see the
+ * record. The leading word keeps "Grants delegated permissions to …" and "App permissions to grant" withheld.
+ */
+const GRANT_TYPE_PHRASE = /\b(?:for|when using|with|under|uses?)\s+(?:application|app|delegated|s2s)(?:[- ](?:level|only))?\s+(?:permissions?|auth\w*)\b/gi;
+/** A conflict option such as `replace`, or a boolean `overwrite`, lets a write replace an existing item. */
+const OVERWRITE = /^(?:overwrite|replace)$/i;
 const CONTAINER_TOKENS = new Set(words(`
   account board company folder organization parent product project space team workspace
 `));
@@ -140,6 +147,7 @@ const WITHHELD_AUDIENCE = 'puts the record under a company or product, which can
 const WITHHELD_COPY = 'copies content from another record, URL, or file';
 const WITHHELD_RECIPIENT = 'names an address a message goes to or comes from';
 const WITHHELD_IDENTITY = 'changes who the record belongs to or how a person is identified';
+const WITHHELD_OVERWRITE = 'can replace an existing item';
 
 /** A tool with both hints counts as a create. `other` is a delete, whose IDs name the record itself. */
 type WriteKind = 'create' | 'update' | 'other';
@@ -166,7 +174,11 @@ function withheldArgumentReason(
   const compact = tokens.join('');
   const description = isPlainObject(schema) && typeof schema.description === 'string' ? schema.description : '';
   if (tokens.some((token) => ACCESS_TOKENS.has(token)) || ACCESS_TEXT.test(compact) ||
-      ACCESS_DESCRIPTION.test(description)) return WITHHELD_ACCESS;
+      ACCESS_DESCRIPTION.test(description.replace(GRANT_TYPE_PHRASE, ''))) return WITHHELD_ACCESS;
+  if (tokens.includes('overwrite') ||
+      enumValues(schema).some((value) => typeof value === 'string' && OVERWRITE.test(value))) {
+    return WITHHELD_OVERWRITE;
+  }
   if ((tokens.length > 1 && tokens.at(-1) === 'source') || tokens[0]?.startsWith('file')) return WITHHELD_COPY;
   if (tokens.some((token) => RECIPIENT_TOKENS.has(token) || token.startsWith('notify')) ||
       ADDRESS_LEADING_TOKENS.has(tokens[0] ?? '') || compact.includes('replyto')) return WITHHELD_RECIPIENT;
@@ -359,8 +371,14 @@ function deriveNode(
           ? withheldArgumentReason(key, child, required.has(key), context.write)
           : undefined;
         if (withheld && !context.allow.has(childWhere)) {
-          if (required.has(key)) {
-            return { unsupported: `administrative: required argument ${childWhere} ${withheld}; keep it only through review.allowArguments and review.add` };
+          // Withholding an argument whose default overwrites would still overwrite.
+          const overwritesByDefault = withheld === WITHHELD_OVERWRITE && isPlainObject(child) &&
+            (child.default === true || (typeof child.default === 'string' && OVERWRITE.test(child.default)));
+          if (required.has(key) || overwritesByDefault) {
+            const argument = required.has(key)
+              ? `required argument ${childWhere} ${withheld}`
+              : `argument ${childWhere} ${withheld} by default`;
+            return { unsupported: `administrative: ${argument}; keep it only through review.allowArguments and review.add` };
           }
           context.withheld[childWhere] = withheld;
           continue;
@@ -714,6 +732,12 @@ function connectedAccountFields(value: unknown): string[] {
   return Array.isArray(required)
     ? required.filter(isPlainObject).map((field) => String(field.name))
     : [];
+}
+
+function enumValues(schema: unknown): unknown[] {
+  if (!isPlainObject(schema)) return [];
+  return [schema, ...(Array.isArray(schema.anyOf) ? schema.anyOf : [])]
+    .flatMap((node) => isPlainObject(node) && Array.isArray(node.enum) ? node.enum : []);
 }
 
 function withDescription<T extends ManifestInputSchema>(schema: T, description: string | undefined): T {

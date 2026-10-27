@@ -1,0 +1,677 @@
+{
+  "toolkit": "excel",
+  "version": "20261022_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Excel",
+  "description": "Find workbooks, read ranges and tables, and update cells, rows, and worksheets.",
+  "securityDescription": "Microsoft sign-in opens through Composio. Agents can find and read the Excel workbooks the connected account can reach. With write access, Agents can write cell values, insert cells, add tables, table rows, and worksheets, and open workbook sessions. Agents cannot share workbooks or change their permissions, create or upload workbook files, clear or delete ranges, rows, tables, or worksheets, or protect and unprotect sheets.",
+  "preset": {
+    "category": "data",
+    "accent": "#107C41"
+  },
+  "validationCapability": "excel.who_am_i",
+  "review": {
+    "add": [
+      "EXCEL_ADD_TABLE_ROW",
+      "EXCEL_ADD_WORKSHEET",
+      "EXCEL_GET_RANGE",
+      "EXCEL_LIST_FILES",
+      "EXCEL_LIST_TABLES",
+      "EXCEL_LIST_TABLE_ROWS",
+      "EXCEL_LIST_WORKSHEETS",
+      "EXCEL_UPDATE_RANGE"
+    ],
+    "drop": {},
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "excel.add_table",
+      "tool": "EXCEL_ADD_TABLE",
+      "toolName": "excel_add_table",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Create a new table in a worksheet using the Microsoft Graph API.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Excel: Add Table",
+      "input": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The range address for the table. If worksheet is specified, use a range like 'A1:D4'. If worksheet is omitted, include the sheet name (e.g., 'Sheet1!A1:D4')."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the Excel workbook (drive item) where the table will be created."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional drive ID. Required for application-level permissions (s2s_oauth). If not provided, uses /me/drive endpoint for delegated auth. Use EXCEL_LIST_FILES or ONE_DRIVE_GET_DRIVE_ROOT to get the drive ID."
+          },
+          "worksheet": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Worksheet name or ID. When provided, the table is created on this worksheet and the address should be a range like 'A1:D4'. When omitted, the table is created at the workbook level and the address must include the sheet name prefix (e.g., 'Sheet1!A1:D4')."
+          },
+          "hasHeaders": {
+            "type": "boolean",
+            "description": "Whether the first row of the range contains column headers (True) or not (False)."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workbook session ID controlling persistence."
+          }
+        },
+        "required": [
+          "item_id",
+          "address",
+          "hasHeaders"
+        ]
+      }
+    },
+    {
+      "id": "excel.add_table_row",
+      "tool": "EXCEL_ADD_TABLE_ROW",
+      "toolName": "excel_add_table_row",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Add a row to a table using Microsoft Graph API.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Excel: Add Table Row",
+      "input": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "The 0-based index at which to insert the row. Use null or omit to append to the end (recommended)."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 20000
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "maxItems": 100
+            },
+            "maxItems": 100,
+            "description": "A 2D array of values for the new row(s). Each inner array represents one row and MUST have the same number of elements as the table has columns. Use List Table Columns action to verify the table structure first."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the Excel file (drive item) containing the table."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive containing the Excel file. Use 'me' for the user's default OneDrive (delegated auth), or provide a specific drive ID for SharePoint sites or when using application permissions."
+          },
+          "table_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the table to add a row to."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers."
+          }
+        },
+        "required": [
+          "item_id",
+          "table_id",
+          "values"
+        ]
+      }
+    },
+    {
+      "id": "excel.add_worksheet",
+      "tool": "EXCEL_ADD_WORKSHEET",
+      "toolName": "excel_add_worksheet",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Add a new worksheet to an Excel workbook using Microsoft Graph API.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Excel: Add Worksheet",
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the new worksheet to add."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the Excel file (drive item) to add a worksheet to."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive containing the Excel file. If not provided, will attempt to use 'me' for delegated permissions."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers."
+          }
+        },
+        "required": [
+          "item_id",
+          "name"
+        ]
+      }
+    },
+    {
+      "id": "excel.get_range",
+      "tool": "EXCEL_GET_RANGE",
+      "toolName": "excel_get_range",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get a range from a worksheet using Microsoft Graph API.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Valid Excel range address or named range. Cell ranges: A1, A1:B2, A:A, Sheet1!A1:B2. Named ranges: must start with letter/underscore, no spaces (use underscores: Sales_Tax not Sales Tax)."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the Excel file (drive item) containing the worksheet."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional drive ID. If provided, uses /drives/{drive_id}/items/{item_id} endpoint (required for application permissions). If not provided, uses /me/drive/items/{item_id} endpoint (for delegated permissions)."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers."
+          },
+          "worksheet_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID or name of the worksheet (required, cannot be empty). Provide the sheet name (e.g., 'Sheet1') or its unique ID. Use the list worksheets action if you need to find available worksheet names or IDs."
+          }
+        },
+        "required": [
+          "item_id",
+          "worksheet_id",
+          "address"
+        ]
+      }
+    },
+    {
+      "id": "excel.get_session",
+      "tool": "EXCEL_GET_SESSION",
+      "toolName": "excel_get_session",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Create a session for an Excel workbook using Microsoft Graph API.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Excel: Create Excel Session",
+      "input": {
+        "type": "object",
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The OneDrive drive item ID of the Excel file (.xlsx). Drive-item IDs are opaque, immutable identifiers (Microsoft Graph does not document a fixed format). Get a valid item ID from the EXCEL_LIST_FILES action."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional drive ID. Required for application-level permissions (s2s_oauth). If not provided, uses /me/drive endpoint for delegated auth."
+          },
+          "persist_changes": {
+            "type": "boolean",
+            "description": "Whether changes should be persisted after the session. If false, a nonpersistent session is created."
+          }
+        },
+        "required": [
+          "item_id"
+        ]
+      }
+    },
+    {
+      "id": "excel.insert_range",
+      "tool": "EXCEL_INSERT_RANGE",
+      "toolName": "excel_insert_range",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to insert a new cell range into a worksheet, shifting existing cells down or right. Use when you need to create space for new content without overwriting.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Excel: Insert Range",
+      "input": {
+        "type": "object",
+        "properties": {
+          "shift": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "Down",
+              "Right"
+            ],
+            "description": "Direction to shift cells to make space: 'Down' or 'Right'."
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The address of the range (e.g., 'A1:B2')."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the Excel file (drive item) containing the worksheet."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive containing the Excel file. If not provided, defaults to 'me' for delegated auth or must be provided for application-only auth."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional workbook session ID. If provided, changes persist in that session."
+          },
+          "worksheet_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID or name of the worksheet."
+          }
+        },
+        "required": [
+          "item_id",
+          "worksheet_id",
+          "address",
+          "shift"
+        ]
+      }
+    },
+    {
+      "id": "excel.list_files",
+      "tool": "EXCEL_LIST_FILES",
+      "toolName": "excel_list_files",
+      "lane": "read",
+      "effect": "read",
+      "description": "List files and folders in a drive root or specified path.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "description": "Maximum number of items to return per page (maps to $top OData query parameter)."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional folder path under root to list. E.g., 'Documents'. Must be a folder path, not a file path."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the drive (use 'me' for the user's default drive)"
+          },
+          "skip_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque pagination token from a previous response's next_link ($skiptoken value). Pass this to fetch the next page of results."
+          }
+        }
+      }
+    },
+    {
+      "id": "excel.list_table_columns",
+      "tool": "EXCEL_LIST_TABLE_COLUMNS",
+      "toolName": "excel_list_table_columns",
+      "lane": "read",
+      "effect": "read",
+      "description": "List columns in a table using Microsoft Graph API.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of items to return per page (OData $top)."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of items to skip for pagination (OData $skip)."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the Excel file (drive item) containing the table."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive containing the item. If not provided, will attempt to use 'me' for delegated auth."
+          },
+          "table_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the table to list columns from."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers."
+          }
+        },
+        "required": [
+          "item_id",
+          "table_id"
+        ]
+      }
+    },
+    {
+      "id": "excel.list_table_rows",
+      "tool": "EXCEL_LIST_TABLE_ROWS",
+      "toolName": "excel_list_table_rows",
+      "lane": "read",
+      "effect": "read",
+      "description": "List rows in a table using Microsoft Graph API.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "description": "Maximum number of rows to return per page (maps to $top OData query parameter). Microsoft recommends using $top and $skip for large tables."
+          },
+          "skip": {
+            "type": "integer",
+            "description": "Number of rows to skip before returning results (maps to $skip OData query parameter). Use with 'top' for offset-based pagination."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the Excel file (drive item) containing the table."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive containing the Excel file. If not provided, will attempt to use 'me' for delegated permissions."
+          },
+          "table_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name or ID of the table (e.g., 'Table1', 'MyTable'). Note: this must be a valid Excel table name/ID, not a worksheet name."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers."
+          }
+        },
+        "required": [
+          "item_id",
+          "table_id"
+        ]
+      }
+    },
+    {
+      "id": "excel.list_tables",
+      "tool": "EXCEL_LIST_TABLES",
+      "toolName": "excel_list_tables",
+      "lane": "read",
+      "effect": "read",
+      "description": "List tables in a worksheet using Microsoft Graph API. This action retrieves information about all tables present in a specified worksheet of an Excel file. It requires the file ID and worksheet name or ID, and can optionally use a session ID for workbook operations.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of items to return per page (OData $top)."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of items to skip for pagination (OData $skip)."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the Excel file (drive item) containing the worksheet."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional drive ID. Required for application-level permissions (s2s_oauth). If not provided, uses /me/drive endpoint for delegated auth."
+          },
+          "worksheet": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name or ID of the worksheet (e.g., 'Sheet1', '工作表', or '{00000000-0001-0000-0000-000000000000}'). URL encoding is handled automatically."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers."
+          }
+        },
+        "required": [
+          "item_id",
+          "worksheet"
+        ]
+      }
+    },
+    {
+      "id": "excel.list_worksheets",
+      "tool": "EXCEL_LIST_WORKSHEETS",
+      "toolName": "excel_list_worksheets",
+      "lane": "read",
+      "effect": "read",
+      "description": "List worksheets in an Excel workbook using Microsoft Graph API.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of items to return per page (OData $top)."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of items to skip for pagination (OData $skip)."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the Excel file (drive item) to list worksheets for."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive containing the Excel file. If not provided, will attempt to use 'me' for delegated permissions."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional session ID for the workbook. If provided, will be sent in the headers."
+          }
+        },
+        "required": [
+          "item_id"
+        ]
+      }
+    },
+    {
+      "id": "excel.search_files",
+      "tool": "EXCEL_SEARCH_FILES",
+      "toolName": "excel_search_files",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search OneDrive drive items by query to discover Excel workbook IDs. Use when you need to find Excel files by name before performing workbook operations.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "description": "Maximum number of items to return. Uses $top query parameter if supported."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search query text to find items (e.g., filename like 'roster.xlsx' or partial name). Matches across filename, metadata, and file content."
+          },
+          "scope": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "drive",
+              "root"
+            ],
+            "description": "Search scope: 'drive' searches entire drive including items shared with current user; 'root' searches within user's drive hierarchy only."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the drive to search (use 'me' for the user's default drive in delegated auth, or a specific drive ID)."
+          },
+          "skip_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque pagination token from a previous response's next_link URL ($skiptoken value). Pass this to fetch the next page of search results."
+          },
+          "file_extensions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional list of file extensions to filter results (e.g., ['.xlsx', '.xlsm']). Applied as client-side filter to results."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "id": "excel.update_range",
+      "tool": "EXCEL_UPDATE_RANGE",
+      "toolName": "excel_update_range",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Update a range in a worksheet using Microsoft Graph API.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Excel: Update Range",
+      "input": {
+        "type": "object",
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 20000
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "maxItems": 100
+            },
+            "maxItems": 100,
+            "description": "The values to update in the range."
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The address of the range (e.g., 'A1:B2')."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the Excel file (drive item) containing the worksheet."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional drive ID. If provided, uses /drives/{drive_id}/items/{item_id} endpoint (required for application permissions). If not provided, uses /me/drive/items/{item_id} endpoint (for delegated permissions)."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional session ID for the workbook, obtained from the createSession API (GET_SESSION action). Must be a valid, active session ID. Leave blank if not using sessions."
+          },
+          "worksheet_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the worksheet."
+          }
+        },
+        "required": [
+          "item_id",
+          "worksheet_id",
+          "address",
+          "values"
+        ]
+      }
+    },
+    {
+      "id": "excel.who_am_i",
+      "tool": "EXCEL_WHO_AM_I",
+      "toolName": "excel_who_am_i",
+      "lane": "read",
+      "effect": "read",
+      "description": "Return the identity (email, name) of the connected Excel (Microsoft) account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

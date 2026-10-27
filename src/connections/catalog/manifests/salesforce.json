@@ -1,0 +1,1828 @@
+{
+  "toolkit": "salesforce",
+  "version": "20261026_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Salesforce",
+  "description": "Search and query CRM records, and create or update accounts, contacts, leads, opportunities, campaigns, tasks, and notes.",
+  "securityDescription": "Salesforce sign-in opens through Composio, which asks for the org's My Domain. Agents can read the records the connected user can reach and run SOQL queries. With write access, Agents can create and update accounts, contacts, leads, opportunities, campaigns, and tasks, and add notes. A new contact or lead can carry an email address. Agents cannot change a record's owner, an existing person's email or phone, or a parent or account link, send email, delete records, run bulk or composite requests, upload files, run Apex tests, or create custom objects, fields, flows, or validation rules.",
+  "preset": {
+    "category": "business",
+    "accent": "#00A1E0"
+  },
+  "validationCapability": "salesforce.who_am_i",
+  "review": {
+    "add": [
+      "SALESFORCE_CREATE_CONTACT",
+      "SALESFORCE_CREATE_LEAD",
+      "SALESFORCE_CREATE_NOTE",
+      "SALESFORCE_CREATE_TASK",
+      "SALESFORCE_SEARCH_ACCOUNTS",
+      "SALESFORCE_SEARCH_CONTACTS",
+      "SALESFORCE_SEARCH_LEADS",
+      "SALESFORCE_SEARCH_OPPORTUNITIES",
+      "SALESFORCE_SEARCH_TASKS",
+      "SALESFORCE_UPDATE_TASK"
+    ],
+    "drop": {
+      "SALESFORCE_CREATE_CUSTOM_FIELD": "Changes org metadata for every user.",
+      "SALESFORCE_CREATE_CUSTOM_OBJECT": "Changes org metadata for every user.",
+      "SALESFORCE_CREATE_TOOLING_FLOW": "Creates automation that can act on records and send email without an Agent call.",
+      "SALESFORCE_CREATE_VALIDATION_RULE": "Changes org metadata and can block other users from saving records.",
+      "SALESFORCE_GET_COMPOSITE_RESOURCES": "Lists composite API endpoints, which no capability here can call.",
+      "SALESFORCE_RUN_TESTS_ASYNCHRONOUS": "Runs Apex code in the org.",
+      "SALESFORCE_RUN_TESTS_SYNCHRONOUS": "Runs Apex code in the org.",
+      "SALESFORCE_UPLOAD_FILE": "file and filename are withheld, so the tool cannot upload anything."
+    },
+    "allowArguments": {
+      "SALESFORCE_CREATE_CONTACT": [
+        "email"
+      ],
+      "SALESFORCE_CREATE_LEAD": [
+        "Email"
+      ]
+    }
+  },
+  "capabilities": [
+    {
+      "id": "salesforce.create_account",
+      "tool": "SALESFORCE_CREATE_ACCOUNT",
+      "toolName": "salesforce_create_account",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new account in Salesforce with the specified information. Returns the created Account's ID at `data.response_data.id`.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Create account",
+      "withheldArguments": {
+        "custom_fields": "unsupported schema",
+        "account_source": "copies content from another record, URL, or file"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "fax": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fax number."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Account name (required field in Salesforce)."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Type of account."
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Main phone number."
+          },
+          "website": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Company website URL."
+          },
+          "industry": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Industry the account belongs to."
+          },
+          "sic_desc": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Standard Industrial Classification (SIC) description."
+          },
+          "parent_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the parent account if this is a subsidiary. Must be a valid Salesforce Account Id (15- or 18-character)."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Text description of the account."
+          },
+          "billing_city": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Billing address city."
+          },
+          "billing_state": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Billing address state/province. For US/Canada addresses, use full state/province names (e.g., 'California', 'New York', 'Ontario') or abbreviations ('CA', 'NY') which are auto-converted. For other countries, leave empty unless you know the exact valid picklist value for your Salesforce org. WARNING: If State/Country Picklists are enabled in your org, only pre-configured values are accepted; arbitrary region names will be rejected with FIELD_INTEGRITY_EXCEPTION."
+          },
+          "shipping_city": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Shipping address city."
+          },
+          "annual_revenue": {
+            "type": "number",
+            "description": "Estimated annual revenue."
+          },
+          "billing_street": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Billing address street."
+          },
+          "shipping_state": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Shipping address state/province. For US/Canada addresses, use full state/province names (e.g., 'California', 'New York', 'Ontario') or abbreviations ('CA', 'NY') which are auto-converted. For other countries, leave empty unless you know the exact valid picklist value for your Salesforce org. WARNING: If State/Country Picklists are enabled in your org, only pre-configured values are accepted; arbitrary region names will be rejected with FIELD_INTEGRITY_EXCEPTION."
+          },
+          "billing_country": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Billing address country."
+          },
+          "shipping_street": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Shipping address street."
+          },
+          "shipping_country": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Shipping address country."
+          },
+          "billing_postal_code": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Billing address postal/zip code."
+          },
+          "number_of_employees": {
+            "type": "integer",
+            "description": "Number of employees."
+          },
+          "shipping_postal_code": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Shipping address postal/zip code."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.create_campaign",
+      "tool": "SALESFORCE_CREATE_CAMPAIGN",
+      "toolName": "salesforce_create_campaign",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new campaign in Salesforce. Only `name` is universally required, but org-level validation rules commonly enforce `type`, `status`, `start_date`, and `end_date` as well — omitting them may cause creation to fail.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Create campaign",
+      "withheldArguments": {
+        "custom_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Campaign name (required field in Salesforce)."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Type of campaign."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Current status of the campaign."
+          },
+          "end_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Campaign end date in YYYY-MM-DD format."
+          },
+          "is_active": {
+            "type": "boolean",
+            "description": "Whether the campaign is currently active. Depending on org configuration, setting to `true` may require valid `start_date`/`end_date` ranges; violations raise a non-retriable `CANNOT_INSERT_UPDATE_ACTIVATE_ENTITY` error."
+          },
+          "parent_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the parent campaign if this is a child campaign."
+          },
+          "start_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Campaign start date in YYYY-MM-DD format."
+          },
+          "actual_cost": {
+            "type": "number",
+            "description": "Actual cost spent on the campaign."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Detailed description of the campaign."
+          },
+          "number_sent": {
+            "type": "number",
+            "description": "Number of individuals targeted by the campaign."
+          },
+          "budgeted_cost": {
+            "type": "number",
+            "description": "Budgeted cost for the campaign."
+          },
+          "expected_revenue": {
+            "type": "number",
+            "description": "Expected revenue from the campaign."
+          },
+          "expected_response": {
+            "type": "number",
+            "description": "Expected response rate as a percentage."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.create_contact",
+      "tool": "SALESFORCE_CREATE_CONTACT",
+      "toolName": "salesforce_create_contact",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Creates a new contact in Salesforce with the specified information. Writes to live CRM data — obtain explicit user confirmation before executing. Failures may reflect org-specific validation rules, permission restrictions, or duplicate rules rather than invalid inputs.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Create contact",
+      "withheldArguments": {
+        "lead_source": "copies content from another record, URL, or file",
+        "custom_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's email address."
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's primary phone number."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's job title."
+          },
+          "birthdate": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's birthdate in YYYY-MM-DD format."
+          },
+          "last_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's last name (required field in Salesforce)."
+          },
+          "account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the Account this contact is associated with."
+          },
+          "department": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's department."
+          },
+          "first_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's first name."
+          },
+          "mailing_city": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's mailing city."
+          },
+          "mobile_phone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's mobile phone number."
+          },
+          "mailing_state": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's mailing state/province."
+          },
+          "mailing_street": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's mailing street address."
+          },
+          "mailing_country": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's mailing country."
+          },
+          "mailing_postal_code": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Contact's mailing postal/zip code."
+          }
+        },
+        "required": [
+          "last_name"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.create_lead",
+      "tool": "SALESFORCE_CREATE_LEAD",
+      "toolName": "salesforce_create_lead",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Creates a new lead in Salesforce. `LastName` and `Company` are required. Org-level validation rules (e.g., email format, custom required fields) may reject requests beyond these; inspect the error response body for the failing field. The created lead `id` is returned in a response wrapper, not at the top level.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Create lead",
+      "withheldArguments": {
+        "LeadSource": "copies content from another record, URL, or file",
+        "CustomFields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "City": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead's city."
+          },
+          "Email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead's email address."
+          },
+          "Phone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead's phone number."
+          },
+          "State": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead's state/province."
+          },
+          "Title": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Lead's job title. Maximum length is 128 characters."
+          },
+          "Rating": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead rating."
+          },
+          "Status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead status."
+          },
+          "Street": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead's street address."
+          },
+          "Company": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead's company name. Required - must be provided to create a lead."
+          },
+          "Country": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead's country."
+          },
+          "Website": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead's company website."
+          },
+          "Industry": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead's industry."
+          },
+          "LastName": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead's last name. Required - must be provided to create a lead."
+          },
+          "FirstName": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead's first name."
+          },
+          "PostalCode": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lead's postal/zip code."
+          },
+          "AnnualRevenue": {
+            "type": "number",
+            "description": "Lead's company annual revenue."
+          },
+          "allow_duplicates": {
+            "type": "boolean",
+            "description": "When True, allows creating duplicate leads even if Salesforce duplicate detection rules are triggered. When False (default), creation fails if duplicates are detected and returns duplicate information in the response."
+          },
+          "NumberOfEmployees": {
+            "type": "integer",
+            "description": "Number of employees at lead's company."
+          }
+        },
+        "required": [
+          "LastName",
+          "Company"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.create_note",
+      "tool": "SALESFORCE_CREATE_NOTE",
+      "toolName": "salesforce_create_note",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new note attached to a Salesforce record with the specified title and content. Does not deduplicate — identical calls create duplicate notes. High-volume creation can trigger REQUEST_LIMIT_EXCEEDED; apply exponential backoff on retries.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Create note",
+      "withheldArguments": {
+        "owner_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "is_private": "changes sharing, visibility, permissions, membership, or who acts",
+        "custom_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Body/content of the note. Can contain detailed text information."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Title of the note (required field in Salesforce)."
+          },
+          "parent_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the record to attach the note to (required field in Salesforce). Can be any record that supports notes like Account, Contact, Lead, Opportunity, etc."
+          }
+        },
+        "required": [
+          "parent_id",
+          "title"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.create_opportunity",
+      "tool": "SALESFORCE_CREATE_OPPORTUNITY",
+      "toolName": "salesforce_create_opportunity",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new opportunity in Salesforce with the specified information.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Create opportunity",
+      "withheldArguments": {
+        "lead_source": "copies content from another record, URL, or file",
+        "custom_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opportunity name (required field in Salesforce)."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Type of opportunity."
+          },
+          "amount": {
+            "type": "number",
+            "description": "Estimated total sale amount."
+          },
+          "next_step": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Description of next step in sales process."
+          },
+          "account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the Account this opportunity is associated with. Omitting leaves the opportunity orphaned and excluded from account-based reports."
+          },
+          "close_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Expected close date in YYYY-MM-DD format (required field in Salesforce)."
+          },
+          "contact_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Deprecated: Salesforce Opportunity does not have a writable ContactId field. Contact-to-Opportunity associations must be managed through OpportunityContactRole. This parameter is accepted but ignored."
+          },
+          "stage_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Current stage of the opportunity (required field in Salesforce)."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Text description of the opportunity."
+          },
+          "probability": {
+            "type": "number",
+            "description": "Percentage probability of closing (0-100)."
+          },
+          "pricebook2_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the price book for this opportunity."
+          }
+        },
+        "required": [
+          "name",
+          "close_date",
+          "stage_name"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.create_task",
+      "tool": "SALESFORCE_CREATE_TASK",
+      "toolName": "salesforce_create_task",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new task in Salesforce to track activities, to-dos, and follow-ups related to contacts, leads, or other records. Ensure who_id, what_id, and owner_id reference existing records before calling; invalid IDs cause silent linkage failures or validation errors.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Create task",
+      "withheldArguments": {
+        "owner_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "custom_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Status of the task. Must be a valid picklist value; arbitrary strings trigger validation errors."
+          },
+          "who_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the Contact or Lead this task is associated with. Only accepts Contact IDs (prefix '003') or Lead IDs (prefix '00Q'). Do NOT use Account/Opportunity/Case IDs here; use what_id for those. Swapping who_id and what_id creates orphaned tasks that won't appear on contact/lead timelines. Accepts only a single ID; create separate task records for multiple contacts."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Subject/title of the task."
+          },
+          "what_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the related record (Account, Opportunity, Case, etc.) this task is associated with. Accepts Account IDs (prefix '001'), Opportunity IDs (prefix '006'), Case IDs (prefix '500'), and other business object IDs."
+          },
+          "priority": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Priority level of the task."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Detailed description or notes for the task."
+          },
+          "activity_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Due date for the task in YYYY-MM-DD format. Do not use full datetimes or natural-language strings like 'yesterday'; only YYYY-MM-DD is accepted."
+          },
+          "is_reminder_set": {
+            "type": "boolean",
+            "description": "Whether to set a reminder for this task."
+          },
+          "reminder_date_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Date and time for the reminder in ISO format (YYYY-MM-DDTHH:MM:SS). Required if is_reminder_set is true. Interpreted according to org/user timezone, not UTC."
+          },
+          "composio_execution_message": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Internal field used to communicate processing details."
+          }
+        },
+        "required": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.get_a_batch_of_records",
+      "tool": "SALESFORCE_GET_A_BATCH_OF_RECORDS",
+      "toolName": "salesforce_get_a_batch_of_records",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve multiple Salesforce records in a single request with customizable field selection. Use when you need to fetch data for multiple records at once (up to 200 records).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of qualified field names to retrieve. Format: ObjectApiName.FieldName (e.g., 'Account.Name,Account.Phone'). If the user doesn't have access to a field, an error occurs. Either fields or optionalFields must be provided."
+          },
+          "record_ids": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of record IDs to retrieve. All record IDs must be from supported objects. Maximum 200 records per request."
+          },
+          "optional_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of qualified optional field names. Format: ObjectApiName.FieldName (e.g., 'Account.AnnualRevenue'). If the user doesn't have access to an optional field, it's excluded from the response without error. Can be used with fields parameter. Either fields or optionalFields must be provided."
+          }
+        },
+        "required": [
+          "record_ids"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.get_account",
+      "tool": "SALESFORCE_GET_ACCOUNT",
+      "toolName": "salesforce_get_account",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific account by ID from Salesforce, returning all available fields.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Salesforce ID of the account to retrieve."
+          }
+        },
+        "required": [
+          "account_id"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.get_all_fields_for_object",
+      "tool": "SALESFORCE_GET_ALL_FIELDS_FOR_OBJECT",
+      "toolName": "salesforce_get_all_fields_for_object",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all fields (standard and custom) for a Salesforce object with complete metadata including field types, constraints, picklist values, and relationships.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "object_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "API name of the Salesforce object to describe. Use standard object names (Account, Contact, Lead, Opportunity) or custom object API names ending in __c."
+          }
+        },
+        "required": [
+          "object_name"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.get_campaign",
+      "tool": "SALESFORCE_GET_CAMPAIGN",
+      "toolName": "salesforce_get_campaign",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific campaign by ID from Salesforce, returning all available fields.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Salesforce ID of the campaign to retrieve."
+          }
+        },
+        "required": [
+          "campaign_id"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.get_composite_sobjects",
+      "tool": "SALESFORCE_GET_COMPOSITE_SOBJECTS",
+      "toolName": "salesforce_get_composite_sobjects",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves multiple records of the same object type by IDs with a request body. Use when you need to retrieve more records than URL length limits allow (up to 2000 records vs ~800 via GET).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Array of record IDs to retrieve. Maximum 2000 IDs per request."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Array of field names to retrieve for each record. Specifies which fields to return in the response."
+          },
+          "sobject_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The sObject type name (e.g., 'Account', 'Contact', 'Lead', 'Opportunity'). This specifies which type of records to retrieve."
+          }
+        },
+        "required": [
+          "sobject_name",
+          "ids",
+          "fields"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.get_contact",
+      "tool": "SALESFORCE_GET_CONTACT",
+      "toolName": "salesforce_get_contact",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific contact by ID from Salesforce, returning all available fields.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-delimited string of Contact field API names to retrieve. If omitted, all fields are returned."
+          },
+          "contact_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Salesforce ID of the contact to retrieve. Must be a valid 18-character Salesforce ID; names or emails are not valid substitutes."
+          }
+        },
+        "required": [
+          "contact_id"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.get_file_content",
+      "tool": "SALESFORCE_GET_FILE_CONTENT",
+      "toolName": "salesforce_get_file_content",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns the binary content of a Salesforce file, including references to external files. Use when you need to download or retrieve the actual file data from Salesforce.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The 18-character Salesforce ID of the ContentDocument or ContentVersion file to retrieve."
+          },
+          "version_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies a particular version of the file to retrieve. If not specified, returns the latest version."
+          },
+          "rendition_type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the type of file rendition to return. Available values: THUMB120BY90, THUMB240BY180, THUMB720BY480, SVGZ, ORIGINAL_<File_Extension>."
+          }
+        },
+        "required": [
+          "file_id"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.get_lead",
+      "tool": "SALESFORCE_GET_LEAD",
+      "toolName": "salesforce_get_lead",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific lead by ID from Salesforce, returning all available fields.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "lead_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Salesforce ID of the lead to retrieve. Must be a Salesforce record ID (18-char format like '00QWd000005V3RmMAK'); names, emails, or external codes are not accepted — resolve to a Salesforce ID first using a search or query tool."
+          }
+        },
+        "required": [
+          "lead_id"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.get_list_view_metadata_batch",
+      "tool": "SALESFORCE_GET_LIST_VIEW_METADATA_BATCH",
+      "toolName": "salesforce_get_list_view_metadata_batch",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve metadata for multiple list views in a single batch request. Use when you need to get list view configuration, columns, filters, and sorting for multiple list views at once.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "list_view_ids": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of list view IDs to retrieve metadata for. Use the 18-character Salesforce list view IDs."
+          }
+        },
+        "required": [
+          "list_view_ids"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.get_opportunity",
+      "tool": "SALESFORCE_GET_OPPORTUNITY",
+      "toolName": "salesforce_get_opportunity",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific opportunity by ID from Salesforce, returning all available fields.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-delimited string of Opportunity field API names to retrieve. If omitted, all fields are returned. Custom objects may use non-standard API names for common fields (e.g., primary contact); verify exact field API names and handle null values."
+          },
+          "opportunity_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Salesforce ID of the opportunity to retrieve. Must be a valid 15 or 18 character alphanumeric Salesforce ID (e.g., '006Wd000005FG3CIAW'). When multiple similarly named opportunities exist in search results, confirm the correct record by `Id` or other key attributes before passing the ID here."
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.get_org_limits",
+      "tool": "SALESFORCE_GET_ORG_LIMITS",
+      "toolName": "salesforce_get_org_limits",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve organization limits with max and remaining allocations. Use when you need to check API usage, storage limits, or other resource consumption in Salesforce.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request model for retrieving organization limits. No parameters required."
+      }
+    },
+    {
+      "id": "salesforce.get_related_list_preferences_batch",
+      "tool": "SALESFORCE_GET_RELATED_LIST_PREFERENCES_BATCH",
+      "toolName": "salesforce_get_related_list_preferences_batch",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get a batch of related list user preferences from Salesforce. Use when retrieving display preferences, column widths, or sort orders for multiple related lists simultaneously.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "related_list_ids": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of related list IDs. Each ID follows the format 'objectApiName.relatedListId' (e.g., 'Account.Contacts,Account.Opportunities')."
+          }
+        },
+        "required": [
+          "related_list_ids"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.run_soql_query",
+      "tool": "SALESFORCE_RUN_SOQL_QUERY",
+      "toolName": "salesforce_run_soql_query",
+      "lane": "read",
+      "effect": "read",
+      "description": "Executes a SOQL query against Salesforce data. Returns records matching the query with pagination support.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "SOQL query to execute. Must start with SELECT. Field names must match object schema exactly — use SALESFORCE_GET_ALL_FIELDS_FOR_OBJECT for unfamiliar objects. ALIASES: No 'AS' keyword (use 'SUM(Amount) TotalSales' NOT 'SUM(Amount) AS TotalSales'). AGGREGATES: Without GROUP BY, ORDER BY/LIMIT not allowed (single-row result). COUNT() SYNTAX: Bare COUNT() only valid alone. With GROUP BY or other fields, must specify field: COUNT(Id) or COUNT(fieldName)."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.search_accounts",
+      "tool": "SALESFORCE_SEARCH_ACCOUNTS",
+      "toolName": "salesforce_search_accounts",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search for Salesforce accounts using criteria like name, industry, type, location, or contact information. Always provide at least one filter parameter; omitting all filters returns a broad, slow listing. Owner/territory filtering is unsupported — use SALESFORCE_RUN_SOQL_QUERY for ownership-based filters. Use SALESFORCE_GET_ACCOUNT to fetch complete field data for a specific record. Unsupported filter fields may be silently ignored — verify results reflect intended criteria.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by account name. Supports partial matches."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by account type. Note: The Type field may not exist in all Salesforce orgs. If the query fails with 'No such column Type', either omit this parameter or use a custom Type__c field if available in your org."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000,
+            "description": "Maximum number of accounts to return. Results are hard-capped at approximately 2000 rows; use more selective filters if the full dataset exceeds this."
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by phone number. Supports partial matches. Requires field-level security access to the Phone field."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of valid Salesforce Account field API names to retrieve. Only use actual field names like Id, Name, Industry, etc. Do not include type annotations or placeholders like <string> or <DATE_TIME>. If any field in this list is restricted by field-level security, the entire request will fail — use a minimal set of standard fields (e.g., Id,Name,Website) when access is uncertain."
+          },
+          "website": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by website. Supports partial matches."
+          },
+          "industry": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by industry."
+          },
+          "billing_city": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by billing city. Supports partial matches."
+          },
+          "billing_state": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by billing state/province. Supports partial matches."
+          },
+          "billing_country": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by billing country. Supports partial matches."
+          }
+        }
+      }
+    },
+    {
+      "id": "salesforce.search_contacts",
+      "tool": "SALESFORCE_SEARCH_CONTACTS",
+      "toolName": "salesforce_search_contacts",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search Salesforce Contact records (not Leads — use SALESFORCE_SEARCH_LEADS for those) using name, email, phone, account, or title. All parameters support partial/fuzzy matching, so results may include unrelated records; post-filter client-side for exact matches. Partial matches and common names can return multiple contacts — always confirm the correct contact by its 18-character Id before passing to write operations like SALESFORCE_LOG_CALL or SALESFORCE_CREATE_TASK. A response with totalSize=0 is a valid 'not found' outcome. Provide at least one search criterion; omitting all returns a broad, slow result set. Returned Ids are 18-character strings and must be used as-is in downstream tools.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by contact name (first name, last name, or full name). Supports partial matches."
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by email address. Supports partial matches."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000,
+            "description": "Maximum number of contacts to return. Maximum allowed is 2000; when totalSize exceeds limit, paginate to retrieve full results."
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by phone number. Supports partial matches."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by job title. Supports partial matches."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of Contact fields to retrieve. Custom and non-default fields are excluded unless explicitly listed here."
+          },
+          "account_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by associated account name. Supports partial matches."
+          }
+        }
+      }
+    },
+    {
+      "id": "salesforce.search_leads",
+      "tool": "SALESFORCE_SEARCH_LEADS",
+      "toolName": "salesforce_search_leads",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search for Salesforce leads using criteria like name, email, phone, company, title, status, or lead source. At least one search criterion should be provided — omitting all parameters results in a broad, slow listing of arbitrary records. Partial matches on name, email, and company may return multiple candidates; confirm Email or Company field values before using a lead ID in downstream operations.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by lead name (first name, last name, or full name). Supports partial matches."
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by email address. Supports partial matches."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000,
+            "description": "Maximum number of leads to return. Maximum cap is 2000; for result sets beyond 2000, use SALESFORCE_RUN_SOQL_QUERY with pagination via nextRecordsUrl."
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by phone number. Supports partial matches."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by job title. Supports partial matches."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of Lead fields to retrieve."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by lead status."
+          },
+          "company": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by company name. Supports partial matches."
+          },
+          "lead_source": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by lead source."
+          }
+        }
+      }
+    },
+    {
+      "id": "salesforce.search_opportunities",
+      "tool": "SALESFORCE_SEARCH_OPPORTUNITIES",
+      "toolName": "salesforce_search_opportunities",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search for Salesforce opportunities using multiple criteria like name, account, stage, amount, close date, or status. Apply at least one filter to avoid broad result sets. Partial-match searches may return multiple similar records; verify the correct record by Id before downstream use.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by opportunity name. Supports partial matches."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000,
+            "description": "Maximum number of opportunities to return. Maximum value is 2000. When totalSize in the response exceeds limit, use nextRecordsUrl to paginate through the full dataset."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of Opportunity fields to retrieve. Supports direct Opportunity fields (e.g., Id, Name, Amount) and parent relationship fields (e.g., Account.Name, Owner.Name). Note: Contact.* fields (Contact.Name, Contact.Email, etc.) are NOT valid because Opportunity does not have a direct parent relationship to Contact; use OpportunityContactRole queries to get contact information."
+          },
+          "is_won": {
+            "type": "boolean",
+            "description": "Filter by won status. True for won opportunities, False for lost (only applies to closed opportunities)."
+          },
+          "is_closed": {
+            "type": "boolean",
+            "description": "Filter by closed status. True for closed opportunities, False for open."
+          },
+          "amount_max": {
+            "type": "number",
+            "description": "Maximum opportunity amount."
+          },
+          "amount_min": {
+            "type": "number",
+            "description": "Minimum opportunity amount."
+          },
+          "stage_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by opportunity stage."
+          },
+          "lead_source": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by lead source."
+          },
+          "account_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by associated account name. Supports partial matches."
+          },
+          "close_date_to": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search opportunities with close date before this date (YYYY-MM-DD)."
+          },
+          "close_date_from": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search opportunities with close date from this date (YYYY-MM-DD). When computing relative ranges (e.g., 'this week'), derive dates using the user's local timezone to avoid off-by-one-day errors."
+          }
+        }
+      }
+    },
+    {
+      "id": "salesforce.search_tasks",
+      "tool": "SALESFORCE_SEARCH_TASKS",
+      "toolName": "salesforce_search_tasks",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search for Salesforce tasks using multiple criteria like subject, status, priority, assigned user, related records, or dates. Always provide at least one filter criterion — no filters produces broad, slow results. For complex filtering not supported here, use SALESFORCE_RUN_SOQL_QUERY.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000,
+            "description": "Maximum number of tasks to return. Maximum is 2000. When returned record count equals limit or nextRecordsUrl is present in the response, paginate to retrieve all matching tasks."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of Task fields to retrieve. WhoId/Who.Name, WhatId/What.Name, OwnerId/Owner.Name, and Description can be null on Task records — guard against null before accessing nested .Name fields. Call-specific fields (CallType, CallDurationInSeconds) are frequently null and unreliable as sole filters."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by task status."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by task subject. Supports partial matches. Many Tasks are system-generated or email-related; combine with activity_date_from/activity_date_to, status, and priority for better precision."
+          },
+          "priority": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by task priority."
+          },
+          "is_closed": {
+            "type": "boolean",
+            "description": "Filter by closed status. True for completed tasks, False for open tasks."
+          },
+          "account_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by related account name. Supports partial matches."
+          },
+          "contact_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by related contact name. Supports partial matches."
+          },
+          "activity_date_to": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search tasks with activity date before this date (YYYY-MM-DD)."
+          },
+          "assigned_to_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search by assigned user name. Supports partial matches."
+          },
+          "activity_date_from": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search tasks with activity date from this date (YYYY-MM-DD). Date filtering may not strictly bound results; verify ActivityDate in returned records when date accuracy matters."
+          }
+        }
+      }
+    },
+    {
+      "id": "salesforce.update_account",
+      "tool": "SALESFORCE_UPDATE_ACCOUNT",
+      "toolName": "salesforce_update_account",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing account in Salesforce with the specified changes. Only provided fields will be updated.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Update account",
+      "withheldArguments": {
+        "phone": "changes who the record belongs to or how a person is identified",
+        "parent_id": "moves the record to another container",
+        "custom_fields": "unsupported schema",
+        "account_source": "copies content from another record, URL, or file"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "fax": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated fax number. Leave empty to keep unchanged."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated account name. Leave empty to keep unchanged."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated account type. Leave empty to keep unchanged."
+          },
+          "website": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated website URL. Leave empty to keep unchanged."
+          },
+          "industry": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated industry. Leave empty to keep unchanged."
+          },
+          "sic_desc": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated SIC description. Leave empty to keep unchanged."
+          },
+          "account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Salesforce ID of the account to update."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated description. Leave empty to keep unchanged."
+          },
+          "billing_city": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated billing city. Leave empty to keep unchanged."
+          },
+          "billing_state": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated billing state. Leave empty to keep unchanged. If your org has State and Country/Territory picklists enabled, provide the exact picklist value (e.g., 'California' instead of 'CA')."
+          },
+          "shipping_city": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated shipping city. Leave empty to keep unchanged."
+          },
+          "annual_revenue": {
+            "type": "number",
+            "description": "Updated annual revenue. Leave empty to keep unchanged."
+          },
+          "billing_street": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated billing street. Leave empty to keep unchanged."
+          },
+          "shipping_state": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated shipping state. Leave empty to keep unchanged."
+          },
+          "billing_country": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated billing country. Leave empty to keep unchanged. If your org has State and Country/Territory picklists enabled, provide the exact picklist value (e.g., 'United States' instead of 'USA')."
+          },
+          "shipping_street": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated shipping street. Leave empty to keep unchanged."
+          },
+          "shipping_country": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated shipping country. Leave empty to keep unchanged."
+          },
+          "billing_postal_code": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated billing postal code. Leave empty to keep unchanged."
+          },
+          "number_of_employees": {
+            "type": "integer",
+            "description": "Updated number of employees. Leave empty to keep unchanged."
+          },
+          "shipping_postal_code": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated shipping postal code. Leave empty to keep unchanged."
+          }
+        },
+        "required": [
+          "account_id"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.update_campaign",
+      "tool": "SALESFORCE_UPDATE_CAMPAIGN",
+      "toolName": "salesforce_update_campaign",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing campaign in Salesforce with the specified changes. Only provided fields will be updated.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Update campaign",
+      "withheldArguments": {
+        "parent_id": "moves the record to another container",
+        "custom_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated campaign name. Leave empty to keep unchanged."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated campaign type. Leave empty to keep unchanged."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated campaign status. Leave empty to keep unchanged."
+          },
+          "end_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated end date in YYYY-MM-DD format. Leave empty to keep unchanged."
+          },
+          "is_active": {
+            "type": "boolean",
+            "description": "Updated active status. Leave as None to keep unchanged."
+          },
+          "start_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated start date in YYYY-MM-DD format. Leave empty to keep unchanged."
+          },
+          "actual_cost": {
+            "type": "number",
+            "description": "Updated actual cost. Leave unset to keep unchanged."
+          },
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Salesforce ID of the campaign to update."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated description. Leave empty to keep unchanged."
+          },
+          "number_sent": {
+            "type": "number",
+            "description": "Updated number sent. Leave unset to keep unchanged."
+          },
+          "budgeted_cost": {
+            "type": "number",
+            "description": "Updated budgeted cost. Leave unset to keep unchanged."
+          },
+          "expected_revenue": {
+            "type": "number",
+            "description": "Updated expected revenue. Leave unset to keep unchanged."
+          },
+          "expected_response": {
+            "type": "number",
+            "description": "Updated expected response rate. Leave unset to keep unchanged."
+          }
+        },
+        "required": [
+          "campaign_id"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.update_contact",
+      "tool": "SALESFORCE_UPDATE_CONTACT",
+      "toolName": "salesforce_update_contact",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing contact in Salesforce with the specified changes. Only provided fields will be updated. Returns HTTP 204 with no body on success; use SALESFORCE_GET_CONTACT to verify applied changes. Org-level validation rules, duplicate rules, or field-level permissions may reject correctly formatted requests with HTTP 400; inspect the error response to identify the constraint.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Update contact",
+      "withheldArguments": {
+        "email": "names an address a message goes to or comes from",
+        "phone": "changes who the record belongs to or how a person is identified",
+        "account_id": "moves the record to another container",
+        "mobile_phone": "changes who the record belongs to or how a person is identified",
+        "custom_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated job title. Leave empty to keep unchanged."
+          },
+          "birthdate": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated birthdate in YYYY-MM-DD format. Leave empty to keep unchanged."
+          },
+          "last_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated last name. Leave empty to keep unchanged."
+          },
+          "contact_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Salesforce ID of the contact to update. Must be a valid 18-character Salesforce ID (retrieve via SALESFORCE_SEARCH_CONTACTS); names or emails cannot substitute."
+          },
+          "department": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated department. Leave empty to keep unchanged."
+          },
+          "first_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated first name. Leave empty to keep unchanged."
+          },
+          "mailing_city": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated mailing city. Leave empty to keep unchanged."
+          },
+          "mailing_state": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated mailing state/province. Leave empty to keep unchanged."
+          },
+          "mailing_street": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated mailing street address. Leave empty to keep unchanged."
+          },
+          "mailing_country": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated mailing country. Leave empty to keep unchanged."
+          },
+          "mailing_postal_code": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated mailing postal/zip code. Leave empty to keep unchanged."
+          }
+        },
+        "required": [
+          "contact_id"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.update_lead",
+      "tool": "SALESFORCE_UPDATE_LEAD",
+      "toolName": "salesforce_update_lead",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing lead in Salesforce with the specified changes. Only provided fields will be updated.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Update lead",
+      "withheldArguments": {
+        "email": "names an address a message goes to or comes from",
+        "phone": "changes who the record belongs to or how a person is identified",
+        "lead_source": "copies content from another record, URL, or file",
+        "custom_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated city. Leave empty to keep unchanged."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated state/province. Leave empty to keep unchanged."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated job title. Leave empty to keep unchanged."
+          },
+          "rating": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated rating. Leave empty to keep unchanged. Must match a valid picklist value configured in the org; invalid values cause a validation error. Represents lead quality (Hot/Warm/Cold), not pipeline stage."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated status. Leave empty to keep unchanged. Must match a valid picklist value configured in the org; invalid values cause a validation error. Represents pipeline stage, not lead quality rating."
+          },
+          "street": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated street address. Leave empty to keep unchanged."
+          },
+          "company": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated company name. Leave empty to keep unchanged."
+          },
+          "country": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated country. Leave empty to keep unchanged."
+          },
+          "lead_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Salesforce ID of the lead to update."
+          },
+          "website": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated website. Leave empty to keep unchanged."
+          },
+          "industry": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated industry. Leave empty to keep unchanged."
+          },
+          "last_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated last name. Leave empty to keep unchanged."
+          },
+          "first_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated first name. Leave empty to keep unchanged."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated description. Leave empty to keep unchanged."
+          },
+          "postal_code": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated postal/zip code. Leave empty to keep unchanged."
+          },
+          "annual_revenue": {
+            "type": "number",
+            "description": "Updated annual revenue. Leave unset to keep unchanged. Negative values are passed through to Salesforce as-is (useful for adjustments/write-offs)."
+          },
+          "number_of_employees": {
+            "type": "integer",
+            "description": "Updated number of employees. Leave unset to keep unchanged."
+          }
+        },
+        "required": [
+          "lead_id"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.update_opportunity",
+      "tool": "SALESFORCE_UPDATE_OPPORTUNITY",
+      "toolName": "salesforce_update_opportunity",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing opportunity in Salesforce with the specified changes. Only provided fields will be updated. Returns HTTP 204 with empty body on success; call SALESFORCE_GET_OPPORTUNITY afterward to read updated values. Updates may fail with FIELD_CUSTOM_VALIDATION_EXCEPTION or REQUIRED_FIELD_MISSING — inspect the error message to identify the offending field.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Update opportunity",
+      "withheldArguments": {
+        "account_id": "moves the record to another container",
+        "lead_source": "copies content from another record, URL, or file",
+        "custom_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated opportunity name. Leave empty to keep unchanged."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated opportunity type. Leave empty to keep unchanged."
+          },
+          "amount": {
+            "type": "number",
+            "description": "Updated amount. Leave unset to keep unchanged. Negative values are passed through to Salesforce as-is."
+          },
+          "next_step": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated next step. Leave empty to keep unchanged."
+          },
+          "close_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated close date in YYYY-MM-DD format. Leave empty to keep unchanged."
+          },
+          "stage_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated stage. Leave empty to keep unchanged. Must exactly match a stage defined in the org's current sales process; use SALESFORCE_GET_ALL_FIELDS_FOR_OBJECT with object_name='Opportunity' to discover valid values."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated description. Leave empty to keep unchanged."
+          },
+          "probability": {
+            "type": "number",
+            "description": "Updated probability percentage (0-100). Leave unset to keep unchanged."
+          },
+          "opportunity_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Salesforce ID of the opportunity to update. Multiple opportunities may share the same name — apply additional filters (stage, owner, account) or confirm with the user before updating to avoid modifying the wrong record. Use IDs from fresh search results; stale or manually constructed IDs may be invalid."
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.update_task",
+      "tool": "SALESFORCE_UPDATE_TASK",
+      "toolName": "salesforce_update_task",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing task in Salesforce with new information. Only provided fields will be updated.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Salesforce: Update task",
+      "withheldArguments": {
+        "custom_fields": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated status. Leave empty to keep unchanged."
+          },
+          "who_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated Contact or Lead ID. Leave empty to keep unchanged."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated subject/title of the task. Leave empty to keep unchanged."
+          },
+          "task_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Salesforce ID of the task to update."
+          },
+          "what_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated related record ID. Leave empty to keep unchanged."
+          },
+          "priority": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated priority level. Leave empty to keep unchanged."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated description or notes. Leave empty to keep unchanged."
+          },
+          "activity_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated due date in YYYY-MM-DD format. Leave empty to keep unchanged."
+          },
+          "is_reminder_set": {
+            "type": "boolean",
+            "description": "Whether to set/unset a reminder. Leave empty to keep unchanged."
+          },
+          "reminder_date_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated reminder date/time in ISO format. Leave empty to keep unchanged."
+          }
+        },
+        "required": [
+          "task_id"
+        ]
+      }
+    },
+    {
+      "id": "salesforce.who_am_i",
+      "tool": "SALESFORCE_WHO_AM_I",
+      "toolName": "salesforce_who_am_i",
+      "lane": "read",
+      "effect": "read",
+      "description": "Return the identity (email, name, org) of the connected Salesforce account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

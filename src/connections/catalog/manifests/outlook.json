@@ -1,0 +1,2558 @@
+{
+  "toolkit": "outlook",
+  "version": "20261022_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Outlook",
+  "description": "Search and read mail, draft and send messages, and manage calendar events, contacts, and To Do tasks.",
+  "securityDescription": "Microsoft sign-in opens through Composio. Agents can read the mail, calendars, contacts, and To Do lists the connected account can reach. With write access, Agents can send email to any address, as Gmail can, reply to a message's sender, create drafts and draft replies, send drafts, accept invitations, create and update events, mark, flag, and categorize messages, and create contacts and tasks. Agents cannot forward mail, reply to all, add CC or BCC to a reply, send as another mailbox, add or change event attendees, decline or cancel events, move, copy, or delete mail, attach files, create mail rules, or change mailbox settings.",
+  "preset": {
+    "category": "business",
+    "accent": "#0078D4"
+  },
+  "validationCapability": "outlook.who_am_i",
+  "review": {
+    "add": [
+      "OUTLOOK_CREATE_CONTACT",
+      "OUTLOOK_CREATE_DRAFT",
+      "OUTLOOK_CREATE_DRAFT_REPLY",
+      "OUTLOOK_GET_MESSAGE",
+      "OUTLOOK_LIST_OUTLOOK_ATTACHMENTS",
+      "OUTLOOK_REPLY_EMAIL",
+      "OUTLOOK_SEARCH_MESSAGES",
+      "OUTLOOK_SEND_DRAFT",
+      "OUTLOOK_SEND_EMAIL",
+      "OUTLOOK_UPDATE_CALENDAR_EVENT",
+      "OUTLOOK_UPDATE_EMAIL"
+    ],
+    "drop": {
+      "OUTLOOK_ADD_MAIL_ATTACHMENT": "File uploads are unsupported and inline bytes are capped near 15 KB, so it cannot attach a real file; contentLocation would attach an arbitrary URL reference."
+    },
+    "allowArguments": {
+      "OUTLOOK_CREATE_CONTACT": [
+        "emailAddresses"
+      ],
+      "OUTLOOK_CREATE_DRAFT": [
+        "bcc_recipients",
+        "cc_recipients",
+        "to_recipients"
+      ],
+      "OUTLOOK_SEND_EMAIL": [
+        "bcc_emails",
+        "cc_emails",
+        "to",
+        "to_name"
+      ]
+    }
+  },
+  "capabilities": [
+    {
+      "id": "outlook.accept_event",
+      "tool": "OUTLOOK_ACCEPT_EVENT",
+      "toolName": "outlook_accept_event",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Accepts or tentatively accepts a calendar meeting invite on behalf of a user. Use this action when a user has received a meeting invitation and wants to indicate their attendance status (either confirmed or tentative). The organizer will receive a notification of the acceptance unless send_response is set to false.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Outlook: Accept calendar event invite",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "response_type": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "comment": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional text message to include with the response, sent to the organizer."
+          },
+          "event_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the calendar event to respond to."
+          },
+          "send_response": {
+            "type": "boolean",
+            "description": "Whether to send the response to the organizer. Set to false to accept without notifying."
+          }
+        },
+        "required": [
+          "event_id"
+        ],
+        "description": "Request model for accepting or tentatively accepting a calendar meeting invite."
+      }
+    },
+    {
+      "id": "outlook.calendar_create_event",
+      "tool": "OUTLOOK_CALENDAR_CREATE_EVENT",
+      "toolName": "outlook_calendar_create_event",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new Outlook calendar event, ensuring `start_datetime` is chronologically before `end_datetime`.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Outlook: Create Calendar Event",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "attendees_info": "names an address a message goes to or comes from"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The body of the event. This can be in plain text or HTML format, as specified by the 'is_html' field. Optional - events can be created without a body."
+          },
+          "is_html": {
+            "type": "boolean",
+            "description": "Specifies whether the 'body' content is HTML. Set to true for HTML content; otherwise, it's treated as plain text."
+          },
+          "show_as": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The status to show on the calendar for the duration of the event. Valid values are: 'free', 'tentative', 'busy', 'oof' (out of office), 'workingElsewhere', 'unknown'."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The subject of the calendar event."
+          },
+          "location": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The physical location of the event."
+          },
+          "time_zone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The time zone for the start and end times of the event. Uses Windows time zone names (e.g., 'Pacific Standard Time') or IANA time zone names (e.g., 'America/Los_Angeles'). UTC is also a valid input."
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of category names to associate with the event. The API accepts any string values. For best compatibility with Outlook UI color-coding, use category names from the user's master category list. Category names are case-insensitive and duplicates will be automatically removed."
+          },
+          "importance": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The importance of the event. Valid values are 'low', 'normal', 'high'. Defaults to 'normal'."
+          },
+          "is_all_day": {
+            "type": "boolean",
+            "description": "Set to true for an all-day event. When true, start_datetime and end_datetime must both be at midnight and use the same time_zone."
+          },
+          "recurrence": {
+            "type": "object",
+            "properties": {
+              "range": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The recurrence range. The possible values are: endDate, noEnd, numbered."
+                  },
+                  "endDate": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The date to stop applying the recurrence pattern. Depending on the recurrence pattern of the event, the last occurrence of the meeting may not be this date. Required if type is endDate."
+                  },
+                  "startDate": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The date to start applying the recurrence pattern. The first occurrence of the meeting may be this date or later, depending on the recurrence pattern of the event. Must be the same value as the start property of the recurring event."
+                  },
+                  "recurrenceTimeZone": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "Time zone for the startDate and endDate properties. Optional. If not specified, the time zone of the event is used."
+                  },
+                  "numberOfOccurrences": {
+                    "type": "integer",
+                    "description": "The number of times to repeat the event. Required and must be positive if type is numbered."
+                  }
+                },
+                "required": [
+                  "type",
+                  "startDate"
+                ],
+                "description": "The duration of a recurring event."
+              },
+              "pattern": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The recurrence pattern type: daily, weekly, absoluteMonthly, relativeMonthly, absoluteYearly, relativeYearly."
+                  },
+                  "index": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "Specifies on which instance of the allowed days specified in daysOfWeek the event occurs, counted from the first instance in the month. The possible values are: first, second, third, fourth, last. Default is first. Optional and used if type is relativeMonthly or relativeYearly."
+                  },
+                  "month": {
+                    "type": "integer",
+                    "description": "The month in which the event occurs. This is a number from 1 to 12."
+                  },
+                  "interval": {
+                    "type": "integer",
+                    "description": "The number of units between occurrences, where units can be in days, weeks, months, or years, depending on the type."
+                  },
+                  "dayOfMonth": {
+                    "type": "integer",
+                    "description": "The day of the month on which the event occurs. Required if type is absoluteMonthly or absoluteYearly."
+                  },
+                  "daysOfWeek": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 20000
+                    },
+                    "maxItems": 100,
+                    "description": "A collection of the days of the week on which the event occurs. The possible values are: sunday, monday, tuesday, wednesday, thursday, friday, saturday. If type is relativeMonthly or relativeYearly, and daysOfWeek specifies morethan one day, the event falls on the first day that satisfies the pattern. Required if type is weekly, relativeMonthly, or relativeYearly."
+                  },
+                  "firstDayOfWeek": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The first day of the week. The possible values are: sunday, monday, tuesday, wednesday, thursday, friday, saturday. Default is sunday. Required if type is weekly."
+                  }
+                },
+                "required": [
+                  "type",
+                  "interval"
+                ],
+                "description": "The frequency of a recurring event."
+              }
+            },
+            "description": "The recurrence pattern and range for an event."
+          },
+          "calendar_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of a specific calendar to create the event in. Obtainable from the list calendars action. If omitted, the event is created on the user's default calendar."
+          },
+          "end_datetime": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The event's end date and time. Prefer local YYYY-MM-DDTHH:MM:SS with the IANA or Windows zone in time_zone. Z or a numeric offset is accepted only when it agrees with time_zone."
+          },
+          "start_datetime": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The event's start date and time. Prefer local YYYY-MM-DDTHH:MM:SS with the IANA or Windows zone in time_zone. Z or a numeric offset is accepted only when it agrees with time_zone."
+          },
+          "is_online_meeting": {
+            "type": "boolean",
+            "description": "Set to true to indicate that the event is an online meeting. This will automatically generate an online meeting link if 'online_meeting_provider' is set (e.g., a Microsoft Teams link)."
+          },
+          "online_meeting_provider": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the online meeting provider. Currently, only 'teamsForBusiness' is supported. If 'is_online_meeting' is true and this is set, a meeting link for the provider will be created."
+          }
+        },
+        "required": [
+          "subject",
+          "start_datetime",
+          "end_datetime",
+          "time_zone"
+        ],
+        "description": "Defines the request schema for creating a new event in an Outlook calendar."
+      }
+    },
+    {
+      "id": "outlook.create_contact",
+      "tool": "OUTLOOK_CREATE_CONTACT",
+      "toolName": "outlook_create_contact",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Creates a new contact in a Microsoft Outlook user's contacts folder.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Outlook: Create contact",
+      "withheldArguments": {
+        "userId": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "notes": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Personal notes about the contact. These notes are stored as 'personalNotes' in the Outlook contact details."
+          },
+          "surname": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The contact's surname (last name)."
+          },
+          "birthday": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The contact's birthday in 'YYYY-MM-DD' format. The time component will be set to midnight UTC (e.g., '1990-01-01' becomes '1990-01-01T00:00:00Z' in the API request)."
+          },
+          "jobTitle": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The contact's job title."
+          },
+          "givenName": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The contact's given (first) name."
+          },
+          "homePhone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The contact's home phone number. If provided, this will be stored in Outlook as a list containing this single number."
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of categories to assign to the contact."
+          },
+          "department": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The department the contact belongs to within their company."
+          },
+          "companyName": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the company the contact is associated with."
+          },
+          "displayName": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The contact's display name, typically their full name."
+          },
+          "mobilePhone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The contact's mobile phone number."
+          },
+          "businessPhones": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of business phone numbers for the contact. Each number should be a string."
+          },
+          "emailAddresses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The display name for the contact's email address."
+                },
+                "address": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The contact's email address."
+                }
+              },
+              "required": [
+                "address"
+              ]
+            },
+            "maxItems": 100,
+            "description": "A list of email addresses for the contact. Each item must be an object with an `address` field (string) and optionally a `name` field (e.g., `[{'address': 'jane@example.com', 'name': 'Jane Doe'}]`). Plain strings are not accepted."
+          },
+          "officeLocation": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The contact's office location."
+          }
+        }
+      }
+    },
+    {
+      "id": "outlook.create_draft",
+      "tool": "OUTLOOK_CREATE_DRAFT",
+      "toolName": "outlook_create_draft",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Creates a new Outlook email draft with subject, body, recipients, and an optional attachment. This action creates a standalone draft for new conversations. To create a draft reply to an existing conversation/message, use the OUTLOOK_CREATE_DRAFT_REPLY action instead.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Outlook: Create email draft",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "attachment": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Content of the email draft; use `is_html` to specify if HTML or plain text."
+          },
+          "is_html": {
+            "type": "boolean",
+            "description": "Specifies if the `body` is HTML. If `False`, `body` is plain text. Set to `True` when `body` contains HTML markup; otherwise markup renders as literal text."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "Subject line for the email draft."
+          },
+          "cc_recipients": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional list of CC (carbon copy) recipient email addresses. Must be provided as an array of strings, e.g., [\"cc@example.com\"]."
+          },
+          "to_recipients": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional list of primary 'To' recipient email addresses. Must be provided as an array of strings, e.g., [\"user@example.com\"] for a single recipient or [\"user1@example.com\", \"user2@example.com\"] for multiple recipients. Do not pass as a JSON-encoded string. Can be omitted when creating a draft to be completed later. To send the draft, at least one valid address must be present across `to_recipients`, `cc_recipients`, or `bcc_recipients`."
+          },
+          "bcc_recipients": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional list of BCC (blind carbon copy) recipient email addresses. Must be provided as an array of strings, e.g., [\"bcc@example.com\"]."
+          }
+        },
+        "required": [
+          "subject",
+          "body"
+        ]
+      }
+    },
+    {
+      "id": "outlook.create_draft_reply",
+      "tool": "OUTLOOK_CREATE_DRAFT_REPLY",
+      "toolName": "outlook_create_draft_reply",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Creates a draft reply in the specified user's Outlook mailbox to an existing message (identified by a valid `message_id`), optionally including a `comment` and CC/BCC recipients.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Outlook: Create a draft reply",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "cc_emails": "names an address a message goes to or comes from",
+        "bcc_emails": "names an address a message goes to or comes from"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "comment": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Plain text comment to include in the body of the reply draft."
+          },
+          "message_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Required. Unique ID of the message to reply to. Obtain this from actions like 'List Messages', 'Get Message', or 'Search Messages'."
+          }
+        },
+        "required": [
+          "message_id"
+        ]
+      }
+    },
+    {
+      "id": "outlook.create_task",
+      "tool": "OUTLOOK_CREATE_TASK",
+      "toolName": "outlook_create_task",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to create a new task in Microsoft To Do within a specified task list. Use when adding tasks with title, due dates, reminders, importance levels, descriptions, categories, and linked resources.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Outlook: Create To Do task",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The content of the task body."
+              },
+              "contentType": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The type of the content. Use 'text' for plain text or 'html' for HTML formatted content."
+              }
+            },
+            "required": [
+              "content"
+            ],
+            "description": "Task body content with content type."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "The title of the task. This is the main text displayed for the task."
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of category labels to organize the task (e.g., tags for filtering or grouping tasks)."
+          },
+          "importance": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The importance level of the task. Must be one of: 'low', 'normal', or 'high'. Defaults to 'normal' if not specified."
+          },
+          "dueDateTime": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A single point of time in ISO 8601 format (e.g., 2024-01-15T14:30:00). Do not include timezone offset in the string itself."
+              },
+              "timeZone": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Time zone designation. Use standard IANA time zone identifiers (e.g., 'America/New_York', 'Europe/London') or 'UTC' for Coordinated Universal Time."
+              }
+            },
+            "required": [
+              "dateTime"
+            ],
+            "description": "Date/time with timezone information for task due dates and reminders."
+          },
+          "linkedResources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "webUrl": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "URL pointing to the linked resource."
+                },
+                "displayName": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The display name of the linked resource."
+                },
+                "applicationName": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "The application name of the source that created the linked resource."
+                }
+              },
+              "description": "Resource linked to the task (e.g., document, email, or web link)."
+            },
+            "maxItems": 100,
+            "description": "A list of resources (documents, links, emails) associated with the task. Each resource can have a webUrl, applicationName, and displayName."
+          },
+          "reminderDateTime": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A single point of time in ISO 8601 format (e.g., 2024-01-15T14:30:00). Do not include timezone offset in the string itself."
+              },
+              "timeZone": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Time zone designation. Use standard IANA time zone identifiers (e.g., 'America/New_York', 'Europe/London') or 'UTC' for Coordinated Universal Time."
+              }
+            },
+            "required": [
+              "dateTime"
+            ],
+            "description": "Date/time with timezone information for task due dates and reminders."
+          },
+          "todo_task_list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the task list where the task will be created. Use the List To Do task lists action to retrieve available list IDs."
+          }
+        },
+        "required": [
+          "todo_task_list_id",
+          "title"
+        ]
+      }
+    },
+    {
+      "id": "outlook.download_outlook_attachment",
+      "tool": "OUTLOOK_DOWNLOAD_OUTLOOK_ATTACHMENT",
+      "toolName": "outlook_download_outlook_attachment",
+      "lane": "read",
+      "effect": "read",
+      "description": "Downloads a specific file attachment from an email message in a Microsoft Outlook mailbox; the attachment must contain 'contentBytes' (binary data) and not be a link or embedded item. High-volume parallel calls may trigger HTTP 429 responses; honor the Retry-After header and use exponential backoff.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The user's UPN (User Principal Name) or 'me' for the authenticated user. This identifies the mailbox where the message is located."
+          },
+          "file_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "The desired filename for the downloaded attachment. This name will be assigned to the."
+          },
+          "message_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "The unique identifier of the email message that contains the attachment to be downloaded. This ID is typically obtained when listing or retrieving messages."
+          },
+          "attachment_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "The Microsoft Graph API attachment identifier (NOT the filename). This is a base64-encoded opaque string returned in the 'id' field when listing attachments via the LIST_OUTLOOK_ATTACHMENTS action. Must be the exact value from the API response, not the attachment's display name or filename. Always use the exact attachment_id/message_id pair returned together from LIST_OUTLOOK_ATTACHMENTS — an attachment_id is bound to its specific message_id and cannot be used with a different message_id."
+          }
+        },
+        "required": [
+          "message_id",
+          "attachment_id",
+          "file_name"
+        ]
+      }
+    },
+    {
+      "id": "outlook.find_meeting_times",
+      "tool": "OUTLOOK_FIND_MEETING_TIMES",
+      "toolName": "outlook_find_meeting_times",
+      "lane": "read",
+      "effect": "read",
+      "description": "Suggests meeting times based on organizer and attendee availability, time constraints, and duration requirements. Use when you need to find optimal meeting slots across multiple participants' schedules.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "time_constraint.timeSlots": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "User ID or User Principal Name. Use 'me' for the authenticated user."
+          },
+          "attendees": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "Type of attendee. Valid values: 'required', 'optional', 'resource'."
+                },
+                "emailAddress": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "Display name of the attendee."
+                    },
+                    "address": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "Email address of the attendee."
+                    }
+                  },
+                  "required": [
+                    "address"
+                  ],
+                  "description": "Email address information for the attendee."
+                }
+              },
+              "required": [
+                "emailAddress"
+              ],
+              "description": "Represents an attendee or resource for the meeting."
+            },
+            "maxItems": 100,
+            "description": "List of attendees or resources for the meeting. Empty list searches only organizer's availability."
+          },
+          "max_candidates": {
+            "type": "integer",
+            "description": "Maximum number of meeting time suggestions to return."
+          },
+          "prefer_timezone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Preferred timezone for the response (sets Prefer header with outlook.timezone). If not specified, defaults to UTC."
+          },
+          "time_constraint": {
+            "type": "object",
+            "properties": {
+              "activityDomain": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Nature of activity. Valid values: 'work' (Mon-Fri 8am-5pm, default), 'personal' (Mon-Sun 8am-5pm), 'unrestricted' (24/7), 'unknown'."
+              }
+            },
+            "description": "Time restrictions for the meeting."
+          },
+          "meeting_duration": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Meeting length in ISO 8601 duration format (e.g., 'PT1H' for 1 hour, 'PT30M' for 30 minutes). Default: 30 minutes."
+          },
+          "location_constraint": {
+            "type": "object",
+            "properties": {
+              "locations": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "displayName": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "Name of the location."
+                    },
+                    "resolveAvailability": {
+                      "type": "boolean",
+                      "description": "If true, check if the location is available."
+                    }
+                  },
+                  "required": [
+                    "displayName"
+                  ],
+                  "description": "Represents a location constraint item."
+                },
+                "maxItems": 100,
+                "description": "List of specific allowed locations."
+              },
+              "isRequired": {
+                "type": "boolean",
+                "description": "If true, a location is required for the meeting."
+              },
+              "suggestLocation": {
+                "type": "boolean",
+                "description": "If true, request location suggestions."
+              }
+            },
+            "description": "Meeting location requirements."
+          },
+          "is_organizer_optional": {
+            "type": "boolean",
+            "description": "If true, organizer doesn't need to attend. Default: false."
+          },
+          "return_suggestion_reasons": {
+            "type": "boolean",
+            "description": "If true, include reasons for each suggestion. Default: false."
+          },
+          "minimum_attendee_percentage": {
+            "type": "number",
+            "description": "Minimum confidence percentage (0-100) for suggestions. Default: 50."
+          }
+        },
+        "description": "Request schema for finding meeting times."
+      }
+    },
+    {
+      "id": "outlook.get_calendar_view",
+      "tool": "OUTLOOK_GET_CALENDAR_VIEW",
+      "toolName": "outlook_get_calendar_view",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get events ACTIVE during a time window (includes multi-day events). Use for \"what's on my calendar today/this week\" or availability checks. Returns events overlapping the time range. For keyword search or filters by category, use OUTLOOK_LIST_EVENTS instead.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of events to retrieve."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of events to skip before returning the page (OData $skip)."
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of event properties to return. Defaults to commonly-needed fields excluding the full HTML body. To include the full body content, explicitly add 'body' to this list."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData ordering expression for events, for example 'start/dateTime asc'."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Email address of the target user (or 'me' for authenticated user)."
+          },
+          "timezone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Timezone for event times in the response only; the input window is always interpreted from the offset in start_datetime/end_datetime. Must be an IANA timezone name (e.g., 'America/New_York', 'Europe/London', 'Asia/Kolkata') or Windows timezone identifier (e.g., 'Pacific Standard Time', 'India Standard Time'). UTC offsets like '+05:30' or 'GMT+5' are NOT supported. Defaults to UTC."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend any required identifier fields from the first call (the token supersedes their values). Optional filter, sort and timezone params need not be repeated; the token carries them."
+          },
+          "calendar_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional ID of a specific calendar to query. Must be a calendar identifier (format like 'AAMkAGI2TG93AAA='), NOT an email address. If not provided, uses the primary calendar. Get calendar IDs using LIST_CALENDARS action."
+          },
+          "end_datetime": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The end date and time of the time range, represented in ISO 8601 format. For example, '2019-11-08T20:00:00-08:00' or '2024-12-31T23:59:59Z'."
+          },
+          "start_datetime": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The start date and time of the time range, represented in ISO 8601 format. For example, '2019-11-08T19:00:00-08:00' or '2024-01-01T00:00:00Z'."
+          },
+          "include_sensitivity_label": {
+            "type": "boolean",
+            "description": "When true, retrieves and normalizes the Microsoft Purview sensitivity label applied to each calendar event. This is distinct from the event's built-in sensitivity field and any Teams meeting label. Preserved in next_page_token."
+          }
+        },
+        "required": [
+          "start_datetime",
+          "end_datetime"
+        ]
+      }
+    },
+    {
+      "id": "outlook.get_event",
+      "tool": "OUTLOOK_GET_EVENT",
+      "toolName": "outlook_get_event",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the full details of a specific calendar event by its ID from a user's Outlook calendar, provided the event exists.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The user's primary SMTP address, user principal name (UPN), or the alias 'me' (for the signed-in user) to identify the calendar owner."
+          },
+          "event_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the calendar event to retrieve."
+          },
+          "include_sensitivity_label": {
+            "type": "boolean",
+            "description": "When true, retrieves and normalizes the event's Microsoft Purview sensitivity label from a filtered msip_labels expansion in the same Graph request. This is distinct from the event's built-in sensitivity field and from a Teams online meeting sensitivity-label assignment. Requires Calendars.Read or Calendars.ReadWrite. Treat a returned status of unknown as fail-closed before using the event content."
+          }
+        },
+        "required": [
+          "event_id"
+        ]
+      }
+    },
+    {
+      "id": "outlook.get_mail_delta",
+      "tool": "OUTLOOK_GET_MAIL_DELTA",
+      "toolName": "outlook_get_mail_delta",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieve incremental changes (delta) of messages in a mailbox. FIRST RUN: Returns ALL messages in folder (use top=50 to limit). Response has @odata.deltaLink. SUBSEQUENT: Pass stored deltaLink to get only NEW/UPDATED/DELETED messages since last sync. Properties available: id, subject, from, receivedDateTime, isRead, etc. NOT available: internetMessageHeaders, full body, attachment content (response size limits).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of items to return per page. For first run without delta_token, use top=50 or top=100 to limit results. First delta call without token returns all messages in folder. Paginate through results using @odata.nextLink, then store @odata.deltaLink for next sync."
+          },
+          "expand": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "attachments",
+                "multiValueExtendedProperties",
+                "singleValueExtendedProperties"
+              ],
+              "description": "Valid navigation properties that can be expanded in delta queries. Only navigation properties (relationships) can be expanded. Regular properties like body, from, toRecipients, etc. are NOT expandable and will cause API errors. Note: 'extensions' is technically a navigation property but requires complex OData filter syntax (e.g., $expand=extensions($filter=id eq 'ExtensionId')) which is not supported by this simple expand parameter."
+            },
+            "maxItems": 100,
+            "description": "Navigation properties to expand inline. Supported values: 'attachments', 'multiValueExtendedProperties', 'singleValueExtendedProperties'. Regular properties (body, from, toRecipients, etc.) cannot be expanded and will cause errors."
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of message properties to include (e.g. ['subject','receivedDateTime']). Delta sync has property limitations due to response size constraints. Not available in delta: internetMessageHeaders, body (full), attachments (full content). Available: id, subject, from, toRecipients, ccRecipients, bccRecipients, receivedDateTime, sentDateTime, isRead, isDraft, importance, hasAttachments, categories, conversationId, flag, webLink, bodyPreview (first 255 chars)."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "User identifier: 'me' for the signed-in user or the user's email/UPN."
+          },
+          "folder_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Mail folder identifier (folder GUID) or well-known folder name. Well-known names (case-insensitive): 'inbox', 'drafts', 'sentitems', 'deleteditems', 'junkemail', 'outbox', 'archive', 'clutter', 'conversationhistory'. For custom folders, use the folder ID GUID from LIST_MAIL_FOLDERS. Defaults to 'inbox' when omitted."
+          },
+          "skip_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Skip token for paging through large result sets during initial sync. Accepts either the full @odata.nextLink URL or just the bare token value. Keep paginating until you receive '@odata.deltaLink' instead of nextLink. When using sensitivity-label enrichment, resend include_sensitivity_label=true with this token. Mutually exclusive with delta_token - only one should be provided per request."
+          },
+          "delta_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Delta token from a previous call to get only changes since that state. Accepts either the full @odata.deltaLink URL or just the bare token value. If omitted or invalid (placeholders like <token> are ignored), performs initial sync. Use top parameter on first run to limit results. Response includes @odata.deltaLink - store this for subsequent calls. When using sensitivity-label enrichment, resend include_sensitivity_label=true with this token."
+          },
+          "include_sensitivity_label": {
+            "type": "boolean",
+            "description": "When true, retrieves and normalizes Microsoft Purview sensitivity labels for delta items through Microsoft Graph JSON batches capped at 20 requests per batch. Requires Mail.Read. Treat status unknown as fail-closed before using message content. Repeat this flag on every call that uses skip_token or delta_token because Graph tokens do not preserve this Composio-only setting."
+          }
+        },
+        "description": "Request schema for retrieving incremental changes (delta) of messages in a mailbox."
+      }
+    },
+    {
+      "id": "outlook.get_mail_tips",
+      "tool": "OUTLOOK_GET_MAIL_TIPS",
+      "toolName": "outlook_get_mail_tips",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve mail tips such as automatic replies and mailbox full status. Use when you need to check recipient status before sending mail.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "User principal name (UPN) or 'me' for the signed-in user."
+          },
+          "EmailAddresses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Collection of SMTP addresses of recipients to get MailTips for."
+          },
+          "MailTipsOptions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "automaticReplies",
+                "customMailTip",
+                "deliveryRestriction",
+                "externalMemberCount",
+                "mailboxFullStatus",
+                "maxMessageSize",
+                "moderationStatus",
+                "recipientScope",
+                "recipientSuggestions",
+                "totalMemberCount"
+              ]
+            },
+            "maxItems": 100,
+            "description": "List of mail tip types to retrieve for each recipient."
+          }
+        },
+        "required": [
+          "EmailAddresses",
+          "MailTipsOptions"
+        ],
+        "description": "Request model to retrieve MailTips for specified recipients."
+      }
+    },
+    {
+      "id": "outlook.get_me_contacts",
+      "tool": "OUTLOOK_GET_ME_CONTACTS",
+      "toolName": "outlook_get_me_contacts",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific Outlook contact by its `contact_id` from the contacts of a specified `user_id` (defaults to 'me' for the authenticated user).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "User's principal name (e.g., 'AdeleV@contoso.onmicrosoft.com') or 'me' for the authenticated user. Using 'me' is recommended for accessing one's own contacts."
+          },
+          "contact_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier for the contact within the specified user's Outlook address book."
+          }
+        },
+        "required": [
+          "contact_id"
+        ]
+      }
+    },
+    {
+      "id": "outlook.get_message",
+      "tool": "OUTLOOK_GET_MESSAGE",
+      "toolName": "outlook_get_message",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieve a message by immutable ID from the specified Outlook mailbox. Use `select` to include fields such as `internetMessageHeaders`. A 404 can indicate a deleted message, a different mailbox, or a stale legacy mutable ID.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of message properties to include in the response. Can be provided as an array of strings (e.g., ['subject', 'body']) or as a comma-separated string (e.g., 'subject,body'). Reduces data transfer and improves performance. Common fields: id, subject, from, toRecipients, ccRecipients, receivedDateTime, sentDateTime, body, bodyPreview, hasAttachments, webLink, internetMessageHeaders, isRead, importance, categories. Leave empty to return all message fields."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "User's email address, UPN, or 'me' for the currently authenticated user."
+          },
+          "message_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique immutable ID of the Outlook email message to retrieve. Accepts message IDs from OUTLOOK_LIST_MESSAGES (message.id), OUTLOOK_QUERY_EMAILS (message.id), or OUTLOOK_SEARCH_MESSAGES (use hitId from search results, as resource.id is not populated by the Search API). The message must exist in the specified user's mailbox. Legacy mutable IDs can become stale after a folder move."
+          },
+          "include_sensitivity_label": {
+            "type": "boolean",
+            "description": "When true, retrieves and normalizes the message's Microsoft Purview sensitivity label in the same Graph request. Requires Mail.Read or Mail.ReadWrite. Treat a returned status of unknown as fail-closed before using the message content."
+          }
+        },
+        "required": [
+          "message_id"
+        ]
+      }
+    },
+    {
+      "id": "outlook.get_profile",
+      "tool": "OUTLOOK_GET_PROFILE",
+      "toolName": "outlook_get_profile",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the Microsoft Outlook profile for a specified user.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "select": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The user's unique identifier or principal name. Use 'me' to get the profile of the authenticated user."
+          },
+          "include_proxy_addresses": {
+            "type": "boolean",
+            "description": "Whether to include proxy addresses in the response. Proxy addresses are SMTP addresses prefixed with 'SMTP:' (primary) or 'smtp:' (secondary)."
+          }
+        }
+      }
+    },
+    {
+      "id": "outlook.get_user_by_email",
+      "tool": "OUTLOOK_GET_USER_BY_EMAIL",
+      "toolName": "outlook_get_user_by_email",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves user details from Microsoft Graph by email address (userPrincipalName). Returns user properties including display name, job title, department, and contact information. Use this action when you need to look up a user's profile information using their email address.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The email address (userPrincipalName) of the user to retrieve. This must be a valid email address format."
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional list of user properties to include in the response. Reduces data transfer and improves performance. Common fields: id, displayName, givenName, surname, mail, userPrincipalName, jobTitle, officeLocation, mobilePhone, businessPhones, department. Leave empty to return default properties."
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "description": "Request model for getting a user by email address."
+      }
+    },
+    {
+      "id": "outlook.get_user_calendar_event",
+      "tool": "OUTLOOK_GET_USER_CALENDAR_EVENT",
+      "toolName": "outlook_get_user_calendar_event",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a specific calendar event from a user's primary calendar. Use when you need detailed information about a particular event for a given user.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The user's primary SMTP address, user principal name (UPN), or user ID to identify the calendar owner whose event you want to retrieve."
+          },
+          "event_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the calendar event to retrieve from the user's calendar."
+          },
+          "include_sensitivity_label": {
+            "type": "boolean",
+            "description": "When true, retrieves and normalizes the event's Microsoft Purview sensitivity label from a filtered msip_labels expansion in the same Graph request. This is distinct from the event's built-in sensitivity field and from a Teams online meeting sensitivity-label assignment. Requires Calendars.Read or Calendars.ReadWrite. Treat a returned status of unknown as fail-closed before using the event content."
+          }
+        },
+        "required": [
+          "user_id",
+          "event_id"
+        ]
+      }
+    },
+    {
+      "id": "outlook.list_calendars",
+      "tool": "OUTLOOK_LIST_CALENDARS",
+      "toolName": "outlook_list_calendars",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list calendars in the signed-in user's mailbox. Use when you need to retrieve calendars with optional OData queries.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of calendars to return (OData $top)."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of calendars to skip (OData $skip)."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData filter expression (OData $filter)."
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Properties to include (OData $select)."
+          },
+          "orderby": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Order by expressions (OData $orderby)."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "User ID or userPrincipalName. Use 'me' for the signed-in user."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend any required identifier fields from the first call (the token supersedes their values). Optional filter, sort and timezone params need not be repeated; the token carries them."
+          }
+        }
+      }
+    },
+    {
+      "id": "outlook.list_events",
+      "tool": "OUTLOOK_LIST_EVENTS",
+      "toolName": "outlook_list_events",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves events from a user's Outlook calendar via Microsoft Graph API. Supports primary/secondary/shared calendars, pagination, filtering, property selection, sorting, and timezone specification. Use calendar_id to access non-primary calendars.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999,
+            "description": "Maximum number of events to retrieve per page for pagination."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of initial events to bypass, used for pagination."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData query string to filter calendar events. Filterable properties: 'start/dateTime', 'end/dateTime', 'subject', 'categories', 'importance', 'sensitivity', 'isAllDay', 'isCancelled', 'isReminderOn', 'type'. CRITICAL: Properties like 'body', 'bodyPreview', 'location', 'organizer', 'attendees' do NOT support $filter. Do NOT use mail properties like 'receivedDateTime' (emails only)."
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of specific event property names to return. MUST be provided as a list. If omitted, a default set of properties is returned. Valid field names: id, subject, body, bodyPreview, start, end, isAllDay, organizer, attendees, location, locations, recurrence, importance, sensitivity, showAs, categories, hasAttachments, webLink, onlineMeeting, onlineMeetingProvider, onlineMeetingUrl, isOnlineMeeting, createdDateTime, lastModifiedDateTime, changeKey, iCalUId, type, seriesMasterId, isOrganizer,"
+          },
+          "orderby": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of properties to sort results by. Each item is a string like 'start/dateTime desc' or 'subject asc'. MUST be provided as a list, even for single sort criteria. Use 'asc' (default) or 'desc' for order. IMPORTANT: Use calendar event properties ONLY. Do NOT use mail/message properties like 'receivedDateTime' (which is for emails only). Valid sortable datetime fields: 'start/dateTime', 'end/dateTime', 'createdDateTime', 'lastModifiedDateTime'."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Email address of the target user (or 'me' for authenticated user), identifying the calendar for event listing."
+          },
+          "timezone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Preferred timezone for event start/end times. Accepts IANA format (e.g., 'America/New_York', 'Europe/London', 'Indian/Mauritius', 'Asia/Tokyo') or Windows format (e.g., 'Eastern Standard Time', 'Pacific Standard Time'). Placeholder patterns like '<REGION>/London' are auto-resolved to valid IANA timezones (e.g., 'Europe/London') where the city can be matched. Falls back to 'UTC' only if the timezone cannot be resolved."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend any required identifier fields from the first call (the token supersedes their values). Optional filter, sort and timezone params need not be repeated; the token carries them. Not available together with expand_recurring_events."
+          },
+          "calendar_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional ID of a specific calendar to retrieve events from. If not provided, uses the default calendar. Get calendar IDs using LIST_CALENDARS action. IMPORTANT: Do NOT use 'primary' or 'default' as values - these are not valid calendar IDs in Microsoft Graph. Leave this field empty/null to access the default calendar. Useful for accessing secondary calendars, shared calendars, or team calendars."
+          },
+          "expand_recurring_events": {
+            "type": "boolean",
+            "description": "When true, automatically expands recurring events to show actual occurrences within the filtered date range instead of series masters. When false (default), returns series masters as before."
+          },
+          "include_sensitivity_label": {
+            "type": "boolean",
+            "description": "When true, retrieves and normalizes the Microsoft Purview sensitivity label stored on each calendar event. This is distinct from the event's built-in sensitivity field and from a Teams online meeting sensitivity label."
+          }
+        }
+      }
+    },
+    {
+      "id": "outlook.list_mail_folder_messages",
+      "tool": "OUTLOOK_LIST_MAIL_FOLDER_MESSAGES",
+      "toolName": "outlook_list_mail_folder_messages",
+      "lane": "read",
+      "effect": "read",
+      "description": "Compatibility action that lists messages directly contained in one specified mail folder. It does not recursively include messages from descendant folders. Prefer OUTLOOK_LIST_MESSAGES for new calls; use this action only when its $expand support is required.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "description": "Maximum number of messages to return per request (1-1000). To page through more, use the `next_page_token` from the response (pass it back as `page_token`)."
+          },
+          "skip": {
+            "type": "integer",
+            "description": "Number of messages to skip from the beginning of the result set, for pagination."
+          },
+          "expand": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of message navigation properties to include inline using OData $expand. Use Graph expansion expressions such as 'attachments' or 'attachments($select=id,name,size,contentType,isInline)'. Regular message properties belong in select, not expand."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $filter query to filter messages. CRITICAL: String literals MUST use single quotes ('), not double quotes (\"). Examples: 'isRead eq false', 'from/emailAddress/address eq 'sender@example.com'', 'receivedDateTime ge 2023-01-01T00:00:00Z', 'hasAttachments eq true'."
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of message properties to include in the response. OData $select parameter. Valid properties include: id, subject, from, toRecipients, receivedDateTime, sentDateTime, hasAttachments, importance, isRead, body, bodyPreview, categories, conversationId."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Property to sort results by with direction. OData $orderby parameter. Example: 'receivedDateTime desc' or 'subject asc'. IMPORTANT: Cannot be used with complex 'filter' queries (multiple 'contains()' operations, OR clauses, or nested properties like 'from/emailAddress/address') - Microsoft Graph will reject such combinations with InefficientFilter error. For complex filters, omit this parameter and sort results client-side."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "User's id, userPrincipalName, or 'me' for the signed-in user."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend any required identifier fields from the first call (the token supersedes their values). Optional filter, sort and timezone params need not be repeated; the token carries them."
+          },
+          "mail_folder_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID or well-known name of the mail folder from which to retrieve messages. ONLY these specific well-known names are valid as string names: 'inbox', 'drafts', 'sentitems', 'deleteditems', 'junkemail', 'archive', 'outbox', 'clutter', 'conflicts', 'conversationhistory', 'localfailures', 'msgfolderroot', 'recoverableitemsdeletions', 'scheduled', 'searchfolders', 'serverfailures', 'syncissues'. Arbitrary folder names (e.g., 'workjournal') are NOT valid."
+          },
+          "include_sensitivity_label": {
+            "type": "boolean",
+            "description": "When true, retrieves and normalizes Microsoft Purview sensitivity labels in the same Graph request. Requires Mail.Read. Treat status unknown as fail-closed. Preserved in next_page_token."
+          }
+        },
+        "required": [
+          "mail_folder_id"
+        ],
+        "description": "Request parameters for listing messages in a specific mail folder (including subfolders)."
+      }
+    },
+    {
+      "id": "outlook.list_mail_folders",
+      "tool": "OUTLOOK_LIST_MAIL_FOLDERS",
+      "toolName": "outlook_list_mail_folders",
+      "lane": "read",
+      "effect": "read",
+      "description": "List a user's top-level Outlook mail folders with property projection, hidden-folder control, and paging. Use this to inspect the mailbox folder inventory or obtain folder IDs.",
+      "maxResultBytes": 65536,
+      "withheldArguments": {
+        "select": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of items to return per page."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of items to skip before returning results."
+          },
+          "count": {
+            "type": "boolean",
+            "description": "Include total count of matching items in the response."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData filter expression to filter mail folders. String values must be enclosed in single quotes (e.g., displayName eq 'Inbox'). WARNING: Microsoft Graph API does not officially document which mailFolder properties support filtering. Known unsupported properties: parentFolderId (causes ErrorInvalidProperty error). To filter by parent folder, use the child folders endpoint instead: GET /me/mailFolders/{parentFolderId}/childFolders. Properties like isHidden may work but are not guaranteed."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Property to sort by, optionally followed by 'asc' or 'desc'."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "User's id, userPrincipalName, or 'me' for the signed-in user."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend any required identifier fields from the first call (the token supersedes their values). Optional filter, sort and timezone params need not be repeated; the token carries them."
+          },
+          "include_hidden_folders": {
+            "type": "boolean",
+            "description": "Include hidden mail folders (isHidden=true) when set to true."
+          }
+        },
+        "description": "Request parameters for listing mail folders in a user's mailbox."
+      }
+    },
+    {
+      "id": "outlook.list_messages",
+      "tool": "OUTLOOK_LIST_MESSAGES",
+      "toolName": "outlook_list_messages",
+      "lane": "read",
+      "effect": "read",
+      "description": "List or query Outlook messages from one folder (Inbox by default) or mailbox-wide with folder='allfolders'. Use simple filter fields for common conditions, filter for a raw OData expression, or search for full-text matching. Supports field selection, sorting, page size, offset, and opaque continuation tokens. Microsoft Graph does not allow search with filter, orderby, or skip; use OUTLOOK_QUERY_EMAILS only when you want its stricter single-folder OData validation.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "description": "Maximum number of messages to return per request (1-1000). To page through more, use the `next_page_token` from the response (pass it back as `page_token`), repeating until it is absent. For large mailboxes (1000+ messages), always paginate."
+          },
+          "skip": {
+            "type": "integer",
+            "description": "Number of messages to skip from the beginning of the result set, for pagination."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Raw OData $filter expression for server-side message filtering, for example \"sentDateTime ge 2026-01-01T00:00:00Z\". Use this for sentDateTime ge/le and conditions not covered by the simple filter parameters. If both are provided, this expression and the simple filters are combined with 'and'. Quote strings and enums with single quotes and double embedded apostrophes, for example subject eq 'Bob''s update'. Do not quote booleans or dates."
+          },
+          "folder": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID or well-known name of the mail folder. Well-known names (case-insensitive): archive, clutter, conflicts, conversationhistory, deleteditems, drafts, inbox, junkemail, localfailures, msgfolderroot, outbox, recoverableitemsdeletions, scheduled, searchfolders, sentitems, serverfailures, syncissues. Use 'allfolders' to search across all mail folders (uses /messages endpoint without folder filter). Or use a valid folder ID (base64-like string, e.g., 'AAMkAGI0ZjExAAA=')."
+          },
+          "search": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Full-text search query using Microsoft Graph $search syntax. Searches across subject, body, and sender fields server-side. Cannot be combined with filter, orderby, or skip; those parameters are omitted when search is set. Example: 'budget report' or 'from:john@example.com'"
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Message properties to include. Accepts a list of strings or a comma-separated string (e.g., 'id,subject,from'). Valid properties: id, subject, from, toRecipients, ccRecipients, bccRecipients, receivedDateTime, sentDateTime, hasAttachments, importance, isRead, body, bodyPreview, categories, conversationId, conversationIndex, flag, internetMessageHeaders, parentFolderId, replyTo, sender, webLink, isDraft, isReadReceiptRequested, isDeliveryReceiptRequested, changeKey, createdDateTime,"
+          },
+          "is_read": {
+            "type": "boolean",
+            "description": "Filter by read status: 'true' for read, 'false' for unread. Unspecified means no filter by read status."
+          },
+          "orderby": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Properties to sort by, such as 'receivedDateTime desc'. Default is 'receivedDateTime desc'. When combined with filter, every orderby property must also appear first in filter in the same order; for example filter='sentDateTime ge 2026-01-01T00:00:00Z' requires orderby=['sentDateTime desc']. The action reorders its simple filter clauses when the sort property is already filtered."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by exact match of the subject line. Special characters like apostrophes, brackets will be automatically escaped. For complex subject searches, consider using 'Search Messages' instead."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Target user's email or 'me' for authenticated user. For delegated access, use shared mailbox or delegated user's email."
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filter by categories (case-sensitive); matches if tagged with any specified category."
+          },
+          "importance": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by importance: 'low', 'normal', or 'high'."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for fetching the next page. Omit it for the first page; then pass back the `next_page_token` from the previous response, unmodified, repeating until it is absent. Do not construct or edit this value. When set, it drives pagination; resend any required identifier fields from the first call (the token supersedes their values). Optional filter, sort and paging params need not be repeated; the token carries them."
+          },
+          "from_address": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter by the sender's exact email address. NOTE: This filter is applied client-side on the returned results, not server-side."
+          },
+          "conversation_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages by conversation ID to retrieve all messages in a specific email thread. NOTE: This filter is applied client-side on the returned results."
+          },
+          "has_attachments": {
+            "type": "boolean",
+            "description": "Filter by attachment presence: 'true' for messages with attachments, 'false' for those without. NOTE: This filter is applied client-side on the returned results."
+          },
+          "response_detail": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "minimal",
+              "full"
+            ],
+            "description": "Level of detail in the response. 'minimal' (default) applies a default $select projection that excludes the heavy 'body', 'uniqueBody', and 'internetMessageHeaders' fields to keep responses small — typical for listing/search use cases. 'full' returns the complete message payload from Microsoft Graph, including the full HTML body. Note: an explicit `select` list always wins over `response_detail` — pass select=['body','subject',...] to control the fields directly."
+          },
+          "subject_contains": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages where the subject contains the specified case-insensitive substring. NOTE: This filter is applied client-side on the returned results. For better performance, use 'Search Messages' instead."
+          },
+          "subject_endswith": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages where the subject ends with the specified case-insensitive string. NOTE: This filter is applied client-side on the returned results. For better performance, use 'Search Messages' instead."
+          },
+          "sent_date_time_gt": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages sent after this ISO 8601 DateTimeOffset timestamp. Include a timezone, for example 2023-01-10T14:30:00Z. For inclusive ge/le comparisons, use filter with an unquoted date literal."
+          },
+          "sent_date_time_lt": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages sent before this ISO 8601 DateTimeOffset timestamp. Include a timezone, for example 2023-02-20T10:00:00Z. For inclusive ge/le comparisons, use filter with an unquoted date literal."
+          },
+          "subject_startswith": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages where the subject starts with the specified case-insensitive string."
+          },
+          "received_date_time_ge": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages received on or after this ISO 8601 DateTimeOffset timestamp. Include a timezone, for example 2023-03-15T08:00:00Z."
+          },
+          "received_date_time_gt": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages received after this ISO 8601 DateTimeOffset timestamp. Include a timezone, for example 2023-01-01T00:00:00Z."
+          },
+          "received_date_time_le": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages received on or before this ISO 8601 DateTimeOffset timestamp. Include a timezone, for example 2023-03-31T23:59:59Z."
+          },
+          "received_date_time_lt": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages received before this ISO 8601 DateTimeOffset timestamp. Include a timezone, for example 2023-04-01T00:00:00Z."
+          },
+          "include_sensitivity_label": {
+            "type": "boolean",
+            "description": "When true, retrieves and normalizes Microsoft Purview sensitivity labels in the same Graph request. Requires Mail.Read or Mail.ReadWrite. Treat status unknown as fail-closed before using a message's content. The setting is preserved in next_page_token."
+          }
+        }
+      }
+    },
+    {
+      "id": "outlook.list_outlook_attachments",
+      "tool": "OUTLOOK_LIST_OUTLOOK_ATTACHMENTS",
+      "toolName": "outlook_list_outlook_attachments",
+      "lane": "read",
+      "effect": "read",
+      "description": "List attachments for one Outlook email message. response_detail='minimal' returns projected metadata only; 'full' also returns base64 contentBytes for file attachments and can produce a large response. Returns fileAttachment, itemAttachment, and referenceAttachment records, including inline images and signatures. Only fileAttachment records can be downloaded with OUTLOOK_DOWNLOAD_OUTLOOK_ATTACHMENT. Results are under data.response_data.value.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of attachment records to return (OData $top)."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the user. Use the user's UPN (e.g., 'AdeleV@contoso.onmicrosoft.com') or 'me' for the currently authenticated user. This specifies the mailbox to query."
+          },
+          "message_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the email message from which to retrieve attachments. Must be a message ID (obtained from OUTLOOK_LIST_MESSAGES or OUTLOOK_SEARCH_EMAILS), not a folder ID or calendar event ID. Folder IDs look similar but will cause an error. When sourcing from OUTLOOK_SEARCH_EMAILS, use `hitId` as the message identifier — not `resource.id`."
+          },
+          "response_detail": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "minimal",
+              "full"
+            ],
+            "description": "Level of detail in the response. 'minimal' (default) returns only the attachment metadata that exists on the Graph attachment base type (id, name, size, contentType, isInline, lastModifiedDateTime) — the base64-encoded contentBytes and any fileAttachment-only fields (contentId, contentLocation) are excluded so the heavy file payload never leaves Microsoft Graph. 'full' returns the complete payload including contentBytes for downloading."
+          }
+        },
+        "required": [
+          "message_id"
+        ]
+      }
+    },
+    {
+      "id": "outlook.list_to_do_lists",
+      "tool": "OUTLOOK_LIST_TO_DO_LISTS",
+      "toolName": "outlook_list_to_do_lists",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list Microsoft To Do task lists for the signed-in user. Use when you need to discover available task lists before listing or creating tasks. Returns todoTaskList objects with id and displayName that can be used in downstream operations.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of task lists to return (OData $top)."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of task lists to skip from the beginning of the result set (OData $skip). Use with $top for pagination."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData filter expression to filter task lists (OData $filter)."
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Properties to include in the response (OData $select)."
+          },
+          "orderby": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Order by expressions (OData $orderby)."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "User ID or userPrincipalName. Use 'me' for the signed-in user."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend any required identifier fields from the first call (the token supersedes their values). Optional filter, sort and timezone params need not be repeated; the token carries them."
+          }
+        },
+        "description": "Request parameters for listing Microsoft To Do task lists."
+      }
+    },
+    {
+      "id": "outlook.list_todo_tasks",
+      "tool": "OUTLOOK_LIST_TODO_TASKS",
+      "toolName": "outlook_list_todo_tasks",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list tasks within a specified Microsoft To Do task list, including status and due dates. Use when retrieving tasks from a specific To Do list.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999,
+            "description": "Maximum number of tasks to retrieve per page (OData $top parameter). Use for pagination."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of tasks to skip before returning results (OData $skip parameter). Use with 'top' for offset-based pagination."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData filter expression to narrow down results (OData $filter parameter). Use for filtering by status, importance, dates, etc. Examples: \"status eq 'notStarted'\", \"importance eq 'high'\", \"dueDateTime/dateTime ge '2024-01-01T00:00:00Z'\""
+          },
+          "orderby": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of properties to sort results by (OData $orderby parameter). Each item is a string like 'dueDateTime/dateTime desc' or 'title asc'. Use 'asc' (default) or 'desc' for sort order."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier (GUID) or user principal name (email) of the user. Required for app-only (S2S) authentication. If not provided, defaults to '/me' endpoint (delegated authentication)."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend any required identifier fields from the first call (the token supersedes their values). Optional filter, sort and timezone params need not be repeated; the token carries them."
+          },
+          "todo_task_list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the To Do task list to retrieve tasks from."
+          }
+        },
+        "required": [
+          "todo_task_list_id"
+        ],
+        "description": "Request parameters for listing tasks from a Microsoft To Do task list."
+      }
+    },
+    {
+      "id": "outlook.query_emails",
+      "tool": "OUTLOOK_QUERY_EMAILS",
+      "toolName": "outlook_query_emails",
+      "lane": "read",
+      "effect": "read",
+      "description": "Query one Outlook mail folder with a validated raw OData filter. Best for precise server-side metadata conditions when validation and corrective guidance for OData syntax are useful. Returns 100 messages by default, up to 1000 per request, with projection, sorting, offset, and opaque continuation-token pagination. • Searches SINGLE folder only (inbox, sentitems, etc.) - NOT across all folders • For mailbox-wide OData filtering or full-text search: Use OUTLOOK_LIST_MESSAGES with folder='allfolders' • Server-side filters: dates, importance, isRead, hasAttachments, subjects, conversationId • Pagination: use the returned next_page_token (pass it back as page_token) until it is absent • Limitations: Recipient/body filtering requires OUTLOOK_SEARCH_MESSAGES",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of messages to return per request (1-1000). Default is 100. IMPORTANT: For large mailboxes, paginate using `next_page_token`. Pagination example: 1) Call with top=100, 2) Read `next_page_token` from the response, 3) If present, call again passing it back as `page_token`, 4) Repeat until `next_page_token` is absent."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of messages to skip for pagination. NOTE: For large result sets, prefer the returned `next_page_token` (pass it back as `page_token`) over manual skip."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $filter query string to filter email messages. Syntax: 'field operator value' combined with 'and', 'or', 'not'. **Operators:** eq, ne, lt, le, gt, ge, startswith(), contains(), any() **String Functions:** - subject: contains(), startswith() - from/sender: startswith() and eq only."
+          },
+          "folder": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "SINGLE mail folder to search within (cannot search across all folders). Well-known names (case-insensitive): 'inbox', 'sentitems', 'drafts', 'deleteditems', 'outbox', 'junkemail', 'archive', 'clutter', 'recoverableitemsdeletions'. For custom folders (e.g., 'Billing', 'Projects'), you MUST provide the folder ID (a long base64-like string like 'AAMkAGU0NTRiNDA4...'). Use OUTLOOK_LIST_MAIL_FOLDERS to get folder IDs for custom folders. Do NOT pass folder URLs or display names."
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of message properties to include in the response (accepts comma-separated string or list). Field names are automatically normalized to correct camelCase (e.g., 'bodypreview' -> 'bodyPreview', 'hasattachments' -> 'hasAttachments'). Valid fields: id, subject, from, sender, toRecipients, ccRecipients, bccRecipients, replyTo, receivedDateTime, sentDateTime, createdDateTime, lastModifiedDateTime, hasAttachments, importance, isRead, isDraft, body, bodyPreview, uniqueBody, categories,"
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Sort order as comma-separated string or list (accepts 'field asc/desc' format or JSON-serialized arrays). Input is automatically normalized to correct format. Common fields: receivedDateTime, sentDateTime, subject, importance, from. NOTE: Ordering may be automatically disabled by Microsoft Graph API when using certain filters (e.g., subject exact match, conversationId) to avoid 'InefficientFilter' errors. In those cases, results will be unsorted."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Target user's email or 'me' for authenticated user. IMPORTANT: 'me' uses the currently connected account. For shared or delegated mailbox access, ensure the connected user has mailbox access and the app has Mail.Read.Shared. 403 errors indicate insufficient delegated/application permissions."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend any required identifier fields from the first call (the token supersedes their values). Optional filter, sort and timezone params need not be repeated; the token carries them."
+          },
+          "include_sensitivity_label": {
+            "type": "boolean",
+            "description": "When true, retrieves and normalizes Microsoft Purview sensitivity labels in the same Graph request. Requires Mail.Read or Mail.ReadWrite. Treat status unknown as fail-closed before using a message's content. The setting is preserved in next_page_token."
+          }
+        }
+      }
+    },
+    {
+      "id": "outlook.reply_email",
+      "tool": "OUTLOOK_REPLY_EMAIL",
+      "toolName": "outlook_reply_email",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Sends a reply to an Outlook email message with optional HTML formatting, attachments, CC, and BCC recipients.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Outlook: Reply to Email",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "cc_emails": "names an address a message goes to or comes from",
+        "attachment": "unsupported schema",
+        "bcc_emails": "names an address a message goes to or comes from"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "comment": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "The body content of the reply email. Can be plain text or HTML based on is_html flag."
+          },
+          "is_html": {
+            "type": "boolean",
+            "description": "Whether the comment body should be rendered as HTML (true) or plain text (false). When false, HTML tags in the comment will be displayed as literal text."
+          },
+          "message_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Microsoft Graph message ID (NOT an email address). This is a Base64-encoded string typically starting with 'AAMk' (e.g., 'AAMkAGI2TAAA='). Do NOT pass email addresses like 'user@example.com'. Obtain this ID from the 'id' field returned by `OUTLOOK_LIST_MESSAGES`, `OUTLOOK_GET_MESSAGE`, or `OUTLOOK_SEARCH_MESSAGES` actions."
+          }
+        },
+        "required": [
+          "message_id",
+          "comment"
+        ]
+      }
+    },
+    {
+      "id": "outlook.search_events",
+      "tool": "OUTLOOK_SEARCH_EVENTS",
+      "toolName": "outlook_search_events",
+      "lane": "read",
+      "effect": "read",
+      "description": "Searches for calendar events in the authenticated user's primary calendar. Work and school accounts use Microsoft Graph Search. When Microsoft Graph reports that Search is unsupported for a personal Microsoft account, the action searches a caller-supplied calendarView window locally by matching every whitespace-separated keyword across subject, body preview, location, and attendees.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum results per work or school Microsoft Search page. For the personal Microsoft account fallback, this limits calendar candidates examined in one provider page, so it can return fewer keyword matches; use next_page_token to continue scanning. The default is 25."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The search query string to find calendar events. Required on the first page and omitted when continuing with page_token. For personal Microsoft accounts, the fallback treats this as plain, case-insensitive terms across subject, body preview, location, and attendees. Every whitespace-separated term must match; Microsoft Search query syntax is not available."
+          },
+          "from_index": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The zero-based starting index for pagination. Use this to skip results and fetch the next page."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for a personal-account fallback result. Omit for the first page; then pass back next_page_token unmodified. When set, it carries the date window and keyword from the first request and advances one calendar candidate page."
+          },
+          "end_datetime": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "End of the ISO 8601 calendar window for the personal Microsoft account fallback. Must be supplied with start_datetime when Microsoft Search is unavailable for that account; ignored for normal Microsoft Search requests."
+          },
+          "start_datetime": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Start of the ISO 8601 calendar window for the personal Microsoft account fallback. Must be supplied with end_datetime when Microsoft Search is unavailable for that account; ignored for normal Microsoft Search requests."
+          },
+          "include_sensitivity_label": {
+            "type": "boolean",
+            "description": "When true, hydrates each search hit's Microsoft Purview sensitivity label through Graph JSON batches capped at 20 requests per batch. This is distinct from the event's built-in sensitivity field and from a Teams online meeting sensitivity-label assignment. Requires Calendars.Read. Treat status unknown as fail-closed before using event content."
+          }
+        },
+        "description": "Request model for searching calendar events via Microsoft Graph Search API."
+      }
+    },
+    {
+      "id": "outlook.search_messages",
+      "tool": "OUTLOOK_SEARCH_MESSAGES",
+      "toolName": "outlook_search_messages",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search Outlook messages using KQL syntax. Supports Microsoft 365, work/school, and personal Microsoft accounts. Personal accounts use the Messages API fallback. Examples: 'from:user@example.com AND received>=2025-10-01', 'to:info@jcdn.nl AND subject:invoice', 'received>today-30 AND hasattachment:yes'",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 25,
+            "description": "Number of search results to return per page (1-25). Note: For message entity, max size is 25. Also, from_index + size cannot exceed 1000 (API pagination window limit)."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "KQL (Keyword Query Language) search query string. Supports advanced syntax for precise searches. **Basic Syntax:** - Simple keywords: 'budget report' - Exact phrases: '\"quarterly review\"' - Boolean operators: 'urgent AND deadline' or 'invoice OR receipt' **Property Filters (prefix:value):** - from: Sender email - 'from:user@example.com' or 'from:example.com' - to: Recipient email - 'to:info@jcdn.nl' - cc: CC recipient - 'cc:manager@example.com' - subject: Subject line - 'subject:invoice' -"
+          },
+          "region": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Geographic region for the search query. ONLY required when using application permissions (S2S authentication). DO NOT use with delegated permissions (user authentication) - the API will reject the request. Common values: 'US', 'EU', 'GB', 'JP', 'CN', 'IN', 'CA', 'AU', 'BR', 'RU'. Leave unset (None) for delegated permissions."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Text to search for within the message subject line. Legacy parameter - prefer using 'subject:text' in the query parameter for more control. When combined with query, this filter is joined using AND. If query contains OR operators, the query is wrapped in parentheses to preserve precedence. Example: Instead of subject='invoice', use query='subject:invoice AND received>=2025-10-01'"
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Target mailbox: 'me' for the signed-in user, or an email/UPN for a shared/other mailbox (e.g., 'support@example.com'). Shared-mailbox access requires Mail.Read.Shared (delegated) or Mail.Read (application) on the target; 403 means insufficient permissions."
+          },
+          "fromEmail": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages by sender email address or domain. Supports exact email ('user@example.com') or domain matching ('example.com'). Legacy parameter - prefer using 'from:email@example.com' in the query parameter for more flexibility. When combined with query, this filter is joined using AND. If query contains OR operators, the query is wrapped in parentheses to preserve precedence."
+          },
+          "from_index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999,
+            "description": "The 0-based starting index for Microsoft Search API pagination (max 999). Note: from_index + size cannot exceed 1000 (API pagination window limit). To paginate: check response['value'][0]['hitsContainers'][0]['moreResultsAvailable']. For Microsoft Search API results, if true, call again with from_index += size (e.g., 0 → 25 → 50). For Messages API fallback results, pass the response's next_page_token as page_token instead."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next Messages API fallback page. Omit for the first page; then pass back the next_page_token from the previous response, unmodified. Do not construct or edit it. When set, it preserves the original mailbox, query, and page size. Also resend the original user_id for a shared mailbox so connection requirements can be evaluated correctly."
+          },
+          "hasAttachments": {
+            "type": "boolean",
+            "description": "Filters messages based on the presence of attachments. Legacy parameter - prefer using 'hasattachment:yes' or 'hasattachment:no' in the query parameter. When combined with query, this filter is joined using AND. If query contains OR operators, the query is wrapped in parentheses to preserve precedence."
+          },
+          "enable_top_results": {
+            "type": "boolean",
+            "description": "If `true`, sorts results by relevance; otherwise, sorts by date in descending order (newest first)."
+          },
+          "include_sensitivity_label": {
+            "type": "boolean",
+            "description": "When true, hydrates each search hit's Microsoft Purview sensitivity label through Graph JSON batches capped at 20 requests per batch. Requires Mail.Read or Mail.ReadWrite. Treat status unknown as fail-closed before using the search result's message content."
+          }
+        },
+        "description": "Searches Outlook messages with Microsoft Search or the Messages API fallback."
+      }
+    },
+    {
+      "id": "outlook.send_draft",
+      "tool": "OUTLOOK_SEND_DRAFT",
+      "toolName": "outlook_send_draft",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Tool to send an existing draft message. Use after creating a draft when you want to deliver it to recipients immediately. Example: Send a draft message with ID 'AAMkAG…'.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Outlook: Send draft",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the draft message to send."
+          }
+        },
+        "required": [
+          "message_id"
+        ]
+      }
+    },
+    {
+      "id": "outlook.send_email",
+      "tool": "OUTLOOK_SEND_EMAIL",
+      "toolName": "outlook_send_email",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Sends an email with subject, body, recipients, and optional attachments via Microsoft Graph API. Supports comma-separated email addresses in the to_email field for multiple recipients. Accepts either a single file or a list of files as attachments. Attachments require a non-empty file with valid name and mimetype.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Outlook: Send email",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "attachment": "unsupported schema",
+        "from_address": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The primary recipient's email address(es). You can provide a single email or multiple emails separated by commas. Valid email addresses will be extracted from strings containing extra text. Format: name@domain.com"
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The content of the email body as a plain string (plain text or HTML based on `is_html`). Do not pass structured objects; provide only the raw text/HTML content."
+          },
+          "is_html": {
+            "type": "boolean",
+            "description": "Specifies if the email body is HTML; `True` for HTML, `False` for plain text."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "The subject line of the email."
+          },
+          "to_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The display name of the primary recipient."
+          },
+          "cc_emails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of email addresses for CC recipients. Each email should be a separate string in the array. Do NOT pass comma-separated values as a single string."
+          },
+          "bcc_emails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of email addresses for BCC recipients. Each email should be a separate string in the array. Do NOT pass comma-separated values as a single string."
+          },
+          "save_to_sent_items": {
+            "type": "boolean",
+            "description": "Indicates if the email should be saved in 'Sent Items'."
+          }
+        },
+        "required": [
+          "subject",
+          "body",
+          "to"
+        ]
+      }
+    },
+    {
+      "id": "outlook.update_calendar_event",
+      "tool": "OUTLOOK_UPDATE_CALENDAR_EVENT",
+      "toolName": "outlook_update_calendar_event",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates specified fields of an existing Outlook calendar event. Implementation note: To avoid unintentionally clearing properties, the action first fetches the existing event, merges only the provided fields, and then PATCHes the merged updates. Unspecified fields remain unchanged.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Outlook: Update calendar event",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "location": "unsupported schema",
+        "attendees": "names an address a message goes to or comes from"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The actual content of the event body, corresponding to the specified contentType."
+              },
+              "contentType": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The format of the event body. Must be 'Text' for plain text or 'HTML' for HTML content."
+              }
+            },
+            "required": [
+              "contentType",
+              "content"
+            ],
+            "description": "Event body with content type ('Text' or 'HTML') and the content. If omitted, the existing body remains unchanged."
+          },
+          "show_as": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Availability status for the event. Valid values: 'free', 'tentative', 'busy', 'oof'. If omitted, the existing status remains unchanged."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "New subject for the event. If provided as an empty string, the subject will be cleared. If omitted, the existing subject remains unchanged."
+          },
+          "event_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the calendar event to be updated. This ID can be obtained from the OUTLOOK_LIST_EVENTS action."
+          },
+          "time_zone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "IANA or Windows time zone for start_datetime and/or end_datetime. If omitted, naive values use the event's original zone, not the UTC zone shown by OUTLOOK_GET_EVENT or OUTLOOK_LIST_EVENTS; pass 'UTC' when using values from those responses. Offset values with no time_zone are converted to UTC."
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Category names to associate with the event. If provided (even empty), replaces the existing categories. If omitted, categories remain unchanged. Duplicate entries (case-insensitive) are automatically removed."
+          },
+          "recurrence": {
+            "type": "object",
+            "properties": {
+              "range": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The recurrence range. Possible values: endDate, noEnd, or numbered."
+                  },
+                  "endDate": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The date to stop applying the recurrence pattern. Required when type is endDate."
+                  },
+                  "startDate": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The date to start applying the recurrence pattern."
+                  },
+                  "recurrenceTimeZone": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "Time zone for the startDate and endDate properties."
+                  },
+                  "numberOfOccurrences": {
+                    "type": "integer",
+                    "description": "The number of times to repeat the event. Required and must be positive when type is numbered."
+                  }
+                },
+                "required": [
+                  "type",
+                  "startDate"
+                ],
+                "description": "Specifies the duration of a recurring event."
+              },
+              "pattern": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The recurrence pattern type: daily, weekly, absoluteMonthly, relativeMonthly, absoluteYearly, or relativeYearly."
+                  },
+                  "index": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "Specifies which instance (first, second, third, fourth, or last) of allowed days the event occurs."
+                  },
+                  "month": {
+                    "type": "integer",
+                    "description": "The month in which the event occurs. This is a number from 1 to 12."
+                  },
+                  "interval": {
+                    "type": "integer",
+                    "description": "The number of units between occurrences, where units can be in days, weeks, months, or years."
+                  },
+                  "dayOfMonth": {
+                    "type": "integer",
+                    "description": "The day of the month on which the event occurs. Required if type is absoluteMonthly or absoluteYearly."
+                  },
+                  "daysOfWeek": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 20000
+                    },
+                    "maxItems": 100,
+                    "description": "A collection of the days of the week on which the event occurs. Possible values: sunday through saturday."
+                  },
+                  "firstDayOfWeek": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "The first day of the week. Defaults to Sunday."
+                  }
+                },
+                "required": [
+                  "type",
+                  "interval"
+                ],
+                "description": "Defines the frequency of a recurring event."
+              }
+            },
+            "description": "The recurrence pattern for an event."
+          },
+          "end_datetime": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "New end date and time. Prefer local YYYY-MM-DDTHH:MM:SS. If time_zone is omitted, a naive value is interpreted in the event's original zone, not the UTC zone shown by OUTLOOK_GET_EVENT or OUTLOOK_LIST_EVENTS; pass time_zone='UTC' when using a value from those responses. An offset value with no time_zone is converted to UTC."
+          },
+          "start_datetime": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "New start date and time. Prefer local YYYY-MM-DDTHH:MM:SS. If time_zone is omitted, a naive value is interpreted in the event's original zone, not the UTC zone shown by OUTLOOK_GET_EVENT or OUTLOOK_LIST_EVENTS; pass time_zone='UTC' when using a value from those responses. An offset value with no time_zone is converted to UTC."
+          }
+        },
+        "required": [
+          "event_id"
+        ]
+      }
+    },
+    {
+      "id": "outlook.update_email",
+      "tool": "OUTLOOK_UPDATE_EMAIL",
+      "toolName": "outlook_update_email",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Updates specified properties of an existing email message; `message_id` must identify a valid message within the specified `user_id`'s mailbox.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Outlook: Update email message",
+      "withheldArguments": {
+        "From": "names an address a message goes to or comes from",
+        "sender": "unsupported schema",
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "reply_to": "names an address a message goes to or comes from",
+        "cc_recipients": "names an address a message goes to or comes from",
+        "to_recipients": "names an address a message goes to or comes from",
+        "bcc_recipients": "names an address a message goes to or comes from"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The actual email body content, formatted according to the `contentType`. For example, if contentType is 'HTML', this would be HTML markup."
+              },
+              "contentType": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Specifies the format of the email body content. Must be either 'Text' (for plain text) or 'HTML' (for HTML markup)."
+              }
+            },
+            "required": [
+              "contentType",
+              "content"
+            ],
+            "description": "New body content (Text or HTML). If omitted, the existing message body remains unchanged. Must be a dict with both `contentType` ('Text' or 'HTML') and `content` keys set together; omitting `contentType` defaults to plain text and will not render HTML markup."
+          },
+          "flag": {
+            "type": "object",
+            "properties": {
+              "flagStatus": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Flag status for the message. Possible values: 'notFlagged', 'flagged', 'complete'. When 'notFlagged', any date/time fields (startDateTime, dueDateTime, completedDateTime) are ignored."
+              },
+              "dueDateTime": {
+                "type": "object",
+                "properties": {
+                  "dateTime": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "A single point of time in a combined date and time representation ({date}T{time}; for example, 2017-08-29T04:00:00.0000000)."
+                  },
+                  "timeZone": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "Represents a time zone, for example, 'Pacific Standard Time' or 'UTC'."
+                  }
+                },
+                "required": [
+                  "dateTime",
+                  "timeZone"
+                ],
+                "description": "Represents a date and time with timezone information for input."
+              },
+              "startDateTime": {
+                "type": "object",
+                "properties": {
+                  "dateTime": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "A single point of time in a combined date and time representation ({date}T{time}; for example, 2017-08-29T04:00:00.0000000)."
+                  },
+                  "timeZone": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "Represents a time zone, for example, 'Pacific Standard Time' or 'UTC'."
+                  }
+                },
+                "required": [
+                  "dateTime",
+                  "timeZone"
+                ],
+                "description": "Represents a date and time with timezone information for input."
+              },
+              "completedDateTime": {
+                "type": "object",
+                "properties": {
+                  "dateTime": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "A single point of time in a combined date and time representation ({date}T{time}; for example, 2017-08-29T04:00:00.0000000)."
+                  },
+                  "timeZone": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "description": "Represents a time zone, for example, 'Pacific Standard Time' or 'UTC'."
+                  }
+                },
+                "required": [
+                  "dateTime",
+                  "timeZone"
+                ],
+                "description": "Represents a date and time with timezone information for input."
+              }
+            },
+            "required": [
+              "flagStatus"
+            ],
+            "description": "Represents the flag value for a message (input)."
+          },
+          "is_read": {
+            "type": "boolean",
+            "description": "Mark message as read (True) or unread (False). If omitted, read status remains unchanged."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "New subject line. If omitted, the existing subject remains unchanged. Provide empty string to clear the subject."
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Categories associated with the message. Provides a list of category labels (e.g., 'Follow Up', 'Customer')."
+          },
+          "importance": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "New importance level ('low', 'normal', 'high'). If omitted, the existing importance level remains unchanged."
+          },
+          "message_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the email message to be updated. This ID is typically obtained from listing messages or creating/sending a message. URL-encoded IDs are automatically decoded before use."
+          },
+          "internet_message_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The message ID in the format specified by RFC2822. Updatable only if isDraft = true."
+          },
+          "inference_classification": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Classification of the message for the user based on inferred relevance or importance. Possible values: 'focused' or 'other'."
+          },
+          "is_read_receipt_requested": {
+            "type": "boolean",
+            "description": "Indicates whether a read receipt is requested for the message."
+          },
+          "is_delivery_receipt_requested": {
+            "type": "boolean",
+            "description": "Indicates whether a delivery receipt is requested for the message."
+          }
+        },
+        "required": [
+          "message_id"
+        ]
+      }
+    },
+    {
+      "id": "outlook.update_todo_task",
+      "tool": "OUTLOOK_UPDATE_TODO_TASK",
+      "toolName": "outlook_update_todo_task",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update an existing task in Microsoft To Do. Use when modifying a task's title, status, importance, due date, reminder, body, or categories. Only the fields you provide will be changed.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Outlook: Update To Do task",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The content of the task body."
+              },
+              "contentType": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The type of the content. Use 'text' for plain text or 'html' for HTML formatted content."
+              }
+            },
+            "required": [
+              "content"
+            ],
+            "description": "Updated description or notes for the task. Provide both contentType ('text' or 'html') and content fields."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "The new title of the task."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The updated status of the task. Allowed values: 'notStarted', 'inProgress', 'completed', 'waitingOnOthers', 'deferred'."
+          },
+          "task_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the task to update. Obtain this from List To Do tasks or Create To Do task."
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Updated list of category labels for the task."
+          },
+          "importance": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The importance level of the task. Allowed values: 'low', 'normal', 'high'."
+          },
+          "dueDateTime": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A single point of time in ISO 8601 format (e.g., 2024-01-15T14:30:00). Do not include timezone offset in the string itself."
+              },
+              "timeZone": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Time zone designation. Use standard IANA time zone identifiers (e.g., 'America/New_York', 'Europe/London') or 'UTC'."
+              }
+            },
+            "required": [
+              "dateTime"
+            ],
+            "description": "The updated due date and time. Provide both dateTime (ISO 8601) and timeZone."
+          },
+          "reminderDateTime": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A single point of time in ISO 8601 format (e.g., 2024-01-15T14:30:00). Do not include timezone offset in the string itself."
+              },
+              "timeZone": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Time zone designation. Use standard IANA time zone identifiers (e.g., 'America/New_York', 'Europe/London') or 'UTC'."
+              }
+            },
+            "required": [
+              "dateTime"
+            ],
+            "description": "The updated reminder date and time. Setting this will also enable the reminder."
+          },
+          "completedDateTime": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A single point of time in ISO 8601 format (e.g., 2024-01-15T14:30:00). Do not include timezone offset in the string itself."
+              },
+              "timeZone": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Time zone designation. Use standard IANA time zone identifiers (e.g., 'America/New_York', 'Europe/London') or 'UTC'."
+              }
+            },
+            "required": [
+              "dateTime"
+            ],
+            "description": "The date and time the task was completed. Typically set alongside status='completed'."
+          },
+          "todo_task_list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the task list that contains the task."
+          }
+        },
+        "required": [
+          "todo_task_list_id",
+          "task_id"
+        ]
+      }
+    },
+    {
+      "id": "outlook.who_am_i",
+      "tool": "OUTLOOK_WHO_AM_I",
+      "toolName": "outlook_who_am_i",
+      "lane": "read",
+      "effect": "read",
+      "description": "Return the identity (email, name) of the connected Outlook account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

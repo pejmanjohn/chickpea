@@ -1,6 +1,14 @@
 import * as v from 'valibot';
 
+import bitbucket from './manifests/bitbucket.json' with { type: 'json' };
+import excel from './manifests/excel.json' with { type: 'json' };
 import freshdesk from './manifests/freshdesk.json' with { type: 'json' };
+import github from './manifests/github.json' with { type: 'json' };
+import oneDrive from './manifests/one_drive.json' with { type: 'json' };
+import outlook from './manifests/outlook.json' with { type: 'json' };
+import pagerduty from './manifests/pagerduty.json' with { type: 'json' };
+import salesforce from './manifests/salesforce.json' with { type: 'json' };
+import sharePoint from './manifests/share_point.json' with { type: 'json' };
 import type {
   ManagedAccessLane,
   ManagedConnectorDefinition,
@@ -226,8 +234,17 @@ export function compileComposioManifest(manifest: ComposioManifest): ManagedConn
   };
 }
 
-export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [freshdesk]
-  .map((value) => parseComposioManifest(value));
+export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
+  bitbucket,
+  excel,
+  freshdesk,
+  github,
+  oneDrive,
+  outlook,
+  pagerduty,
+  salesforce,
+  sharePoint,
+].map((value) => parseComposioManifest(value));
 
 /** Reviewed manifests the generator still checks but the catalog does not ship, with the reason. */
 export const HELD_COMPOSIO_MANIFESTS: Readonly<Record<string, string>> = {

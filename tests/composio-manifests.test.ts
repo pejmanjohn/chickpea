@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { test } from 'node:test';
 
 import * as v from 'valibot';
@@ -6,16 +8,17 @@ import * as v from 'valibot';
 import type { ConnectionAccountManagedPolicy } from '../src/config/types.ts';
 import {
   COMPOSIO_MANIFESTS,
+  HELD_COMPOSIO_MANIFESTS,
   compileComposioManifest,
   parseComposioManifest,
   type ComposioManifest,
 } from '../src/connections/catalog/composio-manifests.ts';
 import trello from '../src/connections/catalog/manifests/trello.json' with { type: 'json' };
-import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
+import { MANAGED_CONNECTOR_CATALOG, createManagedConnectorCatalog } from '../src/connections/catalog/index.ts';
 import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
-import { manifestComposioCapabilities } from '../src/connections/providers/composio/manifest-capabilities.ts';
 import {
+  MANIFEST_DIRECTORY,
   checkComposioManifest,
   checkComposioManifestDirectory,
   draftComposioManifest,
@@ -413,6 +416,66 @@ test('write tools lose file and copy-source arguments but keep a plain source fi
   }
 });
 
+test('write tools lose options that replace an existing item, and a tool that replaces by default needs review', () => {
+  const name = { type: 'string' };
+  const { manifest, report } = draftComposioManifest(snapshot([
+    tool('ACME_CREATE_FOLDER', ['createHint'], {
+      type: 'object',
+      properties: {
+        name,
+        conflict_behavior: { type: 'string', enum: ['fail', 'rename', 'replace'], default: 'rename' },
+        on_conflict: { anyOf: [{ type: 'string', enum: ['skip', 'Overwrite'] }, { type: 'null' }] },
+        sort: { type: 'string', enum: ['name', 'size'] },
+      },
+      required: ['name'],
+    }),
+    tool('ACME_UPLOAD_FILE', ['createHint'], {
+      type: 'object',
+      properties: { name, overwrite: { type: 'boolean', default: true } },
+      required: ['name'],
+    }),
+    tool('ACME_LIST_FOLDERS', ['readOnlyHint'], {
+      type: 'object',
+      properties: { conflict_behavior: { type: 'string', enum: ['fail', 'replace'] } },
+    }),
+  ]));
+  const folder = manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_CREATE_FOLDER')!;
+
+  assert.deepEqual(Object.keys(folder.input.properties), ['name', 'sort']);
+  assert.deepEqual(folder.withheldArguments, {
+    conflict_behavior: 'can replace an existing item',
+    on_conflict: 'can replace an existing item',
+  });
+  assert.equal(folder.effect, 'reversible_write');
+  assert.equal(lanes(manifest).ACME_UPLOAD_FILE, undefined);
+  assert.match(report.excluded.find(({ tool: slug }) => slug === 'ACME_UPLOAD_FILE')!.reason,
+    /^administrative: argument overwrite can replace an existing item by default/);
+  assert.ok('conflict_behavior' in manifest.capabilities
+    .find(({ tool: slug }) => slug === 'ACME_LIST_FOLDERS')!.input.properties);
+});
+
+test('a description that names the caller\'s OAuth grant does not withhold an argument', () => {
+  const { manifest } = draftComposioManifest(snapshot([
+    tool('ACME_UPDATE_RANGE', ['updateHint'], {
+      type: 'object',
+      properties: {
+        item_id: { type: 'string' },
+        drive_id: { type: 'string', description: 'Optional drive ID. Required for application-level permissions (s2s_oauth).' },
+        session_id: { type: 'string', description: 'Workbook session. Uses delegated permissions when omitted.' },
+        audience: { type: 'string', description: 'Sets the permissions other people get on the workbook.' },
+        scopes: { type: 'string', description: 'Application permissions to grant to the installed app.' },
+        access: { type: 'string', description: 'App permissions requested for all repositories.' },
+        grant: { type: 'string', description: 'Grants delegated permissions on the mailbox to the named principal.' },
+      },
+      required: ['item_id'],
+    }),
+  ]));
+  const range = manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_UPDATE_RANGE')!;
+
+  assert.deepEqual(Object.keys(range.input.properties), ['item_id', 'drive_id', 'session_id']);
+  assert.deepEqual(Object.keys(range.withheldArguments!), ['audience', 'scopes', 'access', 'grant']);
+});
+
 test('a write that needs a permission argument is administrative and needs an explicit reviewer opt-in', () => {
   const share = tool('ACME_SHARE_BOARD', ['updateHint'], {
     type: 'object',
@@ -586,6 +649,21 @@ test('manifest connectors use the same catalog contract as hand-written ones', (
   }
   assert.equal(MANAGED_CONNECTOR_CATALOG.capabilities('freshdesk', 'read')
     .some(({ id }) => id === 'freshdesk.reply_to_ticket'), false);
+});
+
+test('every held manifest compiles into the managed catalog beside the shipped connectors', async () => {
+  for (const toolkit of Object.keys(HELD_COMPOSIO_MANIFESTS)) {
+    const manifest = parseComposioManifest(
+      JSON.parse(await readFile(path.join(MANIFEST_DIRECTORY, `${toolkit}.json`), 'utf8')),
+    );
+    const catalog = createManagedConnectorCatalog([
+      ...MANAGED_CONNECTOR_CATALOG.list(),
+      compileComposioManifest(manifest),
+    ]);
+    const connector = catalog.connector(toolkit);
+    assert.ok(connector, toolkit);
+    for (const capability of connector.capabilities) assert.ok(capability.input, capability.id);
+  }
 });
 
 const FRESHDESK_POLICY: ConnectionAccountManagedPolicy = {
@@ -841,54 +919,104 @@ test('a precondition must compare two read capabilities over arguments the write
   assert.throws(() => parseComposioManifest(manifest), /invalid precondition/);
 });
 
-const MOVE_CARD = manifestComposioCapabilities([pilotManifest('trello')])['trello.update_cards_by_id_card']!;
+const CARD_POLICY: ConnectionAccountManagedPolicy = {
+  kind: 'managed',
+  adapterId: 'composio',
+  toolkit: 'trello',
+  principalRef: 'chickpea:membership:membership_test',
+  accountRef: 'ca_trello',
+  allowedCapabilities: ['trello.who_am_i', 'trello.update_cards_by_id_card'],
+};
 
-function boardLookups(card: () => Record<string, unknown>, list: Record<string, unknown>, calls: string[]) {
-  return async (tool: string): Promise<Record<string, unknown>> => {
-    calls.push(tool);
-    if (tool === 'TRELLO_GET_CARDS_BY_ID_CARD') return card();
-    if (tool === 'TRELLO_GET_LISTS_BOARD_BY_ID_LIST') return list;
-    throw new Error(`unexpected lookup ${tool}`);
-  };
+type ToolResult = { data: Record<string, unknown>; error?: string | null; successful?: boolean };
+
+/** Trello is held out of the catalog, so the provider executes its manifest by injection. */
+function trelloProvider(execute: (slug: string) => ToolResult, calls: string[]) {
+  return new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    manifests: [pilotManifest('trello')],
+    getConnectedAccount: async () => { throw new Error('status unavailable'); },
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: {
+        async execute(slug) {
+          calls.push(slug);
+          return { error: null, successful: true, ...execute(slug) };
+        },
+      },
+    }),
+  });
 }
 
-const sameBoardRule = /idList must stay in the record's current container/;
+function boardProvider(boards: { card: string; list: string }, calls: string[]) {
+  return trelloProvider((slug) => ({
+    data: slug === 'TRELLO_GET_CARDS_BY_ID_CARD' ? { data: { id: 'card', idBoard: boards.card } }
+      : slug === 'TRELLO_GET_LISTS_BOARD_BY_ID_LIST' ? { id: boards.list }
+      : { id: 'card' },
+  }), calls);
+}
 
-test('moving a card to a list on another board fails its precondition', async () => {
+function cardLookupProvider(card: () => ToolResult, list: Record<string, unknown>, calls: string[]) {
+  return trelloProvider((slug) => slug === 'TRELLO_GET_CARDS_BY_ID_CARD' ? card()
+    : slug === 'TRELLO_GET_LISTS_BOARD_BY_ID_LIST' ? { data: list }
+    : { data: { id: 'card' } }, calls);
+}
+
+const MOVE = { idCard: 'c'.repeat(24), idList: 'l'.repeat(24) };
+
+const rejectedBeforeDispatch = (error: unknown) => error instanceof ManagedProviderRequestError &&
+  error.code === 'validation_failed' && error.metadata.capabilityToolDispatched === false &&
+  /idList must stay in the record's current container/.test(error.message);
+
+test('moving a card to a list on another board is rejected before the write dispatches', async () => {
   const calls: string[] = [];
-  const move = { idCard: 'c'.repeat(24), idList: 'l'.repeat(24) };
-  const boards = (card: string, list: string) =>
-    boardLookups(() => ({ data: { id: 'card', idBoard: card } }), { id: list }, calls);
 
-  await assert.rejects(MOVE_CARD.beforeDispatch!(move, boards('board_a', 'board_b')), sameBoardRule);
+  await assert.rejects(
+    boardProvider({ card: 'board_a', list: 'board_b' }, calls)
+      .execute({ policy: CARD_POLICY, capability: 'trello.update_cards_by_id_card', arguments: MOVE }),
+    rejectedBeforeDispatch,
+  );
   assert.deepEqual(calls.sort(), ['TRELLO_GET_CARDS_BY_ID_CARD', 'TRELLO_GET_LISTS_BOARD_BY_ID_LIST']);
 
   calls.length = 0;
-  await MOVE_CARD.beforeDispatch!(move, boards('board_a', 'board_a'));
-  assert.deepEqual(calls.sort(), ['TRELLO_GET_CARDS_BY_ID_CARD', 'TRELLO_GET_LISTS_BOARD_BY_ID_LIST']);
+  await boardProvider({ card: 'board_a', list: 'board_a' }, calls)
+    .execute({ policy: CARD_POLICY, capability: 'trello.update_cards_by_id_card', arguments: MOVE });
+  assert.equal(calls.at(-1), 'TRELLO_UPDATE_CARDS_BY_ID_CARD');
 
   calls.length = 0;
-  await MOVE_CARD.beforeDispatch!({ idCard: 'c'.repeat(24), name: 'Renamed' }, boards('board_a', 'board_b'));
-  assert.deepEqual(calls, []);
+  await boardProvider({ card: 'board_a', list: 'board_b' }, calls).execute({
+    policy: CARD_POLICY,
+    capability: 'trello.update_cards_by_id_card',
+    arguments: { idCard: 'c'.repeat(24), name: 'Renamed' },
+  });
+  assert.deepEqual(calls, ['TRELLO_UPDATE_CARDS_BY_ID_CARD']);
 });
 
 test('a list move fails closed when the card lookup is empty, shaped differently, or fails', async () => {
   const board = { id: 'board_a' };
-  const cases: Array<[string, () => Record<string, unknown>, Record<string, unknown>]> = [
-    ['empty card body', () => ({}), board],
-    ['board id under another key', () => ({ card: { idBoard: 'board_a' } }), board],
-    ['board id two data levels down', () => ({ data: { data: { idBoard: 'board_a' } } }), board],
+  const cases: Array<[string, () => ToolResult, Record<string, unknown>]> = [
+    ['empty card body', () => ({ data: {} }), board],
+    ['board id under another key', () => ({ data: { card: { idBoard: 'board_a' } } }), board],
+    ['board id two data levels down', () => ({ data: { data: { data: { idBoard: 'board_a' } } } }), board],
+    ['failed lookup that still carries a body',
+      () => ({ data: { idBoard: 'board_a' }, error: 'Card not found', successful: false }), board],
+    ['unsuccessful lookup with no error text', () => ({ data: { idBoard: 'board_a' }, successful: false }), board],
     ['lookup that throws', () => { throw new Error('socket hang up'); }, board],
-    ['both lookups empty', () => ({}), {}],
+    ['both lookups empty', () => ({ data: {} }), {}],
   ];
 
   for (const [name, card, list] of cases) {
     const calls: string[] = [];
     await assert.rejects(
-      MOVE_CARD.beforeDispatch!({ idCard: 'c'.repeat(24), idList: 'l'.repeat(24) }, boardLookups(card, list, calls)),
-      sameBoardRule,
+      cardLookupProvider(card, list, calls).execute({
+        policy: CARD_POLICY,
+        capability: 'trello.update_cards_by_id_card',
+        arguments: MOVE,
+      }),
+      rejectedBeforeDispatch,
       name,
     );
     assert.ok(calls.includes('TRELLO_GET_CARDS_BY_ID_CARD'), name);
+    assert.equal(calls.includes('TRELLO_UPDATE_CARDS_BY_ID_CARD'), false, name);
   }
 });
