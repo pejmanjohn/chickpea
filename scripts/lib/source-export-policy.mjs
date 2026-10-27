@@ -290,6 +290,10 @@ export const allowedBinaryFiles = new Map([
   [exportPath('assets', 'connectors', 'quickbooks.png'), 'fbb9a774485736d868563505d849ce6fb080cf6019bc0161402f3df7f4616095'],
   [exportPath('assets', 'connectors', 'cal.png'), '5f5f79b1641128e25ce931f66b54bae1451bdd0bab3b7aee426635c0d03a36e4'],
   [exportPath('assets', 'connectors', 'webex.png'), 'fbb6c31d602642c5988b82f52ec0819ca7b99e71c1da91323192a8b56a71a1bc'],
+  [exportPath('assets', 'connectors', 'adzviser.png'), '6d64f55d2a791ffe98dc174d735849b86ca88e8c24e19669929a875bdb39e915'],
+  [exportPath('assets', 'connectors', 'funnel.png'), 'acea2607227fb85b9cd43752761b4fc08eea0c3562da1fe14ea8a587f796fc75'],
+  [exportPath('assets', 'connectors', 'supermetrics.png'), 'e6b3e5ca95dad5a3f01d02598e05bfb2082ece46362ae3d64438086b7e6f06b6'],
+  [exportPath('assets', 'connectors', 'windsor-ai.png'), '0fd54d0fe1df834bbf86e1f738d7bdf1a26a89da9fc4e7d3b7c61e2ab2d81c57'],
   [
     exportPath('assets', 'chickpea-mark.png'),
     '84864d6d3323f7d9d5491a139c0e9e0b0d92b1e076c742d5f4d50e75148b65fb',

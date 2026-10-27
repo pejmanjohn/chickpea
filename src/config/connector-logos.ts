@@ -208,6 +208,9 @@ export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
   "miro": {
     "svg": "<path d=\"M17.392 0H13.9L17 4.808 10.444 0H6.949l3.102 6.3L3.494 0H0l3.05 8.131L0 24h3.494L10.05 6.985 6.949 24h3.494L17 5.494 13.899 24h3.493L24 3.672 17.392 0z\"/>"
   },
+  "tiktok-ads": {
+    "svg": "<path d=\"M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93-.01 2.92.01 5.84-.02 8.75-.08 1.4-.54 2.79-1.35 3.94-1.31 1.92-3.58 3.17-5.91 3.21-1.43.08-2.86-.31-4.08-1.03-2.02-1.19-3.44-3.37-3.65-5.71-.02-.5-.03-1-.01-1.49.18-1.9 1.12-3.72 2.58-4.96 1.66-1.44 3.98-2.13 6.15-1.72.02 1.48-.04 2.96-.04 4.44-.99-.32-2.15-.23-3.02.37-.63.41-1.11 1.04-1.36 1.75-.21.51-.15 1.07-.14 1.61.24 1.64 1.82 3.02 3.5 2.87 1.12-.01 2.19-.66 2.77-1.61.19-.33.4-.67.41-1.06.1-1.79.06-3.57.07-5.36.01-4.03-.01-8.05.02-12.07z\"/>"
+  },
   // Official Honeycomb touch icon, bundled unchanged for self-hosted/offline rendering.
   // Source: https://docs.honeycomb.io/ (retrieved 2026-10-26).
   // Asset: https://docs.honeycomb.io/mintlify-assets/_mintlify/favicons/honeycomb/7YUY9epdPvOVWjv6/_generated/favicon/apple-touch-icon.png
@@ -318,6 +321,34 @@ export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
   // Asset: https://www.apollo.io/apple-icon.png
   "apollo": {
     "svg": "<img src=\"/connectors/apollo.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Adzviser touch icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://adzviser.com/ (retrieved 2026-10-27).
+  // Asset: https://adzviser.com/apple-touch-icon.png
+  "adzviser": {
+    "svg": "<img src=\"/connectors/adzviser.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Funnel site icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://funnel.io/ (retrieved 2026-10-27).
+  // Asset: https://funnel.io/hubfs/Branding/Logos/funnel-favicon-web.png
+  "funnel": {
+    "svg": "<img src=\"/connectors/funnel.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Supermetrics site icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://supermetrics.com/ (retrieved 2026-10-27).
+  // Asset: https://supermetrics.com/favicon.png?v=1
+  "supermetrics": {
+    "svg": "<img src=\"/connectors/supermetrics.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Windsor.ai touch icon, bundled unchanged for self-hosted/offline rendering.
+  // Source: https://windsor.ai/ (retrieved 2026-10-27).
+  // Asset: https://windsor.ai/wp-content/uploads/2020/02/favicon-310-300x300.png
+  "windsor-ai": {
+    "svg": "<img src=\"/connectors/windsor-ai.png\" alt=\"\">",
     "raster": true
   },
   // Official Freshdesk product mark, embedded for self-hosted/offline rendering.

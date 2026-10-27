@@ -109,7 +109,7 @@ test('managed Google analytics presets reference the official product-icon binar
 
 test('preset lanes classify the existing MCP catalog, the API additions, and both', () => {
   const existingMcpPresets = CONNECTOR_PRESETS.filter((preset) => !API_PRESET_IDS.has(preset.id));
-  assert.equal(existingMcpPresets.length, 53);
+  assert.equal(existingMcpPresets.length, 58);
   for (const preset of existingMcpPresets) {
     assert.deepEqual(presetLanes(preset), { mcp: true, api: false }, preset.id);
   }
@@ -583,6 +583,15 @@ test('vendor-hosted OAuth MCP presets request the scopes their servers advertise
     clickup: { url: 'https://mcp.clickup.com/mcp', scope: 'read write' },
     gitlab: { url: 'https://gitlab.com/api/v4/mcp', scope: 'mcp' },
     miro: { url: 'https://mcp.miro.com/', scope: 'boards:read boards:write' },
+    adzviser: { url: 'https://mcp.adzviser.com/http' },
+    funnel: { url: 'https://mcp.ai.funnel.io/mcp', scope: 'openid profile email offline_access' },
+    supermetrics: {
+      url: 'https://mcp.supermetrics.com/mcp',
+      scope:
+        'team_read user_read ds_logins_read ds_accounts_read ds_queries_run openid offline_access auth_create_account ds_login_links_read ds_login_links_write ds_platform_write business_context_read business_context_write',
+    },
+    'tiktok-ads': { url: 'https://business-api.tiktok.com/open_mcp/tt-ads-mcp-layer', scope: 'mcp:tt4b' },
+    'windsor-ai': { url: 'https://mcp.windsor.ai/', scope: 'create delete offline_access' },
   };
   for (const [id, { url, scope }] of Object.entries(reviewed)) {
     const preset = getConnectorPreset(id);
