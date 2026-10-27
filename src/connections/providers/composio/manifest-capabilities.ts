@@ -2,7 +2,11 @@ import * as v from 'valibot';
 
 import { isRecord } from '../../../security/content-validation.ts';
 import { MANAGED_CONNECTOR_CATALOG, composioManifest } from '../../catalog/index.ts';
-import type { ManifestLookup } from '../../catalog/composio-manifests.ts';
+import {
+  compileComposioManifest,
+  type ComposioManifest,
+  type ManifestLookup,
+} from '../../catalog/composio-manifests.ts';
 
 type ReadTool = (tool: string, arguments_: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
@@ -23,11 +27,13 @@ const RESULT_BUDGETS = [
   { items: 5, characters: 100, depth: 3 },
 ] as const;
 
-export function manifestComposioCapabilities(): Record<string, ManifestComposioCapability> {
+export function manifestComposioCapabilities(
+  manifests: readonly ComposioManifest[] = MANAGED_CONNECTOR_CATALOG.list()
+    .flatMap(({ toolkit }) => composioManifest(toolkit) ?? []),
+): Record<string, ManifestComposioCapability> {
   const entries: Record<string, ManifestComposioCapability> = {};
-  for (const connector of MANAGED_CONNECTOR_CATALOG.list()) {
-    const manifest = composioManifest(connector.toolkit);
-    if (!manifest) continue;
+  for (const manifest of manifests) {
+    const connector = compileComposioManifest(manifest);
     const tools = new Map(manifest.capabilities.map(({ id, tool }) => [id, tool]));
     for (const capability of connector.capabilities) {
       entries[capability.id] = {

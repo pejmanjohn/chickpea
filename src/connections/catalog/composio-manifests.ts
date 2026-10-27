@@ -1,7 +1,6 @@
 import * as v from 'valibot';
 
 import freshdesk from './manifests/freshdesk.json' with { type: 'json' };
-import trello from './manifests/trello.json' with { type: 'json' };
 import type {
   ManagedAccessLane,
   ManagedConnectorDefinition,
@@ -227,8 +226,13 @@ export function compileComposioManifest(manifest: ComposioManifest): ManagedConn
   };
 }
 
-export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [freshdesk, trello]
+export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [freshdesk]
   .map((value) => parseComposioManifest(value));
+
+/** Reviewed manifests the generator still checks but the catalog does not ship, with the reason. */
+export const HELD_COMPOSIO_MANIFESTS: Readonly<Record<string, string>> = {
+  trello: "Composio's hosted Connect Link for its managed OAuth1 config fails with \"Link session not found or expired\"",
+};
 
 function parseInputSchema(value: unknown, depth: number, where: string): ManifestInputSchema {
   const fail = (): never => {

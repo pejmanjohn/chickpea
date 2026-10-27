@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   COMPOSIO_MANIFEST_LIMITS,
   COMPOSIO_MANIFESTS,
+  HELD_COMPOSIO_MANIFESTS,
   parseComposioManifest,
   type ComposioManifest,
   type ComposioManifestAuth,
@@ -552,8 +553,9 @@ export async function checkComposioManifestDirectory(): Promise<string[]> {
   const problems: string[] = [];
   const toolkits = files.map((file) => file.slice(0, -'.json'.length));
   const bundled = COMPOSIO_MANIFESTS.map(({ toolkit }) => toolkit).sort();
-  if (!isDeepStrictEqual(bundled, toolkits)) {
-    problems.push(`composio-manifests.ts bundles [${bundled.join(', ')}] but the manifest directory has [${toolkits.join(', ')}]`);
+  const held = Object.keys(HELD_COMPOSIO_MANIFESTS).sort();
+  if (!isDeepStrictEqual([...bundled, ...held].sort(), toolkits)) {
+    problems.push(`composio-manifests.ts bundles [${bundled.join(', ')}] and holds [${held.join(', ')}] but the manifest directory has [${toolkits.join(', ')}]`);
   }
   for (const toolkit of toolkits) {
     const value: unknown = JSON.parse(await readFile(path.join(MANIFEST_DIRECTORY, `${toolkit}.json`), 'utf8'));

@@ -8974,7 +8974,7 @@ test('Agent connection setup retains the complete preset catalog', async () => {
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    69,
+    68,
   );
 });
 
@@ -9294,7 +9294,7 @@ test('legacy Google access does not hide fresh Google connection presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 69);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 68);
 });
 
 test('every catalog connector opens an Agent-owned setup flow', async () => {
@@ -9316,7 +9316,6 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
           managedCatalogFixture('google-ads', 'googleads', 'Google Ads'),
           managedCatalogFixture('youtube-managed', 'youtube', 'YouTube'),
           managedCatalogFixture('freshdesk-managed', 'freshdesk', 'Freshdesk'),
-          managedCatalogFixture('trello-managed', 'trello', 'Trello'),
         ],
       },
     },
@@ -9341,7 +9340,7 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 69);
+  assert.equal(presetIds.length, 68);
 });
 
 test('Agent-owned Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {

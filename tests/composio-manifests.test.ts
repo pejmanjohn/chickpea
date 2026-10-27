@@ -6,12 +6,15 @@ import * as v from 'valibot';
 import type { ConnectionAccountManagedPolicy } from '../src/config/types.ts';
 import {
   COMPOSIO_MANIFESTS,
+  compileComposioManifest,
   parseComposioManifest,
   type ComposioManifest,
 } from '../src/connections/catalog/composio-manifests.ts';
+import trello from '../src/connections/catalog/manifests/trello.json' with { type: 'json' };
 import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
 import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
+import { manifestComposioCapabilities } from '../src/connections/providers/composio/manifest-capabilities.ts';
 import {
   checkComposioManifest,
   checkComposioManifestDirectory,
@@ -56,9 +59,15 @@ function lanes(manifest: ComposioManifest): Record<string, string> {
   return Object.fromEntries(manifest.capabilities.map(({ tool: slug, lane }) => [slug, lane]));
 }
 
+const PILOT_MANIFESTS = [...COMPOSIO_MANIFESTS, parseComposioManifest(trello)];
+
 const pilotManifest = (toolkit: string) => structuredClone(
-  COMPOSIO_MANIFESTS.find((manifest) => manifest.toolkit === toolkit)!,
+  PILOT_MANIFESTS.find((manifest) => manifest.toolkit === toolkit)!,
 ) as ComposioManifest;
+
+const TRELLO_CONNECTOR = compileComposioManifest(pilotManifest('trello'));
+
+const trelloCapability = (id: string) => TRELLO_CONNECTOR.capabilities.find((capability) => capability.id === id);
 
 test('every committed manifest matches the generator output for its pinned snapshot', async () => {
   assert.deepEqual(await checkComposioManifestDirectory(), []);
@@ -398,7 +407,7 @@ test('write tools lose file and copy-source arguments but keep a plain source fi
     ['trello.add_cards', { idList: 'l'.repeat(24), name: 'Ship it' }],
     ['trello.update_cards_by_id_card', { idCard: 'c'.repeat(24), name: 'Ship it' }],
   ] as const) {
-    const input = MANAGED_CONNECTOR_CATALOG.capability(id)!.input;
+    const input = trelloCapability(id)!.input;
     assert.equal(v.safeParse(input, card).success, true, id);
     assert.equal(v.safeParse(input, { ...card, fileSource: 'aGVsbG8=' }).success, false, id);
   }
@@ -507,7 +516,7 @@ test('the check rejects a withheld permission argument added back to a pilot man
   const problems = checkComposioManifest(manifest, await readSnapshot('trello', manifest.version));
 
   assert.ok(problems.some((problem) => problem.includes('TRELLO_ADD_BOARDS') && problem.includes('input')), problems.join('\n'));
-  const compiled = MANAGED_CONNECTOR_CATALOG.capability('trello.add_boards')!.input;
+  const compiled = trelloCapability('trello.add_boards')!.input;
   assert.equal(v.safeParse(compiled, { name: 'Roadmap' }).success, true);
   assert.equal(v.safeParse(compiled, { name: 'Roadmap', prefs_permissionLevel: 'public' }).success, false);
 });
@@ -524,7 +533,7 @@ test('the check rejects a manifest that drops a required argument', async () => 
 });
 
 test('compiled tools require every required argument and reject unknown ones', () => {
-  const addCard = MANAGED_CONNECTOR_CATALOG.capability('trello.add_cards')!;
+  const addCard = trelloCapability('trello.add_cards')!;
   assert.equal(v.safeParse(addCard.input, { name: 'Ship it' }).success, false);
   assert.equal(v.safeParse(addCard.input, { idList: 'a'.repeat(24), name: 'Ship it' }).success, true);
   assert.equal(v.safeParse(addCard.input, { idList: 'a'.repeat(24), boardSecret: 'x' }).success, false);
@@ -551,7 +560,7 @@ test('derived schemas cap strings, arrays, and depth, and unbounded manifest sch
   });
   assert.equal('deep' in note.input.properties, false);
 
-  const compiled = MANAGED_CONNECTOR_CATALOG.capability('trello.add_cards')!.input;
+  const compiled = trelloCapability('trello.add_cards')!.input;
   assert.equal(v.safeParse(compiled, { idList: 'a'.repeat(24), desc: 'x'.repeat(20_001) }).success, false);
 
   for (const unbounded of [
@@ -566,9 +575,8 @@ test('derived schemas cap strings, arrays, and depth, and unbounded manifest sch
 });
 
 test('manifest connectors use the same catalog contract as hand-written ones', () => {
-  for (const toolkit of ['trello', 'freshdesk']) {
-    const connector = MANAGED_CONNECTOR_CATALOG.connector(toolkit)!;
-    assert.equal(connector.id, `${toolkit}-managed`);
+  for (const connector of [TRELLO_CONNECTOR, MANAGED_CONNECTOR_CATALOG.connector('freshdesk')!]) {
+    assert.equal(connector.id, `${connector.toolkit}-managed`);
     assert.ok(connector.capabilities.some(({ accessLane }) => accessLane === 'read'));
     assert.ok(connector.capabilities.some(({ accessLane }) => accessLane === 'write'));
     for (const capability of connector.capabilities) {
@@ -580,24 +588,24 @@ test('manifest connectors use the same catalog contract as hand-written ones', (
     .some(({ id }) => id === 'freshdesk.reply_to_ticket'), false);
 });
 
-const TRELLO_POLICY: ConnectionAccountManagedPolicy = {
+const FRESHDESK_POLICY: ConnectionAccountManagedPolicy = {
   kind: 'managed',
   adapterId: 'composio',
-  toolkit: 'trello',
+  toolkit: 'freshdesk',
   principalRef: 'chickpea:membership:membership_test',
-  accountRef: 'ca_trello',
-  allowedCapabilities: ['trello.who_am_i', 'trello.add_cards'],
+  accountRef: 'ca_freshdesk',
+  allowedCapabilities: ['freshdesk.currently_authenticated_agent', 'freshdesk.add_note_to_ticket'],
 };
 
 function recordingProvider(data: Record<string, unknown>, calls: Array<Record<string, unknown>>) {
   return new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
     getConnectedAccount: async () => ({
-      id: TRELLO_POLICY.accountRef,
+      id: FRESHDESK_POLICY.accountRef,
       status: 'ACTIVE',
       isDisabled: false,
-      toolkit: 'trello',
-      userId: TRELLO_POLICY.principalRef,
+      toolkit: 'freshdesk',
+      userId: FRESHDESK_POLICY.principalRef,
     }),
     createClient: async () => ({
       sessions: { async create() { throw new Error('session execution must not be used'); } },
@@ -617,23 +625,27 @@ test('manifest execution sends validated arguments at the pinned version and bou
   const provider = recordingProvider(large, calls);
 
   const result = await provider.execute({
-    policy: TRELLO_POLICY,
-    capability: 'trello.add_cards',
-    arguments: { idList: 'a'.repeat(24), name: 'Ship it' },
+    policy: FRESHDESK_POLICY,
+    capability: 'freshdesk.add_note_to_ticket',
+    arguments: { ticket_id: 42, body: 'Printer fixed.' },
   });
 
   assert.deepEqual(calls, [{
-    tool: 'TRELLO_ADD_CARDS',
-    userId: TRELLO_POLICY.principalRef,
-    connectedAccountId: TRELLO_POLICY.accountRef,
-    version: pilotManifest('trello').version,
-    arguments: { idList: 'a'.repeat(24), name: 'Ship it' },
+    tool: 'FRESHDESK_ADD_NOTE_TO_TICKET',
+    userId: FRESHDESK_POLICY.principalRef,
+    connectedAccountId: FRESHDESK_POLICY.accountRef,
+    version: pilotManifest('freshdesk').version,
+    arguments: { ticket_id: 42, body: 'Printer fixed.' },
   }]);
   assert.equal(result.data.truncated, true);
   assert.ok(new TextEncoder().encode(JSON.stringify(result.data)).byteLength <= 65_536);
 
   await assert.rejects(
-    provider.execute({ policy: TRELLO_POLICY, capability: 'trello.add_cards', arguments: { name: 'No list' } }),
+    provider.execute({
+      policy: FRESHDESK_POLICY,
+      capability: 'freshdesk.add_note_to_ticket',
+      arguments: { body: 'No ticket' },
+    }),
     (error: unknown) => error instanceof ManagedProviderRequestError &&
       error.code === 'validation_failed' && error.metadata.capabilityToolDispatched === false,
   );
@@ -652,9 +664,9 @@ test('a write that times out after dispatch is reported as possibly completed', 
 
   await assert.rejects(
     provider.execute({
-      policy: TRELLO_POLICY,
-      capability: 'trello.add_cards',
-      arguments: { idList: 'a'.repeat(24) },
+      policy: FRESHDESK_POLICY,
+      capability: 'freshdesk.add_note_to_ticket',
+      arguments: { ticket_id: 42, body: 'Printer fixed.' },
     }),
     (error: unknown) => error instanceof ManagedProviderRequestError && error.code === 'ambiguous',
   );
@@ -662,10 +674,10 @@ test('a write that times out after dispatch is reported as possibly completed', 
 
 test('connection validation runs the manifest validation capability', async () => {
   const calls: Array<Record<string, unknown>> = [];
-  await recordingProvider({ id: 'member' }, calls).validate({ policy: TRELLO_POLICY });
+  await recordingProvider({ id: 'agent' }, calls).validate({ policy: FRESHDESK_POLICY });
 
   assert.deepEqual(calls.map(({ tool: slug, arguments: args }) => ({ slug, args })), [
-    { slug: 'TRELLO_WHO_AM_I', args: {} },
+    { slug: 'FRESHDESK_CURRENTLY_AUTHENTICATED_AGENT', args: {} },
   ]);
 });
 
@@ -829,102 +841,54 @@ test('a precondition must compare two read capabilities over arguments the write
   assert.throws(() => parseComposioManifest(manifest), /invalid precondition/);
 });
 
-const CARD_POLICY: ConnectionAccountManagedPolicy = {
-  ...TRELLO_POLICY,
-  allowedCapabilities: ['trello.who_am_i', 'trello.update_cards_by_id_card'],
-};
+const MOVE_CARD = manifestComposioCapabilities([pilotManifest('trello')])['trello.update_cards_by_id_card']!;
 
-function boardProvider(boards: { card: string; list: string }, calls: string[]) {
-  return new ComposioManagedConnectionProvider({
-    apiKey: 'test-key',
-    getConnectedAccount: async () => { throw new Error('status unavailable'); },
-    createClient: async () => ({
-      sessions: { async create() { throw new Error('session execution must not be used'); } },
-      tools: {
-        async execute(slug) {
-          calls.push(slug);
-          const data = slug === 'TRELLO_GET_CARDS_BY_ID_CARD' ? { data: { id: 'card', idBoard: boards.card } }
-            : slug === 'TRELLO_GET_LISTS_BOARD_BY_ID_LIST' ? { id: boards.list }
-            : { id: 'card' };
-          return { data, error: null, successful: true };
-        },
-      },
-    }),
-  });
+function boardLookups(card: () => Record<string, unknown>, list: Record<string, unknown>, calls: string[]) {
+  return async (tool: string): Promise<Record<string, unknown>> => {
+    calls.push(tool);
+    if (tool === 'TRELLO_GET_CARDS_BY_ID_CARD') return card();
+    if (tool === 'TRELLO_GET_LISTS_BOARD_BY_ID_LIST') return list;
+    throw new Error(`unexpected lookup ${tool}`);
+  };
 }
 
-test('moving a card to a list on another board is rejected before the write dispatches', async () => {
+const sameBoardRule = /idList must stay in the record's current container/;
+
+test('moving a card to a list on another board fails its precondition', async () => {
   const calls: string[] = [];
   const move = { idCard: 'c'.repeat(24), idList: 'l'.repeat(24) };
+  const boards = (card: string, list: string) =>
+    boardLookups(() => ({ data: { id: 'card', idBoard: card } }), { id: list }, calls);
 
-  await assert.rejects(
-    boardProvider({ card: 'board_a', list: 'board_b' }, calls)
-      .execute({ policy: CARD_POLICY, capability: 'trello.update_cards_by_id_card', arguments: move }),
-    (error: unknown) => error instanceof ManagedProviderRequestError &&
-      error.code === 'validation_failed' && error.metadata.capabilityToolDispatched === false,
-  );
+  await assert.rejects(MOVE_CARD.beforeDispatch!(move, boards('board_a', 'board_b')), sameBoardRule);
   assert.deepEqual(calls.sort(), ['TRELLO_GET_CARDS_BY_ID_CARD', 'TRELLO_GET_LISTS_BOARD_BY_ID_LIST']);
 
   calls.length = 0;
-  await boardProvider({ card: 'board_a', list: 'board_a' }, calls)
-    .execute({ policy: CARD_POLICY, capability: 'trello.update_cards_by_id_card', arguments: move });
-  assert.equal(calls.at(-1), 'TRELLO_UPDATE_CARDS_BY_ID_CARD');
+  await MOVE_CARD.beforeDispatch!(move, boards('board_a', 'board_a'));
+  assert.deepEqual(calls.sort(), ['TRELLO_GET_CARDS_BY_ID_CARD', 'TRELLO_GET_LISTS_BOARD_BY_ID_LIST']);
 
   calls.length = 0;
-  await boardProvider({ card: 'board_a', list: 'board_b' }, calls).execute({
-    policy: CARD_POLICY,
-    capability: 'trello.update_cards_by_id_card',
-    arguments: { idCard: 'c'.repeat(24), name: 'Renamed' },
-  });
-  assert.deepEqual(calls, ['TRELLO_UPDATE_CARDS_BY_ID_CARD']);
+  await MOVE_CARD.beforeDispatch!({ idCard: 'c'.repeat(24), name: 'Renamed' }, boards('board_a', 'board_b'));
+  assert.deepEqual(calls, []);
 });
-
-type CardLookup = () => { data: Record<string, unknown>; error?: string; successful?: boolean };
-
-function cardLookupProvider(card: CardLookup, list: Record<string, unknown>, calls: string[]) {
-  return new ComposioManagedConnectionProvider({
-    apiKey: 'test-key',
-    getConnectedAccount: async () => { throw new Error('status unavailable'); },
-    createClient: async () => ({
-      sessions: { async create() { throw new Error('session execution must not be used'); } },
-      tools: {
-        async execute(slug) {
-          calls.push(slug);
-          if (slug === 'TRELLO_GET_CARDS_BY_ID_CARD') return { error: null, successful: true, ...card() };
-          if (slug === 'TRELLO_GET_LISTS_BOARD_BY_ID_LIST') return { data: list, error: null, successful: true };
-          return { data: { id: 'card' }, error: null, successful: true };
-        },
-      },
-    }),
-  });
-}
 
 test('a list move fails closed when the card lookup is empty, shaped differently, or fails', async () => {
   const board = { id: 'board_a' };
-  const cases: Array<[string, CardLookup, Record<string, unknown>]> = [
-    ['empty card body', () => ({ data: {} }), board],
-    ['board id under another key', () => ({ data: { card: { idBoard: 'board_a' } } }), board],
-    ['board id two data levels down', () => ({ data: { data: { data: { idBoard: 'board_a' } } } }), board],
-    ['failed lookup that still carries a body',
-      () => ({ data: { idBoard: 'board_a' }, error: 'Card not found', successful: false }), board],
-    ['unsuccessful lookup with no error text', () => ({ data: { idBoard: 'board_a' }, successful: false }), board],
+  const cases: Array<[string, () => Record<string, unknown>, Record<string, unknown>]> = [
+    ['empty card body', () => ({}), board],
+    ['board id under another key', () => ({ card: { idBoard: 'board_a' } }), board],
+    ['board id two data levels down', () => ({ data: { data: { idBoard: 'board_a' } } }), board],
     ['lookup that throws', () => { throw new Error('socket hang up'); }, board],
-    ['both lookups empty', () => ({ data: {} }), {}],
+    ['both lookups empty', () => ({}), {}],
   ];
 
   for (const [name, card, list] of cases) {
     const calls: string[] = [];
     await assert.rejects(
-      cardLookupProvider(card, list, calls).execute({
-        policy: CARD_POLICY,
-        capability: 'trello.update_cards_by_id_card',
-        arguments: { idCard: 'c'.repeat(24), idList: 'l'.repeat(24) },
-      }),
-      (error: unknown) => error instanceof ManagedProviderRequestError &&
-        error.code === 'validation_failed' && error.metadata.capabilityToolDispatched === false,
+      MOVE_CARD.beforeDispatch!({ idCard: 'c'.repeat(24), idList: 'l'.repeat(24) }, boardLookups(card, list, calls)),
+      sameBoardRule,
       name,
     );
     assert.ok(calls.includes('TRELLO_GET_CARDS_BY_ID_CARD'), name);
-    assert.equal(calls.includes('TRELLO_UPDATE_CARDS_BY_ID_CARD'), false, name);
   }
 });

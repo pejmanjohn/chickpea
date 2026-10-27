@@ -41,7 +41,6 @@ test('the managed catalog retains Google Workspace contracts and adds productivi
       'googleads',
       'youtube',
       'freshdesk',
-      'trello',
     ],
   );
   assert.deepEqual(
