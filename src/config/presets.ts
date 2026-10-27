@@ -863,7 +863,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     auth: { kind: 'oauth', scope: 'read write documents:read documents:edit documents:send' },
     tokenDocsUrl: 'https://developers.pandadoc.com/docs/getting-started-with-mcp',
     tokenDocsHint:
-      'Sign in to PandaDoc at app.pandadoc.com and choose the workspace Chickpea should access.',
+      'Sign in to the PandaDoc account at app.pandadoc.com that Chickpea should access.',
     notes:
       'For an account at app.pandadoc.eu, add a custom connection to https://mcp.pandadoc.eu/v1/mcp.',
   },
@@ -884,7 +884,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   {
     id: 'todoist',
     name: 'Todoist',
-    description: 'Find tasks, projects, and activity, and add, update, complete, move, and delete Todoist items.',
+    description: 'Find tasks, projects, and activity, and add, update, complete, and move Todoist items.',
     category: 'project',
     accent: '#E44332',
     url: 'https://ai.todoist.net/mcp',
@@ -893,6 +893,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsUrl:
       'https://www.todoist.com/help/todoist/todoist-and-ai/connect-todoist-to-an-ai-assistant-xMSzFfHng',
     tokenDocsHint: 'Sign in to the Todoist account Chickpea should access.',
+    notes: 'In a Todoist organization, an administrator may first need to allow third-party connections.',
   },
   {
     id: 'webflow',
@@ -906,7 +907,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsUrl: 'https://developers.webflow.com/mcp/reference/getting-started',
     tokenDocsHint: 'Sign in to Webflow and choose the workspace and sites Chickpea should access.',
     notes:
-      'Only site owners and admins can authorize a site, and each connection covers one Webflow workspace.',
+      'Only site owners and admins can authorize a site, and each connection covers one Webflow workspace. Analytics needs the Webflow Analyze add-on.',
   },
   {
     id: 'wix',
