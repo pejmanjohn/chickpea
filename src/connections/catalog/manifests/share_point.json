@@ -1,0 +1,725 @@
+{
+  "toolkit": "share_point",
+  "version": "20261020_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "SharePoint",
+  "description": "Search SharePoint sites, read files, pages, and lists, and add folders and list items.",
+  "securityDescription": "Microsoft sign-in opens through Composio, which asks for the SharePoint subdomain. Agents can read the sites, document libraries, files, pages, and lists the connected account can reach. With write access, Agents can create folders, add list items, and rename folders. Agents cannot upload or overwrite files, share items or create sharing links, change permissions or site and list settings, move or copy items, publish pages, or delete anything.",
+  "preset": {
+    "category": "docs",
+    "accent": "#038387"
+  },
+  "validationCapability": "share_point.validate_credential",
+  "review": {
+    "add": [
+      "SHARE_POINT_CREATE_LIST_ITEM_IN_FOLDER",
+      "SHARE_POINT_DOWNLOAD_FILE_BY_SERVER_RELATIVE_URL",
+      "SHARE_POINT_GET_LIST_ITEMS",
+      "SHARE_POINT_LIST_ALL_LISTS",
+      "SHARE_POINT_LIST_FILES_IN_FOLDER",
+      "SHARE_POINT_RENAME_FOLDER",
+      "SHARE_POINT_SHAREPOINT_CREATE_FOLDER"
+    ],
+    "drop": {
+      "SHARE_POINT_UPDATE_LIST": "Changes list settings for everyone on the site, including turning versioning off.",
+      "SHARE_POINT_UPDATE_SITE": "Changes site-wide settings such as navigation and save-as-template for everyone on the site."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "share_point.create_list_item_in_folder",
+      "tool": "SHARE_POINT_CREATE_LIST_ITEM_IN_FOLDER",
+      "toolName": "share_point_create_list_item_in_folder",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to create a list item in a specific folder within a SharePoint list. IMPORTANT: This action works ONLY with SharePoint lists (not document libraries). The folder_url can be either a server-relative URL (e.g., '/Lists/MyList') or an absolute URL (e.g., 'https://site.sharepoint.com/sites/sitename/Lists/MyList'). To create files in document libraries, use a different action like upload_file.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "SharePoint: Create List Item in Folder",
+      "input": {
+        "type": "object",
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "FieldName": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "Internal name of the field to set"
+                },
+                "FieldValue": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "Value to assign to the field"
+                }
+              },
+              "required": [
+                "FieldName",
+                "FieldValue"
+              ]
+            },
+            "maxItems": 100,
+            "description": "List of field name/value pairs to set on the new item."
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          },
+          "folder_url": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "URL of the target folder within the list where the item will be created. Accepts both server-relative URLs (e.g., '/Lists/MyList') and absolute URLs (e.g., 'https://site.sharepoint.com/sites/sitename/Lists/MyList'). For the list root folder, use '/Lists/<ListName>' or the full absolute URL. For a subfolder within the list, append the subfolder path. You can obtain this URL from the list's RootFolder.ServerRelativeUrl property."
+          },
+          "list_title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The title of the SharePoint list where the item will be created. Must be an existing list (not a document library)."
+          },
+          "check_in_comment": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional check-in comment if the item is checked out."
+          }
+        },
+        "required": [
+          "list_title",
+          "folder_url",
+          "values"
+        ]
+      }
+    },
+    {
+      "id": "share_point.download_file_by_server_relative_url",
+      "tool": "SHARE_POINT_DOWNLOAD_FILE_BY_SERVER_RELATIVE_URL",
+      "toolName": "share_point_download_file_by_server_relative_url",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to download a file by server-relative URL. Use when you need to fetch the raw bytes of a SharePoint file by its server-relative path.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          },
+          "server_relative_url": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Server-relative URL of the file to download, starting with '/'. Can be either URL-encoded or unencoded. E.g., '/Shared Documents/report.pdf' for root site, '/sites/CustomerDocs/archive/Shared Documents/file.pdf' for a nested subsite, or '/personal/username_domain/Documents/file.docx' for personal OneDrive sites. A complete '/sites/' or '/teams/' resource path determines the owning web even when site_name is supplied."
+          }
+        },
+        "required": [
+          "server_relative_url"
+        ],
+        "description": "Request model for downloading a file by its server-relative URL."
+      }
+    },
+    {
+      "id": "share_point.get_list_items",
+      "tool": "SHARE_POINT_GET_LIST_ITEMS",
+      "toolName": "share_point_get_list_items",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve items from a SharePoint list. Use when you need to fetch list entries with optional OData parameters.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of items to return."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of navigation properties to expand for lookup fields. Some fields, including Author and Editor, require select to include the corresponding expanded subfields. For example, use expand='Author,Editor' with select='Id,Author/Title,Editor/Title'."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData filter expression to limit results (e.g., Title eq 'Test')."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of internal field names to return. Use '*' to retrieve all available fields, which is recommended when you don't know the exact field names. When expanding user fields such as Author or Editor, select must include the corresponding expanded subfields, for example, 'Id,Author/Title,Editor/Title' with expand='Author,Editor'. SharePoint uses internal field names, not display names - spaces are hex-encoded as '_x0020_' (e.g., 'File_x0020_Size' for 'File Size')."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData orderby expression to sort results (e.g., Created desc)."
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          },
+          "skiptoken": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Pagination token returned as `skiptoken` by the previous response. Pass it unchanged to retrieve the next page."
+          },
+          "list_title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Exact Title property value of the SharePoint list to query. The Title property value varies by site configuration and localization - for example, the default document library's Title may be 'Documents', 'Shared Documents', or a localized name. To find the exact Title property value, use SHARE_POINT_LIST_ALL_LISTS which returns all lists with their Title properties."
+          }
+        },
+        "required": [
+          "list_title"
+        ],
+        "description": "Request parameters for retrieving items from a SharePoint list."
+      }
+    },
+    {
+      "id": "share_point.get_site_by_hostname",
+      "tool": "SHARE_POINT_GET_SITE_BY_HOSTNAME",
+      "toolName": "share_point_get_site_by_hostname",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieve SharePoint site information by hostname or URL. Returns site metadata including site ID, display name, URLs, and timestamps. Use this action when you need to discover a site's identifier or properties using only its hostname, which is essential for subsequent operations requiring siteId. Useful for validating site existence or obtaining site metadata without prior knowledge of internal IDs.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "hostname": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The fully qualified domain name of the SharePoint site to retrieve (e.g., 'contoso.sharepoint.com' or 'contoso.sharepoint.com:/sites/teamsite'). Can include a server-relative path after a colon for subsites."
+          }
+        },
+        "required": [
+          "hostname"
+        ],
+        "description": "Request parameters for retrieving a SharePoint site by hostname."
+      }
+    },
+    {
+      "id": "share_point.get_site_by_id",
+      "tool": "SHARE_POINT_GET_SITE_BY_ID",
+      "toolName": "share_point_get_site_by_id",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve information about a SharePoint site (web) by its unique identifier. Use this action when you have a specific site GUID and need to fetch its metadata such as title, URL, language, or template information.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $expand to expand navigation properties, e.g., 'CurrentUser,Lists,Webs'."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $select to specify fields to return, e.g., 'Id,Title,Url,ServerRelativeUrl'."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier (GUID) of the SharePoint site to retrieve. This is the site's web ID."
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          }
+        },
+        "required": [
+          "site_id"
+        ],
+        "description": "Request parameters for retrieving SharePoint site by ID."
+      }
+    },
+    {
+      "id": "share_point.get_site_drive_item_by_path",
+      "tool": "SHARE_POINT_GET_SITE_DRIVE_ITEM_BY_PATH",
+      "toolName": "share_point_get_site_drive_item_by_path",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a file or folder by its server-relative path in a SharePoint site. Use when you need to get metadata for an item (file or folder) by path.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $expand query option. Comma-separated list of related entities to expand. E.g., 'ListItemAllFields' for files, or 'Files,Folders' for folders."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $select query option. Comma-separated list of fields to return. E.g., 'Name,ServerRelativeUrl,UniqueId,Length,TimeLastModified'."
+          },
+          "item_path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Server-relative path of the file or folder to retrieve, starting with '/'. E.g., '/Shared Documents/file.pdf' for files or '/Shared Documents/MyFolder' for folders. Can be provided as a plain path or pre-encoded. Both formats are accepted. A complete '/sites/' or '/teams/' resource path determines the owning web even when site_name is supplied. An explicit site_name must identify that web or an ancestor; unrelated selectors return an error."
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          }
+        },
+        "required": [
+          "item_path"
+        ],
+        "description": "Request parameters for retrieving a SharePoint file or folder by its server-relative path."
+      }
+    },
+    {
+      "id": "share_point.get_site_page_content",
+      "tool": "SHARE_POINT_GET_SITE_PAGE_CONTENT",
+      "toolName": "share_point_get_site_page_content",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve modern SharePoint Site Pages content by reading list item fields. Use when a .aspx page result cannot be downloaded as a file or when you need the structured content (CanvasContent1, LayoutWebpartsContent) of modern pages.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "List item ID of the page in the Site Pages library. Either page_file_name or item_id must be provided."
+          },
+          "render_as": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "raw",
+              "text",
+              "html"
+            ],
+            "description": "Format for retrieving content fields. 'raw' returns direct field values (CanvasContent1, LayoutWebpartsContent). 'text' uses FieldValuesAsText endpoint for plain text rendering. 'html' uses FieldValuesAsHtml endpoint for HTML rendering."
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          },
+          "page_file_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "File name of the modern SharePoint page to retrieve (e.g., 'Formed-LLC-&-Received-EIN.aspx'). Must include the .aspx extension. Either page_file_name or item_id must be provided."
+          }
+        },
+        "description": "Request parameters for retrieving modern SharePoint site page content."
+      }
+    },
+    {
+      "id": "share_point.get_site_root",
+      "tool": "SHARE_POINT_GET_SITE_ROOT",
+      "toolName": "share_point_get_site_root",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves metadata about the root web of a SharePoint site collection. Use this action when you need to get information about the root site in a site collection, such as its title, URL, language settings, or template information. This is useful for discovering the top-level site properties before navigating to subsites or performing collection-wide operations.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $expand parameter to expand navigation properties, e.g., 'CurrentUser,Lists,Webs'."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $select parameter to specify which fields to return, e.g., 'Id,Title,Url,ServerRelativeUrl'."
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          }
+        },
+        "description": "Request parameters for retrieving the root web of a SharePoint site collection."
+      }
+    },
+    {
+      "id": "share_point.list_all_lists",
+      "tool": "SHARE_POINT_LIST_ALL_LISTS",
+      "toolName": "share_point_list_all_lists",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all lists in the current SharePoint web/site. Use this action to discover available lists and document libraries on a SharePoint site, or to pre-check for existing lists before creation (duplicate list names will fail). Returns metadata for each list including Title, Id, BaseType, ItemCount, and other properties. Supports OData query parameters for filtering, selecting specific fields, sorting, and pagination.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of lists to return. For pagination, combine with `skip` and increase `skip` by `top` until a page contains fewer than `top` lists."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based number of lists to skip. SharePoint does not return a continuation token for this collection; use 0 for the first page, then increase by `top` for each subsequent page."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $expand to include related entities."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $filter to narrow results."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $select to specify which list fields to return, e.g., 'Title,Id'."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $orderby to sort results, e.g., 'Title desc'."
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          },
+          "skiptoken": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Deprecated compatibility input for callers that already supply a raw OData $skiptoken. SharePoint does not return a skiptoken for this collection; use numeric `skip` instead. Ignored when `skip` is provided."
+          }
+        },
+        "description": "Optional OData query parameters for listing all SharePoint lists."
+      }
+    },
+    {
+      "id": "share_point.list_files_in_folder",
+      "tool": "SHARE_POINT_LIST_FILES_IN_FOLDER",
+      "toolName": "share_point_list_files_in_folder",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list files within a SharePoint folder (non-recursive; does not enumerate subfolders). Use when you need to enumerate all files in a folder by its server-relative URL. To cover nested structures, call the tool separately for each subfolder.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of files to return. For pagination, combine with `skip` and increase `skip` by `top` until a page contains fewer than `top` files."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based number of files to skip. SharePoint does not return a continuation token for this collection; use 0 for the first page, then increase by `top` for each subsequent page."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $expand to inline related entities (e.g., 'ListItemAllFields'). When expanding 'Files,Folders', access results via `Files.results` and `Folders.results` arrays in the response."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $select to specify which file properties to return (comma-separated)."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $orderby to sort the results (e.g., 'Name desc')."
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          },
+          "skiptoken": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Deprecated compatibility input for callers that already supply a raw OData $skiptoken. SharePoint does not return a skiptoken for this collection; use numeric `skip` instead. Ignored when `skip` is provided."
+          },
+          "folder_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Server-relative path of an existing folder. Use a site-local path such as '/Shared Documents/General' or a full site path such as '/sites/MySite/Shared Documents/General'. SharePoint path matching is case-insensitive. A nonexistent folder returns an error."
+          }
+        },
+        "required": [
+          "folder_name"
+        ],
+        "description": "Request parameters for listing files in a SharePoint folder."
+      }
+    },
+    {
+      "id": "share_point.list_site_drives",
+      "tool": "SHARE_POINT_LIST_SITE_DRIVES",
+      "toolName": "share_point_list_site_drives",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all document libraries (drives) in a SharePoint site. Use when you need to discover available document libraries or storage locations within a SharePoint site. This action lists all drives accessible in the specified site, including default document libraries and any custom document libraries created by users.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "OData $top parameter - number of drives to return. Default: 25."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $expand parameter to expand related entities (e.g., 'root,items')."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $select parameter - comma-separated properties to return (e.g., 'id,name,webUrl,driveType')."
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          }
+        },
+        "description": "Request parameters for listing drives in a SharePoint site."
+      }
+    },
+    {
+      "id": "share_point.list_sites",
+      "tool": "SHARE_POINT_LIST_SITES",
+      "toolName": "share_point_list_sites",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all SharePoint sites accessible to the user. Use when you need to discover available sites before performing site-specific operations.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Number of sites to return. Maximum value is 500."
+          },
+          "search": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search query to filter sites by name or description. Use '*' to get all sites."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of managed property names to return. Common properties: SiteId, SiteName, Title, Path, Description, Created, LastModifiedTime. If not specified, SharePoint returns a default set of properties."
+          }
+        },
+        "description": "Request parameters for listing SharePoint sites."
+      }
+    },
+    {
+      "id": "share_point.list_subfolders_in_folder",
+      "tool": "SHARE_POINT_LIST_SUBFOLDERS_IN_FOLDER",
+      "toolName": "share_point_list_subfolders_in_folder",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list immediate child folders within a SharePoint folder. Use when you need folder navigation or directory discovery by server-relative URL.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "OData $top to limit the number of subfolders returned."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $select to specify which folder properties to return (comma-separated)."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $orderby to sort the results (e.g., 'Name desc')."
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          },
+          "folder_server_relative_url": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Server-relative URL of the parent folder, e.g., '/Shared Documents' or '/sites/MySite/Folder'. Must be a valid path to an existing folder. For folders with special characters (#, %), the action will automatically use the ResourcePath-based endpoint."
+          }
+        },
+        "required": [
+          "folder_server_relative_url"
+        ],
+        "description": "Request parameters for listing immediate subfolders in a SharePoint folder."
+      }
+    },
+    {
+      "id": "share_point.rename_folder",
+      "tool": "SHARE_POINT_RENAME_FOLDER",
+      "toolName": "share_point_rename_folder",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Renames a SharePoint folder by updating its list item metadata. To use this action: 1. Provide the folder path and new leaf folder name. 2. The action updates the folder list item fields needed by SharePoint. The rename operation updates both the folder's display name (Title) and actual name (FileLeafRef). Note: This only changes the folder name, not its location in the hierarchy.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "SharePoint: Rename SharePoint Folder",
+      "input": {
+        "type": "object",
+        "properties": {
+          "new_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "New folder name (leaf name only, not full path). This will be used for both the display name (Title) and the actual folder name (FileLeafRef). Do not include path separators (/)."
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          },
+          "match_etag": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ETag value for concurrency control. Use '*' (default) to overwrite regardless of the current version. To enforce version checking, obtain the ETag from GET_FOLDER_BY_SERVER_RELATIVE_URL with expand=ListItemAllFields, then use the '__metadata.etag' value."
+          },
+          "__metadata.type": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData entity type of the folder's list item. Accepted for compatibility with older MERGE-style calls."
+          },
+          "server_relative_folder_url": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Server-relative path of the folder to rename, including library and any parent folders. Must start with '/' and include the document library name. Example: '/Shared Documents/OldFolder' or '/Shared Documents/ParentFolder/OldFolder'."
+          }
+        },
+        "required": [
+          "server_relative_folder_url",
+          "new_name"
+        ]
+      }
+    },
+    {
+      "id": "share_point.search_files",
+      "tool": "SHARE_POINT_SEARCH_FILES",
+      "toolName": "share_point_search_files",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search for files across all SharePoint sites and OneDrive using Keyword Query Language. Returns files matching the query with metadata like title, path, size, author, and modification time. Use this action when you need to discover files broadly across an organization without knowing specific drive IDs or site locations. Results are automatically filtered to show only document content types. A site_name changes the endpoint context but does not isolate results unless restrict_to_site_path is enabled or query contains an equivalent Path restriction. Use from_index and row_limit parameters to paginate through large result sets.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The search query text. Can use Keyword Query Language (KQL) syntax for advanced filtering. Examples: 'Q4 report', 'budget proposal', 'FileType:docx', 'Author:\"John Doe\"'. Use KQL properties like FileType, Author, LastModifiedTime, or Path to narrow results."
+          },
+          "row_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Maximum number of file results to return per request. Default is 25."
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          },
+          "from_index": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based index of the first result to return. Use for pagination (e.g., from_index=0 for page 1, from_index=25 for page 2 with row_limit=25). Compare TotalRows vs RowCount in the response to determine if additional pages exist."
+          },
+          "select_properties": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of managed property names to return in results. Common file properties: Title, Author, Path, Size, LastModifiedTime, FileType, FileName, FileExtension. If not specified, SharePoint returns a default set."
+          },
+          "restrict_to_site_path": {
+            "type": "boolean",
+            "description": "Limit results to the effective subsite URL using a KQL Path restriction. Requires site_name on the request or in the connection configuration."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "description": "Request parameters for searching files across all SharePoint sites and OneDrive."
+      }
+    },
+    {
+      "id": "share_point.sharepoint_create_folder",
+      "tool": "SHARE_POINT_SHAREPOINT_CREATE_FOLDER",
+      "toolName": "share_point_sharepoint_create_folder",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new folder in SharePoint using the REST API. Returns `server_relative_url`; use it for downstream operations instead of constructing paths manually. Does not configure sharing or permissions on the created folder.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "SharePoint: Create SharePoint Folder",
+      "input": {
+        "type": "object",
+        "properties": {
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          },
+          "folder_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Decoded name of the folder to create. Literal '%' and '#' characters are preserved. SharePoint names cannot contain double quotes, *, :, <, >, ?, /, backslash, or |."
+          },
+          "relative_path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Decoded path below the document-library root, for example 'Projects/2025'. The parent path must already exist. Plain spaces are accepted; do not pre-encode them as %20."
+          },
+          "document_library": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Root-folder URL segment of the target document library, for example 'Shared Documents'. This may differ from its display title, such as 'Documents'. To target a nested subsite from a parent-site connection, include the child path, such as 'subweb01/Shared Documents'; the action resolves the deepest owning web. An explicit site_name must identify that web or an ancestor; unrelated selectors return an error."
+          }
+        },
+        "required": [
+          "folder_name"
+        ]
+      }
+    },
+    {
+      "id": "share_point.validate_credential",
+      "tool": "SHARE_POINT_VALIDATE_CREDENTIAL",
+      "toolName": "share_point_validate_credential",
+      "lane": "read",
+      "effect": "read",
+      "description": "Validate SharePoint credentials by attempting to retrieve the current user information. Use this action during setup or configuration to verify that provided credentials have valid access to the SharePoint site before performing other operations.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "site_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path."
+          }
+        },
+        "description": "Request model for validating SharePoint credentials."
+      }
+    }
+  ]
+}

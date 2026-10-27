@@ -1,0 +1,2415 @@
+{
+  "toolkit": "bitbucket",
+  "version": "20261023_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Bitbucket",
+  "description": "Read repositories, code, and pull requests, and open issues, branches, pull requests, and comments.",
+  "securityDescription": "Bitbucket sign-in opens through Composio. Agents can read the workspaces, repositories, code, commits, issues, and pull requests the connected account can reach. With write access, Agents can create branches and issues, open and edit pull requests, including their reviewers, and comment on, resolve, or reopen pull request and issue threads. Reviewers must already have access to the repository. Agents cannot create repositories, merge, approve, or decline pull requests, assign issues, push commits, delete anything, or change repository permissions or settings.",
+  "preset": {
+    "category": "dev",
+    "accent": "#0052CC"
+  },
+  "validationCapability": "bitbucket.get_current_user2",
+  "review": {
+    "add": [
+      "BITBUCKET_CREATE_ISSUE_COMMENT",
+      "BITBUCKET_CREATE_PULL_REQUEST_COMMENT",
+      "BITBUCKET_RESOLVE_PULL_REQUEST_COMMENT"
+    ],
+    "drop": {
+      "BITBUCKET_CREATE_REPOSITORY": "With is_private withheld, Bitbucket can create a public repository."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "bitbucket.browse_repository_path",
+      "tool": "BITBUCKET_BROWSE_REPOSITORY_PATH",
+      "toolName": "bitbucket_browse_repository_path",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve content for a file path or browse directory contents at a specified revision in a Bitbucket repository. Use when you need flexible access to repository content - returns raw file data for files or paginated directory listings for directories.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter query string using Bitbucket's REST API filtering syntax to narrow results. Only applicable when browsing directories."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1). Only applicable when browsing directories."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "File or directory path within the repository to browse. Use empty string for root directory."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field name for sorting results. Prefix with '-' for descending order. Only applicable when browsing directories."
+          },
+          "commit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Commit hash, branch name, or tag to browse from. Defaults to 'master' if not specified."
+          },
+          "format": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Response format. Use 'meta' to return metadata as JSON instead of raw file contents when browsing a file."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of entries per page (1-100). Only applicable when browsing directories. Controls pagination size."
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Maximum depth for breadth-first recursive directory traversal. Only applicable when path is a directory. Large values may cause timeouts."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository slug or UUID (typically URL-formatted name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID or UUID (often username or team name) containing the repository."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ]
+      }
+    },
+    {
+      "id": "bitbucket.create_branch",
+      "tool": "BITBUCKET_CREATE_BRANCH",
+      "toolName": "bitbucket_create_branch",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new branch in a Bitbucket repository from a target commit hash; the branch name must be unique, adhere to Bitbucket's naming conventions, and not include the 'refs/heads/' prefix.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Bitbucket: Create a branch",
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name for the new branch (e.g., 'feature/new-login', 'bugfix/issue-123'). Important: Do not include the 'refs/heads/' prefix."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug or UUID of the repository where the branch will be created. This is usually the repository's name in URL-friendly format."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or UUID that owns the repository. This can typically be found in the URL of your Bitbucket workspace."
+          },
+          "target_hash": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The full commit hash (SHA1) from which the new branch will be created. This commit must exist in the repository."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "name",
+          "target_hash"
+        ],
+        "description": "Request model for creating a new branch in a Bitbucket repository."
+      }
+    },
+    {
+      "id": "bitbucket.create_issue",
+      "tool": "BITBUCKET_CREATE_ISSUE",
+      "toolName": "bitbucket_create_issue",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new issue in a Bitbucket repository, setting the authenticated user as reporter; ensures assignee (if provided) has repository access, and that any specified milestone, version, or component IDs exist.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Bitbucket: Create an issue",
+      "withheldArguments": {
+        "assignee": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Type of the issue (e.g., 'bug', 'enhancement', 'proposal', 'task')."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Title for the new issue."
+          },
+          "due_on": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Due date for the issue in ISO 8601 format (e.g., 'YYYY-MM-DDTHH:mm:ssZ')."
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Detailed description for the new issue."
+          },
+          "priority": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Priority level of the issue (e.g., 'trivial', 'minor', 'major', 'critical', 'blocker')."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug of the Bitbucket repository."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID or slug of the Bitbucket workspace."
+          },
+          "version_id": {
+            "type": "integer",
+            "description": "Numeric ID of an existing version to associate with this issue."
+          },
+          "component_id": {
+            "type": "integer",
+            "description": "Numeric ID of an existing component to associate with this issue."
+          },
+          "milestone_id": {
+            "type": "integer",
+            "description": "Numeric ID of an existing milestone to associate with this issue."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "title",
+          "content"
+        ]
+      }
+    },
+    {
+      "id": "bitbucket.create_issue_comment",
+      "tool": "BITBUCKET_CREATE_ISSUE_COMMENT",
+      "toolName": "bitbucket_create_issue_comment",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Adds a new comment with markdown support to an existing Bitbucket issue.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Bitbucket: Create an issue comment",
+      "input": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The raw text content for the comment. This content supports markdown formatting, which Bitbucket will then render."
+          },
+          "issue_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the issue on which the comment will be posted."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug (URL-friendly version) of the repository name."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID or slug of the workspace or user that owns the repository."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "issue_id",
+          "content"
+        ],
+        "description": "Request model for creating a comment on a Bitbucket issue."
+      }
+    },
+    {
+      "id": "bitbucket.create_pull_request",
+      "tool": "BITBUCKET_CREATE_PULL_REQUEST",
+      "toolName": "bitbucket_create_pull_request",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new pull request in a specified Bitbucket repository, ensuring the source branch exists and is distinct from the (optional) destination branch.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Bitbucket: Create a pull request",
+      "input": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "description": "Concise title summarizing the changes for the pull request."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Slug (URL-friendly name) of the repository for the pull request."
+          },
+          "reviewers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "UUID of the Bitbucket user to be a reviewer."
+                }
+              },
+              "required": [
+                "uuid"
+              ]
+            },
+            "maxItems": 100,
+            "description": "List of Bitbucket user UUIDs to be added as reviewers. Malformed or non-existent UUIDs trigger validation errors."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID (UUID or slug) of the repository owner."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Detailed Markdown description of the pull request, outlining changes and purpose."
+          },
+          "source_branch": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name of the source branch with changes to be merged."
+          },
+          "destination_branch": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name of the destination branch for merging; defaults to repository's main branch if unspecified."
+          },
+          "close_source_branch": {
+            "type": "boolean",
+            "description": "If true, automatically closes the source branch upon pull request merge."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "title",
+          "source_branch"
+        ]
+      }
+    },
+    {
+      "id": "bitbucket.create_pull_request_comment",
+      "tool": "BITBUCKET_CREATE_PULL_REQUEST_COMMENT",
+      "toolName": "bitbucket_create_pull_request_comment",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Creates a new comment on a Bitbucket pull request. Supports top-level comments, threaded replies, and inline code comments. Use when providing feedback on a PR, replying to existing comments, or commenting on specific code lines.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Bitbucket: Create pull request comment",
+      "withheldArguments": {
+        "inline.to": "names an address a message goes to or comes from",
+        "inline.from": "names an address a message goes to or comes from"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "inline": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "File path in the repository where the inline comment should be placed."
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "description": "Location details for inline code comments."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug (URL-friendly version) of the repository name."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID or slug of the workspace that owns the repository."
+          },
+          "content_raw": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The raw text content for the comment. Supports markdown formatting which Bitbucket will render."
+          },
+          "pull_request_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The unique identifier of the pull request to comment on."
+          },
+          "parent_comment_id": {
+            "type": "integer",
+            "description": "ID of an existing comment to reply to, creating a threaded comment. If omitted, creates a top-level comment."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "pull_request_id",
+          "content_raw"
+        ],
+        "description": "Request model for creating a comment on a Bitbucket pull request."
+      }
+    },
+    {
+      "id": "bitbucket.get_branch",
+      "tool": "BITBUCKET_GET_BRANCH",
+      "toolName": "bitbucket_get_branch",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information about a specific branch in a Bitbucket repository. Use when you need to get branch metadata, the commit it points to, or verify a branch exists.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the branch to retrieve (e.g., 'master', 'main', 'feature/my-feature'). Do not include the 'refs/heads/' prefix."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug or UUID of the repository. This is usually the repository's name in URL-friendly format."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or slug that owns the repository. This can typically be found in the URL of your Bitbucket workspace."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "name"
+        ],
+        "description": "Request model for getting a specific branch in a Bitbucket repository."
+      }
+    },
+    {
+      "id": "bitbucket.get_commit_changes",
+      "tool": "BITBUCKET_GET_COMMIT_CHANGES",
+      "toolName": "bitbucket_get_commit_changes",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a page of changes made in a specified commit, showing all changed files with their change statistics (lines added/removed, status). Use when you need to enumerate files modified in a specific commit or commit range.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "spec": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Commit SHA or range (e.g., '3a8b42' for single commit or '3a8b42..9ff173' for range)."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of changes per page (1-100). Bitbucket default is 500 if not specified."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository slug (URL-friendly name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID or slug (URL-friendly name)."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "spec"
+        ],
+        "description": "Request to retrieve changes made in a specified commit."
+      }
+    },
+    {
+      "id": "bitbucket.get_commit_comment",
+      "tool": "BITBUCKET_GET_COMMIT_COMMENT",
+      "toolName": "bitbucket_get_commit_comment",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific comment from a commit by its ID. Use when you need to fetch details of a particular commit comment including content, author, timestamps, and inline location.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "commit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The commit hash to retrieve the comment from."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The repository slug (URL-friendly name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace slug or UUID that owns the repository."
+          },
+          "comment_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The unique identifier for the comment."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "commit",
+          "comment_id"
+        ],
+        "description": "Request model for retrieving a specific commit comment."
+      }
+    },
+    {
+      "id": "bitbucket.get_commit_diff",
+      "tool": "BITBUCKET_GET_COMMIT_DIFF",
+      "toolName": "bitbucket_get_commit_diff",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the unified diff between two provided revisions or for a single commit in a Bitbucket repository. Use when you need to see the actual code changes in a commit or between two commits. Supports filtering by file path and various diff options.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional file path to filter the diff to a specific file or directory. If omitted, returns diff for all changes."
+          },
+          "spec": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A commit SHA, branch name, tag, or revspec (e.g. '3a8b42..9ff173' for range). For a single commit, provide the commit hash. For comparing two commits, use 'commit1..commit2' format."
+          },
+          "merge": {
+            "type": "boolean",
+            "description": "Whether to generate merge diff. Set to true for merge commit diffs."
+          },
+          "topic": {
+            "type": "boolean",
+            "description": "Whether to generate a 2-way three-dot diff when spec contains two commits. Set to true to use three-dot diff notation."
+          },
+          "binary": {
+            "type": "boolean",
+            "description": "Whether to include binary file diffs. Set to true to include binary diffs in the output."
+          },
+          "context": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of context lines to include around changes. If not specified, uses the default context lines."
+          },
+          "renames": {
+            "type": "boolean",
+            "description": "Whether to detect file renames. Set to true to show rename detection in the diff."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The repository slug (URL-friendly name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or username that owns the repository."
+          },
+          "ignore_whitespace": {
+            "type": "boolean",
+            "description": "Whether to ignore whitespace changes in the diff. Set to true to exclude whitespace-only changes."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "spec"
+        ],
+        "description": "Request to get the diff for a commit or between two revisions."
+      }
+    },
+    {
+      "id": "bitbucket.get_current_user2",
+      "tool": "BITBUCKET_GET_CURRENT_USER2",
+      "toolName": "bitbucket_get_current_user2",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve complete profile information for the currently authenticated Bitbucket user. Use when you need comprehensive user details including account_id, username, nickname, and other profile fields.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request model for GetCurrentUser2 action. No parameters are required."
+      }
+    },
+    {
+      "id": "bitbucket.get_file_from_repository",
+      "tool": "BITBUCKET_GET_FILE_FROM_REPOSITORY",
+      "toolName": "bitbucket_get_file_from_repository",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific file's content from a Bitbucket repository at a given commit (hash, branch, or tag), failing if the file path is invalid for that commit.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Full path to the file within the repository (e.g., 'src/main.py')."
+          },
+          "commit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Commit hash, branch name (fetches latest), or tag for the file version."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository slug or UUID (typically URL-formatted name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID or UUID (often username or team name) containing the repository."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "commit",
+          "path"
+        ]
+      }
+    },
+    {
+      "id": "bitbucket.get_pull_request",
+      "tool": "BITBUCKET_GET_PULL_REQUEST",
+      "toolName": "bitbucket_get_pull_request",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get a single pull request by ID with complete details.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository slug (URL-friendly name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID or slug (URL-friendly name). Must exactly match the pull request's workspace (case-sensitive); slug and UUID are not interchangeable."
+          },
+          "pull_request_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The ID of the pull request to retrieve."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "pull_request_id"
+        ],
+        "description": "Request to get a single pull request by ID."
+      }
+    },
+    {
+      "id": "bitbucket.get_pull_request_comment",
+      "tool": "BITBUCKET_GET_PULL_REQUEST_COMMENT",
+      "toolName": "bitbucket_get_pull_request_comment",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a specific comment from a pull request by its ID. Use when you need to fetch details of a particular pull request comment including content, author, timestamps, and inline location.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The repository slug (URL-friendly name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace slug or UUID that owns the repository."
+          },
+          "comment_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The unique identifier for the comment."
+          },
+          "pull_request_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The unique identifier of the pull request."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "pull_request_id",
+          "comment_id"
+        ],
+        "description": "Request model for retrieving a specific pull request comment."
+      }
+    },
+    {
+      "id": "bitbucket.get_pull_request_commits",
+      "tool": "BITBUCKET_GET_PULL_REQUEST_COMMITS",
+      "toolName": "bitbucket_get_pull_request_commits",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve commits for a specified pull request. Use when reviewing the commit history of a PR or analyzing changes included in a pull request.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of commits per page (1-100)."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository slug (URL-friendly name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID or slug (URL-friendly name)."
+          },
+          "pull_request_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The ID of the pull request to retrieve commits for."
+          },
+          "response_detail": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "minimal",
+              "full"
+            ],
+            "description": "Level of detail in the response. 'minimal' (default) returns only essential commit information (hash, message, date, author name/email, html_link). 'full' returns the complete Bitbucket API response with all nested objects."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "pull_request_id"
+        ],
+        "description": "Request to retrieve commits for a pull request."
+      }
+    },
+    {
+      "id": "bitbucket.get_pull_request_diff",
+      "tool": "BITBUCKET_GET_PULL_REQUEST_DIFF",
+      "toolName": "bitbucket_get_pull_request_diff",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to fetch the unified diff for a Bitbucket pull request (follows 302 redirect to repository diff). Use when reviewing code changes in a PR. Supports optional truncation for large diffs via max_chars parameter.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "max_chars": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of characters to return in the diff. If the diff exceeds this limit, it will be truncated. If None, no truncation is applied. Use this to protect against very large diffs."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository slug (URL-friendly name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID or slug (URL-friendly name)."
+          },
+          "pull_request_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The ID of the pull request to retrieve the diff for."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "pull_request_id"
+        ],
+        "description": "Request to get the unified diff for a pull request."
+      }
+    },
+    {
+      "id": "bitbucket.get_pull_request_diffstat",
+      "tool": "BITBUCKET_GET_PULL_REQUEST_DIFFSTAT",
+      "toolName": "bitbucket_get_pull_request_diffstat",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get the diffstat for a Bitbucket pull request, showing all changed files with their change statistics (lines added/removed, status). Use when you need to enumerate files modified in a PR.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of diffstat entries per page (1-100). Bitbucket default is 500 if not specified."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository slug (URL-friendly name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID or slug (URL-friendly name)."
+          },
+          "pull_request_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The ID of the pull request to get diffstat for."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "pull_request_id"
+        ],
+        "description": "Request to get diffstat for a pull request."
+      }
+    },
+    {
+      "id": "bitbucket.get_repositories_branching_model",
+      "tool": "BITBUCKET_GET_REPOSITORIES_BRANCHING_MODEL",
+      "toolName": "bitbucket_get_repositories_branching_model",
+      "lane": "read",
+      "effect": "read",
+      "description": "Return the branching model as applied to the repository. Use when you need to understand the repository's branch workflow configuration, including development/production branches and branch type prefixes.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The repository slug."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "This can either be the workspace ID (slug) or the workspace UUID surrounded by curly-braces."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ],
+        "description": "Request to get the branching model configuration for a repository."
+      }
+    },
+    {
+      "id": "bitbucket.get_repositories_commit",
+      "tool": "BITBUCKET_GET_REPOSITORIES_COMMIT",
+      "toolName": "bitbucket_get_repositories_commit",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve detailed information about a specific commit in a Bitbucket repository. Use when you need to get complete commit details including author, message, date, parents, and related links.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "commit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The commit hash (SHA) to retrieve."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository slug (URL-friendly name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID or slug (URL-friendly name)."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "commit"
+        ],
+        "description": "Request to retrieve a specific commit from a repository."
+      }
+    },
+    {
+      "id": "bitbucket.get_repositories_effective_branching_model",
+      "tool": "BITBUCKET_GET_REPOSITORIES_EFFECTIVE_BRANCHING_MODEL",
+      "toolName": "bitbucket_get_repositories_effective_branching_model",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the effective branching model for a Bitbucket repository, showing which branching model is currently applied (including any inheritance from project-level settings). Use when you need to understand the repository's branch workflow configuration, including development and production branches and branch type prefixes.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The repository slug. This is usually the repository's name in URL-friendly format."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace slug or UUID that owns the repository. This can typically be found in the URL of your Bitbucket workspace."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ],
+        "description": "Request model for getting the effective branching model of a repository."
+      }
+    },
+    {
+      "id": "bitbucket.get_repositories_filehistory",
+      "tool": "BITBUCKET_GET_REPOSITORIES_FILEHISTORY",
+      "toolName": "bitbucket_get_repositories_filehistory",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns a paginated list of commits that modified the specified file. Use when you need to track file changes over time, find who modified a file, or determine when a file was created or last changed.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string for filtering commits in the file history. Common use: filter by commit date using 'commit.date<=YYYY-MM-DD' or 'commit.date>=YYYY-MM-DD'. Example: 'commit.date<=2024-12-31' returns only commits before that date."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Full path to the file within the repository (e.g., 'README.md', 'src/main.py')."
+          },
+          "commit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Commit hash, branch name, or tag from which to retrieve file history. The API returns commits reachable from this reference that modified the file."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of fields to include or exclude from the response. Prefix with '+' to add fields or '-' to remove them. Example: '+values.commit.message' adds commit messages to the response."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of commits per page (1-100). Default is typically 30 if not specified."
+          },
+          "renames": {
+            "type": "boolean",
+            "description": "Whether to follow file renames through history. If true (default), returns commits that modified the file even if it had a different name. If false, only returns commits where the file had the current path."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The repository slug (URL-friendly name) or UUID."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace slug or UUID that owns the repository."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "commit",
+          "path"
+        ],
+        "description": "Request model for retrieving file commit history in a Bitbucket repository."
+      }
+    },
+    {
+      "id": "bitbucket.get_repositories_pullrequests_statuses",
+      "tool": "BITBUCKET_GET_REPOSITORIES_PULLREQUESTS_STATUSES",
+      "toolName": "bitbucket_get_repositories_pullrequests_statuses",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns all build statuses (e.g., CI/CD pipeline results) for a specific pull request. Use when you need to check build status, verify test results, or monitor deployment pipelines for a pull request.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of statuses per page (1-100). Bitbucket default is 30 if not specified."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug or UUID of the repository. This is usually the repository's name in URL-friendly format."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or slug that owns the repository. This can typically be found in the URL of your Bitbucket workspace."
+          },
+          "pull_request_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The ID of the pull request to retrieve statuses for."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "pull_request_id"
+        ],
+        "description": "Request model for getting pull request statuses from a Bitbucket repository."
+      }
+    },
+    {
+      "id": "bitbucket.get_repositories_refs",
+      "tool": "BITBUCKET_GET_REPOSITORIES_REFS",
+      "toolName": "bitbucket_get_repositories_refs",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns the branches and tags in the repository. Use when you need to list all refs (both branches and tags) in a single API call with optional filtering by type, name pattern, or commit hash.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string using Bitbucket Query Language (BBQL) to filter refs. Syntax: 'field operator value'. Operators: '=' (exact match), '~' (contains substring), '!=' (not equal). String values MUST be enclosed in double quotes. Filter by name pattern using 'name~\"pattern\"', by type using 'type=\"branch\"' or 'type=\"tag\"', or by commit hash using 'target.hash=\"hash\"'."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field for sorting ref results. Prefix with '-' for descending order. Common sortable fields: 'name', 'target.date' (commit date). Default sorting applies natural sorting for ref names with numeric values."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of refs per page (1-100). Bitbucket default is typically 10 if not specified."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug or UUID of the repository. This is usually the repository's name in URL-friendly format."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or slug that owns the repository. This can typically be found in the URL of your Bitbucket workspace."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ],
+        "description": "Request model for getting branches and tags (refs) in a Bitbucket repository."
+      }
+    },
+    {
+      "id": "bitbucket.get_repositories_refs_tags",
+      "tool": "BITBUCKET_GET_REPOSITORIES_REFS_TAGS",
+      "toolName": "bitbucket_get_repositories_refs_tags",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information about a specific tag in a Bitbucket repository. Use when you need to get tag metadata, target commit details, or verify a tag exists.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the tag to retrieve (without refs/tags/ prefix). For example, 'v1.0.0' or 'fedex17'."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug (URL-friendly name) of the repository. This identifies the repository within the workspace."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or slug that owns the repository. This can be a user's username or a team's slug."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "name"
+        ],
+        "description": "Request model for retrieving a specific tag."
+      }
+    },
+    {
+      "id": "bitbucket.get_repositories_src",
+      "tool": "BITBUCKET_GET_REPOSITORIES_SRC",
+      "toolName": "bitbucket_get_repositories_src",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists the contents of the root directory on the repository's main branch without needing to specify a commit or branch. This endpoint redirects to the main branch automatically.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional format parameter. Use 'meta' to get metadata instead of raw contents when accessing files."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The repository slug (URL-friendly repository name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or slug that owns the repository."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ]
+      }
+    },
+    {
+      "id": "bitbucket.get_repository",
+      "tool": "BITBUCKET_GET_REPOSITORY",
+      "toolName": "bitbucket_get_repository",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information about a specific repository in a Bitbucket workspace. Use when you need to get repository metadata, settings, or details.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The repository slug (URL-friendly identifier) for the repository to retrieve."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace slug or UUID. This identifies the Bitbucket workspace that owns the repository."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ]
+      }
+    },
+    {
+      "id": "bitbucket.get_repository_patch",
+      "tool": "BITBUCKET_GET_REPOSITORY_PATCH",
+      "toolName": "bitbucket_get_repository_patch",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the git patch content for a Bitbucket repository at a specified revision or commit range. Use when you need to review code changes, generate diffs, or analyze modifications between commits. Returns raw patch in unified diff format.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "spec": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A commit hash, branch name, tag, or commit range (e.g., '3a8b42..9ff173'). If a single commit is provided, the diff is against its first parent. For ranges, shows diff between the two commits."
+          },
+          "max_chars": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of characters to return in the patch. If the patch exceeds this limit, it will be truncated. If None, no truncation is applied. Use this to protect against very large patches."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug or UUID of the repository. This is usually the repository's name in URL-friendly format."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or slug that owns the repository. This can typically be found in the URL of your Bitbucket workspace."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "spec"
+        ],
+        "description": "Request to retrieve patch content for a repository at a specific revision."
+      }
+    },
+    {
+      "id": "bitbucket.get_snippet",
+      "tool": "BITBUCKET_GET_SNIPPET",
+      "toolName": "bitbucket_get_snippet",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific Bitbucket snippet by its encoded ID from an existing workspace, returning its metadata and file structure.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID (slug) or the workspace UUID surrounded by curly braces, identifying the Bitbucket workspace."
+          },
+          "encoded_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier (encoded ID) of the snippet to be retrieved."
+          },
+          "accept_format": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The desired format for the response. Valid options are 'application/json', 'multipart/related', or 'multipart/form-data'. This may affect how snippet content or file data is presented."
+          }
+        },
+        "required": [
+          "workspace",
+          "encoded_id"
+        ],
+        "description": "Request model for getting a snippet."
+      }
+    },
+    {
+      "id": "bitbucket.get_user",
+      "tool": "BITBUCKET_GET_USER",
+      "toolName": "bitbucket_get_user",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves public profile information for a specific Bitbucket user by username or UUID. Use when you need to get user details like display name, avatar, creation date, and links to related resources.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "selected_user": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The username or UUID of the user to retrieve. Can be a username (e.g., 'john_doe') or a UUID enclosed in curly braces (e.g., '{4f3ecac3-c951-41d4-8a4c-95f40be978fc}')."
+          }
+        },
+        "required": [
+          "selected_user"
+        ],
+        "description": "Request model for the GetUser action."
+      }
+    },
+    {
+      "id": "bitbucket.get_user_permissions_repositories",
+      "tool": "BITBUCKET_GET_USER_PERMISSIONS_REPOSITORIES",
+      "toolName": "bitbucket_get_user_permissions_repositories",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns an object for each repository the caller has explicit access to, including their permission level. Use when you need to discover which repositories the authenticated user can access and their specific permissions.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results. Used to retrieve a specific page in a multi-page result set. Page numbers start at 1."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of items to return per page for pagination. Controls the size of the paginated result set. Default is typically 10 if not specified."
+          }
+        },
+        "description": "Request model for the GetUserPermissionsRepositories action. Specifies optional query parameters for paginating repositories. Note: This endpoint does not support BBQL filtering or sorting."
+      }
+    },
+    {
+      "id": "bitbucket.get_user_permissions_workspaces",
+      "tool": "BITBUCKET_GET_USER_PERMISSIONS_WORKSPACES",
+      "toolName": "bitbucket_get_user_permissions_workspaces",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves workspace memberships and permission levels for the authenticated user. Returns an object for each workspace the caller is a member of, along with their effective role (highest privilege level). Use when you need to determine which workspaces a user can access and their permission level in each.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string to filter results by workspace slug or permission level using Bitbucket's filtering syntax. Examples: q=workspace.slug=\"workspace1\" or q=permission=\"owner\". Supported fields: workspace.slug (workspace identifier), permission (permission level). Use exact match with = operator. String values must be enclosed in double quotes."
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination. Use this to navigate through multiple pages of results."
+          },
+          "pagelen": {
+            "type": "integer",
+            "description": "Number of items per page for pagination. Controls how many workspace permission objects are returned in a single response."
+          }
+        },
+        "description": "Request model for the GetUserPermissionsWorkspaces action. Specifies optional query parameters for filtering and pagination."
+      }
+    },
+    {
+      "id": "bitbucket.get_user_workspaces",
+      "tool": "BITBUCKET_GET_USER_WORKSPACES",
+      "toolName": "bitbucket_get_user_workspaces",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all workspaces accessible to the authenticated user. Use when you need to list workspaces the current user can access, optionally filtered by workspace slug or permission level.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string to filter workspaces by attributes such as workspace slug or permission level. Examples: 'workspace.slug=\"my-workspace\"' or 'permission=\"owner\"'. Follow Bitbucket's filtering syntax for complex queries."
+          }
+        },
+        "description": "Request model for the GetUserWorkspaces action. Specifies optional query parameters for filtering workspaces."
+      }
+    },
+    {
+      "id": "bitbucket.get_workspace",
+      "tool": "BITBUCKET_GET_WORKSPACE",
+      "toolName": "bitbucket_get_workspace",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information about a specific Bitbucket workspace. Use when you need to get workspace metadata, settings, or details.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID (slug) or workspace UUID surrounded by curly-braces. Example: 'my-workspace' or '{workspace-uuid}'."
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "description": "Request model for the GetWorkspace action. Requires the workspace ID or UUID."
+      }
+    },
+    {
+      "id": "bitbucket.get_workspaces_pullrequests",
+      "tool": "BITBUCKET_GET_WORKSPACES_PULLREQUESTS",
+      "toolName": "bitbucket_get_workspaces_pullrequests",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get all workspace pull requests authored by a specified user. Use when you need to retrieve pull requests created by a specific user across all repositories in a workspace.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "OPEN",
+              "MERGED",
+              "DECLINED"
+            ],
+            "description": "Lifecycle state of a pull request."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of pull requests per page (1-100). Bitbucket default is 10 if not specified."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID or slug (URL-friendly name)."
+          },
+          "selected_user": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The username of the user whose pull requests you want to retrieve."
+          }
+        },
+        "required": [
+          "workspace",
+          "selected_user"
+        ],
+        "description": "Request to get all workspace pull requests authored by a specified user."
+      }
+    },
+    {
+      "id": "bitbucket.get_workspaces_search_code",
+      "tool": "BITBUCKET_GET_WORKSPACES_SEARCH_CODE",
+      "toolName": "bitbucket_get_workspaces_search_code",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search for code in the repositories of the specified workspace. Use when you need to find specific code patterns, function definitions, or text across all repositories in a workspace.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination. Use this to navigate through multiple pages of search results."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Additional fields to include in the response, using the fields parameter syntax. For example, '+values.file.commit.repository' to include repository details for each code match."
+          },
+          "pagelen": {
+            "type": "integer",
+            "description": "Number of results per page. Controls how many code search results are returned in a single response."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace identifier. This can be the workspace slug (e.g., 'my-workspace') or its UUID enclosed in curly braces (e.g., '{workspace-uuid}')."
+          },
+          "search_query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The search query string to search for in the code. Can use advanced syntax like 'foo+repo:demo' to search within specific repositories, or 'test+ext:py' to filter by file extension."
+          }
+        },
+        "required": [
+          "workspace",
+          "search_query"
+        ],
+        "description": "Request model for searching code in workspace repositories."
+      }
+    },
+    {
+      "id": "bitbucket.list_branches",
+      "tool": "BITBUCKET_LIST_BRANCHES",
+      "toolName": "bitbucket_list_branches",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists branches in a Bitbucket repository with optional server-side filtering by name pattern (BBQL) and sorting. Use when you need to discover available branches, search for specific branch patterns, or navigate repository branch structure.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string using Bitbucket Query Language (BBQL) to filter branches. Syntax: 'field operator value'. Operators: '=' (exact match), '~' (contains substring), '!=' (not equal). String values MUST be enclosed in double quotes. Common use case: filter by branch name pattern using 'name~\"pattern\"'. Examples: 'name~\"feature/\"' (branches starting with feature/), 'name=\"main\"' (exact match for main branch). Combine multiple conditions with AND/OR (e.g., 'name~\"feature/\" OR name~\"bugfix/\"')."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field for sorting branch results. Prefix with '-' for descending order. Common sortable fields: 'name', 'target.date' (commit date). Default sorting applies natural sorting for branch names with numeric values."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of branches per page (1-100). Bitbucket default is typically 10 if not specified."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug or UUID of the repository. This is usually the repository's name in URL-friendly format."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or slug that owns the repository. This can typically be found in the URL of your Bitbucket workspace."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ],
+        "description": "Request model for listing branches in a Bitbucket repository."
+      }
+    },
+    {
+      "id": "bitbucket.list_commits",
+      "tool": "BITBUCKET_LIST_COMMITS",
+      "toolName": "bitbucket_list_commits",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a page of commits from a Bitbucket repository. Returns commits in reverse chronological order (newest first), similar to git log. Use when you need to browse commit history, filter commits by branch/tag, or restrict to commits affecting a specific path.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter commits to only those that affect the specified file or directory path."
+          },
+          "exclude": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Branch or tag name, or commit SHA to exclude from the commit history. Commits reachable from this ref will be excluded. Multiple values can be separated by commas."
+          },
+          "include": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Branch or tag name, or commit SHA to include in the commit history. If not specified, the repository's default branch is used. Multiple values can be separated by commas (e.g., 'main,develop')."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of commits per page (1-100). Bitbucket default is typically 30 if not specified."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug or UUID of the repository. This is usually the repository's name in URL-friendly format."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or slug that owns the repository. This can typically be found in the URL of your Bitbucket workspace."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ],
+        "description": "Request model for listing commits in a Bitbucket repository."
+      }
+    },
+    {
+      "id": "bitbucket.list_commits_from_revision",
+      "tool": "BITBUCKET_LIST_COMMITS_FROM_REVISION",
+      "toolName": "bitbucket_list_commits_from_revision",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list commits starting from a specific revision in a Bitbucket repository. Commits are paginated and returned in reverse chronological order. Use when you need to retrieve commit history from a specific commit, branch, or tag.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional file path to filter commits. Only commits that modified this file or directory will be returned."
+          },
+          "exclude": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional commit hash or branch to exclude from the results. Can be used to create a range with the 'include' parameter."
+          },
+          "include": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional commit hash or branch to include in the results. Can be used to create a range with the 'exclude' parameter."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of commits per page (1-100). Bitbucket default is typically 30 if not specified."
+          },
+          "revision": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The commit hash, branch name, tag, or other revision identifier to start listing commits from. Commits are returned in reverse chronological order starting from this revision."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug of the repository. This is the repository's name, usually in lowercase and with hyphens instead of spaces."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID (slug) or UUID of the Bitbucket workspace that owns the repository. This can be the workspace name or its universally unique identifier."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "revision"
+        ],
+        "description": "Request model for listing commits from a specific revision."
+      }
+    },
+    {
+      "id": "bitbucket.list_commits_on_master",
+      "tool": "BITBUCKET_LIST_COMMITS_ON_MASTER",
+      "toolName": "bitbucket_list_commits_on_master",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists commits on the master branch of a Bitbucket repository. Use when you need to retrieve the commit history for the master branch, including commit messages, authors, dates, and parent relationships.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of commits per page (1-100). Bitbucket default is typically 30 if not specified."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug or UUID of the repository. This is usually the repository's name in URL-friendly format."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or slug that owns the repository. This can typically be found in the URL of your Bitbucket workspace."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ],
+        "description": "Request model for listing commits on the master branch in a Bitbucket repository."
+      }
+    },
+    {
+      "id": "bitbucket.list_issues",
+      "tool": "BITBUCKET_LIST_ISSUES",
+      "toolName": "bitbucket_list_issues",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists issues in a Bitbucket repository with optional filtering by state, priority, kind, or assignee. Use when you need to discover issue IDs or get an overview of repository issues.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter issues by kind (type). Use 'bug', 'enhancement', 'proposal', or 'task'. If not provided, issues of all kinds are returned."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter issues by state. Use a specific state like 'new', 'open', 'resolved', 'on hold', 'invalid', 'duplicate', 'wontfix', or 'closed'. If not provided, all issues regardless of state are returned."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of issues per page (1-100). Bitbucket default is 10 if not specified."
+          },
+          "assignee": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter issues by assignee. Provide the Bitbucket account ID (UUID) of the assignee. Use 'null' (as a string) to find unassigned issues. If not provided, issues with any assignee (or no assignee) are returned."
+          },
+          "priority": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter issues by priority. Use 'trivial', 'minor', 'major', 'critical', or 'blocker'. If not provided, issues of all priorities are returned."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug (URL-friendly name) of the repository."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or slug (URL-friendly name) that owns the repository."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ],
+        "description": "Request model for listing issues in a Bitbucket repository."
+      }
+    },
+    {
+      "id": "bitbucket.list_pull_requests",
+      "tool": "BITBUCKET_LIST_PULL_REQUESTS",
+      "toolName": "bitbucket_list_pull_requests",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists pull requests in a specified, accessible Bitbucket repository, optionally filtering by state (OPEN, MERGED, DECLINED).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "OPEN",
+              "MERGED",
+              "DECLINED"
+            ],
+            "description": "Lifecycle state of a pull request."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Number of pull requests per page (1-50). Bitbucket default is 10 if not specified."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository slug (URL-friendly name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID or slug (URL-friendly name)."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ],
+        "description": "Lists pull requests in a specified repository."
+      }
+    },
+    {
+      "id": "bitbucket.list_pull_requests_for_commit",
+      "tool": "BITBUCKET_LIST_PULL_REQUESTS_FOR_COMMIT",
+      "toolName": "bitbucket_list_pull_requests_for_commit",
+      "lane": "read",
+      "effect": "read",
+      "description": "List pull requests in which a repository commit was reviewed. Requires Bitbucket's Pull Request Commit Links app to be installed and the repository to be indexed.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number to retrieve. Page numbering starts at 1."
+          },
+          "commit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "SHA1 hash of the commit whose related pull requests to list."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of pull requests to return per page (1-100)."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository slug or UUID containing the commit."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace slug or UUID that owns the repository."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "commit"
+        ],
+        "description": "Repository commit and optional page to query."
+      }
+    },
+    {
+      "id": "bitbucket.list_repositories",
+      "tool": "BITBUCKET_LIST_REPOSITORIES",
+      "toolName": "bitbucket_list_repositories",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a paginated list of all public repositories on Bitbucket. Use when you need to discover or search across public repositories, optionally filtered by role, query string, creation date, or sorted by various fields.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string using Bitbucket Query Language (BBQL) to filter repositories. Note: This parameter requires the 'role' parameter to be specified. Syntax: 'field operator value'. Operators: '=' (exact match), '~' (contains substring), '!=' (not equal), '>' '>=' '<' '<=' (comparison for dates/numbers). String values MUST be enclosed in double quotes. Valid repository fields: 'name', 'full_name', 'is_private', 'created_on', 'updated_on', 'language'."
+          },
+          "page": {
+            "type": "integer",
+            "description": "The page number to retrieve in the paginated list of results. Page numbering starts at 1. Use together with 'pagelen' to control pagination."
+          },
+          "role": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "member",
+              "contributor",
+              "admin",
+              "owner"
+            ],
+            "description": "Enum for repository role filter values."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field to sort returned repositories by. Prefix with a hyphen (-) for descending order. Common sortable fields: 'name', 'created_on', 'updated_on'."
+          },
+          "after": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ISO-8601 timestamp to filter results created after this date/time. Format: YYYY-MM-DDTHH:mm:ss.sssZ (e.g., '2024-01-01T00:00:00.000Z'). Only repositories created after this timestamp will be returned."
+          },
+          "pagelen": {
+            "type": "integer",
+            "description": "The number of items to return per page. Accepts values between 1 and 100 (inclusive). Defaults to 10 if not specified."
+          }
+        },
+        "description": "Request model for the ListRepositories action. Specifies optional query parameters for filtering and sorting public repositories."
+      }
+    },
+    {
+      "id": "bitbucket.list_repositories_in_workspace",
+      "tool": "BITBUCKET_LIST_REPOSITORIES_IN_WORKSPACE",
+      "toolName": "bitbucket_list_repositories_in_workspace",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists repositories in a specified Bitbucket workspace, accessible to the authenticated user, with options to filter by role or query string, and sort results. Responses are paginated; iterate using the `next` field in each response until it is absent to retrieve all repositories.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string using Bitbucket Query Language (BBQL) to filter repositories. Syntax: 'field operator value'. Operators: '=' (exact match), '~' (contains substring), '!=' (not equal), '>' '>=' '<' '<=' (comparison for dates/numbers). String values MUST be enclosed in double quotes. Valid repository fields: 'name', 'full_name', 'project.key', 'is_private', 'created_on', 'updated_on', 'language'. Combine multiple conditions with AND/OR (e.g., 'name~\"api\" AND is_private=true')."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number of the results to retrieve. Defaults to 1 if not specified."
+          },
+          "role": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters repositories by the authenticated user's role within each repository."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field for sorting repository results. Prefix with '-' for descending order. Common sortable fields: 'name', 'updated_on', 'created_on'."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of results per page (1-100). Defaults to 10 if not specified."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The identifier of the Bitbucket workspace. This can be the workspace slug (e.g., 'my-workspace') or its UUID enclosed in curly braces (e.g., '{workspace-uuid}'). Empty results may indicate insufficient permissions rather than an invalid identifier."
+          }
+        },
+        "required": [
+          "workspace"
+        ]
+      }
+    },
+    {
+      "id": "bitbucket.list_repository_forks",
+      "tool": "BITBUCKET_LIST_REPOSITORY_FORKS",
+      "toolName": "bitbucket_list_repository_forks",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a paginated list of all forks for a specific repository in a Bitbucket workspace. Returns repository objects for each fork with metadata like owner, creation date, and size. Use this action when you need to discover who has forked a repository or analyze fork relationships.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "The page number to retrieve in the paginated list of results. Page numbering starts at 1. Use together with 'pagelen' to control pagination."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of items to return per page. Accepts values between 1 and 100 (inclusive)."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The repository slug (URL-friendly identifier) for the repository whose forks to list."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace slug or UUID that owns the repository."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ],
+        "description": "Request model for the ListRepositoryForks action. Specifies path parameters and optional pagination parameters."
+      }
+    },
+    {
+      "id": "bitbucket.list_repository_paths",
+      "tool": "BITBUCKET_LIST_REPOSITORY_PATHS",
+      "toolName": "bitbucket_list_repository_paths",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists file and directory entries under a repository path at a given revision, with optional breadth-first recursion via max_depth for repository traversal and scanning. Fails if the path points to a file rather than a directory.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter query string using Bitbucket's REST API filtering syntax to narrow results."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Directory path within the repository to list. Use empty string for root. Must be a directory, not a file."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field name for sorting results. Prefix with '-' for descending order."
+          },
+          "commit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Commit hash, branch name, or tag to list paths from. Determines the revision to traverse."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of entries per page (1-100). Controls pagination size."
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Maximum depth for breadth-first recursive directory traversal. If specified, includes nested subdirectories up to this depth."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository slug or UUID (typically URL-formatted name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID or UUID (often username or team name) containing the repository."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "commit"
+        ]
+      }
+    },
+    {
+      "id": "bitbucket.list_snippets",
+      "tool": "BITBUCKET_LIST_SNIPPETS",
+      "toolName": "bitbucket_list_snippets",
+      "lane": "read",
+      "effect": "read",
+      "description": "Returns all snippets accessible to the authenticated user. Use when you need to discover or list snippets, optionally filtered by role (owner, contributor, or member).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number of the results to retrieve. Defaults to 1 if not specified."
+          },
+          "role": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "owner",
+              "contributor",
+              "member"
+            ],
+            "description": "Enum for snippet role filter values."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of results per page (1-100). Defaults to the Bitbucket API's default page length if not specified."
+          }
+        },
+        "description": "Request model for the ListSnippets action. Specifies optional query parameter for filtering snippets."
+      }
+    },
+    {
+      "id": "bitbucket.list_tags",
+      "tool": "BITBUCKET_LIST_TAGS",
+      "toolName": "bitbucket_list_tags",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists tags in a Bitbucket repository with optional server-side filtering by name pattern or commit hash (BBQL) and sorting. Use when you need to discover available tags, search for specific tag patterns, or find tags pointing to specific commits.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string using Bitbucket Query Language (BBQL) to filter tags. Syntax: 'field operator value'. Operators: '=' (exact match), '~' (contains substring), '!=' (not equal). String values MUST be enclosed in double quotes. Common use case: filter by tag name pattern using 'name~\"pattern\"' or by commit hash using 'target.hash=\"hash\"'. Examples: 'name~\"v1.\"' (tags starting with v1.), 'name=\"v1.0.0\"' (exact match for v1.0.0 tag), 'target.hash=\"a1b2c3d4\"' (tags pointing to specific commit)."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field for sorting tag results. Prefix with '-' for descending order. Common sortable fields: 'name', 'target.date' (commit date). Default sorting applies natural sorting for tag names with numeric values."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of tags per page (1-100). Bitbucket default is typically 10 if not specified."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug or UUID of the repository. This is usually the repository's name in URL-friendly format."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or slug that owns the repository. This can typically be found in the URL of your Bitbucket workspace."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ],
+        "description": "Request model for listing tags in a Bitbucket repository."
+      }
+    },
+    {
+      "id": "bitbucket.list_versions",
+      "tool": "BITBUCKET_LIST_VERSIONS",
+      "toolName": "bitbucket_list_versions",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists versions (milestones) in a Bitbucket repository's issue tracker. Use when you need to discover available versions for associating with issues, or to retrieve version IDs for use with create_issue.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string using Bitbucket Query Language (BBQL) to filter versions. Syntax: 'field operator value'. Operators: '=' (exact match), '~' (contains substring), '!=' (not equal). String values MUST be enclosed in double quotes. Common use case: filter by version name pattern using 'name~\"pattern\"'. Examples: 'name~\"1.\"' (versions starting with 1.), 'name=\"2.0\"' (exact match for version 2.0)."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number for paginated results (starts from 1)."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field for sorting version results. Prefix with '-' for descending order. Common sortable fields: 'name'. Default sorting applies natural sorting."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of versions per page (1-100). Bitbucket default is typically 10 if not specified."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug or UUID of the repository. This is usually the repository's name in URL-friendly format."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID or slug that owns the repository. This can typically be found in the URL of your Bitbucket workspace."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug"
+        ],
+        "description": "Request model for listing versions in a Bitbucket repository."
+      }
+    },
+    {
+      "id": "bitbucket.list_workspace_members",
+      "tool": "BITBUCKET_LIST_WORKSPACE_MEMBERS",
+      "toolName": "bitbucket_list_workspace_members",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists all members of a specified Bitbucket workspace; the workspace must exist.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number of the results to retrieve. Defaults to 1 if not specified."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of results per page (1-100). Defaults to the Bitbucket API's default page length if not specified."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace ID (UUID) or slug from which to list members. The slug is the user-friendly, URL-safe identifier for the workspace."
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "description": "Request model for the BITBUCKET_LIST_WORKSPACE_MEMBERS action."
+      }
+    },
+    {
+      "id": "bitbucket.list_workspace_projects",
+      "tool": "BITBUCKET_LIST_WORKSPACE_PROJECTS",
+      "toolName": "bitbucket_list_workspace_projects",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists projects in a specified Bitbucket workspace. Use when you need to retrieve all projects belonging to a workspace.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string to filter projects by attributes, following Bitbucket's filtering syntax. Syntax: 'field operator value'. Operators: '=' (exact match), '~' (contains substring), '!=' (not equal). String values MUST be enclosed in double quotes. Valid project fields: 'name', 'key', 'is_private'. Combine multiple conditions with AND/OR (e.g., 'name~\"api\" AND is_private=true')."
+          },
+          "page": {
+            "type": "integer",
+            "description": "Specifies which page of results to return. Page numbering starts at 1."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field to sort returned projects by; prefix with a hyphen (-) for descending order. Common sortable fields: 'name', 'key', 'created_on', 'updated_on'."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Controls the number of items per page. Must be between 1 and 100."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The identifier of the Bitbucket workspace. This can be the workspace slug (e.g., 'my-workspace') or its UUID enclosed in curly braces (e.g., '{workspace-uuid}')."
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "description": "Request model for the ListWorkspaceProjects action. Specifies the workspace and optional query parameters for filtering and sorting projects."
+      }
+    },
+    {
+      "id": "bitbucket.list_workspaces",
+      "tool": "BITBUCKET_LIST_WORKSPACES",
+      "toolName": "bitbucket_list_workspaces",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists Bitbucket workspaces accessible to the authenticated user, optionally filtered and sorted. Results are paginated; follow the `next` field in each response to retrieve subsequent pages until `next` is absent. When multiple workspaces are returned, verify the correct `slug` or UUID before passing to downstream tools.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Query string to filter workspaces by attributes, following Bitbucket's filtering syntax."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page number of the results to retrieve. Defaults to 1 if not specified."
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field to sort returned workspaces by; prefix with a hyphen (-) for descending order."
+          },
+          "pagelen": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Number of results per page (1-100). Defaults to 10 if not specified."
+          }
+        },
+        "description": "Request model for the ListWorkspaces action. Specifies optional query parameters for filtering and sorting workspaces."
+      }
+    },
+    {
+      "id": "bitbucket.resolve_pull_request_comment",
+      "tool": "BITBUCKET_RESOLVE_PULL_REQUEST_COMMENT",
+      "toolName": "bitbucket_resolve_pull_request_comment",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Tool to resolve or reopen a pull request comment thread. Use when marking a comment as addressed during review or reopening a previously resolved thread.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Bitbucket: Resolve pull request comment",
+      "input": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "resolve",
+              "reopen"
+            ],
+            "description": "Action to perform: 'resolve' marks the comment thread as addressed, 'reopen' unmarks it."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The repository slug (URL-friendly name)."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The workspace slug or UUID that owns the repository."
+          },
+          "comment_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The unique identifier for the comment to resolve or reopen."
+          },
+          "pull_request_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The unique identifier of the pull request."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "pull_request_id",
+          "comment_id"
+        ],
+        "description": "Request model for resolving or reopening a pull request comment thread."
+      }
+    },
+    {
+      "id": "bitbucket.update_pull_request",
+      "tool": "BITBUCKET_UPDATE_PULL_REQUEST",
+      "toolName": "bitbucket_update_pull_request",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update an existing pull request's editable fields (e.g., title, description, reviewers) via the Bitbucket Cloud API. Use when you need to modify a pull request without creating a new one. Only sends fields that are explicitly provided to avoid accidental overwrites.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Bitbucket: Update Pull Request",
+      "input": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "boolean",
+            "description": "If true, marks the pull request as a draft. If false, marks it as ready for review. If omitted, draft status remains unchanged."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 255,
+            "description": "Updated title for the pull request. If omitted, title remains unchanged."
+          },
+          "repo_slug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Repository slug (URL-friendly name) or UUID."
+          },
+          "reviewers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "UUID of the Bitbucket user to be a reviewer. Must be in Bitbucket's standard format with curly braces."
+                }
+              },
+              "required": [
+                "uuid"
+              ],
+              "description": "Reviewer object for pull requests."
+            },
+            "maxItems": 100,
+            "description": "Updated list of Bitbucket user UUIDs to be reviewers. Replaces existing reviewers. If omitted, reviewers remain unchanged."
+          },
+          "workspace": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workspace ID (slug) or workspace UUID that owns the repository."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Updated Markdown description for the pull request. If omitted, description remains unchanged."
+          },
+          "pull_request_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Unique ID of the pull request to update."
+          },
+          "close_source_branch": {
+            "type": "boolean",
+            "description": "If true, automatically closes the source branch upon pull request merge. If omitted, setting remains unchanged."
+          }
+        },
+        "required": [
+          "workspace",
+          "repo_slug",
+          "pull_request_id"
+        ],
+        "description": "Request to update an existing pull request's editable fields."
+      }
+    }
+  ]
+}

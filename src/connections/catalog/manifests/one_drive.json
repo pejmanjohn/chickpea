@@ -1,0 +1,2206 @@
+{
+  "toolkit": "one_drive",
+  "version": "20261013_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "OneDrive",
+  "description": "Find, read, and create files and folders, and update Excel workbooks stored in OneDrive.",
+  "securityDescription": "Microsoft sign-in opens through Composio. Agents can read the files, folders, and SharePoint content the connected account can reach, including who an item is shared with. With write access, Agents can create text files and folders, rename items or edit their descriptions, restore items from the recycle bin to their original folder, and edit cells, formats, and tables in Excel workbooks. A new text file can replace a file of the same name; OneDrive keeps the earlier version in its version history. Agents cannot share items, create or redeem sharing or preview links, change permissions, move or copy items, check files in or out, or delete anything.",
+  "preset": {
+    "category": "docs",
+    "accent": "#0364B8"
+  },
+  "validationCapability": "one_drive.get_root",
+  "review": {
+    "add": [
+      "ONE_DRIVE_DOWNLOAD_FILE",
+      "ONE_DRIVE_LIST_FOLDER_CHILDREN",
+      "ONE_DRIVE_ONEDRIVE_CREATE_FOLDER",
+      "ONE_DRIVE_ONEDRIVE_CREATE_TEXT_FILE"
+    ],
+    "drop": {
+      "ONE_DRIVE_CHECKIN_ITEM": "Check-in publishes a checked-out file's changes to everyone with access, and checkout is excluded, so the pair is not offered.",
+      "ONE_DRIVE_COPY_ITEM": "Copies an item into any folder or drive, which can put its content where more people can see it.",
+      "ONE_DRIVE_GET_DRIVE_ITEM_BY_SHARING_URL": "prefer_redeem can redeem a sharing link, which grants the connected account durable access; read tools cannot withhold an argument.",
+      "ONE_DRIVE_MOVE_ITEM": "Moves an item to another folder or drive, which can widen who sees it; Google Drive offers no move either.",
+      "ONE_DRIVE_PREVIEW_DRIVE_ITEM": "Creates an embeddable preview URL for the item, a link-creation path Google Drive does not offer."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "one_drive.create_workbook_session",
+      "tool": "ONE_DRIVE_CREATE_WORKBOOK_SESSION",
+      "toolName": "one_drive_create_workbook_session",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Create a persistent or temporary session for an Excel workbook.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "OneDrive: Create Workbook Session",
+      "input": {
+        "type": "object",
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "DriveItem ID of the Office Open XML workbook."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Drive containing the workbook. Use 'me' for the connected user's drive, or provide a Microsoft Graph drive ID."
+          },
+          "persist_changes": {
+            "type": "boolean",
+            "description": "True to save workbook changes; false to create a temporary, non-persistent session copy."
+          }
+        },
+        "required": [
+          "item_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.download_file",
+      "tool": "ONE_DRIVE_DOWNLOAD_FILE",
+      "toolName": "one_drive_download_file",
+      "lane": "read",
+      "effect": "read",
+      "description": "Downloads a file from a user's OneDrive using its item ID, which must refer to a file and not a folder. Response contains a content object with the downloaded file, MIME type, and name; raw file data is not returned directly. Parsing content from Excel, Word, PDF, or other formats requires additional tooling. The downloaded file can be passed to downstream tools such as OUTLOOK_SEND_EMAIL or OUTLOOK_CREATE_DRAFT.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "pdf",
+              "html"
+            ],
+            "description": "Optional format for file conversion during download. 'pdf' converts supported source files (doc, docx, dot, dotx, dotm, dsn, dwg, eml, epub, fluidframework, form, htm, html, loop, loot, markdown, md, msg, note, odp, ods, odt, page, pps, ppsx, ppt, pptx, pulse, rtf, task, tif, tiff, wbtx, whiteboard, xls, xlsm, xlsx) to PDF. 'html' converts Loop/Fluid files (loop, fluid, wbtx) to HTML. Leave empty to download the file in its original format without conversion."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Raw item ID only (e.g., '1234567890ABC'). Do not include URL fragments or query parameters like '&cid=...' or '?param=...' from sharing links."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "User's ID or User Principal Name (UPN), or 'me' for the authenticated user's OneDrive. Ignored when drive_id is provided."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive containing the file. Required for SharePoint or OneDrive for Business drives. When provided, user_id is ignored."
+          },
+          "file_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Desired filename (including extension) for the downloaded content."
+          },
+          "if_none_match": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional ETag or cTag value for conditional download. If the provided tag matches the current file's tag, the API returns HTTP 304 Not Modified without downloading the file, saving bandwidth. Useful for caching scenarios."
+          }
+        },
+        "required": [
+          "item_id",
+          "file_name"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.format_workbook_range",
+      "tool": "ONE_DRIVE_FORMAT_WORKBOOK_RANGE",
+      "toolName": "one_drive_format_workbook_range",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Apply dimensions, alignment, wrapping, font, fill, and borders to a workbook range. Components are updated sequentially, not atomically, so earlier formatting remains if a later update fails.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "OneDrive: Format Workbook Range",
+      "input": {
+        "type": "object",
+        "properties": {
+          "fill": {
+            "type": "object",
+            "properties": {
+              "color": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "HTML named color or hexadecimal #RRGGBB fill color."
+              }
+            },
+            "required": [
+              "color"
+            ],
+            "description": "Optional fill-color change for the range."
+          },
+          "font": {
+            "type": "object",
+            "properties": {
+              "bold": {
+                "type": "boolean",
+                "description": "Whether text should be bold."
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Nonblank font family name."
+              },
+              "size": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Font size in points; must be greater than zero."
+              },
+              "color": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "HTML named color or hexadecimal #RRGGBB font color."
+              },
+              "italic": {
+                "type": "boolean",
+                "description": "Whether text should be italic."
+              },
+              "underline": {
+                "type": "string",
+                "maxLength": 20000,
+                "enum": [
+                  "None",
+                  "Single",
+                  "Double",
+                  "SingleAccountant",
+                  "DoubleAccountant"
+                ],
+                "description": "Underline style to apply to the font."
+              }
+            },
+            "description": "Optional font changes for the range."
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Range in A1 notation, such as A1:D10. Accidental wrapping quotes are removed and embedded apostrophes are escaped for OData."
+          },
+          "borders": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "color": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "HTML named color or hexadecimal #RRGGBB border color."
+                },
+                "style": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "enum": [
+                    "None",
+                    "Continuous",
+                    "Dash",
+                    "DashDot",
+                    "DashDotDot",
+                    "Dot",
+                    "Double",
+                    "SlantDashDot"
+                  ],
+                  "description": "Line style to apply to this border side."
+                },
+                "weight": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "enum": [
+                    "Hairline",
+                    "Thin",
+                    "Medium",
+                    "Thick"
+                  ],
+                  "description": "Line weight to apply to this border side."
+                },
+                "side_index": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "enum": [
+                    "EdgeTop",
+                    "EdgeBottom",
+                    "EdgeLeft",
+                    "EdgeRight",
+                    "InsideVertical",
+                    "InsideHorizontal",
+                    "DiagonalDown",
+                    "DiagonalUp"
+                  ],
+                  "description": "Side of the range border to update."
+                }
+              },
+              "required": [
+                "side_index"
+              ]
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "description": "Optional border changes, with at most one entry per side."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "DriveItem ID of the Office Open XML workbook."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Drive containing the workbook. Use 'me' for the connected user's drive, or provide a Microsoft Graph drive ID."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Workbook session ID returned by ONE_DRIVE_CREATE_WORKBOOK_SESSION."
+          },
+          "base_format": {
+            "type": "object",
+            "properties": {
+              "wrapText": {
+                "type": "boolean",
+                "description": "Whether text in the range should wrap."
+              },
+              "rowHeight": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Height to apply to every row in the range, in points."
+              },
+              "columnWidth": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Width to apply to every column in the range, in points."
+              },
+              "verticalAlignment": {
+                "type": "string",
+                "maxLength": 20000,
+                "enum": [
+                  "Top",
+                  "Center",
+                  "Bottom",
+                  "Justify",
+                  "Distributed"
+                ],
+                "description": "Vertical alignment to apply to the range."
+              },
+              "horizontalAlignment": {
+                "type": "string",
+                "maxLength": 20000,
+                "enum": [
+                  "General",
+                  "Left",
+                  "Center",
+                  "Right",
+                  "Fill",
+                  "Justify",
+                  "CenterAcrossSelection",
+                  "Distributed"
+                ],
+                "description": "Horizontal alignment to apply to the range."
+              }
+            },
+            "description": "Optional dimensions, alignment, and wrapping changes."
+          },
+          "worksheet_id_or_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Worksheet ID or exact worksheet name containing the range."
+          }
+        },
+        "required": [
+          "item_id",
+          "worksheet_id_or_name",
+          "address"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.get_drive",
+      "tool": "ONE_DRIVE_GET_DRIVE",
+      "toolName": "one_drive_get_drive",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the properties and relationships of a Drive resource by its unique ID. Use this action when you need to get details about a specific OneDrive, user's OneDrive, group's document library, or a site's document library. Only drives accessible to the authenticated user are returned; missing drives indicate insufficient OAuth scope or tenant permissions.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the drive. This can be the ID of the user's personal OneDrive, a group's document library, or a specific drive ID. Must be a valid, non-empty value; use ONE_DRIVE_LIST_DRIVES to obtain valid drive IDs."
+          },
+          "expand_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of relationships to expand and include in the response. For example, \"root,list\" to include the root folder and list information. This allows you to retrieve related resources in a single request."
+          },
+          "select_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A comma-separated list of properties to include in the response. Use this to retrieve specific fields and reduce the response size. For example, \"id,name,driveType\". If not provided, all default properties are returned."
+          }
+        },
+        "required": [
+          "drive_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.get_followed_item",
+      "tool": "ONE_DRIVE_GET_FOLLOWED_ITEM",
+      "toolName": "one_drive_get_followed_item",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a specific followed driveItem from a drive. Use when you need to get details about a file or folder that the user has marked to follow.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the drive. This can be the ID of the user's personal OneDrive, a group's document library, or a specific drive ID."
+          },
+          "drive_item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the followed driveItem to retrieve. This is the ID of a specific file or folder that has been followed."
+          }
+        },
+        "required": [
+          "drive_id",
+          "drive_item_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.get_group_drive",
+      "tool": "ONE_DRIVE_GET_GROUP_DRIVE",
+      "toolName": "one_drive_get_group_drive",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the document library (drive) for a Microsoft 365 group. Use when you need to access the default document library associated with a specific group.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the group whose document library you want to retrieve."
+          },
+          "select_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of properties to include in the response. Use this to retrieve specific fields and reduce the response size. For example, [\"id\", \"name\", \"driveType\"]. If not provided, all default properties are returned."
+          }
+        },
+        "required": [
+          "group_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.get_item",
+      "tool": "ONE_DRIVE_GET_ITEM",
+      "toolName": "one_drive_get_item",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the metadata of a DriveItem by its unique ID. Use this tool to get information about a specific file or folder in OneDrive when you have its ID. If a `drive_id` is not provided, it defaults to the user's main drive.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the DriveItem (file or folder). DriveItem IDs vary by platform: OneDrive for Business/SharePoint uses '01...' prefix format (e.g., '01NKDM7HMOJTVYMDOSXFDK2QJDXCDI3WUK'), while OneDrive Personal uses 'HASH!NUMBER' format (e.g., 'D4648F06C91D9D3D!54927'). IDs are case-sensitive and must be used exactly as returned from Microsoft Graph API. Obtain IDs from ONE_DRIVE_LIST_FOLDER_CHILDREN, ONE_DRIVE_SEARCH_ITEMS, or similar operations."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the Drive where the item is located. If not provided, the action will target the user's personal OneDrive (me/drive). Always specify drive_id explicitly for group drives, SharePoint site drives, or shared libraries to avoid silently querying the wrong drive."
+          },
+          "select_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of DriveItem properties to return. If not specified, a default set of properties is returned. Refer to the DriveItem resource documentation for available fields."
+          },
+          "expand_relations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "activities",
+                "analytics",
+                "children",
+                "createdByUser",
+                "lastModifiedByUser",
+                "listItem",
+                "permissions",
+                "retentionLabel",
+                "subscriptions",
+                "thumbnails",
+                "versions",
+                "workbook"
+              ],
+              "description": "Valid navigation properties that can be expanded for a driveItem."
+            },
+            "maxItems": 100,
+            "description": "Navigation properties to expand in the response. Valid values: 'children' (folder contents), 'thumbnails' (image previews), 'versions' (version history), 'permissions' (sharing permissions), 'listItem' (SharePoint list item data), 'activities' (recent activities), 'analytics' (usage analytics), 'createdByUser' (creator user details), 'lastModifiedByUser' (last modifier user details), 'retentionLabel' (retention policy), 'subscriptions' (webhooks), 'workbook' (Excel workbook data)."
+          }
+        },
+        "required": [
+          "item_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.get_item_permissions",
+      "tool": "ONE_DRIVE_GET_ITEM_PERMISSIONS",
+      "toolName": "one_drive_get_item_permissions",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the permissions of a DriveItem by its unique ID within a specific Drive. Use when you need to check who has access to a file or folder and what level of access they have. Response nests permission entries under `data.value`; check top-level `success`/`error` flags before processing results. Results include inherited permissions, owner entries, and anonymous link entries — not just explicitly granted permissions. Sharing links may have differing scopes (org-only vs. anonymous); verify `link.scope` before treating a permission as externally accessible.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of properties to include in the response. For example, 'id,roles,link'."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the drive item. Verify the correct item before calling — disambiguate similarly named files using folder path, timestamps, or file size. Required unless item_path is provided."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of a SharePoint site. Use this if the item is in a SharePoint site's drive."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of a user. Use this if the item is in a specific user's drive (other than 'me')."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the drive. Required if not using other identifiers like group_id, site_id, or user_id in the path."
+          },
+          "group_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of a group. Use this if the item is in a group's drive."
+          },
+          "item_path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The path to the item relative to the drive's root. Use this if item_id is not known. Must start with ':/' and end with ':/'. Example: ':/FolderA/FileB.txt:/'. Only applicable when accessing items in the current user's drive (me/drive/root). Does NOT substitute `item_id` (which is required); use only as supplemental path context for items in the current user's drive."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          },
+          "if_none_match": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If this request header value (etag) matches the current etag on the item, an HTTP 304 Not Modified response is returned."
+          }
+        }
+      }
+    },
+    {
+      "id": "one_drive.get_item_thumbnails",
+      "tool": "ONE_DRIVE_GET_ITEM_THUMBNAILS",
+      "toolName": "one_drive_get_item_thumbnails",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the thumbnails associated with a DriveItem. Use when you need to display visual previews of files. Response contains a `value` array with size keys (`small`, `medium`, `large`); thumbnails may not be generated for all file types or newly uploaded items, so handle an empty or missing `value` array. Returned thumbnail URLs are external HTTP endpoints with independent availability.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of thumbnail sizes to retrieve (e.g., \"small,medium,large\", or \"c300x400_crop\"). If not specified, all available thumbnails for the first thumbnailSet (id: \"0\") are returned."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the DriveItem."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of a Site. Provide either drive_id, group_id, site_id, or user_id."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of a User. Provide either drive_id, group_id, site_id, or user_id."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the Drive. If not provided, 'me' will be used for the current user's drive."
+          },
+          "group_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of a Group. Provide either drive_id, group_id, site_id, or user_id."
+          },
+          "original_orientation": {
+            "type": "boolean",
+            "description": "If true, retrieves the thumbnail with its original EXIF orientation. This is only supported on OneDrive Personal. Defaults to false."
+          }
+        },
+        "required": [
+          "item_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.get_item_versions",
+      "tool": "ONE_DRIVE_GET_ITEM_VERSIONS",
+      "toolName": "one_drive_get_item_versions",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the version history of a DriveItem by its unique ID. Use when you need to access or list previous versions of a file. Version history may be unavailable or empty for folders or items in drives without versioning enabled.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the item (file or folder)."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the site. Mutually exclusive with drive_id, group_id, and user_id."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the user. Mutually exclusive with drive_id, group_id, and site_id."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the drive. Mutually exclusive with group_id, site_id, and user_id. One of these must be provided if not using the /me path."
+          },
+          "group_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the group. Mutually exclusive with drive_id, site_id, and user_id."
+          }
+        },
+        "required": [
+          "item_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.get_root",
+      "tool": "ONE_DRIVE_GET_ROOT",
+      "toolName": "one_drive_get_root",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve metadata for the root folder of the signed-in user's OneDrive. Use when you need information about the user's OneDrive root directory, such as size, child count, or web URL.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The user's ID, email, or 'me'. Defaults to 'me' (authenticated user). Required for S2S (app-only) auth."
+          },
+          "select_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of properties to include in the response. Use this to retrieve specific fields and reduce the response size. Common fields include: id, name, size, createdDateTime, lastModifiedDateTime, webUrl, folder, root. If not provided, all default properties are returned."
+          }
+        }
+      }
+    },
+    {
+      "id": "one_drive.get_sharepoint_list_items",
+      "tool": "ONE_DRIVE_GET_SHAREPOINT_LIST_ITEMS",
+      "toolName": "one_drive_get_sharepoint_list_items",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get the items (list items) within a specific SharePoint list on a site. Use when you need to retrieve data from a SharePoint list.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The maximum number of items to return in a single response. Used for pagination."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The number of items to skip in the result set. Used for pagination."
+          },
+          "count": {
+            "type": "boolean",
+            "description": "If true, returns the total count of items in the @odata.count property."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of relationships to expand, or 'fields($select=columnName1,columnName2)' to retrieve specific fields. For example, to get specific columns 'Name' and 'Color', use 'fields($select=Name,Color)'. SharePoint internal field names may differ from display names; call without expand first (or use 'fields' alone) to discover actual internal names before filtering or selecting specific fields."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "An OData filter query to restrict the results. For example, to filter items where 'Quantity' is less than 600, use 'fields/Quantity lt 600'."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of properties to include in the response. Often used in conjunction with '$expand=fields(select=...)'. For example, 'id,name,fields'."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the list within the SharePoint site."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData order by expression to sort results. For example, 'fields/Name asc' or 'fields/Quantity desc'."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the SharePoint site."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          }
+        },
+        "required": [
+          "site_id",
+          "list_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.get_site",
+      "tool": "ONE_DRIVE_GET_SITE",
+      "toolName": "one_drive_get_site",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves metadata for a specific SharePoint site by its ID. Use this action when you need to get details like display name, web URL, and creation/modification dates for a known SharePoint site.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of relationships to expand in the response. Example: columns,lists,drives"
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of properties to include in the response. Example: id,displayName,webUrl"
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the SharePoint site. This is the id property of the site resource."
+          }
+        },
+        "required": [
+          "site_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.get_site_page_content",
+      "tool": "ONE_DRIVE_GET_SITE_PAGE_CONTENT",
+      "toolName": "one_drive_get_site_page_content",
+      "lane": "read",
+      "effect": "read",
+      "description": "Gets the content of a modern SharePoint site page. Use when you need to retrieve the details and content of a specific page within a SharePoint site.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Expands related entities. For example, use 'canvasLayout' to include the page's layout and web part content."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of properties to include in the response. Example: id,name,title"
+          },
+          "page_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the site page."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the SharePoint site."
+          }
+        },
+        "required": [
+          "site_id",
+          "page_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.get_user",
+      "tool": "ONE_DRIVE_GET_USER",
+      "toolName": "one_drive_get_user",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the properties and profile information for a specific Microsoft user by their user ID or user principal name. Use this action when you need to get detailed information about a user's profile, including their contact details, job information, and account status. This action requires the User.Read or User.ReadBasic.All OAuth scope to access user profile data.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Specific properties to return in the response. Use this to retrieve only the fields you need and reduce response size. Example properties: displayName, mail, jobTitle, givenName, surname, mobilePhone. If not provided, all default user properties are returned."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The user principal name (UPN) or user ID to retrieve. Examples: 'user@contoso.com' or '87d349ed-44d7-43e1-9a83-5f2406dee5bd'. This is a required parameter that identifies which user's profile to fetch."
+          }
+        },
+        "required": [
+          "user_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.inspect_workbook_table",
+      "tool": "ONE_DRIVE_INSPECT_WORKBOOK_TABLE",
+      "toolName": "one_drive_inspect_workbook_table",
+      "lane": "read",
+      "effect": "read",
+      "description": "Read a workbook table's occupied range and one page of its columns.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "DriveItem ID of the Office Open XML workbook."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Drive containing the workbook. Use 'me' for the connected user's drive, or provide a Microsoft Graph drive ID."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque token for the next columns page. Omit initially, then pass next_page_token back unchanged."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional workbook session ID to use for both table reads."
+          },
+          "column_page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum columns to request on the first page. Microsoft Graph may return fewer."
+          },
+          "table_id_or_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Exact table ID or table name in the workbook."
+          }
+        },
+        "required": [
+          "item_id",
+          "table_id_or_name"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.list_activities",
+      "tool": "ONE_DRIVE_LIST_ACTIVITIES",
+      "toolName": "one_drive_list_activities",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve recent activities on the authenticated user's OneDrive. Use when you need to track recent changes or actions performed across the drive.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999,
+            "description": "The maximum number of activities to return. Must be between 1 and 999."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive to list activities for. If not provided, the default drive of the authenticated user (/me/drive) will be used."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          }
+        },
+        "description": "Request model for listing drive activities."
+      }
+    },
+    {
+      "id": "one_drive.list_drives",
+      "tool": "ONE_DRIVE_LIST_DRIVES",
+      "toolName": "one_drive_list_drives",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a list of Drive resources available to the authenticated user, or for a specific user, group, or site. Use when you need to find out what drives are accessible. Returns only drives within the signed-in account's permission scope; missing drives indicate insufficient permissions or different tenant scope. Results are paginated — pass the returned next_page_token back as page_token across all pages to avoid missing drives. Returned drives represent document libraries and may not reflect full SharePoint site structure; use SHARE_POINT_GET_SITE_COLLECTION_INFO or SHARE_POINT_SEARCH_QUERY for broader coverage. Use driveType and webUrl to distinguish personal, system, and SharePoint-backed drives.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "description": "The maximum number of items to return in a single page. Must be between 1 and 999."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of relationships to expand (e.g., \"root,list\")."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of properties to include in the response (e.g., \"id,name,driveType\")."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of properties to order the results by, optionally followed by \"asc\" or \"desc\" (e.g., \"name desc\")."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the site to list drives for. If provided, group_id and user_id should not be used."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the user to list drives for. If provided, group_id and site_id should not be used. If none of group_id, site_id, or user_id are provided, the drives for the current authenticated user (/me/drives) will be listed."
+          },
+          "group_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the group to list drives for. If provided, site_id and user_id should not be used."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          }
+        },
+        "description": "Request model for listing OneDrive drives."
+      }
+    },
+    {
+      "id": "one_drive.list_folder_children",
+      "tool": "ONE_DRIVE_LIST_FOLDER_CHILDREN",
+      "toolName": "one_drive_list_folder_children",
+      "lane": "read",
+      "effect": "read",
+      "description": "List the direct children (files/folders) of a OneDrive/SharePoint folder by DriveItem ID or path. Returns reliable pagination tokens for large folders. Use when you need to enumerate folder contents deterministically, find companion artifacts (e.g., .vtt/.docx files), or browse within a known folder.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999,
+            "description": "Maximum number of items to return per page. Default is 200."
+          },
+          "expand": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of relationships to expand in the response (e.g., ['thumbnails', 'permissions']). Use this to include related resources inline."
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Comma-separated list of properties to include in the response (e.g., ['id', 'name', 'size'])."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Sort results by specified properties (e.g., 'name', 'lastModifiedDateTime desc')."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If provided, uses /sites/{site-id}/drive/... route for SharePoint sites."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive. Required unless using 'use_me_drive' or 'site_id' is provided."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          },
+          "folder_path": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Path relative to the drive root (e.g., '/', '/Recordings', '/Documents/Project'). Use '/' to list the root folder's children. Alternative to 'folder_item_id'."
+          },
+          "use_me_drive": {
+            "type": "boolean",
+            "description": "If true, uses /me/drive/... route for the authenticated user's personal OneDrive."
+          },
+          "folder_item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the folder (DriveItem) to list children from. Supports both simple item IDs (e.g., '01BYE5RZ6QN3ZWBTUFOFD3GSPGOHDJD36K') and drive-qualified item IDs with '!' separator (e.g., 'driveId!itemId' format commonly returned from search results or shared item listings). When a drive-qualified ID is detected, the drive portion is automatically extracted and used in the API request."
+          }
+        }
+      }
+    },
+    {
+      "id": "one_drive.list_item_activities",
+      "tool": "ONE_DRIVE_LIST_ITEM_ACTIVITIES",
+      "toolName": "one_drive_list_item_activities",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list recent activities for a specific item in a OneDrive drive. Use when you need to track changes or actions performed on a file or folder.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the driveItem."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the drive."
+          }
+        },
+        "required": [
+          "drive_id",
+          "item_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.list_onedrive_shared_items",
+      "tool": "ONE_DRIVE_LIST_ONEDRIVE_SHARED_ITEMS",
+      "toolName": "one_drive_list_onedrive_shared_items",
+      "lane": "read",
+      "effect": "read",
+      "description": "List files shared from other people's OneDrive accounts using Microsoft Graph Search match-all and a OneDrive-personal URL heuristic. This excludes SharePoint-site shares by design; use ONE_DRIVE_SEARCH_DRIVE_ITEMS for broad keyword/KQL search across OneDrive and SharePoint.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based result offset for paging through the match-all search."
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Number of search results to inspect before filtering."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional driveItem fields to return on each hit resource. webUrl and parentReference are always included because they are required to identify shared OneDrive-personal items."
+          }
+        }
+      }
+    },
+    {
+      "id": "one_drive.list_root_drive_changes",
+      "tool": "ONE_DRIVE_LIST_ROOT_DRIVE_CHANGES",
+      "toolName": "one_drive_list_root_drive_changes",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list changes in the root of the user's primary drive using a delta token. Use when you need to track file and folder modifications, additions, or deletions in the main OneDrive directory. First call without `token` returns all current items plus an `@odata.deltaLink`; store that token and pass it on subsequent calls to retrieve only incremental changes. Losing the deltaLink token forces a full resync. Responses include deleted items (check `deleted` property) and the root item itself alongside files and folders.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999,
+            "description": "Maximum number of items to return in a single response. Useful for pagination and controlling response size."
+          },
+          "token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Either a raw token string or a full URL from @odata.nextLink/@odata.deltaLink. Accepts: raw token value, full pagination URL, or 'latest' to get a token for future calls. Omit to get all current items. Loop until `@odata.nextLink` is absent to get complete results; default page size is ~200 items."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of relationships to expand in the response."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of DriveItem properties to include in the response. Use this to retrieve specific fields and reduce response size."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive to track changes for. If not provided, will attempt to use the authenticated user's default drive (requires delegated auth). For application auth, this parameter is required."
+          }
+        }
+      }
+    },
+    {
+      "id": "one_drive.list_sharepoint_item_permissions",
+      "tool": "ONE_DRIVE_LIST_SHAREPOINT_ITEM_PERMISSIONS",
+      "toolName": "one_drive_list_sharepoint_item_permissions",
+      "lane": "read",
+      "effect": "read",
+      "description": "List Microsoft Graph beta permissions from a SharePoint list or list item.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optional OData $top page size."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional OData $select value, for example id,roles,grantedToV2,grantedToIdentitiesV2."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional SharePoint list item ID. Provide this to list permissions for a list item; omit it to list permissions for the list."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique Microsoft Graph ID of the SharePoint list."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The Microsoft Graph SharePoint site ID in composite format, usually 'hostname,site-collection-id,web-id'."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          }
+        },
+        "required": [
+          "site_id",
+          "list_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.list_sharepoint_list_items_delta",
+      "tool": "ONE_DRIVE_LIST_SHAREPOINT_LIST_ITEMS_DELTA",
+      "toolName": "one_drive_list_sharepoint_list_items_delta",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to track changes to items in a SharePoint list using a delta query. Use when you need to get newly created, updated, or deleted list items without performing a full read of the entire item collection.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999,
+            "description": "Maximum number of items to return in a single response."
+          },
+          "token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "If unspecified or empty, enumerates the current state. If 'latest', returns an empty response with the latest delta token. If a previous delta token, returns changes since that token."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of relationships to expand. Use 'fields($select=ColumnA,ColumnB)' format for field selection."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of listItem properties to return."
+          },
+          "list_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the list within the site."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "SharePoint site ID in composite format: hostname,site-collection-guid,site-guid (three comma-separated parts)."
+          }
+        },
+        "required": [
+          "site_id",
+          "list_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.list_site_columns",
+      "tool": "ONE_DRIVE_LIST_SITE_COLUMNS",
+      "toolName": "one_drive_list_site_columns",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all column definitions for a SharePoint site. Use this when you need to retrieve the schema or structure of columns within a specific SharePoint site.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The maximum number of items to return."
+          },
+          "count": {
+            "type": "boolean",
+            "description": "If true, returns the total count of items in the @odata.count property."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of related resources to expand in the response."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData filter expression to apply to the results."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of properties to include in the response."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of properties used to sort the results."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the SharePoint site. Example: `contoso.sharepoint.com,2C712604-133D-4A7C-9194-F53CE4C952A2,A704AEF5-C2C0-43C3-A3D8-9F55A73A02E2`"
+          }
+        },
+        "required": [
+          "site_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.list_site_items_delta",
+      "tool": "ONE_DRIVE_LIST_SITE_ITEMS_DELTA",
+      "toolName": "one_drive_list_site_items_delta",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to track changes to DriveItems in the default document library of a SharePoint site. Use when you need to get a list of items that have been added, modified, or deleted since a previous state or to get an initial enumeration of all items.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999,
+            "description": "Maximum number of items to return in a single response. Useful for pagination and controlling response size."
+          },
+          "token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A token used to retrieve a specific page of results or to get changes since a previous state. Can be 'latest' to get the most recent delta token without items, a deltaLink URL, or a timestamp (YYYY-MM-DDTHH:MM:SSZ)."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of relationships to expand in the response."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of DriveItem properties to include in the response. Use this to retrieve specific fields and reduce response size."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the SharePoint site."
+          }
+        },
+        "required": [
+          "site_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.list_site_lists",
+      "tool": "ONE_DRIVE_LIST_SITE_LISTS",
+      "toolName": "one_drive_list_site_lists",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all lists under a specific SharePoint site. Use when you need to enumerate lists within a known site. Returns only Microsoft Graph-supported lists — internal/system lists are excluded, so results may be a strict subset of all site lists (e.g., 13 returned where 108 exist). Results are in the `data.value` array. IMPORTANT: Only works with organizational Microsoft 365 accounts (Azure AD/Entra ID). NOT supported for personal Microsoft accounts (MSA/Outlook.com/Hotmail). Personal OneDrive users cannot access SharePoint sites through this endpoint.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The maximum number of items to return."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of relationships to expand in the response. Example: columns,items"
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData filter expression. Example: startswith(name,'Doc')"
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of properties to include in the response. Example: id,name,list"
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData order by expression. Example: name asc"
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "SharePoint site ID in the required composite format: 'hostname,site-collection-id,web-id' (e.g., 'contoso.sharepoint.com,2C712604-1370-44E7-A1F5-426573FDA80A,2D4B0860-D7DE-419B-88E6-5866AF240000'). Must contain exactly two commas separating three parts: (1) SharePoint hostname, (2) site collection GUID, (3) web GUID. Only works with organizational Microsoft 365 accounts."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          }
+        },
+        "required": [
+          "site_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.list_site_subsites",
+      "tool": "ONE_DRIVE_LIST_SITE_SUBSITES",
+      "toolName": "one_drive_list_site_subsites",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all subsites of a SharePoint site. Use when you need to retrieve a collection of subsites for a given parent site. IMPORTANT: This action only works with organizational Microsoft 365 accounts (Azure AD/Entra ID accounts). It is NOT supported for personal Microsoft accounts (MSA/Outlook.com/Hotmail accounts). Personal OneDrive users cannot access SharePoint sites through this endpoint. An empty `value` array in the response means the site has no subsites, not a failure.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The maximum number of items to return."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of relationships to expand in the response."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData filter expression. Example: startswith(name,'Project')"
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of properties to include in the response. Example: id,name,webUrl"
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData order by expression. Example: name asc, createdDateTime desc"
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the SharePoint site for which to list subsites. Must be the full composite Graph ID in the format `hostname,siteCollectionId,siteId`; partial or malformed IDs may silently return empty results rather than an error."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          }
+        },
+        "required": [
+          "site_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.list_subscriptions",
+      "tool": "ONE_DRIVE_LIST_SUBSCRIPTIONS",
+      "toolName": "one_drive_list_subscriptions",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list the current subscriptions for the authenticated user or app. Use this to retrieve details of existing webhook subscriptions. Results may span multiple drives and resources; filter client-side by resource URL or type to narrow to a specific scope. An empty `value` array means no subscriptions exist, not a failed call.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          }
+        }
+      }
+    },
+    {
+      "id": "one_drive.list_workbook_worksheets",
+      "tool": "ONE_DRIVE_LIST_WORKBOOK_WORKSHEETS",
+      "toolName": "one_drive_list_workbook_worksheets",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of all worksheets in an Excel workbook stored in OneDrive or SharePoint. Returns worksheet metadata including IDs, names, positions, and visibility states. Use this action when you need to enumerate available worksheets in a workbook, find a specific worksheet by name, or understand the workbook structure before performing operations on worksheet data.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Not applied. The Excel workbook worksheets endpoint returns all worksheets in a single response and does not support $top-based paging with a continuation cursor, so this value is deliberately not sent (a small $top would silently drop worksheets). Kept for backward compatibility."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of worksheets to skip before returning results (manual offset). This endpoint returns all worksheets in one response, so pagination is not needed; use only for an explicit offset."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of specific fields to return for each worksheet (e.g., 'id,name,position'). If not specified, default fields (id, name, position, visibility) are returned. Refer to the workbookWorksheet resource documentation for available fields."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the workbook item (Excel file). This must be the DriveItem ID of an Excel workbook file (.xlsx, .xlsm, etc.). IDs are case-sensitive and must be used exactly as returned from Microsoft Graph API. Obtain IDs from ONE_DRIVE_LIST_FOLDER_CHILDREN, ONE_DRIVE_SEARCH_ITEMS, or similar operations."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the OneDrive or SharePoint drive containing the workbook. Use a Drive resource ID such as a OneDrive Personal drive ID or a SharePoint/OneDrive for Business drive ID (commonly prefixed with 'b!'). Obtain this from ONE_DRIVE_LIST_DRIVES, ONE_DRIVE_GET_DRIVE, or similar drive-level operations. Do not pass a DriveItem/file ID here."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional workbook session ID. Use this to list worksheets from an existing Excel workbook session."
+          }
+        },
+        "required": [
+          "drive_id",
+          "item_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.onedrive_create_folder",
+      "tool": "ONE_DRIVE_ONEDRIVE_CREATE_FOLDER",
+      "toolName": "one_drive_onedrive_create_folder",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new folder in the user's OneDrive with configurable conflict behavior, optionally within a specified parent_folder (by ID or full path from root) which, if not the root, must exist and be accessible.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "OneDrive: Create folder",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The desired name for the new folder (also accepts 'folder_name' as an alias). If a folder with this name already exists in the specified parent_folder, the new folder will be automatically renamed (e.g., 'New Folder' might become 'New Folder 1'). Examples: ['Annual Reports', 'Client Meeting Notes']"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional description for the folder. Provides a user-visible description of the folder. Examples: ['Project documents for Q1 2024', 'Meeting notes archive']"
+          },
+          "parent_folder": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID or full path of the parent folder for the new folder. Paths must start from the root (e.g., '/Documents/Reports'). If an ID is provided, it refers to an existing folder's unique ID. Examples: ['/Projects/Alpha', 'folder_id_12345ABC', '/']"
+          },
+          "conflict_behavior": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "fail",
+              "rename",
+              "replace"
+            ],
+            "description": "How Microsoft Graph should handle a folder name conflict in the target parent folder. Use 'fail' to return an error, 'rename' to create a uniquely renamed folder, or 'replace' to replace the existing item when supported by Graph."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.onedrive_create_text_file",
+      "tool": "ONE_DRIVE_ONEDRIVE_CREATE_TEXT_FILE",
+      "toolName": "one_drive_onedrive_create_text_file",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new plain-text file with specified content in the authenticated user's personal OneDrive, using either the folder's unique ID or its absolute path relative to the user's OneDrive root (paths are automatically resolved to IDs); note that OneDrive may rename or create a new version if the filename already exists. All files are written as plain text regardless of extension — specifying .docx or .xlsx does not produce a true Office document. This action only works with the user's personal OneDrive (/me/drive) and does not support SharePoint document libraries or shared drives.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "OneDrive: Create a new text file",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The desired name for the new text file, including its extension (e.g., 'report.txt', 'notes.log'). Also accepts 'file_name' as an alias."
+          },
+          "folder": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The folder within the user's personal OneDrive where the new text file will be created. Use '/' for root, a path like '/Documents/Projects' (relative to OneDrive root), a folder name like 'MyFolder' (treated as '/MyFolder'), or a valid folder ID. Note: Paths are resolved against the user's personal OneDrive (/me/drive/root) only and cannot target SharePoint document libraries or shared drives."
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The plain text content to be written into the new file. For very large text bodies, the request may fail or truncate; split large content across multiple files if needed."
+          },
+          "conflict_behavior": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "fail",
+              "replace",
+              "rename"
+            ],
+            "description": "How to handle conflicts when a file with the same name already exists. 'fail' (default) returns an error if the file exists, 'replace' overwrites the existing file, 'rename' creates a new file with an incremented name (e.g., 'file 1.txt')."
+          }
+        },
+        "required": [
+          "name",
+          "content"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.read_workbook_range",
+      "tool": "ONE_DRIVE_READ_WORKBOOK_RANGE",
+      "toolName": "one_drive_read_workbook_range",
+      "lane": "read",
+      "effect": "read",
+      "description": "Reads a range of cells from an Excel workbook worksheet stored in OneDrive or SharePoint using Microsoft Graph API. Returns cell values, formulas, formatting, and metadata for the specified range. Use this action when you need to extract data from specific cells in an Excel file, whether reading a single cell, a rectangular range, an entire column, or an entire row. The range address must be specified in A1 notation (e.g., 'A1:B5').",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The range address in A1 notation. Supports single cells (e.g., 'A1'), cell ranges (e.g., 'A1:B5'), entire columns (e.g., 'A:A'), or entire rows (e.g., '1:1'). The address is used as-is in the Graph API function call syntax."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the workbook item (Excel file). This is the DriveItem ID for the Excel file containing the worksheet you want to read from."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the drive containing the workbook. Required to locate the Excel file in OneDrive or SharePoint."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional workbook session ID. Use this to read from an existing Excel workbook session."
+          },
+          "select_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional list of specific fields to return in the response. If not specified, all default range properties are returned. Available fields include: address, addressLocal, cellCount, columnCount, columnHidden, columnIndex, hidden, rowCount, rowHidden, rowIndex, values, formulas, text, valueTypes, numberFormat."
+          },
+          "worksheet_id_or_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID or name of the worksheet within the workbook. Can be a worksheet name like 'Sheet1' or a worksheet ID like '{00000000-0001-0000-0000-000000000000}'. Non-ASCII names are automatically URL-encoded."
+          }
+        },
+        "required": [
+          "drive_id",
+          "item_id",
+          "worksheet_id_or_name",
+          "address"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.restore_drive_item",
+      "tool": "ONE_DRIVE_RESTORE_DRIVE_ITEM",
+      "toolName": "one_drive_restore_drive_item",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to restore a deleted OneDrive driveItem (file or folder) from the recycle bin. Use when you need to recover a deleted item to its original location or to a specified parent folder, optionally renaming it during restoration. IMPORTANT LIMITATION: This API is ONLY available for OneDrive Personal accounts. It does NOT work with OneDrive for Business or SharePoint. For Business/SharePoint accounts, use the SharePoint REST API endpoints (/_api/web/recyclebin) instead.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "OneDrive: Restore Deleted Item",
+      "withheldArguments": {
+        "parent_reference_id": "moves the record to another container"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "(Optional) The new name for the restored item. If not provided, the item will be restored with its original name. This is useful if you want to rename the item during the restore process or if an item with the same name already exists in the destination."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the deleted DriveItem (file or folder) to restore. This item must currently be in the OneDrive recycle bin. The ID can be obtained from deleted items listing or from the item before deletion."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the Drive containing the deleted item. Required when using application authentication. If not provided with delegated authentication, uses the authenticated user's default drive."
+          }
+        },
+        "required": [
+          "item_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.search_drive_items",
+      "tool": "ONE_DRIVE_SEARCH_DRIVE_ITEMS",
+      "toolName": "one_drive_search_drive_items",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search OneDrive and accessible SharePoint files with Microsoft Graph Search. This does not produce a complete shared-with-me list; use deprecated ONE_DRIVE_GET_SHARED_ITEMS only when full shared-with-me enumeration is required before Microsoft removes that API in November 2026. Requires OneDrive permissions plus Sites.Read.All because SharePoint-backed files can appear in results.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based result offset for paging."
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Number of search results to return."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Microsoft Search query for OneDrive and SharePoint driveItem results. KQL is supported. Use '*' to match all accessible drive items."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional driveItem fields to return on each hit resource."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.search_items",
+      "tool": "ONE_DRIVE_SEARCH_ITEMS",
+      "toolName": "one_drive_search_items",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search OneDrive for files and folders by keyword. Searches filenames, metadata, and file content to find matching items. Use when you need to find specific files based on keywords, file types, or content. Supports filtering, sorting, and pagination. Results are mixed files and folders — filter client-side using file vs folder properties. Disambiguate similarly named items using parentReference.path, lastModifiedDateTime, and size before passing item IDs downstream. Newly created or recently moved files may not appear due to indexing delays; fall back to ONE_DRIVE_LIST_FOLDER_CHILDREN if expected items are missing. No server-side date filtering — apply lastModifiedDateTime/createdDateTime filtering in your own logic. HTTP 429 responses include a Retry-After header; use exponential backoff.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The query text used to search for items. Values are matched across filenames, metadata, and file content. This is a simple keyword-based search only - NOT KQL (Keyword Query Language). IMPORTANT: (1) KQL operators like 'folder:', 'file:', 'content:', 'filetype:' are NOT supported by this endpoint and will be treated as literal text search. Use plain keywords instead (e.g., 'shared documents' not 'folder:shared')."
+          },
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The maximum number of items to return in a single page. Default is 200."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of relationship names to expand and include in the response. For driveItem resources, you can expand relationships like 'children' to get child items, 'thumbnails' to get thumbnail metadata, or 'permissions' to get sharing permissions. For example, use 'children' to include the child items of folders in search results, or 'thumbnails' to include thumbnail URLs. Note: Not all relationships may be expandable in search results."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of driveItem properties to include in the response. Valid properties include: id, name, webUrl, size, createdDateTime, lastModifiedDateTime, file, folder, parentReference, createdBy, lastModifiedBy, fileSystemInfo, searchResult, remoteItem, etc. Note: @-prefixed annotations (e.g., @microsoft.graph.downloadUrl) are automatically stripped as they are not valid in $select queries for search endpoints."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of properties used to sort the order of the items in the response. Use 'asc' or 'desc' for ascending or descending order, e.g., 'name asc'."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive to search within. If not provided, the user's personal drive (me/drive) will be searched. Use ONE_DRIVE_LIST_DRIVES to get valid drive IDs. Note: Some drive ID formats (e.g., secondary personal drives or special SharePoint IDs) may return 'ObjectHandle is Invalid' errors due to Microsoft Graph API limitations."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          },
+          "search_scope": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "drive",
+              "root"
+            ],
+            "description": "Specifies the scope of the search. 'root' searches within the folder hierarchy starting from root (uses /drives/{drive_id}/root/search or /me/drive/root/search). 'drive' broadens the search to include items shared with the current user (uses /drives/{drive_id}/search or /me/drive/search). This parameter is respected both with and without a drive_id."
+          },
+          "stripped_annotations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Internal field to track stripped annotations. Not exposed to API."
+          },
+          "transformed_path_query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Internal field to track if path-based query was transformed. Not exposed to API."
+          },
+          "transformed_kql_operator": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Internal field to track if a KQL operator was transformed. Not exposed to API."
+          },
+          "transformed_parent_query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Internal field to track if parent: filter was stripped from query. Not exposed to API."
+          },
+          "transformed_wildcard_query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Internal field to track if wildcard characters were removed from query. Not exposed to API."
+          }
+        },
+        "required": [
+          "q"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.search_sharepoint_sites",
+      "tool": "ONE_DRIVE_SEARCH_SHAREPOINT_SITES",
+      "toolName": "one_drive_search_sharepoint_sites",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search SharePoint sites visible to an organizational Microsoft account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Free-text keywords to match across SharePoint site properties. Required for the first page; omit when page_token is provided."
+          },
+          "order_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "createdDateTime asc",
+              "createdDateTime desc"
+            ],
+            "description": "Optional creation-time ordering. This endpoint supports only createdDateTime asc or createdDateTime desc."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999,
+            "description": "Maximum sites to request on the first page. Must be between 1 and 999; Microsoft Graph may return fewer."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit it initially, then pass next_page_token back unchanged. The token carries the original search, page size, and ordering."
+          }
+        }
+      }
+    },
+    {
+      "id": "one_drive.update_drive_item_metadata",
+      "tool": "ONE_DRIVE_UPDATE_DRIVE_ITEM_METADATA",
+      "toolName": "one_drive_update_drive_item_metadata",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update the metadata of a specific item (file or folder) in OneDrive. Use this to rename items, change descriptions, or move items to a new parent folder.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "OneDrive: Update Drive Item Metadata",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "group_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "file_system_info": "copies content from another record, URL, or file",
+        "parent_reference_id": "moves the record to another container",
+        "parent_reference_drive_id": "moves the record to another container"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The new name for the drive item. Must not contain illegal characters: `\\`, `/`, `:`, `*`, `?`, `'`, `<`, `>`, `|`; these trigger an `invalidRequest` error."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the drive item (file or folder) to update."
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the site. Used when updating an item within a site's drive."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the drive. Required if not using other specific paths like /me, /groups/{group-id}, /sites/{site-id}, or /users/{user-id}."
+          },
+          "if_match": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The eTag or cTag value for conditional update. If this header is included and the eTag provided doesn't match the current eTag on the item, a 412 Precondition Failed response is returned. Use this to prevent conflicts when multiple users update the same item."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The new description for the drive item."
+          }
+        },
+        "required": [
+          "item_id"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.update_table_column_range",
+      "tool": "ONE_DRIVE_UPDATE_TABLE_COLUMN_RANGE",
+      "toolName": "one_drive_update_table_column_range",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Update values, formulas, number formats, or row and column visibility in a table column's whole or data-body range.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "OneDrive: Update Table Column Range",
+      "input": {
+        "type": "object",
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 20000
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "maxItems": 100
+            },
+            "maxItems": 100,
+            "description": "Two-dimensional array of raw values to write."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "DriveItem ID of the Office Open XML workbook."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Drive containing the workbook. Use 'me' for the connected user's drive, or provide a Microsoft Graph drive ID."
+          },
+          "formulas": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 20000
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "maxItems": 100
+            },
+            "maxItems": 100,
+            "description": "Two-dimensional array of A1-style formulas or literal values to write."
+          },
+          "range_kind": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "whole_column",
+              "data_body"
+            ],
+            "description": "Use data_body for data rows only, or whole_column to include the table column's header and totals ranges."
+          },
+          "row_hidden": {
+            "type": "boolean",
+            "description": "Whether all rows in the range should be hidden."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional workbook session ID returned by ONE_DRIVE_CREATE_WORKBOOK_SESSION."
+          },
+          "column_index": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based index of the table column to update."
+          },
+          "column_hidden": {
+            "type": "boolean",
+            "description": "Whether all columns in the range should be hidden."
+          },
+          "formulas_r1c1": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 20000
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "maxItems": 100
+            },
+            "maxItems": 100,
+            "description": "Two-dimensional array of R1C1-style formulas or literal values to write."
+          },
+          "number_format": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 20000
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "maxItems": 100
+            },
+            "maxItems": 100,
+            "description": "Two-dimensional array of Excel number format strings to write."
+          },
+          "formulas_local": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 20000
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "maxItems": 100
+            },
+            "maxItems": 100,
+            "description": "Two-dimensional array of A1-style formulas or literal values in the user's language and number-formatting locale."
+          },
+          "table_id_or_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Exact table ID or table name in the workbook."
+          }
+        },
+        "required": [
+          "drive_id",
+          "item_id",
+          "table_id_or_name",
+          "column_index"
+        ]
+      }
+    },
+    {
+      "id": "one_drive.write_workbook_cell",
+      "tool": "ONE_DRIVE_WRITE_WORKBOOK_CELL",
+      "toolName": "one_drive_write_workbook_cell",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates the value, formula, or format of a specific cell in an Excel workbook stored in OneDrive. Use this action when you need to write data to a single cell at a specific row and column position. The row and column parameters are 0-indexed (row 0 is the first row, column 0 is column A).",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "OneDrive: Write Workbook Cell",
+      "input": {
+        "type": "object",
+        "properties": {
+          "row": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The row number of the cell (0-indexed). Row 0 is the first row in the worksheet."
+          },
+          "column": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The column number of the cell (0-indexed). Column 0 is the first column (A) in the worksheet."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 20000
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "maxItems": 100
+            },
+            "maxItems": 100,
+            "description": "Optional 2D array containing the value to write to the cell. Must be a single-cell array like [['new value']]. At least one of values, formulas, or number_format must be provided."
+          },
+          "item_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the workbook item (Excel file) in OneDrive."
+          },
+          "drive_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the drive containing the workbook. Use 'me' for the user's default OneDrive, or specify a SharePoint drive ID."
+          },
+          "formulas": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "maxItems": 100
+            },
+            "maxItems": 100,
+            "description": "Optional 2D array containing a formula to set in the cell (e.g., [['=SUM(A1:A10)']]). If provided, this takes precedence over values."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional workbook session ID. If provided, changes are grouped in a session for better consistency. Must be a valid session ID from a createSession call."
+          },
+          "number_format": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "maxItems": 100
+            },
+            "maxItems": 100,
+            "description": "Optional 2D array containing the number format string for the cell (e.g., [['0.00']] for two decimal places, [['mm-dd-yyyy']] for dates)."
+          },
+          "worksheet_id_or_name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID or name of the worksheet where the cell is located. Can be the worksheet name (e.g., 'Sheet1') or its unique ID."
+          }
+        },
+        "required": [
+          "drive_id",
+          "item_id",
+          "worksheet_id_or_name",
+          "row",
+          "column"
+        ]
+      }
+    }
+  ]
+}

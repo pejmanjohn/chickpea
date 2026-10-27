@@ -1,0 +1,947 @@
+{
+  "toolkit": "pagerduty",
+  "version": "20260903_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "PagerDuty",
+  "description": "Review incidents, on-call schedules, and services, and acknowledge, resolve, or add notes to incidents.",
+  "securityDescription": "PagerDuty sign-in opens through Composio. Agents can read the incidents, alerts, notes, services, schedules, on-call shifts, escalation policies, and users the connected account can reach. With write access, Agents can acknowledge, resolve, retitle, or change the urgency of an incident, escalate it to another level of its own escalation policy, and add notes. Escalation pages only the responders on that policy. Agents cannot create incidents, reassign them, add responders, subscribe people to updates, merge incidents, or change services, schedules, escalation policies, users, or webhooks.",
+  "preset": {
+    "category": "dev",
+    "accent": "#04AC38"
+  },
+  "validationCapability": "pagerduty.retrieve_current_user_info",
+  "review": {
+    "add": [
+      "PAGERDUTY_FETCH_PRIORITIES_LIST",
+      "PAGERDUTY_GET_INCIDENT_LOG_ENTRIES_BY_ID",
+      "PAGERDUTY_GET_SCHEDULES",
+      "PAGERDUTY_POST_INCIDENT_NOTE_USING_ID",
+      "PAGERDUTY_RETRIEVE_CURRENT_USER_INFO",
+      "PAGERDUTY_RETRIEVE_INCIDENT_BY_INCIDENT_ID",
+      "PAGERDUTY_RETRIEVE_NOTES_FOR_INCIDENT",
+      "PAGERDUTY_RETRIEVE_ONCALL_LIST",
+      "PAGERDUTY_UPDATE_INCIDENT_BY_ID"
+    ],
+    "drop": {
+      "PAGERDUTY_UPDATE_SERVICE_BY_ID": "Changes a service's escalation policy, urgency rules, and alert grouping, which decide who is paged."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "pagerduty.fetch_escalation_polices_list",
+      "tool": "PAGERDUTY_FETCH_ESCALATION_POLICES_LIST",
+      "toolName": "pagerduty_fetch_escalation_polices_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of escalation policies configured in the PagerDuty account. This endpoint allows users to access detailed information about how incidents are escalated within their organization, including the sequence of notifications and assignments for different teams or individuals. It's particularly useful for reviewing and auditing the incident response process, ensuring that critical alerts are properly routed and escalated. The endpoint provides a comprehensive view of all escalation policies, which is essential for maintaining an effective incident management strategy. However, it does not modify any existing policies or create new ones; it's purely for retrieval and review purposes.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "The number of results per page."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the result, showing only the records whose name matches the query."
+          },
+          "total": {
+            "type": "boolean",
+            "description": "By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated. See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset to start pagination search results."
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "services",
+                "teams",
+                "targets"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Array of additional data to include in the response. Can include 'services', 'teams', and/or 'targets' to get detailed information about associated entities."
+          },
+          "sort_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "name",
+              "name:asc",
+              "name:desc"
+            ],
+            "description": "Used to specify the field you wish to sort the results on."
+          },
+          "team__ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "An array of team IDs. Only results related to these teams will be returned. Account must have the `teams` ability to use this parameter."
+          },
+          "user__ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filters the results, showing only escalation policies on which any of the users is a target."
+          }
+        },
+        "description": "Request schema for `FetchEscalationPolicesList`"
+      }
+    },
+    {
+      "id": "pagerduty.fetch_incident_list",
+      "tool": "PAGERDUTY_FETCH_INCIDENT_LIST",
+      "toolName": "pagerduty_fetch_incident_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of incidents from PagerDuty based on specified criteria. This endpoint allows users to fetch multiple incidents, making it useful for incident management, reporting, and analysis. It supports filtering by status and date range, as well as pagination for handling large result sets. The endpoint is particularly valuable for obtaining an overview of recent or ongoing incidents, tracking incident trends, or integrating PagerDuty incident data into external systems or dashboards. Note that while this endpoint provides a summary of incidents, it may not include full details for each incident; separate API calls might be necessary to fetch comprehensive information for individual incidents.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Number of incidents to return per page. Must be between 1 and 100. Default is 25 if not specified. Use with offset for pagination."
+          },
+          "since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Start of date range filter (ISO 8601 format). Only incidents created after this time are returned. Example: '2024-01-01T00:00:00Z'. Maximum range is 6 months. Defaults to 1 month ago if not specified. Ignored when date_range='all'."
+          },
+          "total": {
+            "type": "boolean",
+            "description": "By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated. See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information."
+          },
+          "until": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "End of date range filter (ISO 8601 format). Only incidents created before this time are returned. Example: '2024-12-31T23:59:59Z'. Must be within 6 months of 'since' parameter. Defaults to now if not specified. Ignored when date_range='all'."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Pagination offset to start results from. Use with limit for pagination. For example, offset=25 with limit=25 returns results 26-50. Default is 0."
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "acknowledgers",
+                "agents",
+                "assignees",
+                "conference_bridge",
+                "escalation_policies",
+                "first_trigger_log_entries",
+                "priorities",
+                "services",
+                "teams",
+                "users"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Array of additional details to include in the response. Available options: 'acknowledgers', 'agents', 'assignees', 'conference_bridge', 'escalation_policies', 'first_trigger_log_entries', 'priorities', 'services', 'teams', 'users'. Including these expands the response with additional related object details."
+          },
+          "sort_by": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Sort incidents by specified fields and direction. Format: 'field:direction'. Available fields: 'incident_number', 'created_at', 'resolved_at', 'urgency'. Direction: 'asc' (default) or 'desc'. Examples: ['created_at:desc'], ['urgency:desc', 'created_at:asc']. Maximum two fields. Sorting by urgency requires the 'urgencies' account ability."
+          },
+          "statuses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "triggered",
+                "acknowledged",
+                "resolved"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Filter incidents by status. Accepts multiple values: 'triggered', 'acknowledged', 'resolved'. Returns only incidents matching the specified statuses. If not specified, returns incidents of all statuses."
+          },
+          "team__ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "An array of team IDs. Only results related to these teams will be returned. Account must have the `teams` ability to use this parameter."
+          },
+          "time_zone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Time zone for rendering dates/times in response. Uses IANA time zone format (e.g., 'America/New_York', 'UTC', 'Europe/London'). Defaults to account's configured time zone if not specified."
+          },
+          "urgencies": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "high",
+                "low"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Array of urgencies to filter incidents. Accepts multiple values: 'high', 'low'. Defaults to all urgencies if not specified. Account must have the `urgencies` ability to use this filter."
+          },
+          "user__ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Returns only the incidents currently assigned to the passed user(s). This expects one or more user IDs. Note: When using the assigned_to_user filter, you will only receive incidents with statuses of triggered or acknowledged. This is because resolved incidents are not assigned to any user."
+          },
+          "date_range": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "all"
+            ],
+            "description": "When set to all, the since and until parameters and defaults are ignored."
+          },
+          "incident_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Incident de-duplication key. Incidents with child alerts do not have an incident key; querying by incident key will return incidents whose alerts have alert_key matching the given incident key."
+          },
+          "service__ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Returns only the incidents associated with the passed service(s). This expects one or more service IDs."
+          }
+        },
+        "description": "Request schema for `FetchIncidentList`"
+      }
+    },
+    {
+      "id": "pagerduty.fetch_priorities_list",
+      "tool": "PAGERDUTY_FETCH_PRIORITIES_LIST",
+      "toolName": "pagerduty_fetch_priorities_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of existing priorities in the PagerDuty system, ordered from most severe to least severe. This endpoint should be used when you need to obtain information about the current priority levels configured in your PagerDuty account. It's particularly useful for integrations that need to reference or display priority information, or for administrators who want to review the existing priority structure. The endpoint provides a read-only view of priorities and does not allow for creation, modification, or deletion of priority levels. Keep in mind that this API call is subject to rate limiting, so it should not be called excessively in short periods.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "The number of results per page. Note: The priorities endpoint may return all priorities regardless of this parameter as the list is typically small."
+          },
+          "total": {
+            "type": "boolean",
+            "description": "By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated. See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset to start pagination search results. Note: The priorities endpoint may not support offset as the list is typically small."
+          }
+        },
+        "description": "Request schema for `FetchPrioritiesList`"
+      }
+    },
+    {
+      "id": "pagerduty.get_alerts_by_incident_id",
+      "tool": "PAGERDUTY_GET_ALERTS_BY_INCIDENT_ID",
+      "toolName": "pagerduty_get_alerts_by_incident_id",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all alerts associated with a specific incident in PagerDuty. Alerts are the raw events that triggered or contributed to an incident. This endpoint allows users to fetch detailed information about these alerts, including their status, creation time, severity, and related service information. It is particularly useful for incident postmortems, auditing purposes, understanding alert grouping behavior, or investigating which monitoring events led to an incident. The endpoint returns a paginated list of alerts with optional filtering by status or alert_key, and supports including additional related data like services, first trigger log entries, or parent incident details.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The incident ID to retrieve alerts for."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "The number of results per page."
+          },
+          "total": {
+            "type": "boolean",
+            "description": "By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated. See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset to start pagination search results."
+          },
+          "include": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "services",
+              "first_trigger_log_entries",
+              "incidents"
+            ],
+            "description": "Additional details to include in the response. Options: 'services' includes service details for each alert, 'first_trigger_log_entries' includes the first trigger log entry for each alert, 'incidents' includes the parent incident details."
+          },
+          "sort_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "created_at",
+              "resolved_at",
+              "created_at:asc",
+              "created_at:desc",
+              "resolved_at:asc",
+              "resolved_at:desc"
+            ],
+            "description": "Used to specify both the field you wish to sort the results on (created_at/resolved_at), as well as the direction (asc/desc) of the results. The sort_by field and direction should be separated by a colon. A maximum of two fields can be included, separated by a comma. Sort direction defaults to ascending."
+          },
+          "statuses": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "triggered",
+              "resolved"
+            ],
+            "description": "Return only alerts with the given statuses. (More status codes may be introduced in the future.)"
+          },
+          "alert_key": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Alert de-duplication key."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for `GetAlertsByIncidentId`"
+      }
+    },
+    {
+      "id": "pagerduty.get_incident_log_entries_by_id",
+      "tool": "PAGERDUTY_GET_INCIDENT_LOG_ENTRIES_BY_ID",
+      "toolName": "pagerduty_get_incident_log_entries_by_id",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all log entries associated with a specific incident in PagerDuty. This endpoint provides a comprehensive history of actions, notifications, and status changes related to the incident. It should be used when detailed information about the lifecycle of an incident is needed, such as for post-incident reviews, auditing, or tracking the incident resolution process. The endpoint returns log entries in chronological order, allowing users to trace the incident's progression from creation to resolution. Note that the number of log entries returned may be large for long-running or complex incidents, so pagination might be necessary (though not specified in the given schema).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the resource."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "The number of results per page."
+          },
+          "since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The start of the date range over which you want to search."
+          },
+          "total": {
+            "type": "boolean",
+            "description": "By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated. See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information."
+          },
+          "until": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The end of the date range over which you want to search."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset to start pagination search results."
+          },
+          "include": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "incidents",
+              "services",
+              "channels",
+              "teams"
+            ],
+            "description": "Additional related objects to include in the log entry response. - incidents: Include full incident details in each log entry - services: Include full service details in each log entry - channels: Include detailed channel information for each log entry - teams: Include full team details for log entries involving teams"
+          },
+          "time_zone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Time zone in which results will be rendered. This will default to the account time zone."
+          },
+          "is_overview": {
+            "type": "boolean",
+            "description": "If `true`, will return a subset of log entries that show only the most important changes to the incident."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for `GetIncidentLogEntriesById`"
+      }
+    },
+    {
+      "id": "pagerduty.get_schedules",
+      "tool": "PAGERDUTY_GET_SCHEDULES",
+      "toolName": "pagerduty_get_schedules",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of all schedules from your PagerDuty account. This endpoint provides essential information about on-call rotations, helping teams manage and organize their incident response workflows. Use this when you need to view all existing schedules, such as during schedule audits, team restructuring, or when setting up integrations that require schedule IDs. The endpoint returns basic details for each schedule, which can be used to make further API calls for more specific information. Note that this endpoint does not provide the full details of each schedule's rotation patterns; for that, you would need to make additional API calls using the schedule IDs returned by this endpoint.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "The number of results per page."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the result, showing only the records whose name matches the query."
+          },
+          "total": {
+            "type": "boolean",
+            "description": "By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated. See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset to start pagination search results."
+          },
+          "include": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "schedule_layers"
+            ],
+            "description": "Array of additional details to include."
+          },
+          "time_zone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Time zone in which results will be rendered. This will default to the current user\"s time zone and then the account\"s time zone."
+          }
+        },
+        "description": "Request schema for `GetSchedules`"
+      }
+    },
+    {
+      "id": "pagerduty.post_incident_note_using_id",
+      "tool": "PAGERDUTY_POST_INCIDENT_NOTE_USING_ID",
+      "toolName": "pagerduty_post_incident_note_using_id",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Adds a new note to an existing incident in PagerDuty. This endpoint allows users to append additional information, updates, or comments to a specific incident identified by its unique ID. It's particularly useful for documenting the progress of incident resolution, sharing important observations, or recording actions taken. The note content can include any text relevant to the incident management process, helping teams collaborate and maintain a clear record of the incident's timeline and handling.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "PagerDuty: Post incident note using id",
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The incident ID to add the note to. You can obtain incident IDs from the list incidents action."
+          },
+          "note__content": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The text content of the note to add to the incident. This can include investigation details, status updates, resolution steps, or any other relevant information about the incident."
+          }
+        },
+        "required": [
+          "id",
+          "note__content"
+        ],
+        "description": "Request schema for `PostIncidentNoteUsingId`"
+      }
+    },
+    {
+      "id": "pagerduty.retrieve_current_user_info",
+      "tool": "PAGERDUTY_RETRIEVE_CURRENT_USER_INFO",
+      "toolName": "pagerduty_retrieve_current_user_info",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the profile information of the currently authenticated user in the PagerDuty system. This endpoint provides access to personal details, settings, and account information associated with the user making the API request. It's particularly useful for applications that need to display or utilize user-specific data without requiring additional input. The endpoint should be used when an application needs to fetch up-to-date information about the current user, such as their name, email, role, or other account-related details. Note that this endpoint does not provide information about other users in the organization, nor does it allow for modifications to the user profile.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "include": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "contact_methods",
+                "notification_rules",
+                "teams",
+                "subdomains"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Array of additional Models to include in response."
+          }
+        },
+        "description": "Request schema for `RetrieveCurrentUserInfo`"
+      }
+    },
+    {
+      "id": "pagerduty.retrieve_incident_by_incident_id",
+      "tool": "PAGERDUTY_RETRIEVE_INCIDENT_BY_INCIDENT_ID",
+      "toolName": "pagerduty_retrieve_incident_by_incident_id",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed information about a specific incident in PagerDuty using its unique identifier. This endpoint allows users to access comprehensive data about an individual incident, including its current status, assigned responders, and related metadata. It is particularly useful for tracking the progress of an ongoing incident, reviewing historical incident data, or integrating incident details into external systems or reports. The endpoint should be used when specific incident information is needed, rather than for retrieving bulk or summarized incident data. Note that this endpoint provides a snapshot of the incident at the time of the request and may not reflect real-time updates without subsequent API calls.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the resource."
+          },
+          "include": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "acknowledgers",
+              "agents",
+              "assignees",
+              "conference_bridge",
+              "custom_fields",
+              "escalation_policies",
+              "first_trigger_log_entries",
+              "priorities",
+              "services",
+              "teams",
+              "users"
+            ],
+            "description": "Array of additional details to include."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for `RetrieveIncidentByIncidentId`"
+      }
+    },
+    {
+      "id": "pagerduty.retrieve_list_of_services",
+      "tool": "PAGERDUTY_RETRIEVE_LIST_OF_SERVICES",
+      "toolName": "pagerduty_retrieve_list_of_services",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of services configured in the PagerDuty account. This endpoint allows you to fetch details about various services set up for incident management and alerting. It's particularly useful for getting an overview of all services, their configurations, and associated teams or escalation policies. The endpoint supports filtering, sorting, and pagination to manage large sets of services efficiently. Use this when you need to audit existing services, prepare for bulk updates, or integrate service information into other systems. Note that the response may not include full details of each service, and separate API calls might be necessary to fetch comprehensive information for individual services.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the results, showing only services with the specified name."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "The number of results per page."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the result, showing only the records whose name matches the query."
+          },
+          "total": {
+            "type": "boolean",
+            "description": "By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated. See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset to start pagination search results."
+          },
+          "include": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "escalation_policies",
+              "teams",
+              "integrations",
+              "auto_pause_notifications_parameters"
+            ],
+            "description": "Array of additional details to include."
+          },
+          "sort_by": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "name",
+              "name:asc",
+              "name:desc"
+            ],
+            "description": "Used to specify the field you wish to sort the results on."
+          },
+          "team__ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "An array of team IDs. Only results related to these teams will be returned. Account must have the `teams` ability to use this parameter."
+          },
+          "time_zone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Time zone in which results will be rendered. This will default to the account time zone."
+          }
+        },
+        "description": "Request schema for `RetrieveListOfServices`"
+      }
+    },
+    {
+      "id": "pagerduty.retrieve_maintenance_windows",
+      "tool": "PAGERDUTY_RETRIEVE_MAINTENANCE_WINDOWS",
+      "toolName": "pagerduty_retrieve_maintenance_windows",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of maintenance windows from the PagerDuty incident management platform. Maintenance windows are scheduled periods during which alerts and notifications for specified services are suppressed to allow for system maintenance or updates without triggering unnecessary incidents. This endpoint should be used to get an overview of all maintenance windows, their schedules, and affected services. It supports filtering by team, service, and search query, as well as pagination for handling large result sets. The endpoint is particularly useful for reviewing upcoming maintenance schedules, auditing past maintenance windows, or integrating maintenance information into external systems or dashboards.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "The number of results per page."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the result, showing only the records whose name matches the query."
+          },
+          "total": {
+            "type": "boolean",
+            "description": "By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated. See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "past",
+              "future",
+              "ongoing",
+              "open",
+              "all"
+            ],
+            "description": "Only return maintenance windows in a given state."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset to start pagination search results."
+          },
+          "include": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "teams",
+              "services",
+              "users"
+            ],
+            "description": "Array of additional Models to include in response."
+          },
+          "team__ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "An array of team IDs. Only results related to these teams will be returned. Account must have the `teams` ability to use this parameter."
+          },
+          "service__ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "An array of service IDs. Only results related to these services will be returned."
+          }
+        },
+        "description": "Request schema for `RetrieveMaintenanceWindows`"
+      }
+    },
+    {
+      "id": "pagerduty.retrieve_notes_for_incident",
+      "tool": "PAGERDUTY_RETRIEVE_NOTES_FOR_INCIDENT",
+      "toolName": "pagerduty_retrieve_notes_for_incident",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all notes associated with a specific incident in PagerDuty. This endpoint allows users to access the complete history of comments, updates, and additional information added to an incident throughout its lifecycle. It is particularly useful for reviewing the incident's progress, understanding the actions taken, and gathering context for post-incident analysis. The endpoint should be used when detailed information about an incident's communication trail is needed, such as during incident reviews or when compiling reports. It does not provide real-time updates and may not include the most recent notes if called immediately after a new note is added due to potential API caching.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The incident ID to retrieve notes from. You can obtain incident IDs from the list incidents action or incident-related actions."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for `RetrieveNotesForIncident`"
+      }
+    },
+    {
+      "id": "pagerduty.retrieve_oncall_list",
+      "tool": "PAGERDUTY_RETRIEVE_ONCALL_LIST",
+      "toolName": "pagerduty_retrieve_oncall_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the current on-call information for your PagerDuty account. This endpoint provides a comprehensive view of who is currently on-call across various schedules and escalation policies. It's particularly useful for getting an overview of your organization's current on-call status, identifying who is responsible for incident response at any given time, and planning team availability. The endpoint supports filtering by users, escalation policies, and schedules, making it versatile for different querying needs. It also allows for pagination and including additional details like contact methods and schedule information. This tool should be used when you need to quickly assess the current on-call situation or gather data for on-call analytics. Note that while it provides current and near-future on-call information, it may not be suitable for long-term scheduling or historical analysis beyond a 3-month window.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "The number of results per page."
+          },
+          "since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The start of the time range over which you want to search. If an on-call period overlaps with the range, it will be included in the result. Defaults to current time. On-call shifts are limited to 90 days in the future."
+          },
+          "total": {
+            "type": "boolean",
+            "description": "By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated. See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information."
+          },
+          "until": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The end of the time range over which you want to search. If an on-call period overlaps with the range, it will be included in the result. Defaults to current time. On-call shifts are limited to 90 days in the future, and the `until` time cannot be before the `since` time."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset to start pagination search results."
+          },
+          "include": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "escalation_policies",
+              "users",
+              "schedules"
+            ],
+            "description": "Options for including additional details in the response. - escalation_policies: Include full escalation policy details - users: Include full user details with contact methods - schedules: Include full schedule details"
+          },
+          "earliest": {
+            "type": "boolean",
+            "description": "This will filter on-calls such that only the earliest on-call for each combination of escalation policy, escalation level, and user is returned. This is useful for determining when the \"next\" on-calls are for a given set of filters."
+          },
+          "user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filters the results, showing only on-calls for the specified user IDs."
+          },
+          "time_zone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Time zone in which results will be rendered. This will default to the account time zone."
+          },
+          "schedule_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filters the results, showing only on-calls for the specified schedule IDs. If `null` is provided in the array, it includes permanent on-calls due to direct user escalation targets."
+          },
+          "escalation_policy_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filters the results, showing only on-calls for the specified escalation policy IDs."
+          }
+        },
+        "description": "Request schema for `RetrieveOncallList`"
+      }
+    },
+    {
+      "id": "pagerduty.retrieve_users_list",
+      "tool": "PAGERDUTY_RETRIEVE_USERS_LIST",
+      "toolName": "pagerduty_retrieve_users_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of users from the PagerDuty system. This endpoint allows you to fetch information about multiple users in your PagerDuty account, which can be useful for user management, generating reports, or integrating user data with other systems. The response typically includes basic information about each user, such as their ID, name, email, and role. Use query parameters to filter, paginate, or search for specific users. This endpoint is ideal for bulk operations or when you need an overview of your PagerDuty user base. Note that the results may be paginated, so multiple calls might be necessary to retrieve all users for large accounts.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "The number of results per page."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the result, showing only the records whose name matches the query."
+          },
+          "total": {
+            "type": "boolean",
+            "description": "By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated. See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset to start pagination search results."
+          },
+          "include": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "contact_methods",
+              "notification_rules",
+              "teams",
+              "subdomains"
+            ],
+            "description": "Array of additional Models to include in response."
+          },
+          "team__ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "An array of team IDs. Only results related to these teams will be returned. Account must have the `teams` ability to use this parameter."
+          }
+        },
+        "description": "Request schema for `RetrieveUsersList`"
+      }
+    },
+    {
+      "id": "pagerduty.update_incident_by_id",
+      "tool": "PAGERDUTY_UPDATE_INCIDENT_BY_ID",
+      "toolName": "pagerduty_update_incident_by_id",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "The UpdateIncident endpoint allows you to modify various attributes of an existing incident in PagerDuty's incident management system. This PUT operation enables users to update incident status, priority, assignments, escalation levels, and other key properties. It's particularly useful for reflecting the current state of an incident, reassigning responsibilities, or adjusting the incident's urgency and escalation path. The endpoint should be used when there are significant changes to an incident that need to be reflected in the system, such as acknowledging the incident, marking it as resolved, or changing its priority. It's important to note that this endpoint updates an existing incident and does not create new incidents. Care should be taken when modifying critical fields like status or escalation policy, as these changes can significantly impact the incident management workflow.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "PagerDuty: Update incident by id",
+      "withheldArguments": {
+        "incident__assignments": "unsupported schema"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the resource."
+          },
+          "incident__type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "incident",
+              "incident_reference"
+            ],
+            "description": "The incident type."
+          },
+          "incident__title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The new title of the incident."
+          },
+          "incident__status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "resolved",
+              "acknowledged"
+            ],
+            "description": "The new status of the incident."
+          },
+          "incident__urgency": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "high",
+              "low"
+            ],
+            "description": "The urgency of the incident."
+          },
+          "incident__resolution": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The resolution for this incident if status is set to resolved."
+          },
+          "incident__escalation__level": {
+            "type": "integer",
+            "description": "Escalate the incident to this level in the escalation policy."
+          },
+          "incident__incident__type__id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Id"
+          },
+          "incident__incident__type__name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the Incident Type."
+          },
+          "incident__conference__bridge__conference__url": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "An URL for the conference bridge. This could be a link to a web conference or Slack channel."
+          },
+          "incident__conference__bridge__conference__number": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The phone number of the conference call for the conference bridge. Phone numbers should be formatted like +1 415-555-1212,,,,1234#, where a comma (,) represents a one-second wait and pound (#) completes access code input."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Request schema for `UpdateIncidentById`"
+      }
+    }
+  ]
+}

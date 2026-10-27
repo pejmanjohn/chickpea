@@ -1,0 +1,1799 @@
+{
+  "toolkit": {
+    "slug": "share_point",
+    "name": "SharePoint",
+    "version": "20261020_00",
+    "description": "SharePoint is a Microsoft platform for document management and intranets, enabling teams to collaborate, store, and organize content securely and effectively",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": [
+          "subdomain"
+        ]
+      },
+      {
+        "mode": "S2S_OAUTH2",
+        "fields": [
+          "subdomain"
+        ]
+      }
+    ],
+    "currentUserEndpoint": "https://{{subdomain}}.sharepoint.com/_api/web/currentUser"
+  },
+  "tools": [
+    {
+      "slug": "SHARE_POINT_CREATE_LIST_ITEM_BY_ID",
+      "name": "Create SharePoint List Item by GUID",
+      "description": "Tool to create a new item in a SharePoint list using the list's GUID. Use when you have the list GUID rather than the list title.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "createHint",
+        "openWorldHint",
+        "create"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateListItemByIdRequest",
+        "example": {
+          "fields": {
+            "Title": "New Task",
+            "Description": "Task description"
+          },
+          "list_id": "a12e3d6e-9414-462d-bd53-cf06f3982ad3",
+          "metadata_type": "SP.Data.TasksListItem"
+        },
+        "required": [
+          "list_id",
+          "metadata_type",
+          "fields"
+        ],
+        "properties": {
+          "fields": {
+            "type": "object",
+            "title": "Fields",
+            "examples": [
+              {
+                "Title": "New Task",
+                "Status": "Active"
+              }
+            ],
+            "description": "Dictionary mapping internal field names to their values for the new list item. Example: {'Title': 'New Item', 'Description': 'Item details'}. At minimum, provide 'Title' field for most lists.",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "list_id": {
+            "type": "string",
+            "title": "List Id",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            "examples": [
+              "a12e3d6e-9414-462d-bd53-cf06f3982ad3"
+            ],
+            "description": "The unique identifier (GUID) of the SharePoint list where the item will be created. Format: '12345678-1234-1234-1234-123456789abc'"
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          },
+          "metadata_type": {
+            "type": "string",
+            "title": "Metadata Type",
+            "examples": [
+              "SP.Data.TasksListItem",
+              "SP.Data.AbcListItem"
+            ],
+            "description": "The ListItemEntityTypeFullName required for __metadata.type in the request body. Format: 'SP.Data.{ListName}ListItem' (e.g., 'SP.Data.TasksListItem' or 'SP.Data.AbcListItem'). Use GET_LIST_ITEM_ENTITY_TYPE_FULL_NAME to retrieve this value if unknown."
+          }
+        },
+        "description": "Request model for creating a SharePoint list item by list GUID.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_CREATE_LIST_ITEM_IN_FOLDER",
+      "name": "Create List Item in Folder",
+      "description": "Tool to create a list item in a specific folder within a SharePoint list. IMPORTANT: This action works ONLY with SharePoint lists (not document libraries). The folder_url can be either a server-relative URL (e.g., '/Lists/MyList') or an absolute URL (e.g., 'https://site.sharepoint.com/sites/sitename/Lists/MyList'). To create files in document libraries, use a different action like upload_file.",
+      "version": "20261020_00",
+      "tags": [
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateListItemInFolderRequest",
+        "example": {
+          "site": "composio-test",
+          "values": [
+            {
+              "FieldName": "Title",
+              "FieldValue": "New Item"
+            }
+          ],
+          "folder_url": "/Lists/MyList",
+          "list_title": "MyList",
+          "check_in_comment": "Initial creation"
+        },
+        "required": [
+          "list_title",
+          "folder_url",
+          "values"
+        ],
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "FieldValue",
+              "required": [
+                "FieldName",
+                "FieldValue"
+              ],
+              "properties": {
+                "FieldName": {
+                  "type": "string",
+                  "title": "Field Name",
+                  "description": "Internal name of the field to set"
+                },
+                "FieldValue": {
+                  "type": "string",
+                  "title": "Field Value",
+                  "description": "Value to assign to the field"
+                }
+              }
+            },
+            "title": "Values",
+            "description": "List of field name/value pairs to set on the new item."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test",
+              "marketing",
+              "hr-portal"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          },
+          "folder_url": {
+            "type": "string",
+            "title": "Folder Url",
+            "examples": [
+              "/Lists/MyList",
+              "/Lists/Tasks/SubFolder",
+              "https://site.sharepoint.com/sites/sitename/Lists/MyList",
+              "https://site.sharepoint.com/sites/sitename/Lists/Tasks/SubFolder"
+            ],
+            "description": "URL of the target folder within the list where the item will be created. Accepts both server-relative URLs (e.g., '/Lists/MyList') and absolute URLs (e.g., 'https://site.sharepoint.com/sites/sitename/Lists/MyList'). For the list root folder, use '/Lists/<ListName>' or the full absolute URL. For a subfolder within the list, append the subfolder path. You can obtain this URL from the list's RootFolder.ServerRelativeUrl property. This parameter works with SharePoint lists only, NOT document libraries."
+          },
+          "list_title": {
+            "type": "string",
+            "title": "List Title",
+            "examples": [
+              "MyList",
+              "Tasks",
+              "Announcements"
+            ],
+            "description": "The title of the SharePoint list where the item will be created. Must be an existing list (not a document library)."
+          },
+          "check_in_comment": {
+            "type": "string",
+            "title": "Check In Comment",
+            "description": "Optional check-in comment if the item is checked out."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_DOWNLOAD_FILE_BY_SERVER_RELATIVE_URL",
+      "name": "Download File by Server-relative URL",
+      "description": "Tool to download a file by server-relative URL. Use when you need to fetch the raw bytes of a SharePoint file by its server-relative path.",
+      "version": "20261020_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DownloadFileByServerRelativeUrlRequest",
+        "required": [
+          "server_relative_url"
+        ],
+        "properties": {
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "testcomposio",
+              "marketing",
+              "hr-portal"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used. A complete '/sites/' or '/teams/' resource path determines the owning web even when site_name is supplied. An explicit site_name must identify that web or an ancestor; unrelated selectors return an error. Site-local paths use site_name or the connection's saved site."
+          },
+          "server_relative_url": {
+            "type": "string",
+            "title": "Server Relative Url",
+            "examples": [
+              "/Shared Documents/report.pdf",
+              "/sites/CustomerDocs/archive/Shared Documents/file.pdf",
+              "/personal/username_domain/Documents/file.docx"
+            ],
+            "description": "Server-relative URL of the file to download, starting with '/'. Can be either URL-encoded or unencoded. E.g., '/Shared Documents/report.pdf' for root site, '/sites/CustomerDocs/archive/Shared Documents/file.pdf' for a nested subsite, or '/personal/username_domain/Documents/file.docx' for personal OneDrive sites. A complete '/sites/' or '/teams/' resource path determines the owning web even when site_name is supplied. An explicit site_name must identify that web or an ancestor; unrelated selectors return an error. Site-local paths use site_name or the connection's saved site."
+          }
+        },
+        "description": "Request model for downloading a file by its server-relative URL."
+      }
+    },
+    {
+      "slug": "SHARE_POINT_GET_FILE_BY_SERVER_RELATIVE_URL",
+      "name": "Get File Metadata by Server Relative URL (Deprecated)",
+      "description": "DEPRECATED: Use GetSiteDriveItemByPath instead. Tool to fetch SharePoint file metadata (exists/permissions/URLs/UniqueId) given a server-relative path, using the more robust ServerRelativePath API for special characters. Use after SHARE_POINT_SEARCH_QUERY returns a Path and you need to confirm the canonical working path or retrieve file properties without downloading bytes.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "idempotentHint",
+        "files",
+        "deprecated"
+      ],
+      "deprecated": true,
+      "input": {
+        "type": "object",
+        "title": "GetFileByServerRelativeUrlRequest",
+        "required": [
+          "server_relative_path_decoded"
+        ],
+        "properties": {
+          "expand": {
+            "type": "string",
+            "title": "Expand",
+            "examples": [
+              "ListItemAllFields"
+            ],
+            "description": "OData $expand query option. Comma-separated list of related entities to expand, such as 'ListItemAllFields' to include list item metadata."
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "examples": [
+              "ServerRelativeUrl,UniqueId,Name,Length,TimeLastModified"
+            ],
+            "description": "OData $select query option. Comma-separated list of fields to return. E.g., 'ServerRelativeUrl,UniqueId,Name,Length,TimeLastModified,LinkingUri'."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "Workshopsubmissions",
+              "Finance",
+              "HR"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used. If omitted and the file path starts with '/sites/{site}/', the site is inferred from the path; nested subsites still require their complete web path."
+          },
+          "server_relative_path_decoded": {
+            "type": "string",
+            "title": "Server Relative Path Decoded",
+            "examples": [
+              "/sites/Finance/Shared Documents/W-9.pdf",
+              "/Shared Documents/report.pdf",
+              "/personal/username_domain/Documents/file.docx"
+            ],
+            "description": "Decoded server-relative path of the file, starting with '/'. E.g., '/sites/Finance/Shared Documents/W-9.pdf' or '/Shared Documents/report.pdf'. Do not URL-encode; provide the path with spaces and special characters as-is."
+          }
+        },
+        "description": "Request parameters for retrieving SharePoint file metadata by its server-relative path.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_GET_LIST_ITEMS",
+      "name": "Get SharePoint List Items",
+      "description": "Tool to retrieve items from a SharePoint list. Use when you need to fetch list entries with optional OData parameters.",
+      "version": "20261020_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetListItemsRequest",
+        "example": {
+          "top": 10,
+          "expand": "Author,Editor",
+          "filter": "Title eq 'Test'",
+          "select": "Id,Author/Title,Editor/Title",
+          "orderby": "Created desc",
+          "list_title": "My List"
+        },
+        "required": [
+          "list_title"
+        ],
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "minimum": 1,
+            "examples": [
+              10
+            ],
+            "description": "Maximum number of items to return."
+          },
+          "expand": {
+            "type": "string",
+            "title": "Expand",
+            "description": "Comma-separated list of navigation properties to expand for lookup fields. Some fields, including Author and Editor, require select to include the corresponding expanded subfields. For example, use expand='Author,Editor' with select='Id,Author/Title,Editor/Title'."
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "examples": [
+              "Title eq 'Test'"
+            ],
+            "description": "OData filter expression to limit results (e.g., Title eq 'Test')."
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "examples": [
+              "Title,Id",
+              "*",
+              "FileLeafRef,Created,Modified"
+            ],
+            "description": "Comma-separated list of internal field names to return. Use '*' to retrieve all available fields, which is recommended when you don't know the exact field names. When expanding user fields such as Author or Editor, select must include the corresponding expanded subfields, for example, 'Id,Author/Title,Editor/Title' with expand='Author,Editor'. SharePoint uses internal field names, not display names - spaces are hex-encoded as '_x0020_' (e.g., 'File_x0020_Size' for 'File Size'). Common system fields: Id, Title, Created, Modified, AuthorId, EditorId, GUID, FileLeafRef (file name), FileDirRef (folder path), FileRef (server-relative URL). Field availability varies by list type: document libraries include file-specific fields like File_x0020_Size, while custom lists have their own schema. To discover available fields for a specific list, either: (1) use select='*' first to see all fields returned in items, or (2) use SHARE_POINT_GET_LIST_BY_TITLE with expand='Fields' to get field metadata including InternalName."
+          },
+          "orderby": {
+            "type": "string",
+            "title": "Orderby",
+            "examples": [
+              "Created desc"
+            ],
+            "description": "OData orderby expression to sort results (e.g., Created desc)."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "testcomposio",
+              "marketing",
+              "hr-portal"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          },
+          "skiptoken": {
+            "type": "string",
+            "title": "Skiptoken",
+            "examples": [
+              "Paged=TRUE&p_ID=15"
+            ],
+            "description": "Pagination token returned as `skiptoken` by the previous response. Pass it unchanged to retrieve the next page."
+          },
+          "list_title": {
+            "type": "string",
+            "title": "List Title",
+            "examples": [
+              "Documents",
+              "My List",
+              "Tasks"
+            ],
+            "description": "Exact Title property value of the SharePoint list to query. The Title property value varies by site configuration and localization - for example, the default document library's Title may be 'Documents', 'Shared Documents', or a localized name. To find the exact Title property value, use SHARE_POINT_LIST_ALL_LISTS which returns all lists with their Title properties."
+          }
+        },
+        "description": "Request parameters for retrieving items from a SharePoint list.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_GET_SITE_BY_HOSTNAME",
+      "name": "Get SharePoint Site by Hostname",
+      "description": "Retrieve SharePoint site information by hostname or URL. Returns site metadata including site ID, display name, URLs, and timestamps. Use this action when you need to discover a site's identifier or properties using only its hostname, which is essential for subsequent operations requiring siteId. Useful for validating site existence or obtaining site metadata without prior knowledge of internal IDs.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "sharepoint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSiteByHostnameRequest",
+        "required": [
+          "hostname"
+        ],
+        "properties": {
+          "hostname": {
+            "type": "string",
+            "title": "Hostname",
+            "examples": [
+              "contoso.sharepoint.com",
+              "contoso.sharepoint.com:/sites/marketing"
+            ],
+            "description": "The fully qualified domain name of the SharePoint site to retrieve (e.g., 'contoso.sharepoint.com' or 'contoso.sharepoint.com:/sites/teamsite'). Can include a server-relative path after a colon for subsites."
+          }
+        },
+        "description": "Request parameters for retrieving a SharePoint site by hostname."
+      }
+    },
+    {
+      "slug": "SHARE_POINT_GET_SITE_BY_ID",
+      "name": "Get SharePoint Site by ID",
+      "description": "Tool to retrieve information about a SharePoint site (web) by its unique identifier. Use this action when you have a specific site GUID and need to fetch its metadata such as title, URL, language, or template information.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "sharepoint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSiteByIdRequest",
+        "required": [
+          "site_id"
+        ],
+        "properties": {
+          "expand": {
+            "type": "string",
+            "title": "Expand",
+            "examples": [
+              "CurrentUser",
+              "Lists,Webs"
+            ],
+            "description": "OData $expand to expand navigation properties, e.g., 'CurrentUser,Lists,Webs'."
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "examples": [
+              "Id,Title,Url",
+              "Title,Description,Created"
+            ],
+            "description": "OData $select to specify fields to return, e.g., 'Id,Title,Url,ServerRelativeUrl'."
+          },
+          "site_id": {
+            "type": "string",
+            "title": "Site Id",
+            "examples": [
+              "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+            ],
+            "description": "The unique identifier (GUID) of the SharePoint site to retrieve. This is the site's web ID."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used. The site_id lookup is limited to the selected site collection."
+          }
+        },
+        "description": "Request parameters for retrieving SharePoint site by ID.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_GET_SITE_DRIVE_ITEM_BY_PATH",
+      "name": "Get Site Drive Item by Path",
+      "description": "Tool to retrieve a file or folder by its server-relative path in a SharePoint site. Use when you need to get metadata for an item (file or folder) by path.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "idempotentHint",
+        "files"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSiteDriveItemByPathRequest",
+        "required": [
+          "item_path"
+        ],
+        "properties": {
+          "expand": {
+            "type": "string",
+            "title": "Expand",
+            "examples": [
+              "ListItemAllFields",
+              "Files,Folders"
+            ],
+            "description": "OData $expand query option. Comma-separated list of related entities to expand. E.g., 'ListItemAllFields' for files, or 'Files,Folders' for folders."
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "examples": [
+              "Name,ServerRelativeUrl,UniqueId,Length"
+            ],
+            "description": "OData $select query option. Comma-separated list of fields to return. E.g., 'Name,ServerRelativeUrl,UniqueId,Length,TimeLastModified'."
+          },
+          "item_path": {
+            "type": "string",
+            "title": "Item Path",
+            "examples": [
+              "/Shared Documents/report.pdf",
+              "/Shared Documents/MyFolder",
+              "/sites/Finance/Shared Documents/file.pdf"
+            ],
+            "description": "Server-relative path of the file or folder to retrieve, starting with '/'. E.g., '/Shared Documents/file.pdf' for files or '/Shared Documents/MyFolder' for folders. Can be provided as a plain path or pre-encoded. Both formats are accepted. A complete '/sites/' or '/teams/' resource path determines the owning web even when site_name is supplied. An explicit site_name must identify that web or an ancestor; unrelated selectors return an error. Site-local paths use site_name or the connection's saved site."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "Workshopsubmissions",
+              "Finance",
+              "HR"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used. A complete '/sites/' or '/teams/' resource path determines the owning web even when site_name is supplied. An explicit site_name must identify that web or an ancestor; unrelated selectors return an error. Site-local paths use site_name or the connection's saved site."
+          }
+        },
+        "description": "Request parameters for retrieving a SharePoint file or folder by its server-relative path.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_GET_SITE_PAGE_CONTENT",
+      "name": "Get SharePoint Site Page Content",
+      "description": "Tool to retrieve modern SharePoint Site Pages content by reading list item fields. Use when a .aspx page result cannot be downloaded as a file or when you need the structured content (CanvasContent1, LayoutWebpartsContent) of modern pages.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "site_pages"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSitePageContentRequest",
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id",
+            "minimum": 1,
+            "examples": [
+              5,
+              12
+            ],
+            "description": "List item ID of the page in the Site Pages library. Either page_file_name or item_id must be provided."
+          },
+          "render_as": {
+            "enum": [
+              "raw",
+              "text",
+              "html"
+            ],
+            "type": "string",
+            "title": "Render As",
+            "default": "raw",
+            "examples": [
+              "raw",
+              "text",
+              "html"
+            ],
+            "description": "Format for retrieving content fields. 'raw' returns direct field values (CanvasContent1, LayoutWebpartsContent). 'text' uses FieldValuesAsText endpoint for plain text rendering. 'html' uses FieldValuesAsHtml endpoint for HTML rendering."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "testcomposio",
+              "marketing",
+              "hr-portal"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          },
+          "page_file_name": {
+            "type": "string",
+            "title": "Page File Name",
+            "examples": [
+              "Home.aspx",
+              "Formed-LLC-&-Received-EIN.aspx"
+            ],
+            "description": "File name of the modern SharePoint page to retrieve (e.g., 'Formed-LLC-&-Received-EIN.aspx'). Must include the .aspx extension. Either page_file_name or item_id must be provided."
+          }
+        },
+        "description": "Request parameters for retrieving modern SharePoint site page content.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_GET_SITE_ROOT",
+      "name": "Get SharePoint Root Site",
+      "description": "Retrieves metadata about the root web of a SharePoint site collection. Use this action when you need to get information about the root site in a site collection, such as its title, URL, language settings, or template information. This is useful for discovering the top-level site properties before navigating to subsites or performing collection-wide operations.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "sharepoint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSiteRootRequest",
+        "example": {
+          "expand": "CurrentUser",
+          "select": "Id,Title,Url"
+        },
+        "properties": {
+          "expand": {
+            "type": "string",
+            "title": "Expand",
+            "examples": [
+              "CurrentUser",
+              "Lists,Webs"
+            ],
+            "description": "OData $expand parameter to expand navigation properties, e.g., 'CurrentUser,Lists,Webs'."
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "examples": [
+              "Id,Title,Url",
+              "Title,Description,Created"
+            ],
+            "description": "OData $select parameter to specify which fields to return, e.g., 'Id,Title,Url,ServerRelativeUrl'."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          }
+        },
+        "description": "Request parameters for retrieving the root web of a SharePoint site collection.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_LIST_ALL_LISTS",
+      "name": "List SharePoint Lists",
+      "description": "Retrieves all lists in the current SharePoint web/site. Use this action to discover available lists and document libraries on a SharePoint site, or to pre-check for existing lists before creation (duplicate list names will fail). Returns metadata for each list including Title, Id, BaseType, ItemCount, and other properties. Supports OData query parameters for filtering, selecting specific fields, sorting, and pagination.",
+      "version": "20261020_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListAllListsRequest",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "minimum": 1,
+            "examples": [
+              10
+            ],
+            "description": "Maximum number of lists to return. For pagination, combine with `skip` and increase `skip` by `top` until a page contains fewer than `top` lists."
+          },
+          "skip": {
+            "type": "integer",
+            "title": "Skip",
+            "minimum": 0,
+            "examples": [
+              0,
+              10
+            ],
+            "description": "Zero-based number of lists to skip. SharePoint does not return a continuation token for this collection; use 0 for the first page, then increase by `top` for each subsequent page."
+          },
+          "expand": {
+            "type": "string",
+            "title": "Expand",
+            "examples": [
+              "Fields"
+            ],
+            "description": "OData $expand to include related entities."
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "examples": [
+              "Hidden eq false"
+            ],
+            "description": "OData $filter to narrow results."
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "examples": [
+              "Title,Id"
+            ],
+            "description": "OData $select to specify which list fields to return, e.g., 'Title,Id'."
+          },
+          "orderby": {
+            "type": "string",
+            "title": "Orderby",
+            "examples": [
+              "Title desc"
+            ],
+            "description": "OData $orderby to sort results, e.g., 'Title desc'."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          },
+          "skiptoken": {
+            "type": "string",
+            "title": "Skiptoken",
+            "examples": [
+              "Paged=TRUE&p_ID=15"
+            ],
+            "deprecated": true,
+            "description": "Deprecated compatibility input for callers that already supply a raw OData $skiptoken. SharePoint does not return a skiptoken for this collection; use numeric `skip` instead. Ignored when `skip` is provided."
+          }
+        },
+        "description": "Optional OData query parameters for listing all SharePoint lists.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_LIST_FILES_IN_FOLDER",
+      "name": "List Files in Folder",
+      "description": "Tool to list files within a SharePoint folder (non-recursive; does not enumerate subfolders). Use when you need to enumerate all files in a folder by its server-relative URL. To cover nested structures, call the tool separately for each subfolder.",
+      "version": "20261020_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListFilesInFolderRequest",
+        "example": {
+          "top": 50,
+          "skip": 0,
+          "select": "Name,ServerRelativeUrl,Length",
+          "folder_name": "/Shared Documents"
+        },
+        "required": [
+          "folder_name"
+        ],
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "minimum": 1,
+            "examples": [
+              100
+            ],
+            "description": "Maximum number of files to return. For pagination, combine with `skip` and increase `skip` by `top` until a page contains fewer than `top` files."
+          },
+          "skip": {
+            "type": "integer",
+            "title": "Skip",
+            "minimum": 0,
+            "examples": [
+              0,
+              100
+            ],
+            "description": "Zero-based number of files to skip. SharePoint does not return a continuation token for this collection; use 0 for the first page, then increase by `top` for each subsequent page."
+          },
+          "expand": {
+            "type": "string",
+            "title": "Expand",
+            "examples": [
+              "ListItemAllFields"
+            ],
+            "description": "OData $expand to inline related entities (e.g., 'ListItemAllFields'). When expanding 'Files,Folders', access results via `Files.results` and `Folders.results` arrays in the response."
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "examples": [
+              "Name,ServerRelativeUrl,Length"
+            ],
+            "description": "OData $select to specify which file properties to return (comma-separated)."
+          },
+          "orderby": {
+            "type": "string",
+            "title": "Orderby",
+            "examples": [
+              "Name desc"
+            ],
+            "description": "OData $orderby to sort the results (e.g., 'Name desc')."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          },
+          "skiptoken": {
+            "type": "string",
+            "title": "Skiptoken",
+            "examples": [
+              "Paged=TRUE&p_ID=15"
+            ],
+            "deprecated": true,
+            "description": "Deprecated compatibility input for callers that already supply a raw OData $skiptoken. SharePoint does not return a skiptoken for this collection; use numeric `skip` instead. Ignored when `skip` is provided."
+          },
+          "folder_name": {
+            "type": "string",
+            "title": "Folder Name",
+            "examples": [
+              "/Shared Documents"
+            ],
+            "description": "Server-relative path of an existing folder. Use a site-local path such as '/Shared Documents/General' or a full site path such as '/sites/MySite/Shared Documents/General'. SharePoint path matching is case-insensitive. A nonexistent folder returns an error."
+          }
+        },
+        "description": "Request parameters for listing files in a SharePoint folder.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_LIST_SITE_DRIVES",
+      "name": "List Site Drives",
+      "description": "Tool to retrieve all document libraries (drives) in a SharePoint site. Use when you need to discover available document libraries or storage locations within a SharePoint site. This action lists all drives accessible in the specified site, including default document libraries and any custom document libraries created by users.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "list"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListSiteDrivesRequest",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "default": 25,
+            "maximum": 1000,
+            "minimum": 1,
+            "examples": [
+              25,
+              50,
+              100
+            ],
+            "description": "OData $top parameter - number of drives to return. Default: 25."
+          },
+          "expand": {
+            "type": "string",
+            "title": "Expand",
+            "examples": [
+              "root",
+              "items",
+              "root,items"
+            ],
+            "description": "OData $expand parameter to expand related entities (e.g., 'root,items')."
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "examples": [
+              "id,name,webUrl,driveType",
+              "id,name,createdDateTime"
+            ],
+            "description": "OData $select parameter - comma-separated properties to return (e.g., 'id,name,webUrl,driveType')."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test",
+              "Workshopsubmissions",
+              "Finance"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          }
+        },
+        "description": "Request parameters for listing drives in a SharePoint site.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_LIST_SITES",
+      "name": "List SharePoint Sites",
+      "description": "Tool to retrieve all SharePoint sites accessible to the user. Use when you need to discover available sites before performing site-specific operations.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "list",
+        "sharepoint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListSitesRequest",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "examples": [
+              50,
+              100,
+              200
+            ],
+            "description": "Number of sites to return. Maximum value is 500."
+          },
+          "search": {
+            "type": "string",
+            "title": "Search",
+            "examples": [
+              "*",
+              "Team",
+              "Marketing"
+            ],
+            "description": "Search query to filter sites by name or description. Use '*' to get all sites."
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "examples": [
+              "SiteId,SiteName,Title,Path",
+              "SiteId,Title,Description"
+            ],
+            "description": "Comma-separated list of managed property names to return. Common properties: SiteId, SiteName, Title, Path, Description, Created, LastModifiedTime. If not specified, SharePoint returns a default set of properties."
+          }
+        },
+        "description": "Request parameters for listing SharePoint sites.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_LIST_SUBFOLDERS_IN_FOLDER",
+      "name": "List Subfolders in Folder",
+      "description": "Tool to list immediate child folders within a SharePoint folder. Use when you need folder navigation or directory discovery by server-relative URL.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "folders"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListSubfoldersInFolderRequest",
+        "example": {
+          "top": 50,
+          "select": "Name,ServerRelativeUrl,UniqueId",
+          "folder_server_relative_url": "/Shared Documents"
+        },
+        "required": [
+          "folder_server_relative_url"
+        ],
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "minimum": 1,
+            "examples": [
+              100
+            ],
+            "description": "OData $top to limit the number of subfolders returned."
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "examples": [
+              "Name,ServerRelativeUrl,UniqueId"
+            ],
+            "description": "OData $select to specify which folder properties to return (comma-separated)."
+          },
+          "orderby": {
+            "type": "string",
+            "title": "Orderby",
+            "examples": [
+              "Name asc"
+            ],
+            "description": "OData $orderby to sort the results (e.g., 'Name desc')."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          },
+          "folder_server_relative_url": {
+            "type": "string",
+            "title": "Folder Server Relative Url",
+            "examples": [
+              "/Shared Documents",
+              "/sites/MySite/MyFolder"
+            ],
+            "description": "Server-relative URL of the parent folder, e.g., '/Shared Documents' or '/sites/MySite/Folder'. Must be a valid path to an existing folder. For folders with special characters (#, %), the action will automatically use the ResourcePath-based endpoint."
+          }
+        },
+        "description": "Request parameters for listing immediate subfolders in a SharePoint folder.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_RENAME_FOLDER",
+      "name": "Rename SharePoint Folder",
+      "description": "Renames a SharePoint folder by updating its list item metadata. To use this action: 1. Provide the folder path and new leaf folder name. 2. The action updates the folder list item fields needed by SharePoint. The rename operation updates both the folder's display name (Title) and actual name (FileLeafRef). Note: This only changes the folder name, not its location in the hierarchy.",
+      "version": "20261020_00",
+      "tags": [
+        "list",
+        "update",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RenameFolderRequest",
+        "required": [
+          "server_relative_folder_url",
+          "new_name"
+        ],
+        "properties": {
+          "new_name": {
+            "type": "string",
+            "title": "New Name",
+            "examples": [
+              "NewFolder",
+              "Renamed Folder 2024"
+            ],
+            "description": "New folder name (leaf name only, not full path). This will be used for both the display name (Title) and the actual folder name (FileLeafRef). Do not include path separators (/)."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test",
+              "teamsite"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          },
+          "match_etag": {
+            "type": "string",
+            "title": "Match Etag",
+            "default": "*",
+            "description": "ETag value for concurrency control. Use '*' (default) to overwrite regardless of the current version. To enforce version checking, obtain the ETag from GET_FOLDER_BY_SERVER_RELATIVE_URL with expand=ListItemAllFields, then use the '__metadata.etag' value."
+          },
+          "__metadata.type": {
+            "type": "string",
+            "title": "  Metadata.Type",
+            "examples": [
+              "SP.Data.Shared_x0020_DocumentsItem"
+            ],
+            "description": "OData entity type of the folder's list item. Accepted for compatibility with older MERGE-style calls."
+          },
+          "server_relative_folder_url": {
+            "type": "string",
+            "title": "Server Relative Folder Url",
+            "examples": [
+              "/Shared Documents/OldFolder",
+              "/Shared Documents/Parent/OldFolder"
+            ],
+            "description": "Server-relative path of the folder to rename, including library and any parent folders. Must start with '/' and include the document library name. Example: '/Shared Documents/OldFolder' or '/Shared Documents/ParentFolder/OldFolder'."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_SEARCH_FILES",
+      "name": "Search Files Across All Sites",
+      "description": "Search for files across all SharePoint sites and OneDrive using Keyword Query Language. Returns files matching the query with metadata like title, path, size, author, and modification time. Use this action when you need to discover files broadly across an organization without knowing specific drive IDs or site locations. Results are automatically filtered to show only document content types. A site_name changes the endpoint context but does not isolate results unless restrict_to_site_path is enabled or query contains an equivalent Path restriction. Use from_index and row_limit parameters to paginate through large result sets.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "idempotentHint",
+        "files"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchFilesRequest",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "examples": [
+              "project report",
+              "budget.xlsx",
+              "FileType:pdf Author:Smith"
+            ],
+            "description": "The search query text. Can use Keyword Query Language (KQL) syntax for advanced filtering. Examples: 'Q4 report', 'budget proposal', 'FileType:docx', 'Author:\"John Doe\"'. Use KQL properties like FileType, Author, LastModifiedTime, or Path to narrow results."
+          },
+          "row_limit": {
+            "type": "integer",
+            "title": "Row Limit",
+            "default": 25,
+            "maximum": 500,
+            "minimum": 1,
+            "examples": [
+              25
+            ],
+            "description": "Maximum number of file results to return per request. Default is 25."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "Finance"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used. This changes the SharePoint Search endpoint context but does not strictly isolate results; set restrict_to_site_path to true for strict site isolation."
+          },
+          "from_index": {
+            "type": "integer",
+            "title": "From Index",
+            "minimum": 0,
+            "examples": [
+              0
+            ],
+            "description": "Zero-based index of the first result to return. Use for pagination (e.g., from_index=0 for page 1, from_index=25 for page 2 with row_limit=25). Compare TotalRows vs RowCount in the response to determine if additional pages exist."
+          },
+          "select_properties": {
+            "type": "string",
+            "title": "Select Properties",
+            "examples": [
+              "Title,Path,Size,LastModifiedTime,FileType"
+            ],
+            "description": "Comma-separated list of managed property names to return in results. Common file properties: Title, Author, Path, Size, LastModifiedTime, FileType, FileName, FileExtension. If not specified, SharePoint returns a default set."
+          },
+          "restrict_to_site_path": {
+            "type": "boolean",
+            "title": "Restrict To Site Path",
+            "default": false,
+            "description": "Limit results to the effective subsite URL using a KQL Path restriction. Requires site_name on the request or in the connection configuration."
+          }
+        },
+        "description": "Request parameters for searching files across all SharePoint sites and OneDrive."
+      }
+    },
+    {
+      "slug": "SHARE_POINT_SHAREPOINT_CREATE_FOLDER",
+      "name": "Create SharePoint Folder",
+      "description": "Creates a new folder in SharePoint using the REST API. Returns `server_relative_url`; use it for downstream operations instead of constructing paths manually. Does not configure sharing or permissions on the created folder.",
+      "version": "20261020_00",
+      "tags": [
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateFolderRequest",
+        "required": [
+          "folder_name"
+        ],
+        "properties": {
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used. A complete '/sites/' or '/teams/' resource path determines the owning web even when site_name is supplied. An explicit site_name must identify that web or an ancestor; unrelated selectors return an error. Site-local paths use site_name or the connection's saved site.",
+            "human_parameter_name": "Site",
+            "human_parameter_description": "Optional per-call site override. Enter 'marketing' for 'https://contoso.sharepoint.com/sites/marketing'; bare site names use '/sites/' by default. For a different path, enter the full path, such as '/teams/engineering' for 'https://contoso.sharepoint.com/teams/engineering'. This must identify a site or subsite root, not a page, library, list, or folder. Same-origin full site URLs are accepted. Nested subsites require their complete path; a child name alone means '/sites/{name}'. If omitted, the site configured on the connection is used; if none is configured, the root site is used."
+          },
+          "folder_name": {
+            "type": "string",
+            "title": "Folder Name",
+            "description": "Decoded name of the folder to create. Literal '%' and '#' characters are preserved. SharePoint names cannot contain double quotes, *, :, <, >, ?, /, backslash, or |.",
+            "human_parameter_name": "Folder Name",
+            "human_parameter_description": "Enter what you want to call the new folder. This is the folder that will be created in SharePoint."
+          },
+          "relative_path": {
+            "type": "string",
+            "title": "Relative Path",
+            "default": "",
+            "description": "Decoded path below the document-library root, for example 'Projects/2025'. The parent path must already exist. Plain spaces are accepted; do not pre-encode them as %20.",
+            "human_parameter_name": "Relative Path",
+            "human_parameter_description": "If you want the new folder inside an existing subfolder, provide that path relative to the library (e.g., 'Projects/2025'). Leave blank to create it at the library root."
+          },
+          "document_library": {
+            "type": "string",
+            "title": "Document Library",
+            "default": "Shared Documents",
+            "description": "Root-folder URL segment of the target document library, for example 'Shared Documents'. This may differ from its display title, such as 'Documents'. To target a nested subsite from a parent-site connection, include the child path, such as 'subweb01/Shared Documents'; the action resolves the deepest owning web. An explicit site_name must identify that web or an ancestor; unrelated selectors return an error.",
+            "human_parameter_name": "Document Library",
+            "human_parameter_description": "Choose the library where you want the folder to live (for example, 'Shared Documents')."
+          }
+        }
+      }
+    },
+    {
+      "slug": "SHARE_POINT_UPDATE_FILE_ITEM",
+      "name": "Update File Item Metadata",
+      "description": "Tool to update metadata fields on a SharePoint file item via its ListItemAllFields. Use this action when you need to modify document properties, custom columns, or metadata without changing the file content itself. This operates on the list item behind the file, allowing you to set Title, Status, Owner, Categories, or any other library column.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "updateHint",
+        "idempotentHint",
+        "openWorldHint",
+        "update"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateFileItemRequest",
+        "required": [
+          "server_relative_url",
+          "fields"
+        ],
+        "properties": {
+          "etag": {
+            "type": "string",
+            "title": "Etag",
+            "default": "*",
+            "description": "ETag value for concurrency control. Use '*' to force update regardless of version. Provide a specific ETag to ensure safe concurrent updates. Format: '\"guid,version\"' like '\"c7a93369-bda8-4da1-b1a3-3d87d2e207fc,1\"'."
+          },
+          "fields": {
+            "type": "object",
+            "title": "Fields",
+            "examples": [
+              {
+                "Title": "Updated Document Title",
+                "Status": "Approved"
+              },
+              {
+                "OwnerUserId": 7,
+                "DepartmentId": 3
+              },
+              {
+                "TagsId": {
+                  "results": [
+                    1,
+                    5,
+                    9
+                  ]
+                }
+              }
+            ],
+            "description": "Dictionary mapping internal field names to their new values. Supports text, numbers, booleans, dates, and complex types for lookup/person fields. For lookup and person/group fields, append 'Id' to the field name and provide the ID as an integer (single-value) or {'results': [id1, id2, ...]} for multi-value (OData verbose format). Internal field names with spaces are encoded with '_x0020_' (e.g., 'Related_x0020_Item' for 'Related Item').",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          },
+          "server_relative_url": {
+            "type": "string",
+            "title": "Server Relative Url",
+            "examples": [
+              "/Shared Documents/report.pdf",
+              "/sites/Finance/Documents/W-9.pdf"
+            ],
+            "description": "Server-relative URL of the file to update, starting with '/'. E.g., '/Shared Documents/report.pdf' or '/sites/Finance/Documents/W-9.pdf'."
+          },
+          "entity_type_full_name": {
+            "type": "string",
+            "title": "Entity Type Full Name",
+            "description": "The ListItemEntityTypeFullName required for __metadata.type in the request body. If not provided, it will be fetched automatically. Format: 'SP.Data.{ListName}ListItem' like 'SP.Data.Shared_x0020_DocumentsItem'."
+          }
+        },
+        "description": "Request model for updating a SharePoint file item's metadata fields.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_UPDATE_LIST",
+      "name": "Update SharePoint List",
+      "description": "Tool to update properties of an existing SharePoint list. Use when you need to modify list metadata such as title, description, or settings like versioning and attachments.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "updateHint",
+        "idempotentHint",
+        "update"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateListRequest",
+        "required": [
+          "list_guid"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "Updated List Title"
+            ],
+            "description": "New title for the list. Provide this to rename the list."
+          },
+          "if_match": {
+            "type": "string",
+            "title": "If Match",
+            "default": "*",
+            "description": "ETag value for concurrency control. Use '*' to force update regardless of version. Provide a specific ETag to ensure safe concurrent updates."
+          },
+          "list_guid": {
+            "type": "string",
+            "title": "List Guid",
+            "examples": [
+              "a12e3d6e-9414-462d-bd53-cf06f3982ad3"
+            ],
+            "description": "GUID of the SharePoint list to update, in canonical format (e.g., 'a12e3d6e-9414-462d-bd53-cf06f3982ad3')."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test",
+              "marketing",
+              "hr-portal"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "Updated list description via API"
+            ],
+            "description": "New description for the list. Provide this to update the list description."
+          },
+          "enable_versioning": {
+            "type": "boolean",
+            "title": "Enable Versioning",
+            "description": "Whether versioning is enabled for the list. Set to true to enable, false to disable."
+          },
+          "enable_attachments": {
+            "type": "boolean",
+            "title": "Enable Attachments",
+            "description": "Whether attachments are enabled for list items. Set to true to enable, false to disable."
+          },
+          "content_types_enabled": {
+            "type": "boolean",
+            "title": "Content Types Enabled",
+            "description": "Whether content types are enabled for the list. Set to true to enable, false to disable."
+          }
+        },
+        "description": "Request model for updating a SharePoint list."
+      }
+    },
+    {
+      "slug": "SHARE_POINT_UPDATE_LIST_ITEM",
+      "name": "Update SharePoint List Item",
+      "description": "Tool to update fields on an existing SharePoint list item. Use when you need to modify an item's properties with proper ETag concurrency control via MERGE.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "updateHint",
+        "idempotentHint",
+        "update"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateListItemRequest",
+        "examples": [
+          {
+            "etag": "*",
+            "fields": {
+              "Title": "Updated Task",
+              "Status": "Complete"
+            },
+            "item_id": 5,
+            "list_title": "Tasks"
+          },
+          {
+            "etag": "*",
+            "fields": {
+              "Title": "Q4 Initiative",
+              "ProjectManagerId": 12
+            },
+            "item_id": 10,
+            "list_title": "Projects"
+          },
+          {
+            "etag": "*",
+            "fields": {
+              "Title": "Blog Post",
+              "AuthorsId": {
+                "results": [
+                  5,
+                  8,
+                  12
+                ]
+              }
+            },
+            "item_id": 7,
+            "list_title": "Content Calendar"
+          }
+        ],
+        "required": [
+          "list_title",
+          "item_id",
+          "fields"
+        ],
+        "properties": {
+          "etag": {
+            "type": "string",
+            "title": "Etag",
+            "default": "*",
+            "description": "ETag value for concurrency control. Use '*' to force update regardless of version. Provide a specific ETag (from GET_LIST_ITEM_ETAG tool) to ensure safe concurrent updates. Format: '\"guid,version\"' like '\"c7a93369-bda8-4da1-b1a3-3d87d2e207fc,1\"'."
+          },
+          "fields": {
+            "type": "object",
+            "title": "Fields",
+            "examples": [
+              {
+                "Title": "Updated Title",
+                "Status": "Complete"
+              },
+              {
+                "ProjectId": 5,
+                "AssignedToId": 12
+              },
+              {
+                "CategoriesId": {
+                  "results": [
+                    1,
+                    3,
+                    5
+                  ]
+                }
+              }
+            ],
+            "description": "Dictionary mapping internal field names to their new values. Supports text, numbers, booleans, dates, and complex types for lookup/person fields. For lookup and person/group fields, append 'Id' to the field name and provide the ID as an integer (single-value) or {'results': [id1, id2, ...]} for multi-value (OData verbose format). Internal field names with spaces are encoded with '_x0020_' (e.g., 'Related_x0020_Item' for 'Related Item').",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id",
+            "minimum": 1,
+            "examples": [
+              1,
+              42
+            ],
+            "description": "Numeric ID of the list item to update."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          },
+          "list_title": {
+            "type": "string",
+            "title": "List Title",
+            "examples": [
+              "Tasks",
+              "My List"
+            ],
+            "description": "The exact title of the SharePoint list containing the item to update."
+          },
+          "entity_type_full_name": {
+            "type": "string",
+            "title": "Entity Type Full Name",
+            "description": "The ListItemEntityTypeFullName required for __metadata.type in the request body. If not provided, it will be fetched automatically using GET_LIST_ITEM_ENTITY_TYPE_FULL_NAME. Format: 'SP.Data.{ListName}ListItem' like 'SP.Data.TasksListItem'."
+          }
+        },
+        "description": "Request model for updating a SharePoint list item.",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_UPDATE_SITE",
+      "name": "Update SharePoint Site",
+      "description": "Tool to update properties of the current SharePoint site (web). Use when you need to modify site title, description, or other SP.Web properties via MERGE.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "updateHint",
+        "idempotentHint",
+        "update"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateSiteRequest",
+        "example": {
+          "title": "Updated Site Title",
+          "description": "Updated site description via API"
+        },
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "examples": [
+              "My Updated Site",
+              "Engineering Team Site"
+            ],
+            "description": "The new title for the site. If not provided, the title will not be updated."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test",
+              "engineering-team"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "examples": [
+              "Updated site description",
+              "This site is for the engineering team"
+            ],
+            "description": "The new description for the site. If not provided, the description will not be updated."
+          },
+          "tree_view_enabled": {
+            "type": "boolean",
+            "title": "Tree View Enabled",
+            "description": "Whether the tree view is enabled on the site."
+          },
+          "quick_launch_enabled": {
+            "type": "boolean",
+            "title": "Quick Launch Enabled",
+            "description": "Whether the Quick Launch navigation is enabled on the site."
+          },
+          "enable_minimal_download": {
+            "type": "boolean",
+            "title": "Enable Minimal Download",
+            "description": "Whether to enable minimal download strategy for the site."
+          },
+          "save_site_as_template_enabled": {
+            "type": "boolean",
+            "title": "Save Site As Template Enabled",
+            "description": "Whether the 'Save Site as Template' feature is enabled."
+          }
+        },
+        "description": "Request model for updating a SharePoint site (web).",
+        "additionalProperties": false
+      }
+    },
+    {
+      "slug": "SHARE_POINT_UPLOAD_FROM_URL",
+      "name": "Upload File from URL to SharePoint",
+      "description": "Tool to fetch a file from a URL and upload it to SharePoint. Use when you need to upload files directly from external URLs without downloading them to the client first. When a file with the same name already exists, use conflict_behavior to control the behavior: - 'replace': Overwrites the existing file (fails with HTTP 423 if the file is locked/open) - 'fail': Returns an error if a file with that name exists - 'rename': Uploads with an auto-generated suffix (e.g., 'report 1.docx'), bypassing file locks",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "upload",
+        "file",
+        "createHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UploadFromUrlRequest",
+        "required": [
+          "file_url"
+        ],
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id",
+            "description": "Explicit SharePoint site ID (e.g., contoso.sharepoint.com,2C712604-...,2D2244C3-...). Takes precedence over site_name and the connection-configured site. If drive_id is also provided, both explicit IDs are used; otherwise this site's default drive is used."
+          },
+          "drive_id": {
+            "type": "string",
+            "title": "Drive Id",
+            "examples": [
+              "b!xyz123"
+            ],
+            "description": "Explicit drive ID where the file should be uploaded. Takes precedence over site_name and the connection-configured site. When site_id is also provided, selects that drive within the explicit site; otherwise selects the drive directly. If omitted, uses the selected site's default document library."
+          },
+          "file_url": {
+            "type": "string",
+            "title": "File Url",
+            "examples": [
+              "https://example.com/document.pdf",
+              "https://cdn.example.com/image.png"
+            ],
+            "description": "The URL of the file to download and upload to SharePoint. Must be accessible from the server."
+          },
+          "file_name": {
+            "type": "string",
+            "title": "File Name",
+            "examples": [
+              "document.pdf",
+              "report.xlsx"
+            ],
+            "description": "Name for the uploaded file. If not provided, extracts from the URL or Content-Disposition header."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "title": "Overwrite",
+            "deprecated": true,
+            "description": "DEPRECATED. Use 'conflict_behavior' instead. true → 'replace', false → 'fail'. Ignored if 'conflict_behavior' is set."
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used. This value is ignored when either site_id or drive_id is provided; explicit IDs take precedence."
+          },
+          "folder_path": {
+            "type": "string",
+            "title": "Folder Path",
+            "examples": [
+              "Projects",
+              "Projects/2025",
+              "Team"
+            ],
+            "description": "Decoded folder path relative to the selected drive root. Do not include the document-library name when that library is the drive itself. For example, use 'Projects', not 'Documents/Projects', unless a folder literally named 'Documents' exists inside the drive root. Defaults to the drive root."
+          },
+          "source_headers": {
+            "type": "object",
+            "title": "Source Headers",
+            "examples": [
+              {
+                "Authorization": "Bearer token123"
+              },
+              {
+                "X-Custom-Header": "value"
+              }
+            ],
+            "description": "Optional HTTP headers to include when downloading from file_url. Use for authentication tokens, signed URLs, or CDN-specific headers.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "conflict_behavior": {
+            "enum": [
+              "fail",
+              "replace",
+              "rename"
+            ],
+            "type": "string",
+            "title": "ConflictBehavior",
+            "examples": [
+              "replace",
+              "fail",
+              "rename"
+            ],
+            "description": "Specifies how to handle name conflicts when uploading files to SharePoint."
+          }
+        }
+      }
+    },
+    {
+      "slug": "SHARE_POINT_VALIDATE_CREDENTIAL",
+      "name": "Validate SharePoint Credentials",
+      "description": "Validate SharePoint credentials by attempting to retrieve the current user information. Use this action during setup or configuration to verify that provided credentials have valid access to the SharePoint site before performing other operations.",
+      "version": "20261020_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ValidateCredentialRequest",
+        "properties": {
+          "site_name": {
+            "type": "string",
+            "title": "Site Name",
+            "examples": [
+              "composio-test",
+              "team-site"
+            ],
+            "description": "Optional per-call site override. Provide the complete server-relative path to the SharePoint site or subsite web root, such as '/sites/marketing/archive' or '/teams/engineering', or provide a same-origin full URL to that web root. Do not pass a page, library, list, folder, or other resource URL. A bare name such as 'marketing' maps to '/sites/marketing', so nested subsites require their complete path. If omitted, the site configured on the connection is used; if none is configured, the tenant root site is used."
+          }
+        },
+        "description": "Request model for validating SharePoint credentials."
+      }
+    }
+  ]
+}
