@@ -8,13 +8,15 @@ import { test } from 'node:test';
 import { parseArguments, runCases } from '../scripts/verify-smoke.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
 import { appendSmokeLedger, readSmokeLedger, SMOKE_LEDGER_SCHEMA, smokePassed } from '../scripts/lib/smoke-ledger.mjs';
+// @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
+import { SMOKE_CASES } from '../scripts/lib/smoke-cases.mjs';
 
 const SHA = 'a'.repeat(40);
 const line = (overrides: Record<string, unknown> = {}) => ({
   schema: SMOKE_LEDGER_SCHEMA, coreSha: SHA, lane: 'amber', profile: 'core',
   workerVersion: '5504e066-9504-4924-9861-993392bf7a2f', result: 'pass',
   startedAt: '2026-10-27T05:00:00.000Z', finishedAt: '2026-10-27T05:09:00.000Z', durationMs: 540_000, deployMs: 60_000,
-  cases: [{ id: 'dm-reply', result: 'pass', category: null, durationMs: 20_000 }],
+  cases: SMOKE_CASES.map((entry: { id: string }) => ({ id: entry.id, result: 'pass', category: null, durationMs: 20_000 })),
   evidence: '/private/run', ...overrides,
 });
 
@@ -34,6 +36,8 @@ test('the smoke ledger keeps owner-only lines and names a commit passed only on 
   assert.equal(smokePassed(entries, SHA), true);
   assert.equal(smokePassed(entries, 'b'.repeat(40)), false, 'a failed run never passes its commit');
   assert.equal(smokePassed(entries, 'c'.repeat(40)), false);
+  appendSmokeLedger(line({ coreSha: 'd'.repeat(40), cases: [{ id: 'dm-reply', result: 'pass', category: null, durationMs: 1 }] }), file);
+  assert.equal(smokePassed(readSmokeLedger(file), 'd'.repeat(40)), false, 'a run of a chosen subset never passes its commit');
   assert.throws(() => appendSmokeLedger(line({ result: 'pass', cases: [{ id: 'dm-reply', result: 'blocked', category: 'tool', durationMs: 0 }] }), file), /malformed/);
   assert.deepEqual(readSmokeLedger(path.join(dir, 'missing.jsonl')), []);
 });

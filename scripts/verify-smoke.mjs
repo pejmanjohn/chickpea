@@ -184,33 +184,35 @@ async function cleanUp(world) {
   const report = [];
   for (const item of world.cleanup.filter((entry) => entry.kind === 'routine')) {
     // A completed one-time routine leaves its Agent's list but still exists; its own record is the readback.
-    const read = async () => (await world.admin.call('GET', `/admin/api/audit/scheduled_work/routines/${encodeURIComponent(item.id)}`)).body?.routine;
-    const routine = await read();
+    const read = () => world.admin.call('GET', `/admin/api/audit/scheduled_work/routines/${encodeURIComponent(item.id)}`);
+    const routine = (await read()).body?.routine;
     if (routine && routine.state !== 'deleted') {
       await world.admin.call('POST', `${item.schedulesPath}/${encodeURIComponent(item.id)}/control`,
         { action: 'delete', expectedVersion: routine.version, acknowledgeIrreversible: true },
         { headers: { 'idempotency-key': `smoke:${world.marker}:${item.id}:delete` } });
     }
     const after = await read();
-    report.push({ ...item, absent: !after || after.state === 'deleted' });
+    report.push({ ...item, absent: after.status === 404 || after.body?.routine?.state === 'deleted' });
   }
   for (const item of world.cleanup.filter((entry) => entry.kind === 'agent')) {
     const agentPath = `/admin/api/agents/${encodeURIComponent(item.id)}`;
-    const read = async () => { const answer = await world.admin.call('GET', agentPath); return answer.status === 200 ? answer.body?.agent ?? answer.body : null; };
-    let agent = await read();
-    if (agent && agent.lifecycle !== 'archived') {
+    const read = async () => { const answer = await world.admin.call('GET', agentPath); return { status: answer.status, agent: answer.body?.agent ?? answer.body }; };
+    let { status, agent } = await read();
+    if (status === 200 && agent.lifecycle !== 'archived') {
       await world.admin.call('POST', `${agentPath}/archive`, { expectedRevision: agent.revision });
     }
     // Archiving turns the Slack handle off in the background and bumps the revision; delete once Admin allows it.
     const deadline = Date.now() + 90_000;
-    while ((agent = await read()) && Date.now() < deadline) {
-      if (agent.lifecycle === 'archived' && !agent.deletion?.blocked) {
+    while (status !== 404 && Date.now() < deadline) {
+      ({ status, agent } = await read());
+      if (status === 200 && agent.lifecycle === 'archived' && !agent.deletion?.blocked) {
         const deleted = await world.admin.call('DELETE', agentPath, { expectedRevision: agent.revision, credentialConfigurationBinding: agent.credentialConfigurationBinding });
         if (deleted.status === 204) continue;
       }
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      if (status !== 404) await new Promise((resolve) => setTimeout(resolve, 3_000));
     }
-    report.push({ ...item, absent: !agent });
+    // Only Admin's 404 is an absence; a failed readback is not.
+    report.push({ ...item, absent: status === 404 });
   }
   return report;
 }
@@ -222,10 +224,15 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
   const startedAt = Date.now();
   const candidate = realpathSync(options.candidate);
   const { readEnvironmentRegistry } = await import('./lib/environment-registry.mjs');
+  const registration = readEnvironmentRegistry().targets?.[options.lane] ?? {};
   // Without a deploy the cases grade whatever the lane already serves.
   const coreSha = options.deploy
     ? spawnSync('git', ['rev-parse', 'HEAD'], { cwd: candidate, encoding: 'utf8' }).stdout.trim()
-    : readEnvironmentRegistry().targets?.[options.lane]?.sourceRevision ?? '';
+    : registration.sourceRevision ?? '';
+  if (!options.deploy && options.ledger && registration.sourceDirty) {
+    stderr.write(`${options.lane} serves an uncommitted tree, and a ledger line names a commit. Deploy, or pass --no-ledger.\n`);
+    return 2;
+  }
   const evidenceDir = path.join(homedir(), '.chickpea', 'verification', 'smoke',
     `${new Date(startedAt).toISOString().replace(/[:.]/gu, '-')}-${options.lane}-${coreSha.slice(0, 8)}`);
   mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
@@ -236,7 +243,7 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
     return 2;
   }
 
-  const heldBefore = readEnvironmentRegistry().targets?.[options.lane]?.claim?.canonicalWorktreePath === candidate;
+  const heldBefore = registration.claim?.canonicalWorktreePath === candidate;
   say(`claiming ${options.lane} for ${candidate} at ${coreSha.slice(0, 12)}`);
   // The candidate's own claim moves to its HEAD; anyone else's is waited out, never taken.
   const claim = heldBefore
@@ -251,6 +258,7 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
   let workerVersion = null;
   const { readEnvironmentCapabilities } = await import('./lib/environment-capabilities.mjs');
   const profile = (await readEnvironmentCapabilities(options.lane, { env })).lanes[0]?.profile;
+  const blocked = (summary) => selected.map((entry) => ({ id: entry.id, result: 'blocked', category: 'tool', summary, durationMs: 0 }));
   try {
     if (options.deploy) {
       say(`deploying (${profile} profile); log ${path.join(evidenceDir, 'deploy.log')}`);
@@ -259,9 +267,15 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
       deployMs = Date.now() - deployStarted;
       if (deployed.status !== 0) {
         stderr.write(`The deploy exited ${deployed.status}${deployed.reason ? `: ${deployed.reason}` : ''}. Last output:\n${deployed.tail?.split('\n').slice(-8).join('\n') ?? ''}\n`);
-        outcomes = selected.map((entry) => ({ id: entry.id, result: 'blocked', category: 'tool', summary: 'The deploy failed.', durationMs: 0 }));
+        outcomes = blocked('The deploy failed.');
       }
       say(`deploy exited ${deployed.status} after ${(deployMs / 1000).toFixed(0)} s`);
+      // The ledger line names coreSha, so the lane must register exactly that commit before a case runs.
+      const served = readEnvironmentRegistry().targets?.[options.lane] ?? {};
+      if (!outcomes.length && (served.sourceRevision !== coreSha || served.sourceDirty)) {
+        stderr.write(`The deploy exited 0, but ${options.lane} registers ${served.sourceRevision ?? 'no revision'}${served.sourceDirty ? ' (dirty)' : ''}, not ${coreSha}.\n`);
+        outcomes = blocked('The lane does not register the candidate.');
+      }
     }
     workerVersion = (await readEnvironmentCapabilities(options.lane, { env })).lanes[0]?.liveVersion ?? null;
     if (!outcomes.length) {
@@ -290,7 +304,7 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
     evidence: evidenceDir,
   };
   writeFileSync(path.join(evidenceDir, 'result.json'), `${JSON.stringify({ ...entry, outcomes, cleanup }, null, 2)}\n`, { mode: 0o600 });
-  if (options.ledger) say(`ledger ${appendSmokeLedger(entry, options.ledger)}`);
+  if (options.ledger) say(`ledger ${appendSmokeLedger(entry, options.ledger)}${selected.length < SMOKE_CASES.length ? ' (a chosen subset, not a batch pass)' : ''}`);
   say(`${entry.result.toUpperCase()} in ${(entry.durationMs / 1000).toFixed(0)} s`);
   return entry.result === 'pass' ? 0 : 1;
 }

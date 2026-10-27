@@ -22,6 +22,8 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from '
 import { homedir } from 'node:os';
 import path from 'node:path';
 
+import { SMOKE_CASES } from './smoke-cases.mjs';
+
 export const SMOKE_LEDGER_SCHEMA = 'chickpea-smoke-ledger/v1';
 export const CASE_RESULTS = Object.freeze(['pass', 'fail', 'blocked']);
 export const FAILURE_CATEGORIES = Object.freeze(['product', 'model', 'tool']);
@@ -74,7 +76,8 @@ export function readSmokeLedger(file = defaultSmokeLedger()) {
   });
 }
 
-/** Whether some run on `sha` passed every case. */
-export function smokePassed(entries, sha) {
-  return entries.some((entry) => entry.coreSha === sha && entry.result === 'pass');
+/** Whether some run on `sha` passed every fixed case; a run of a chosen subset never counts. */
+export function smokePassed(entries, sha, caseIds = SMOKE_CASES.map((entry) => entry.id)) {
+  return entries.some((entry) => entry.coreSha === sha && entry.result === 'pass' &&
+    caseIds.every((id) => entry.cases.some((outcome) => outcome.id === id)));
 }

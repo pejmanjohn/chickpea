@@ -65,7 +65,9 @@ it.
 Each run appends one line to `~/.chickpea/verification/smoke-ledger.jsonl`.
 `scripts/lib/smoke-ledger.mjs` defines the line (`chickpea-smoke-ledger/v1`) and
 exports `readSmokeLedger` and `smokePassed(entries, sha)` for Cloud's pin
-check. A line passes only when every case passed and cleanup read back clean.
+check. A line passes only when every case passed and cleanup read back clean,
+and `smokePassed` counts only a run of every fixed case, never a `--cases`
+subset.
 Readbacks, the timestamped deploy log, and `result.json` go to an owner-only
 run directory under `~/.chickpea/verification/smoke/`.
 
