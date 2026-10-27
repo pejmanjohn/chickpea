@@ -3,17 +3,45 @@
 Use `changed` by default. An explicit mode or narrower user request wins.
 These are skill workflows, separate from the dormant coordinator's typed suites.
 
+By default `changed` and `regression` run once per merge batch on `main`, after
+the batch merges and before any Chickpea Cloud pin or Core release. For
+`changed` on `main`, pass `--base` the last batch-verified commit so the plan
+covers the whole batch. Per PR, run only the live check its
+[risk class](../../../AGENTS.md#shipping-by-risk-class) names. That is a
+`probe`, or a `changed` run scoped to the T3 cycle or rehearsal, the T4 money
+proof, or the T0x dry run.
+
 | Mode | Beneath the browser | Live journey |
 | --- | --- | --- |
+| `probe` | None. The PR's own gates run separately | 1 to 3 named-assumption cases from the brief on the brief's lane |
 | `changed` | Focused tests and applicable offline checks selected from the diff | Changed behavior and its nearest failure, permission, or persistence case on one suitable lane |
 | `regression` | Fixed core tests, offline delivery/durability/provider checks, authoring evaluation, Admin checks | Essential journeys below using reusable fixtures on one deployed candidate lane |
-| `release` | Full repository tests, local workerd, offline checks, lockfile and committed-source export | Core journeys plus fresh OAuth, installation, authority, restart, and relevant feature coverage |
+| `release` | Full repository tests, local workerd, offline checks, lockfile and committed-source export | In-place update from the prior release plus core journeys; fresh installation only for installer or setup changes; rollback only for storage-contract changes |
 
 `smoke` remains a compatibility request for the original four journeys: create
 and welcome, full instruction approval, fresh Personal OAuth/read, and actual
 channel schedule delivery. Use the requested target, or one available deployed
 lane when none is named. "Amber then Cobalt" explicitly runs both. `deep` requires
 an explicit inventory; dormant catalog contracts are not executable coverage.
+
+## Probe
+
+A probe checks one named assumption for one PR. The assumption is an outside
+fact no test reaches, such as a Slack field, a provider parameter, or an OAuth
+flow. The brief names the lane, its Worker URL, the readback tool, and 1 to 3
+exact cases. A probe takes 15 minutes or less including deploy. It runs from
+the implementation commit in parallel with review.
+
+- Skip the kickoff preflight, the normal path, the case template, and the
+  supporting docs unless a case needs one.
+- Claim the brief's lane and deploy the implementation commit with the
+  profile's commands. Redeploy only when a fix round touches runtime code.
+- Initialize a run whose spec holds only the brief's cases. Record `begin`,
+  `finish`, and [cleanup](records.md#exact-cleanup-and-schedule-limits) for
+  each case, and nothing else. A probe records no lessons, phase receipts,
+  verdicts, or report.
+- Clean up, release the claim, and report each case's result with its
+  readback. A failing case goes back to the PR's fix round.
 
 ## Changed behavior
 
@@ -222,13 +250,12 @@ Follow [releasing](../../../docs/runbooks/releasing.md) for the single Node 24 b
 dependency audit, and advertised deployment profiles. This mode verifies a
 candidate; it never tags, publishes, merges, or deploys production.
 
-Run core regression plus fresh Personal connection setup on the empty connector
-test Agent, actual second-user denial, and retained state/sign-in/delivery after
-restart or QA redeploy. For first release or setup changes, exercise installation
-from the public-source artifact on a designated disposable target. For later
-releases exercise the documented upgrade as well. Include affected memory, skill,
-private schedule, revocation, and other advertised feature journeys. Report each
-missing actor, fixture, or unsupported contract as untested/blocked.
+Update a QA lane in place from the prior release to the candidate, then run the
+core regression journeys on it as the batch smoke. Exercise installation from
+the public-source artifact on a designated disposable target only when installer
+or setup code changed. Run a rollback cycle only when `release.json`'s storage
+generation or a migration digest changed. Report each missing actor, fixture, or
+unsupported contract as untested/blocked.
 
 Fresh OAuth consent and exact test teardown are already authorized by invocation.
 Pause only for a real missing credential/capability or an out-of-scope change,

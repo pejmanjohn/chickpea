@@ -81,6 +81,13 @@
   `.agents/skills/chickpea-live-verification/SKILL.md` and
   `.claude/skills/chickpea-live-verification/SKILL.md`, point at
   `qa/live/operator/SKILL.md`.
+  Until a scripted smoke exists, run the skill once per merge batch on `main`,
+  after the batch merges and before any Chickpea Cloud pin or Core release.
+  Per PR, run only the live check the [risk class](#shipping-by-risk-class)
+  names: the T2 probe (the skill's `probe` mode), the T3 cycle or rehearsal,
+  the T4 money proof, or the T0x dry run. Run it from the implementation commit
+  in parallel with review, and redeploy only when a fix round touches runtime
+  code. A comment-only or docs-only commit never repeats a lane check.
   A request to run it authorizes its declared QA actions and exact cleanup,
   including test messages, product approvals, and OAuth with registered test
   accounts. Do not request the same permission at every step. Use its mode and
@@ -107,3 +114,54 @@
   proof of product failure; Slack/Admin/provider readback remains acceptance.
   Keep logs and incident artifacts private. Use existing repository commands
   for local development/builds and the guarded wrapper for deployments.
+
+## Shipping by risk class
+
+The author declares the risk class in the PR description, and the reviewer
+confirms it. The class decides what blocks merge and what blocks production,
+which here means Chickpea Cloud running a pinned Core commit.
+
+| Class | Examples | Before merge | Before production |
+| --- | --- | --- | --- |
+| T0 docs and workflow | runbooks, README, `qa/` prose, package file lists | `verify:hygiene`, plus review only for prose with product, process, or legal weight | nothing |
+| T0x executable guides | install, update, and uninstall guides an agent follows | review, plus one live dry run on a throwaway target in parallel | nothing |
+| T1 host-only | refactors, tests, scripts, CLI tooling, logic fully covered by unit tests | typecheck, related tests, review, the automatic security review, one full regression on the final tree | Cloud's staging attestation, standard promotion, and canary |
+| T2 live-surface behavior | routing, tools, Admin behavior, models and providers, connections, Slack features | T1, plus a probe only when the change rests on an outside fact no test reaches | a passed batch smoke on the Core commit Cloud pins |
+| T3 storage, contract, boundary, dependency | migrations, `release.json` digests, storage generation, secrets, auth boundaries, Flue or Pi upgrades, installer, deploy scripts, sandbox image | a short design note first, review plus a security-focused delta review, a full regression, and the live check below | a passed batch smoke and Cloud's full promotion |
+| T4 product shape, privacy, money | new data handling, billing, policy, pricing | research and an adversarial design review before code, then T2 or T3 as the code warrants, plus one staging end-to-end proof for money flows | as T2 or T3 |
+
+- A probe checks a named assumption such as a Slack field, a provider
+  parameter, or an OAuth flow. It is 1 to 3 cases and takes 15 minutes or less
+  including deploy. Skip it when the author and reviewer agree the change rests
+  on no such fact.
+- The T3 live check depends on the change. Storage changes get a live
+  upgrade-and-rollback cycle on a lane. Installer or deploy changes get a
+  rehearsal with the real artifact. Provider or dependency upgrades get a diff
+  of captured request bodies.
+- Review means a fresh, independent first pass (on Claude, a Fable subagent;
+  on Codex, an equivalent adversarial review). Start it when the PR opens, in
+  parallel with gates and probes. The reviewer may apply small, local fixes
+  itself.
+- Run a delta re-review only for security, storage, or money fixes, or a fix
+  larger than about 50 changed lines. The automatic commit security review
+  always runs.
+
+## Human gates
+
+- Do not ask the maintainer to approve wording. Choose the words for UI
+  strings, error text, docs, marketing, legal, and pricing copy. List new or
+  changed customer-visible strings in the PR description and flag legal and
+  pricing text. The maintainer may change them after merge.
+- Ask once, up front. When you first clarify the task, send one batched
+  question with the product calls and the authorizations the thread will need,
+  such as a production deploy once verified, a Core release after, and any
+  spending.
+- Never ask whether to continue into work the original request covered,
+  whether to merge a PR that passed its class's checks, or whether to start the
+  next independent unit.
+- When a question must wait for its answer, keep running everything that does
+  not depend on it. Gate only the irreversible step.
+- A production deploy needs a grant given in the thread. Spending and paid
+  resources, resource or data deletion, customer messages, and publishing a
+  Core release tag also need the maintainer. A grant given in the thread
+  covers the tag.

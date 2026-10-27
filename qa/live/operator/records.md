@@ -94,7 +94,8 @@ npm run verify:live:record -- lesson --area delivery --case requested-schedule \
 ```
 
 A lesson grades nothing. The report lists every lesson under "Lessons for the
-feature map"; fold each into its feature file before the run's PR merges.
+feature map"; fold each into its feature file before the run's PR merges, or
+in the next PR for a batch run on `main`.
 
 Each context records `grade`, exact `target`, `servingVersion`, actual `model`,
 actor identity, fixture revision/digest, lane `state`, and relevant `config` digest.

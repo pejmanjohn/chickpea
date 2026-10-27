@@ -153,8 +153,8 @@ a public document means un-ignoring that exact file there (and listing it in
 the leak scan denies private names, local user paths, tokens, and binaries.
 
 Local automated checks cannot establish real Slack/provider acceptance.
-Changes to setup, authority, delivery, or persistence also need the relevant
-attended checks from the [release checklist](docs/runbooks/releasing.md). Do not describe a build or
+Changes to setup, authority, delivery, or persistence also need the live checks
+their [risk class](AGENTS.md#shipping-by-risk-class) names. Do not describe a build or
 fake-backend result as live acceptance.
 
 ## Where things live
