@@ -57,35 +57,42 @@ export interface DraftReport {
 
 const HINTS = ['readOnlyHint', 'createHint', 'updateHint', 'destructiveHint'] as const;
 
-const READ_LINT_LEADING_VERBS = new Set(`
-  ACKNOWLEDGE ACTIVATE ADD APPEND APPLY APPROVE ARCHIVE ASSIGN ATTACH BAN BLOCK BOOK BUY CANCEL
-  CHARGE CLEAR CLONE CLOSE CONNECT CONVERT COPY CREATE DEACTIVATE DELETE DEPLOY DESTROY DETACH
-  DISABLE DISCONNECT DUPLICATE EDIT EMPTY ENABLE ENQUEUE ERASE EXECUTE FOLLOW FORWARD GRANT IMPORT
-  INSERT INSTALL INVITE INVOKE JOIN KICK LEAVE LIKE LINK LOCK MARK MERGE MODIFY MOVE MUTE PATCH PAUSE
-  PAY PIN PING POST PUBLISH PURCHASE PURGE PUT REFUND REGISTER REJECT REMOVE RENAME REOPEN REPLACE
-  REPLY RESET RESOLVE RESTART RESTORE RESUME REVOKE ROLLBACK SCHEDULE SEND SET SHARE SNOOZE START
-  STAR STOP SUBMIT SUBSCRIBE SUSPEND SYNC TAG TRANSFER TRASH TRIGGER UNARCHIVE UNASSIGN UNBAN
-  UNBLOCK UNFOLLOW UNINSTALL UNLIKE UNLINK UNLOCK UNMUTE UNPIN UNPUBLISH UNSTAR UNSUBSCRIBE UNTAG
-  UNTRASH UPDATE UPLOAD UPSERT VOTE
-`.trim().split(/\s+/));
+const words = (text: string) => text.trim().split(/\s+/);
+
+/**
+ * A create or update hint does not make these reversible; the lint reclassifies
+ * them as destructive. Delete synonyms and one-way actions such as submit,
+ * approve, rotate, and deploy all count.
+ */
+const IRREVERSIBLE_VERBS = new Set(words(`
+  archive cancel clear delete destroy detach discard drop empty erase expire merge purge remove revoke
+  terminate transfer trash truncate unlink void wipe
+  approve decline deploy execute finalize overwrite regenerate reject reset rotate submit
+`));
+/** Also adjectives ("an empty board", "clear text"), so in a tool name they count only as its first word. */
+const LEADING_ONLY_VERBS = new Set(['clear', 'empty']);
+
+const READ_LINT_LEADING_VERBS = new Set([...words(`
+  ACKNOWLEDGE ACTIVATE ADD APPEND APPLY ASSIGN ATTACH BAN BLOCK BOOK BUY CHARGE CLONE CLOSE CONNECT
+  CONVERT COPY CREATE DEACTIVATE DISABLE DISCONNECT DUPLICATE EDIT ENABLE ENQUEUE FOLLOW FORWARD GRANT
+  IMPORT INSERT INSTALL INVITE INVOKE JOIN KICK LEAVE LIKE LINK LOCK MARK MODIFY MOVE MUTE PATCH PAUSE
+  PAY PIN PING POST PUBLISH PURCHASE PUT REFUND REGISTER RENAME REOPEN REPLACE REPLY RESOLVE RESTART
+  RESTORE RESUME ROLLBACK SCHEDULE SEND SET SHARE SNOOZE START STAR STOP SUBSCRIBE SUSPEND SYNC TAG
+  TRIGGER UNARCHIVE UNASSIGN UNBAN UNBLOCK UNFOLLOW UNINSTALL UNLIKE UNLOCK UNMUTE UNPIN UNPUBLISH
+  UNSTAR UNSUBSCRIBE UNTAG UNTRASH UPDATE UPLOAD UPSERT VOTE
+`), ...[...IRREVERSIBLE_VERBS].map((verb) => verb.toUpperCase())]);
 const READ_LINT_MARKERS = /(?:^|_)(ARCHIVE|DELETE|DELETED|MARK|PURGE|REMOVE|REMOVED|SEND|SENT|TRASH)(?:_|$)/;
-const READ_LINT_DESCRIPTION_VERBS = new Set(`
-  add append approve archive assign attach block cancel charge close create delete disable enable
-  edit forward grant import insert invite mark modify move pay ping publish purchase purge refund
-  reject remove rename reply revoke schedule send share start stop submit subscribe transfer trigger
-  unsubscribe update upload upsert
-`.trim().split(/\s+/));
-/** A create or update hint does not make these reversible; the lint reclassifies them as destructive. */
-const IRREVERSIBLE_MARKERS =
-  /(?:^|_)((?:ARCHIVE|CANCEL|DELETE|DESTROY|ERASE|MERGE|PURGE|REMOVE|REVOKE|TRANSFER|TRASH|VOID)(?:S|D|ED|LED|RED)?)(?:_|$)/;
-const IRREVERSIBLE_DESCRIPTION_VERBS = new Set(`
-  archive cancel delete destroy erase merge purge remove revoke transfer trash void
-`.trim().split(/\s+/));
+/** Not "execute": "Executes a SOQL query…" opens Salesforce, Google Ads, and Mixpanel query reads. */
+const READ_LINT_DESCRIPTION_VERBS = new Set([...words(`
+  add append assign attach block charge close create disable edit enable forward grant import insert
+  invite mark modify move pay ping publish purchase refund rename reply schedule send share start stop
+  subscribe trigger unsubscribe update upload upsert
+`), ...[...IRREVERSIBLE_VERBS].filter((verb) => verb !== 'execute')]);
 
 const REVIEW_REQUIRED_EFFECTS = new Set<ManagedEffectClass>([
   'destructive', 'administrative', 'spend_or_budget', 'external_publish',
 ]);
-const ADMINISTRATIVE = /(?:^|_)(ADMIN|ADMINS|AGENT|AGENTS|API_KEY|API_KEYS|AUDIT|GROUP|GROUPS|INTEGRATION|INTEGRATIONS|MEMBER|MEMBERS|MEMBERSHIP|MEMBERSHIPS|ORGANIZATION|ORGANIZATIONS|PERMISSION|PERMISSIONS|POLICIES|POLICY|ROLE|ROLES|SCIM|SETTING|SETTINGS|SLA|SSO|TEAM|TEAMS|TOKEN|TOKENS|USER|USERS|WEBHOOK|WEBHOOKS|WORKSPACE|WORKSPACES)(?:_|$)/;
+const ADMINISTRATIVE = /(?:^|_)(ADMIN|ADMINS|AGENT|AGENTS|API_KEY|API_KEYS|AUDIT|CREDENTIAL|CREDENTIALS|GROUP|GROUPS|INTEGRATION|INTEGRATIONS|MEMBER|MEMBERS|MEMBERSHIP|MEMBERSHIPS|ORGANIZATION|ORGANIZATIONS|PASSWORD|PASSWORDS|PERMISSION|PERMISSIONS|POLICIES|POLICY|ROLE|ROLES|SCIM|SECRET|SECRETS|SETTING|SETTINGS|SLA|SSO|TEAM|TEAMS|TOKEN|TOKENS|USER|USERS|WEBHOOK|WEBHOOKS|WORKSPACE|WORKSPACES)(?:_|$)/;
 const SPEND = /(?:^|_)(BID|BIDS|BILL|BILLING|BILLS|BUDGET|BUDGETS|BUY|CHARGE|CHARGES|CHECKOUT|INVOICE|INVOICES|ORDER|ORDERS|PAY|PAYMENT|PAYMENTS|PAYOUT|PAYOUTS|PURCHASE|REFUND|REFUNDS|SUBSCRIPTION|SUBSCRIPTIONS|TRANSFER|TRANSFERS)(?:_|$)/;
 const PUBLISH = /(?:^|_)(BROADCAST|COMMENT|COMMENTS|EMAIL|EMAILS|FORWARD|INVITE|MESSAGE|MESSAGES|NOTIFY|OUTBOUND|POST|PUBLISH|REPLY|SEND|SHARE)(?:_|$)/;
 
@@ -94,48 +101,65 @@ const PUBLISH = /(?:^|_)(BROADCAST|COMMENT|COMMENTS|EMAIL|EMAILS|FORWARD|INVITE|
  * Freshdesk joins new contacts to a company by domain, which widens ticket
  * visibility. Webhooks and callbacks hand record data to an outside URL.
  */
-const ACCESS_TOKENS = new Set(`
+const ACCESS_TOKENS = new Set(words(`
   acl admin admins agent agents assignee assignees callback collaborator collaborators domain domains
   follower followers group groups guest guests member members org orgs organization organizations
   owner owners private public responder role roles subscriber subscribers team teams user users
   watcher watchers webhook webhooks
-`.trim().split(/\s+/));
+`));
 const ACCESS_TEXT = /permission|visib|privacy|invit|selfjoin|viewall|share|membership/;
 const ACCESS_DESCRIPTION = /\b(?:permissions?|visibility|visible to|public|private|publication|publish\w*|who can|invit\w*|membership)\b/i;
-const CONTAINER_TOKENS = new Set(`
-  account board company folder organization parent project space team workspace
-`.trim().split(/\s+/));
+const CONTAINER_TOKENS = new Set(words(`
+  account board company folder organization parent product project space team workspace
+`));
+/**
+ * Withheld on create too. A Freshdesk ticket's company shows it to that
+ * company's contacts who can view all its tickets, and its product picks the
+ * mailbox replies come from. No ID on a create names the record itself, so a
+ * required one is withheld as well and the tool needs review.
+ */
+const AUDIENCE_CONTAINER_TOKENS = new Set(['company', 'product']);
 /**
  * An email address on any write, create included, is a place mail can go. A
  * ticket's requester receives every reply, so a free requester email on
  * create-ticket would undo a reply bound to the requester.
  */
-const RECIPIENT_TOKENS = new Set(`
+const RECIPIENT_TOKENS = new Set(words(`
   attendee attendees bcc cc email emails participant participants recipient recipients
-`.trim().split(/\s+/));
+`));
 /** `to_emails`, `from_email`, and `to` address a message; `applicable_to` does not. */
 const ADDRESS_LEADING_TOKENS = new Set(['from', 'to']);
-const IDENTITY_TOKENS = new Set(`
+const IDENTITY_TOKENS = new Set(words(`
   external facebook instagram linkedin login mobile password phone requester twitter username
-`.trim().split(/\s+/));
+`));
 
 const WITHHELD_ACCESS = 'changes sharing, visibility, permissions, membership, or who acts';
 const WITHHELD_MOVE = 'moves the record to another container';
+const WITHHELD_AUDIENCE = 'puts the record under a company or product, which can widen who sees it or change its sending mailbox';
 const WITHHELD_COPY = 'copies content from another record, URL, or file';
 const WITHHELD_RECIPIENT = 'names an address a message goes to or comes from';
 const WITHHELD_IDENTITY = 'changes who the record belongs to or how a person is identified';
 
+/** A tool with both hints counts as a create. `other` is a delete, whose IDs name the record itself. */
+type WriteKind = 'create' | 'update' | 'other';
+
+function writeKind(tags: readonly string[]): WriteKind {
+  if (tags.includes('createHint')) return 'create';
+  return tags.includes('updateHint') ? 'update' : 'other';
+}
+
 /**
  * Writes run without a per-call confirmation, so a write tool's schema is the
  * gate. These rules withhold arguments that widen access, copy from another
- * record, address a message to someone, or, on update, move a record out of
- * its container or change who it belongs to.
+ * record, address a message to someone, place a new record under a company or
+ * product, or, on update, move a record out of its container or change who it
+ * belongs to.
  */
 function withheldArgumentReason(
   name: string,
   schema: unknown,
   required: boolean,
-  update: boolean,
+  kind: WriteKind,
 ): string | undefined {
   const tokens = name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   const compact = tokens.join('');
@@ -147,8 +171,13 @@ function withheldArgumentReason(
       ADDRESS_LEADING_TOKENS.has(tokens[0] ?? '') || compact.includes('replyto')) return WITHHELD_RECIPIENT;
   const identifier = tokens[0] === 'id' || tokens.at(-1) === 'id' || tokens.at(-1) === 'ids';
   // A required container ID on update usually names the record itself (company_id on update-company).
-  if (update && !required && identifier && tokens.some((token) => CONTAINER_TOKENS.has(token))) return WITHHELD_MOVE;
-  if (update && tokens.some((token) => IDENTITY_TOKENS.has(token))) return WITHHELD_IDENTITY;
+  if (kind === 'update' && !required && identifier && tokens.some((token) => CONTAINER_TOKENS.has(token))) {
+    return WITHHELD_MOVE;
+  }
+  if (kind === 'create' && identifier && tokens.some((token) => AUDIENCE_CONTAINER_TOKENS.has(token))) {
+    return WITHHELD_AUDIENCE;
+  }
+  if (kind === 'update' && tokens.some((token) => IDENTITY_TOKENS.has(token))) return WITHHELD_IDENTITY;
   return undefined;
 }
 
@@ -158,21 +187,39 @@ export function readLaneLintHit(name: string, description: string): string | und
   return READ_LINT_MARKERS.exec(name)?.[1] ?? leadingDescriptionVerb(description, READ_LINT_DESCRIPTION_VERBS);
 }
 
+/** A name token can mark a state as well as an action: `SET_BOOKING_CANCELLED`, `MARK_TABLE_DROPPED`. */
 function irreversibleVerb(name: string, description: string): string | undefined {
-  return IRREVERSIBLE_MARKERS.exec(name)?.[1] ?? leadingDescriptionVerb(description, IRREVERSIBLE_DESCRIPTION_VERBS);
+  return name.split('_').find((token, index) => {
+    const verb = baseVerb(token, IRREVERSIBLE_VERBS, true);
+    return verb !== undefined && (index === 0 || !LEADING_ONLY_VERBS.has(verb));
+  }) ?? leadingDescriptionVerb(description, IRREVERSIBLE_VERBS);
 }
 
+/** Reads "Deletes…" and, past a leading adverb, "Permanently deletes…". */
 function leadingDescriptionVerb(description: string, verbs: ReadonlySet<string>): string | undefined {
   const text = description.trim()
     .replace(/^(?:tool|action|endpoint|api)\s+(?:to|that|which)\s+/i, '')
     .replace(/^(?:this|the)\s+(?:tool|action|endpoint)\s+/i, '')
     .replace(/^(?:use this to|used to|allows you to|lets you|helps you)\s+/i, '');
-  const word = /^[A-Za-z]+/.exec(text)?.[0]?.toLowerCase();
-  if (!word) return undefined;
-  for (const candidate of [word, word.replace(/ies$/, 'y'), word.replace(/es$/, ''), word.replace(/s$/, '')]) {
-    if (verbs.has(candidate)) return candidate;
+  const [, first, second] = /^([A-Za-z]+)(?:\s+([A-Za-z]+))?/.exec(text) ?? [];
+  if (!first) return undefined;
+  return baseVerb(first, verbs, false) ??
+    (second && /ly$/i.test(first) ? baseVerb(second, verbs, false) : undefined);
+}
+
+/**
+ * The verb in `verbs` that `word` inflects: "deletes", "empties", and, with
+ * `participles`, "archived", "cancelled", and "emptied". Descriptions skip
+ * participles, which open with an adjective ("Archived boards…").
+ */
+function baseVerb(word: string, verbs: ReadonlySet<string>, participles: boolean): string | undefined {
+  const lower = word.toLowerCase();
+  const candidates = [lower, lower.replace(/s$/, ''), lower.replace(/es$/, ''), lower.replace(/ies$/, 'y')];
+  if (participles) {
+    candidates.push(lower.replace(/d$/, ''), lower.replace(/ed$/, ''), lower.replace(/ied$/, 'y'),
+      lower.replace(/([^aeiou])\1ed$/, '$1'));
   }
-  return undefined;
+  return candidates.find((candidate) => verbs.has(candidate));
 }
 
 function writeEffect(name: string): ManagedEffectClass {
@@ -207,8 +254,7 @@ type Derived<T> = { schema: T } | { unsupported: string };
 
 interface DeriveContext {
   /** Withhold access, move, and copy arguments; only write tools set this. */
-  write: boolean;
-  update: boolean;
+  write?: WriteKind;
   /** Argument paths a reviewer kept despite a withholding rule. */
   allow: ReadonlySet<string>;
   withheld: Record<string, string>;
@@ -217,7 +263,7 @@ interface DeriveContext {
 
 export function deriveInputSchema(
   raw: unknown,
-  options: { write: boolean; update: boolean; allow?: ReadonlySet<string> } = { write: false, update: false },
+  options: { write?: WriteKind; allow?: ReadonlySet<string> } = {},
 ): { schema: ManifestObjectSchema; withheld: Record<string, string>; allowedKept: string[] } | { error: string } {
   const context: DeriveContext = { ...options, allow: options.allow ?? new Set(), withheld: {}, allowedKept: [] };
   const derived = deriveNode(raw, 0, '', context, true);
@@ -309,7 +355,7 @@ function deriveNode(
       for (const [key, child] of source) {
         const childWhere = where ? `${where}.${key}` : key;
         const withheld = context.write
-          ? withheldArgumentReason(key, child, required.has(key), context.update)
+          ? withheldArgumentReason(key, child, required.has(key), context.write)
           : undefined;
         if (withheld && !context.allow.has(childWhere)) {
           if (required.has(key)) {
@@ -381,8 +427,7 @@ export function draftComposioManifest(
     if (irreversible) report.irreversible.push({ tool: tool.slug, verb: irreversible });
     const write = classification.lane === 'write';
     const input = deriveInputSchema(tool.input, {
-      write,
-      update: tool.tags.includes('updateHint') && !tool.tags.includes('createHint'),
+      ...(write ? { write: writeKind(tool.tags) } : {}),
       allow: new Set(allowArguments[tool.slug] ?? []),
     });
     if ('error' in input) {

@@ -10,7 +10,7 @@
   },
   "label": "Freshdesk",
   "description": "Find, create, and update tickets, contacts, companies, and help articles in one helpdesk.",
-  "securityDescription": "Freshdesk connects with an API key and helpdesk subdomain entered on Composio's hosted page; Chickpea never receives the key. Agents act as the Freshdesk agent who owns the key. With write access, Agents can create and update tickets, contacts, and companies, add private notes, reply to tickets, and draft help articles. A reply goes only to the ticket's requester, who can be any contact in the helpdesk, including anyone who has emailed support. A new ticket's requester must be an existing contact or have no email. Agents cannot forward tickets, send outbound email, add recipients or email addresses, or notify anyone about a note. They cannot delete anything, change a ticket's requester, a contact's phone, social, or external IDs, or a company's domains, assign tickets, act as another user, make notes public, publish articles, widen which tickets a contact sees, move a contact or ticket to another company or parent, or manage agents, groups, roles, SLAs, or canned responses.",
+  "securityDescription": "Freshdesk connects with an API key and subdomain entered on Composio's hosted page; Chickpea never receives the key. Agents act as the Freshdesk agent who owns the key. With write access, Agents can create and update tickets, contacts, and companies, add private notes, reply to tickets, and draft help articles. A reply reaches the ticket's requester and its existing CCs. The requester can be any helpdesk contact, including anyone who emailed support. A new ticket's requester must be an existing contact or have no email. Agents cannot forward tickets, send outbound email, add recipients or email addresses, or notify anyone about a note. They cannot delete anything, change a ticket's requester or parent, a contact's company, phone, social, or external IDs, or a company's domains, set a ticket's company or product, assign tickets, act as another user, make notes public, publish articles, widen which tickets a contact sees, or manage agents, groups, roles, SLAs, or canned responses.",
   "preset": {
     "category": "business",
     "accent": "#00AC4C"
@@ -149,6 +149,8 @@
         "email": "names an address a message goes to or comes from",
         "group_id": "changes sharing, visibility, permissions, membership, or who acts",
         "cc_emails": "names an address a message goes to or comes from",
+        "company_id": "puts the record under a company or product, which can widen who sees it or change its sending mailbox",
+        "product_id": "puts the record under a company or product, which can widen who sees it or change its sending mailbox",
         "responder_id": "changes sharing, visibility, permissions, membership, or who acts",
         "custom_fields": "unsupported schema",
         "email_config_id": "names an address a message goes to or comes from",
@@ -226,14 +228,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Timestamp when the first response is due. Format: ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."
-          },
-          "company_id": {
-            "type": "integer",
-            "description": "Company ID of the requester"
-          },
-          "product_id": {
-            "type": "integer",
-            "description": "ID of the product linked to the ticket"
           },
           "twitter_id": {
             "type": "string",
@@ -994,6 +988,7 @@
         "group_id": "changes sharing, visibility, permissions, membership, or who acts",
         "parent_id": "moves the record to another container",
         "company_id": "moves the record to another container",
+        "product_id": "moves the record to another container",
         "twitter_id": "changes who the record belongs to or how a person is identified",
         "attachments": "unsupported schema",
         "facebook_id": "changes who the record belongs to or how a person is identified",
@@ -1086,10 +1081,6 @@
           "ticket_id": {
             "type": "integer",
             "description": "ID of the ticket to be updated."
-          },
-          "product_id": {
-            "type": "integer",
-            "description": "ID of the product associated with this ticket."
           },
           "description": {
             "type": "string",

@@ -202,6 +202,84 @@ test('a create or update tool whose name or description is irreversible is destr
   assert.equal(merge?.effect, 'destructive');
 });
 
+const IRREVERSIBLE_SYNONYMS = [
+  'DROP', 'WIPE', 'TRUNCATE', 'DISCARD', 'TERMINATE', 'EXPIRE', 'CLEAR', 'EMPTY', 'UNLINK', 'DETACH',
+];
+const ONE_WAY_ACTIONS = [
+  'RESET', 'ROTATE', 'REGENERATE', 'OVERWRITE', 'SUBMIT', 'APPROVE', 'REJECT', 'DECLINE', 'FINALIZE', 'EXECUTE', 'DEPLOY',
+];
+
+for (const [kind, verbs] of [['delete synonym', IRREVERSIBLE_SYNONYMS], ['one-way action', ONE_WAY_ACTIONS]] as const) {
+  test(`a create or update tool named for a ${kind} is destructive and needs review`, () => {
+    const tools = verbs.map((verb, index) => tool(`ACME_${verb}_WIDGET`, [index % 2 ? 'createHint' : 'updateHint']));
+    const { manifest, report } = draftComposioManifest(snapshot([...tools, tool('ACME_UPDATE_WIDGET', ['updateHint'])]));
+
+    assert.deepEqual(lanes(manifest), { ACME_UPDATE_WIDGET: 'write', ACME_WHO_AM_I: 'read' });
+    assert.deepEqual(
+      report.irreversible.map(({ verb }) => verb).sort(),
+      [...verbs].sort(),
+    );
+    for (const { tool: slug } of report.irreversible) {
+      assert.match(report.excluded.find((entry) => entry.tool === slug)!.reason, /^destructive \(irreversible verb/, slug);
+    }
+  });
+}
+
+test('the irreversibility lint reads past participles and a leading adverb in the description', () => {
+  const { manifest, report } = draftComposioManifest(snapshot([
+    tool('ACME_SET_FORM_SUBMITTED', ['updateHint']),
+    tool('ACME_MARK_TABLE_DROPPED', ['updateHint']),
+    { ...tool('ACME_UPDATE_RECORD_STATE', ['updateHint']), description: 'Permanently deletes the record and its history.' },
+    { ...tool('ACME_PATCH_VAULT', ['updateHint']), description: 'Irreversibly wipes every entry in the vault.' },
+    { ...tool('ACME_GET_RECORD', ['readOnlyHint']), description: 'Permanently deletes the record.' },
+  ]));
+
+  assert.deepEqual(lanes(manifest), { ACME_WHO_AM_I: 'read' });
+  assert.deepEqual(report.irreversible, [
+    { tool: 'ACME_MARK_TABLE_DROPPED', verb: 'DROPPED' },
+    { tool: 'ACME_PATCH_VAULT', verb: 'wipe' },
+    { tool: 'ACME_SET_FORM_SUBMITTED', verb: 'SUBMITTED' },
+    { tool: 'ACME_UPDATE_RECORD_STATE', verb: 'delete' },
+  ]);
+  assert.match(report.excluded.find(({ tool: slug }) => slug === 'ACME_GET_RECORD')!.reason, /^read lint hit "delete"/);
+});
+
+test('clear and empty count only as verbs, and a query read that executes stays a read', () => {
+  const { manifest } = draftComposioManifest(snapshot([
+    tool('ACME_CLEAR_CACHE', ['updateHint']),
+    tool('ACME_CREATE_EMPTY_BOARD', ['createHint']),
+    tool('ACME_UPDATE_CLEAR_TEXT_NOTE', ['updateHint']),
+    tool('ACME_ENRICH_WITH_CLEARBIT', ['updateHint']),
+    { ...tool('ACME_GET_CLEARBIT_COMPANY', ['readOnlyHint']), description: 'Clearbit firmographics for a company domain.' },
+    { ...tool('ACME_LIST_CLEARED_PAYMENTS', ['readOnlyHint']), description: 'Cleared payments in a date range.' },
+    { ...tool('ACME_RUN_QUERY', ['readOnlyHint']), description: 'Executes a SOQL query and returns the matching records.' },
+  ]));
+
+  assert.deepEqual(lanes(manifest), {
+    ACME_CREATE_EMPTY_BOARD: 'write',
+    ACME_ENRICH_WITH_CLEARBIT: 'write',
+    ACME_GET_CLEARBIT_COMPANY: 'read',
+    ACME_LIST_CLEARED_PAYMENTS: 'read',
+    ACME_RUN_QUERY: 'read',
+    ACME_UPDATE_CLEAR_TEXT_NOTE: 'write',
+    ACME_WHO_AM_I: 'read',
+  });
+});
+
+test('a write that sets a password, credential, secret, token, or API key is administrative and needs review', () => {
+  const slugs = [
+    'ACME_SET_PASSWORD', 'ACME_UPDATE_USER_PASSWORD', 'ACME_CREATE_CREDENTIAL', 'ACME_UPDATE_SECRETS',
+    'ACME_CREATE_ACCESS_TOKEN', 'ACME_CREATE_API_KEY', 'ACME_RESET_PASSWORD',
+  ];
+  const { manifest, report } = draftComposioManifest(snapshot(slugs.map((slug) => tool(slug, ['createHint']))));
+
+  assert.deepEqual(lanes(manifest), { ACME_WHO_AM_I: 'read' });
+  for (const slug of slugs) {
+    assert.match(report.excluded.find((entry) => entry.tool === slug)!.reason, /^(?:administrative|destructive)\b/, slug);
+  }
+  assert.match(report.excluded.find(({ tool: slug }) => slug === 'ACME_SET_PASSWORD')!.reason, /^administrative/);
+});
+
 test('the check rejects a destructive tool slipped into a manifest without review', async () => {
   const manifest = pilotManifest('trello');
   const snapshotValue = await readSnapshot('trello', manifest.version);
@@ -404,7 +482,7 @@ test('write tools lose recipient arguments, and a tool that needs one is adminis
   assert.match(report.excluded.find(({ tool: slug }) => slug === 'ACME_FORWARD_THREAD')!.reason, /^administrative: required argument to /);
 });
 
-test('Freshdesk replies reach only the ticket requester, and forwarding and outbound email are absent', () => {
+test('Freshdesk replies cannot add recipients, and forwarding and outbound email are absent', () => {
   const ids = MANAGED_CONNECTOR_CATALOG.connector('freshdesk')!.capabilities.map(({ id }) => id);
   assert.equal(ids.includes('freshdesk.reply_to_forward_ticket'), false);
   assert.equal(ids.includes('freshdesk.create_ticket_outbound_email'), false);
@@ -669,6 +747,73 @@ test('a Freshdesk ticket can only be opened for someone already in the helpdesk,
   assert.equal(v.safeParse(create, { ...ticket, requester_id: 7 }).success, true);
   assert.equal(v.safeParse(create, { ...ticket, email: 'someone@example.com' }).success, false);
   assert.equal(v.safeParse(create, { ...ticket, requester_id: 7, email_config_id: 3 }).success, false);
+});
+
+test('create and update tools lose company and product IDs unless a reviewer keeps them', () => {
+  const ticket = (required: string[]) => ({
+    type: 'object',
+    properties: {
+      ticket_id: { type: 'integer' },
+      subject: { type: 'string' },
+      company_id: { type: 'integer', description: 'Company of the requester.' },
+      product_id: { type: 'integer', description: 'Product linked to the ticket.' },
+    },
+    required,
+  });
+  const create = tool('ACME_CREATE_TICKET', ['createHint'], ticket(['subject']));
+  const update = tool('ACME_UPDATE_TICKET', ['updateHint'], ticket(['ticket_id']));
+  const ofProduct = (slug: string, hint: string) => tool(slug, [hint], {
+    type: 'object', properties: { product_id: { type: 'integer' }, title: { type: 'string' } }, required: ['product_id'],
+  });
+  const tools = [
+    create, update,
+    ofProduct('ACME_CREATE_PRODUCT_IMAGE', 'createHint'),
+    ofProduct('ACME_UPDATE_PRODUCT', 'updateHint'),
+    ofProduct('ACME_DELETE_PRODUCT', 'destructiveHint'),
+  ];
+  const generated = draftComposioManifest(snapshot(tools));
+  const capability = (manifest: ComposioManifest, slug: string) =>
+    manifest.capabilities.find(({ tool: name }) => name === slug);
+
+  assert.deepEqual(Object.keys(capability(generated.manifest, 'ACME_CREATE_TICKET')!.input.properties), ['ticket_id', 'subject']);
+  assert.deepEqual(Object.keys(capability(generated.manifest, 'ACME_UPDATE_TICKET')!.input.properties), ['ticket_id', 'subject']);
+  assert.deepEqual(Object.keys(capability(generated.manifest, 'ACME_CREATE_TICKET')!.withheldArguments!), ['company_id', 'product_id']);
+  assert.deepEqual(Object.keys(capability(generated.manifest, 'ACME_UPDATE_TICKET')!.withheldArguments!), ['company_id', 'product_id']);
+  assert.deepEqual(capability(generated.manifest, 'ACME_UPDATE_PRODUCT')!.input.required, ['product_id']);
+  assert.equal(capability(generated.manifest, 'ACME_CREATE_PRODUCT_IMAGE'), undefined);
+  assert.match(generated.report.excluded.find(({ tool: slug }) => slug === 'ACME_CREATE_PRODUCT_IMAGE')!.reason,
+    /^administrative: required argument product_id /);
+  assert.match(generated.report.excluded.find(({ tool: slug }) => slug === 'ACME_DELETE_PRODUCT')!.reason, /^destructive;/);
+
+  const reviewed = draftComposioManifest(snapshot(tools), {
+    ...generated.manifest,
+    review: {
+      add: ['ACME_CREATE_TICKET', 'ACME_DELETE_PRODUCT'],
+      drop: {},
+      allowArguments: { ACME_CREATE_TICKET: ['company_id', 'product_id'] },
+    },
+  }).manifest;
+  assert.deepEqual(Object.keys(capability(reviewed, 'ACME_CREATE_TICKET')!.input.properties), [
+    'ticket_id', 'subject', 'company_id', 'product_id',
+  ]);
+  assert.equal(capability(reviewed, 'ACME_CREATE_TICKET')!.effect, 'administrative');
+  assert.deepEqual(capability(reviewed, 'ACME_DELETE_PRODUCT')!.input.required, ['product_id']);
+
+  for (const id of ['freshdesk.create_ticket', 'freshdesk.update_ticket']) {
+    const input = MANAGED_CONNECTOR_CATALOG.capability(id)!.input;
+    const base = id === 'freshdesk.create_ticket'
+      ? { subject: 'Printer jam', description: 'Tray 2 is stuck.', requester_id: 7 }
+      : { ticket_id: 42, subject: 'Printer jam' };
+    assert.equal(v.safeParse(input, base).success, true, id);
+    assert.equal(v.safeParse(input, { ...base, company_id: 9 }).success, false, `${id} company_id`);
+    assert.equal(v.safeParse(input, { ...base, product_id: 3 }).success, false, `${id} product_id`);
+  }
+});
+
+test('the Freshdesk security copy says a reply reaches the requester and the existing CCs', () => {
+  const copy = MANAGED_CONNECTOR_CATALOG.connector('freshdesk')!.securityDescription;
+  assert.match(copy, /A reply reaches the ticket's requester and its existing CCs\./);
+  assert.doesNotMatch(copy, /goes only to/);
 });
 
 test('the draft report names each argument that carries a precondition', async () => {
