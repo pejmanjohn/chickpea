@@ -262,6 +262,10 @@ export function daemonLaunchArguments({ profile, port, headless = false, platfor
     '--remote-debugging-address=127.0.0.1',
     '--no-default-browser-check',
     '--window-size=1440,900',
+    // A covered window's tab reads `visibilityState` "hidden", and Admin's pollers stop until it is in front again.
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
     ...(headless ? ['--headless'] : []),
     ...chromiumArguments({ platform, uid }),
     ...keychainLaunchArguments(platform),
