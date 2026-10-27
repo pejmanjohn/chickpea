@@ -216,7 +216,6 @@ test('an invitation admits only its exact Slack actor and consumes authority bef
       organizationId: owner.membership.organizationId,
       slackTeamId: 'TACME', slackUserId: 'UINVITEE', displayName: 'Invitee', role: 'admin',
       locatorHash: sha256(locator), inviterMembershipId: owner.membership.id,
-      expiresAt: fixture.clock.now + 7 * 24 * 60 * 60_000,
     });
     const inviteService = admissionService(fixture, backend, () => ({
       slackTeamId: 'TACME', slackUserId: 'UINVITEE', displayName: 'Invited Admin',
@@ -274,7 +273,6 @@ test('a removed Admin needs a fresh invitation and exact OIDC reactivates the sa
       organizationId: owner.membership.organizationId,
       slackTeamId: 'TACME', slackUserId: 'UREMOVED', displayName: 'Removed Admin', role: 'admin',
       locatorHash: sha256(firstLocator), inviterMembershipId: owner.membership.id,
-      expiresAt: fixture.clock.now + 7 * 24 * 60 * 60_000,
     });
     const adminService = admissionService(fixture, backend, () => ({
       slackTeamId: 'TACME', slackUserId: 'UREMOVED', displayName: 'Removed Admin',
@@ -301,7 +299,6 @@ test('a removed Admin needs a fresh invitation and exact OIDC reactivates the sa
       organizationId: owner.membership.organizationId,
       slackTeamId: 'TACME', slackUserId: 'UREMOVED', displayName: 'Removed Admin', role: 'admin',
       locatorHash: sha256(freshLocator), inviterMembershipId: owner.membership.id,
-      expiresAt: fixture.clock.now + 7 * 24 * 60 * 60_000,
     });
     const freshStart = await adminService.startInvitation({
       locator: freshLocator, browserBinding: `${BROWSER}-removed-fresh`, redirectUri: REDIRECT,
@@ -347,7 +344,6 @@ test('revocation after Better Auth reconciliation tombstones authority and a fre
       organizationId: owner.membership.organizationId,
       slackTeamId: 'TACME', slackUserId: 'URECOVER', displayName: 'Recovering Admin', role: 'admin',
       locatorHash: sha256(firstLocator), inviterMembershipId: owner.membership.id,
-      expiresAt: fixture.clock.now + 7 * 24 * 60 * 60_000,
     });
     const service = admissionService(fixture, backend, () => ({
       slackTeamId: 'TACME', slackUserId: 'URECOVER', displayName: 'Recovering Admin',
@@ -391,7 +387,6 @@ test('revocation after Better Auth reconciliation tombstones authority and a fre
       organizationId: owner.membership.organizationId,
       slackTeamId: 'TACME', slackUserId: 'URECOVER', displayName: 'Recovering Admin', role: 'admin',
       locatorHash: sha256(freshLocator), inviterMembershipId: owner.membership.id,
-      expiresAt: fixture.clock.now + 7 * 24 * 60 * 60_000,
     });
     const fresh = await service.startInvitation({
       locator: freshLocator, browserBinding: `${BROWSER}-fresh`, redirectUri: REDIRECT,
@@ -430,7 +425,6 @@ test('a copied invitation cannot admit a different Slack actor', async () => {
       organizationId: owner.membership.organizationId,
       slackTeamId: 'TACME', slackUserId: 'UINVITED', displayName: 'Invitee', role: 'admin',
       locatorHash: sha256(locator), inviterMembershipId: owner.membership.id,
-      expiresAt: fixture.clock.now + 7 * 24 * 60 * 60_000,
     });
     const attacker = admissionService(fixture, backend, () => ({
       slackTeamId: 'TACME', slackUserId: 'UATTACKER', displayName: 'Attacker',

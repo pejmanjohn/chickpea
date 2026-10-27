@@ -57,7 +57,6 @@ test('a native connector welcome link stays on the dedicated setup surface until
       role: 'admin',
       locatorHash: editorLocatorHash,
       inviterMembershipId: owner.membership.id,
-      expiresAt: NOW + 60_000,
     });
     const editor = await identity.consumeInvitation({
       invitationId: editorInvitation.id,

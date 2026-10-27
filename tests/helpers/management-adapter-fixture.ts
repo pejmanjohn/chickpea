@@ -47,7 +47,6 @@ export async function createManagementAdapterFixture(
     role: 'admin',
     locatorHash,
     inviterMembershipId: owner.membership.id,
-    expiresAt: now + 60_000,
   });
   const admin = await identity.consumeInvitation({
     invitationId: invitation.id,

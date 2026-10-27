@@ -31,7 +31,6 @@ async function queuedRun(store: SqliteRoutineStore, suffix: string): Promise<Rou
   await store.putConfirmation({
     confirmationId: `confirm_${suffix}`, tokenHash, actorId: 'U_MEMBER', actorClass: 'member',
     workspaceId: 'T_TEST', channelId: `C_${suffix}`, draft, previewHash,
-    expiresAt: NOW + 15 * 60_000,
   });
   await store.confirm({
     tokenHash, actorId: 'U_MEMBER', workspaceId: 'T_TEST', channelId: `C_${suffix}`,

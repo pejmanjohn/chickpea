@@ -96,6 +96,8 @@ import type {
   User,
 } from './types.ts';
 
+const INVITATION_TTL_MS = 7 * 24 * 60 * 60_000;
+
 interface IdentityStoreOptions {
   now?: () => number;
   /**
@@ -2676,10 +2678,6 @@ export class IdentityStoreLogic {
   createInvitation(input: CreateInvitationInput): Invitation {
     const at = this.now();
     this.expirePendingInvitations(at);
-    if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= at ||
-        input.expiresAt > at + 7 * 24 * 60 * 60_000) {
-      throw identityError('identity_invalid', 'Invitation expiry is invalid.');
-    }
     const inviter = this.requiredMembership(input.inviterMembershipId);
     if (inviter.organizationId !== input.organizationId || inviter.role !== 'owner' || inviter.status !== 'active') {
       throw identityError('inviter_not_authorized', 'Only an active Owner can invite an Admin.');
@@ -2704,7 +2702,7 @@ export class IdentityStoreLogic {
       id, input.organizationId, slackId(input.slackTeamId, 'Slack team ID'),
       slackId(input.slackUserId, 'Slack user ID'), cleanDisplayName(input.displayName),
       input.role, credentialHash(input.locatorHash), input.inviterMembershipId,
-      input.expiresAt, at, at,
+      at + INVITATION_TTL_MS, at, at,
     );
     return this.requiredInvitation(id);
   }
@@ -2719,13 +2717,14 @@ export class IdentityStoreLogic {
   }
 
   resendInvitation(input: ResendInvitationInput): Invitation {
-    this.expirePendingInvitations();
+    const at = this.now();
+    this.expirePendingInvitations(at);
     const current = this.requiredInvitation(input.invitationId);
     if (current.status !== 'pending') throw identityError('invitation_not_pending', 'Invitation is unavailable.');
     this.db.run(
       `UPDATE identity_invitations SET locator_hash = ?, expires_at = ?, updated_at = ?
        WHERE invitation_id = ? AND status = 'pending'`,
-      credentialHash(input.locatorHash), input.expiresAt, this.now(), current.id,
+      credentialHash(input.locatorHash), at + INVITATION_TTL_MS, at, current.id,
     );
     return this.requiredInvitation(current.id);
   }
@@ -2743,7 +2742,7 @@ export class IdentityStoreLogic {
 
   consumeInvitation(input: ConsumeInvitationInput): IdentityResolution {
     return this.db.transaction(() => {
-      const at = input.at ?? this.now();
+      const at = this.now();
       this.expirePendingInvitations(at);
       const invitation = this.requiredInvitation(input.invitationId);
       if (invitation.status !== 'pending') throw identityError('invitation_not_pending', 'Invitation is unavailable.');

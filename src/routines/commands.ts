@@ -234,7 +234,7 @@ async function executeRoutineCommand(
     turn, store, config, resolveIdentity, env, capability, now, canManageChannel, botToken, slackClient, assignment,
     bindAuthority, checkAuthority, resolveAuthority,
   } = context;
-  const service = new RoutineService(store, { now });
+  const service = new RoutineService(store);
   if (command.kind === 'help' || command.kind === 'invalid') return renderRoutineHelp();
   if (command.kind === 'list') {
     if (turn.channelType === 'im') {
@@ -318,7 +318,6 @@ async function executeRoutineCommand(
       actorId: turn.userId,
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
-      at: now(),
     });
     return cancelled
       ? '**Routine deletion cancelled**'

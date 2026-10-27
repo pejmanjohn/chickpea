@@ -90,7 +90,7 @@ async function routines(installation: HostedInstallation, team: string) {
     const previewHash = hashRoutineValue(JSON.stringify(draft));
     routineStore.putConfirmation({
       confirmationId: `rconfirm_${team}_${suffix}`, tokenHash, actorId: 'U_MEMBER', actorClass: 'member',
-      workspaceId: team, channelId: 'C_PENDING', draft, previewHash, expiresAt: now + 900_000,
+      workspaceId: team, channelId: 'C_PENDING', draft, previewHash,
     });
     const routine = routineStore.confirm({
       tokenHash, actorId: 'U_MEMBER', workspaceId: team, channelId: 'C_PENDING', previewHash,

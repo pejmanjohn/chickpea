@@ -62,7 +62,6 @@ export async function authorityFixture(
     role: 'admin',
     locatorHash,
     inviterMembershipId: owner.membership.id,
-    expiresAt: NOW + 60_000,
   });
   const member = await identity.consumeInvitation({
     invitationId: invitation.id,

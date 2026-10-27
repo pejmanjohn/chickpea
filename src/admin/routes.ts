@@ -9510,6 +9510,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (error.code === 'routine_version_conflict') {
           return c.json({ error: error.code, ...error.details }, 409);
         }
+        console.warn({
+          event: 'chickpea.admin.schedule_control_rejected',
+          agentId: c.req.param('id'),
+          scheduleId: c.req.param('scheduleId'),
+          action: parsed.output.action,
+          code: error.code,
+          message: error.message,
+        });
         return c.json({ error: error.code }, 400);
       }
       return internalError(c, error);

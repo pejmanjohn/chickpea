@@ -5,7 +5,6 @@ import {
   hashRoutineValue,
   isOpaqueRoutineId,
 } from './ids.ts';
-import { ROUTINE_LIMITS } from './limits.ts';
 import {
   type ConfirmRoutineInput,
   type ControlRoutineInput,
@@ -70,7 +69,6 @@ export interface RoutineConfirmationReceipt {
 }
 
 interface RoutineServiceDependencies {
-  now?: () => number;
   routineId?: () => string;
   confirmationId?: () => string;
   token?: () => string;
@@ -82,7 +80,6 @@ interface RoutineServiceDependencies {
  * User-facing confirmation is reserved for irreversible deletion.
  */
 export class RoutineService {
-  private readonly now: () => number;
   private readonly routineId: () => string;
   private readonly confirmationId: () => string;
   private readonly token: () => string;
@@ -91,7 +88,6 @@ export class RoutineService {
     private readonly store: RoutineStore,
     dependencies: RoutineServiceDependencies = {},
   ) {
-    this.now = dependencies.now ?? Date.now;
     this.routineId = dependencies.routineId ?? createRoutineId;
     this.confirmationId = dependencies.confirmationId ?? createConfirmationId;
     this.token = dependencies.token ?? createConfirmationToken;
@@ -104,8 +100,7 @@ export class RoutineService {
     const token = this.token();
     const previewHash = hashRoutineValue(JSON.stringify(draft));
     const confirmationId = this.confirmationId();
-    const expiresAt = this.now() + ROUTINE_LIMITS.confirmationTtlMs;
-    await this.store.putConfirmation({
+    const { expiresAt } = await this.store.putConfirmation({
       confirmationId,
       tokenHash: hashRoutineValue(token),
       actorId: request.actorId,
@@ -114,7 +109,6 @@ export class RoutineService {
       channelId: request.channelId,
       draft,
       previewHash,
-      expiresAt,
     });
     return { confirmationId, token, previewHash, expiresAt, draft };
   }

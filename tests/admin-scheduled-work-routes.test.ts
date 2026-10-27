@@ -41,12 +41,11 @@ function definition(): RoutineDefinitionContent {
 
 async function seededRoutine(
   store: SqliteRoutineStore,
-  now: () => number = () => NOW,
   sourceVisibility: SourceVisibility = 'public',
   threadTs?: string,
 ) {
   const service = new RoutineService(store, {
-    now, routineId: () => 'routine_admin',
+    routineId: () => 'routine_admin',
   });
   return service.save({
     action: 'create', actorId: 'U_CREATOR', workspaceId: 'T_TEST', channelId: 'C_TEST',
@@ -104,7 +103,7 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
   const settings = new SqliteSettingsStore(path);
   const work = new SqliteWorkStore(path);
   try {
-    const routine = await seededRoutine(routines, Date.now, 'public', '1785000000.000100');
+    const routine = await seededRoutine(routines, 'public', '1785000000.000100');
     await config.createAgent({
       id: 'agent_routine_admin',
       revision: 1,
@@ -275,7 +274,7 @@ test('Scheduled Work list pages completed one-time definitions and filters by re
         failureClass: 'deadline_exceeded', publicError: 'The routine occurrence expired before execution began.',
       });
     }
-    const api = createRoutineAdminApi({ store: () => routines, work: () => work, now: () => NOW });
+    const api = createRoutineAdminApi({ store: () => routines, work: () => work });
 
     const first = await api.request('/audit/scheduled_work/routines?state=completed&limit=2');
     assert.equal(first.status, 200);
@@ -335,7 +334,6 @@ test('Scheduled Work structurally redacts private and unlinked definition conten
   const canary = 'PRIVATE_ROUTINE_CANARY_<script>alert(71)</script>';
   try {
     const service = new RoutineService(routines, {
-      now: () => NOW,
       routineId: () => 'routine_private_admin',
     });
     const routine = await service.save({
@@ -362,7 +360,7 @@ test('Scheduled Work structurally redacts private and unlinked definition conten
       },
       sourceVisibility: 'private',
     }, 'seed-private-routine');
-    const api = createRoutineAdminApi({ store: () => routines, work: () => work, now: () => NOW });
+    const api = createRoutineAdminApi({ store: () => routines, work: () => work });
 
     const listText = await (await api.request('/audit/scheduled_work/routines')).text();
     assert.doesNotMatch(listText, /PRIVATE_ROUTINE_CANARY|alert\(71\)/);
@@ -381,7 +379,7 @@ test('Scheduled Work structurally redacts private and unlinked definition conten
     assert.equal(detail.revisions[0].definition, null);
     assert.equal(detail.revisions[0].provenance, null);
 
-    const unlinked = createRoutineAdminApi({ store: () => routines, now: () => NOW });
+    const unlinked = createRoutineAdminApi({ store: () => routines });
     const unlinkedText = await (await unlinked.request(
       `/audit/scheduled_work/routines/${routine.id}`,
     )).text();
@@ -676,7 +674,7 @@ test('direct schedules are absent from shared list, detail, and mutation surface
   }
 });
 
-test('private schedule projections are readable only to proven Channel members across global and Agent APIs', async () => {
+test('private schedule projections are readable only to proven Channel members across global and Agent APIs', async (t) => {
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-private-member-')), 'state.db');
   const routines = new SqliteRoutineStore(path);
   const work = new SqliteWorkStore(path);
@@ -722,7 +720,6 @@ test('private schedule projections are readable only to proven Channel members a
   try {
     const nextRunAt = Date.now() + 3_600_000;
     const routine = await new RoutineService(routines, {
-      now: Date.now,
       routineId: () => 'routine_private_member',
     }).save({
       action: 'create',
@@ -865,7 +862,6 @@ test('private schedule projections are readable only to proven Channel members a
     assert.equal(replayedPause.status, 200, await replayedPause.clone().text());
     assert.equal((await replayedPause.json() as Record<string, any>).schedule.version, 2);
     const secondRoutine = await new RoutineService(routines, {
-      now: Date.now,
       routineId: () => 'routine_private_member_second',
     }).save({
       action: 'create',
@@ -945,15 +941,26 @@ test('private schedule projections are readable only to proven Channel members a
       state: 'active',
     }, attentionReference.revision);
 
+    const warn = t.mock.method(console, 'warn', () => undefined);
     const unsupportedResume = await appFor(true, false).request(controlUrl, {
       method: 'POST',
       headers: controlHeaders('unsupported-resume'),
       body: JSON.stringify({ action: 'resume', expectedVersion: 2 }),
     });
     assert.equal(unsupportedResume.status, 400);
-    assert.equal(
-      (await unsupportedResume.json() as Record<string, any>).error,
-      'routines_unavailable_on_target',
+    assert.deepEqual(await unsupportedResume.json(), { error: 'routines_unavailable_on_target' });
+    assert.deepEqual(
+      warn.mock.calls
+        .map((call) => call.arguments[0])
+        .filter((entry) => (entry as Record<string, unknown>)?.event === 'chickpea.admin.schedule_control_rejected'),
+      [{
+        event: 'chickpea.admin.schedule_control_rejected',
+        agentId: agent.id,
+        scheduleId: routine.id,
+        action: 'resume',
+        code: 'routines_unavailable_on_target',
+        message: 'Routine scheduling is unavailable on this deployment.',
+      }],
     );
     assert.equal((await routines.getRoutine(routine.id))?.version, 2);
 
@@ -1205,7 +1212,7 @@ test('cookie-style unsafe Scheduled Work controls require same-origin and idempo
   const routines = new SqliteRoutineStore(':memory:', () => NOW);
   try {
     const routine = await seededRoutine(routines);
-    const api = createRoutineAdminApi({ store: () => routines, now: () => NOW });
+    const api = createRoutineAdminApi({ store: () => routines });
     const crossOrigin = await api.request(
       `https://chickpea.test/audit/scheduled_work/routines/${routine.id}/control`,
       {
@@ -1226,5 +1233,68 @@ test('cookie-style unsafe Scheduled Work controls require same-origin and idempo
     assert.equal(missingKey.status, 400);
   } finally {
     routines.close();
+  }
+});
+
+test('Agent schedule delete succeeds when the Worker clock reads ahead of the state store clock', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-schedule-clock-skew-')), 'state.db');
+  // The state Durable Object runs on its own clock. The Admin route runs in
+  // the Worker, whose Date.now() here reads 1 ms ahead of the store's.
+  const routines = new SqliteRoutineStore(path, () => Date.now() - 1);
+  const work = new SqliteWorkStore(path);
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(path);
+  try {
+    await seedActiveRoutine(routines, 'routine_clock_skew', Date.now() + 3_600_000);
+    const routine = (await routines.getRoutine('routine_clock_skew'))!;
+    const agent = await config.createAgent({
+      id: 'agent_clock_skew',
+      name: 'Clock skew Agent',
+      instructions: 'Run scheduled work.',
+      enabled: true,
+      lifecycle: 'active',
+      creatorMembershipId: 'membership_test_owner',
+      editPolicy: 'all_workspace_members',
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    await config.putAgentScheduleReference({
+      boundRoutineVersion: routine.authorityBindingVersion ?? routine.version,
+      scheduleId: routine.id,
+      agentId: agent.id,
+      workspaceId: routine.workspaceId,
+      channelId: routine.channelId,
+      createdByMembershipId: 'membership_test_owner',
+      runsAsMembershipId: 'membership_test_owner',
+      authorityReceiptId: 'receipt_clock_skew',
+      requiredConnectionAccountIds: [],
+      state: 'active',
+    });
+    const app = createAdminRoutes({
+      store: config, settings, routines, work, ...testAdminAuthority(TOKEN),
+    });
+    const deleted = await app.request(
+      `http://localhost/admin/api/agents/${agent.id}/schedules/${routine.id}/control`,
+      {
+        method: 'POST',
+        headers: testAdminHeaders(TOKEN, {
+          'content-type': 'application/json',
+          'idempotency-key': 'clock-skew-delete',
+        }),
+        body: JSON.stringify({
+          action: 'delete', expectedVersion: routine.version, acknowledgeIrreversible: true,
+        }),
+      },
+    );
+    assert.equal(deleted.status, 200, await deleted.clone().text());
+    assert.equal((await deleted.json() as Record<string, any>).schedule.status, 'deleted');
+    assert.ok((await routines.getRoutine(routine.id))?.deletedAt);
+  } finally {
+    routines.close();
+    work.close();
+    config.close();
+    settings.close();
   }
 });

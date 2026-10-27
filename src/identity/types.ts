@@ -805,13 +805,11 @@ export interface CreateInvitationInput {
   role: 'admin';
   locatorHash: string;
   inviterMembershipId: string;
-  expiresAt: number;
 }
 
 export interface ResendInvitationInput {
   invitationId: string;
   locatorHash: string;
-  expiresAt: number;
 }
 
 export interface ConsumeInvitationInput {
@@ -822,7 +820,6 @@ export interface ConsumeInvitationInput {
   displayName?: string | null;
   betterAuthUserId: string;
   betterAuthMembershipId: string;
-  at?: number;
 }
 
 export interface CreatePersonalTokenRecordInput {

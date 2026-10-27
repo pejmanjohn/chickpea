@@ -6378,7 +6378,6 @@ export class WorkspaceManagementService {
       const channelId = await this.requireRoutineMutation(actor, operation);
       const seed = createHash('sha256').update(proposalId).digest('hex');
       const service = new RoutineService(this.stores.routines!, {
-        now: this.now,
         confirmationId: () => `rconfirm_${seed.slice(0, 32)}`,
         token: () => seed.slice(0, 48),
       });
@@ -6462,7 +6461,7 @@ export class WorkspaceManagementService {
       const resumes = reference.state === 'active' && routine.state === 'paused' &&
         AUTHORITY_PAUSE_REASONS.has(routine.pausedReason ?? '');
       return routineMutation(resumes
-        ? await new RoutineService(this.stores.routines!, { now: this.now }).control({
+        ? await new RoutineService(this.stores.routines!).control({
             routineId: routine.id,
             expectedVersion: routine.version,
             action: 'resume',

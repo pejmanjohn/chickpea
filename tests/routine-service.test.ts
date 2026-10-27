@@ -29,7 +29,6 @@ test('service saves a validated create in one operation without a user confirmat
   let routineIds = 0;
   let tokenCalls = 0;
   const service = new RoutineService(store, {
-    now: () => NOW,
     routineId: () => `routine_service_${routineIds++}`,
     confirmationId: () => 'rconfirm_service',
     token: () => {
@@ -71,7 +70,6 @@ test('service binds edits and deletions to the current optimistic version', asyn
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   let confirmation = 0;
   const service = new RoutineService(store, {
-    now: () => NOW,
     routineId: () => 'routine_versioned',
     confirmationId: () => `rconfirm_versioned_${confirmation++}`,
     token: () => `token-versioned-${confirmation}`,

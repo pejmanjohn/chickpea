@@ -515,6 +515,17 @@ line with event `quarantine` gives the cause. The turn's preceding
 `memory_metric` lines show `delivery_lease` otherwise. Filter with
 `wrangler tail --search agent_failure`.
 
+## Agent schedule control rejections
+
+When Admin pauses, resumes, or deletes an Agent's schedule and the routine
+state refuses the action with a 400, the response carries only the error
+code. Core also logs one structured `console.warn` object with `event:
+"chickpea.admin.schedule_control_rejected"`, the `agentId`, `scheduleId`,
+`action`, `code`, and `message`. The message is the routine state's fixed
+explanation, such as `Routine confirmation is invalid.`, and never contains
+schedule content. Stale versions (409) and missing schedules (404) are not
+logged. Filter with `wrangler tail --search schedule_control_rejected`.
+
 ## Connection logs
 
 MCP connector traffic and OAuth credential renewal each log one structured

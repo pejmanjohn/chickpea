@@ -46,7 +46,6 @@ async function createRoutine(
     channelId: `C_${id}`,
     draft,
     previewHash,
-    expiresAt: now + ROUTINE_LIMITS.confirmationTtlMs,
   });
   return store.confirm({
     tokenHash,

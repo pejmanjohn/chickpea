@@ -340,7 +340,7 @@ test('scheduled work crosses creation, v2 receipt, restart, reattached read, and
   let store = new SqliteRoutineStore(statePath, () => now);
   try {
     const projection = normalizeRoutineSchedule('0 * * * *', 'UTC', now);
-    const routine = await new RoutineService(store, { now: () => now }).save({
+    const routine = await new RoutineService(store).save({
       action: 'create',
       actorId: 'U_CREATOR',
       workspaceId: 'T_ACCEPT',
@@ -415,7 +415,7 @@ test('scheduled work crosses creation, v2 receipt, restart, reattached read, and
 /** A channel routine due at the top of each hour, saved at minute 59. */
 async function hourlyChannelRoutine(store: SqliteRoutineStore, now: () => number, key: string) {
   const projection = normalizeRoutineSchedule('0 * * * *', 'UTC', now());
-  return new RoutineService(store, { now }).save({
+  return new RoutineService(store).save({
     action: 'create', actorId: 'U_CREATOR', workspaceId: 'T_ACCEPT', channelId: 'C_ACCEPT',
     definition: {
       name: 'Hourly report', description: 'Reports hourly.', taskText: 'report the hourly state.',
