@@ -26,7 +26,7 @@ interface SlackGatewaySessionRpc {
   restart(): Promise<void>;
   status(): Promise<GatewaySessionStatusSnapshot>;
   observe(): Promise<GatewaySessionStatusSnapshot>;
-  confirmDelivery(): Promise<GatewaySessionStatusSnapshot>;
+  confirmDelivery(deployedVersion?: string): Promise<GatewaySessionStatusSnapshot>;
 }
 
 /** Bound for the gateway's answer to a readiness ping; it normally takes <1 s. */
@@ -171,11 +171,21 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
    * minute later. An unanswered probe restarts the session, so a later
    * readiness poll sees its replacement. HTTP delivery has no socket to probe.
    */
-  async confirmDelivery(): Promise<GatewaySessionStatusSnapshot> {
+  async confirmDelivery(deployedVersion?: string): Promise<GatewaySessionStatusSnapshot> {
+    // Cloudflare keeps a busy object on the code it started with, and this
+    // one is never idle: its socket and the readiness polls keep it running
+    // the previous version for minutes after a deploy. Restart onto the
+    // deployed code; the next poll reaches the replacement.
+    const versionId = cloudflareWorkerVersionId(this.env) ?? null;
+    if (deployedVersion && versionId && deployedVersion !== versionId) {
+      console.info({ component: 'slack_gateway', event: 'session_superseded', versionId, deployedVersion });
+      this.supervisor?.stop();
+      this.supervisor = undefined;
+      this.state.abort(`Superseded by Worker version ${deployedVersion}`);
+    }
     const status = await this.status();
     const supervisor = this.supervisor;
     if (!status.healthy || !supervisor) return status;
-    const versionId = cloudflareWorkerVersionId(this.env) ?? null;
     if (await supervisor.confirmDelivery(GATEWAY_DELIVERY_CONFIRM_TIMEOUT_MS)) {
       console.info({ component: 'slack_gateway', event: 'session_confirmed',
         generation: status.generation, versionId });

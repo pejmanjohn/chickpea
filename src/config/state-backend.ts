@@ -26,7 +26,7 @@ import { SqliteSlackStateStore, type SlackStateStore } from '../slack/claim-stor
 import { resolveStateDbPath } from '../state/node-state-db.ts';
 import { SqliteMemoryStateStore } from '../memory/store.ts';
 import type { MemoryStateStore } from '../memory/types.ts';
-import { SqliteRoutineStore } from '../routines/store.ts';
+import { RoutineStoreLogic, SqliteRoutineStore } from '../routines/store.ts';
 import type { RoutineStore } from '../routines/types.ts';
 import { SqliteUsageStore } from '../usage/store.ts';
 import type { UsageStore } from '../usage/types.ts';
@@ -148,7 +148,8 @@ export function getConfigStore(env?: PlatformEnv): ConfigStore {
   if (isCloudflareTarget()) {
     return new CfConfigStore(freshTagStateStubs(env));
   }
-  cachedConfigStore = nodeCached(cachedConfigStore, (path) => new SqliteConfigStore(path));
+  cachedConfigStore = nodeCached(cachedConfigStore, (path) =>
+    new SqliteConfigStore(path, undefined, (transaction) => new RoutineStoreLogic(transaction)));
   return cachedConfigStore.store;
 }
 

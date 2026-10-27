@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
 import type { Hono } from 'hono';
@@ -1926,6 +1930,88 @@ test('an MCP OAuth setup signs in to its connection account and marks it ready',
     config.close();
     management.close();
     settings.close();
+  }
+});
+
+test('an MCP OAuth setup link completes for an account stored with a bare-origin URL', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-setup-bare-origin-'));
+  const configPath = join(directory, 'config.db');
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-bare-origin' });
+  const config = new SqliteConfigStore(configPath, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.ensureWorkspaceInstallation({
+      workspaceId: owner.user.slackTeamId, teamId: owner.user.slackTeamId, transportMode: 'gateway',
+      appId: 'A_SETUP', botUserId: 'U_BOT', gatewayBindingId: 'binding_setup',
+    });
+    const agent = await config.createAgent({
+      id: 'agent_logs', name: 'Logs helper', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', instructions: 'Search logs.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const logs = await seedConnection({ config, settings }, owner, agent.id, {
+      providerId: 'logs', label: 'Logs', policy: { ...LINEAR_POLICY, url: 'https://mcp.logs.example' },
+    });
+    // Stores now write the canonical URL, so restore the raw form an earlier version saved.
+    const earlier = new DatabaseSync(configPath);
+    earlier.prepare("UPDATE config_connection_accounts SET policy_json = json_set(policy_json, '$.url', ?) WHERE id = ?")
+      .run('https://mcp.logs.example', logs.id);
+    earlier.close();
+    const stored = await currentAccount(config, logs);
+    assert.equal(stored.policy.kind === 'mcp' ? stored.policy.url : undefined, 'https://mcp.logs.example');
+
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'mcp_bare_origin_setup', randomCapability: () => CAPABILITY,
+    });
+    const setupId = await requestConnectionSetup(service, owner, {
+      kind: 'mcp_connection', agentId: agent.id, connectionId: 'logs',
+    });
+    const starts: StartMcpOAuthInput[] = [];
+    const app = createManagementSetupRoutes({
+      management, config, settings, identity, now: () => START,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+      deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+      startMcpOAuth: async (input) => {
+        starts.push(input);
+        return { authorizationUrl: new URL('https://auth.logs.example/authorize'), state: 'state' };
+      },
+      completeMcpOAuth: async () => {
+        const [start] = starts;
+        assert.ok(start);
+        return {
+          ref: start.ref,
+          ...(start.accountRevision !== undefined ? { accountRevision: start.accountRevision } : {}),
+          ...(start.oauthAttemptId ? { oauthAttemptId: start.oauthAttemptId } : {}),
+          ...(start.authorizationAuthority ? { authorizationAuthority: start.authorizationAuthority } : {}),
+        };
+      },
+      resolveMcpOAuthToken: async () => 'logs-access-token',
+      discoverMcp: async () => ({ tools: [{ name: 'search_logs' }] }),
+      identifyMcp: async () => undefined,
+    });
+    const cookie = await claimSetup(app, setupId);
+    const started = await postSetupForm(app, setupId, 'authorize', cookie, {});
+    assert.equal(started.headers.get('location'), 'https://auth.logs.example/authorize', await started.clone().text());
+
+    const state = Buffer.from(JSON.stringify({ a: logs.id, c: 'account', n: 'nonce' })).toString('base64url');
+    const callback = await app.request(
+      `http://localhost/setup/${setupId}/oauth/mcp/callback?state=${state}&code=accepted`,
+      { headers: { cookie } },
+    );
+    assert.equal(callback.headers.get('location'), `/setup/${setupId}`, await callback.clone().text());
+    assert.equal((await management.getSetup(setupId))?.status, 'completed');
+    const ready = await currentAccount(config, logs);
+    assert.equal(ready.lifecycle, 'ready');
+    assert.equal(ready.policy.kind === 'mcp' ? ready.policy.url : undefined, 'https://mcp.logs.example/');
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

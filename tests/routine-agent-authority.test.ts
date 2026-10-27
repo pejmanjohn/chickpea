@@ -28,6 +28,14 @@ import { createManagedConnectionProviderRegistry } from '../src/connections/mana
 import type { RoutineDefinition } from '../src/routines/types.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import type { ConfigStore } from '../src/config/store.ts';
+import type { PlatformEnv } from '../src/config/state-backend.ts';
+import type { IdentityStore } from '../src/identity/types.ts';
+import type { RoutineStore } from '../src/routines/types.ts';
+import { promisify } from '../src/state/async-facade.ts';
+import { DoSqlStateDb } from '../src/state/do-state-db.ts';
+import { buildTagStateStores } from '../src/state/tag-state-stores.ts';
+import { FakeObjectStorage } from './helpers/installation-objects.ts';
 
 const WORKSPACE = 'T_AUTHORITY';
 const CHANNEL = 'C_SUPPORT';
@@ -97,6 +105,61 @@ test('exact schedule dependencies govern disconnects, mounting, metadata edits, 
     assert.deepEqual((await bind({ ...legacyRoutine, version: 2, name: 'Legacy rename' })).requiredConnectionAccountIds, [added.id]);
     assert.deepEqual((await bind({ ...legacyRoutine, version: 3 }, [])).requiredConnectionAccountIds, []);
   } finally { config.close(); identity.close(); settings.close(); }
+});
+
+test('only a creation binds a routine that has no schedule reference', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const identity = new SqliteIdentityStore(':memory:');
+  try {
+    const owner = await createSlackOwner(identity, { teamId: WORKSPACE, userId: 'U_UNBOUND', suffix: 'unbound_edit' });
+    const agent = await config.createAgent({ id: 'agent_unbound', name: 'Unbound', instructions: 'Run the saved task.',
+      model: 'local-stub/unbound', enabled: true, lifecycle: 'active', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+    await config.ensureWorkspaceInstallation({ workspaceId: WORKSPACE, transportMode: 'direct', defaultAgentId: agent.id });
+    await config.putAgentChannelGrant({ workspaceId: WORKSPACE, channelId: CHANNEL, agentId: agent.id,
+      status: 'active', createdByMembershipId: owner.membership.id });
+    const bind = (definition: RoutineDefinition) => bindRoutineAgentAuthority({ routine: definition,
+      assignment: { workspaceId: WORKSPACE, channelId: CHANNEL, agentId: agent.id, agent },
+      actorMembershipId: owner.membership.id, env: undefined, requiredConnectionAccountIds: [],
+    }, { config, identity });
+    const edited = { ...routineDefinition(), id: 'routine_unbound_edit', version: 2, authorityBindingVersion: 2 };
+    await assert.rejects(bind(edited), (error: unknown) =>
+      error instanceof RoutineAuthorityError && error.reason === 'schedule_authority_missing');
+    assert.equal(await config.getAgentScheduleReference(edited.id), undefined, 'an edit cannot claim an unbound routine');
+    assert.equal((await bind({ ...routineDefinition(), id: 'routine_unbound_new' })).agentId, agent.id);
+  } finally { config.close(); identity.close(); }
+});
+
+test('the Durable Object stores delete an Agent\'s live routines with the Agent', async () => {
+  const storage = new FakeObjectStorage();
+  const stores = buildTagStateStores(new DoSqlStateDb(storage.asDurableObjectStorage()), {} as PlatformEnv,
+    { gatewayLeaseOwner: 'test' });
+  const facade = { close() {} };
+  const config = promisify(stores.config, facade) as unknown as ConfigStore;
+  const identity = promisify(stores.identity, facade) as unknown as IdentityStore;
+  const routines = promisify(stores.routines, facade) as unknown as RoutineStore;
+  const owner = await createSlackOwner(identity, { teamId: WORKSPACE, userId: 'U_DO_OWNER', suffix: 'do_agent_delete' });
+  const agent = await config.createAgent({ id: 'agent_do_delete', name: 'Departing', instructions: 'Run saved work.',
+    model: 'local-stub/do-delete', enabled: true, lifecycle: 'active', creatorMembershipId: owner.membership.id,
+    editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+  const keeper = await config.createAgent({ id: 'agent_do_keeper', name: 'Keeper', instructions: 'Stay.',
+    model: 'local-stub/do-keeper', enabled: true, lifecycle: 'active', creatorMembershipId: owner.membership.id,
+    editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+  await config.ensureWorkspaceInstallation({ workspaceId: WORKSPACE, transportMode: 'direct', defaultAgentId: keeper.id });
+  await config.putAgentChannelGrant({ workspaceId: WORKSPACE, channelId: CHANNEL, agentId: agent.id,
+    status: 'active', createdByMembershipId: owner.membership.id });
+  const { routine } = await executeSlackScheduleCommand({ kind: 'save', actionKey: 'rsaction_do_delete', itemId: 'save',
+    workspaceId: WORKSPACE, channelId: CHANNEL, agentId: agent.id,
+    actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+    name: 'Digest', description: '', taskText: 'Summarize the Channel.',
+    schedule: { kind: 'cron', expression: '0 9 * * *' }, timezone: 'UTC',
+    outputPolicy: 'post', requiredConnectionAccountIds: [] }, { config, routines, identity, schedulingAvailable: true });
+  const { revision, credentialIncarnation } = await config.archiveAgent(agent.id, {
+    expectedRevision: (await config.getAgent(agent.id)).revision,
+  });
+  assert.equal(await config.deleteAgentWithMemory(agent.id, 'do-delete', revision, credentialIncarnation!), true);
+  assert.equal(await config.getAgentScheduleReference(routine.id), undefined);
+  assert.ok((await routines.getRoutine(routine.id))?.deletedAt, 'the routine is deleted with its Agent');
 });
 
 test('direct schedules bind and resolve a full member without any Channel grant', async () => {

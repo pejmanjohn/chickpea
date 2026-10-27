@@ -46,7 +46,7 @@ import {
   resolveConfiguredMcpOAuthScope,
   type ConfiguredMcpOAuthClient,
 } from './mcp-oauth-clients.ts';
-import { createMcpGuardedFetch, validateMcpUrl } from './mcp-url.ts';
+import { createMcpGuardedFetch, sameMcpServerUrl, validateMcpUrl } from './mcp-url.ts';
 import {
   isOAuthAttemptId,
   LEASE_ATTEMPTS,
@@ -295,12 +295,10 @@ export async function isCurrentMcpOAuthConnection(
     const connection = (await store.getAgent(ref.agentId)).mcpServers.find(
       (server) => server.id === ref.connectionId,
     );
-    const validated = connection ? validateMcpUrl(connection.url) : undefined;
     return (
       connection?.authMode === 'oauth' &&
       (ref.credentialRef === undefined || connection.credentialRef === ref.credentialRef) &&
-      validated?.ok === true &&
-      validated.url === serverUrl
+      sameMcpServerUrl(connection.url, serverUrl)
     );
   } catch (error) {
     if (error instanceof UnknownAgentError) return false;

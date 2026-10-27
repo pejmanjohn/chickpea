@@ -79,7 +79,7 @@ export function buildTagStateStores(
           }
         : {}),
     }),
-    config: new ConfigStoreLogic(db),
+    config: new ConfigStoreLogic(db, undefined, (transaction) => new RoutineStoreLogic(transaction)),
     snapshots: new SnapshotStoreLogic(db),
     slack: new SlackStateLogic(db),
     settings: new SettingsStoreLogic(db),

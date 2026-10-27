@@ -142,6 +142,7 @@ test('deployment readiness waits until the gateway answers on the new version se
   const activation = await mintDeploymentActivation();
   let answered = false;
   let statusCalls = 0;
+  const confirmedFor: string[] = [];
   const app = createAdminRoutes({ settings });
   const env = {
     [DEPLOYMENT_ACTIVATION_DIGEST_BINDING]: activation.digest,
@@ -154,9 +155,9 @@ test('deployment readiness waits until the gateway answers on the new version se
           statusCalls += 1;
           return { healthy: true, phase: 'healthy', detail: null, generation: 1, versionId: TARGET_VERSION };
         },
-        confirmDelivery: async () => answered
+        confirmDelivery: async (deployedVersion: string) => { confirmedFor.push(deployedVersion); return answered
           ? { healthy: true, phase: 'healthy', detail: null, generation: 2, versionId: TARGET_VERSION }
-          : { healthy: false, phase: 'stale', detail: 'gateway_session_unconfirmed', generation: 1, versionId: TARGET_VERSION },
+          : { healthy: false, phase: 'stale', detail: 'gateway_session_unconfirmed', generation: 1, versionId: TARGET_VERSION }; },
       }),
     },
   };
@@ -176,6 +177,7 @@ test('deployment readiness waits until the gateway answers on the new version se
     answered = true;
     assert.equal((await request()).status, 204);
     assert.equal(statusCalls, 0, 'readiness confirms delivery instead of reading local health alone');
+    assert.deepEqual(confirmedFor, [TARGET_VERSION, TARGET_VERSION], 'readiness names the deployed version, so a session on older code restarts');
   } finally {
     settings.close();
   }

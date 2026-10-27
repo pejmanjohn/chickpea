@@ -176,6 +176,7 @@
     "chatgpt-helper:build": "node scripts/build-chatgpt-helper.mjs",
     "build:cli": "npm run build --workspace packages/cli",
     "verify:live:record": "node scripts/verification-record.mjs",
+    "verify:smoke": "node scripts/verify-smoke.mjs",
     "verify:live:runner-matrix": "node --import tsx qa/live/runner-matrix/cli.ts",
     "verify:live:candidate": "node scripts/verify-qa-candidate.mjs",
     "verify:live:kickoff": "node scripts/verify-live-kickoff.mjs",

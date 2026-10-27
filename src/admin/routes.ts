@@ -94,6 +94,7 @@ import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
 import { readProposalApprovalStatus } from './proposal-status.ts';
 import { ENVIRONMENT_AUTHORITY_PATH, environmentAuthorityResponse } from './environment-authority.ts';
+import { ENVIRONMENT_ROUTINE_DUE_PATH, environmentRoutineDueResponse } from './environment-routine-due.ts';
 import {
   ENVIRONMENT_MODELS_PATH,
   ENVIRONMENT_SEED_PATH,
@@ -364,7 +365,7 @@ import {
 } from '../config/mcp-secrets.ts';
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
 import { MAX_MCP_OAUTH_SCOPE_LENGTH, MAX_MCP_TOOLS } from '../config/mcp-limits.ts';
-import { validateMcpUrl } from '../config/mcp-url.ts';
+import { sameMcpServerUrl, validateMcpUrl } from '../config/mcp-url.ts';
 import {
   modelEffortChoiceError,
   resolveModelEfforts,
@@ -2008,6 +2009,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         codingModel: coding?.modelId ?? null,
       };
     },
+  }));
+  app.post(ENVIRONMENT_ROUTINE_DUE_PATH, (c) => environmentRoutineDueResponse({
+    authorization: c.req.header('authorization'),
+    env: (c.env ?? {}) as PlatformEnv,
+    readBody: () => c.req.text(),
+    markDueNow: (routineId, now) => routines(c).markDueNow(routineId, now),
   }));
   app.post(ENVIRONMENT_SEED_PATH, (c) => environmentSeedResponse({
     authorization: c.req.header('authorization'),
@@ -8312,13 +8319,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch {
       savedRef = undefined;
     }
-    const savedUrl = savedConnection ? validateMcpUrl(savedConnection.url) : undefined;
     const inputHeaderNames = (input.headerNames ?? []).map((name) => name.toLowerCase()).sort();
     const savedHeaderNames = (savedConnection?.headerNames ?? []).map((name) => name.toLowerCase()).sort();
     const testsExactSavedCredentialPolicy = (): boolean => Boolean(
-      savedConnection && savedRef && savedUrl?.ok &&
+      savedConnection && savedRef &&
       input.credentialBinding === savedRef.credentialBinding &&
-      savedUrl.url === validated.url &&
+      sameMcpServerUrl(savedConnection.url, validated.url) &&
       savedConnection.transport === input.transport &&
       savedConnection.authMode === input.authMode &&
       JSON.stringify(savedHeaderNames) === JSON.stringify(inputHeaderNames),
@@ -11577,9 +11583,7 @@ function isApiOAuthAccount(
 
 function isMcpOAuthAccount(account: ConnectionAccount, serverUrl?: string): boolean {
   if (account.policy.kind !== 'mcp' || account.policy.authMode !== 'oauth') return false;
-  if (!serverUrl) return true;
-  const validated = validateMcpUrl(account.policy.url);
-  return validated.ok && validated.url === serverUrl;
+  return !serverUrl || sameMcpServerUrl(account.policy.url, serverUrl);
 }
 
 async function normalizeApiOAuthPatch(
@@ -11712,10 +11716,9 @@ async function verifyAndStoreMcpOAuthConnection(
     }
     const currentAgent = await input.configStore.getAgent(oauthRef.agentId);
     const current = currentAgent.mcpServers.find(({ id }) => id === oauthRef.connectionId);
-    const currentUrl = current ? validateMcpUrl(current.url) : undefined;
     if (!current || current.authMode !== 'oauth' ||
         boundMcpCredentialRef(currentAgent.id, current).credentialRef !== oauthRef.credentialRef ||
-        !currentUrl?.ok || currentUrl.url !== validated.url) {
+        !sameMcpServerUrl(current.url, validated.url)) {
       throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
     }
   };
@@ -11798,7 +11801,7 @@ async function replaceVerifiedMcpConnection(
         (accountRevision !== undefined && account.revision !== accountRevision) ||
         (oauthAttemptId !== undefined && account.policy.oauthAttemptId !== oauthAttemptId) ||
         account.policy.kind !== 'mcp' || account.policy.authMode !== 'oauth' ||
-        account.policy.url !== original.url) {
+        !sameMcpServerUrl(account.policy.url, original.url)) {
       if (account && (
         (accountRevision !== undefined && account.revision !== accountRevision) ||
         (oauthAttemptId !== undefined && account.policy.oauthAttemptId !== oauthAttemptId)
@@ -11838,7 +11841,7 @@ async function replaceVerifiedMcpConnection(
       ref.credentialRef !== undefined && entry.credentialRef === ref.credentialRef &&
       entry.credentialRef === original.credentialRef &&
       entry.authMode === 'oauth' &&
-      entry.url === original.url,
+      sameMcpServerUrl(entry.url, original.url),
   );
   if (index < 0) {
     throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
@@ -11881,7 +11884,7 @@ async function readGatewaySessionStatus(
     get(id: unknown): {
       status(): Promise<GatewaySessionStatusSnapshot>;
       observe?(): Promise<GatewaySessionStatusSnapshot>;
-      confirmDelivery?(): Promise<GatewaySessionStatusSnapshot>;
+      confirmDelivery?(deployedVersion?: string): Promise<GatewaySessionStatusSnapshot>;
     };
   } | undefined;
   // A deployment serving many installations has no shared-app session.
@@ -11895,7 +11898,7 @@ async function readGatewaySessionStatus(
       // answer on it; an Admin observation reads the snapshot and lets the
       // wake run behind the response.
       const status = await timed('gw', () =>
-        options.confirm && typeof stub.confirmDelivery === 'function' ? stub.confirmDelivery()
+        options.confirm && typeof stub.confirmDelivery === 'function' ? stub.confirmDelivery(cloudflareWorkerVersionId(rawEnv))
           : options.observe && typeof stub.observe === 'function' ? stub.observe() : stub.status());
       if (typeof status?.healthy === 'boolean') {
         const currentVersion = cloudflareWorkerVersionId(rawEnv);

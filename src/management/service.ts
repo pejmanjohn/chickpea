@@ -1,4 +1,5 @@
 import { describeSkillPaths } from '../config/skill-package.ts';
+import { sameMcpServerUrl } from '../config/mcp-url.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import {
@@ -3122,6 +3123,9 @@ export class WorkspaceManagementService {
     } else if (operation.kind === 'control_routine' || operation.kind === 'run_routine' ||
         operation.kind === 'delete_routine') {
       agentId = (await this.stores.config.getAgentScheduleReference(operation.routineId))?.agentId;
+      if (!agentId) {
+        throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
+      }
     }
     if (!agentId) return;
     const agent = await optionalAgent(this.stores.config, agentId);
@@ -7624,7 +7628,7 @@ function mcpSecurityBoundaryChanged(
   before: ManagementMcpConnection,
   after: ManagementMcpConnection,
 ): boolean {
-  return before.url !== after.url ||
+  return !sameMcpServerUrl(before.url, after.url) ||
     before.transport !== after.transport ||
     before.authMode !== after.authMode ||
     canonicalJson([...before.headerNames].sort()) !== canonicalJson([...after.headerNames].sort());

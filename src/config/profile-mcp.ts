@@ -38,7 +38,7 @@ import {
   type McpSecretRef,
 } from './mcp-secrets.ts';
 import { boundMcpCredentialRef } from './connection-credential-binding.ts';
-import { createMcpGuardedFetch, validateMcpUrl } from './mcp-url.ts';
+import { createMcpGuardedFetch, sameMcpServerUrl, validateMcpUrl } from './mcp-url.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 import {
   getConfigStore,
@@ -346,7 +346,7 @@ export function resolveRuntimePlanMcpConnections(
                       });
                       const account = accounts.find(({ account }) => account.id === server.id)?.account;
                       return account?.policy.kind === 'mcp' && account.policy.authMode === 'oauth' &&
-                        account.policy.url === serverUrl &&
+                        sameMcpServerUrl(account.policy.url, serverUrl) &&
                         (attemptId === undefined || account.policy.oauthAttemptId === attemptId);
                     },
                   });
@@ -382,7 +382,7 @@ function runtimeMcpDeclarationStillAllowed(
         .sort(([a], [b]) => a.localeCompare(b)).map(([key, values]) => [key, [...values].sort()]));
       return canonical(current) === canonical(frozen);
     }) &&
-    server.url === declaration.url &&
+    sameMcpServerUrl(server.url, declaration.url) &&
     server.credentialRef === declaration.credentialRef &&
     server.transport === declaration.transport &&
     server.authMode === declaration.authMode &&
@@ -437,13 +437,11 @@ async function resolveLiveMcpBearer(
           validateConnection: (ref, serverUrl) => {
             if (useValidatedConnection) {
               useValidatedConnection = false;
-              const validated = validateMcpUrl(server.url);
               return ref.agentId === opts.agentId &&
                 ref.connectionId === server.id &&
                 ref.credentialRef === server.credentialRef &&
                 server.authMode === 'oauth' &&
-                validated.ok &&
-                validated.url === serverUrl;
+                sameMcpServerUrl(server.url, serverUrl);
             }
             return isCurrentMcpOAuthConnection(configStore, ref, serverUrl);
           },
@@ -480,7 +478,7 @@ function legacyMcpServerStillAllowed(
   frozen: McpConnectionConfig,
 ): boolean {
   if (isMetaAdsMcpConnection(current) !== isMetaAdsMcpConnection(frozen)) return false;
-  if (!isProfileMcpServerEligible(current) || current.id !== frozen.id || current.url !== frozen.url ||
+  if (!isProfileMcpServerEligible(current) || current.id !== frozen.id || !sameMcpServerUrl(current.url, frozen.url) ||
       current.credentialRef !== frozen.credentialRef ||
       current.transport !== frozen.transport || current.authMode !== frozen.authMode ||
       JSON.stringify([...current.headerNames].map((name) => name.toLowerCase()).sort()) !==

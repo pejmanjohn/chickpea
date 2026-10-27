@@ -95,6 +95,20 @@ export function validateMcpUrl(raw: string): McpUrlResult {
 }
 
 /**
+ * The one form MCP server URLs are stored and compared in: the URL
+ * `validateMcpUrl` returns, so a bare origin gains its root slash. A URL the
+ * guard rejects never equals an accepted one; two rejected URLs may or may not.
+ */
+export function canonicalMcpServerUrl(raw: string): string {
+  const validated = validateMcpUrl(raw);
+  return validated.ok ? validated.url : raw;
+}
+
+export function sameMcpServerUrl(left: string, right: string): boolean {
+  return canonicalMcpServerUrl(left) === canonicalMcpServerUrl(right);
+}
+
+/**
  * Fetch implementation for Flue's MCP transports.
  *
  * Redirects are handled manually so every hop goes through the URL/DNS guard.

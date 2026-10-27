@@ -283,7 +283,7 @@ function describeError(error: unknown, credential: string | undefined, depth = 0
   };
 }
 
-function authorizedSeed(authorization: string | undefined, env: PlatformEnv): boolean {
+export function authorizedSeed(authorization: string | undefined, env: PlatformEnv): boolean {
   const token = env[ENVIRONMENT_SEED_TOKEN_BINDING];
   const supplied = authorization?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
   return isQaTarget(env.CHICKPEA_ENV_TARGET) &&

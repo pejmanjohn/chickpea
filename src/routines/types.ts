@@ -715,6 +715,8 @@ export interface RoutineStore {
   purgeConfirmations(): Promise<number>;
   cleanupRetention(): Promise<RoutineMaintenanceResult>;
   getRoutine(routineId: string): Promise<RoutineDefinition | undefined>;
+  /** QA lanes only: make one active routine due at `now`, for the next heartbeat to claim. */
+  markDueNow(routineId: string, now: number): Promise<RoutineDefinition | undefined>;
   getRoutineByWorkId(workId: string): Promise<RoutineDefinition | undefined>;
   listRoutines(workspaceId?: string, channelId?: string): Promise<RoutineDefinition[]>;
   listAdminRoutinePage(input: RoutineAdminPageInput): Promise<RoutineAdminPage>;
@@ -793,6 +795,7 @@ export type RoutineRpcRequest =
   | { kind: 'purge_confirmations' }
   | { kind: 'cleanup_retention' }
   | { kind: 'get_routine'; routineId: string }
+  | { kind: 'mark_due_now'; routineId: string; now: number }
   | { kind: 'get_routine_by_work'; workId: string }
   | { kind: 'list_routines'; workspaceId?: string; channelId?: string }
   | { kind: 'list_admin_routine_page'; input: RoutineAdminPageInput }

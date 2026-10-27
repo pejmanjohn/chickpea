@@ -373,6 +373,8 @@ export class RoutineStoreLogic {
         return { kind: 'maintenance', result: this.cleanupRetention() };
       case 'get_routine':
         return { kind: 'routine', routine: this.getRoutine(request.routineId) ?? null };
+      case 'mark_due_now':
+        return { kind: 'routine', routine: this.markDueNow(request.routineId, request.now) ?? null };
       case 'get_routine_by_work':
         return { kind: 'routine', routine: this.getRoutineByWorkId(request.workId) ?? null };
       case 'list_routines':
@@ -895,30 +897,6 @@ export class RoutineStoreLogic {
         if (current.workspaceId !== input.workspaceId || current.channelId !== input.channelId) {
           throw confirmationError();
         }
-        const nextVersion = current.version + 1;
-        const beforeHash = definitionHash(current);
-        this.db.run(
-          `UPDATE routines SET name = '', description = '', task_text = '', schedule_input = '',
-             schedule_json = '{}', timezone = '', reservation_windows_json = '[]',
-             next_run_at = NULL, projected_daily_starts = 0, version = ?, updated_at = ?,
-             updated_by = ?, deleted_at = ?, deleted_by = ? WHERE id = ?`,
-          nextVersion,
-          at,
-          input.actorId,
-          at,
-          input.actorId,
-          current.id,
-        );
-        this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', current.id);
-        this.db.run(
-          `UPDATE routine_revisions SET definition_json = NULL WHERE routine_id = ?`,
-          current.id,
-        );
-        this.db.run(
-          `UPDATE routine_request_provenance SET request_text = NULL WHERE routine_id = ?`,
-          current.id,
-        );
-        this.db.run(`UPDATE routine_runs SET revision_json = NULL WHERE routine_id = ?`, current.id);
         this.db.run(
           `DELETE FROM routine_confirmations
            WHERE json_extract(draft_json, '$.routineId') = ? AND id <> ?`,
@@ -931,27 +909,13 @@ export class RoutineStoreLogic {
           confirmation.id,
         );
         this.config.retireAgentScheduleReference(current.id);
-        this.insertRevision(
-          current.id,
-          nextVersion,
-          null,
-          input.actorId,
-          confirmation.actorClass,
-          confirmation.id,
+        routine = this.tombstoneRoutine(current, {
+          actorId: input.actorId,
+          actorClass: confirmation.actorClass,
+          confirmationId: confirmation.id,
+          idempotencyKey: input.idempotencyKey,
           at,
-          beforeHash,
-        );
-        routine = required(this.getRoutine(current.id), 'Routine tombstone was not readable.');
-        this.appendRoutineAudit(
-          input.idempotencyKey,
-          'routine.deleted',
-          routine,
-          input.actorId,
-          confirmation.actorClass,
-          beforeHash,
-          null,
-          at,
-        );
+        });
       }
       this.db.run(
         'UPDATE routine_confirmations SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL',
@@ -1320,6 +1284,19 @@ export class RoutineStoreLogic {
   getRoutine(routineId: string): RoutineDefinition | undefined {
     const row = this.db.get('SELECT * FROM routines WHERE id = ?', routineId);
     return row ? rowToRoutine(row as unknown as RoutineRow) : undefined;
+  }
+
+  markDueNow(routineId: string, now: number): RoutineDefinition | undefined {
+    if (!isOpaqueRoutineId(routineId) || !Number.isSafeInteger(now)) {
+      throw routineError('routine_invalid_id', 'Routine identifier is invalid.');
+    }
+    this.db.run(
+      `UPDATE routines SET next_run_at = ?
+         WHERE id = ? AND state = 'active' AND deleted_at IS NULL AND next_run_at IS NOT NULL`,
+      now,
+      routineId,
+    );
+    return this.getRoutine(routineId);
   }
 
   getRoutineByWorkId(workId: string): RoutineDefinition | undefined {
@@ -3097,6 +3074,83 @@ export class RoutineStoreLogic {
     const value = this.db.get('SELECT source_visibility FROM routines WHERE id = ?', routineId)
       ?.source_visibility;
     return value === 'public' || value === 'private' ? value : 'unknown';
+  }
+
+  /**
+   * Deletes the live routines of an Agent that is itself being deleted. It runs
+   * inside the caller's transaction, and the caller then removes the Agent's
+   * schedule references, so no live routine is left without one.
+   */
+  deleteAgentRoutines(agentId: string): void {
+    const at = this.now();
+    for (const { scheduleId } of this.config.listAgentScheduleReferences(agentId)) {
+      const current = this.getRoutine(scheduleId);
+      if (!current || current.deletedAt !== null) continue;
+      this.db.run(
+        `DELETE FROM routine_confirmations WHERE json_extract(draft_json, '$.routineId') = ?`,
+        current.id,
+      );
+      this.tombstoneRoutine(current, {
+        actorId: null,
+        actorClass: 'system',
+        confirmationId: null,
+        idempotencyKey: `routine:agent-deleted:${agentId}:${current.id}`,
+        at,
+      });
+    }
+  }
+
+  /** Scrubs the saved body and future schedule; body-free revisions, runs and audit stay. */
+  private tombstoneRoutine(
+    current: RoutineDefinition,
+    by: {
+      actorId: string | null;
+      actorClass: RoutineRevision['actorClass'];
+      confirmationId: string | null;
+      idempotencyKey: string;
+      at: number;
+    },
+  ): RoutineDefinition {
+    const nextVersion = current.version + 1;
+    const beforeHash = definitionHash(current);
+    this.db.run(
+      `UPDATE routines SET name = '', description = '', task_text = '', schedule_input = '',
+         schedule_json = '{}', timezone = '', reservation_windows_json = '[]',
+         next_run_at = NULL, projected_daily_starts = 0, version = ?, updated_at = ?,
+         updated_by = ?, deleted_at = ?, deleted_by = ? WHERE id = ?`,
+      nextVersion,
+      by.at,
+      by.actorId,
+      by.at,
+      by.actorId,
+      current.id,
+    );
+    this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', current.id);
+    this.db.run('UPDATE routine_revisions SET definition_json = NULL WHERE routine_id = ?', current.id);
+    this.db.run('UPDATE routine_request_provenance SET request_text = NULL WHERE routine_id = ?', current.id);
+    this.db.run('UPDATE routine_runs SET revision_json = NULL WHERE routine_id = ?', current.id);
+    this.insertRevision(
+      current.id,
+      nextVersion,
+      null,
+      by.actorId,
+      by.actorClass,
+      by.confirmationId,
+      by.at,
+      beforeHash,
+    );
+    const routine = required(this.getRoutine(current.id), 'Routine tombstone was not readable.');
+    this.appendRoutineAudit(
+      by.idempotencyKey,
+      'routine.deleted',
+      routine,
+      by.actorId,
+      by.actorClass,
+      beforeHash,
+      null,
+      by.at,
+    );
+    return routine;
   }
 
   private requiredMutableRoutine(routineId: string, expectedVersion: number): RoutineDefinition {

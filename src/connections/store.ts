@@ -39,7 +39,7 @@ import type {
 import { MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY } from '../config/types.ts';
 import type { ConnectionAccountView } from './types.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
-import { validateMcpUrl } from '../config/mcp-url.ts';
+import { sameMcpServerUrl } from '../config/mcp-url.ts';
 import type {
   ManagedConnectionProviderRegistry,
   ManagedConnectionValidationResult,
@@ -1180,13 +1180,10 @@ export async function markCancelledMcpOAuthAccount(
     );
     if (account) break;
   }
-  const validated = account?.policy.kind === 'mcp'
-    ? validateMcpUrl(account.policy.url)
-    : undefined;
   if (!account || account.lifecycle !== 'pending' || account.revision !== input.accountRevision ||
       account.policy.kind !== 'mcp' || account.policy.authMode !== 'oauth' ||
       account.policy.oauthAttemptId !== input.oauthAttemptId ||
-      !validated?.ok || validated.url !== input.serverUrl) return false;
+      !sameMcpServerUrl(account.policy.url, input.serverUrl)) return false;
   return markConnectionAccountNeedsAttention(config, account);
 }
 

@@ -266,6 +266,7 @@ export async function executeSlackScheduleCommand(
       agentId: agent.id,
       agent,
     };
+    const intendedVersion = command.routineId ? command.expectedVersion! + 1 : 1;
     await checkRoutineAgentAuthority({
       routine: existing ?? priorCreate ?? {
         id: deterministicRoutineId(command.actionKey, command.itemId),
@@ -276,6 +277,7 @@ export async function executeSlackScheduleCommand(
       assignment,
       actorMembershipId: command.actorMembershipId,
       env: undefined,
+      bindingVersion: intendedVersion,
     }, { config: dependencies.config, identity: dependencies.identity });
     const routine = await service.save({
       ...request,
@@ -301,7 +303,6 @@ export async function executeSlackScheduleCommand(
       } } : {}),
     }, effectKey(command, 'save'));
 
-    const intendedVersion = command.routineId ? command.expectedVersion! + 1 : 1;
     if (routine.version > intendedVersion && routine.authorityBindingVersion !== intendedVersion) {
       return { effect: 'saved', routine, created: false };
     }
