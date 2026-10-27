@@ -161,7 +161,7 @@ Every connection belongs to one Agent for its lifetime. A **team account** is sh
 
 Selected connection capabilities authorize the Agent to carry out the requested task. The model uses the conversation and saved instructions to determine intent, without requiring particular words or an extra confirmation merely because a tool can write. Explicit read-only permissions, preview-only requests, and saved confirmation requirements remain in force. Conversation text and API results cannot expand connection grants. The [Security Model](#security-model) has the full list.
 
-What you can connect, 35 presets in all. 13 run through a single Composio key; the other 22 go through the vendor's hosted MCP server or a direct API:
+What you can connect, 46 presets in all. 13 run through a single Composio key; the other 33 go through the vendor's hosted MCP server or a direct API:
 
 <table>
   <tr>
@@ -193,30 +193,48 @@ What you can connect, 35 presets in all. 13 run through a single Composio key; t
   <tr>
     <td>Ahrefs</td>
     <td><img src="https://cdn.simpleicons.org/airtable" width="14" height="14" alt=""> Airtable</td>
+    <td>Amplitude</td>
     <td><img src="https://cdn.simpleicons.org/atlassian" width="14" height="14" alt=""> Atlassian</td>
+    <td><img src="https://cdn.simpleicons.org/betterstack/000000/ffffff" width="14" height="14" alt=""> Better Stack</td>
+  </tr>
+  <tr>
+    <td>BugSnag</td>
+    <td><img src="https://cdn.simpleicons.org/clickhouse" width="14" height="14" alt=""> ClickHouse</td>
     <td><img src="https://cdn.simpleicons.org/cloudflare" width="14" height="14" alt=""> Cloudflare</td>
+    <td><img src="https://cdn.simpleicons.org/datadog" width="14" height="14" alt=""> Datadog</td>
     <td>Exa</td>
   </tr>
   <tr>
     <td>Firecrawl</td>
     <td>Fireflies</td>
     <td>Gamma</td>
+    <td><img src="https://cdn.simpleicons.org/grafana" width="14" height="14" alt=""> Grafana Cloud</td>
     <td>Granola</td>
-    <td><img src="https://cdn.simpleicons.org/huggingface" width="14" height="14" alt=""> Hugging Face</td>
   </tr>
   <tr>
+    <td>Honeycomb</td>
+    <td><img src="https://cdn.simpleicons.org/huggingface" width="14" height="14" alt=""> Hugging Face</td>
     <td>incident.io</td>
     <td><img src="https://cdn.simpleicons.org/intercom/000000/ffffff" width="14" height="14" alt=""> Intercom</td>
     <td><img src="https://cdn.simpleicons.org/linear" width="14" height="14" alt=""> Linear</td>
-    <td>LunarCrush</td>
-    <td>Monday.com</td>
   </tr>
   <tr>
+    <td>LunarCrush</td>
+    <td><img src="https://cdn.simpleicons.org/meta" width="14" height="14" alt=""> Meta Ads</td>
+    <td>Monday.com</td>
+    <td>MotherDuck</td>
     <td>Neon</td>
+  </tr>
+  <tr>
+    <td><img src="https://cdn.simpleicons.org/netlify" width="14" height="14" alt=""> Netlify</td>
     <td><img src="https://cdn.simpleicons.org/posthog" width="14" height="14" alt=""> PostHog</td>
     <td><img src="https://cdn.simpleicons.org/sentry/362D59/ffffff" width="14" height="14" alt=""> Sentry</td>
+    <td>Statsig</td>
     <td><img src="https://cdn.simpleicons.org/stripe" width="14" height="14" alt=""> Stripe</td>
+  </tr>
+  <tr>
     <td><img src="https://cdn.simpleicons.org/supabase" width="14" height="14" alt=""> Supabase</td>
+    <td colspan="4"></td>
   </tr>
   <tr>
     <th colspan="5" align="left">Presets · direct HTTP API</th>
