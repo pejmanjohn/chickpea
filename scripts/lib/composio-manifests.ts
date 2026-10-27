@@ -537,6 +537,37 @@ export async function readSnapshot(toolkit: string, version: string): Promise<Co
   return JSON.parse(await readFile(path.join(SNAPSHOT_DIRECTORY, toolkit, `${version}.json`), 'utf8')) as ComposioSnapshot;
 }
 
+/** Reads toolkit metadata from Composio with GET requests only. */
+export async function fetchComposioToolkit(
+  toolkit: string,
+  apiKey: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<[detail: unknown, toolList: { items: unknown[] }]> {
+  const slug = encodeURIComponent(toolkit);
+  const get = async (url: string): Promise<unknown> => {
+    const response = await fetchImpl(url, {
+      headers: { 'x-api-key': apiKey },
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) throw new Error(`Composio metadata request failed with HTTP ${response.status}`);
+    return response.json();
+  };
+  const detail = await get(`https://backend.composio.dev/api/v3/toolkits/${slug}`);
+  const items: unknown[] = [];
+  const cursors = new Set<string>();
+  let cursor = '';
+  do {
+    const page = await get(`https://backend.composio.dev/api/v3/tools?toolkit_slug=${slug}&limit=1000` +
+      `&toolkit_versions=latest${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+    if (!isPlainObject(page) || !Array.isArray(page.items)) throw new Error('Composio tool list is not in the expected shape');
+    items.push(...page.items);
+    cursor = typeof page.next_cursor === 'string' ? page.next_cursor : '';
+    if (cursors.has(cursor)) throw new Error(`Composio repeated tool list cursor ${cursor}`);
+    if (cursor) cursors.add(cursor);
+  } while (cursor);
+  return [detail, { items }];
+}
+
 export function snapshotFromComposio(
   detail: unknown,
   toolList: unknown,

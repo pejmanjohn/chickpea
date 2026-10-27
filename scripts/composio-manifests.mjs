@@ -9,6 +9,7 @@ import {
   SNAPSHOT_DIRECTORY,
   checkComposioManifestDirectory,
   draftComposioManifest,
+  fetchComposioToolkit,
   readSnapshot,
   renderDraftReport,
   snapshotFromComposio,
@@ -86,17 +87,5 @@ async function readComposioExport(directory, name) {
 async function fetchComposio(name) {
   const apiKey = process.env.COMPOSIO_API_KEY?.trim();
   if (!apiKey) throw new Error('COMPOSIO_API_KEY is not set');
-  const slug = encodeURIComponent(name);
-  const get = async (url) => {
-    const response = await fetch(url, {
-      headers: { 'x-api-key': apiKey },
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!response.ok) throw new Error(`Composio metadata request failed with HTTP ${response.status}`);
-    return response.json();
-  };
-  return Promise.all([
-    get(`https://backend.composio.dev/api/v3/toolkits/${slug}`),
-    get(`https://backend.composio.dev/api/v3/tools?toolkit_slug=${slug}&limit=1000&toolkit_versions=latest`),
-  ]);
+  return fetchComposioToolkit(name, apiKey);
 }

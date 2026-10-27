@@ -16,7 +16,9 @@ import {
   checkComposioManifest,
   checkComposioManifestDirectory,
   draftComposioManifest,
+  fetchComposioToolkit,
   readSnapshot,
+  snapshotFromComposio,
   type ComposioSnapshot,
   type ComposioSnapshotTool,
 } from '../scripts/lib/composio-manifests.ts';
@@ -60,6 +62,45 @@ const pilotManifest = (toolkit: string) => structuredClone(
 
 test('every committed manifest matches the generator output for its pinned snapshot', async () => {
   assert.deepEqual(await checkComposioManifestDirectory(), []);
+});
+
+function composioCatalog(pages: Record<string, { items: unknown[]; next_cursor: string | null }>) {
+  const requested: string[] = [];
+  const fetchImpl = (async (url: string | URL | Request) => {
+    const address = new URL(String(url));
+    requested.push(address.search);
+    const body = address.pathname.endsWith('/toolkits/acme')
+      ? { slug: 'acme', name: 'Acme', meta: { version: VERSION, description: '' }, composio_managed_auth_schemes: ['OAUTH2'] }
+      : pages[address.searchParams.get('cursor') ?? ''];
+    return new Response(JSON.stringify(body), { status: 200 });
+  }) as typeof fetch;
+  return { fetchImpl, requested };
+}
+
+const listed = (slug: string) => ({
+  slug, name: slug, description: '', version: VERSION, tags: ['important', 'readOnlyHint'], input_parameters: {},
+});
+
+test('the snapshot fetch follows the tool list cursor to the last page', async () => {
+  const { fetchImpl, requested } = composioCatalog({
+    '': { items: [listed('ACME_WHO_AM_I')], next_cursor: 'page-2' },
+    'page-2': { items: [listed('ACME_LIST_NOTES')], next_cursor: null },
+  });
+
+  const [detail, tools] = await fetchComposioToolkit('acme', 'test-key', fetchImpl);
+
+  assert.deepEqual(snapshotFromComposio(detail, tools, new Set()).tools.map(({ slug }) => slug), [
+    'ACME_LIST_NOTES', 'ACME_WHO_AM_I',
+  ]);
+  assert.equal(requested.filter((search) => search.includes('toolkit_slug=acme')).length, 2);
+});
+
+test('the snapshot fetch fails instead of looping on a cursor that never ends', async () => {
+  const { fetchImpl } = composioCatalog({
+    '': { items: [listed('ACME_WHO_AM_I')], next_cursor: 'again' },
+    again: { items: [], next_cursor: 'again' },
+  });
+  await assert.rejects(fetchComposioToolkit('acme', 'test-key', fetchImpl), /cursor/);
 });
 
 test('a read-tagged tool whose name or description writes is excluded, never placed in the read lane', () => {
