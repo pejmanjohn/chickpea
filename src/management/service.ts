@@ -1394,6 +1394,14 @@ export class WorkspaceManagementService {
       target: { kind: 'agent', id: input.agentId },
     });
     const agent = await this.requireEditableAgent(actor, input.agentId);
+    // The config store refuses a system Agent's connection binding, but only
+    // after the person has signed in to the provider. Refuse before the link.
+    if (agent.kind === 'system') {
+      throw new ManagementError(
+        'invalid_request',
+        `${agent.name} cannot hold connections. Choose the user Agent that will use this service, or create one first, then prepare its connector setup.`,
+      );
+    }
     const connector = resolveConnectorCatalogPreset(input.connector);
     if (!connector) {
       throw new ManagementError(
