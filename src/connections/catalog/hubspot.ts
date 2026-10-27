@@ -20,31 +20,39 @@ export const HUBSPOT_OBJECT_PROPERTIES: Readonly<Record<
   contacts: [
     'firstname', 'lastname', 'email', 'phone', 'mobilephone', 'jobtitle', 'company',
     'website', 'lifecyclestage', 'hs_lead_status', 'hubspot_owner_id',
+    'createdate', 'lastmodifieddate', 'hs_object_id',
   ],
   companies: [
     'name', 'domain', 'phone', 'city', 'state', 'country', 'industry',
     'numberofemployees', 'annualrevenue', 'lifecyclestage', 'hubspot_owner_id',
+    'createdate', 'hs_lastmodifieddate', 'hs_object_id',
   ],
   deals: [
     'dealname', 'amount', 'dealstage', 'pipeline', 'closedate', 'dealtype',
-    'description', 'hubspot_owner_id',
+    'description', 'hubspot_owner_id', 'createdate', 'hs_lastmodifieddate', 'hs_object_id',
   ],
   tickets: [
     'subject', 'content', 'hs_pipeline', 'hs_pipeline_stage', 'hs_ticket_priority',
-    'hubspot_owner_id',
+    'hubspot_owner_id', 'createdate', 'hs_lastmodifieddate', 'hs_object_id',
   ],
-  notes: ['hs_note_body', 'hs_timestamp', 'hubspot_owner_id'],
+  notes: [
+    'hs_note_body', 'hs_timestamp', 'hubspot_owner_id',
+    'hs_createdate', 'hs_lastmodifieddate', 'hs_object_id',
+  ],
   tasks: [
     'hs_task_subject', 'hs_task_body', 'hs_task_status', 'hs_task_priority',
     'hs_timestamp', 'hs_task_type', 'hubspot_owner_id',
+    'hs_createdate', 'hs_lastmodifieddate', 'hs_object_id',
   ],
   meetings: [
     'hs_meeting_title', 'hs_meeting_body', 'hs_meeting_start_time', 'hs_meeting_end_time',
     'hs_meeting_outcome', 'hs_timestamp', 'hubspot_owner_id',
+    'hs_createdate', 'hs_lastmodifieddate', 'hs_object_id',
   ],
   calls: [
     'hs_call_title', 'hs_call_body', 'hs_call_status', 'hs_call_duration',
     'hs_timestamp', 'hubspot_owner_id',
+    'hs_createdate', 'hs_lastmodifieddate', 'hs_object_id',
   ],
 };
 
@@ -222,7 +230,7 @@ export const MANAGED_HUBSPOT_CONNECTORS: readonly ManagedConnectorDefinition[] =
     'HubSpot sign-in opens through Composio. Chickpea pins one exact connected portal and exposes only typed CRM reads and selected record writes. Privacy, delete, import, schema, workflow, marketing publication, batch, and trigger operations are absent. HubSpot may show an unverified-app warning for Composio managed OAuth.',
   capabilities: [
     capability('hubspot.account.get', 'read', 'read', 'hubspot_get_account', 'Verify the connected HubSpot portal identity.', v.strictObject({})),
-    capability('hubspot.objects.search', 'read', 'read', 'hubspot_search_objects', 'Search bounded contacts, companies, deals, tickets, and activities.', SearchSchema),
+    capability('hubspot.objects.search', 'read', 'read', 'hubspot_search_objects', 'Search contacts, companies, deals, tickets, and activities. Results run oldest first unless sorted, and any one search stops at 10,000; sort by createdate (hs_createdate for activities) descending to get the newest. Filter dates in Unix milliseconds.', SearchSchema),
     capability('hubspot.objects.get', 'read', 'read', 'hubspot_get_object', 'Read one CRM record with allowlisted properties.', GetObjectSchema),
     capability('hubspot.owners.list', 'read', 'read', 'hubspot_list_owners', 'List a bounded page of CRM owners.', OwnerListSchema),
     capability('hubspot.pipelines.list', 'read', 'read', 'hubspot_list_pipelines', 'List deal or ticket pipelines and stages.', PipelineListSchema),
