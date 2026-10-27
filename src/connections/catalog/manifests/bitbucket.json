@@ -6,7 +6,7 @@
   },
   "label": "Bitbucket",
   "description": "Read repositories, code, and pull requests, and open issues, branches, pull requests, and comments.",
-  "securityDescription": "Bitbucket sign-in opens through Composio. Agents can read the workspaces, repositories, code, commits, issues, and pull requests the connected account can reach. With write access, Agents can create branches and issues, open and edit pull requests, including their reviewers, and comment on, resolve, or reopen pull request and issue threads. Reviewers must already have access to the repository. Agents cannot create repositories, merge, approve, or decline pull requests, assign issues, push commits, delete anything, or change repository permissions or settings.",
+  "securityDescription": "Bitbucket sign-in opens through Composio. Agents can read the workspaces, repositories, code, commits, issues, and pull requests the connected account can reach. With write access, Agents can create branches and issues, open and edit pull requests, and comment on, resolve, or reopen pull request and issue threads. Agents cannot create repositories, merge, approve, or decline pull requests, add or change reviewers, assign issues, push commits, delete anything, or change repository permissions or settings.",
   "preset": {
     "category": "dev",
     "accent": "#0052CC"
@@ -257,6 +257,9 @@
       "description": "Creates a new pull request in a specified Bitbucket repository, ensuring the source branch exists and is distinct from the (optional) destination branch.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Bitbucket: Create a pull request",
+      "withheldArguments": {
+        "reviewers": "changes sharing, visibility, permissions, membership, or who acts"
+      },
       "input": {
         "type": "object",
         "properties": {
@@ -270,24 +273,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Slug (URL-friendly name) of the repository for the pull request."
-          },
-          "reviewers": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "uuid": {
-                  "type": "string",
-                  "maxLength": 20000,
-                  "description": "UUID of the Bitbucket user to be a reviewer."
-                }
-              },
-              "required": [
-                "uuid"
-              ]
-            },
-            "maxItems": 100,
-            "description": "List of Bitbucket user UUIDs to be added as reviewers. Malformed or non-existent UUIDs trigger validation errors."
           },
           "workspace": {
             "type": "string",
@@ -2347,6 +2332,9 @@
       "description": "Tool to update an existing pull request's editable fields (e.g., title, description, reviewers) via the Bitbucket Cloud API. Use when you need to modify a pull request without creating a new one. Only sends fields that are explicitly provided to avoid accidental overwrites.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Bitbucket: Update Pull Request",
+      "withheldArguments": {
+        "reviewers": "changes sharing, visibility, permissions, membership, or who acts"
+      },
       "input": {
         "type": "object",
         "properties": {
@@ -2363,25 +2351,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Repository slug (URL-friendly name) or UUID."
-          },
-          "reviewers": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "uuid": {
-                  "type": "string",
-                  "maxLength": 20000,
-                  "description": "UUID of the Bitbucket user to be a reviewer. Must be in Bitbucket's standard format with curly braces."
-                }
-              },
-              "required": [
-                "uuid"
-              ],
-              "description": "Reviewer object for pull requests."
-            },
-            "maxItems": 100,
-            "description": "Updated list of Bitbucket user UUIDs to be reviewers. Replaces existing reviewers. If omitted, reviewers remain unchanged."
           },
           "workspace": {
             "type": "string",

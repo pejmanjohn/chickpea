@@ -463,6 +463,9 @@ test('a description that names the caller\'s OAuth grant does not withhold an ar
         drive_id: { type: 'string', description: 'Optional drive ID. Required for application-level permissions (s2s_oauth).' },
         session_id: { type: 'string', description: 'Workbook session. Uses delegated permissions when omitted.' },
         audience: { type: 'string', description: 'Sets the permissions other people get on the workbook.' },
+        scopes: { type: 'string', description: 'Application permissions to grant to the installed app.' },
+        access: { type: 'string', description: 'App permissions requested for all repositories.' },
+        grant: { type: 'string', description: 'Grants delegated permissions on the mailbox to the named principal.' },
       },
       required: ['item_id'],
     }),
@@ -470,7 +473,7 @@ test('a description that names the caller\'s OAuth grant does not withhold an ar
   const range = manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_UPDATE_RANGE')!;
 
   assert.deepEqual(Object.keys(range.input.properties), ['item_id', 'drive_id', 'session_id']);
-  assert.deepEqual(Object.keys(range.withheldArguments!), ['audience']);
+  assert.deepEqual(Object.keys(range.withheldArguments!), ['audience', 'scopes', 'access', 'grant']);
 });
 
 test('a write that needs a permission argument is administrative and needs an explicit reviewer opt-in', () => {

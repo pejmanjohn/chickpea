@@ -105,13 +105,16 @@ const PUBLISH = /(?:^|_)(BROADCAST|COMMENT|COMMENTS|EMAIL|EMAILS|FORWARD|INVITE|
 const ACCESS_TOKENS = new Set(words(`
   acl admin admins agent agents assignee assignees callback collaborator collaborators domain domains
   follower followers group groups guest guests member members org orgs organization organizations
-  owner owners private public responder role roles subscriber subscribers team teams user users
+  owner owners private public responder reviewer reviewers role roles subscriber subscribers team teams user users
   watcher watchers webhook webhooks
 `));
 const ACCESS_TEXT = /permission|visib|privacy|invit|selfjoin|viewall|share|membership/;
 const ACCESS_DESCRIPTION = /\b(?:permissions?|visibility|visible to|public|private|publication|publish\w*|who can|invit\w*|membership)\b/i;
-/** "Required for application-level permissions" names the caller's OAuth grant, not who can see the record. */
-const GRANT_TYPE_PHRASE = /\b(?:application|app|delegated)(?:[- ](?:level|only))?\s+permissions?\b/gi;
+/**
+ * "Required for application-level permissions" names the caller's OAuth grant, not who can see the
+ * record. The leading word keeps "Grants delegated permissions to …" and "App permissions to grant" withheld.
+ */
+const GRANT_TYPE_PHRASE = /\b(?:for|when using|with|under|uses?)\s+(?:application|app|delegated|s2s)(?:[- ](?:level|only))?\s+(?:permissions?|auth\w*)\b/gi;
 /** A conflict option such as `replace`, or a boolean `overwrite`, lets a write replace an existing item. */
 const OVERWRITE = /^(?:overwrite|replace)$/i;
 const CONTAINER_TOKENS = new Set(words(`
