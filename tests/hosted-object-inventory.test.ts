@@ -197,7 +197,7 @@ function runRoutineOccurrence(routines: RoutineStoreLogic, installationId: strin
   const previewHash = hashRoutineValue(JSON.stringify(draft));
   routines.putConfirmation({
     confirmationId: `rconfirm_${suffix}`, tokenHash, actorId: 'U_MEMBER', actorClass: 'member',
-    workspaceId: TEAM, channelId: CHANNEL, draft, previewHash, expiresAt: now + 900_000,
+    workspaceId: TEAM, channelId: CHANNEL, draft, previewHash,
   });
   const routine = routines.confirm({
     tokenHash, actorId: 'U_MEMBER', workspaceId: TEAM, channelId: CHANNEL, previewHash,

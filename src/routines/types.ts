@@ -189,7 +189,6 @@ export interface PutRoutineConfirmationInput {
   channelId: string;
   draft: RoutineConfirmationDraft;
   previewHash: string;
-  expiresAt: number;
 }
 
 export interface CancelRoutineConfirmationInput {

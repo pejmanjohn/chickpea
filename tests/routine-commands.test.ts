@@ -109,7 +109,7 @@ async function handleRoutineSlackRequest(
 
 async function seedRoutine(store: RoutineStore, name = 'Support steward'): Promise<RoutineDefinition> {
   const projection = normalizeRoutineSchedule('0 9 * * 1-5', 'UTC', NOW);
-  return new RoutineService(store, { now: () => NOW }).save({
+  return new RoutineService(store).save({
     action: 'create',
     actorId: 'U_MEMBER',
     workspaceId: 'T_TEST',
@@ -331,7 +331,7 @@ test('exact DM commands need no deployment flag and stay scoped across threads',
       kind: 'direct_thread' as const, conversationId: 'D_TEST', threadTs: '100.1',
       ownerMembershipId: 'membership_test',
     };
-    const pending = await new RoutineService(store, { now: () => NOW }).save({
+    const pending = await new RoutineService(store).save({
       action: 'create', actorId: 'U_MEMBER', workspaceId: 'T_TEST', channelId: 'D_TEST',
       destination,
       definition: {
@@ -489,7 +489,7 @@ test('pre-upgrade schedule edit confirmations require a fresh request without ch
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   try {
     const routine = await seedRoutine(store);
-    const confirmation = await new RoutineService(store, { now: () => NOW }).createConfirmation({
+    const confirmation = await new RoutineService(store).createConfirmation({
       action: 'delete', routineId: routine.id, expectedVersion: routine.version,
       actorId: 'U_MEMBER', workspaceId: 'T_TEST', channelId: 'C_TEST',
     });
@@ -612,7 +612,7 @@ test('a saved request reads a user-group mention as the group\'s name', async ()
       },
     });
     const projection = normalizeRoutineSchedule('0 9 * * 1-5', 'UTC', NOW);
-    const routine = await new RoutineService(store, { now: () => NOW }).save({
+    const routine = await new RoutineService(store).save({
       action: 'create',
       actorId: 'U_MEMBER',
       workspaceId: 'T_TEST',

@@ -681,9 +681,6 @@ export class RoutineStoreLogic {
     validateRoutineScope(input.workspaceId, input.channelId, input.actorId);
     validateConfirmationInput(input);
     const now = this.now();
-    if (input.expiresAt <= now || input.expiresAt > now + ROUTINE_LIMITS.confirmationTtlMs) {
-      throw routineError('routine_confirmation_invalid', 'Routine confirmation expiry is invalid.');
-    }
     const draft = validateDraft(input.draft);
     this.db.run(
       `INSERT INTO routine_confirmations (
@@ -700,7 +697,7 @@ export class RoutineStoreLogic {
       draft.action === 'create' ? null : draft.expectedVersion,
       input.previewHash,
       now,
-      input.expiresAt,
+      now + ROUTINE_LIMITS.confirmationTtlMs,
     );
     return required(this.getConfirmation(input.tokenHash), 'Routine confirmation was not readable.');
   }

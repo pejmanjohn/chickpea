@@ -36,7 +36,6 @@ import {
 
 interface RoutineAdminApiOptions {
   store: (c: Context) => RoutineStore;
-  now?: () => number;
   id?: () => string;
   capability?: (c: Context) => RoutineCapability;
   usage?: (c: Context) => UsageStore;
@@ -53,7 +52,6 @@ const controlSchema = v.strictObject({
 
 export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
   const app = new Hono();
-  const now = options.now ?? Date.now;
   const id = options.id ?? randomUUID;
   const fallbackAccess = new WeakMap<object, RoutineContentAccessResolver>();
   const accessFor = (c: Context): RoutineContentAccessResolver => {
@@ -196,7 +194,6 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
       }
       const actorId = adminActor(c);
       const service = new RoutineService(state, {
-        now,
         confirmationId: () => `rconfirm_admin_${id().replaceAll('-', '')}`,
         token: () => id().replaceAll('-', ''),
       });

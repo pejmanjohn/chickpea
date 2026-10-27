@@ -49,7 +49,6 @@ async function createRoutine(
     channelId: `C_${routineId}`,
     draft,
     previewHash,
-    expiresAt: START + 15 * 60_000,
   });
   await store.confirm({
     tokenHash,

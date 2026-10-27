@@ -86,7 +86,7 @@ export function maintenanceFixture(db: StateDb, history = 100) {
   const previewHash = hashRoutineValue(JSON.stringify(draft));
   routines.putConfirmation({
     confirmationId: 'rconfirm_meter', tokenHash, actorId: 'U_TEST', actorClass: 'member',
-    workspaceId: 'T_TEST', channelId: 'C_TEST', draft, previewHash, expiresAt: clock + 60_000,
+    workspaceId: 'T_TEST', channelId: 'C_TEST', draft, previewHash,
   });
   const routine = routines.confirm({
     tokenHash, actorId: 'U_TEST', workspaceId: 'T_TEST', channelId: 'C_TEST',
@@ -114,7 +114,7 @@ export function maintenanceFixture(db: StateDb, history = 100) {
     routines.putConfirmation({
       confirmationId: `rconfirm_fresh_${i}`, tokenHash: hashRoutineValue(`fresh-${i}`),
       actorId: 'U_TEST', actorClass: 'member', workspaceId: 'T_TEST', channelId: 'C_TEST',
-      draft, previewHash, expiresAt: NOW + 60_000,
+      draft, previewHash,
     });
   }
   routines.cleanupRetention();

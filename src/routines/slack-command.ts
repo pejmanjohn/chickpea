@@ -135,7 +135,6 @@ export async function executeSlackScheduleCommand(
 ): Promise<SlackScheduleCommandResult> {
   const now = dependencies.now ?? Date.now;
   const service = new RoutineService(dependencies.routines, {
-    now,
     routineId: () => deterministicRoutineId(command.actionKey, command.itemId),
   });
 

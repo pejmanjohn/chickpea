@@ -13,6 +13,7 @@ import { agentRoutineDeletion, RoutineStoreLogic, SqliteRoutineStore } from '../
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
   RoutineStateError,
+  type PutRoutineConfirmationInput,
   type RoutineConfirmationDraft,
   type RoutineDefinition,
   type RoutineDefinitionContent,
@@ -56,7 +57,6 @@ async function confirmDraft(
   store: SqliteRoutineStore,
   draft: RoutineConfirmationDraft,
   suffix: string,
-  now = CREATED_AT,
 ): Promise<RoutineDefinition> {
   const token = `token-${suffix}`;
   const tokenHash = hashRoutineValue(token);
@@ -70,7 +70,6 @@ async function confirmDraft(
     channelId: 'C_TEST',
     draft,
     previewHash,
-    expiresAt: now + 15 * 60 * 1_000,
   });
   return store.confirm({
     tokenHash,
@@ -837,10 +836,13 @@ test('confirmation is actor, scope, preview, expiry, version, and replay bound',
     const draft = createDraft();
     const tokenHash = hashRoutineValue('bound-token');
     const previewHash = hashRoutineValue(JSON.stringify(draft));
-    await store.putConfirmation({
+    // The Durable Object boundary is untyped, so a caller can still send an expiry.
+    const confirmation = await store.putConfirmation({
       confirmationId: 'rconfirm_bound', tokenHash, actorId: 'U_MEMBER', actorClass: 'member',
-      workspaceId: 'T_TEST', channelId: 'C_TEST', draft, previewHash, expiresAt: now + 100,
-    });
+      workspaceId: 'T_TEST', channelId: 'C_TEST', draft, previewHash,
+      expiresAt: Number.MAX_SAFE_INTEGER,
+    } as PutRoutineConfirmationInput);
+    assert.equal(confirmation.expiresAt, CREATED_AT + ROUTINE_LIMITS.confirmationTtlMs);
     for (const patch of [
       { actorId: 'U_OTHER' },
       { channelId: 'C_OTHER' },
@@ -854,7 +856,7 @@ test('confirmation is actor, scope, preview, expiry, version, and replay bound',
         (error: unknown) => error instanceof RoutineStateError && error.code === 'routine_confirmation_invalid',
       );
     }
-    now += 101;
+    now += ROUTINE_LIMITS.confirmationTtlMs + 1;
     await assert.rejects(
       () => store.confirm({
         tokenHash, actorId: 'U_MEMBER', workspaceId: 'T_TEST', channelId: 'C_TEST',
@@ -952,7 +954,6 @@ test('control revisions retain request provenance and deletion scrubs every copi
     );
 
     const service = new RoutineService(store, {
-      now: () => CREATED_AT,
       confirmationId: () => 'rconfirm_control_provenance_delete',
       token: () => 'token-control-provenance-delete',
     });
@@ -991,7 +992,6 @@ test('a confirmation draft cannot overwrite a concurrent routine edit or control
     await store.putConfirmation({
       confirmationId: 'rconfirm_edit_race', tokenHash, actorId: 'U_MEMBER', actorClass: 'member',
       workspaceId: 'T_TEST', channelId: 'C_TEST', draft: editDraft, previewHash,
-      expiresAt: CREATED_AT + 15 * 60 * 1_000,
     });
     await store.control({
       routineId: routine.id, expectedVersion: 1, action: 'pause', actorId: 'U_MEMBER',
@@ -1014,7 +1014,7 @@ test('confirmation cleanup retains artifacts for 24 hours after consumption or e
   let now = CREATED_AT;
   const store = new SqliteRoutineStore(':memory:', () => now);
   try {
-    await confirmDraft(store, createDraft(), 'purge', now);
+    await confirmDraft(store, createDraft(), 'purge');
     now += 24 * 60 * 60 * 1_000 - 1;
     assert.equal(await store.purgeConfirmations(), 0);
     now += 15 * 60 * 1_000 + 2;
@@ -1138,7 +1138,7 @@ test('resume reprojects the schedule and reservations from current time', async 
   let now = CREATED_AT;
   const store = new SqliteRoutineStore(':memory:', () => now);
   try {
-    let routine = await confirmDraft(store, createDraft(), 'resume-projection', now);
+    let routine = await confirmDraft(store, createDraft(), 'resume-projection');
     const originalNextRunAt = routine.nextRunAt;
     routine = await store.control({
       routineId: routine.id,
@@ -1210,7 +1210,7 @@ test('run-now and deployment concurrency ceilings are enforced transactionally',
   let now = CREATED_AT;
   const store = new SqliteRoutineStore(':memory:', () => now);
   try {
-    const routine = await confirmDraft(store, createDraft(), 'run-now-limit', now);
+    const routine = await confirmDraft(store, createDraft(), 'run-now-limit');
     let lastRun;
     for (let index = 0; index < 10; index += 1) {
       const queuedAt = now + index * 60 * 60 * 1_000;
@@ -1793,7 +1793,6 @@ test('audit failure rolls back confirmation consumption, routine, revision, and 
   logic.putConfirmation({
     confirmationId: 'rconfirm_audit_failure', tokenHash, actorId: 'U_MEMBER', actorClass: 'member',
     workspaceId: 'T_TEST', channelId: 'C_TEST', draft, previewHash,
-    expiresAt: CREATED_AT + 15 * 60 * 1_000,
   });
   db.exec(
     `CREATE TRIGGER reject_routine_audit BEFORE INSERT ON audit_events
