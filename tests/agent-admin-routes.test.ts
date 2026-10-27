@@ -6645,6 +6645,36 @@ test('Admin deletes an Agent only after archive has turned its Slack handle off'
   }
 });
 
+test('Admin deletes an archived Agent that still owns a Slack thread route', async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    // An Agent created in Slack owns the thread its welcome posted in.
+    await fixture.store.putAgentThreadRoute({
+      workspaceId: 'T_TEST', channelId: 'D_OWNER', threadTs: '1790000000.000100', agentId: 'agent_support', agentGeneration: 1,
+    });
+    const archived = await supportAgentRequest(fixture.app, 'POST', '/archive', {
+      expectedRevision: (await fixture.store.getAgent('agent_support')).revision,
+    });
+    assert.equal(archived.status, 200);
+    const agent = await fixture.store.getAgent('agent_support');
+    const deleted = await fixture.app.request('http://localhost/admin/api/agents/agent_support', {
+      method: 'DELETE', headers: auth(),
+      body: JSON.stringify({
+        expectedRevision: agent.revision,
+        credentialConfigurationBinding: agentCredentialConfigurationBinding(agent.credentialIncarnation),
+      }),
+    });
+    assert.equal(deleted.status, 204, await deleted.clone().text());
+    await assert.rejects(fixture.store.getAgent('agent_support'), UnknownAgentError);
+    assert.equal(await fixture.store.getAgentThreadRoute('T_TEST', 'D_OWNER', '1790000000.000100'), undefined,
+      'the thread falls back to ordinary routing');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 function onePixelPng(pixel: readonly number[]): Uint8Array {
   const crc32 = (value: Uint8Array) => {
     let crc = 0xffffffff;
