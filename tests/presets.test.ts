@@ -107,7 +107,7 @@ test('managed Google analytics presets reference the official product-icon binar
 
 test('preset lanes classify the existing MCP catalog, the API additions, and both', () => {
   const existingMcpPresets = CONNECTOR_PRESETS.filter((preset) => !API_PRESET_IDS.has(preset.id));
-  assert.equal(existingMcpPresets.length, 32);
+  assert.equal(existingMcpPresets.length, 39);
   for (const preset of existingMcpPresets) {
     assert.deepEqual(presetLanes(preset), { mcp: true, api: false }, preset.id);
   }
@@ -321,8 +321,7 @@ test('the Granola MCP preset uses browser OAuth with the advertised resource sco
 });
 
 test('vendor-hosted OAuth MCP presets request the scopes their servers advertise', () => {
-  // Scopes come from each server's OAuth metadata; read-only variants are left out.
-  const reviewed: Record<string, { url: string; scope: string }> = {
+  const reviewed: Record<string, { url: string; scope?: string }> = {
     amplitude: { url: 'https://mcp.amplitude.com/mcp', scope: 'all:read all:write offline_access' },
     'better-stack': { url: 'https://mcp.betterstack.com', scope: 'read write' },
     clickhouse: { url: 'https://mcp.clickhouse.cloud/mcp', scope: 'mcp:access openid profile email' },
@@ -332,12 +331,25 @@ test('vendor-hosted OAuth MCP presets request the scopes their servers advertise
     motherduck: { url: 'https://api.motherduck.com/mcp', scope: 'mcp:connect' },
     netlify: { url: 'https://netlify-mcp.netlify.app/mcp', scope: 'read write offline_access' },
     statsig: { url: 'https://api.statsig.com/v3/mcp', scope: 'personal_read_write' },
+    clay: { url: 'https://api.clay.com/v3/mcp', scope: 'mcp' },
+    close: {
+      url: 'https://mcp.close.com/mcp',
+      scope: 'mcp.read mcp.write_safe mcp.write_destructive offline_access',
+    },
+    'customer-io': { url: 'https://mcp.customer.io/mcp', scope: 'read write' },
+    mercury: {
+      url: 'https://mcp.mercury.com/mcp',
+      scope: 'read offline_access transactions:request transfers:request categories:create categories:edit transactions:update',
+    },
+    paypal: { url: 'https://mcp.paypal.com/mcp' },
+    plain: { url: 'https://mcp.plain.com/mcp', scope: 'openid offline_access' },
+    pylon: { url: 'https://mcp.usepylon.com', scope: 'openid offline_access' },
   };
   for (const [id, { url, scope }] of Object.entries(reviewed)) {
     const preset = getConnectorPreset(id);
     assert.ok(preset && 'auth' in preset, id);
     assert.equal(preset.url, url, id);
-    assert.deepEqual(preset.auth, { kind: 'oauth', scope }, id);
+    assert.deepEqual(preset.auth, scope ? { kind: 'oauth', scope } : { kind: 'oauth' }, id);
     assert.equal(preset.toolAccessMode, undefined, id);
     assert.match(preset.tokenDocsUrl ?? '', /^https:\/\//, id);
     assert.equal(resolveConnectorCatalogPreset(preset.name)?.id, id);

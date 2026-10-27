@@ -8974,7 +8974,7 @@ test('Agent connection setup retains the complete preset catalog', async () => {
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    46,
+    53,
   );
 });
 
@@ -9294,7 +9294,7 @@ test('legacy Google access does not hide fresh Google connection presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 46);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 53);
 });
 
 test('every catalog connector opens an Agent-owned setup flow', async () => {
@@ -9339,7 +9339,7 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 46);
+  assert.equal(presetIds.length, 53);
 });
 
 test('Agent-owned Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {
@@ -10359,9 +10359,9 @@ test('a connected preset drops out of the Available gallery until it is removed'
   // Linear and Asana are already connected, so the gallery no longer offers them...
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="linear"/);
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
-  // ...other presets remain, and the Available count drops from 34 to 32.
+  // ...other presets remain, and the Available count drops by two.
   assert.match(panel, /data-action="conn-preset" data-preset="airtable"/);
-  assert.match(panel, /<span class="gallery-head-count">32<\/span>/);
+  assert.match(panel, /<span class="gallery-head-count">39<\/span>/);
 });
 
 test('OAuth rows surface a persisted reconnect requirement instead of stale connected copy', async () => {
@@ -11143,9 +11143,9 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gallery, /data-action="conn-gallery-search"/);
   assert.equal(
     (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
-    34,
+    41,
   );
-  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">34<\/span>/);
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">41<\/span>/);
   assert.doesNotMatch(gallery, /data-preset="google-workspace"/);
   assert.doesNotMatch(gallery, /data-preset="github"/);
   assert.doesNotMatch(gallery, /data-preset="context7"/);
@@ -11261,10 +11261,13 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   const linearShape = galleryRowShape('linear');
   const granolaShape = galleryRowShape('granola');
   assert.deepEqual(granolaShape.shape, linearShape.shape);
-  for (const id of ['better-stack', 'clickhouse', 'datadog', 'grafana', 'netlify']) {
+  for (const id of ['better-stack', 'clickhouse', 'datadog', 'grafana', 'netlify', 'paypal']) {
     assert.deepEqual(galleryRowShape(id), linearShape, id);
   }
-  for (const id of ['amplitude', 'honeycomb', 'motherduck', 'statsig']) {
+  for (const id of [
+    'amplitude', 'honeycomb', 'motherduck', 'statsig',
+    'clay', 'close', 'customer-io', 'mercury', 'plain', 'pylon',
+  ]) {
     assert.deepEqual(galleryRowShape(id), granolaShape, id);
   }
 
@@ -11865,10 +11868,12 @@ test('vendor-hosted OAuth MCP presets save their server and request their own sc
   const ids = [
     'amplitude', 'better-stack', 'clickhouse', 'datadog', 'grafana',
     'honeycomb', 'motherduck', 'netlify', 'statsig',
+    'clay', 'close', 'customer-io', 'mercury', 'paypal', 'plain', 'pylon',
   ];
   for (const id of ids) {
     const preset = getConnectorPreset(id);
     assert.ok(preset && 'auth' in preset && preset.auth.kind === 'oauth', id);
+    const scope = preset.auth.scope;
     const harness = runAdminPageHarness({
       agents: [connectionsAgent()],
       oauthStartResult: { authorizationUrl: 'https://auth.example/authorize?state=opaque-state' },
@@ -11901,12 +11906,12 @@ test('vendor-hosted OAuth MCP presets save their server and request their own sc
         statusText: '',
         discoveredTools: [],
         allowedTools: [],
-        oauthScope: preset.auth.scope,
+        ...(scope ? { oauthScope: scope } : {}),
         presetId: id,
       },
     ], id);
     assert.deepEqual(harness.oauthStartPosts, [
-      { agentId: 'agent_conn', connectionId: id, body: { scope: preset.auth.scope } },
+      { agentId: 'agent_conn', connectionId: id, body: scope ? { scope } : {} },
     ], id);
     assert.deepEqual(harness.assignedUrls, ['https://auth.example/authorize?state=opaque-state'], id);
   }
