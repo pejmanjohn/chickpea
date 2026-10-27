@@ -101,8 +101,13 @@ daemon writes an owner-only log beside its record
 (`<root>/<lane>.daemon.log`). Seeding, `import` and `export` refuse while a
 daemon or another browser has the profile open; stop the daemon first. `start` launches Chrome itself with `--remote-debugging-port`,
 `--hide-crash-restore-bubble` and `--no-first-run`, and on macOS with the real
-keychain, so cookies survive and no "Restore pages?" bubble appears. The
-maintainer signs each profile in once, in the daemon's own window. If a
+keychain, so cookies survive and no "Restore pages?" bubble appears. It also
+passes `--disable-backgrounding-occluded-windows`,
+`--disable-renderer-backgrounding` and `--disable-background-timer-throttling`:
+without them a covered daemon window's tabs read hidden, and Admin's pollers
+stop until the window is in front. A minimized window still reads hidden. A daemon started before these flags existed
+keeps running without them; `stop` and `start` it while no session drives the
+lane. The maintainer signs each profile in once, in the daemon's own window. If a
 profile is signed out, ask for that one-time sign-in during the kickoff
 preflight. Google may refuse sign-in inside an automated browser, so use
 Slack's email code; treat a Google OAuth consent that refuses automation as a

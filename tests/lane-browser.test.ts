@@ -324,6 +324,9 @@ test('the attach plan targets the lane daemon port and allows evidence roots out
   assert.ok(launch.includes('--hide-crash-restore-bubble'));
   assert.equal(launch.includes('--use-mock-keychain'), false, 'macOS lane profiles use the keychain');
   assert.equal(launch.includes('--headless'), false, 'the daemon is a real window');
+  for (const flag of ['--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling']) {
+    assert.ok(launch.includes(flag), `${flag}: a covered daemon window keeps running its pages`);
+  }
   assert.ok((daemonLaunchArguments({ profile: '/p/amber', port: 9331, platform: 'linux', uid: 0 }) as string[]).includes('--no-sandbox'));
   assert.ok((daemonLaunchArguments({ profile: '/p/amber', port: 9331, headless: true, platform: 'linux', uid: 0 }) as string[]).includes('--headless'));
 });
