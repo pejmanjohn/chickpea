@@ -626,7 +626,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsHint:
       'Sign in to the Datadog organization on the US1 site (app.datadoghq.com) that Chickpea should access.',
     notes:
-      'A Datadog administrator must first add this installation\'s /oauth/callback URL under Organization Settings → MCP OAuth Redirect URLs. For another Datadog site, add a custom connection to that site\'s MCP URL.',
+      'A Datadog administrator must first add this installation\'s /oauth/callback URL under Organization Settings → MCP OAuth Redirect URLs and enable MCP access on that page. For another Datadog site, add a custom connection to that site\'s MCP URL.',
   },
   {
     id: 'grafana',
@@ -641,7 +641,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsHint:
       'Sign in to Grafana Cloud, enter your stack URL, and choose the access Chickpea should receive.',
     notes:
-      'The stack needs Grafana Assistant. Each connected user counts as an Assistant active user, and Grafana asks users to sign in again every 30 days.',
+      'The stack needs Grafana Assistant. Each connected user counts as an Assistant active user, and Grafana asks users to sign in again every 30 days. If Write access is greyed out at sign-in, ask an administrator for the Assistant Admin role.',
   },
   {
     id: 'honeycomb',
@@ -694,7 +694,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsUrl: 'https://docs.statsig.com/integrations/mcp',
     tokenDocsHint: 'Sign in to the Statsig account Chickpea should access.',
     notes:
-      'Statsig sign-in uses a Personal Console API Key. A project owner may first need to allow Personal Console API Keys for your role.',
+      'Statsig sign-in uses a Personal Console API Key. An organization owner may first need to allow Personal Console API Keys for your role.',
   },
   {
     id: 'google-workspace',
