@@ -1,0 +1,1258 @@
+{
+  "toolkit": "microsoft_teams",
+  "version": "20261026_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Microsoft Teams",
+  "description": "Read chats, channel conversations, meetings, and transcripts, and create meeting links.",
+  "securityDescription": "Microsoft Teams sign-in opens through Composio. Agents read what the signed-in person can see: their chats, the teams and channels they belong to, channel and chat messages, files found by search, and their online meetings with recording lists and transcripts. With write access, Agents can only create a standalone online meeting the person organizes, including its lobby and recording options; nobody is invited or notified. Agents cannot post, edit, pin, or delete messages, start chats, add or remove members, create, archive, or delete teams or channels, change team, channel, chat, or tab settings, set presence, or change shifts.",
+  "preset": {
+    "category": "business",
+    "accent": "#6264A7"
+  },
+  "validationCapability": "microsoft_teams.who_am_i",
+  "review": {
+    "add": [
+      "MICROSOFT_TEAMS_CHATS_GET_ALL_CHATS",
+      "MICROSOFT_TEAMS_GET_CHANNEL_MESSAGE",
+      "MICROSOFT_TEAMS_GET_CHANNEL_MESSAGE_REPLY",
+      "MICROSOFT_TEAMS_GET_CHAT",
+      "MICROSOFT_TEAMS_GET_ONLINE_MEETING",
+      "MICROSOFT_TEAMS_LIST_MESSAGE_REPLIES",
+      "MICROSOFT_TEAMS_LIST_ONLINE_MEETINGS",
+      "MICROSOFT_TEAMS_LIST_PINNED_MESSAGES",
+      "MICROSOFT_TEAMS_LIST_USER_CHAT_MESSAGES",
+      "MICROSOFT_TEAMS_POST_MESSAGE_REPLY",
+      "MICROSOFT_TEAMS_TEAMS_LIST",
+      "MICROSOFT_TEAMS_TEAMS_LIST_CHANNELS",
+      "MICROSOFT_TEAMS_TEAMS_POST_CHANNEL_MESSAGE",
+      "MICROSOFT_TEAMS_TEAMS_POST_CHAT_MESSAGE"
+    ],
+    "drop": {
+      "MICROSOFT_TEAMS_CREATE_CALL_OPERATION": "Acts on a live call; live call control is outside this connector's scope.",
+      "MICROSOFT_TEAMS_CREATE_OPEN_SHIFT": "Changes a team's shift schedule, which other people work from.",
+      "MICROSOFT_TEAMS_CREATE_SHIFT": "Changes a team's shift schedule, which other people work from.",
+      "MICROSOFT_TEAMS_CREATE_TIME_OFF": "Changes a team's shift schedule, which other people work from.",
+      "MICROSOFT_TEAMS_CREATE_TIME_OFF_REASON": "Changes a team's shift schedule settings.",
+      "MICROSOFT_TEAMS_GET_MEETING_RECORDING_CONTENT": "Downloads up to 256 MiB of meeting video, which no Agent result can carry; recording metadata stays readable.",
+      "MICROSOFT_TEAMS_GET_MY_PROFILE": "Duplicates who_am_i for the signed-in person.",
+      "MICROSOFT_TEAMS_GET_SCHEDULE": "Shifts scheduling is outside this connector's chats, channels, and meetings.",
+      "MICROSOFT_TEAMS_GET_TEAM_OPERATION": "Reports the status of team administration jobs, which this connector cannot start.",
+      "MICROSOFT_TEAMS_GET_TIME_OFF_REASON": "Shifts scheduling is outside this connector's chats, channels, and meetings.",
+      "MICROSOFT_TEAMS_LIST_COMMUNICATIONS_CALLS_OPERATIONS": "Live call control is outside this connector's scope.",
+      "MICROSOFT_TEAMS_LIST_GROUP_TEAM_OPERATIONS": "Reports the status of team administration jobs, which this connector cannot start.",
+      "MICROSOFT_TEAMS_LIST_TEAM_OPERATIONS": "Reports the status of team administration jobs, which this connector cannot start.",
+      "MICROSOFT_TEAMS_POST_MESSAGE_REPLY": "Posts to everyone in the chat or channel, and its schema keeps mentions, including whole-team and channel mentions, and urgent importance, which no rule withholds. This connector brings Teams into Slack for reading.",
+      "MICROSOFT_TEAMS_TEAMS_POST_CHANNEL_MESSAGE": "Posts to everyone in the chat or channel, and its schema keeps mentions, including whole-team and channel mentions, and urgent importance, which no rule withholds. This connector brings Teams into Slack for reading.",
+      "MICROSOFT_TEAMS_TEAMS_POST_CHAT_MESSAGE": "Posts to everyone in the chat or channel, and its schema keeps mentions, including whole-team and channel mentions, and urgent importance, which no rule withholds. This connector brings Teams into Slack for reading.",
+      "MICROSOFT_TEAMS_UNARCHIVE_CHANNEL": "Changes a channel's state for everyone in the team; channel settings are out of scope.",
+      "MICROSOFT_TEAMS_UPDATE_CALL_OPERATION": "Acts on a live call; live call control is outside this connector's scope.",
+      "MICROSOFT_TEAMS_UPDATE_CHAT": "Renames a chat for everyone in it; chat settings are out of scope.",
+      "MICROSOFT_TEAMS_UPDATE_CHAT_MESSAGE": "Edits a message other people have already read. This connector does not post into chats or channels, so it has no message of its own to correct.",
+      "MICROSOFT_TEAMS_UPDATE_OPEN_SHIFT": "Changes a team's shift schedule, which other people work from.",
+      "MICROSOFT_TEAMS_UPDATE_TAB": "Changes a channel tab for everyone in the team; channel settings are out of scope.",
+      "MICROSOFT_TEAMS_UPDATE_TIME_OFF_REASON": "Changes a team's shift schedule settings."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "microsoft_teams.chats_get_all_chats",
+      "tool": "MICROSOFT_TEAMS_CHATS_GET_ALL_CHATS",
+      "toolName": "microsoft_teams_chats_get_all_chats",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists a specified user's Microsoft Teams chats, supporting filtering and property selection. An unfiltered first page for `user_id='me'` includes the personal self-chat with `is_self_chat=true`; use SEND_MESSAGE_TO_SELF and LIST_MESSAGES_TO_SELF for it. Returns one provider page per call (up to `top`, further bounded by `limit` if given), potentially plus that one synthetic entry, and a `next_page_token`.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "The number of provider chats to return per page (1-50). Microsoft Graph enforces a maximum of 50 per request. An unfiltered first page for user_id='me' can contain one additional synthetic self-chat. This action returns ONE page per call plus a `next_page_token`; pass that token back as `page_token` to get the next page."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Caps how many provider chats this single call returns (bounds the page size). An unfiltered first page for user_id='me' can contain one additional synthetic self-chat beyond this limit. If more chats match than `limit`, the response includes a `next_page_token` — pass it back as `page_token` to fetch the rest; nothing is dropped. When larger than one Graph page (max 50) a single call still returns one page plus a token. Leave unset to return a full page."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData filter query string (do not include '$filter='). Supports filtering by chat properties like 'topic', 'chatType' (e.g., \"chatType eq 'group'\", \"topic eq 'Project X'\"), and 'installedApps/any(...)' for app-based filtering. The synthetic self-chat is included only when this is empty because its filter semantics cannot be safely emulated."
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of specific Microsoft Graph chat resource properties to retrieve (e.g., 'id', 'topic'). If omitted or empty, a default set of properties is returned. Each string in the list should be a valid property name."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID or user principal name (UPN) of the user whose chats are to be retrieved. Use 'me' to specify the currently authenticated user. An unfiltered first-page request for 'me' includes the user's self-chat (personal notes); use SEND_MESSAGE_TO_SELF to add a note or LIST_MESSAGES_TO_SELF to read it without supplying IDs."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifier (user_id), but filter/select params need not be repeated — the token carries them."
+          }
+        }
+      }
+    },
+    {
+      "id": "microsoft_teams.create_meeting",
+      "tool": "MICROSOFT_TEAMS_CREATE_MEETING",
+      "toolName": "microsoft_teams_create_meeting",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Use to schedule a new standalone Microsoft Teams online meeting, i.e., one not linked to any calendar event.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Microsoft Teams: Create online meeting",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "participants": "changes sharing, visibility, permissions, membership, or who acts",
+        "allow_live_share": "changes sharing, visibility, permissions, membership, or who acts",
+        "allowed_presenters": "changes sharing, visibility, permissions, membership, or who acts",
+        "allow_attendee_to_enable_mic": "names an address a message goes to or comes from",
+        "allow_attendee_to_enable_camera": "names an address a message goes to or comes from",
+        "allow_participants_to_change_name": "names an address a message goes to or comes from",
+        "share_meeting_chat_history_default": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The subject or title for the online meeting."
+          },
+          "chat_info": {
+            "type": "object",
+            "properties": {
+              "thread_id": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The unique identifier for a thread in Microsoft Teams. Maps to Microsoft Graph chatInfo.threadId."
+              },
+              "message_id": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The unique identifier of a message in a Microsoft Teams channel. Maps to Microsoft Graph chatInfo.messageId."
+              },
+              "reply_chain_message_id": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The ID of the reply message. Maps to Microsoft Graph chatInfo.replyChainMessageId."
+              }
+            },
+            "description": "Chat information to associate with an online meeting."
+          },
+          "external_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A custom external identifier for the online meeting. Maps to Microsoft Graph externalId."
+          },
+          "end_date_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The end date and time of the meeting, specified in ISO 8601 format (e.g., '2024-08-15T11:00:00Z'). Must be after start_date_time."
+          },
+          "allow_recording": {
+            "type": "boolean",
+            "description": "Indicates whether recording is enabled for the meeting."
+          },
+          "start_date_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The start date and time of the meeting, specified in ISO 8601 format (e.g., '2024-08-15T10:00:00Z')."
+          },
+          "allow_whiteboard": {
+            "type": "boolean",
+            "description": "Indicates whether whiteboard is enabled for the meeting."
+          },
+          "chat_restrictions": {
+            "type": "object",
+            "properties": {
+              "allow_text_only": {
+                "type": "boolean",
+                "description": "Indicates whether the meeting chat allows text only. Maps to Microsoft Graph chatRestrictions.allowTextOnly."
+              }
+            },
+            "description": "Chat restrictions that Microsoft Graph accepts when creating an online meeting."
+          },
+          "allow_meeting_chat": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "enabled",
+              "disabled",
+              "limited"
+            ],
+            "description": "Specifies the mode of meeting chat. Possible values: enabled (default), disabled, limited (only during the meeting call)."
+          },
+          "allow_transcription": {
+            "type": "boolean",
+            "description": "Indicates whether transcription is enabled for the meeting."
+          },
+          "meeting_template_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the meeting template. Using a custom meeting template to create a meeting is a Teams Premium feature."
+          },
+          "allow_breakout_rooms": {
+            "type": "boolean",
+            "description": "Indicates whether breakout rooms are enabled for the meeting."
+          },
+          "is_passcode_required": {
+            "type": "boolean",
+            "description": "An optional boolean indicating whether a passcode should be required to join this meeting. If not specified, the organization's default policy applies."
+          },
+          "record_automatically": {
+            "type": "boolean",
+            "description": "Indicates whether to record the meeting automatically."
+          },
+          "watermark_protection": {
+            "type": "object",
+            "properties": {
+              "is_enabled_for_video": {
+                "type": "boolean",
+                "description": "Indicates whether watermarking is enabled for video. Maps to Microsoft Graph watermarkProtection.isEnabledForVideo."
+              },
+              "is_enabled_for_content_sharing": {
+                "type": "boolean",
+                "description": "Indicates whether watermarking is enabled for shared content. Maps to Microsoft Graph watermarkProtection.isEnabledForContentSharing."
+              }
+            },
+            "description": "Watermark protection settings that Microsoft Graph accepts when creating an online meeting."
+          },
+          "lobby_bypass_settings": {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "maxLength": 20000,
+                "enum": [
+                  "organizer",
+                  "organization",
+                  "organizationAndFederated",
+                  "everyone",
+                  "invited",
+                  "organizationExcludingGuests"
+                ],
+                "description": "Specifies the type of participants that are automatically admitted into a meeting, bypassing the lobby."
+              },
+              "is_dialin_bypass_enabled": {
+                "type": "boolean",
+                "description": "Specifies whether or not to always let dial-in callers bypass the lobby."
+              }
+            },
+            "description": "Specifies which participants can bypass the meeting lobby."
+          },
+          "is_entry_exit_announced": {
+            "type": "boolean",
+            "description": "Indicates whether to announce when callers join or leave."
+          },
+          "allow_teamwork_reactions": {
+            "type": "boolean",
+            "description": "Indicates whether Teams reactions are enabled for the meeting."
+          },
+          "allow_power_point_sharing": {
+            "type": "boolean",
+            "description": "Indicates whether PowerPoint live is enabled for the meeting."
+          },
+          "is_end_to_end_encryption_enabled": {
+            "type": "boolean",
+            "description": "Indicates whether end-to-end encryption is enabled for the meeting. Note: This property must be used with Teams policies to determine the final behavior."
+          },
+          "allow_copying_and_sharing_meeting_content": {
+            "type": "boolean",
+            "description": "Indicates whether participants can copy and share meeting content."
+          }
+        },
+        "required": [
+          "start_date_time",
+          "end_date_time",
+          "subject"
+        ],
+        "description": "Request schema for creating a new Microsoft Teams online meeting. This standalone onlineMeeting action intentionally does not accept deprecated Teams live-event fields (`isBroadcast`, `broadcastSettings`) or read-only response fields (`joinInformation`). Use calendar-backed Outlook event actions when the meeting must be tied to a calendar event for transcript workflows."
+      }
+    },
+    {
+      "id": "microsoft_teams.get_channel",
+      "tool": "MICROSOFT_TEAMS_GET_CHANNEL",
+      "toolName": "microsoft_teams_get_channel",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get a specific channel in a team. Use after obtaining valid team and channel IDs to fetch channel details.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of relationships to expand and include in the response (e.g., 'members', 'tabs')."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of properties to include in the response (e.g., 'id,displayName,description'). Empty string returns all default properties. Use to optimize performance by excluding expensive properties like 'email' and 'summary'."
+          },
+          "team_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the Microsoft Teams team. Must be a valid GUID (e.g., '893075dd-2487-4122-925f-022c42e20265')."
+          },
+          "channel_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the channel within the specified team. Must be in thread format (e.g., '19:561fbdbbfca848a484f0a6f00ce9dbbd@thread.tacv2')."
+          }
+        },
+        "required": [
+          "team_id",
+          "channel_id"
+        ],
+        "description": "Parameters for retrieving a specific channel in a team."
+      }
+    },
+    {
+      "id": "microsoft_teams.get_channel_message",
+      "tool": "MICROSOFT_TEAMS_GET_CHANNEL_MESSAGE",
+      "toolName": "microsoft_teams_get_channel_message",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific message from a Microsoft Teams channel using its Team, Channel, and Message IDs.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "team_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the Team containing the channel where the message is located."
+          },
+          "channel_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the Channel within the specified Team that contains the message."
+          },
+          "message_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the message to retrieve from the channel."
+          }
+        },
+        "required": [
+          "team_id",
+          "channel_id",
+          "message_id"
+        ]
+      }
+    },
+    {
+      "id": "microsoft_teams.get_channel_message_reply",
+      "tool": "MICROSOFT_TEAMS_GET_CHANNEL_MESSAGE_REPLY",
+      "toolName": "microsoft_teams_get_channel_message_reply",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a single reply to a message in a channel. Use when you need to get details of a specific reply message.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "expand": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Expand related entities. Use to include additional related information in the response."
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Select specific properties to be returned. If not specified, all properties are returned."
+          },
+          "team_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier of the Microsoft Teams team."
+          },
+          "reply_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier of the reply message to retrieve."
+          },
+          "channel_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier of the channel within the team."
+          },
+          "message_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier of the channel message that contains the reply."
+          }
+        },
+        "required": [
+          "team_id",
+          "channel_id",
+          "message_id",
+          "reply_id"
+        ],
+        "description": "Request schema for retrieving a single reply to a channel message."
+      }
+    },
+    {
+      "id": "microsoft_teams.get_chat",
+      "tool": "MICROSOFT_TEAMS_GET_CHAT",
+      "toolName": "microsoft_teams_get_chat",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a single chat by ID. Use when you need to get details about a specific chat.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "expand": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of related entities to expand in the response. Supported values: 'members' (includes all chat members), 'lastMessagePreview' (includes preview of the last message). Leave empty to return only basic chat properties."
+          },
+          "chat_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the chat to retrieve. This is the chat's ID in the format '19:abc123def456@thread.v2' for group chats or '19:user1_user2@unq.gbl.spaces' for one-on-one chats."
+          }
+        },
+        "required": [
+          "chat_id"
+        ]
+      }
+    },
+    {
+      "id": "microsoft_teams.get_chat_message",
+      "tool": "MICROSOFT_TEAMS_GET_CHAT_MESSAGE",
+      "toolName": "microsoft_teams_get_chat_message",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get a specific chat message. Use after confirming chat_id and message_id.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier of the Microsoft Teams chat that contains the message."
+          },
+          "message_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier of the chat message to retrieve. This is a numeric timestamp string (milliseconds since epoch) returned by the Microsoft Graph API when listing messages. Do not include underscores or other separators."
+          }
+        },
+        "required": [
+          "chat_id",
+          "message_id"
+        ]
+      }
+    },
+    {
+      "id": "microsoft_teams.get_meeting_transcript_content",
+      "tool": "MICROSOFT_TEAMS_GET_MEETING_TRANSCRIPT_CONTENT",
+      "toolName": "microsoft_teams_get_meeting_transcript_content",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieve the raw content for a Microsoft Teams meeting transcript, with or without speaker attribution. Use this after listing meeting transcripts and selecting a transcript ID. The Microsoft Graph transcript APIs only support calendar-backed online meetings that have an available transcript; standalone meetings created only with the create onlineMeeting API can return 412.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "text/vtt",
+              "application/vnd.microsoft.graph.transcript+text"
+            ],
+            "description": "Transcript content format. Use text/vtt for speaker-attributed WebVTT or application/vnd.microsoft.graph.transcript+text for timestamped text without speaker attribution. The unattributed format is required when speaker attribution is disabled by tenant policy."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The meeting organizer's Microsoft Graph user ID or UPN. When omitted, the action uses /me. For app-only connections, pass the organizer user GUID."
+          },
+          "transcript_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The callTranscript ID returned by the list meeting transcripts endpoint. This value is URL-encoded in the path."
+          },
+          "online_meeting_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The online meeting ID that owns the transcript. This value is URL-encoded in the path."
+          }
+        },
+        "required": [
+          "online_meeting_id",
+          "transcript_id"
+        ],
+        "description": "Request parameters for retrieving Microsoft Teams meeting transcript content."
+      }
+    },
+    {
+      "id": "microsoft_teams.get_online_meeting",
+      "tool": "MICROSOFT_TEAMS_GET_ONLINE_MEETING",
+      "toolName": "microsoft_teams_get_online_meeting",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details of a specific Microsoft Teams online meeting by its ID. Use when you need to get the properties and relationships of an existing meeting.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "expand": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Expand related entities to include additional information in the response."
+          },
+          "select": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Select specific properties to be returned. Allows filtering the response to include only the fields you need."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The user ID (UPN or object ID) of the meeting organizer. Required for S2S (client credentials) authentication. Not needed for delegated authentication."
+          },
+          "meeting_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier (ID) of the online meeting to retrieve. This is the meeting's ID in the format returned when creating a meeting."
+          }
+        },
+        "required": [
+          "meeting_id"
+        ],
+        "description": "Request schema for retrieving a specific online meeting."
+      }
+    },
+    {
+      "id": "microsoft_teams.get_primary_channel",
+      "tool": "MICROSOFT_TEAMS_GET_PRIMARY_CHANNEL",
+      "toolName": "microsoft_teams_get_primary_channel",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get the default (General) channel of a team. Use when you need to access the primary channel without knowing its channel ID.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of relationships to expand inline (e.g., 'members', 'tabs'). Note: Expanding some relationships may require additional permissions."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of properties to include in the response (e.g., 'id,displayName,description'). Empty returns all default properties."
+          },
+          "team_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the Microsoft Teams team. Must be a valid GUID (e.g., '02bd9fd6-8f93-4758-87c3-1fb73740a315')."
+          }
+        },
+        "required": [
+          "team_id"
+        ],
+        "description": "Parameters for retrieving the primary (General) channel of a team."
+      }
+    },
+    {
+      "id": "microsoft_teams.get_team_from_group",
+      "tool": "MICROSOFT_TEAMS_GET_TEAM_FROM_GROUP",
+      "toolName": "microsoft_teams_get_team_from_group",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get a specific team. Use when full details of one team by ID are needed.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $expand query parameter to include related resources inline. Comma-separated list of relationships (e.g., 'channels', 'members', 'operations'). Note: Expanding some relationships may require additional permissions."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $select query parameter to specify which properties to include in the response. Comma-separated list of property names (e.g., 'id,displayName,description')."
+          },
+          "group_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "GUID of the Microsoft 365 group that has an associated team."
+          }
+        },
+        "required": [
+          "group_id"
+        ]
+      }
+    },
+    {
+      "id": "microsoft_teams.list_meeting_recordings",
+      "tool": "MICROSOFT_TEAMS_LIST_MEETING_RECORDINGS",
+      "toolName": "microsoft_teams_list_meeting_recordings",
+      "lane": "read",
+      "effect": "read",
+      "description": "List recordings for a scheduled, non-expired Microsoft Teams online meeting. Returns recording metadata, including IDs needed by the recording-content action. Microsoft Graph excludes live events and documents that meetings created with create onlineMeeting without an associated calendar event are unsupported.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "OData $top parameter for limiting results. Maximum value is 100. Defaults to 25 for optimal performance."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $filter parameter for filtering results. Use OData syntax with fields supported by Microsoft Graph for callRecording."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $select parameter for field selection. Comma-separated list of properties to return (e.g., 'id,createdDateTime,meetingOrganizer,recordingContentUrl')."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The user ID or user principal name (UPN) associated with the meeting. For delegated connections, omit this field or use 'me' for the signed-in user. For app-only connections, provide a specific user ID or UPN."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          },
+          "online_meeting_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The online meeting ID. Provide the raw value; this action URL-encodes it."
+          }
+        },
+        "required": [
+          "online_meeting_id"
+        ],
+        "description": "Request parameters for listing meeting recordings."
+      }
+    },
+    {
+      "id": "microsoft_teams.list_meeting_transcripts",
+      "tool": "MICROSOFT_TEAMS_LIST_MEETING_TRANSCRIPTS",
+      "toolName": "microsoft_teams_list_meeting_transcripts",
+      "lane": "read",
+      "effect": "read",
+      "description": "List meeting transcripts for a Microsoft Teams online meeting. Retrieves all transcripts associated with a specific meeting, including metadata such as creation time, meeting organizer, and content URL. Use this action when you need to access or review the transcription records of a meeting, for example to extract meeting notes, analyze discussion topics, or maintain compliance records.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "OData $top parameter for limiting results. Maximum value is 100. Defaults to 25 for optimal performance."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $filter parameter for filtering results. Use OData syntax with fields supported by Microsoft Graph for callTranscript."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $select parameter for field selection. Comma-separated list of properties to return (e.g., 'id,createdDateTime,meetingOrganizer,transcriptContentUrl')."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The user ID or user principal name (UPN). Provide the raw value; this action URL-encodes it."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          },
+          "online_meeting_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The online meeting ID. Provide the raw value; this action URL-encodes it."
+          }
+        },
+        "required": [
+          "user_id",
+          "online_meeting_id"
+        ],
+        "description": "Request parameters for listing meeting transcripts."
+      }
+    },
+    {
+      "id": "microsoft_teams.list_message_replies",
+      "tool": "MICROSOFT_TEAMS_LIST_MESSAGE_REPLIES",
+      "toolName": "microsoft_teams_list_message_replies",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all replies to a specific message in a Microsoft Teams channel. Use when you need to retrieve the conversation thread for a particular message.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Show only the first n items. Useful for pagination and limiting result size."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Skip the first n items. Used for pagination to retrieve items beyond the initial set."
+          },
+          "count": {
+            "type": "boolean",
+            "description": "Include count of items in the response. When true, adds a total count of matching replies."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Expand related entities to include additional data."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter items by property values using OData syntax. Example: \"messageType eq 'message'\" or \"from/user/displayName eq 'John'\""
+          },
+          "search": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search items by search phrases. Use this to find replies containing specific keywords or phrases."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Select specific properties to be returned (comma-separated). Example: 'id,body,from,createdDateTime'"
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Order items by property values. Example: 'createdDateTime desc' or 'lastModifiedDateTime'"
+          },
+          "team_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier (GUID) of the Microsoft Teams team."
+          },
+          "channel_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier of the channel within the team."
+          },
+          "message_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier of the parent message for which to retrieve replies."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          }
+        },
+        "required": [
+          "team_id",
+          "channel_id",
+          "message_id"
+        ],
+        "description": "Request schema for listing replies to a message in a Microsoft Teams channel."
+      }
+    },
+    {
+      "id": "microsoft_teams.list_online_meetings",
+      "tool": "MICROSOFT_TEAMS_LIST_ONLINE_MEETINGS",
+      "toolName": "microsoft_teams_list_online_meetings",
+      "lane": "read",
+      "effect": "read",
+      "description": "Look up a Microsoft Teams online meeting for a user by identifier. This is effectively a 'lookup-by-identifier' endpoint, NOT a general-purpose list or search. Microsoft Graph REQUIRES an OData $filter predicate on /me/onlineMeetings and /users/{user_id}/onlineMeetings; without it the API returns HTTP 400 'Filter expression expected'. The only supported filter properties on this endpoint are JoinWebUrl and joinMeetingIdSettings/joinMeetingId (e.g. \"JoinWebUrl eq 'https://teams.microsoft.com/l/meetup-join/...'\" or \"joinMeetingIdSettings/joinMeetingId eq '1234567890'\"). subject and VideoTeleconferenceId are NOT supported here. If you already know the meeting id, prefer MICROSOFT_TEAMS_USERS_GET_ONLINE_MEETING. There is no Graph API for free-text searching a user's meetings by title.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999,
+            "description": "Show only the first n items. Maximum value is 999."
+          },
+          "skip": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Skip the first n items for pagination."
+          },
+          "count": {
+            "type": "boolean",
+            "description": "Include count of items in the response."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Expand related entities to include additional data in the response."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "REQUIRED OData $filter predicate. This endpoint is a lookup-by-identifier, NOT a general-purpose search/list — Microsoft Graph returns HTTP 400 'Filter expression expected' without it. The ONLY two supported filter properties are: - JoinWebUrl — e.g. \"JoinWebUrl eq 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_xxx%40thread.v2/0'\" - joinMeetingIdSettings/joinMeetingId — e.g."
+          },
+          "search": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search items by search phrases. Use this to find online meetings by keywords."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Select specific properties to be returned (comma-separated, e.g., 'id,subject,joinWebUrl')."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Order items by property values (e.g., 'creationDateTime' or 'creationDateTime desc')."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "User ID or user principal name (UPN) to query online meetings for. With delegated (OAuth2) auth, omit or use 'me' for the signed-in user. With application (S2S/client_credentials) auth, you MUST provide a specific user ID or UPN — 'me' does not work without a signed-in user."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers, but filter/sort params need not be repeated — the token carries them."
+          }
+        },
+        "required": [
+          "filter"
+        ],
+        "description": "Request parameters for listing online meetings for a user."
+      }
+    },
+    {
+      "id": "microsoft_teams.list_pinned_messages",
+      "tool": "MICROSOFT_TEAMS_LIST_PINNED_MESSAGES",
+      "toolName": "microsoft_teams_list_pinned_messages",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the list of pinned messages in a Microsoft Teams chat. Use when you need to get all messages that have been pinned in a specific chat conversation.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "expand": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Expand related entities to include additional details. Use 'message' to retrieve the full message content along with pinned message info."
+          },
+          "chat_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier of the Microsoft Teams chat. Use the Get All Chats action to retrieve valid chat IDs."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifier (chat_id) — the token carries any other params."
+          }
+        },
+        "required": [
+          "chat_id"
+        ]
+      }
+    },
+    {
+      "id": "microsoft_teams.list_team_members",
+      "tool": "MICROSOFT_TEAMS_LIST_TEAM_MEMBERS",
+      "toolName": "microsoft_teams_list_team_members",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list members of a Microsoft Teams team. Use when you need to retrieve the members of a specific team, for auditing or notifications.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999,
+            "description": "Optional maximum number of members to request per Microsoft Graph page (1–999)."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "DEPRECATED: no longer applied. Pagination is now driven by the opaque page_token; use next_page_token from the response to fetch additional pages."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional OData filter expression to filter members. Microsoft Graph supports filtering aadUserConversationMember values by userId, displayName, or email. Examples: \"(microsoft.graph.aadUserConversationMember/userId eq '73761f06-2ac9-469c-9f10-279a8cc267f9')\", \"(microsoft.graph.aadUserConversationMember/displayName eq 'John Doe')\", or \"(microsoft.graph.aadUserConversationMember/email eq 'user@example.com')\"."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional comma-separated list of properties to include in the response. Example: \"id,displayName,email\" to return only those fields."
+          },
+          "team_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "GUID of the Microsoft Teams team to retrieve members from."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifier (team_id), but filter/select params need not be repeated — the token carries them."
+          }
+        },
+        "required": [
+          "team_id"
+        ],
+        "description": "Request schema for listing members of a Microsoft Teams team."
+      }
+    },
+    {
+      "id": "microsoft_teams.list_user_chat_members",
+      "tool": "MICROSOFT_TEAMS_LIST_USER_CHAT_MEMBERS",
+      "toolName": "microsoft_teams_list_user_chat_members",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list members of a specific chat for a user in Microsoft Teams. Use when you need to retrieve the members of a specific user's chat, whether it's a one-on-one chat, group chat, or meeting chat.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the chat. This is the chat ID returned by Graph API."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the user. Can be the user's ID (GUID), user principal name (UPN/email), or 'me' for the authenticated user."
+          }
+        },
+        "required": [
+          "user_id",
+          "chat_id"
+        ],
+        "description": "Request schema for listing members of a specific chat for a user in Microsoft Teams."
+      }
+    },
+    {
+      "id": "microsoft_teams.list_user_chat_messages",
+      "tool": "MICROSOFT_TEAMS_LIST_USER_CHAT_MESSAGES",
+      "toolName": "microsoft_teams_list_user_chat_messages",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve messages from a specific chat for a given user. Use when you need to access chat messages through the user context.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Maximum number of messages to retrieve. Microsoft Graph enforces a maximum limit of 50 per request."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "DEPRECATED: no longer applied. Pagination is now driven by the opaque page_token; use next_page_token from the response to fetch additional pages."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData filter expression for filtering messages by property values (do not include '$filter=' prefix)."
+          },
+          "chat_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique Microsoft Graph chat identifier. This is the chat ID returned by Graph API."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Order items by property values (comma-separated list of properties)."
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier (GUID or UPN) of the user whose chats to access."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers (user_id, chat_id), but filter/sort params need not be repeated — the token carries them."
+          }
+        },
+        "required": [
+          "user_id",
+          "chat_id"
+        ],
+        "description": "Request schema for listing messages in a user's chat."
+      }
+    },
+    {
+      "id": "microsoft_teams.search_files",
+      "tool": "MICROSOFT_TEAMS_SEARCH_FILES",
+      "toolName": "microsoft_teams_search_files",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search files in Microsoft Teams using KQL syntax. Find files by name, type, content, author, and modification date across all Teams and channels. Supports boolean logic and date ranges. Examples: 'filetype:pdf AND lastmodifiedtime>=2024-10-01', 'contract AND budget', 'filename:report AND author:user@example.com'",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "size": {
+            "type": "integer",
+            "description": "The maximum number of file results to return per page. Use with from_index for pagination."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search query for files in Teams. Supports keywords, filenames, and content search. **Basic Syntax:** - Keywords: 'budget contract' - Exact phrases: '\"project timeline\"' - Filenames: 'report.pdf' or 'filename:contract' - File types: 'filetype:pdf' or 'filetype:docx' - Boolean: 'contract AND budget' or 'report OR summary' **Property Filters:** - filename: File name - 'filename:contract' - filetype: File extension - 'filetype:pdf', 'filetype:docx', 'filetype:xlsx' - author: Creator -"
+          },
+          "region": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the geographic region for the search request. ONLY required when using application permissions (S2S authentication). DO NOT use with delegated permissions (user authentication) - the API will reject the request. Valid values: 'NAM' (North America), 'EMEA' (Europe, Middle East, Africa), 'APAC' (Asia Pacific). Leave unset (None) for delegated permissions."
+          },
+          "from_index": {
+            "type": "integer",
+            "description": "The 0-based starting index for pagination. To paginate: check response['value'][0]['hitsContainers'][0]['moreResultsAvailable']. If true, call again with from_index += size (e.g., 0 → 25 → 50)."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "description": "Searches files in Microsoft Teams using the Microsoft Search API."
+      }
+    },
+    {
+      "id": "microsoft_teams.search_messages",
+      "tool": "MICROSOFT_TEAMS_SEARCH_MESSAGES",
+      "toolName": "microsoft_teams_search_messages",
+      "lane": "read",
+      "effect": "read",
+      "description": "Search Microsoft Teams messages using KQL syntax. Supports sender (from:), date filters (sent:), attachments, and boolean logic. Works across all Teams chats and channels the user has access to, including matching self-DM/personal-note messages whose resource chatId is `48:notes`. Examples: 'from:user@example.com AND sent>=2024-10-01', 'punchlist OR termination', 'sent>today-30 AND hasattachment:yes' NOTE: This action requires an organizational Microsoft 365 account (Azure AD/Entra ID). It does NOT work with personal Microsoft accounts (MSA) such as @outlook.com, @hotmail.com, or @live.com. If using a personal Microsoft account, this search will fail.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "size": {
+            "type": "integer",
+            "description": "The maximum number of search results to return per page. Use with from_index for pagination."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "KQL (Keyword Query Language) search query string. Supports advanced syntax for precise searches. **Basic Syntax:** - Simple keywords: 'budget report' - Exact phrases: '\"quarterly review\"' - Boolean operators: 'urgent AND deadline' or 'invoice OR receipt' **Property Filters (prefix:value):** - from: Sender - 'from:user@example.com' or 'from:example.com' - sent: Date sent - 'sent:2024-10-01', 'sent>=2024-10-01', 'sent:2024-10-01..2024-10-31', 'sent>today-7' - hasattachment: Has files -"
+          },
+          "region": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the geographic region for the search request. ONLY required when using application permissions (S2S authentication). DO NOT use with delegated permissions (user authentication) - the API will reject the request. Valid values: 'NAM' (North America), 'EMEA' (Europe, Middle East, Africa), 'APAC' (Asia Pacific). Leave unset (None) for delegated permissions."
+          },
+          "from_index": {
+            "type": "integer",
+            "description": "The 0-based starting index for pagination. To paginate: check response['value'][0]['hitsContainers'][0]['moreResultsAvailable']. If true, call again with from_index += size (e.g., 0 → 25 → 50). The Teams message ID is hits[]['resource']['id']; hits[]['hitId'] is only the search result's internal identifier."
+          },
+          "enable_top_results": {
+            "type": "boolean",
+            "description": "If `true`, sorts results by relevance; otherwise, sorts by date in descending order (newest first)."
+          }
+        },
+        "description": "Searches Microsoft Teams messages using the Microsoft Search API."
+      }
+    },
+    {
+      "id": "microsoft_teams.teams_list",
+      "tool": "MICROSOFT_TEAMS_TEAMS_LIST",
+      "toolName": "microsoft_teams_teams_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves Microsoft Teams accessible by the authenticated user, allowing filtering, property selection, and pagination.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "description": "Maximum number of teams to return per page (1-999). Used for pagination; see `next_link` in response."
+          },
+          "count": {
+            "type": "boolean",
+            "description": "When true, includes the total count of items in the @odata.count property in the response. The count is only returned in the first page of results."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData v4.0 filter string to refine results based on team properties (e.g., `startsWith(displayName,'A')`). Consult OData v4.0 documentation for syntax."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated team properties to retrieve (e.g., 'id,displayName,description'). If empty or omitted, standard properties are returned. Supported properties include `id`, `displayName`, `description`, `visibility`."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifier(s) (none), but filter/sort/search params need not be repeated — the token carries them."
+          }
+        }
+      }
+    },
+    {
+      "id": "microsoft_teams.teams_list_channel_messages",
+      "tool": "MICROSOFT_TEAMS_TEAMS_LIST_CHANNEL_MESSAGES",
+      "toolName": "microsoft_teams_teams_list_channel_messages",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list messages in a Teams channel when team_id and channel_id are known (no chat_id required). Use this to enumerate channel message history and obtain message_id for follow-on operations like listing replies or getting message details.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Maximum number of messages to return per page (1-50). Microsoft Graph enforces a maximum of 50 messages per request."
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional expansion parameter. Only 'replies' is supported, which includes message replies (up to 1,000 per message; use replies@odata.nextLink for more)."
+          },
+          "team_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier (GUID) of the Microsoft Teams team."
+          },
+          "channel_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier of the channel within the team."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifiers (team_id, channel_id), but filter/sort params need not be repeated — the token carries them."
+          }
+        },
+        "required": [
+          "team_id",
+          "channel_id"
+        ],
+        "description": "Request schema for listing messages in a Teams channel."
+      }
+    },
+    {
+      "id": "microsoft_teams.teams_list_channels",
+      "tool": "MICROSOFT_TEAMS_TEAMS_LIST_CHANNELS",
+      "toolName": "microsoft_teams_teams_list_channels",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves channels for a specified Microsoft Teams team ID (must be valid and for an existing team), with options to include shared channels, filter results, and select properties.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData v4 query string to filter channels (e.g., `startswith(displayName,'Sales')` or `membershipType eq 'private'`)."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated channel properties to return (e.g., 'id,displayName,description'); empty for default properties. Common: `id`, `displayName`, `description`, `email`, `membershipType`, `webUrl`."
+          },
+          "team_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier (GUID/UUID) of the Microsoft Teams team. Must be in UUID format (e.g., '87b0560f-fc0d-4442-add8-b380ca926707'). Team names are not accepted. Use MICROSOFT_TEAMS_LIST_USER_JOINED_TEAMS to get team IDs."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Opaque continuation token for the next page. Omit for the first page; then pass back the `next_page_token` from the previous response, unmodified, until it is absent. Do not construct or edit it. When set, it drives pagination; resend the same required identifier (team_id), but filter/select params need not be repeated — the token carries them."
+          },
+          "include_shared_channels": {
+            "type": "boolean",
+            "description": "If true, include channels shared with the team (uses allChannels endpoint). If false, exclude shared channels from results by filtering on membershipType."
+          }
+        },
+        "required": [
+          "team_id"
+        ]
+      }
+    },
+    {
+      "id": "microsoft_teams.who_am_i",
+      "tool": "MICROSOFT_TEAMS_WHO_AM_I",
+      "toolName": "microsoft_teams_who_am_i",
+      "lane": "read",
+      "effect": "read",
+      "description": "Return the identity (email, name) of the connected Microsoft Teams account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

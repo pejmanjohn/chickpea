@@ -1,0 +1,468 @@
+{
+  "toolkit": "webex",
+  "version": "20260721_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Webex",
+  "description": "Read Webex spaces, messages, teams, and people, and create new spaces.",
+  "securityDescription": "Webex sign-in opens through Composio. Agents can read the spaces and teams the signed-in person belongs to, their messages and memberships, and people in the organization's directory. With write access, Agents can create a new space with only the person in it. Agents cannot post, edit, or delete messages, add or remove members or moderators, rename, lock, or delete spaces or teams, or manage webhooks. Webex meetings, recordings, and transcripts are not available.",
+  "preset": {
+    "category": "business",
+    "accent": "#00BCEB"
+  },
+  "validationCapability": "webex.messaging_list_rooms",
+  "review": {
+    "add": [],
+    "drop": {
+      "WEBEX_LIST_WEBHOOKS": "Webhooks are integration plumbing that can name outside URLs, not messages or people.",
+      "WEBEX_MESSAGING_CREATE_MESSAGE": "Posts to everyone in a space, and markdown mentions such as @all cannot be withheld; this connector reads Webex for Slack.",
+      "WEBEX_UPDATE_ROOM": "Renames or locks a space for everyone in it; space settings are out of scope.",
+      "WEBEX_WEBHOOKS_GET_WEBHOOK": "Webhooks are integration plumbing that can name outside URLs, not messages or people."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "webex.get_team_details",
+      "tool": "WEBEX_GET_TEAM_DETAILS",
+      "toolName": "webex_get_team_details",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details for a specific team by teamId. Use when you need full metadata of a team before performing team-related operations.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "teamId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier for the team."
+          }
+        },
+        "required": [
+          "teamId"
+        ],
+        "description": "Request model for retrieving details of a Webex team."
+      }
+    },
+    {
+      "id": "webex.list_teams",
+      "tool": "WEBEX_LIST_TEAMS",
+      "toolName": "webex_list_teams",
+      "lane": "read",
+      "effect": "read",
+      "description": "Lists all teams the authenticated user belongs to. Teams are groups of people with shared rooms visible to all members. Use this when you need to find available teams, get team IDs for other operations, or discover which teams a user has access to. Results are ordered by creation date (newest first) and can be paginated using the max parameter.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "max": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of teams to return per page. Must be at least 1. Default is 100 if not specified."
+          }
+        },
+        "description": "Request parameters to filter which teams to list."
+      }
+    },
+    {
+      "id": "webex.messaging_create_room",
+      "tool": "WEBEX_MESSAGING_CREATE_ROOM",
+      "toolName": "webex_messaging_create_room",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new Webex room for team collaboration. The authenticated user is automatically added as a member. Use this to create group rooms for team discussions or associate rooms with existing teams. To create a 1:1 room, use the Create Message action with toPersonId/toPersonEmail instead. Note: Team rooms cannot be moved after creation. Bots cannot simultaneously create and classify rooms.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Webex: Create Room",
+      "withheldArguments": {
+        "teamId": "changes sharing, visibility, permissions, membership, or who acts",
+        "isPublic": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A user-friendly name for the room. This will be displayed as the room's title."
+          },
+          "isLocked": {
+            "type": "boolean",
+            "description": "Set the space as moderated/locked. When true, only moderators can post messages. Must be true if isAnnouncementOnly is true."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The description of the space. Required when isPublic is true."
+          },
+          "classificationId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the space classification to apply during room creation. Note: Bots cannot simultaneously create and classify rooms."
+          },
+          "isAnnouncementOnly": {
+            "type": "boolean",
+            "description": "Sets the space into announcement mode. Only moderators can post messages. The space must be locked (isLocked=true) for this to work."
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "description": "Request model for creating a Webex room."
+      }
+    },
+    {
+      "id": "webex.messaging_get_membership_details",
+      "tool": "WEBEX_MESSAGING_GET_MEMBERSHIP_DETAILS",
+      "toolName": "webex_messaging_get_membership_details",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details for a specific membership. Use when you need metadata for a membership by its ID.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "membershipId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier for the membership."
+          }
+        },
+        "required": [
+          "membershipId"
+        ],
+        "description": "Request model for retrieving details of a Webex membership by its unique identifier."
+      }
+    },
+    {
+      "id": "webex.messaging_get_message_details",
+      "tool": "WEBEX_MESSAGING_GET_MESSAGE_DETAILS",
+      "toolName": "webex_messaging_get_message_details",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details for a specific message. Use when you need full content and metadata by message ID.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier for the message."
+          }
+        },
+        "required": [
+          "messageId"
+        ],
+        "description": "Request model for retrieving details of a Webex message by its unique identifier."
+      }
+    },
+    {
+      "id": "webex.messaging_get_team_membership_details",
+      "tool": "WEBEX_MESSAGING_GET_TEAM_MEMBERSHIP_DETAILS",
+      "toolName": "webex_messaging_get_team_membership_details",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details for a specific team membership. Use when you need metadata for a team membership by its ID.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "membershipId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier for the team membership."
+          }
+        },
+        "required": [
+          "membershipId"
+        ],
+        "description": "Request model for retrieving details of a Webex team membership by its unique identifier."
+      }
+    },
+    {
+      "id": "webex.messaging_list_memberships",
+      "tool": "WEBEX_MESSAGING_LIST_MEMBERSHIPS",
+      "toolName": "webex_messaging_list_memberships",
+      "lane": "read",
+      "effect": "read",
+      "description": "List memberships in Webex rooms. When called without parameters, returns memberships for all rooms the authenticated user belongs to. Use roomId to list all members of a specific room. Use personId or personEmail with roomId to check if a specific person is a member of a room. Supports filtering by teamId and limiting results with max parameter.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "max": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Limit the maximum number of membership records returned."
+          },
+          "roomId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter memberships by the Webex room ID. Lists all members of the specified room."
+          },
+          "teamId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter memberships associated with a specific team ID."
+          },
+          "personId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter memberships by the Webex person ID. Note: Requires roomId parameter to be specified (unless you are a Compliance Officer)."
+          },
+          "personEmail": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter memberships by the member's email address. Note: Requires roomId parameter to be specified (unless you are a Compliance Officer)."
+          }
+        },
+        "description": "Request parameters to filter which memberships to list."
+      }
+    },
+    {
+      "id": "webex.messaging_list_messages",
+      "tool": "WEBEX_MESSAGING_LIST_MESSAGES",
+      "toolName": "webex_messaging_list_messages",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list messages in a room. Use when you need to retrieve chat history filtered by room, time window, or mentions.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "max": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of messages to return per request."
+          },
+          "before": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages sent before a specific ISO8601 timestamp."
+          },
+          "roomId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier for the room to list messages from."
+          },
+          "parentId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages that are replies to a specific message ID."
+          },
+          "beforeMessage": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter messages sent before a specific message, by its ID."
+          },
+          "mentionedPeople": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Filter messages where the caller is mentioned; use 'me' or person IDs."
+          }
+        },
+        "required": [
+          "roomId"
+        ],
+        "description": "Request parameters to filter which messages to list in a room."
+      }
+    },
+    {
+      "id": "webex.messaging_list_rooms",
+      "tool": "WEBEX_MESSAGING_LIST_ROOMS",
+      "toolName": "webex_messaging_list_rooms",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list rooms the authenticated user belongs to. Use after authentication when needing to retrieve spaces filtered by team, type, or sorted. Example: \"List my group rooms sorted by last activity.\"",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters rooms made public before this ISO 8601 timestamp. Used with orgPublicSpaces."
+          },
+          "max": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of rooms to return (1-1000). Default is 100."
+          },
+          "from": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters rooms made public after this ISO 8601 timestamp. Used with orgPublicSpaces."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "direct",
+              "group"
+            ],
+            "description": "Filter rooms by type: 'direct' (1:1) or 'group'. Cannot be set in combination with orgPublicSpaces."
+          },
+          "sortBy": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "id",
+              "lastactivity",
+              "created"
+            ],
+            "description": "Sort results by 'id', 'lastactivity' (recent activity), or 'created' (creation date). Cannot be set in combination with orgPublicSpaces."
+          },
+          "teamId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Limit rooms to those associated with a specific team by ID. Cannot be set in combination with orgPublicSpaces."
+          },
+          "orgPublicSpaces": {
+            "type": "boolean",
+            "description": "Shows the organization's public spaces (both joined and unjoined). When set, results are sorted by madePublic timestamp. Cannot be combined with teamId, type, or sortBy."
+          }
+        },
+        "description": "Request parameters to filter which rooms to list."
+      }
+    },
+    {
+      "id": "webex.messaging_list_team_memberships",
+      "tool": "WEBEX_MESSAGING_LIST_TEAM_MEMBERSHIPS",
+      "toolName": "webex_messaging_list_team_memberships",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all memberships for a specific team. Use when you need to retrieve all members of a team, including their roles (moderator status). Requires a valid teamId.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "max": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Limit the maximum number of team membership records returned. Default is 100."
+          },
+          "teamId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The team ID for which to list memberships. Required."
+          }
+        },
+        "required": [
+          "teamId"
+        ],
+        "description": "Request parameters to list team memberships for a specific team."
+      }
+    },
+    {
+      "id": "webex.people_get_person",
+      "tool": "WEBEX_PEOPLE_GET_PERSON",
+      "toolName": "webex_people_get_person",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves detailed profile information for a specific person by their ID. Returns comprehensive user details including contact information, organizational data, presence status, and Webex Calling information. Use when you need full profile details for a known person ID. To find person IDs, use the List People action first.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "personId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier (ID) of the person to retrieve. This is a base64-encoded identifier that starts with 'Y2lzY29zcGFyazovL3VzL1BFT1BMRS8'. Obtain person IDs from the List People action."
+          },
+          "callingData": {
+            "type": "boolean",
+            "description": "Whether to include Webex Calling (BroadCloud) user details in the response. Set to true to retrieve calling-specific information like extensions and location IDs. Only applicable for users with a Webex Calling license. Default is false."
+          }
+        },
+        "required": [
+          "personId"
+        ],
+        "description": "Request model for retrieving details of a specific person by ID."
+      }
+    },
+    {
+      "id": "webex.people_list_people",
+      "tool": "WEBEX_PEOPLE_LIST_PEOPLE",
+      "toolName": "webex_people_list_people",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list people in your organization. Use when you need to retrieve people filtered by email, display name, IDs, roles, or location.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "List people by ID. Accepts up to 85 person IDs separated by commas."
+          },
+          "max": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of people to return per request."
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "List people with this email address. For non-admin calls, either email or displayName is required."
+          },
+          "orgId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "List people in this organization. Only admin users of another organization (such as partners) may use this parameter."
+          },
+          "roles": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "List of role IDs separated by commas."
+          },
+          "locationId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "List people present in this location."
+          },
+          "callingData": {
+            "type": "boolean",
+            "description": "Include Webex Calling user details in the response. Default is false."
+          },
+          "displayName": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "List people whose name starts with this string. Note: This parameter may not work for consumer organizations. For non-admin calls, either displayName or email is required."
+          }
+        },
+        "description": "Request parameters to filter which people to list."
+      }
+    },
+    {
+      "id": "webex.rooms_get_room_details",
+      "tool": "WEBEX_ROOMS_GET_ROOM_DETAILS",
+      "toolName": "webex_rooms_get_room_details",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details for a specific room. Use when you need full metadata of a room before posting messages or updating settings.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "roomId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier for the room."
+          }
+        },
+        "required": [
+          "roomId"
+        ],
+        "description": "Request model for retrieving details of a Webex room."
+      }
+    }
+  ]
+}

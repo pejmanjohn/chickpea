@@ -1,0 +1,2153 @@
+{
+  "toolkit": {
+    "slug": "google_maps",
+    "name": "Google Maps",
+    "version": "20261026_00",
+    "description": "Integrate Google Maps to access location data, geocoding, directions, and mapping services in your application.",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      },
+      {
+        "mode": "API_KEY",
+        "fields": [
+          "generic_api_key"
+        ]
+      }
+    ],
+    "currentUserEndpoint": "https://places.googleapis.com/v1/places/ChIJN1t_tDeuEmsRUsoyG83frY4?fields=displayName"
+  },
+  "tools": [
+    {
+      "slug": "GOOGLE_MAPS_AUTOCOMPLETE",
+      "name": "Autocomplete Place Predictions",
+      "description": "Returns place and query predictions for text input. Use when implementing as-you-type autocomplete functionality for place searches. Returns up to five predictions ordered by relevance.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Places search & details"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "AutocompleteRequest",
+        "required": [
+          "input"
+        ],
+        "properties": {
+          "input": {
+            "type": "string",
+            "title": "Input",
+            "examples": [
+              "pizza",
+              "123 Main",
+              "Eiffel"
+            ],
+            "description": "Text string to search for place predictions. Can be full words, substrings, place names, addresses, or plus codes. Must be non-empty."
+          },
+          "origin": {
+            "type": "object",
+            "title": "Origin",
+            "required": [
+              "latitude",
+              "longitude"
+            ],
+            "properties": {
+              "latitude": {
+                "type": "number",
+                "title": "Latitude",
+                "maximum": 90,
+                "minimum": -90,
+                "examples": [
+                  37.7749
+                ],
+                "description": "Latitude coordinate."
+              },
+              "longitude": {
+                "type": "number",
+                "title": "Longitude",
+                "maximum": 180,
+                "minimum": -180,
+                "examples": [
+                  -122.4194
+                ],
+                "description": "Longitude coordinate."
+              }
+            },
+            "description": "Latitude/longitude point for distance calculations.",
+            "additionalProperties": false
+          },
+          "regionCode": {
+            "type": "string",
+            "title": "Region Code",
+            "examples": [
+              "us",
+              "gb",
+              "fr"
+            ],
+            "description": "Region code in ccTLD format for formatting responses (e.g., 'us', 'br')."
+          },
+          "inputOffset": {
+            "type": "integer",
+            "title": "Input Offset",
+            "minimum": 0,
+            "examples": [
+              5,
+              10
+            ],
+            "description": "Zero-based Unicode character offset of cursor position in the input string."
+          },
+          "languageCode": {
+            "type": "string",
+            "title": "Language Code",
+            "examples": [
+              "en-US",
+              "es-ES",
+              "fr-FR"
+            ],
+            "description": "Preferred language for results using IETF BCP-47 language codes (e.g., 'en-US', 'es-ES')."
+          },
+          "locationBias": {
+            "type": "object",
+            "title": "LocationBias",
+            "properties": {
+              "circle": {
+                "type": "object",
+                "title": "Circle",
+                "required": [
+                  "center",
+                  "radius"
+                ],
+                "properties": {
+                  "center": {
+                    "type": "object",
+                    "title": "Center",
+                    "examples": [
+                      {
+                        "latitude": 37.7749,
+                        "longitude": -122.4194
+                      }
+                    ],
+                    "description": "Center point with latitude and longitude coordinates.",
+                    "additionalProperties": {
+                      "type": "number"
+                    }
+                  },
+                  "radius": {
+                    "type": "number",
+                    "title": "Radius",
+                    "maximum": 50000,
+                    "minimum": 0,
+                    "examples": [
+                      1000,
+                      5000
+                    ],
+                    "description": "Radius in meters (0.0-50000.0 for bias, must exceed 0.0 for restriction)."
+                  }
+                },
+                "description": "Circular area for location bias or restriction.",
+                "additionalProperties": false
+              },
+              "rectangle": {
+                "type": "object",
+                "title": "Rectangle",
+                "required": [
+                  "low",
+                  "high"
+                ],
+                "properties": {
+                  "low": {
+                    "type": "object",
+                    "title": "Low",
+                    "examples": [
+                      {
+                        "latitude": 37.7,
+                        "longitude": -122.5
+                      }
+                    ],
+                    "description": "Southwest corner with latitude and longitude coordinates.",
+                    "additionalProperties": {
+                      "type": "number"
+                    }
+                  },
+                  "high": {
+                    "type": "object",
+                    "title": "High",
+                    "examples": [
+                      {
+                        "latitude": 37.8,
+                        "longitude": -122.4
+                      }
+                    ],
+                    "description": "Northeast corner with latitude and longitude coordinates.",
+                    "additionalProperties": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "description": "Rectangular area for location bias or restriction.",
+                "additionalProperties": false
+              }
+            },
+            "description": "Area to bias search results toward.",
+            "additionalProperties": false
+          },
+          "sessionToken": {
+            "type": "string",
+            "title": "Session Token",
+            "examples": [
+              "session_123",
+              "user_abc_session"
+            ],
+            "description": "User-generated string grouping calls into sessions for billing purposes."
+          },
+          "includedRegionCodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Included Region Codes",
+            "examples": [
+              [
+                "US"
+              ],
+              [
+                "US",
+                "CA",
+                "MX"
+              ]
+            ],
+            "description": "Up to 15 two-character country codes (ISO 3166-1 Alpha-2) to restrict results. Query predictions unavailable when this is set."
+          },
+          "locationRestriction": {
+            "type": "object",
+            "title": "LocationRestriction",
+            "properties": {
+              "circle": {
+                "type": "object",
+                "title": "Circle",
+                "required": [
+                  "center",
+                  "radius"
+                ],
+                "properties": {
+                  "center": {
+                    "type": "object",
+                    "title": "Center",
+                    "examples": [
+                      {
+                        "latitude": 37.7749,
+                        "longitude": -122.4194
+                      }
+                    ],
+                    "description": "Center point with latitude and longitude coordinates.",
+                    "additionalProperties": {
+                      "type": "number"
+                    }
+                  },
+                  "radius": {
+                    "type": "number",
+                    "title": "Radius",
+                    "maximum": 50000,
+                    "minimum": 0,
+                    "examples": [
+                      1000,
+                      5000
+                    ],
+                    "description": "Radius in meters (0.0-50000.0 for bias, must exceed 0.0 for restriction)."
+                  }
+                },
+                "description": "Circular area for location bias or restriction.",
+                "additionalProperties": false
+              },
+              "rectangle": {
+                "type": "object",
+                "title": "Rectangle",
+                "required": [
+                  "low",
+                  "high"
+                ],
+                "properties": {
+                  "low": {
+                    "type": "object",
+                    "title": "Low",
+                    "examples": [
+                      {
+                        "latitude": 37.7,
+                        "longitude": -122.5
+                      }
+                    ],
+                    "description": "Southwest corner with latitude and longitude coordinates.",
+                    "additionalProperties": {
+                      "type": "number"
+                    }
+                  },
+                  "high": {
+                    "type": "object",
+                    "title": "High",
+                    "examples": [
+                      {
+                        "latitude": 37.8,
+                        "longitude": -122.4
+                      }
+                    ],
+                    "description": "Northeast corner with latitude and longitude coordinates.",
+                    "additionalProperties": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "description": "Rectangular area for location bias or restriction.",
+                "additionalProperties": false
+              }
+            },
+            "description": "Area to restrict search results within.",
+            "additionalProperties": false
+          },
+          "includedPrimaryTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Included Primary Types",
+            "examples": [
+              [
+                "restaurant"
+              ],
+              [
+                "cafe",
+                "bakery"
+              ]
+            ],
+            "description": "Restricts results to up to five specified primary types (e.g., 'restaurant', 'cafe')."
+          },
+          "includeQueryPredictions": {
+            "type": "boolean",
+            "title": "Include Query Predictions",
+            "description": "Includes query predictions in response for text searches (default: false)."
+          },
+          "includePureServiceAreaBusinesses": {
+            "type": "boolean",
+            "title": "Include Pure Service Area Businesses",
+            "description": "Includes businesses without physical locations (default: false)."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_COMPUTE_ROUTE_MATRIX",
+      "name": "Compute Route Matrix",
+      "description": "Calculates travel distance and duration matrix between multiple origins and destinations using the modern Routes API; supports OAuth2 authentication and various travel modes. Matrix is capped at 625 elements (e.g., 25×25); chunk larger sets to avoid RESOURCE_EXHAUSTED errors. Response elements may be returned out of input order — always use originIndex and destinationIndex to map results. Only use elements where condition='ROUTE_EXISTS'; the matrix may be incomplete.",
+      "version": "20261026_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ComputeRouteMatrixRequest",
+        "required": [
+          "origins",
+          "destinations"
+        ],
+        "properties": {
+          "units": {
+            "enum": [
+              "METRIC",
+              "IMPERIAL"
+            ],
+            "type": "string",
+            "title": "Units",
+            "default": "IMPERIAL",
+            "examples": [
+              "IMPERIAL",
+              "METRIC"
+            ],
+            "description": "Unit system (e.g., 'METRIC' for kilometers, 'IMPERIAL' for miles) for displaying distances. Note: distanceMeters in responses is always in meters regardless of this setting; units affects only human-readable text output."
+          },
+          "origins": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "RouteMatrixOriginDestination",
+              "properties": {
+                "address": {
+                  "type": "string",
+                  "title": "Address",
+                  "examples": [
+                    "1600 Amphitheatre Parkway, Mountain View, CA"
+                  ],
+                  "description": "Address as a string. Provide either address or latitude/longitude."
+                },
+                "latitude": {
+                  "type": "number",
+                  "title": "Latitude",
+                  "examples": [
+                    37.4224764
+                  ],
+                  "description": "Latitude in decimal degrees. Must be used with longitude."
+                },
+                "longitude": {
+                  "type": "number",
+                  "title": "Longitude",
+                  "examples": [
+                    -122.0842499
+                  ],
+                  "description": "Longitude in decimal degrees. Must be used with latitude."
+                }
+              },
+              "description": "A single origin or destination location for the route matrix."
+            },
+            "title": "Origins",
+            "examples": [
+              [
+                {
+                  "address": "1600 Amphitheatre Parkway, Mountain View, CA"
+                },
+                {
+                  "latitude": 37.403184,
+                  "longitude": -122.097371
+                }
+              ]
+            ],
+            "minItems": 1,
+            "description": "List of origin locations. Each can be specified as an address or latitude/longitude coordinates."
+          },
+          "fieldMask": {
+            "type": "string",
+            "title": "Field Mask",
+            "default": "originIndex,destinationIndex,duration,distanceMeters,status,condition",
+            "examples": [
+              "originIndex,destinationIndex,duration,distanceMeters,status",
+              "originIndex,destinationIndex,duration,distanceMeters,status,condition"
+            ],
+            "description": "Comma-separated list of response fields to include (e.g., 'originIndex,destinationIndex,duration,distanceMeters,status'). Keep originIndex, destinationIndex and status in the mask; Instant calls without them are rejected. Use '*' for all fields."
+          },
+          "travelMode": {
+            "enum": [
+              "DRIVE",
+              "BICYCLE",
+              "WALK",
+              "TWO_WHEELER",
+              "TRANSIT"
+            ],
+            "type": "string",
+            "title": "Travel Mode",
+            "default": "DRIVE",
+            "examples": [
+              "DRIVE",
+              "BICYCLE",
+              "WALK",
+              "TRANSIT"
+            ],
+            "description": "Mode of transportation for the route matrix calculation."
+          },
+          "destinations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "RouteMatrixOriginDestination",
+              "properties": {
+                "address": {
+                  "type": "string",
+                  "title": "Address",
+                  "examples": [
+                    "1600 Amphitheatre Parkway, Mountain View, CA"
+                  ],
+                  "description": "Address as a string. Provide either address or latitude/longitude."
+                },
+                "latitude": {
+                  "type": "number",
+                  "title": "Latitude",
+                  "examples": [
+                    37.4224764
+                  ],
+                  "description": "Latitude in decimal degrees. Must be used with longitude."
+                },
+                "longitude": {
+                  "type": "number",
+                  "title": "Longitude",
+                  "examples": [
+                    -122.0842499
+                  ],
+                  "description": "Longitude in decimal degrees. Must be used with latitude."
+                }
+              },
+              "description": "A single origin or destination location for the route matrix."
+            },
+            "title": "Destinations",
+            "examples": [
+              [
+                {
+                  "address": "85 10th Ave, New York, NY"
+                },
+                {
+                  "latitude": 37.383047,
+                  "longitude": -122.044651
+                }
+              ]
+            ],
+            "minItems": 1,
+            "description": "List of destination locations. Each can be specified as an address or latitude/longitude coordinates."
+          },
+          "languageCode": {
+            "type": "string",
+            "title": "Language Code",
+            "default": "en-US",
+            "examples": [
+              "en-US",
+              "es",
+              "fr"
+            ],
+            "description": "BCP-47 language code (e.g., 'en-US', 'es') for textual information."
+          },
+          "routingPreference": {
+            "enum": [
+              "ROUTING_PREFERENCE_UNSPECIFIED",
+              "TRAFFIC_UNAWARE",
+              "TRAFFIC_AWARE",
+              "TRAFFIC_AWARE_OPTIMAL"
+            ],
+            "type": "string",
+            "title": "RoutingPreference",
+            "default": "TRAFFIC_AWARE",
+            "examples": [
+              "TRAFFIC_AWARE",
+              "TRAFFIC_UNAWARE"
+            ],
+            "description": "Specifies factors to consider when calculating the route."
+          }
+        },
+        "description": "Parameters for computing a route matrix between multiple origins and destinations."
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_DISTANCE_MATRIX_API",
+      "name": "Distance Matrix (Legacy)",
+      "description": "DEPRECATED: Legacy API that calculates travel distance and time for a matrix of origins and destinations. This API only works with API keys (no OAuth2 support). Use the modern 'Compute Route Matrix' action instead, which supports OAuth2 authentication. Supports different modes of transportation and options like departure/arrival times. Capped at 100 elements per request (elements = origins × destinations count); split large sets into batches.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "Google Maps",
+        "readOnlyHint"
+      ],
+      "deprecated": true,
+      "input": {
+        "type": "object",
+        "title": "DistanceMatrixApiRequest",
+        "required": [
+          "origins",
+          "destinations"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key",
+            "examples": [
+              "YOUR_API_KEY"
+            ],
+            "description": "Your application's API key. This key identifies your application for purposes of quota management."
+          },
+          "mode": {
+            "enum": [
+              "driving",
+              "walking",
+              "bicycling",
+              "transit"
+            ],
+            "type": "string",
+            "title": "Mode",
+            "default": "driving",
+            "examples": [
+              "driving"
+            ],
+            "description": "Specifies the mode of transport to use."
+          },
+          "avoid": {
+            "enum": [
+              "tolls",
+              "highways",
+              "ferries",
+              "indoor"
+            ],
+            "type": "string",
+            "title": "Avoid",
+            "examples": [
+              "tolls"
+            ],
+            "description": "Indicates that the calculated route should avoid the specified features. Multiple values can be pipe-separated e.g. 'tolls|highways'."
+          },
+          "units": {
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "type": "string",
+            "title": "Units",
+            "examples": [
+              "imperial"
+            ],
+            "description": "Specifies the unit system to use when displaying results. The default is metric."
+          },
+          "region": {
+            "type": "string",
+            "title": "Region",
+            "examples": [
+              "us",
+              "uk"
+            ],
+            "description": "The region code, specified as a ccTLD ('top-level domain') two-character value. This helps influence results based on the region."
+          },
+          "origins": {
+            "type": "string",
+            "title": "Origins",
+            "examples": [
+              "Washington, DC|New York City, NY",
+              "place_id:ChIJ69P_A4EBwokR7sD2pE2A|enc:gfo}EtohhU:"
+            ],
+            "description": "The starting point for calculating travel distance and time. You can supply one or more locations separated by the pipe character (|), in the form of a place ID (prefixed with place_id:), an address, latitude/longitude coordinates (e.g., '40.7128,-74.0060'), a plus code, or an encoded polyline (prefixed with enc: and a colon)."
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "examples": [
+              "en-US",
+              "fr-FR"
+            ],
+            "description": "The language in which to return results. See the list of supported languages: https://developers.google.com/maps/faq#languagesupport"
+          },
+          "arrival_time": {
+            "type": "integer",
+            "title": "Arrival Time",
+            "examples": [
+              1493890000
+            ],
+            "description": "Specifies the desired time of arrival for transit directions, in seconds since midnight, January 1, 1970 UTC. You can specify either departure_time or arrival_time, but not both."
+          },
+          "destinations": {
+            "type": "string",
+            "title": "Destinations",
+            "examples": [
+              "San Francisco, CA|Victoria, BC",
+              "40.659569,-73.933783|place_id:ChIJ3S-JXmauEmsRUcIaWtf4MzE"
+            ],
+            "description": "One or more locations to use as the finishing point for calculating travel distance and time. Accepts the same formats as origins."
+          },
+          "transit_mode": {
+            "enum": [
+              "bus",
+              "subway",
+              "train",
+              "tram",
+              "rail"
+            ],
+            "type": "string",
+            "title": "Transit Mode",
+            "examples": [
+              "bus"
+            ],
+            "description": "Specifies one or more preferred modes of transit. This parameter may only be specified for transit directions. Multiple values can be pipe-separated e.g. 'bus|train'."
+          },
+          "traffic_model": {
+            "enum": [
+              "best_guess",
+              "pessimistic",
+              "optimistic"
+            ],
+            "type": "string",
+            "title": "Traffic Model",
+            "examples": [
+              "best_guess"
+            ],
+            "description": "Specifies the assumptions to use when calculating time in traffic. This parameter is only used if the request includes a departure_time and mode is 'driving'."
+          },
+          "departure_time": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string",
+                "const": "now"
+              }
+            ],
+            "title": "Departure Time",
+            "examples": [
+              1493879400,
+              "now"
+            ],
+            "description": "Specifies the desired time of departure. You can specify the time as an integer in seconds since midnight, January 1, 1970 UTC, or as the string 'now'. Required for duration_in_traffic."
+          },
+          "transit_routing_preference": {
+            "enum": [
+              "less_walking",
+              "fewer_transfers"
+            ],
+            "type": "string",
+            "title": "Transit Routing Preference",
+            "examples": [
+              "less_walking"
+            ],
+            "description": "Specifies preferences for transit routes. This parameter may only be specified for transit directions."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_GEOCODE_ADDRESS",
+      "name": "Geocode Address",
+      "description": "DEPRECATED: Legacy API to convert street addresses into geographic coordinates (latitude and longitude). This API works best with API key authentication. For OAuth connections without an API key, you may need to provide the 'key' parameter or use the newer 'Text Search' action instead. Use when you need to geocode an address or location to get its precise latitude/longitude coordinates.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Geocoding & geolocation"
+      ],
+      "deprecated": true,
+      "input": {
+        "type": "object",
+        "title": "GeocodeAddressRequest",
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key",
+            "examples": [
+              "YOUR_API_KEY"
+            ],
+            "description": "Your application's API key. This parameter is required when using API key authentication. If not provided, will attempt to use OAuth authentication (requires X-Goog-User-Project header with project ID)."
+          },
+          "bounds": {
+            "type": "string",
+            "title": "Bounds",
+            "examples": [
+              "34.172684,-118.604794|34.236144,-118.500938"
+            ],
+            "description": "Bounding box of the viewport within which to bias geocode results more prominently. Format: southwest_lat,southwest_lng|northeast_lat,northeast_lng. This parameter will only influence, not fully restrict, results from the geocoder."
+          },
+          "region": {
+            "type": "string",
+            "title": "Region",
+            "examples": [
+              "us",
+              "uk",
+              "ca"
+            ],
+            "description": "Region code specified as a ccTLD (country code top-level domain) two-character value. This parameter will only influence, not fully restrict, results from the geocoder."
+          },
+          "address": {
+            "type": "string",
+            "title": "Address",
+            "examples": [
+              "1600 Amphitheatre Parkway, Mountain View, CA"
+            ],
+            "description": "The street address that you want to geocode, in the format used by the national postal service of the country concerned. Additional address elements such as business names and unit, suite or floor numbers should be avoided. Street address elements should be delimited by spaces (shown here as url-escaped to %20). If both address and components are provided, address takes precedence."
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "examples": [
+              "en",
+              "es",
+              "fr"
+            ],
+            "description": "Language in which to return results. If not supplied, the geocoder attempts to use the preferred language as specified in the Accept-Language header, or the native language of the domain from which the request is sent."
+          },
+          "components": {
+            "type": "string",
+            "title": "Components",
+            "examples": [
+              "postal_code:94043|country:US",
+              "country:US"
+            ],
+            "description": "Component filters separated by a pipe (|). Each component filter consists of component:value pair and fully restricts results from the geocoder. Examples: components=country:US or components=postal_code:94043|country:US. If both address and components are provided, address takes precedence."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_GEOCODE_ADDRESS_WITH_QUERY",
+      "name": "Geocode Address With Query",
+      "description": "Tool to map addresses to geographic coordinates with query parameter. Use when you need to convert a textual address into latitude/longitude coordinates using the modern v4beta API. Results may match multiple places — always verify `formattedAddress`, `region`, and `addressComponents` in the response before using returned coordinates.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Geocoding & geolocation"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GeocodeAddressWithQueryRequest",
+        "required": [
+          "address_query"
+        ],
+        "properties": {
+          "region_code": {
+            "type": "string",
+            "title": "Region Code",
+            "examples": [
+              "US",
+              "FR"
+            ],
+            "description": "Region code, specified as a ccTLD two-character value (e.g., 'US', 'FR'). This parameter affects results based on applicable law."
+          },
+          "address_query": {
+            "type": "string",
+            "title": "Address Query",
+            "examples": [
+              "1600 Amphitheatre Parkway Mountain View CA",
+              "Eiffel Tower, Paris"
+            ],
+            "description": "The unstructured address to geocode. This should be a single string containing the full address (e.g., '1600 Amphitheatre Parkway Mountain View CA'). Include city, state/region, and country where possible — incomplete or ambiguous strings may return zero results or incorrect matches."
+          },
+          "language_code": {
+            "type": "string",
+            "title": "Language Code",
+            "examples": [
+              "en",
+              "es"
+            ],
+            "description": "Language in which the results should be returned (e.g., 'en', 'es', 'fr')."
+          }
+        },
+        "description": "Request model for geocoding an address to geographic coordinates."
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_GEOCODE_LOCATION",
+      "name": "Reverse Geocode Location",
+      "description": "Tool to convert geographic coordinates (latitude and longitude) to human-readable addresses using reverse geocoding. Use when you need to find the address or place name for a given set of coordinates. A single coordinate pair may return multiple results; verify formattedAddress, region, and addressComponents before committing to a result.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Geocoding & geolocation"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GeocodeLocationRequest",
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "properties": {
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Types",
+            "examples": [
+              [
+                "street_address",
+                "locality"
+              ]
+            ],
+            "description": "Set of type tags to restrict results; results without specified types are removed"
+          },
+          "latitude": {
+            "type": "number",
+            "title": "Latitude",
+            "maximum": 90,
+            "minimum": -90,
+            "examples": [
+              37.4224764
+            ],
+            "description": "Latitude coordinate in degrees, range [-90.0, +90.0]"
+          },
+          "longitude": {
+            "type": "number",
+            "title": "Longitude",
+            "maximum": 180,
+            "minimum": -180,
+            "examples": [
+              -122.0842499
+            ],
+            "description": "Longitude coordinate in degrees, range [-180.0, +180.0]"
+          },
+          "regionCode": {
+            "type": "string",
+            "title": "Region Code",
+            "examples": [
+              "US",
+              "GB",
+              "FR"
+            ],
+            "description": "Region code specified as a ccTLD two-character value, affecting results based on applicable law"
+          },
+          "languageCode": {
+            "type": "string",
+            "title": "Language Code",
+            "examples": [
+              "en",
+              "es",
+              "fr"
+            ],
+            "description": "Language code in which the results should be returned (BCP-47 format)"
+          }
+        },
+        "description": "Request model for reverse geocoding (coordinates to address)."
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_GEOCODE_PLACE",
+      "name": "Geocode Place by ID",
+      "description": "Tool to perform geocode lookup using a place identifier to retrieve address and coordinates. Use when you need to get detailed geographic information for a specific Google Place ID.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Geocoding & geolocation"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GeocodePlaceRequest",
+        "required": [
+          "place_id"
+        ],
+        "properties": {
+          "place_id": {
+            "type": "string",
+            "title": "Place Id",
+            "examples": [
+              "ChIJj61dQgK6j4AR4GeTYWZsKWw",
+              "places/ChIJj61dQgK6j4AR4GeTYWZsKWw"
+            ],
+            "description": "Place identifier to geocode. Must be in the format 'places/{placeId}' or just the place ID (e.g., 'ChIJj61dQgK6j4AR4GeTYWZsKWw'). The unique identifier for a place in the Google Places database."
+          },
+          "regionCode": {
+            "type": "string",
+            "title": "Region Code",
+            "examples": [
+              "US",
+              "GB",
+              "FR"
+            ],
+            "description": "Region code specified as a ccTLD two-character value, affecting results based on applicable law and address formatting."
+          },
+          "languageCode": {
+            "type": "string",
+            "title": "Language Code",
+            "examples": [
+              "en",
+              "es",
+              "fr"
+            ],
+            "description": "Language code in which the results should be returned (BCP-47 format). Defaults to 'en' if not specified."
+          }
+        },
+        "description": "Request model for geocoding a place identifier."
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_GEOCODING_API",
+      "name": "Geocoding API",
+      "description": "Convert addresses into geographic coordinates (latitude and longitude) and vice versa (reverse geocoding), or get an address for a Place ID. Uses the Geocoding API v4 (v4beta) which supports OAuth2 authentication. Exactly one of `address`, `latlng`, or `place_id` must be provided per request; omitting all three or mixing incompatible combinations yields no useful results.",
+      "version": "20261026_00",
+      "tags": [
+        "google_maps",
+        "geocoding",
+        "location",
+        "important",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GeocodingApiRequest",
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key",
+            "examples": [
+              "YOUR_API_KEY"
+            ],
+            "description": "Your application's API key. If not provided, will be extracted from connection metadata."
+          },
+          "bounds": {
+            "type": "string",
+            "title": "Bounds",
+            "examples": [
+              "34.172684,-118.604794|34.236144,-118.500938"
+            ],
+            "description": "The bounding box of the viewport within which to bias geocode results more prominently (e.g., '34.172684,-118.604794|34.236144,-118.500938'). This parameter will only influence, not fully restrict, results."
+          },
+          "latlng": {
+            "type": "string",
+            "title": "Latlng",
+            "examples": [
+              "40.714224,-73.961452"
+            ],
+            "description": "The latitude and longitude coordinates specifying the location for which you want the closest, human-readable address (e.g., '40.714224,-73.961452'). Provide for reverse geocoding."
+          },
+          "region": {
+            "type": "string",
+            "title": "Region",
+            "examples": [
+              "US",
+              "ES"
+            ],
+            "description": "The region code, specified as a ccTLD ('top-level domain') two-character value. This parameter will only influence, not fully restrict, results from the geocoder."
+          },
+          "address": {
+            "type": "string",
+            "title": "Address",
+            "examples": [
+              "1600 Amphitheatre Parkway, Mountain View, CA"
+            ],
+            "description": "The street address or plus code that you want to geocode. Provide for geocoding (address to coordinates)."
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "examples": [
+              "en",
+              "es"
+            ],
+            "description": "The language in which to return results. If language is not supplied, the geocoder attempts to use the preferred language as specified in the Accept-Language header, or the native language of the domain from which the request is sent."
+          },
+          "place_id": {
+            "type": "string",
+            "title": "Place Id",
+            "examples": [
+              "ChIJd8BlQ2BZwokRAFUEcm_qrcA"
+            ],
+            "description": "The place ID of the place for which you wish to obtain the human-readable address. Provide for place ID geocoding."
+          },
+          "components": {
+            "type": "string",
+            "title": "Components",
+            "examples": [
+              "postal_code:94043|country:US"
+            ],
+            "description": "A components filter with elements separated by a pipe (|). E.g., 'postal_code:94043|country:US'. Used for geocoding, can be restrictive or biasing. Supplying only `components` without `address` may return ZERO_RESULTS for some queries."
+          },
+          "result_type": {
+            "type": "string",
+            "title": "Result Type",
+            "examples": [
+              "street_address|locality"
+            ],
+            "description": "A filter of one or more address types, separated by a pipe (|) (e.g., 'street_address|locality'). Used for reverse geocoding and place ID geocoding."
+          },
+          "location_type": {
+            "type": "string",
+            "title": "Location Type",
+            "examples": [
+              "ROOFTOP|RANGE_INTERPOLATED"
+            ],
+            "description": "A filter of one or more location types, separated by a pipe (|) (e.g., 'ROOFTOP|RANGE_INTERPOLATED'). Used for reverse geocoding and place ID geocoding."
+          },
+          "extra_computations": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "ADDRESS_DESCRIPTORS",
+                "BUILDING_AND_ENTRANCES"
+              ],
+              "type": "string",
+              "title": "ExtraComputationEnum"
+            },
+            "title": "Extra Computations",
+            "examples": [
+              [
+                "ADDRESS_DESCRIPTORS"
+              ]
+            ],
+            "description": "Use this parameter to specify additional features in the response. Can select multiple values."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_GET_PLACE_DETAILS",
+      "name": "Get Place Details",
+      "description": "Retrieves comprehensive details for a place using its resource name (places/{place_id} format). Use when you need detailed information about a specific place.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Places search & details"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetPlaceDetailsRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "places/ChIJj61dQgK6j4AR4GeTYWZsKWw",
+              "ChIJj61dQgK6j4AR4GeTYWZsKWw",
+              "places/ChIJN1t_tDeuEmsRUsoyG83frY4"
+            ],
+            "description": "Google Place ID ONLY - an alphanumeric code (NOT a business name, address, or search query). Accepts 'places/{place_id}' or just the place_id. Place IDs typically start with 'ChIJ' followed by alphanumeric characters. To find a place ID from a business name, first use TEXT_SEARCH or NEARBY_SEARCH."
+          },
+          "fieldMask": {
+            "type": "string",
+            "title": "Field Mask",
+            "default": "id,displayName,formattedAddress",
+            "examples": [
+              "id,displayName,formattedAddress",
+              "id,displayName,formattedAddress,location,types,rating",
+              "displayName,formattedAddress,nationalPhoneNumber,internationalPhoneNumber,websiteUri,regularOpeningHours",
+              "*"
+            ],
+            "description": "Comma-separated list of place fields to return (no spaces allowed). Use '*' for all fields (not recommended for performance/cost). Common fields: id, displayName, formattedAddress, location, types, rating, photos, reviews, regularOpeningHours, nationalPhoneNumber, internationalPhoneNumber, websiteUri, googleMapsUri. Note: 'emailAddress' and 'phoneNumber' are NOT valid fields - use 'nationalPhoneNumber' or 'internationalPhoneNumber' instead."
+          },
+          "regionCode": {
+            "type": "string",
+            "title": "Region Code",
+            "examples": [
+              "US",
+              "GB",
+              "FR",
+              "JP",
+              "CA"
+            ],
+            "description": "Unicode country/region code (CLDR format) for region-specific display names. Examples: 'US', 'GB', 'FR', 'JP'. This affects how place names and addresses are formatted."
+          },
+          "languageCode": {
+            "type": "string",
+            "title": "Language Code",
+            "examples": [
+              "en",
+              "es",
+              "fr",
+              "ja",
+              "zh-CN"
+            ],
+            "description": "Preferred language code for place details (BCP-47 format). Examples: 'en' (English), 'es' (Spanish), 'fr' (French), 'ja' (Japanese). If not specified, defaults to the language of the request location."
+          },
+          "sessionToken": {
+            "type": "string",
+            "title": "Session Token",
+            "examples": [
+              "CjQSMAoSCXKp2I5aRbcdEeKlv62-kRkSFAoSCeMG0J90bdcdEeowxViZXGNIGhQqEgkeNhAlOBZXaRJQ1h-KoiIQAQ"
+            ],
+            "description": "URL-safe base64 string (max 36 characters) for Autocomplete session billing. Used to group this request with previous Autocomplete requests for billing purposes."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_GET_ROUTE",
+      "name": "Get Route",
+      "description": "Calculates one or more routes between two specified locations. Uses various travel modes and preferences; addresses must be resolvable by Google Maps. Response `duration` is a string with 's' suffix (e.g., `\"4557s\"`); parse before displaying.",
+      "version": "20261026_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetRouteRequest",
+        "required": [
+          "origin_address",
+          "destination_address"
+        ],
+        "properties": {
+          "units": {
+            "enum": [
+              "METRIC",
+              "IMPERIAL"
+            ],
+            "type": "string",
+            "title": "Units",
+            "default": "IMPERIAL",
+            "examples": [
+              "IMPERIAL",
+              "METRIC"
+            ],
+            "description": "Unit system (e.g., 'METRIC' for kilometers, 'IMPERIAL' for miles) for displaying distances. Note: `routes.distanceMeters` in the response is always in meters regardless of this setting; `units` only affects human-readable distance formatting in other fields."
+          },
+          "field_mask": {
+            "type": "string",
+            "title": "Field Mask",
+            "examples": [
+              "routes.distanceMeters,routes.duration"
+            ],
+            "description": "Comma-separated list of `Route` object fields to include in the response (e.g., 'routes.distanceMeters,routes.duration'). If not specified, a default fieldMask is used based on travelMode: for TRANSIT mode, transit-specific fields (transitDetails, steps, etc.) are included; for other modes, basic route fields (distanceMeters, duration, polyline) are included. Fields not listed are absent from the response; explicitly include all needed fields such as `routes.legs.steps` and `routes.polyline.encodedPolyline`."
+          },
+          "avoid_tolls": {
+            "type": "boolean",
+            "title": "Avoid Tolls",
+            "default": false,
+            "description": "Attempts to avoid toll roads if true."
+          },
+          "travel_mode": {
+            "enum": [
+              "DRIVE",
+              "BICYCLE",
+              "WALK",
+              "TWO_WHEELER",
+              "TRANSIT"
+            ],
+            "type": "string",
+            "title": "Travel Mode",
+            "default": "DRIVE",
+            "examples": [
+              "DRIVE",
+              "BICYCLE",
+              "WALK"
+            ],
+            "description": "Mode of transportation for the route."
+          },
+          "avoid_ferries": {
+            "type": "boolean",
+            "title": "Avoid Ferries",
+            "default": false,
+            "description": "Attempts to avoid ferries if true."
+          },
+          "language_code": {
+            "type": "string",
+            "title": "Language Code",
+            "default": "en-US",
+            "examples": [
+              "en-US",
+              "es",
+              "fr"
+            ],
+            "description": "BCP-47 language code (e.g., 'en-US', 'es') for textual information like navigation instructions."
+          },
+          "avoid_highways": {
+            "type": "boolean",
+            "title": "Avoid Highways",
+            "default": false,
+            "description": "Attempts to avoid highways if true."
+          },
+          "origin_address": {
+            "type": "string",
+            "title": "Origin Address",
+            "examples": [
+              "1600 Amphitheatre Parkway, Mountain View, CA",
+              "48.8566,2.3522"
+            ],
+            "description": "Starting point for the route calculation. Can be an address (e.g., '1600 Amphitheatre Parkway, Mountain View, CA') or coordinates as 'latitude,longitude' (e.g., '48.8566,2.3522')."
+          },
+          "routing_preference": {
+            "enum": [
+              "ROUTING_PREFERENCE_UNSPECIFIED",
+              "TRAFFIC_UNAWARE",
+              "TRAFFIC_AWARE",
+              "TRAFFIC_AWARE_OPTIMAL"
+            ],
+            "type": "string",
+            "title": "RoutingPreference",
+            "examples": [
+              "TRAFFIC_AWARE",
+              "TRAFFIC_UNAWARE"
+            ],
+            "description": "Specifies factors to consider when calculating the route."
+          },
+          "destination_address": {
+            "type": "string",
+            "title": "Destination Address",
+            "examples": [
+              "85 10th Ave, New York, NY",
+              "40.7484,-73.9967"
+            ],
+            "description": "Destination point for the route calculation. Can be an address (e.g., '85 10th Ave, New York, NY') or coordinates as 'latitude,longitude' (e.g., '40.7484,-73.9967')."
+          },
+          "compute_alternative_routes": {
+            "type": "boolean",
+            "title": "Compute Alternative Routes",
+            "default": false,
+            "description": "Computes and returns alternative routes if true."
+          }
+        },
+        "description": "Parameters for requesting a route, including origin, destination, travel mode, and preferences."
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_GET_TIME_ZONE",
+      "name": "Get Time Zone",
+      "description": "Retrieves time zone information for a specific geographic location and timestamp. Use this action when you need to determine the time zone ID, UTC offset, daylight savings offset, or localized time zone name for any point on Earth. The API considers the provided timestamp to accurately determine whether daylight savings is in effect at that moment.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "idempotentHint",
+        "Time zones"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTimeZoneRequest",
+        "required": [
+          "location",
+          "timestamp"
+        ],
+        "properties": {
+          "language": {
+            "enum": [
+              "ar",
+              "bg",
+              "bn",
+              "ca",
+              "cs",
+              "da",
+              "de",
+              "el",
+              "en",
+              "en-AU",
+              "en-GB",
+              "es",
+              "eu",
+              "fa",
+              "fi",
+              "fil",
+              "fr",
+              "gl",
+              "gu",
+              "hi",
+              "hr",
+              "hu",
+              "id",
+              "it",
+              "iw",
+              "ja",
+              "kn",
+              "ko",
+              "lt",
+              "lv",
+              "ml",
+              "mr",
+              "nl",
+              "no",
+              "pl",
+              "pt",
+              "pt-BR",
+              "pt-PT",
+              "ro",
+              "ru",
+              "sk",
+              "sl",
+              "sr",
+              "sv",
+              "ta",
+              "te",
+              "th",
+              "tl",
+              "tr",
+              "uk",
+              "vi",
+              "zh-CN",
+              "zh-TW"
+            ],
+            "type": "string",
+            "title": "LanguageCode",
+            "examples": [
+              "en",
+              "es",
+              "fr"
+            ],
+            "description": "Supported language codes for Google Maps API."
+          },
+          "location": {
+            "type": "string",
+            "title": "Location",
+            "examples": [
+              "39.6034810,-119.6822510",
+              "37.7749,-122.4194"
+            ],
+            "description": "A comma-separated latitude,longitude tuple representing the location to look up. For example: '39.6034810,-119.6822510'."
+          },
+          "timestamp": {
+            "type": "integer",
+            "title": "Timestamp",
+            "examples": [
+              1331161200,
+              1609459200
+            ],
+            "description": "The desired time as seconds since midnight, January 1, 1970 UTC (Unix epoch time). The API uses this timestamp to determine whether Daylight Savings should be applied for the location's time zone."
+          }
+        },
+        "description": "Request parameters for fetching time zone information."
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_LOOKUP_AERIAL_VIDEO",
+      "name": "Lookup Aerial Video",
+      "description": "Tool to look up an aerial view video by address or video ID. Returns video metadata including state and URIs for playback. Use when you need to retrieve a previously rendered aerial video or check the status of a video render request. A PROCESSING response includes metadata.videoId for a later lookup and no playback URIs. Only a lookup returning a ready video is billable.",
+      "version": "20261026_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint",
+        "Aerial imagery & videos"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "LookupAerialVideoRequest",
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address",
+            "examples": [
+              "1600 Amphitheatre Parkway, Mountain View, CA"
+            ],
+            "description": "A US postal address. Either videoId or address must be provided, but not both."
+          },
+          "videoId": {
+            "type": "string",
+            "title": "Video Id",
+            "examples": [
+              "ChYKFEhlbGxvIEZyb20gR29vZ2xlIE1hcHMSAggB"
+            ],
+            "description": "An ID returned from videos.renderVideo. Either videoId or address must be provided, but not both."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_MAPS_EMBED_API",
+      "name": "Embed Google Map",
+      "description": "Tool to generate an embeddable Google Map URL and HTML iframe code. Use when you need to display a map (place, view, directions, street view, search) on a webpage without JavaScript. Note: This API only works with API keys (no OAuth2 support). It generates embed URLs and does not make direct API calls. Generated embed URLs are publicly accessible; avoid passing sensitive or internal location queries.",
+      "version": "20261026_00",
+      "tags": [
+        "google_maps",
+        "embed",
+        "important",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "MapsEmbedApiRequest",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "place",
+              "view",
+              "directions",
+              "streetview",
+              "search"
+            ],
+            "type": "string",
+            "title": "Mode",
+            "examples": [
+              "place"
+            ],
+            "description": "The mode of the embedded map."
+          },
+          "api_key": {
+            "type": "string",
+            "title": "Api Key",
+            "examples": [
+              "AIzaSyD..."
+            ],
+            "description": "Google Maps API key. Required if not provided via connection metadata. The Maps Embed API only supports API key authentication, not OAuth."
+          },
+          "view_params": {
+            "type": "object",
+            "title": "ViewModeParams",
+            "properties": {
+              "zoom": {
+                "type": "integer",
+                "title": "Zoom",
+                "maximum": 21,
+                "minimum": 0,
+                "examples": [
+                  15
+                ],
+                "description": "Sets the initial zoom level of the map. Values range from 0 (the whole world) to 21 (individual buildings)."
+              },
+              "center": {
+                "type": "string",
+                "title": "Center",
+                "examples": [
+                  "-33.8569,151.2152"
+                ],
+                "description": "Defines the center of the map view. Accepts comma-separated latitude and longitude value (e.g., '37.4218,-122.0840'). This is REQUIRED for view mode."
+              },
+              "region": {
+                "type": "string",
+                "title": "Region",
+                "examples": [
+                  "US"
+                ],
+                "description": "Defines appropriate borders and labels based on geopolitical sensitivities (e.g., 'US', 'GB'). Accepts a two-character ccTLD code."
+              },
+              "maptype": {
+                "enum": [
+                  "roadmap",
+                  "satellite"
+                ],
+                "type": "string",
+                "title": "Maptype",
+                "examples": [
+                  "satellite"
+                ],
+                "description": "Defines the type of map tiles to load."
+              },
+              "language": {
+                "type": "string",
+                "title": "Language",
+                "examples": [
+                  "es"
+                ],
+                "description": "Defines the language for UI elements and map labels (e.g., 'en', 'es', 'fr')."
+              }
+            },
+            "description": "Parameters for 'view' mode.",
+            "additionalProperties": false
+          },
+          "place_params": {
+            "type": "object",
+            "title": "PlaceModeParams",
+            "required": [
+              "q"
+            ],
+            "properties": {
+              "q": {
+                "type": "string",
+                "title": "Q",
+                "examples": [
+                  "Space+Needle,Seattle+WA",
+                  "place_id:ChIJrTLr-GyuEmsRBfy61i59si0"
+                ],
+                "description": "Defines the map marker location. Accepts a URL-escaped place name, address, plus code, or Place ID (prefixed with 'place_id:')."
+              },
+              "zoom": {
+                "type": "integer",
+                "title": "Zoom",
+                "maximum": 21,
+                "minimum": 0,
+                "examples": [
+                  15
+                ],
+                "description": "Sets the initial zoom level of the map. Values range from 0 (the whole world) to 21 (individual buildings)."
+              },
+              "center": {
+                "type": "string",
+                "title": "Center",
+                "examples": [
+                  "37.4218,-122.0840"
+                ],
+                "description": "Defines the center of the map view. Accepts comma-separated latitude and longitude value (e.g., '37.4218,-122.0840')."
+              },
+              "region": {
+                "type": "string",
+                "title": "Region",
+                "examples": [
+                  "US"
+                ],
+                "description": "Defines appropriate borders and labels based on geopolitical sensitivities (e.g., 'US', 'GB'). Accepts a two-character ccTLD code."
+              },
+              "maptype": {
+                "enum": [
+                  "roadmap",
+                  "satellite"
+                ],
+                "type": "string",
+                "title": "Maptype",
+                "examples": [
+                  "satellite"
+                ],
+                "description": "Defines the type of map tiles to load."
+              },
+              "language": {
+                "type": "string",
+                "title": "Language",
+                "examples": [
+                  "es"
+                ],
+                "description": "Defines the language for UI elements and map labels (e.g., 'en', 'es', 'fr')."
+              }
+            },
+            "description": "Parameters for 'place' mode.",
+            "additionalProperties": false
+          },
+          "search_params": {
+            "type": "object",
+            "title": "SearchModeParams",
+            "required": [
+              "q"
+            ],
+            "properties": {
+              "q": {
+                "type": "string",
+                "title": "Q",
+                "examples": [
+                  "record+stores+in+Seattle"
+                ],
+                "description": "Defines the search term. Can include a geographic restriction (e.g., 'record+stores+in+Seattle')."
+              },
+              "zoom": {
+                "type": "integer",
+                "title": "Zoom",
+                "maximum": 21,
+                "minimum": 0,
+                "examples": [
+                  15
+                ],
+                "description": "Sets the initial zoom level of the map. Values range from 0 (the whole world) to 21 (individual buildings)."
+              },
+              "center": {
+                "type": "string",
+                "title": "Center",
+                "examples": [
+                  "37.4218,-122.0840"
+                ],
+                "description": "Defines the center of the map view. Accepts comma-separated latitude and longitude value (e.g., '37.4218,-122.0840')."
+              },
+              "region": {
+                "type": "string",
+                "title": "Region",
+                "examples": [
+                  "US"
+                ],
+                "description": "Defines appropriate borders and labels based on geopolitical sensitivities (e.g., 'US', 'GB'). Accepts a two-character ccTLD code."
+              },
+              "maptype": {
+                "enum": [
+                  "roadmap",
+                  "satellite"
+                ],
+                "type": "string",
+                "title": "Maptype",
+                "examples": [
+                  "satellite"
+                ],
+                "description": "Defines the type of map tiles to load."
+              },
+              "language": {
+                "type": "string",
+                "title": "Language",
+                "examples": [
+                  "es"
+                ],
+                "description": "Defines the language for UI elements and map labels (e.g., 'en', 'es', 'fr')."
+              }
+            },
+            "description": "Parameters for 'search' mode.",
+            "additionalProperties": false
+          },
+          "directions_params": {
+            "type": "object",
+            "title": "DirectionsModeParams",
+            "required": [
+              "origin",
+              "destination"
+            ],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "driving",
+                  "walking",
+                  "bicycling",
+                  "transit",
+                  "flying"
+                ],
+                "type": "string",
+                "title": "Mode",
+                "examples": [
+                  "driving"
+                ],
+                "description": "Defines the method of travel."
+              },
+              "zoom": {
+                "type": "integer",
+                "title": "Zoom",
+                "maximum": 21,
+                "minimum": 0,
+                "examples": [
+                  15
+                ],
+                "description": "Sets the initial zoom level of the map. Values range from 0 (the whole world) to 21 (individual buildings)."
+              },
+              "avoid": {
+                "type": "string",
+                "title": "Avoid",
+                "examples": [
+                  "tolls|highways"
+                ],
+                "description": "Specifies features to avoid in directions (e.g., 'tolls', 'highways', 'ferries'). Separate multiple values with the pipe character (|). E.g. 'tolls|highways'."
+              },
+              "units": {
+                "enum": [
+                  "metric",
+                  "imperial"
+                ],
+                "type": "string",
+                "title": "Units",
+                "examples": [
+                  "metric"
+                ],
+                "description": "Specifies measurement units for distances."
+              },
+              "center": {
+                "type": "string",
+                "title": "Center",
+                "examples": [
+                  "37.4218,-122.0840"
+                ],
+                "description": "Defines the center of the map view. Accepts comma-separated latitude and longitude value (e.g., '37.4218,-122.0840')."
+              },
+              "origin": {
+                "type": "string",
+                "title": "Origin",
+                "examples": [
+                  "Oslo+Norway",
+                  "place_id:ChIJs--MqP1YwokRBwAhjXWIHn8"
+                ],
+                "description": "Defines the starting point for directions. Accepts URL-escaped place name, address, plus code, lat/lng coordinates, or Place ID (prefixed with 'place_id:')."
+              },
+              "region": {
+                "type": "string",
+                "title": "Region",
+                "examples": [
+                  "US"
+                ],
+                "description": "Defines appropriate borders and labels based on geopolitical sensitivities (e.g., 'US', 'GB'). Accepts a two-character ccTLD code."
+              },
+              "maptype": {
+                "enum": [
+                  "roadmap",
+                  "satellite"
+                ],
+                "type": "string",
+                "title": "Maptype",
+                "examples": [
+                  "satellite"
+                ],
+                "description": "Defines the type of map tiles to load."
+              },
+              "language": {
+                "type": "string",
+                "title": "Language",
+                "examples": [
+                  "es"
+                ],
+                "description": "Defines the language for UI elements and map labels (e.g., 'en', 'es', 'fr')."
+              },
+              "waypoints": {
+                "type": "string",
+                "title": "Waypoints",
+                "examples": [
+                  "Berlin,Germany|Paris,France"
+                ],
+                "description": "Specifies one or more intermediary places to route directions. Separate multiple waypoints with the pipe character (|). E.g., 'Berlin,Germany|Paris,France'. Up to 20 waypoints."
+              },
+              "destination": {
+                "type": "string",
+                "title": "Destination",
+                "examples": [
+                  "Telemark+Norway",
+                  "place_id:ChIJ3S-JXmauEmsRUcIaWtf4MzE"
+                ],
+                "description": "Defines the endpoint of the directions. Accepts URL-escaped place name, address, plus code, lat/lng coordinates, or Place ID (prefixed with 'place_id:')."
+              }
+            },
+            "description": "Parameters for 'directions' mode.",
+            "additionalProperties": false
+          },
+          "streetview_params": {
+            "type": "object",
+            "title": "StreetViewModeParams",
+            "properties": {
+              "fov": {
+                "type": "number",
+                "title": "Fov",
+                "maximum": 100,
+                "minimum": 10,
+                "examples": [
+                  90
+                ],
+                "description": "Horizontal field of view in degrees (10-100). Smaller numbers mean higher zoom."
+              },
+              "pano": {
+                "type": "string",
+                "title": "Pano",
+                "examples": [
+                  "street_view_pano_id"
+                ],
+                "description": "A specific panorama ID. Required if 'location' is not provided. 'location' can be a fallback."
+              },
+              "zoom": {
+                "type": "integer",
+                "title": "Zoom",
+                "maximum": 21,
+                "minimum": 0,
+                "examples": [
+                  15
+                ],
+                "description": "Sets the initial zoom level of the map. Values range from 0 (the whole world) to 21 (individual buildings)."
+              },
+              "pitch": {
+                "type": "number",
+                "title": "Pitch",
+                "maximum": 90,
+                "minimum": -90,
+                "examples": [
+                  10
+                ],
+                "description": "Angle, up or down, of the camera in degrees (-90 to 90). Positive is up."
+              },
+              "center": {
+                "type": "string",
+                "title": "Center",
+                "examples": [
+                  "37.4218,-122.0840"
+                ],
+                "description": "Defines the center of the map view. Accepts comma-separated latitude and longitude value (e.g., '37.4218,-122.0840')."
+              },
+              "radius": {
+                "type": "integer",
+                "title": "Radius",
+                "minimum": 0,
+                "examples": [
+                  50
+                ],
+                "description": "Radius in meters to search for a panorama, centered on lat/lng. Default 50."
+              },
+              "region": {
+                "type": "string",
+                "title": "Region",
+                "examples": [
+                  "US"
+                ],
+                "description": "Defines appropriate borders and labels based on geopolitical sensitivities (e.g., 'US', 'GB'). Accepts a two-character ccTLD code."
+              },
+              "source": {
+                "enum": [
+                  "default",
+                  "outdoor"
+                ],
+                "type": "string",
+                "title": "Source",
+                "examples": [
+                  "outdoor"
+                ],
+                "description": "Limits Street View searches to selected sources. 'default' or 'outdoor'."
+              },
+              "heading": {
+                "type": "number",
+                "title": "Heading",
+                "maximum": 360,
+                "minimum": -180,
+                "examples": [
+                  210
+                ],
+                "description": "Compass heading of the camera in degrees clockwise from North (-180 to 360)."
+              },
+              "maptype": {
+                "enum": [
+                  "roadmap",
+                  "satellite"
+                ],
+                "type": "string",
+                "title": "Maptype",
+                "examples": [
+                  "satellite"
+                ],
+                "description": "Defines the type of map tiles to load."
+              },
+              "language": {
+                "type": "string",
+                "title": "Language",
+                "examples": [
+                  "es"
+                ],
+                "description": "Defines the language for UI elements and map labels (e.g., 'en', 'es', 'fr')."
+              },
+              "location": {
+                "type": "string",
+                "title": "Location",
+                "examples": [
+                  "46.414382,10.013988"
+                ],
+                "description": "Latitude and longitude as comma-separated values (e.g., '46.414382,10.013988'). Displays panorama closest to this location. Required if 'pano' is not provided."
+              }
+            },
+            "description": "Parameters for 'streetview' mode.",
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_NEARBY_SEARCH",
+      "name": "Nearby search",
+      "description": "Searches for places (e.g., restaurants, parks) within a specified circular area, with options to filter by place types and customize the returned fields and number of results.",
+      "version": "20261026_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "NearbySearchRequest",
+        "required": [
+          "latitude",
+          "longitude",
+          "radius"
+        ],
+        "properties": {
+          "radius": {
+            "type": "number",
+            "title": "Radius",
+            "maximum": 50000,
+            "minimum": 0,
+            "examples": [
+              1500,
+              5000
+            ],
+            "description": "Radius of the circular search area in meters."
+          },
+          "latitude": {
+            "type": "number",
+            "title": "Latitude",
+            "maximum": 90,
+            "minimum": -90,
+            "examples": [
+              -33.8670522,
+              34.052235
+            ],
+            "description": "Latitude coordinate of the search center in decimal degrees."
+          },
+          "fieldMask": {
+            "type": "string",
+            "title": "Field Mask",
+            "default": "places.displayName",
+            "examples": [
+              "places.displayName",
+              "displayName,formattedAddress,rating",
+              "places.id,places.formattedAddress,places.types",
+              "*"
+            ],
+            "description": "Comma-separated list of place fields for the response. Fields are automatically prefixed with 'places.' if missing. Common fields: displayName, formattedAddress, id, types, rating, userRatingCount, location, businessStatus, regularOpeningHours, photos, reviews. Use '*' for all fields (not recommended for production). Valid field names include: displayName, formattedAddress, shortFormattedAddress, id, types, primaryType, primaryTypeDisplayName, location, viewport, plusCode, rating, userRatingCount, reviews, regularOpeningHours, currentOpeningHours, photos, websiteUri, googleMapsUri, businessStatus, priceLevel, priceRange, addressComponents, utcOffsetMinutes, internationalPhoneNumber, nationalPhoneNumber, editorialSummary, accessibilityOptions, parkingOptions, paymentOptions, delivery, dineIn, takeout, reservable, servesBreakfast, servesLunch, servesDinner, servesBeer, servesWine, allowsDogs, outdoorSeating, liveMusic, goodForChildren, goodForGroups."
+          },
+          "longitude": {
+            "type": "number",
+            "title": "Longitude",
+            "maximum": 180,
+            "minimum": -180,
+            "examples": [
+              151.1957362,
+              -118.243683
+            ],
+            "description": "Longitude coordinate of the search center in decimal degrees."
+          },
+          "excludedTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Excluded Types",
+            "examples": [
+              [
+                "cafe"
+              ],
+              [
+                "store"
+              ]
+            ],
+            "description": "List of place types to exclude from Table A. Results matching any of these types are omitted. Up to 50 types allowed. Must be provided as a list, e.g., ['cafe'] for a single type or ['cafe', 'store'] for multiple types. Must use valid Table A types only."
+          },
+          "includedTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Included Types",
+            "examples": [
+              [
+                "restaurant"
+              ],
+              [
+                "atm",
+                "bank"
+              ],
+              [
+                "park"
+              ]
+            ],
+            "description": "List of place types to include from Table A. Results will match at least one of these types. Up to 50 types allowed. Must be provided as a list, e.g., ['restaurant'] for a single type or ['atm', 'bank'] for multiple types. Common types: restaurant, cafe, bank, atm, hospital, pharmacy, school, park, gym, hotel, airport, gas_station. IMPORTANT: 'food' is NOT a valid type (it's in Table B); use specific types like restaurant, cafe, bakery, fast_food_restaurant instead. Note: 'locality' is valid, but 'city', 'town', 'sublocality', 'landmark', and 'point_of_interest' are NOT valid for filtering."
+          },
+          "maxResultCount": {
+            "type": "integer",
+            "title": "Max Result Count",
+            "default": 10,
+            "maximum": 20,
+            "minimum": 1,
+            "examples": [
+              5,
+              10,
+              20
+            ],
+            "description": "Maximum number of search results to return. Valid range: 1-20. The actual count may be lower based on available places."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_PLACE_PHOTO",
+      "name": "Get Place Photo",
+      "description": "Retrieves high quality photographic content from the Google Maps Places database. Use when you need to download a place photo using a photo_reference obtained from Place Details, Nearby Search, or Text Search requests. Images are scaled proportionally to fit within specified dimensions.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Places search & details"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "PlacePhotoRequest",
+        "required": [
+          "photo_reference"
+        ],
+        "properties": {
+          "maxwidth": {
+            "type": "integer",
+            "title": "Maxwidth",
+            "maximum": 1600,
+            "minimum": 1,
+            "examples": [
+              400,
+              800,
+              1600
+            ],
+            "description": "Maximum desired width of the image in pixels (1-1600). Image will be scaled proportionally. You must specify either maxwidth, maxheight, or both."
+          },
+          "maxheight": {
+            "type": "integer",
+            "title": "Maxheight",
+            "maximum": 1600,
+            "minimum": 1,
+            "examples": [
+              400,
+              800,
+              1600
+            ],
+            "description": "Maximum desired height of the image in pixels (1-1600). Image will be scaled proportionally. You must specify either maxwidth, maxheight, or both."
+          },
+          "photo_reference": {
+            "type": "string",
+            "title": "Photo Reference",
+            "examples": [
+              "ATJ83zhSSAtkh5LTozXMhBghqubeOxnZWUV2m7Hv2tQaIzKQJgvZk9eCaEjBW0r0Zx1oJ9RF1G7oeM34sQQMOv8s2zA0sgGBiyBgvdyMxeVByRgHUXmv-rkJ2wyvNv17jyTSySm_-_6R2B0v4eKX257HOxvXlx_TSwp2NrICKrZM2d5d2P4q",
+              "places/ChIJj61dQgK6j4AR4GeTYWZsKWw/photos/ATJ83zhSSAtkh5LTozXMhBghqubeOxnZWUV2m7Hv2tQaIzKQJgvZk9eCaEjBW0r0Zx1oJ9RF1G7oeM34sQQMOv8s2zA0sgGBiyBgvdyMxeVByRgHUXmv-rkJ2wyvNv17jyTSySm_-_6R2B0v4eKX257HOxvXlx_TSwp2NrICKrZM2d5d2P4q"
+            ],
+            "description": "A string identifier that uniquely identifies a photo. Can be either: (1) A full photo resource name in format 'places/{place_id}/photos/{photo}' from the new Places API, or (2) Just the photo reference string from legacy API. Obtained from Place Details, Nearby Search, or Text Search requests. Note: Photo references cannot be cached and may expire over time."
+          }
+        },
+        "description": "Request parameters for retrieving a Place Photo."
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_RENDER_AERIAL_VIDEO",
+      "name": "Render Aerial Video",
+      "description": "Starts rendering an aerial view video for a US postal address. Returns a video ID that can be used with lookupVideo to retrieve the video once rendering completes. Rendering typically takes up to a few hours.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "Aerial imagery & videos",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "RenderAerialVideoRequest",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address",
+            "examples": [
+              "1600 Amphitheatre Parkway, Mountain View, CA 94043",
+              "350 Fifth Avenue, New York, NY 10118",
+              "1 Apple Park Way, Cupertino, CA 95014"
+            ],
+            "description": "US postal address for which to render aerial video. Must be a valid US address with street, city, state, and postal code."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLE_MAPS_TEXT_SEARCH",
+      "name": "Text Search",
+      "description": "Searches for places on Google Maps using a textual query (e.g., \"restaurants in London\", \"Eiffel Tower\"). Results may include CLOSED_PERMANENTLY or TEMPORARILY_CLOSED places — filter by businessStatus=OPERATIONAL. Include city/region and business type in textQuery to avoid empty or irrelevant results. Deduplicate using id or formattedAddress, not name alone. Throttle to ~1 req/s; OVER_QUERY_LIMIT (HTTP 429) requires exponential backoff.",
+      "version": "20261026_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "TextSearchRequest",
+        "required": [
+          "textQuery"
+        ],
+        "properties": {
+          "fieldMask": {
+            "type": "string",
+            "title": "Field Mask",
+            "default": "places.displayName,places.formattedAddress",
+            "examples": [
+              "displayName,formattedAddress,rating",
+              "places.displayName,places.formattedAddress,places.types,places.rating",
+              "displayName,websiteUri,nationalPhoneNumber",
+              "*"
+            ],
+            "description": "Comma-separated list of place fields to return. Instant requests default to displayName and formattedAddress; connected-account requests that omit this field retain their existing default including priceLevel. Requesting priceLevel explicitly increases the Instant price. Common fields include: displayName, formattedAddress, types, rating, userRatingCount, priceLevel, websiteUri, nationalPhoneNumber, internationalPhoneNumber, regularOpeningHours, location, photos, googleMapsUri, businessStatus, id. The 'places.' prefix is optional and will be added automatically. Use '*' for all fields (not recommended for performance/cost). Common aliases are supported: 'name'->displayName, 'address'->formattedAddress, 'url'/'website'->websiteUri, 'type'->types, 'phone'->nationalPhoneNumber. Invalid field names (e.g., places.phoneNumber instead of places.nationalPhoneNumber) cause errors. Many fields (rating, websiteUri, regularOpeningHours, nationalPhoneNumber) may be absent even when requested — handle nulls."
+          },
+          "textQuery": {
+            "type": "string",
+            "title": "Text Query",
+            "examples": [
+              "restaurants in London",
+              "Eiffel Tower",
+              "coffee shops near me"
+            ],
+            "description": "Text query for searching places. Matched against place name, address, and category. Underspecified queries (missing city, region, or business type) yield empty or irrelevant results. Brand-name-only queries return multiple franchise branches — validate formattedAddress against the intended location."
+          },
+          "maxResultCount": {
+            "type": "integer",
+            "title": "Max Result Count",
+            "default": 10,
+            "examples": [
+              5,
+              10,
+              20
+            ],
+            "description": "Maximum number of place results to return (must be 1-20). Note: Google prefers `pageSize`, but this action uses `maxResultCount`."
+          }
+        }
+      }
+    }
+  ]
+}
