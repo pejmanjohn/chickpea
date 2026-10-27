@@ -2534,6 +2534,7 @@ export class ConfigStoreLogic {
       this.requireAgentHasNoBlockingReferences(agentId);
       this.deleteRevokedAgentConnectionBindings(agentId);
       this.deleteAgentThreadRoutes(agentId);
+      this.deleteAgentScheduleReferences(agentId);
       const deleted = this.db.run(
         'DELETE FROM config_agents WHERE id = ? AND revision = ? AND credential_incarnation = ?',
         agentId,
@@ -2578,6 +2579,7 @@ export class ConfigStoreLogic {
       this.requireAgentHasNoBlockingReferences(agentId);
       this.deleteRevokedAgentConnectionBindings(agentId);
       this.deleteAgentThreadRoutes(agentId);
+      this.deleteAgentScheduleReferences(agentId);
       const deleted = this.db.run(
         'DELETE FROM config_agents WHERE id = ? AND revision = ? AND credential_incarnation = ?',
         agentId,
@@ -2751,6 +2753,14 @@ export class ConfigStoreLogic {
       this.deleteSlackPublicContextRoot(String(route.workspace_id), String(route.channel_id), String(route.thread_ts));
     }
     this.db.run('DELETE FROM config_agent_thread_routes WHERE agent_id = ?', agentId);
+  }
+
+  /**
+   * A deleted Agent's schedule references can never resolve again. Its routines,
+   * their runs and their audit stay, since Scheduled work and Usage still read them.
+   */
+  private deleteAgentScheduleReferences(agentId: string): void {
+    this.db.run('DELETE FROM config_agent_schedule_references WHERE agent_id = ?', agentId);
   }
 
   private deleteRevokedAgentConnectionBindings(agentId: string): void {
