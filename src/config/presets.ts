@@ -1023,7 +1023,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsUrl: 'https://adzviser.com/mcp',
     tokenDocsHint: 'Sign in to the Adzviser account whose workspace Chickpea should report on.',
     notes:
-      'Read-only. Needs your own Adzviser account with a workspace and at least one connected source. Adzviser is a paid service, and new workspaces start with a 14-day trial.',
+      'Read-only. Needs your own Adzviser account with a workspace and at least one connected source. Adzviser is a paid service, and new workspaces start with a 14-day trial for $0.99.',
   },
   {
     id: 'funnel',
@@ -1069,12 +1069,12 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsUrl: 'https://ads.tiktok.com/resources/help/article/about-tiktok-for-business-mcp-server?lang=en',
     tokenDocsHint: 'Sign in with the TikTok for Business account whose ad accounts Chickpea should manage.',
     notes:
-      'Read and write. This preset uses TikTok\'s progressive-disclosure server, which loads about 40 core tools first and makes the rest discoverable on demand.',
+      'Read and write. This preset uses TikTok\'s progressive-disclosure server, which loads about 40 core tools.',
   },
   {
     id: 'windsor-ai',
     name: 'Windsor.ai',
-    description: 'Query connected marketing data and pause, enable, or change budgets on ad campaigns.',
+    description: 'Query connected marketing data and create, pause, enable, or change budgets on campaigns and ads.',
     category: 'business',
     accent: '#263244',
     url: 'https://mcp.windsor.ai/',
@@ -1083,7 +1083,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsUrl: 'https://windsor.ai/documentation/windsor-mcp/',
     tokenDocsHint: 'Sign in to the Windsor.ai account whose data sources Chickpea should query.',
     notes:
-      'Needs your own Windsor.ai account with at least one connected data source. Write actions cover Meta, Google, TikTok, LinkedIn, and Microsoft ads.',
+      'Needs your own Windsor.ai account with at least one connected data source and has no read-only grant. Write actions can create or change campaigns, ad groups, and ads on Meta, Google, TikTok, LinkedIn, and Microsoft ads, post to Instagram and Google Business Profile, and schedule data exports.',
   },
   {
     id: 'google-workspace',
