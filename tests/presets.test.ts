@@ -218,6 +218,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     category: 'business',
     accent: '#FF0000',
     logoId: 'youtube',
+  }, {
+    id: 'freshdesk-managed',
+    managedToolkit: 'freshdesk',
+    providerId: 'freshdesk',
+    name: 'Freshdesk',
+    description: 'Find, create, and update tickets, contacts, companies, and help articles in one helpdesk.',
+    category: 'business',
+    accent: '#00AC4C',
+    logoId: 'freshdesk',
   }]);
   assert.equal(CONNECTION_CATALOG_PRESETS.some(({ id }) => id === 'notion'), false);
   assert.equal(CONNECTION_CATALOG_PRESETS.some(({ id }) => id === 'notion-managed'), true);

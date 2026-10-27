@@ -264,7 +264,7 @@ test('an Owner gets a 24-hour provider key handoff over MCP and the key never en
       confirmedSetup: await f.management.getSetup(confirmedResult.outcomes[0]!.setupOperationId!, NOW),
     });
     assert.doesNotMatch(everything, /sk-typed-in-browser-only/);
-    assert.doesNotMatch(everything, /sk-/);
+    assert.doesNotMatch(everything, /\bsk-/);
     assert.ok(receipts.length === 1, 'one non-secret receipt was delivered');
     assert.equal(
       (snapshot.result as { providers: Array<{ id: string; source: string }> })

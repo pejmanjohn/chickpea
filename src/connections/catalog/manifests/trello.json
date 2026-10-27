@@ -1,0 +1,1495 @@
+{
+  "toolkit": "trello",
+  "version": "20261007_01",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Trello",
+  "description": "Find, create, and update cards, lists, and boards the connected account can reach.",
+  "securityDescription": "Trello sign-in opens through Composio. Agents can read every board, list, card, and member the connected Trello account can reach; Chickpea adds no board picker. With write access, Agents can create boards, lists, and cards, comment on cards, and edit cards, including archiving a card or moving it to another list on the same board. Before a move, Chickpea checks that the target list is on the card's board. New boards keep Trello's default visibility. Agents cannot delete anything, change board visibility or permissions, invite people or assign card members, add a board to a Workspace, move a card to another board, copy boards, lists, or cards, or attach files.",
+  "preset": {
+    "category": "project",
+    "accent": "#0052CC"
+  },
+  "validationCapability": "trello.who_am_i",
+  "review": {
+    "add": [
+      "TRELLO_ADD_CARDS_ACTIONS_COMMENTS_BY_ID_CARD",
+      "TRELLO_GET_BOARDS_LISTS_BY_ID_BOARD",
+      "TRELLO_GET_CARDS_BY_ID_CARD",
+      "TRELLO_GET_LISTS_CARDS_BY_ID_LIST",
+      "TRELLO_GET_MEMBERS_BOARDS_BY_ID_MEMBER",
+      "TRELLO_GET_SEARCH",
+      "TRELLO_UPDATE_CARDS_BY_ID_CARD"
+    ],
+    "drop": {
+      "TRELLO_GET_MEMBERS_ME": "Duplicates TRELLO_WHO_AM_I for identity and TRELLO_GET_MEMBERS_BY_ID_MEMBER for member details."
+    },
+    "allowArguments": {}
+  },
+  "capabilities": [
+    {
+      "id": "trello.add_boards",
+      "tool": "TRELLO_ADD_BOARDS",
+      "toolName": "trello_add_boards",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new Trello board; the 'name' parameter is required for creation, and various preferences can be customized or cloned from a source board.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Trello: Add board",
+      "withheldArguments": {
+        "prefs_voting": "changes sharing, visibility, permissions, membership, or who acts",
+        "idBoardSource": "copies content from another record, URL, or file",
+        "prefs__voting": "changes sharing, visibility, permissions, membership, or who acts",
+        "idOrganization": "changes sharing, visibility, permissions, membership, or who acts",
+        "keepFromSource": "copies content from another record, URL, or file",
+        "prefs_comments": "changes sharing, visibility, permissions, membership, or who acts",
+        "prefs_selfJoin": "changes sharing, visibility, permissions, membership, or who acts",
+        "prefs__comments": "changes sharing, visibility, permissions, membership, or who acts",
+        "prefs__selfJoin": "changes sharing, visibility, permissions, membership, or who acts",
+        "prefs_invitations": "changes sharing, visibility, permissions, membership, or who acts",
+        "prefs__invitations": "changes sharing, visibility, permissions, membership, or who acts",
+        "prefs_permissionLevel": "changes sharing, visibility, permissions, membership, or who acts",
+        "prefs__permissionLevel": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "desc": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Description for the Trello board (0-16384 characters)."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name for the new Trello board (1-16384 characters). This field is required for board creation."
+          },
+          "closed": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Whether the board should be immediately archived (closed)."
+          },
+          "powerUps": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Power-Ups to enable (e.g., 'calendar,voting', 'all'; valid: 'calendar', 'cardAging', 'recap', 'voting')."
+          },
+          "subscribed": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Whether the creator is automatically subscribed to the board."
+          },
+          "labelNames__red": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name for the red label (0-16384 characters); corresponds to API parameter 'labelNames/red'."
+          },
+          "prefs_cardAging": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Card aging style ('pirate' or 'regular'); corresponds to API parameter 'prefs_cardAging'."
+          },
+          "labelNames__blue": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name for the blue label (0-16384 characters); corresponds to API parameter 'labelNames/blue'."
+          },
+          "prefs__cardAging": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Card aging style ('pirate' or 'regular'); corresponds to API parameter 'prefs/cardAging'."
+          },
+          "prefs_background": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Board background (standard name, custom ID, or hex code; 0-16384 characters); corresponds to API parameter 'prefs_background'."
+          },
+          "prefs_cardCovers": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Whether card covers are shown; corresponds to API parameter 'prefs_cardCovers'."
+          },
+          "labelNames__green": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name for the green label (0-16384 characters); corresponds to API parameter 'labelNames/green'."
+          },
+          "prefs__background": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Board background (standard name like 'blue', 'pink', or custom ID); corresponds to API parameter 'prefs/background'."
+          },
+          "prefs__cardCovers": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Whether card covers are shown; corresponds to API parameter 'prefs/cardCovers'."
+          },
+          "labelNames__orange": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name for the orange label (0-16384 characters); corresponds to API parameter 'labelNames/orange'."
+          },
+          "labelNames__purple": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name for the purple label (0-16384 characters); corresponds to API parameter 'labelNames/purple'."
+          },
+          "labelNames__yellow": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name for the yellow label (0-16384 characters); corresponds to API parameter 'labelNames/yellow'."
+          },
+          "prefs__calendarFeedEnabled": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Whether the calendar feed is enabled; corresponds to API parameter 'prefs/calendarFeedEnabled'."
+          }
+        },
+        "description": "Request schema for `AddBoards`"
+      }
+    },
+    {
+      "id": "trello.add_cards",
+      "tool": "TRELLO_ADD_CARDS",
+      "toolName": "trello_add_cards",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new card in a Trello list. Only `idList` is required; `idBoard` is optional as the API determines the board from the list.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Trello: Add card",
+      "withheldArguments": {
+        "idMembers": "changes sharing, visibility, permissions, membership, or who acts",
+        "urlSource": "copies content from another record, URL, or file",
+        "fileSource": "copies content from another record, URL, or file",
+        "idCardSource": "copies content from another record, URL, or file",
+        "keepFromSource": "copies content from another record, URL, or file"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "due": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Due date for the card (date string or 'null' to remove)."
+          },
+          "pos": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Position in list: 'top', 'bottom', or a positive float."
+          },
+          "desc": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Card description (0-16384 characters)."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name/title for the card. Highly recommended for new cards. If omitted, a blank title is created. When using 'idCardSource' to copy a card, the name is copied from the source unless overridden here."
+          },
+          "closed": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Archive (close) the card. Valid values: 'true', 'false'."
+          },
+          "idList": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the list to add the card to. Must be a 24-character hexadecimal string."
+          },
+          "idBoard": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of the board for the card. Must be a 24-character hexadecimal string. Optional - the API automatically determines the board from idList."
+          },
+          "idLabels": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of label IDs to add. Each ID must be a 24-character hexadecimal string."
+          },
+          "subscribed": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Subscribe user to the card. Valid values: 'true', 'false'."
+          },
+          "idAttachmentCover": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID of an image attachment on this card for its cover, or 'null' for no cover. Must be a 24-character hexadecimal string or 'null'."
+          }
+        },
+        "required": [
+          "idList"
+        ],
+        "description": "Request schema for `AddCards`"
+      }
+    },
+    {
+      "id": "trello.add_cards_actions_comments_by_id_card",
+      "tool": "TRELLO_ADD_CARDS_ACTIONS_COMMENTS_BY_ID_CARD",
+      "toolName": "trello_add_cards_actions_comments_by_id_card",
+      "lane": "write",
+      "effect": "external_publish",
+      "description": "Adds a new text comment, which can include @mentions, to a Trello card specified by its ID; file attachments are not supported via this action.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Trello: Add comment to card",
+      "input": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comment text, between 1 and 16384 characters. Supports @mentions to notify Trello users."
+          },
+          "idCard": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ID or shortLink of the Trello card to add the comment to."
+          }
+        },
+        "required": [
+          "idCard",
+          "text"
+        ],
+        "description": "Request schema for `AddCardsActionsCommentsByIdCard`"
+      }
+    },
+    {
+      "id": "trello.add_lists",
+      "tool": "TRELLO_ADD_LISTS",
+      "toolName": "trello_add_lists",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new list on a specified Trello board, with options to copy an existing list, set its position, initial state (archived/subscribed), and does not modify existing lists or move cards.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Trello: Add new list to board",
+      "withheldArguments": {
+        "idListSource": "copies content from another record, URL, or file"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "pos": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The position of the new list on the board. Valid values are `top`, `bottom`, or a positive number (e.g., '1', '2.5')."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name for the new list. Must be a string with a length from 1 to 16384 characters. This is a required parameter."
+          },
+          "closed": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Indicates whether the list should be created as closed (archived). Set to `true` for closed, or `false` for open."
+          },
+          "idBoard": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the board to which the new list should be added. This is a required parameter."
+          },
+          "subscribed": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Indicates whether the user creating the list should be automatically subscribed to it. Set to `true` to subscribe, or `false` otherwise."
+          }
+        },
+        "description": "Request schema for creating a new list on a Trello board."
+      }
+    },
+    {
+      "id": "trello.get_boards_by_id_board",
+      "tool": "TRELLO_GET_BOARDS_BY_ID_BOARD",
+      "toolName": "trello_get_boards_by_id_board",
+      "lane": "read",
+      "effect": "read",
+      "description": "Fetches comprehensive details for a specific Trello board by its ID; this is a read-only action.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "cards": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the cards to be returned. Valid values: 'all', 'closed', 'none', 'open', or 'visible'."
+          },
+          "lists": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the lists on the board to be returned. Valid values: 'all', 'closed', 'none', or 'open'."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the fields to return for the board object itself. Use 'all' or a comma-separated list. Valid fields: closed, dateLastActivity, dateLastView, desc, descData, idOrganization, invitations, invited, labelNames, memberships, name, pinned, powerUps, prefs, shortLink, shortUrl, starred, subscribed, url."
+          },
+          "labels": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the labels to be returned. Valid values: 'all' or 'none'."
+          },
+          "actions": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the actions to be returned. Specify 'all' or provide a comma-separated list of action types. Valid types include: addAttachmentToCard, addChecklistToCard, addMemberToBoard, addMemberToCard, addMemberToOrganization, addToOrganizationBoard, commentCard, convertToCardFromCheckItem, copyBoard, copyCard, copyCommentCard, createBoard, createCard, createList, createOrganization, deleteAttachmentFromCard, deleteBoardInvitation, deleteCard, deleteOrganizationInvitation, disablePowerUp,"
+          },
+          "idBoard": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier (ID) of the Trello board. Must be either a 24-character hexadecimal long-form ID (e.g., '68f9e68ace7e944875655da6') or an 8-character alphanumeric short-form ID (e.g., '8aBemlak'). Board names are NOT valid. Use TRELLO_GET_MEMBERS_BOARDS_BY_ID_MEMBER with idMember='me' to list boards and get their IDs."
+          },
+          "members": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the members of the board to be returned. Valid values: 'admins', 'all', 'none', 'normal', or 'owners'."
+          },
+          "myPrefs": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether to include the current user's preferences for this board. Set to 'true' or 'false'."
+          },
+          "boardStars": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters board stars. Valid values: 'mine' (stars by the current user) or 'none'."
+          },
+          "checklists": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters board-level checklists to be returned. Valid values: 'all' or 'none'."
+          },
+          "card_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the fields to return for card objects. Use 'all' or a comma-separated list. Valid fields: badges, checkItemStates, closed, dateLastActivity, desc, descData, due, email, idAttachmentCover, idBoard, idChecklists, idLabels, idList, idMembers, idMembersVoted, idShort, labels, manualCoverAttachment, name, pos, shortLink, shortUrl, subscribed, url."
+          },
+          "list_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the fields to return for list objects. Use 'all' or a comma-separated list: closed, idBoard, name, pos, subscribed."
+          },
+          "memberships": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters board memberships to return. Use 'all' or a comma-separated list of types: active, admin, deactivated, me, normal."
+          },
+          "label_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the fields to return for label objects. Use 'all' or a comma-separated list: color, idBoard, name, uses."
+          },
+          "labels_limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The maximum number of labels to return, ranging from 0 to 1000."
+          },
+          "organization": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether to include the organization object to which the board belongs. Set to 'true' or 'false'."
+          },
+          "action_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the fields to return for action objects. Use 'all' or a comma-separated list of fields: data, date, idMemberCreator, type. Defaults to 'all'."
+          },
+          "action_member": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether to include the member object within actions. Set to 'true' or 'false'."
+          },
+          "actions_limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The maximum number of actions to return, ranging from 0 to 1000. Defaults to 50 if not specified."
+          },
+          "actions_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters actions to those that occurred after a specific date (ISO 8601 format), or 'lastView'. Use null for no date filtering."
+          },
+          "card_stickers": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether to include stickers on cards. Set to 'true' or 'false'."
+          },
+          "member_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies fields for member objects. Use 'all' or a comma-separated list. Valid fields: avatarHash, bio, bioData, confirmed, fullName, idPremOrgsAdmin, initials, memberType, products, status, url, username."
+          },
+          "actions_format": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the format for returned actions. Valid values: 'count', 'list', or 'minimal'. Defaults to 'list' if not specified."
+          },
+          "membersInvited": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters invited members of the board. Valid values: 'admins', 'all', 'none', 'normal', or 'owners'."
+          },
+          "actions_display": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether to return display objects for actions. Set to 'true' or 'false'."
+          },
+          "card_checklists": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the checklists on cards to be returned. Valid values: 'all' or 'none'."
+          },
+          "actions_entities": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether to return entity objects for actions. Set to 'true' or 'false'."
+          },
+          "card_attachments": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether to include card attachments. Set to 'true', 'false', or 'cover' (for only card cover attachments)."
+          },
+          "checklist_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies fields for board-level checklist objects. Use 'all' or a comma-separated list: idBoard, idCard, name, pos."
+          },
+          "memberships_member": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether to include member objects within memberships. Set to 'true' or 'false'."
+          },
+          "organization_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies fields for the organization object. Use 'all' or a comma-separated list. Valid fields: billableMemberCount, desc, descData, displayName, idBoards, invitations, invited, logoHash, memberships, name, powerUps, prefs, premiumFeatures, products, url, website."
+          },
+          "action_memberCreator": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether to include the member creator object within actions. Set to 'true' or 'false'."
+          },
+          "action_member_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the fields to return for member objects within actions. Use 'all' or a comma-separated list. Valid fields: avatarHash, bio, bioData, confirmed, fullName, idPremOrgsAdmin, initials, memberType, products, status, url, username."
+          },
+          "membersInvited_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies fields for invited member objects. Use 'all' or a comma-separated list. Valid fields: avatarHash, bio, bioData, confirmed, fullName, idPremOrgsAdmin, initials, memberType, products, status, url, username."
+          },
+          "card_attachment_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the fields to return for card attachment objects. Use 'all' or a comma-separated list. Valid fields: bytes, date, edgeColor, idMember, isUpload, mimeType, name, previews, url."
+          },
+          "organization_memberships": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters organization memberships to return. Use 'all' or a comma-separated list: active, admin, deactivated, me, normal."
+          },
+          "memberships_member_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies fields for member objects within memberships. Use 'all' or a comma-separated list. Valid fields: avatarHash, bio, bioData, confirmed, fullName, idPremOrgsAdmin, initials, memberType, products, status, url, username."
+          },
+          "action_memberCreator_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the fields to return for member creator objects within actions. Use 'all' or a comma-separated list. Valid fields: avatarHash, bio, bioData, confirmed, fullName, idPremOrgsAdmin, initials, memberType, products, status, url, username."
+          }
+        },
+        "required": [
+          "idBoard"
+        ],
+        "description": "Request schema for retrieving detailed information about a specific Trello board."
+      }
+    },
+    {
+      "id": "trello.get_boards_cards_by_id_board",
+      "tool": "TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD",
+      "toolName": "trello_get_boards_cards_by_id_board",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves cards from an existing Trello board, allowing filtering and customization of fields for cards, attachments, and members.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The maximum number of cards to return. Must be a number between 1 and 1000, inclusive."
+          },
+          "since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A date in ISO 8601 format. Only cards updated after this date will be returned. Use 'null' for no restriction."
+          },
+          "before": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A date in ISO 8601 format. Only cards updated before this date will be returned. Use 'null' for no restriction."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of card fields to be returned. Use 'all' to include all fields. Valid fields include: badges, checkItemStates, closed, dateLastActivity, desc, descData, due, email, idAttachmentCover, idBoard, idChecklists, idLabels, idList, idMembers, idMembersVoted, idShort, labels, manualCoverAttachment, name, pos, shortLink, shortUrl, subscribed, or url. If not specified, defaults to 'all' on the API side."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the cards to return. Valid values are 'all', 'closed', 'none', 'open', or 'visible'. If not specified, defaults to 'visible' on the API side."
+          },
+          "actions": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of action types to be returned. Use 'all' to include all action types. Valid action types include: addAttachmentToCard, addChecklistToCard, addMemberToBoard, addMemberToCard, addMemberToOrganization, addToOrganizationBoard, commentCard, convertToCardFromCheckItem, copyBoard, copyCard, copyCommentCard, createBoard, createCard, createList, createOrganization, deleteAttachmentFromCard, deleteBoardInvitation, deleteCard, deleteOrganizationInvitation, disablePowerUp,"
+          },
+          "idBoard": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the Trello board. Valid formats: 24-character hexadecimal ID (e.g., '60d5f2f1c8a8b4002b8f0123') OR 8-character shortLink (e.g., 'TH6F0pTM'). Human-readable board names or URL slugs (e.g., 'my-board', 'tech-jcorp') are NOT valid identifiers. In the URL 'trello.com/b/TH6F0pTM/my-board', 'TH6F0pTM' is the valid shortLink, while 'my-board' is just a slug and cannot be used."
+          },
+          "members": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether members should be returned. Valid values are 'true' or 'false'."
+          },
+          "stickers": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether stickers should be returned. Valid values are 'true' or 'false'."
+          },
+          "checklists": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines which checklists to return. Valid values are 'all' or 'none'. If not specified, defaults to 'none' on the API side."
+          },
+          "attachments": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether attachments should be returned. Can be 'true', 'false', or 'cover' (to return only card cover attachments)."
+          },
+          "member_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of member fields to be returned. Use 'all' to include all fields. Valid fields include: avatarHash, bio, bioData, confirmed, fullName, idPremOrgsAdmin, initials, memberType, products, status, url, or username. If not specified, defaults to 'avatarHash,fullName,initials,username' on the API side."
+          },
+          "checkItemStates": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether check item states should be returned. Valid values are 'true' or 'false'."
+          },
+          "attachment_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of attachment fields to be returned. Use 'all' to include all fields. Valid fields include: bytes, date, edgeColor, idMember, isUpload, mimeType, name, previews, or url. If not specified, defaults to 'all' on the API side."
+          }
+        },
+        "required": [
+          "idBoard"
+        ],
+        "description": "Request schema for `GetBoardsCardsByIdBoard`"
+      }
+    },
+    {
+      "id": "trello.get_boards_lists_by_id_board",
+      "tool": "TRELLO_GET_BOARDS_LISTS_BY_ID_BOARD",
+      "toolName": "trello_get_boards_lists_by_id_board",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves lists from a specified Trello board, with options to filter lists and include card details.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "cards": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines which cards should be returned within the lists. Valid values are 'all', 'closed', 'none', or 'open'."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the fields of the lists to be returned. Use 'all' for all fields, or provide a comma-separated list of specific fields. Valid fields include: closed, idBoard, name, pos, or subscribed."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the lists to be returned based on their status. Valid values are 'all', 'closed', 'none', or 'open'."
+          },
+          "idBoard": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the Trello board. Valid formats: 24-character hexadecimal ID (e.g., '60d5f2f1c8a8b4002b8f0123') OR 8-character shortLink (e.g., 'TH6F0pTM'). Human-readable board names or URL slugs (e.g., 'my-board', 'tech-jcorp') are NOT valid identifiers. In the URL 'trello.com/b/TH6F0pTM/my-board', 'TH6F0pTM' is the valid shortLink, while 'my-board' is just a slug and cannot be used."
+          },
+          "card_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the fields of cards to be returned if the 'cards' parameter is not 'none'. Use 'all' for all fields, or provide a comma-separated list of specific fields. Valid fields include: badges, checkItemStates, closed, dateLastActivity, desc, descData, due, email, idAttachmentCover, idBoard, idChecklists, idLabels, idList, idMembers, idMembersVoted, idShort, labels, manualCoverAttachment, name, pos, shortLink, shortUrl, subscribed, or url."
+          }
+        },
+        "required": [
+          "idBoard"
+        ],
+        "description": "Defines the parameters to retrieve lists from a specific Trello board."
+      }
+    },
+    {
+      "id": "trello.get_cards_by_id_card",
+      "tool": "TRELLO_GET_CARDS_BY_ID_CARD",
+      "toolName": "trello_get_cards_by_id_card",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a Trello card by its ID or shortlink, with options to include related data like actions, attachments, members, and checklists.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "list": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include data for the card's list. Use 'true' or 'false'."
+          },
+          "board": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include data for the card's board. Use 'true' or 'false'."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for the card: 'all' or comma-separated (e.g., 'name,desc'). Valid: badges, checkItemStates, closed, dateLastActivity, desc, descData, due, email, idAttachmentCover, idBoard, idChecklists, idLabels, idList, idMembers, idMembersVoted, idShort, labels, manualCoverAttachment, name, pos, shortLink, shortUrl, subscribed, url."
+          },
+          "idCard": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier or shortlink of the Trello card. Must be either a 24-character hexadecimal ID (e.g., '5abbe4b7ddc1b351ef961414') or an 8-character alphanumeric shortlink (e.g., 'H0TZyzbK'). Short numeric strings like '6514' are not valid."
+          },
+          "actions": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Actions to return: 'all' or a comma-separated list of types (e.g., 'addAttachmentToCard', 'commentCard', 'updateCard'). For a complete list of types, consult the Trello API documentation."
+          },
+          "members": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include member data. Use 'true' or 'false'."
+          },
+          "stickers": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include sticker data. Use 'true' or 'false'."
+          },
+          "checklists": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include checklists: 'all' or 'none'."
+          },
+          "attachments": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include attachments: 'true' (all), 'false' (none), or 'cover' (card cover only)."
+          },
+          "list_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for the list: 'all' or comma-separated (e.g., 'name,pos'). Valid: closed, idBoard, name, pos, subscribed."
+          },
+          "board_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for the board: 'all' or comma-separated (e.g., 'name,desc'). Valid: closed, dateLastActivity, dateLastView, desc, descData, idOrganization, invitations, invited, labelNames, memberships, name, pinned, powerUps, prefs, shortLink, shortUrl, starred, subscribed, url."
+          },
+          "membersVoted": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include data for members who voted. Use 'true' or 'false'."
+          },
+          "action_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for actions: 'all' or comma-separated (e.g., 'data,date'). Valid: data, date, idMemberCreator, type."
+          },
+          "actions_limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Maximum actions to return (0-1000)."
+          },
+          "member_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for members: 'all' or comma-separated (e.g., 'avatarHash,fullName'). Valid: avatarHash, bio, bioData, confirmed, fullName, idPremOrgsAdmin, initials, memberType, products, status, url, username."
+          },
+          "sticker_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for stickers: 'all' or comma-separated (e.g., 'image,left'). Valid: image, imageScaled, imageUrl, left, rotate, top, zIndex."
+          },
+          "actions_display": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Return display-friendly action data. Use 'true' or 'false'."
+          },
+          "checkItemStates": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include check item states. Use 'true' or 'false'."
+          },
+          "actions_entities": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include entities (e.g., card, board, member) for actions. Use 'true' or 'false'."
+          },
+          "checklist_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for checklists: 'all' or comma-separated (e.g., 'idBoard,name'). Valid: idBoard, idCard, name, pos."
+          },
+          "attachment_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for attachments: 'all' or comma-separated (e.g., 'bytes,date'). Valid: bytes, date, edgeColor, idMember, isUpload, mimeType, name, previews, url."
+          },
+          "memberVoted_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for members who voted: 'all' or comma-separated (e.g., 'avatarHash,fullName'). Valid: avatarHash, bio, bioData, confirmed, fullName, idPremOrgsAdmin, initials, memberType, products, status, url, username."
+          },
+          "checkItemState_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for check item states: 'all' or comma-separated (e.g., 'idCheckItem,state'). Valid: idCheckItem, state."
+          },
+          "action_memberCreator_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for the action creator: 'all' or comma-separated (e.g., 'avatarHash,fullName'). Valid: avatarHash, bio, bioData, confirmed, fullName, idPremOrgsAdmin, initials, memberType, products, status, url, username."
+          }
+        },
+        "required": [
+          "idCard"
+        ],
+        "description": "Request schema for retrieving a Trello card by its ID."
+      }
+    },
+    {
+      "id": "trello.get_lists_board_by_id_list",
+      "tool": "TRELLO_GET_LISTS_BOARD_BY_ID_LIST",
+      "toolName": "trello_get_lists_board_by_id_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the board to which a specific Trello list belongs.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Board fields to return, comma-separated. Use 'all' for all fields. Valid fields: closed, dateLastActivity, dateLastView, desc, descData, idOrganization, invitations, invited, labelNames, memberships, name, pinned, powerUps, prefs, shortLink, shortUrl, starred, subscribed, url."
+          },
+          "idList": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the Trello list for which to retrieve the parent board information."
+          }
+        },
+        "required": [
+          "idList"
+        ],
+        "description": "Request schema for `GetListsBoardByIdList`"
+      }
+    },
+    {
+      "id": "trello.get_lists_cards_by_id_list",
+      "tool": "TRELLO_GET_LISTS_CARDS_BY_ID_LIST",
+      "toolName": "trello_get_lists_cards_by_id_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Fetches cards from a Trello list by its ID, with options to filter and customize the returned card data.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The maximum number of cards to return. Must be a number from 1 to 1000, provided as a string."
+          },
+          "since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter cards to include only those created or updated after this date. Provide a date string (e.g., YYYY-MM-DD or an ISO 8601 datetime string) or 'null'."
+          },
+          "before": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter cards to include only those created or updated before this date. Provide a date string (e.g., YYYY-MM-DD or an ISO 8601 datetime string) or 'null'."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to include for cards. Defaults to a minimal set: 'id,name,desc,idList,labels,idMembers,due,closed,url'. Use 'all' to return all fields (warning: significantly larger response with extensive nested metadata like badges, limits, nodeId, etc. - 10-20x more data than minimal set)."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter cards by their state. Valid values are 'all', 'closed', 'none', or 'open'. Defaults to 'open'."
+          },
+          "idList": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the list from which to retrieve cards."
+          },
+          "actions": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines what actions are returned. Use 'all' to return all actions, or provide a comma-separated list of specific action types. Valid action types include: addAttachmentToCard, addChecklistToCard, addMemberToBoard, addMemberToCard, addMemberToOrganization, addToOrganizationBoard, commentCard, convertToCardFromCheckItem, copyBoard, copyCard, copyCommentCard, createBoard, createCard, createList, createOrganization, deleteAttachmentFromCard, deleteBoardInvitation, deleteCard,"
+          },
+          "members": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specify whether to include members. Accepted string values are 'true' or 'false'."
+          },
+          "stickers": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specify whether to include stickers. Accepted string values are 'true' or 'false'."
+          },
+          "checklists": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specify whether to include checklists. Valid values are 'all' or 'none'. Defaults to 'none'."
+          },
+          "attachments": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specify whether to include attachments. Accepted string values are 'true', 'false', or 'cover' (to retrieve only card cover attachments)."
+          },
+          "member_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to include for members. Use 'all' or a comma-separated list of specific fields. Valid fields include: avatarHash, bio, bioData, confirmed, fullName, idPremOrgsAdmin, initials, memberType, products, status, url, or username. Defaults to 'avatarHash,fullName,initials,username'."
+          },
+          "checkItemStates": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specify whether to include check item states. Accepted string values are 'true' or 'false'."
+          },
+          "attachment_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to include for attachments. Use 'all' or a comma-separated list of specific fields. Valid fields include: bytes, date, edgeColor, idMember, isUpload, mimeType, name, previews, or url. Defaults to 'all'."
+          }
+        },
+        "required": [
+          "idList"
+        ],
+        "description": "Request model for fetching cards from a specific Trello list, allowing for detailed filtering and field selection."
+      }
+    },
+    {
+      "id": "trello.get_members_boards_by_id_member",
+      "tool": "TRELLO_GET_MEMBERS_BOARDS_BY_ID_MEMBER",
+      "toolName": "trello_get_members_boards_by_id_member",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves board-level details (not lists/cards) for Trello boards associated with a member ID or username, allowing extensive customization of the returned data.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "lists": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the lists returned for each board. Valid values: 'all', 'closed', 'none', 'open'."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the fields to return for each board. Accepts 'all' or a comma-separated list of field names. Possible field names: 'closed', 'dateLastActivity', 'dateLastView', 'desc', 'descData', 'idOrganization', 'invitations', 'invited', 'labelNames', 'memberships', 'name', 'pinned', 'powerUps', 'prefs', 'shortLink', 'shortUrl', 'starred', 'subscribed', 'url'."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters the boards returned. Valid values are 'all' or a comma-separated list of: 'closed', 'members', 'open', 'organization', 'pinned', 'public', 'starred', 'unpinned'."
+          },
+          "actions": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies which actions to return for each board. Accepts 'all' or a comma-separated list of action types. Possible action types: 'addAttachmentToCard', 'addChecklistToCard', 'addMemberToBoard', 'addMemberToCard', 'addMemberToOrganization', 'addToOrganizationBoard', 'commentCard', 'convertToCardFromCheckItem', 'copyBoard', 'copyCard', 'copyCommentCard', 'createBoard', 'createCard', 'createList', 'createOrganization', 'deleteAttachmentFromCard', 'deleteBoardInvitation', 'deleteCard',"
+          },
+          "idMember": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID or username of the Trello member. Use 'me' to refer to the authenticated user. Defaults to 'me' if not provided."
+          },
+          "memberships": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters boards by the member's membership type. Accepts 'all' or a comma-separated list of: 'active', 'admin', 'deactivated', 'me', 'normal'."
+          },
+          "organization": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether to return organization data for boards. Valid values: 'true' or 'false'."
+          },
+          "action_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies fields for returned actions if actions are requested. Accepts 'all' or a comma-separated list: 'data', 'date', 'idMemberCreator', 'type'."
+          },
+          "actions_limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The maximum number of actions to return, from 0 to 1000."
+          },
+          "actions_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters actions to those that occurred after this date, or accepts 'null' or 'lastView'."
+          },
+          "actions_format": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The format for returned actions. Valid values: 'count', 'list', or 'minimal'."
+          },
+          "actions_entities": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether to return entity data for actions. Valid values: 'true' or 'false'."
+          },
+          "organization_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Specifies the fields to return for the organization if 'organization' is 'true'. Accepts 'all' or a comma-separated list of field names. Possible field names: 'billableMemberCount', 'desc', 'descData', 'displayName', 'idBoards', 'invitations', 'invited', 'logoHash', 'memberships', 'name', 'powerUps', 'prefs', 'premiumFeatures', 'products', 'url', 'website'."
+          }
+        },
+        "description": "Request schema for `GetMembersBoardsByIdMember`"
+      }
+    },
+    {
+      "id": "trello.get_members_by_id_member",
+      "tool": "TRELLO_GET_MEMBERS_BY_ID_MEMBER",
+      "toolName": "trello_get_members_by_id_member",
+      "lane": "read",
+      "effect": "read",
+      "description": "Fetches comprehensive information about a Trello member, specified by ID or username, including profile, activities, boards, cards, notifications, and organization affiliations, with customizable detail levels via filters and field parameters.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "cards": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters cards. Valid values: 'all', 'closed', 'none', 'open', 'visible'."
+          },
+          "boards": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters boards. Valid values: 'all' or a comma-separated list (e.g., 'open,starred')."
+          },
+          "fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Member fields to return. Valid values: 'all' or a comma-separated list (e.g., 'fullName,username,email')."
+          },
+          "tokens": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters API tokens for the member. Valid values: 'all', 'none'."
+          },
+          "actions": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters actions by type. Valid values: 'all' or a comma-separated list of action types (e.g., addAttachmentToCard, commentCard, createBoard)."
+          },
+          "idMember": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID or username of the Trello member."
+          },
+          "boardStars": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include information about the member's starred boards. Valid values: 'true', 'false'."
+          },
+          "board_lists": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters lists on boards. Valid values: 'all', 'closed', 'none', 'open'."
+          },
+          "card_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to return for each card. Valid values: 'all' or a comma-separated list (e.g., 'name,desc')."
+          },
+          "customEmoji": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters custom emoji. Valid values: 'all', 'none'."
+          },
+          "action_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Retrieve actions created after this date/time (ISO 8601 or 'lastView'), or 'null' for no restriction."
+          },
+          "board_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to return for each board. Valid values: 'all' or a comma-separated list (e.g., 'name,idOrganization')."
+          },
+          "card_members": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include member objects for each card. Valid values: 'true', 'false'."
+          },
+          "paid_account": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include paid account information for the member. Valid values: 'true', 'false'."
+          },
+          "action_before": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Retrieve actions created before this date/time (ISO 8601), or 'null' for no restriction."
+          },
+          "action_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to return for each action. Valid values: 'all' or a comma-separated list (e.g., 'data,date')."
+          },
+          "actions_limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Maximum number of actions to return (0-1000)."
+          },
+          "board_actions": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters board actions by type. Valid values: 'all' or a comma-separated list of action types (e.g., createCard, updateBoard)."
+          },
+          "boardsInvited": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters boards the member has been invited to. Valid values: 'all' or a comma-separated list (e.g., 'open,starred')."
+          },
+          "card_stickers": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include sticker information for cards. Valid values: 'true', 'false'."
+          },
+          "notifications": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters notifications by type. Valid values: 'all' or a comma-separated list of notification types (e.g., commentCard, addedToBoard)."
+          },
+          "organizations": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters organizations the member belongs to. Valid values: 'all', 'members', 'none', 'public'."
+          },
+          "savedSearches": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include the member's saved searches. Valid values: 'true', 'false'."
+          },
+          "customStickers": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters custom stickers. Valid values: 'all', 'none'."
+          },
+          "actions_display": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include display information for actions. Valid values: 'true', 'false'."
+          },
+          "actions_entities": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include related entities in actions. Valid values: 'true', 'false'."
+          },
+          "boardBackgrounds": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters board backgrounds. Valid values: 'all', 'custom', 'default', 'none', 'premium'."
+          },
+          "card_attachments": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include card attachments. Valid values: 'true', 'false', 'cover'."
+          },
+          "board_memberships": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters board memberships. Valid values: 'all' or a comma-separated list (e.g., 'active,admin')."
+          },
+          "board_organization": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include the organization for each board. Valid values: 'true', 'false'."
+          },
+          "card_member_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to return for card members. Valid values: 'all' or a comma-separated list (e.g., 'fullName,username')."
+          },
+          "notification_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Retrieve notifications created after this notification ID, or 'null' for no restriction."
+          },
+          "board_action_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to return for each board action. Valid values: 'all' or a comma-separated list (e.g., 'data,date')."
+          },
+          "board_actions_limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Maximum number of board actions to return (0-1000)."
+          },
+          "board_actions_since": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Retrieve board actions created after this date/time (ISO 8601 or 'lastView'), or 'null' for no restriction."
+          },
+          "notification_before": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Retrieve notifications created before this notification ID, or 'null' for no restriction."
+          },
+          "notification_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to return for notifications. Valid values: 'all' or a comma-separated list (e.g., 'data,date,unread')."
+          },
+          "notifications_limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Maximum number of notifications to return (1-1000)."
+          },
+          "organization_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to return for organizations. Valid values: 'all' or a comma-separated list (e.g., 'name,displayName')."
+          },
+          "board_actions_format": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Format for board actions. Valid values: 'count', 'list', 'minimal'."
+          },
+          "boardsInvited_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to return for boards the member has been invited to. Valid values: 'all' or a comma-separated list (e.g., 'name,idOrganization')."
+          },
+          "organizationsInvited": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters organizations the member has been invited to. Valid values: 'all', 'members', 'none', 'public'."
+          },
+          "board_actions_display": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include display information for board actions. Valid values: 'true', 'false'."
+          },
+          "notifications_display": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include display information for notifications. Valid values: 'true', 'false'."
+          },
+          "board_actions_entities": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include related entities in board actions. Valid values: 'true', 'false'."
+          },
+          "card_attachment_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to return for card attachments. Valid values: 'all' or a comma-separated list (e.g., 'url,name')."
+          },
+          "customBoardBackgrounds": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filters custom board backgrounds. Valid values: 'all', 'none'."
+          },
+          "notifications_entities": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include related entities in notifications. Valid values: 'true', 'false'."
+          },
+          "board_organization_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to return for the board's organization. Valid values: 'all' or a comma-separated list (e.g., 'name,displayName')."
+          },
+          "organization_paid_account": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include paid account information for organizations. Valid values: 'true', 'false'."
+          },
+          "notification_memberCreator": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Include the member creator for notifications. Valid values: 'true', 'false'."
+          },
+          "organizationsInvited_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields to return for organizations the member has been invited to. Valid values: 'all' or a comma-separated list (e.g., 'name,displayName')."
+          },
+          "notification_memberCreator_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for the notification member creator. Valid values: 'all' or a comma-separated list (e.g., 'fullName,username')."
+          }
+        },
+        "required": [
+          "idMember"
+        ],
+        "description": "Request schema for `GetMembersByIdMember`"
+      }
+    },
+    {
+      "id": "trello.get_search",
+      "tool": "TRELLO_GET_SEARCH",
+      "toolName": "trello_get_search",
+      "lane": "read",
+      "effect": "read",
+      "description": "Searches Trello content (e.g., boards, cards, members) within specified organizations using a query and customizable result fields. IMPORTANT LIMITATIONS: - Search indexing has a delay: newly created/updated cards may not appear for several minutes. - For exact name matching or time-sensitive lookups, use TRELLO_GET_LISTS_CARDS_BY_ID_LIST or TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD to enumerate cards directly, then filter by name. - The search uses word tokenization: queries like 'Payment failed when sending tips' are split into individual terms ['Payment', 'failed', 'when', 'sending', 'tips']. Common words may be ignored. - Set partial='true' (default) for better recall with prefix matching on the last search term.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 16384,
+            "minLength": 1,
+            "description": "The search query string. Trello tokenizes the query into individual words and searches for cards/boards/etc. containing those terms. Note: Common words like 'when', 'the', 'is' may be ignored as stop words."
+          },
+          "idCards": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of card IDs to search for. Each card ID must be a 24-character hexadecimal string (e.g., '5f9f1b9b8f8f8f8f8f8f8f8f'). Do NOT use the short card ID from the card URL."
+          },
+          "partial": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Enable partial/prefix matching for search terms ('true' or 'false'). Default is 'true'. When true, the last word in the query will match word prefixes (e.g., 'pay' matches 'payment'). When false, only exact word matches are returned. Setting to 'true' (recommended) improves search recall, especially for card names that may not be indexed immediately after creation."
+          },
+          "idBoards": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of board IDs to search within, or 'mine' to search all boards the user is a member of (default). Each board ID must be a 24-character hexadecimal string (e.g., '5f9f1b9b8f8f8f8f8f8f8f8f'). Do NOT use the short 8-character ID from the board URL (e.g., 'VGflYpta' from 'trello.com/b/VGflYpta/board-name'). To get the correct ID, use the TRELLO_GET_BOARDS_BY_ID_MEMBER action or extract it from API responses."
+          },
+          "card_list": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Whether to include the list object for each card returned ('true' or 'false')."
+          },
+          "card_board": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Whether to include the board object for each card returned ('true' or 'false')."
+          },
+          "cards_page": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Page number for paginated card results. Must be 0-100. Default is 0."
+          },
+          "modelTypes": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Types of Trello objects to search (e.g., 'cards,boards' or 'all' from 'actions', 'boards', 'cards', 'members', 'organizations'). Default is 'all'."
+          },
+          "card_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for found cards; 'all' or a comma-separated list (e.g., 'name,due'). Default is 'all'."
+          },
+          "cards_limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Maximum number of card results (1-1000). Use 0 to exclude cards from search results. Default is 10."
+          },
+          "board_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for found boards; 'all' or a comma-separated list (e.g., 'name,url'). Default is 'name,idOrganization'."
+          },
+          "boards_limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Maximum number of board results (1-1000). Use 0 to exclude boards from search results. Default is 10."
+          },
+          "card_members": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Whether to include member objects for each card returned ('true' or 'false')."
+          },
+          "card_stickers": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Whether to include sticker objects for each card returned ('true' or 'false')."
+          },
+          "member_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for found members; 'all' or a comma-separated list (e.g., 'fullName,username'). Default is 'avatarHash,fullName,initials,username,confirmed'."
+          },
+          "members_limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Maximum number of member results (1-1000). Use 0 to exclude members from search results. Default is 10."
+          },
+          "idOrganizations": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated list of organization (workspace) IDs to search within. Each organization ID must be a 24-character hexadecimal string (e.g., '5f9f1b9b8f8f8f8f8f8f8f8f')."
+          },
+          "card_attachments": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Whether to include attachments for cards ('true', 'false', or 'cover' for card cover attachments)."
+          },
+          "organization_fields": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Fields for found organizations; 'all' or a comma-separated list (e.g., 'name,url'). Default is 'name,displayName'."
+          },
+          "organizations_limit": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Maximum number of organization results (1-1000). Use 0 to exclude organizations from search results. Default is 10."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "description": "Request schema for `GetSearch` action. Defines the parameters for searching Trello content. IMPORTANT: Trello search has an indexing delay - newly created or updated cards may not appear in search results for several minutes. For time-sensitive or exact name matching, consider using TRELLO_GET_LISTS_CARDS_BY_ID_LIST or TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD to enumerate cards directly."
+      }
+    },
+    {
+      "id": "trello.update_cards_by_id_card",
+      "tool": "TRELLO_UPDATE_CARDS_BY_ID_CARD",
+      "toolName": "trello_update_cards_by_id_card",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing Trello card's attributes like name, description, due date, members, labels, position, or archives/unarchives it, attaches files, or changes its cover.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Trello: Update card attributes",
+      "withheldArguments": {
+        "idBoard": "moves the record to another container",
+        "idMembers": "changes sharing, visibility, permissions, membership, or who acts",
+        "urlSource": "copies content from another record, URL, or file",
+        "fileSource": "copies content from another record, URL, or file",
+        "idCardSource": "copies content from another record, URL, or file",
+        "keepFromSource": "copies content from another record, URL, or file"
+      },
+      "preconditions": [
+        {
+          "argument": "idList",
+          "current": {
+            "capability": "trello.get_cards_by_id_card",
+            "arguments": {
+              "idCard": "$idCard",
+              "fields": "idBoard"
+            },
+            "path": "idBoard"
+          },
+          "target": {
+            "capability": "trello.get_lists_board_by_id_list",
+            "arguments": {
+              "idList": "$idList",
+              "fields": "id"
+            },
+            "path": "id"
+          }
+        }
+      ],
+      "input": {
+        "type": "object",
+        "properties": {
+          "due": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The new due date for the card, in ISO 8601 format, or 'null' to remove the due date."
+          },
+          "pos": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The new position of the card within its list. Can be 'top', 'bottom', or a positive floating-point number. Higher numbers are further down the list."
+          },
+          "desc": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The new description for the card. String length must be from 0 to 16384 characters."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The new name for the card. Required if not copying the name from `idCardSource`, `fileSource`, or `urlSource`."
+          },
+          "closed": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether the card should be archived (closed). Accepts boolean (true/false) or string ('true'/'false')."
+          },
+          "idCard": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID or shortLink of the card to update."
+          },
+          "idList": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the list to move the card to."
+          },
+          "labels": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of label colors (e.g., 'green,yellow,red') to apply, overwriting existing labels. Use 'idLabels' for more precise control. 'all' may add all available label colors."
+          },
+          "idLabels": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of label IDs to apply, replacing existing labels. To preserve existing labels, fetch current `idLabels`, append new ones, and submit the combined list."
+          },
+          "subscribed": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Determines whether the user is subscribed to the card. Accepts boolean (true/false) or string ('true'/'false')."
+          },
+          "idAttachmentCover": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of an existing image attachment to be used as the card cover. Use 'null' or an empty string to remove the cover."
+          }
+        },
+        "required": [
+          "idCard"
+        ],
+        "description": "Request schema for `UpdateCardsByIdCard`"
+      }
+    },
+    {
+      "id": "trello.who_am_i",
+      "tool": "TRELLO_WHO_AM_I",
+      "toolName": "trello_who_am_i",
+      "lane": "read",
+      "effect": "read",
+      "description": "Return the identity (username, email) of the connected Trello account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

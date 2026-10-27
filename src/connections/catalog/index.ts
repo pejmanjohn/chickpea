@@ -12,6 +12,11 @@ import {
   type SemanticActivityDescriptor,
 } from '../../activity/semantic.ts';
 import { MANAGED_NOTION_CONNECTORS } from './notion.ts';
+import {
+  COMPOSIO_MANIFESTS,
+  compileComposioManifest,
+  type ComposioManifest,
+} from './composio-manifests.ts';
 import type {
   ManagedAccessLane,
   ManagedAccountResourceConstraints,
@@ -90,18 +95,29 @@ export function createManagedConnectorCatalog(
   return new ManagedConnectorCatalog(definitions);
 }
 
-export const MANAGED_CONNECTOR_CATALOG = createManagedConnectorCatalog(
-  [
-    ...MANAGED_GOOGLE_WORKSPACE_CONNECTORS,
-    ...MANAGED_GOOGLE_PRODUCTIVITY_CONNECTORS,
-    ...MANAGED_GOOGLE_ANALYTICS_CONNECTORS,
-    ...MANAGED_NOTION_CONNECTORS,
-    ...MANAGED_HUBSPOT_CONNECTORS,
-    ...MANAGED_GONG_CONNECTORS,
-    ...MANAGED_GOOGLE_ADS_CONNECTORS,
-    ...MANAGED_YOUTUBE_CONNECTORS,
-  ],
-);
+const HAND_WRITTEN_CONNECTORS: readonly ManagedConnectorDefinition[] = [
+  ...MANAGED_GOOGLE_WORKSPACE_CONNECTORS,
+  ...MANAGED_GOOGLE_PRODUCTIVITY_CONNECTORS,
+  ...MANAGED_GOOGLE_ANALYTICS_CONNECTORS,
+  ...MANAGED_NOTION_CONNECTORS,
+  ...MANAGED_HUBSPOT_CONNECTORS,
+  ...MANAGED_GONG_CONNECTORS,
+  ...MANAGED_GOOGLE_ADS_CONNECTORS,
+  ...MANAGED_YOUTUBE_CONNECTORS,
+];
+
+const MANIFESTS_WITHOUT_HAND_WRITTEN_CONNECTOR = new Map(COMPOSIO_MANIFESTS
+  .filter(({ toolkit }) => !HAND_WRITTEN_CONNECTORS.some((connector) => connector.toolkit === toolkit))
+  .map((manifest) => [manifest.toolkit, manifest]));
+
+export const MANAGED_CONNECTOR_CATALOG = createManagedConnectorCatalog([
+  ...HAND_WRITTEN_CONNECTORS,
+  ...[...MANIFESTS_WITHOUT_HAND_WRITTEN_CONNECTOR.values()].map(compileComposioManifest),
+]);
+
+export function composioManifest(toolkit: string): ComposioManifest | undefined {
+  return MANIFESTS_WITHOUT_HAND_WRITTEN_CONNECTOR.get(toolkit.trim().toLowerCase());
+}
 
 export function semanticDescriptorForManagedCapability(
   capabilityId: string,
