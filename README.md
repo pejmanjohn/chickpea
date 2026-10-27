@@ -49,7 +49,7 @@ Your team already uses AI all day, one person at a time in a private tab, and th
 
 > **`@growth`** which pages lost impressions in Search Console last month?
 
-`@growth` checks Search Console, cross-references Google Analytics, and answers in the thread. `@sales` pulls the recurring objections out of this week's Gong calls. `@eng` names the top new Sentry issue since Friday's deploy. Ask any of them to update a HubSpot record or move something on your Google Calendar and they confirm with you first. Everyone in the channel sees the answer, and anyone can pick it up later without starting over.
+`@growth` checks Search Console, cross-references Google Analytics, and answers in the thread. `@sales` pulls the recurring objections out of this week's Gong calls. `@eng` names the top new Sentry issue since Friday's deploy. Ask any of them to update a HubSpot record or move something on your Google Calendar, and they make the change, as long as the connection allows writes. Everyone in the channel sees the answer, and anyone can pick it up later without starting over.
 
 The hosted versions of this idea run on the vendor's infrastructure, with the vendor's model, on the vendor's schedule. Good products, and for a lot of teams that trade is fine. Some teams can't make it, for reasons of policy or data, and they have mostly gone without.
 
@@ -236,7 +236,7 @@ What you can connect, 35 presets in all. 13 run through a single Composio key; t
 
 <sub>Gmail, Google Calendar, and Google Drive can also connect through your own Google Cloud OAuth client instead of Composio.</sub>
 
-Managed connectors run through one Composio project key, added under **Settings → Connectors**. Sign-in happens in Composio's hosted UI and Chickpea polls for completion, so a self-hosted install needs no public OAuth callback URL. Opting in means Composio holds OAuth storage, refresh, and API execution for those accounts; Chickpea still owns account selection, capability limits, confirmation policy, and which provider account is used on every call. See the [managed connector runbook](docs/runbooks/composio-managed-connectors.md).
+Managed connectors run through one Composio project key, added under **Settings → Connectors**. Sign-in happens in Composio's hosted UI and Chickpea polls for completion, so a self-hosted install needs no public OAuth callback URL. Opting in means Composio holds OAuth storage, refresh, and API execution for those accounts; Chickpea still owns account selection, capability limits, the read or read-and-write lane of each connection, and which provider account is used on every call. See the [managed connector runbook](docs/runbooks/composio-managed-connectors.md).
 
 ---
 
