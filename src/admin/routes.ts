@@ -94,6 +94,7 @@ import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
 import { readProposalApprovalStatus } from './proposal-status.ts';
 import { ENVIRONMENT_AUTHORITY_PATH, environmentAuthorityResponse } from './environment-authority.ts';
+import { ENVIRONMENT_ROUTINE_DUE_PATH, environmentRoutineDueResponse } from './environment-routine-due.ts';
 import {
   ENVIRONMENT_MODELS_PATH,
   ENVIRONMENT_SEED_PATH,
@@ -2005,6 +2006,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         codingModel: coding?.modelId ?? null,
       };
     },
+  }));
+  app.post(ENVIRONMENT_ROUTINE_DUE_PATH, (c) => environmentRoutineDueResponse({
+    authorization: c.req.header('authorization'),
+    env: (c.env ?? {}) as PlatformEnv,
+    readBody: () => c.req.text(),
+    markDueNow: (routineId, now) => routines(c).markDueNow(routineId, now),
   }));
   app.post(ENVIRONMENT_SEED_PATH, (c) => environmentSeedResponse({
     authorization: c.req.header('authorization'),
