@@ -434,7 +434,9 @@ function deriveNode(
     const present = variants.filter((variant) => !isPlainObject(variant) || variant.type !== 'null');
     if (present.length === 1) {
       const inner = isPlainObject(present[0]) ? present[0] : {};
-      return deriveNode({ ...inner, description: inner.description ?? raw.description }, depth, where, context);
+      return deriveNode({
+        ...('default' in raw ? { default: raw.default } : {}), ...inner, description: inner.description ?? raw.description,
+      }, depth, where, context);
     }
     const branches = present.map((variant) =>
       isPlainObject(variant) && typeof variant.type === 'string' &&
@@ -458,6 +460,11 @@ function deriveNode(
         raw.enum.every((value) => typeof value === 'string' && value.length <= COMPOSIO_MANIFEST_LIMITS.enumValueLength)
         ? raw.enum as string[] : undefined;
       const allowed = context.values.get(where);
+      // Leaving out a narrowed argument whose default is a dropped value would still send that value.
+      if (allowed && defaultValues(raw).some((value) =>
+        value !== null && !(typeof value === 'string' && allowed.includes(value)))) {
+        return { unsupported: `${where} defaults to a value review.allowValues does not keep`, excludesTool: true };
+      }
       const narrowed = allowed && values && allowed.every((value) => values.includes(value))
         ? values.filter((value) => allowed.includes(value)) : values;
       if (narrowed !== values) context.narrowed.add(where);

@@ -924,6 +924,33 @@ test('review.allowValues narrows a string enum the model can set and fails on a 
   }
 });
 
+test('review.allowValues leaves out a tool whose argument defaults to a value the review does not keep', () => {
+  const enumOf = { type: 'string', enum: ['ACTIVE', 'PAUSED'] };
+  const draft = (status: Record<string, unknown>) => {
+    const campaign = snapshot([tool('ACME_UPDATE_CAMPAIGN', ['updateHint', 'destructiveHint'], {
+      type: 'object', properties: { id: { type: 'string' }, status }, required: ['id'],
+    })]);
+    return draftComposioManifest(campaign, {
+      ...draftComposioManifest(campaign).manifest,
+      review: {
+        add: ['ACME_UPDATE_CAMPAIGN'], drop: {}, allowArguments: {},
+        allowValues: { ACME_UPDATE_CAMPAIGN: { status: { values: ['PAUSED'], reason: 'ACTIVE restarts delivery and spend.' } } },
+      },
+    });
+  };
+  const offered = (status: Record<string, unknown>) =>
+    draft(status).manifest.capabilities.some(({ tool: slug }) => slug === 'ACME_UPDATE_CAMPAIGN');
+
+  for (const status of [{ ...enumOf, default: 'ACTIVE' }, { anyOf: [enumOf, { type: 'null' }], default: 'ACTIVE' }]) {
+    assert.equal(offered(status), false, JSON.stringify(status));
+    assert.deepEqual(draft(status).report.excluded,
+      [{ tool: 'ACME_UPDATE_CAMPAIGN', reason: 'status defaults to a value review.allowValues does not keep' }]);
+  }
+  for (const status of [enumOf, { ...enumOf, default: 'PAUSED' }, { anyOf: [enumOf, { type: 'null' }], default: null }]) {
+    assert.equal(offered(status), true, JSON.stringify(status));
+  }
+});
+
 test('paid-ads status writes can only pause, and a new Reddit campaign starts paused', () => {
   const pinterest = (status: string) => ({ ad_account_id: '1', updates: [{ id: '2', status }] });
   const pauseOnly: Array<[capability: string, input: (status: string) => Record<string, unknown>]> = [
