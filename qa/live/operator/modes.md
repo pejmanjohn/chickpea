@@ -5,7 +5,7 @@ These are skill workflows, separate from the dormant coordinator's typed suites.
 
 By default `changed` and `regression` run once per merge batch on `main`, after
 the batch merges and before any Chickpea Cloud pin or Core release. For
-`changed` on `main`, pass `--base` the last batch-verified commit so the plan
+`changed` on `main`, pass the last batch-verified commit as `--base` so the plan
 covers the whole batch. Per PR, run only the live check its
 [risk class](../../../AGENTS.md#shipping-by-risk-class) names. That is a
 `probe`, or a `changed` run scoped to the T3 cycle or rehearsal, the T4 money
@@ -32,14 +32,18 @@ flow. The brief names the lane, its Worker URL, the readback tool, and 1 to 3
 exact cases. A probe takes 15 minutes or less including deploy. It runs from
 the implementation commit in parallel with review.
 
-- Skip the kickoff preflight, the normal path, the case template, and the
-  supporting docs unless a case needs one.
+- Skip the kickoff preflight, the normal path, and the supporting docs unless
+  a case needs one.
 - Claim the brief's lane and deploy the implementation commit with the
   profile's commands. Redeploy only when a fix round touches runtime code.
-- Initialize a run whose spec holds only the brief's cases. Record `begin`,
-  `finish`, and [cleanup](records.md#exact-cleanup-and-schedule-limits) for
-  each case, and nothing else. A probe records no lessons, phase receipts,
-  verdicts, or report.
+- Build the spec with `template --mode changed --area <area>` and `case-add`,
+  keep only the brief's cases, and resolve its context and their required
+  capabilities against the deployed lane before `init`. The record has no
+  `probe` mode, and `begin` refuses a case whose context or capabilities are
+  unresolved. Record `begin`, `finish`, and each owned resource's registration
+  and [cleanup](records.md#exact-cleanup-and-schedule-limits) for each case,
+  and nothing else. A probe records no lessons, phase receipts, verdicts, or
+  report.
 - Clean up, release the claim, and report each case's result with its
   readback. A failing case goes back to the PR's fix round.
 
