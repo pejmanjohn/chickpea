@@ -454,6 +454,37 @@ test('HubSpot schemas keep CRM properties typed, allowlisted, and bounded', () =
   assert.equal(v.safeParse(update.input, { objectId: '123', stageId: 'qualified' }).success, true);
 });
 
+test('HubSpot search sorts and filters every object type by its standard timestamps', () => {
+  const search = MANAGED_CONNECTOR_CATALOG.capability('hubspot.objects.search');
+  assert.ok(search);
+  const timestamps = {
+    contacts: ['createdate', 'lastmodifieddate'],
+    companies: ['createdate', 'hs_lastmodifieddate'],
+    deals: ['createdate', 'hs_lastmodifieddate'],
+    tickets: ['createdate', 'hs_lastmodifieddate'],
+    notes: ['hs_createdate', 'hs_lastmodifieddate'],
+    tasks: ['hs_createdate', 'hs_lastmodifieddate'],
+    meetings: ['hs_createdate', 'hs_lastmodifieddate'],
+    calls: ['hs_createdate', 'hs_lastmodifieddate'],
+  } as const;
+
+  for (const [objectType, [created, modified]] of Object.entries(timestamps)) {
+    assert.equal(v.safeParse(search.input, {
+      objectType,
+      filters: [
+        { property: created, operator: 'GTE', value: '1790812800000' },
+        { property: modified, operator: 'LT', value: '1793059200000' },
+        { property: 'hs_object_id', operator: 'GT', value: '1000' },
+      ],
+      properties: [created, modified, 'hs_object_id'],
+      sort: { property: created, direction: 'descending' },
+    }).success, true, `${objectType} sorts by ${created}`);
+  }
+  assert.equal(v.safeParse(search.input, {
+    objectType: 'contacts', sort: { property: 'hs_createdate', direction: 'descending' },
+  }).success, false);
+});
+
 test('analytics schemas bound resource handles, dates, dimensions, metrics, and result rows', () => {
   const search = MANAGED_CONNECTOR_CATALOG.capability('search_console.analytics.query');
   const report = MANAGED_CONNECTOR_CATALOG.capability('analytics.reports.run');

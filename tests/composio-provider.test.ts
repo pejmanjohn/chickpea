@@ -439,6 +439,64 @@ test('HubSpot search maps only reviewed criteria and normalizes allowlisted CRM 
   assert.doesNotMatch(JSON.stringify(result.data), /custom_secret|api\.hubapi/);
 });
 
+test('HubSpot search forwards a create-date sort and filter and returns the timestamps', async () => {
+  let captured: Record<string, unknown> | undefined;
+  const policy: ConnectionAccountManagedPolicy = {
+    ...POLICY,
+    toolkit: 'hubspot',
+    accountRef: 'ca_hubspot',
+    allowedCapabilities: ['hubspot.objects.search'],
+  };
+  const provider = new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: {
+        async execute(tool, input) {
+          captured = { tool, ...input };
+          return {
+            data: {
+              total: 2,
+              results: [{
+                id: '9002', createdAt: '2026-10-26T09:30:00Z',
+                properties: {
+                  email: 'newest@example.com', createdate: '2026-10-26T09:30:00Z',
+                  lastmodifieddate: '2026-10-26T09:31:00Z', hs_object_id: '9002',
+                },
+              }],
+            },
+            error: null,
+            successful: true,
+          };
+        },
+      },
+    }),
+  });
+
+  const result = await provider.execute({
+    policy,
+    capability: 'hubspot.objects.search',
+    arguments: {
+      objectType: 'contacts',
+      filters: [{ property: 'createdate', operator: 'GTE', value: '1792454400000' }],
+      sort: { property: 'createdate', direction: 'descending' },
+      limit: 1,
+    },
+  });
+
+  const arguments_ = captured?.arguments as Record<string, unknown>;
+  assert.deepEqual(arguments_.sorts, [{ propertyName: 'createdate', direction: 'DESCENDING' }]);
+  assert.deepEqual(arguments_.filterGroups, [{ filters: [{
+    propertyName: 'createdate', operator: 'GTE', value: '1792454400000',
+  }] }]);
+  assert.ok((arguments_.properties as string[]).includes('createdate'));
+  const [newest] = (result.data as { results: Array<Record<string, unknown>> }).results;
+  assert.deepEqual(newest?.properties, {
+    email: 'newest@example.com', createdate: '2026-10-26T09:30:00Z',
+    lastmodifieddate: '2026-10-26T09:31:00Z', hs_object_id: '9002',
+  });
+});
+
 test('HubSpot writes use typed fields and never accept a portal selector or arbitrary properties', async () => {
   const calls: Array<Record<string, unknown>> = [];
   const policy: ConnectionAccountManagedPolicy = {
