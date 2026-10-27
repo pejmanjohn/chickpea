@@ -35,6 +35,9 @@ export const PUBLIC_ASSET_PATHS = [
     'googlebigquery', 'mailchimp', 'pipedrive', 'quickbooks',
     'cal', 'webex', 'canva',
     'adzviser', 'supermetrics', 'windsor-ai',
+    'trello',
+    'zoom',
+    'reddit_ads',
   ].map((name) => `connectors/${name}.png`),
 ];
 const publicPaths = new Set(PUBLIC_ASSET_PATHS);

@@ -49,11 +49,14 @@ export interface DraftReport {
   toolkit: string;
   version: string;
   validationCapability: string;
+  validationArguments?: ComposioManifest['validationArguments'];
   read: string[];
   write: Array<{ tool: string; effect: ManagedEffectClass }>;
   excluded: Array<{ tool: string; reason: string }>;
   withheldArguments: Array<{ tool: string; arguments: Record<string, string> }>;
   preconditions: Array<{ tool: string; argument: string }>;
+  /** String enum arguments review.allowValues narrowed, with the values kept. */
+  allowedValues: Array<{ tool: string; argument: string; values: string[] }>;
   /** Write tools without `destructiveHint` that the irreversibility lint made destructive. */
   irreversible: Array<{ tool: string; verb: string }>;
 }
@@ -122,8 +125,14 @@ const LINK_MINT_TOKENS = new Set(words(`
   create direct download embed expiring generate get make mint presigned preview public share signed store
   temp temporary thumbnail
 `));
-/** Option values that return a link in place of content on their own. */
-const LINK_VALUES = new Set([...LINK_TOKENS, 'presigned']);
+/**
+ * A bare `url` or `link` value returns a link in place of content only on an
+ * argument that picks the output, such as `format` or `return_type`. Semrush's
+ * `target_type` uses `url` for the kind of target it analyzes.
+ */
+const OUTPUT_TOKENS = new Set(['delivery', 'format', 'mode', 'output', 'response', 'return']);
+const OUTPUT_DESCRIPTION =
+  /\b(?:output|response|return|result|download|export|delivery)\s+(?:format|mode|type)\b|\bhow\s+(?:the\s+)?(?:results?|content|files?|data|response)\s+(?:is|are)\s+(?:returned|delivered)\b/i;
 /** A read whose result is such a link: "temporary image URLs", "Returned image URLs expire". */
 const LINK_MINT_DESCRIPTION = new RegExp([
   String.raw`\b(?:temporary|public|shareable|pre-?signed|signed|expiring|pre-?authenticated)\s+(?:[\w()-]+\s+){0,2}(?:urls?|links?)\b`,
@@ -176,6 +185,12 @@ const RECIPIENT_TOKENS = new Set(words(`
 `));
 /** `to_emails`, `from_email`, and `to` address a message; `applicable_to` does not. */
 const ADDRESS_LEADING_TOKENS = new Set(['from', 'to']);
+/**
+ * Ad budgets and bids: `bid_value`, `daily_budget`, `spend_cap`, a goal type of
+ * `LIFETIME_SPEND`, or Reddit's `goal_value`, which is a budget in micros.
+ */
+const SPEND_TOKENS = new Set(['bid', 'bids', 'budget', 'budgets', 'spend', 'spending']);
+const SPEND_DESCRIPTION = /\bmicro-?currency\b|\bin micros\b/i;
 /** Any token containing `phone` counts too: `phones`, Dynamics' `telephone1`. */
 const IDENTITY_TOKENS = new Set(words(`
   external facebook instagram linkedin login logins mobile mobiles password requester twitter username usernames
@@ -187,6 +202,7 @@ const WITHHELD_AUDIENCE = 'puts the record under a company or product, which can
 const WITHHELD_COPY = 'copies content from another record, URL, or file';
 const WITHHELD_RECIPIENT = 'names an address a message goes to or comes from';
 const WITHHELD_IDENTITY = 'changes who the record belongs to or how a person is identified';
+const WITHHELD_SPEND = 'sets a budget, bid, or spend amount';
 const WITHHELD_OVERWRITE = 'can replace an existing item';
 const WITHHELD_ACTING = 'picks the user, admin, or namespace the call acts as';
 const WITHHELD_LINK = 'can make the provider mint a link anyone holding it can open';
@@ -203,9 +219,15 @@ function mintsLink(text: string): boolean {
   return tokens.some((token) => LINK_TOKENS.has(token)) && tokens.some((token) => LINK_MINT_TOKENS.has(token));
 }
 
-/** An option value such as `store_and_link`, or a bare `url` that returns a link in place of content. */
-function linkValue(value: unknown): boolean {
-  return typeof value === 'string' && (mintsLink(value) || LINK_VALUES.has(value.trim().toLowerCase()));
+function picksOutput(name: string, schema: unknown): boolean {
+  return argumentTokens(name).some((token) => OUTPUT_TOKENS.has(token)) || OUTPUT_DESCRIPTION.test(descriptionOf(schema));
+}
+
+/** An option value such as `store_and_link` or `presigned`, or a bare `url` on an argument that picks the output. */
+function linkValue(value: unknown, picksOutputMode: boolean): boolean {
+  if (typeof value !== 'string') return false;
+  const lower = value.trim().toLowerCase();
+  return mintsLink(value) || lower === 'presigned' || (picksOutputMode && LINK_TOKENS.has(lower));
 }
 
 /** Rules for every tool, reads included: who the call acts as, credentials, and modes that mint a shareable link. */
@@ -218,7 +240,8 @@ function anyToolWithheldReason(name: string, schema: unknown): string | undefine
   if ((carriesValue && CREDENTIAL.test(joined)) || (!boolean && CREDENTIAL_DESCRIPTION.test(descriptionOf(schema)))) {
     return WITHHELD_CREDENTIAL;
   }
-  return mintsLink(name) || enumValues(schema).some(linkValue) ? WITHHELD_LINK : undefined;
+  const output = picksOutput(name, schema);
+  return mintsLink(name) || enumValues(schema).some((value) => linkValue(value, output)) ? WITHHELD_LINK : undefined;
 }
 
 /** A tool with both hints counts as a create. `other` is a delete, whose IDs name the record itself. */
@@ -231,10 +254,10 @@ function writeKind(tags: readonly string[]): WriteKind {
 
 /**
  * Writes run without a per-call confirmation, so a write tool's schema is the
- * gate. These rules withhold arguments that widen access, copy from another
- * record, address a message to someone, place a new record under a company or
- * product, or, on update, move a record out of its container or change who it
- * belongs to.
+ * gate. These rules withhold arguments that widen access, set a budget or bid,
+ * copy from another record, address a message to someone, place a new record
+ * under a company or product, or, on update, move a record out of its container
+ * or change who it belongs to.
  */
 function withheldArgumentReason(
   name: string,
@@ -251,6 +274,9 @@ function withheldArgumentReason(
       enumValues(schema).some((value) => typeof value === 'string' && OVERWRITE.test(value))) {
     return WITHHELD_OVERWRITE;
   }
+  if (tokens.some((token) => SPEND_TOKENS.has(token)) || SPEND_DESCRIPTION.test(description) ||
+      enumValues(schema).some((value) => typeof value === 'string' &&
+        argumentTokens(value).some((token) => SPEND_TOKENS.has(token)))) return WITHHELD_SPEND;
   // A file name such as `file_name` labels an attachment without supplying its content.
   if ((tokens.length > 1 && tokens.at(-1) === 'source') ||
       (tokens[0]?.startsWith('file') && !['filename', 'filenames'].includes(compact))) return WITHHELD_COPY;
@@ -359,19 +385,36 @@ interface DeriveContext {
   withheld: Record<string, string>;
   /** Arguments a rule withholds that review.allowArguments kept, with the rule's reason. */
   allowedKept: Record<string, string>;
+  /** String enum argument paths a reviewer narrowed to the listed values. */
+  values: ReadonlyMap<string, readonly string[]>;
+  /** Paths from `values` that named a string enum offering every listed value. */
+  narrowed: Set<string>;
 }
 
 export function deriveInputSchema(
   raw: unknown,
-  options: { write?: WriteKind; allow?: ReadonlySet<string>; deny?: ReadonlyMap<string, string> } = {},
-): { schema: ManifestObjectSchema; withheld: Record<string, string>; allowedKept: Record<string, string> } | { error: string } {
+  options: {
+    write?: WriteKind;
+    allow?: ReadonlySet<string>;
+    deny?: ReadonlyMap<string, string>;
+    values?: ReadonlyMap<string, readonly string[]>;
+  } = {},
+): {
+  schema: ManifestObjectSchema;
+  withheld: Record<string, string>;
+  allowedKept: Record<string, string>;
+  narrowed: ReadonlySet<string>;
+} | { error: string } {
   const context: DeriveContext = {
     ...options, allow: options.allow ?? new Set(), deny: options.deny ?? new Map(), withheld: {}, allowedKept: {},
+    values: options.values ?? new Map(), narrowed: new Set(),
   };
   const derived = deriveNode(raw, 0, '', context, true);
   if ('unsupported' in derived) return { error: derived.unsupported };
   if (!('type' in derived.schema) || derived.schema.type !== 'object') return { error: 'input is not an object' };
-  return { schema: derived.schema, withheld: context.withheld, allowedKept: context.allowedKept };
+  return {
+    schema: derived.schema, withheld: context.withheld, allowedKept: context.allowedKept, narrowed: context.narrowed,
+  };
 }
 
 function deriveNode(
@@ -391,13 +434,17 @@ function deriveNode(
     const present = variants.filter((variant) => !isPlainObject(variant) || variant.type !== 'null');
     if (present.length === 1) {
       const inner = isPlainObject(present[0]) ? present[0] : {};
-      return deriveNode({ ...inner, description: inner.description ?? raw.description }, depth, where, context);
+      return deriveNode({
+        ...('default' in raw ? { default: raw.default } : {}), ...inner, description: inner.description ?? raw.description,
+      }, depth, where, context);
     }
     const branches = present.map((variant) =>
       isPlainObject(variant) && typeof variant.type === 'string' &&
         ['string', 'integer', 'number', 'boolean'].includes(variant.type)
         ? deriveNode({ ...variant, description: undefined }, depth, where, context)
         : { unsupported: `${where} mixes structured types` } as const);
+    // Narrowing one branch leaves the others open, so review.allowValues needs a plain string enum.
+    context.narrowed.delete(where);
     const failed = branches.find((branch) => 'unsupported' in branch);
     if (failed || branches.length === 0) return failed ?? { unsupported: `${where} has no usable type` };
     return {
@@ -412,11 +459,20 @@ function deriveNode(
         raw.enum.length <= COMPOSIO_MANIFEST_LIMITS.enumValues &&
         raw.enum.every((value) => typeof value === 'string' && value.length <= COMPOSIO_MANIFEST_LIMITS.enumValueLength)
         ? raw.enum as string[] : undefined;
+      const allowed = context.values.get(where);
+      // Leaving out a narrowed argument whose default is a dropped value would still send that value.
+      if (allowed && defaultValues(raw).some((value) =>
+        value !== null && !(typeof value === 'string' && allowed.includes(value)))) {
+        return { unsupported: `${where} defaults to a value review.allowValues does not keep`, excludesTool: true };
+      }
+      const narrowed = allowed && values && allowed.every((value) => values.includes(value))
+        ? values.filter((value) => allowed.includes(value)) : values;
+      if (narrowed !== values) context.narrowed.add(where);
       return {
         schema: withDescription({
           type: 'string', maxLength,
           ...(minLength && minLength <= maxLength ? { minLength } : {}),
-          ...(values ? { enum: values } : {}),
+          ...(narrowed ? { enum: narrowed } : {}),
         }, description),
       };
     }
@@ -467,7 +523,7 @@ function deriveNode(
           }
           const defaults = defaultValues(child);
           // Leaving out an argument whose default mints a link would still mint one.
-          if (withheld === WITHHELD_LINK && defaults.some((value) => value === true || linkValue(value))) {
+          if (withheld === WITHHELD_LINK && defaults.some((value) => value === true || linkValue(value, true))) {
             return { unsupported: `${childWhere} mints a shareable link by default`, excludesTool: true };
           }
           // Withholding an argument whose default overwrites would still overwrite.
@@ -520,6 +576,7 @@ function deriveNode(
 export function draftComposioManifest(
   snapshot: ComposioSnapshot,
   previous?: ComposioManifest,
+  options: { validationArguments?: ComposioManifest['validationArguments'] } = {},
 ): { manifest: ComposioManifest; report: DraftReport } {
   const toolkit = snapshot.toolkit.slug;
   if (previous && previous.toolkit !== toolkit) throw new Error('previous manifest belongs to another toolkit');
@@ -529,6 +586,7 @@ export function draftComposioManifest(
   const drop = previous?.review.drop ?? {};
   const allowArguments = previous?.review.allowArguments ?? {};
   const withholdArguments = previous?.review.withholdArguments ?? {};
+  const allowValues = previous?.review.allowValues ?? {};
   const overridden = [...add].filter((slug) => slug in drop);
   if (overridden.length > 0) {
     throw new Error(`review.add names ${overridden.join(', ')}, which review.drop also names; keep only the decision that applies`);
@@ -537,7 +595,7 @@ export function draftComposioManifest(
   const prefix = `${toolkit.toUpperCase()}_`;
   const report: DraftReport = {
     toolkit, version: snapshot.toolkit.version, validationCapability: '',
-    read: [], write: [], excluded: [], withheldArguments: [], preconditions: [], irreversible: [],
+    read: [], write: [], excluded: [], withheldArguments: [], preconditions: [], irreversible: [], allowedValues: [],
   };
   const capabilities: ComposioManifestCapability[] = [];
   for (const tool of [...snapshot.tools].sort((left, right) => left.slug.localeCompare(right.slug))) {
@@ -557,10 +615,12 @@ export function draftComposioManifest(
     if (irreversible) report.irreversible.push({ tool: tool.slug, verb: irreversible });
     const write = classification.lane === 'write';
     const deny = new Map(Object.entries(withholdArguments[tool.slug] ?? {}));
+    const values = new Map(Object.entries(allowValues[tool.slug] ?? {}).map(([path, { values }]) => [path, values]));
     const input = deriveInputSchema(tool.input, {
       ...(write ? { write: writeKind(tool.tags) } : {}),
       allow: new Set(allowArguments[tool.slug] ?? []),
       deny,
+      values,
     });
     if ('error' in input) {
       exclude(input.error);
@@ -569,6 +629,11 @@ export function draftComposioManifest(
     const unmatched = [...deny.keys()].filter((argument) => !(argument in input.withheld));
     if (unmatched.length > 0) {
       throw new Error(`review.withholdArguments names ${tool.slug} ${unmatched.join(', ')}, which its input does not accept`);
+    }
+    const unnarrowed = [...values.keys()].filter((argument) => !input.narrowed.has(argument));
+    if (unnarrowed.length > 0) {
+      throw new Error(`review.allowValues names ${tool.slug} ${unnarrowed.join(', ')}, which its input does not offer ` +
+        'as a string enum with every listed value');
     }
     const allowedKept = Object.entries(input.allowedKept);
     if (!write && allowedKept.length > 0) {
@@ -612,15 +677,26 @@ export function draftComposioManifest(
       report.preconditions.push({ tool: tool.slug, argument });
     }
     if (withheld) report.withheldArguments.push({ tool: tool.slug, arguments: input.withheld });
+    for (const [argument, kept] of values) report.allowedValues.push({ tool: tool.slug, argument, values: [...kept] });
     if (write) report.write.push({ tool: tool.slug, effect });
     else report.read.push(tool.slug);
   }
-  const validationCandidates = capabilities.filter(({ lane, input }) => lane === 'read' && !input.required);
+  const validationArguments = options.validationArguments ?? previous?.validationArguments;
+  const validationCandidates = capabilities.filter(({ lane, input }) => lane === 'read' &&
+    (input.required ?? []).every((argument) => validationArguments?.[argument] !== undefined));
   const validation = validationCandidates.find(({ id }) => id === previous?.validationCapability) ??
     validationCandidates.find(({ tool }) => /(?:^|_)(WHO_AM_I|ME|CURRENT|AUTHENTICATED|ACCOUNT|PROFILE)(?:_|$)/.test(tool)) ??
     validationCandidates[0];
-  if (!validation) throw new Error(`${toolkit} has no read tool without required input to validate a connection`);
+  if (!validation) {
+    throw new Error(`${toolkit} has no read tool whose required input validationArguments supply; ` +
+      'pass fixed arguments with --validation-arguments');
+  }
+  const stale = Object.keys(validationArguments ?? {}).filter((argument) => !(argument in validation.input.properties));
+  if (stale.length > 0) {
+    throw new Error(`validationArguments names ${stale.join(', ')}, which ${validation.tool} input does not accept`);
+  }
   report.validationCapability = validation.id;
+  if (validationArguments) report.validationArguments = validationArguments;
   const manifest: ComposioManifest = {
     toolkit,
     version: snapshot.toolkit.version,
@@ -630,6 +706,7 @@ export function draftComposioManifest(
     securityDescription: previous?.securityDescription ?? defaultSecurityDescription(label, auth),
     preset: previous?.preset ?? { category: 'business', accent: '#000000' },
     validationCapability: validation.id,
+    ...(validationArguments ? { validationArguments } : {}),
     review: {
       add: [...add].sort(),
       drop: Object.fromEntries(Object.entries(drop).sort()),
@@ -637,6 +714,10 @@ export function draftComposioManifest(
       ...(Object.keys(withholdArguments).length > 0 ? {
         withholdArguments: Object.fromEntries(Object.entries(withholdArguments).sort()
           .map(([slug, reasons]) => [slug, Object.fromEntries(Object.entries(reasons).sort())])),
+      } : {}),
+      ...(Object.keys(allowValues).length > 0 ? {
+        allowValues: Object.fromEntries(Object.entries(allowValues).sort()
+          .map(([slug, paths]) => [slug, Object.fromEntries(Object.entries(paths).sort())])),
       } : {}),
     },
     capabilities,
@@ -648,7 +729,7 @@ export function draftComposioManifest(
 export function reviewedTools(manifest: ComposioManifest): string[] {
   return [
     ...manifest.review.add, ...Object.keys(manifest.review.drop), ...Object.keys(manifest.review.allowArguments),
-    ...Object.keys(manifest.review.withholdArguments ?? {}),
+    ...Object.keys(manifest.review.withholdArguments ?? {}), ...Object.keys(manifest.review.allowValues ?? {}),
   ];
 }
 
@@ -675,7 +756,7 @@ export function checkComposioManifest(value: unknown, snapshot: ComposioSnapshot
   }
   if (!isDeepStrictEqual(manifest.auth, expected.auth)) problems.push(`${where} auth differs from the snapshot`);
   if (manifest.validationCapability !== expected.validationCapability) {
-    problems.push(`${where} validation capability is not a read tool without required input`);
+    problems.push(`${where} validation capability is not a read tool whose required input validationArguments supply`);
   }
   const expectedByTool = new Map(expected.capabilities.map((capability) => [capability.tool, capability]));
   for (const capability of manifest.capabilities) {
@@ -819,7 +900,8 @@ export function renderDraftReport(report: DraftReport): string {
   const lines = [
     `# ${report.toolkit} ${report.version}`,
     '',
-    `Validation capability: \`${report.validationCapability}\``,
+    `Validation capability: \`${report.validationCapability}\`` +
+      (report.validationArguments ? ` with \`${JSON.stringify(report.validationArguments)}\`` : ''),
     '',
     `## Read lane (${report.read.length})`,
     ...report.read.map((tool) => `- \`${tool}\``),
@@ -835,6 +917,10 @@ export function renderDraftReport(report: DraftReport): string {
     '',
     `## Arguments with a precondition (${report.preconditions.length})`,
     ...report.preconditions.map(({ tool, argument }) => `- \`${tool}\`: \`${argument}\``),
+    '',
+    `## Enum arguments narrowed by review (${report.allowedValues.length})`,
+    ...report.allowedValues.map(({ tool, argument, values }) =>
+      `- \`${tool}\`: \`${argument}\` only ${values.map((value) => `\`${value}\``).join(', ')}`),
     '',
     `## Arguments withheld (${report.withheldArguments.reduce((sum, { arguments: names }) => sum + Object.keys(names).length, 0)})`,
     ...report.withheldArguments.flatMap(({ tool, arguments: names }) => [

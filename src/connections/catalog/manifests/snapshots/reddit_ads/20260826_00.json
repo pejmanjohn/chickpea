@@ -1,0 +1,3848 @@
+{
+  "toolkit": {
+    "slug": "reddit_ads",
+    "name": "Reddit Ads",
+    "version": "20260826_00",
+    "description": "Reddit Ads API for managing advertising campaigns, conversions, and account data on Reddit.",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      }
+    ],
+    "currentUserEndpoint": "https://oauth.reddit.com/api/v1/me"
+  },
+  "tools": [
+    {
+      "slug": "REDDIT_ADS_CREATE_CAMPAIGN",
+      "name": "Create Reddit Ads Campaign",
+      "description": "Tool to create a new Reddit Ads campaign for the specified ad account. Use when you need to set up a new advertising campaign with specific objective, budget, and targeting settings. Note: Max campaigns creation isn't currently supported - set up Max campaigns in the Ads Manager instead.",
+      "version": "20260826_00",
+      "tags": [
+        "campaigns",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateCampaignRequest",
+        "required": [
+          "ad_account_id",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "title": "Data",
+            "required": [
+              "name",
+              "configured_status",
+              "objective"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "title": "Name",
+                "examples": [
+                  "Test Campaign API",
+                  "Q1 Marketing Campaign"
+                ],
+                "maxLength": 500,
+                "minLength": 3,
+                "description": "The name of the campaign. Required field between 3-500 characters."
+              },
+              "app_id": {
+                "type": "string",
+                "title": "App Id",
+                "examples": [
+                  "com.example.app",
+                  "id123456789"
+                ],
+                "description": "The app ID on either the Apple App Store or Google Play Store. For use with app installs campaigns. Required when objective is APP_INSTALLS."
+              },
+              "bid_type": {
+                "enum": [
+                  "CPC",
+                  "CPM",
+                  "CPV6"
+                ],
+                "type": "string",
+                "title": "BidType",
+                "description": "Bid type for campaign budget optimization."
+              },
+              "end_time": {
+                "type": "string",
+                "title": "End Time",
+                "examples": [
+                  "2024-12-31T23:59:59Z"
+                ],
+                "description": "ISO 8601 timestamp when the campaign will stop delivering. Required if start_time is provided. If unspecified, the campaign will run continuously starting today. Only works when is_campaign_budget_optimization is true."
+              },
+              "bid_value": {
+                "type": "integer",
+                "title": "Bid Value",
+                "examples": [
+                  5000000
+                ],
+                "description": "The amount to pay in microcurrency per bidding event. Only works when is_campaign_budget_optimization is true and optional when bid_strategy is MAXIMIZE_VOLUME. If set at campaign level, it cannot be set at ad group level."
+              },
+              "goal_type": {
+                "enum": [
+                  "LIFETIME_SPEND",
+                  "DAILY_SPEND"
+                ],
+                "type": "string",
+                "title": "GoalType",
+                "description": "Campaign goal type for budget optimization."
+              },
+              "objective": {
+                "enum": [
+                  "APP_INSTALLS",
+                  "CATALOG_SALES",
+                  "CLICKS",
+                  "CONVERSIONS",
+                  "IMPRESSIONS",
+                  "LEAD_GENERATION",
+                  "VIDEO_VIEWABLE_IMPRESSIONS"
+                ],
+                "type": "string",
+                "title": "Objective",
+                "examples": [
+                  "CLICKS",
+                  "CONVERSIONS",
+                  "APP_INSTALLS"
+                ],
+                "description": "The objective type of the campaign. This determines the optimization goal and available features."
+              },
+              "spend_cap": {
+                "type": "integer",
+                "title": "Spend Cap",
+                "examples": [
+                  50000000
+                ],
+                "description": "Campaign lifetime spend cap in microcurrency. This field works for both CBO (campaign budget optimization) and non-CBO campaigns."
+              },
+              "goal_value": {
+                "type": "integer",
+                "title": "Goal Value",
+                "examples": [
+                  100000000
+                ],
+                "description": "Campaign level goal value in micros. Only works when is_campaign_budget_optimization is true."
+              },
+              "start_time": {
+                "type": "string",
+                "title": "Start Time",
+                "examples": [
+                  "2024-01-01T00:00:00Z"
+                ],
+                "description": "ISO 8601 timestamp when the campaign will begin to deliver. Required if end_time is provided. If unspecified, the campaign will run continuously starting today. Only works when is_campaign_budget_optimization is true."
+              },
+              "bid_strategy": {
+                "enum": [
+                  "BIDLESS",
+                  "MAXIMIZE_VOLUME",
+                  "TARGET_CPX"
+                ],
+                "type": "string",
+                "title": "BidStrategy",
+                "description": "Bid strategy for campaign budget optimization."
+              },
+              "invoice_label": {
+                "type": "string",
+                "title": "Invoice Label",
+                "examples": [
+                  "Client-ABC-Q1-2024"
+                ],
+                "maxLength": 80,
+                "description": "A freeform editable text field for agencies that can be used for tracking and reconciliation purposes."
+              },
+              "configured_status": {
+                "enum": [
+                  "ACTIVE",
+                  "ARCHIVED",
+                  "DELETED",
+                  "PAUSED"
+                ],
+                "type": "string",
+                "title": "Configured Status",
+                "examples": [
+                  "PAUSED",
+                  "ACTIVE"
+                ],
+                "description": "The status that the user has configured this entity to have. Can differ from effective_status depending on context such as pending billing information."
+              },
+              "optimization_goal": {
+                "type": "string",
+                "title": "Optimization Goal",
+                "examples": [
+                  "VIDEO_VIEW_6S"
+                ],
+                "description": "The event you want to measure for this campaign. Required when is_campaign_budget_optimization is true for conversions or video view campaigns. This can't be changed later. Starting March 31st, 2026, this can't be set to NULL for video views campaigns."
+              },
+              "conversion_pixel_id": {
+                "type": "string",
+                "title": "Conversion Pixel Id",
+                "description": "The campaign Conversion Pixel ID used for optimization. Only works when is_campaign_budget_optimization is true. Important: This cannot be changed after publishing the campaign."
+              },
+              "funding_instrument_id": {
+                "type": "string",
+                "title": "Funding Instrument Id",
+                "description": "Campaign level funding instrument ID. This is the payment method for the campaign."
+              },
+              "special_ad_categories": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Special Ad Categories",
+                "description": "List of special ad categories (advertising content that require compliance with regulations and policies) related to the campaign."
+              },
+              "view_through_conversion_type": {
+                "enum": [
+                  "SEVEN_DAY_CLICKS",
+                  "SEVEN_DAY_CLICKS_ONE_DAY_VIEW"
+                ],
+                "type": "string",
+                "title": "ViewThroughConversionType",
+                "description": "View-through conversion tracking type."
+              },
+              "is_campaign_budget_optimization": {
+                "type": "boolean",
+                "title": "Is Campaign Budget Optimization",
+                "description": "Indicates whether the campaign will have campaign budget optimization or not. Important: This cannot be changed after publishing the campaign."
+              }
+            },
+            "description": "Campaign data containing name, status, objective, and optional configuration parameters.",
+            "additionalProperties": false
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the ad account to create the campaign under. Must match pattern ^(t2|a2)_.*"
+          }
+        },
+        "description": "Request model for creating a Reddit Ads campaign."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_DO_GEOLOCATION_VALIDATIONS",
+      "name": "Validate Geolocations",
+      "description": "Tool to validate a list of geolocations for use in Reddit Ads targeting. Use when you need to check if geolocation IDs or cities are valid for ad targeting before creating or updating campaigns. Rate limit: Targeting Taxonomy - 100 requests per 60 seconds.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "targeting",
+        "validation"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DoGeolocationValidationsRequest",
+        "properties": {
+          "cities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Cities",
+            "examples": [
+              [
+                "New York",
+                "Los Angeles"
+              ],
+              [
+                "London",
+                "Paris"
+              ]
+            ],
+            "description": "List of city identifiers to validate for ad targeting. Mutually exclusive with geolocation_ids parameter."
+          },
+          "geolocation_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Geolocation Ids",
+            "examples": [
+              [
+                "US",
+                "CA"
+              ],
+              [
+                "GB",
+                "FR",
+                "DE"
+              ]
+            ],
+            "description": "List of geolocation IDs to validate. These are location identifiers used for ad targeting (e.g., 'US', 'CA', 'GB'). Mutually exclusive with cities parameter."
+          }
+        },
+        "description": "Request model for validating geolocations used for targeting."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_A_REPORT",
+      "name": "Get A Report",
+      "description": "Tool to generate a metrics report for ad performance based on specified fields and breakdowns. Use when you need detailed insights and analytics on ad performance, audience engagement, impressions, clicks, spend, and other advertising metrics. Supports up to 3 breakdowns (4 with COUNTRY and REGION combination) and provides paginated results.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "analytics"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAReportRequest",
+        "required": [
+          "ad_account_id",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "title": "Data",
+            "required": [
+              "starts_at",
+              "ends_at",
+              "fields"
+            ],
+            "properties": {
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Fields",
+                "examples": [
+                  [
+                    "IMPRESSIONS",
+                    "CLICKS",
+                    "SPEND"
+                  ],
+                  [
+                    "CTR",
+                    "CPC",
+                    "CONVERSIONS"
+                  ]
+                ],
+                "description": "A list of fields that you want returned in your metrics. Common fields include: IMPRESSIONS, CLICKS, SPEND, CTR, CPC, CPM, CONVERSIONS. Note: CLICK_ATTRIBUTION_WINDOW, VIEW_ATTRIBUTION_WINDOW, and GALLERY_ITEM_CAPTION are deprecated."
+              },
+              "filter": {
+                "type": "string",
+                "title": "Filter",
+                "description": "A string to restrict results by limiting field to specific values or ranges. Format: '<entity name> : <field name> <operation> <value>'. Entity names: campaign, ad_group, ad. Field names: id, effective_status, name. Operations: == (exact match), =@ (substring match). Example: 'campaign : name =@ Summer'"
+              },
+              "ends_at": {
+                "type": "string",
+                "title": "Ends At",
+                "examples": [
+                  "2025-01-07T23:59:59Z",
+                  "2024-12-31T23:59:59Z"
+                ],
+                "description": "An ISO 8601 timestamp indicating the end of the window to fetch reporting metrics for. This field only supports UTC - adjust the date and time to account for different timezones. Example: '2025-01-07T23:59:59Z'"
+              },
+              "starts_at": {
+                "type": "string",
+                "title": "Starts At",
+                "examples": [
+                  "2025-01-01T00:00:00Z",
+                  "2024-12-01T00:00:00Z"
+                ],
+                "description": "An ISO 8601 timestamp indicating the start of the window to fetch reporting metrics for. This field only supports UTC - adjust the date and time to account for different timezones. Example: '2025-01-01T00:00:00Z'"
+              },
+              "breakdowns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Breakdowns",
+                "description": "Breakdowns are aggregations that summarize your data as metrics or statistics. Maximum 3 items (4 if COUNTRY and REGION combination is used). Examples: DATE, CAMPAIGN, AD_GROUP, AD, COUNTRY, REGION, DEVICE."
+              },
+              "time_zone_id": {
+                "enum": [
+                  "GMT",
+                  "UTC",
+                  "America/New_York",
+                  "America/Chicago",
+                  "America/Denver",
+                  "America/Los_Angeles",
+                  "America/Phoenix",
+                  "Europe/London",
+                  "Europe/Paris",
+                  "Europe/Berlin",
+                  "Asia/Tokyo",
+                  "Asia/Hong_Kong",
+                  "Asia/Singapore",
+                  "Australia/Sydney"
+                ],
+                "type": "string",
+                "title": "TimeZoneId",
+                "description": "Time zone IDs supported by Reddit Ads API."
+              },
+              "custom_column_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Custom Column Ids",
+                "description": "A list of custom column IDs that you want returned in your metrics."
+              }
+            },
+            "description": "The report data parameters including time range, fields, and optional breakdowns.",
+            "additionalProperties": false
+          },
+          "page.size": {
+            "type": "integer",
+            "title": "Page.Size",
+            "minimum": 1,
+            "description": "The number of items to be returned by page."
+          },
+          "page.token": {
+            "type": "string",
+            "title": "Page.Token",
+            "description": "The token for the page to retrieve. Used for pagination."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the ad account to get the ads report under. Example: 'a2_imh76hh7e126'"
+          }
+        },
+        "description": "Request model for generating a metrics report."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_AD_ACCOUNT",
+      "name": "Get Ad Account by ID",
+      "description": "Tool to retrieve details for a specific Reddit ad account by ID. Use when you need to get account information including admin approval status, attribution settings, currency, excluded communities/keywords, and other account configuration. Rate limit: 400 requests per 60 seconds (Campaign Management Read).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Ad Account Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAdAccountRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "pattern": "^(t2|a2)_.*",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the ad account to get. Must match pattern ^(t2|a2)_.*"
+          }
+        },
+        "description": "Request model for getting an ad account by ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_AD_ACCOUNT_HISTORY",
+      "name": "Get ad account history",
+      "description": "Get changelog history for a Reddit ad account with filtering options. Use when you need to track changes made to ads, campaigns, or ad groups within an account, including who made changes and when.",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Ad Account Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAdAccountHistoryRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "title": "HistoryRequestData",
+            "properties": {
+              "end_time": {
+                "type": "string",
+                "title": "End Time",
+                "description": "The end time of the change in ISO 8601 format (e.g., '2024-12-31T23:59:59Z')."
+              },
+              "member_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Member Ids",
+                "description": "The Reddit member IDs who made the change."
+              },
+              "start_time": {
+                "type": "string",
+                "title": "Start Time",
+                "description": "The start time of the change in ISO 8601 format (e.g., '2024-01-01T00:00:00Z')."
+              },
+              "change_types": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Change Types",
+                "description": "The types of changes to show (e.g., 'CREATE', 'UPDATE', 'DELETE')."
+              },
+              "entity_id_filters": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "title": "EntityIdFilter",
+                  "properties": {
+                    "entity_id": {
+                      "type": "string",
+                      "title": "Entity Id",
+                      "description": "The specific entity ID to filter for."
+                    },
+                    "entity_type": {
+                      "type": "string",
+                      "title": "Entity Type",
+                      "description": "The type of entity (e.g., 'ad', 'campaign', 'ad_group')."
+                    }
+                  },
+                  "description": "Filter for specific entity IDs in history changes."
+                },
+                "title": "Entity Id Filters",
+                "description": "The entity IDs to show changes for."
+              },
+              "entity_name_filters": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "title": "EntityNameFilter",
+                  "properties": {
+                    "entity_name": {
+                      "type": "string",
+                      "title": "Entity Name",
+                      "description": "The specific entity name to filter for."
+                    },
+                    "entity_type": {
+                      "type": "string",
+                      "title": "Entity Type",
+                      "description": "The type of entity (e.g., 'ad', 'campaign', 'ad_group')."
+                    }
+                  },
+                  "description": "Filter for specific entity names in history changes."
+                },
+                "title": "Entity Name Filters",
+                "description": "The entity names to show changes for."
+              },
+              "entity_field_filters": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "title": "EntityFieldFilter",
+                  "properties": {
+                    "field_name": {
+                      "type": "string",
+                      "title": "Field Name",
+                      "description": "The specific field name to filter for."
+                    },
+                    "entity_type": {
+                      "type": "string",
+                      "title": "Entity Type",
+                      "description": "The type of entity (e.g., 'ad', 'campaign', 'ad_group')."
+                    }
+                  },
+                  "description": "Filter for specific entity fields in history changes."
+                },
+                "title": "Entity Field Filters",
+                "description": "The entity fields to show changes for."
+              }
+            },
+            "description": "Data payload for ad account history request.",
+            "additionalProperties": false
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve. Use this for pagination to get subsequent pages of results."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the ad account to get the account history for (e.g., 'a2_imh76hh7e126')."
+          }
+        },
+        "description": "Request parameters for getting ad account history."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_AD_GROUP",
+      "name": "Get Ad Group",
+      "description": "Tool to get an ad group by its ID from Reddit Ads API. Use when you need to retrieve details about a specific ad group. Note: Rate limit of 400 requests per 60 seconds applies (Campaign Management Read).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Campaign Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAdGroupRequest",
+        "required": [
+          "ad_group_id"
+        ],
+        "properties": {
+          "ad_group_id": {
+            "type": "string",
+            "title": "Ad Group Id",
+            "pattern": "^[a-zA-Z0-9_-]+$",
+            "examples": [
+              "2451509597948428295"
+            ],
+            "description": "The ID of the ad group to get."
+          }
+        },
+        "description": "Request model for retrieving an ad group by its ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_APP_LAST_FIRED_AT",
+      "name": "Get App Last Fired At Report",
+      "description": "Tool to retrieve the last time mobile conversion events were fired for a specific app ID. Use when you need to check conversion tracking status or verify that mobile events are being received. Rate limit: 30 requests per 60 seconds (Conversion Signals).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Conversion Tracking"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAppLastFiredAtRequest",
+        "required": [
+          "app_id"
+        ],
+        "properties": {
+          "app_id": {
+            "type": "string",
+            "title": "App Id",
+            "examples": [
+              "com.reddit.frontpage",
+              "com.example.myapp"
+            ],
+            "description": "The ID of the app to get the last fired at report. This is typically the app's bundle identifier (e.g., 'com.reddit.frontpage' for Android or iOS apps)."
+          }
+        },
+        "description": "Request model for getting the last time mobile conversion events were fired for an app."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_BUSINESS",
+      "name": "Get Business by ID",
+      "description": "Tool to get business details by ID from the Reddit Ads API. Use when you need to retrieve information about a specific business entity including its name, industry, contact details, and metadata. The member must have memberships to the business to access this endpoint.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Business Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetBusinessRequest",
+        "required": [
+          "business_id"
+        ],
+        "properties": {
+          "business_id": {
+            "type": "string",
+            "title": "Business Id",
+            "examples": [
+              "1e200a0b-4e98-32cc-dd47-3006e4c85bb2"
+            ],
+            "description": "The ID of the business to get. This endpoint requires the member to have memberships to the business."
+          }
+        },
+        "description": "Request model for fetching a business by ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_CAMPAIGN",
+      "name": "Get Campaign by ID",
+      "description": "Retrieve a specific Reddit Ads campaign by its ID. Returns comprehensive campaign information including objective, status, budget, targeting, and optimization settings. Rate limited to 400 requests per 60 seconds.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Campaign Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCampaignRequest",
+        "required": [
+          "campaign_id"
+        ],
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id",
+            "examples": [
+              "2451508441785140582"
+            ],
+            "description": "The ID of the campaign to retrieve."
+          }
+        },
+        "description": "Request model for fetching a specific Reddit Ads campaign by ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_CHANNEL_PLANNING_REACH",
+      "name": "Get Channel Planning Reach",
+      "description": "Tool to retrieve estimated reach data for a given set of targeting parameters. Returns a series of 10 data points representing the reach curve by impressions. Use when planning ad campaigns and estimating potential audience reach based on duration, location, age, and gender targeting.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "analytics"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetChannelPlanningReachRequest",
+        "required": [
+          "duration_days",
+          "geolocation"
+        ],
+        "properties": {
+          "gender": {
+            "enum": [
+              "MALE",
+              "FEMALE",
+              "ALL"
+            ],
+            "type": "string",
+            "title": "Gender",
+            "examples": [
+              "ALL"
+            ],
+            "description": "Gender for targeting."
+          },
+          "max_age": {
+            "type": "integer",
+            "title": "Max Age",
+            "maximum": 99,
+            "examples": [
+              34
+            ],
+            "description": "The maximum age for targeting. Must be greater than min_age. Defaults to 99 if not specified. 99 represents ages 99 and older."
+          },
+          "min_age": {
+            "type": "integer",
+            "title": "Min Age",
+            "minimum": 18,
+            "examples": [
+              18
+            ],
+            "description": "The minimum age for targeting. Must be less than max_age. Defaults to 18 if not specified."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "description": "The number of items to be returned by page. Used for pagination."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve. Used for pagination."
+          },
+          "geolocation": {
+            "enum": [
+              "US",
+              "CA",
+              "GB"
+            ],
+            "type": "string",
+            "title": "Geolocation",
+            "examples": [
+              "US"
+            ],
+            "description": "The country code for targeting. Supported values: US (United States), CA (Canada), GB (United Kingdom)."
+          },
+          "duration_days": {
+            "enum": [
+              7,
+              28
+            ],
+            "type": "integer",
+            "title": "Duration Days",
+            "examples": [
+              7,
+              28
+            ],
+            "description": "Number of days in the reach prediction window. Must be either 7 or 28 days."
+          }
+        }
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_CHILD_FUNDING_INSTRUMENTS",
+      "name": "Get Child Funding Instruments",
+      "description": "Tool to retrieve a list of Funding Instrument Allocations for a parent funding instrument. Use when you need to view child allocations, check billing amounts, or verify servability status. Note: This endpoint is rate-limited to 30 requests per 60 seconds under the Billing rate limit category.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Billing"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetChildFundingInstrumentsRequest",
+        "required": [
+          "funding_instrument_id"
+        ],
+        "properties": {
+          "page.size": {
+            "type": "integer",
+            "title": "Page.Size",
+            "examples": [
+              50,
+              100
+            ],
+            "description": "The number of items to be returned per page"
+          },
+          "page.token": {
+            "type": "string",
+            "title": "Page.Token",
+            "examples": [
+              "nextToken",
+              "previousToken"
+            ],
+            "description": "The token for the page to retrieve. Use this to fetch subsequent pages of results"
+          },
+          "funding_instrument_id": {
+            "type": "string",
+            "title": "Funding Instrument Id",
+            "examples": [
+              "1565487",
+              "12345"
+            ],
+            "description": "The ID of the parent funding instrument to retrieve allocations for"
+          }
+        },
+        "description": "Request model for getting child funding instrument allocations."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_CUSTOM_AUDIENCE",
+      "name": "Get Custom Audience",
+      "description": "Tool to retrieve a custom audience by ID from Reddit Ads API. Use when you need to fetch detailed information about a specific custom audience including its configuration, status, and size estimates. Rate limit: 500 requests per 60 seconds (Targeting Taxonomy).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Audiences"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetCustomAudienceRequest",
+        "required": [
+          "audience_id"
+        ],
+        "properties": {
+          "audience_id": {
+            "type": "string",
+            "title": "Audience Id",
+            "examples": [
+              "ca.2451508715609540752"
+            ],
+            "description": "The ID of the custom audience to retrieve"
+          }
+        },
+        "description": "Request model for fetching a custom audience by ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_LEAD_GEN_FORM",
+      "name": "Get Lead Gen Form by ID",
+      "description": "Tool to retrieve details for a specific lead generation form by ID from Reddit Ads. Use when you need to get form information including name, prompt, privacy link, questions, and timestamps. Rate limit: 20 requests per 60 seconds (Leads category).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Leads"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetLeadGenFormRequest",
+        "required": [
+          "lead_gen_form_id"
+        ],
+        "properties": {
+          "lead_gen_form_id": {
+            "type": "string",
+            "title": "Lead Gen Form Id",
+            "examples": [
+              "346ac343-fbb3-4738-82db-70828af30648"
+            ],
+            "description": "The ID of the form to retrieve. Format: UUID (e.g., '346ac343-fbb3-4738-82db-70828af30648')."
+          }
+        },
+        "description": "Request model for getting a lead generation form by ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_ME",
+      "name": "Get Authenticated Member",
+      "description": "Tool to get the authenticated member's information from the Reddit Ads API. Use when you need to retrieve details about the currently authenticated user including their Reddit username, email, name, and phone number. Rate limit: 100 requests per 60 seconds (Business Manager).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "User Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetMeRequest",
+        "properties": {},
+        "description": "Request model for getting the authenticated member.\nThis endpoint requires no parameters - it returns info for the authenticated user."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_PIXEL_LAST_FIRED_AT",
+      "name": "Get Pixel Last Fired At Report",
+      "description": "Tool to retrieve the last time conversion events were fired for a specific conversion pixel. Use when you need to check conversion tracking status or verify that pixel events are being received. Rate limit: 30 requests per 60 seconds (Conversion Signals).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Conversion Tracking"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetPixelLastFiredAtRequest",
+        "required": [
+          "pixel_id"
+        ],
+        "properties": {
+          "pixel_id": {
+            "type": "string",
+            "title": "Pixel Id",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the pixel to get the report."
+          }
+        },
+        "description": "Request model for getting the last time conversion events were fired for a conversion pixel."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_POST",
+      "name": "Get Post by ID",
+      "description": "Tool to retrieve a promoted or organic Reddit post by its ID. Returns post details including type, content, headline, and metadata. Rate limit: 200 requests per 60 seconds (Creative Management).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Creative Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetPostRequest",
+        "required": [
+          "post_id"
+        ],
+        "properties": {
+          "post_id": {
+            "type": "string",
+            "title": "Post Id",
+            "pattern": "^t3_.*",
+            "examples": [
+              "t3_1rm5i21"
+            ],
+            "description": "The ID of the promoted post to get. Must match pattern ^t3_.*"
+          }
+        },
+        "description": "Request model for fetching a Reddit post by ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_PRODUCT_CATALOG",
+      "name": "Get Product Catalog",
+      "description": "Tool to retrieve a specific product catalog by ID from the Reddit Ads API. Use when you need to fetch details about a particular product catalog including its name, language, currency, attached pixels, and product statistics. Rate limit: 7000 requests/300s (burst: 3000 requests/60s).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Product Catalog"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetProductCatalogRequest",
+        "required": [
+          "catalog_id"
+        ],
+        "properties": {
+          "catalog_id": {
+            "type": "string",
+            "title": "Catalog Id",
+            "examples": [
+              "39c92b42-3b19-4457-ab86-08db8a05b1d8"
+            ],
+            "description": "The ID of the product catalog."
+          }
+        },
+        "description": "Request model for retrieving a specific product catalog by ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_PRODUCT_FEED",
+      "name": "Get Product Feed",
+      "description": "Tool to retrieve metadata for a specific product feed by ID. Use when you need to fetch details about a particular feed including its URL, schedule, authentication credentials, and update mode.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Product Catalog"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetProductFeedRequest",
+        "required": [
+          "feed_id"
+        ],
+        "properties": {
+          "feed_id": {
+            "type": "string",
+            "title": "Feed Id",
+            "examples": [
+              "6f084e30-71f8-4a19-b9d6-a5d3ddbede8a"
+            ],
+            "description": "The ID of the product feed."
+          }
+        },
+        "description": "Request model for retrieving a specific product feed by ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_PRODUCT_SET",
+      "name": "Get Product Set",
+      "description": "Tool to retrieve metadata for a specific product set by ID from the Reddit Ads API. Use when you need to fetch details about a particular product set including its name, filter rules, and product statistics. Rate limit: 7000 requests/300s (burst: 3000 requests/60s).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Product Catalog"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetProductSetRequest",
+        "required": [
+          "product_set_id"
+        ],
+        "properties": {
+          "product_set_id": {
+            "type": "string",
+            "title": "Product Set Id",
+            "examples": [
+              "3cefbd19-d9bd-48eb-819b-67dd944da4de"
+            ],
+            "description": "The ID of the product set."
+          }
+        },
+        "description": "Request model for retrieving a specific product set by ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_PROFILE",
+      "name": "Get Profile by ID",
+      "description": "Tool to retrieve details for a specific profile by ID from the Reddit Ads API. Use when you need to get profile information including business ID, Reddit username, and modification timestamp. Rate limit: 100 requests per 60 seconds (Business Manager).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Profiles"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetProfileRequest",
+        "required": [
+          "profile_id"
+        ],
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "pattern": "^t2_.*",
+            "examples": [
+              "t2_m5qt8m97x"
+            ],
+            "description": "The ID of the profile to get. Must match pattern ^t2_.*"
+          }
+        },
+        "description": "Request model for getting a profile by ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_SAVED_AUDIENCE",
+      "name": "Get Saved Audience",
+      "description": "Tool to retrieve a saved audience by ID from Reddit Ads API. Use when you need to fetch detailed information about a specific saved audience including its targeting criteria and status. Rate limit: 400 requests per 60 seconds (Campaign Management Read).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Campaign Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSavedAudienceRequest",
+        "required": [
+          "saved_audience_id"
+        ],
+        "properties": {
+          "saved_audience_id": {
+            "type": "string",
+            "title": "Saved Audience Id",
+            "examples": [
+              "2451508624422555068"
+            ],
+            "description": "The ID of the saved audience to retrieve."
+          }
+        },
+        "description": "Request model for retrieving a saved audience by ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_SK_AD_NETWORK_AVAILABILITY",
+      "name": "Get SKAdNetwork Availability",
+      "description": "Tool to get SKAdNetwork IDs availability quota for an iOS app. Use when you need to check how many SKAdNetwork IDs are available for campaigns, ad groups, or ads.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "SKAdNetwork"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSKAdNetworkAvailabilityRequest",
+        "required": [
+          "app_id"
+        ],
+        "properties": {
+          "app_id": {
+            "type": "string",
+            "title": "App Id",
+            "examples": [
+              "1064216828"
+            ],
+            "description": "App ID from the iOS App Store. Only providing the iOS app ID will return the SKAN campaign_quota for the given app ID."
+          },
+          "ad_group_id": {
+            "type": "string",
+            "title": "Ad Group Id",
+            "examples": [
+              "t2_abc123"
+            ],
+            "description": "The ad group ID. Required when querying SKAN ad_quota for a specific ad group within the specified app ID."
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id",
+            "examples": [
+              "t2_xyz789"
+            ],
+            "description": "Campaign ID. Required when querying SKAN ad_group_quota for a given campaign ID."
+          }
+        },
+        "description": "Request schema for getting SKAdNetwork IDs availability quota."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_GET_STRUCTURED_POST",
+      "name": "Get Structured Post by ID",
+      "description": "Tool to retrieve a structured post by its ID from the Reddit Ads API. Returns post details including creative content which can be image, text, video, or carousel type. Rate limit: 200 requests per 60 seconds (Creative Management).",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Creative Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetStructuredPostRequest",
+        "required": [
+          "post_id"
+        ],
+        "properties": {
+          "post_id": {
+            "type": "string",
+            "title": "Post Id",
+            "pattern": "^t3_.*",
+            "examples": [
+              "t3_1rm5i7x"
+            ],
+            "description": "The ID of the post to retrieve. Must match pattern ^t3_.*"
+          }
+        },
+        "description": "Request model for fetching a structured Reddit post by ID."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_AD_ACCOUNTS_BY_BUSINESS",
+      "name": "List Ad Accounts By Business",
+      "description": "Tool to get a list of ad accounts under a business on Reddit Ads. Use when you need to retrieve ad accounts associated with a specific business ID. Supports filtering by specific ad account IDs and pagination for large result sets. Rate limit: Campaign Management Read (400 requests/60s).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "Ad Account Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListAdAccountsByBusinessRequest",
+        "required": [
+          "business_id"
+        ],
+        "properties": {
+          "ids": {
+            "type": "string",
+            "title": "Ids",
+            "examples": [
+              "t2_123,t2_abc,t2_xyz"
+            ],
+            "description": "IDs of ad accounts to search for within the business. Ad accounts should be comma-separated"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "examples": [
+              50
+            ],
+            "description": "The number of items to be returned by page"
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve"
+          },
+          "business_id": {
+            "type": "string",
+            "title": "Business Id",
+            "examples": [
+              "0d27fa89-3e67-4413-9618-b89f7f15e80f"
+            ],
+            "description": "The ID of the business to get ad accounts for"
+          }
+        },
+        "description": "Request model for listing ad accounts under a business"
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_AD_GROUPS",
+      "name": "List Ad Groups",
+      "description": "Tool to list ad groups for a Reddit ad account. Use when you need to retrieve ad groups for campaign management. Rate limit: Campaign Management Read - 400 requests per 60 seconds.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "Campaign Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListAdGroupsRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Id",
+            "examples": [
+              [
+                "2179967543",
+                "2172797281"
+              ]
+            ],
+            "description": "The list of ad group IDs to filter by."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "examples": [
+              50
+            ],
+            "description": "The number of items to be returned per page."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "examples": [
+              "nextToken"
+            ],
+            "description": "The token for the page to retrieve (for pagination)."
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id",
+            "examples": [
+              "2179967543"
+            ],
+            "description": "The ID of the campaign to list ad groups under."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the ad account to list ad groups for."
+          }
+        },
+        "description": "Request parameters for listing ad groups by ad account."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_ADS",
+      "name": "List Ads",
+      "description": "Tool to list ads by ad account on Reddit Ads platform. Use when you need to retrieve advertising campaigns for a specific ad account. Note: Only 1 ad will appear for each Max campaign. Supports filtering by specific ad IDs and pagination for large result sets.",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "idempotentHint",
+        "Ads"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListAdsRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Id",
+            "examples": [
+              [
+                "2179967543",
+                "2172797281"
+              ]
+            ],
+            "description": "Optional list of specific ad IDs to filter by. When provided, only ads matching these IDs will be returned."
+          },
+          "page.size": {
+            "type": "integer",
+            "title": "Page.Size",
+            "minimum": 1,
+            "examples": [
+              50,
+              100
+            ],
+            "description": "Number of ads to return per page. Controls pagination size for the results."
+          },
+          "page.token": {
+            "type": "string",
+            "title": "Page.Token",
+            "examples": [
+              "nextToken123"
+            ],
+            "description": "Token for retrieving a specific page of results. Use the token from the pagination.next_url or pagination.previous_url to navigate through pages."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the ad account to list ads for. This is the unique identifier for the Reddit Ads account."
+          }
+        },
+        "description": "Parameters for listing ads by ad account."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_CAMPAIGNS",
+      "name": "List Campaigns",
+      "description": "Tool to list campaigns by ad account with pagination support. Use when you need to retrieve campaigns for a specific Reddit Ads account. Rate limit: Campaign Management Read - 400 requests per 60 seconds.",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Campaign Management",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListCampaignsRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Id",
+            "examples": [
+              [
+                "2179967543",
+                "2172797281"
+              ]
+            ],
+            "description": "The list of campaign IDs to filter by. If provided, only campaigns with matching IDs will be returned."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "examples": [
+              10,
+              25,
+              50
+            ],
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the ad account to list campaigns for. This is a required path parameter."
+          }
+        },
+        "description": "Parameters for listing campaigns by ad account."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_CARRIERS",
+      "name": "List Carriers",
+      "description": "Tool to retrieve all available carriers from Reddit Ads API for targeting purposes. Use when you need to get a list of mobile carriers for ad targeting. Rate limit: Targeting Taxonomy - 500 requests per 60 seconds.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Targeting Taxonomy"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListCarriersRequest",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "examples": [
+              10,
+              25,
+              50
+            ],
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          }
+        },
+        "description": "Request model for listing all carriers. Supports pagination for navigating through large result sets."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_COMMUNITIES",
+      "name": "List Communities",
+      "description": "Tool to list targetable communities matched by their names. Use when you need to find Reddit communities (subreddits) available for ad targeting. Rate limit: Targeting Taxonomy - 500 requests per 60 seconds.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Targeting Taxonomy"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListCommunitiesRequest",
+        "properties": {
+          "names": {
+            "type": "string",
+            "title": "Names",
+            "examples": [
+              "gaming,technology,science"
+            ],
+            "description": "Comma-separated list of community names to get info for. Queried community won't be in response if it is not targetable."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "examples": [
+              10,
+              25,
+              50
+            ],
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          }
+        },
+        "description": "Request model for listing targetable communities. Filter by community names and paginate through results."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_DEVICES",
+      "name": "List Devices",
+      "description": "Tool to retrieve all available devices from Reddit Ads API for targeting purposes. Use when you need to get a list of devices (by make and model) for ad targeting. Rate limit: Targeting Taxonomy - 500 requests per 60 seconds.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Targeting Taxonomy"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListDevicesRequest",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "examples": [
+              10,
+              25,
+              50
+            ],
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          }
+        },
+        "description": "Request model for listing all devices. Supports pagination for navigating through large result sets."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_FUNDING_INSTRUMENTS",
+      "name": "List Funding Instruments",
+      "description": "Tool to list funding instruments (payment methods) for a Reddit Ads ad account. Use when you need to retrieve billing information or check available payment methods. Rate limit: 30 requests per 60 seconds (Billing category).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Billing"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListFundingInstrumentsRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "ACTIVE",
+              "INACTIVE",
+              "UPCOMING",
+              "SELECTABLE",
+              "ALL"
+            ],
+            "type": "string",
+            "title": "FundingInstrumentMode",
+            "examples": [
+              "ACTIVE",
+              "SELECTABLE"
+            ],
+            "description": "Enum for funding instrument modes."
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Types",
+            "examples": [
+              [
+                "CREDIT_CARD",
+                "CREDIT_LINE"
+              ]
+            ],
+            "description": "A list of funding instrument types to filter by."
+          },
+          "search": {
+            "type": "string",
+            "title": "Search",
+            "description": "Search text to filter funding instruments by name or other text fields."
+          },
+          "end_time": {
+            "type": "string",
+            "title": "End Time",
+            "examples": [
+              "2025-02-09T04:00:00Z"
+            ],
+            "description": "End time in ISO-8601 format to filter funding instruments."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "examples": [
+              10,
+              50,
+              100
+            ],
+            "description": "The number of items to return per page."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The pagination token for retrieving the next page of results. Obtained from the previous response's pagination.next_url."
+          },
+          "start_time": {
+            "type": "string",
+            "title": "Start Time",
+            "examples": [
+              "2025-01-09T04:00:00Z"
+            ],
+            "description": "Start time in ISO-8601 format to filter funding instruments."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_imh76hh7e126",
+              "a2_abc123"
+            ],
+            "description": "The ID of the ad account to list funding instruments for."
+          },
+          "is_selectable": {
+            "type": "boolean",
+            "title": "Is Selectable",
+            "description": "Deprecated parameter. Use mode=SELECTABLE or mode=ALL instead."
+          },
+          "funding_instrument_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Funding Instrument Ids",
+            "examples": [
+              [
+                "246",
+                "12345"
+              ]
+            ],
+            "description": "A list of funding instrument IDs to filter by."
+          }
+        },
+        "description": "Request model for listing funding instruments by ad account."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_GEOLOCATIONS",
+      "name": "List Geolocations",
+      "description": "Tool to fetch a list of geolocations from Reddit Ads API. Use when you need geographic targeting options. Postal code and City geolocations are excluded by default unless postal_code or cities_search parameters are provided.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Targeting Taxonomy"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListGeolocationsRequest",
+        "properties": {
+          "country": {
+            "type": "string",
+            "title": "Country",
+            "examples": [
+              "US"
+            ],
+            "description": "The filter for retrieving all geolocations by country."
+          },
+          "postal_code": {
+            "type": "string",
+            "title": "Postal Code",
+            "examples": [
+              "00772"
+            ],
+            "description": "The filter for retrieving postal code geolocations by substring match."
+          },
+          "cities_search": {
+            "type": "string",
+            "title": "Cities Search",
+            "examples": [
+              "Toronto"
+            ],
+            "description": "The filter for retrieving city geolocations by substring match."
+          }
+        },
+        "description": "Request model for listing geolocations. Postal code and City geolocations\nare excluded by default unless the respective query parameters are provided."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_INDUSTRIES",
+      "name": "List Industries",
+      "description": "Tool to retrieve all available industries from Reddit Ads API. Use when you need to get a complete list of industries for targeting or classification purposes. Returns industry IDs and display names.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Targeting Taxonomy"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListIndustriesRequest",
+        "properties": {},
+        "description": "Request model for listing all industries. No parameters required."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_INTERESTS",
+      "name": "List Interests",
+      "description": "Tool to retrieve all available interests from Reddit Ads API for targeting purposes. Use when you need to get a list of interests for ad targeting. Rate limit: Targeting Taxonomy - 500 requests per 60 seconds.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Targeting Taxonomy"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListInterestsRequest",
+        "properties": {},
+        "description": "Request model for listing all interests. No parameters required."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_LEAD_GEN_FORMS",
+      "name": "List Lead Gen Forms",
+      "description": "Tool to list lead generation forms for a Reddit Ads ad account. Use when you need to retrieve all lead gen forms associated with a specific ad account. Rate limit: 20 requests per 60 seconds (Leads category).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Leads"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListLeadGenFormsRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "examples": [
+              10,
+              25,
+              50
+            ],
+            "description": "The number of items to return per page. Use to control pagination size."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "examples": [
+              "nextPageToken123"
+            ],
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the ad account to list lead gen forms for. Format: a2_<identifier> (e.g., 'a2_imh76hh7e126')."
+          }
+        },
+        "description": "Request parameters for listing lead generation forms by ad account."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_MY_BUSINESSES",
+      "name": "List My Businesses",
+      "description": "Tool to retrieve details of businesses associated with the provided access token. Use when you need to get a list of businesses the user has access to, with optional filters for ad account ID or user role (BUSINESS_ADMIN or CATALOG_ADMIN).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "Business Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListMyBusinessesRequest",
+        "properties": {
+          "role": {
+            "enum": [
+              "BUSINESS_ADMIN",
+              "CATALOG_ADMIN"
+            ],
+            "type": "string",
+            "title": "BusinessRole",
+            "description": "Enum for business role types"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "description": "The number of items to be returned by page."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_123"
+            ],
+            "description": "Optional ad account ID to filter businesses by. If provided, will return businesses that give the member access to the ad account."
+          }
+        },
+        "description": "Request model for listing businesses associated with the access token."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_PIXELS_BY_AD_ACCOUNT",
+      "name": "List Pixels By Ad Account",
+      "description": "Tool to list pixels by ad account. Use when you need to retrieve conversion pixels for a specific Reddit Ads account. Note: Rate limited to 30 requests per 60 seconds (Conversion Signals).",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint",
+        "Conversion Signals"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListPixelsByAdAccountRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "page.size": {
+            "type": "integer",
+            "title": "Page.Size",
+            "minimum": 1,
+            "examples": [
+              25
+            ],
+            "description": "The number of items to be returned per page."
+          },
+          "page.token": {
+            "type": "string",
+            "title": "Page.Token",
+            "examples": [
+              "nextToken"
+            ],
+            "description": "The token for the page to retrieve. Use the value from pagination.next_url or pagination.previous_url in a previous response to navigate pages."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the ad account to list pixels for."
+          }
+        },
+        "description": "Request schema for listing pixels by ad account."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_POSTS",
+      "name": "List Posts by Profile",
+      "description": "Tool to list up to 1,000 of the most recent posts for a specified profile. Use when you need to retrieve posts from a Reddit profile. Supports filtering by post type (CAROUSEL, IMAGE, TEXT, VIDEO) and source (ORGANIC, PROMOTED). Rate limit: 200 requests per 60 seconds (Creative Management).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Creative Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListPostsRequest",
+        "required": [
+          "profile_id"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "CAROUSEL",
+              "IMAGE",
+              "TEXT",
+              "VIDEO"
+            ],
+            "type": "string",
+            "title": "PostType",
+            "description": "The type of posts to be fetched."
+          },
+          "source": {
+            "enum": [
+              "ORGANIC",
+              "PROMOTED"
+            ],
+            "type": "string",
+            "title": "PostSource",
+            "description": "The source of posts to be fetched."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "description": "The number of items to be returned per page. Maximum 1,000 posts can be retrieved."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve. Use the next_url or previous_url from pagination response to navigate pages."
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "pattern": "^t2_.*",
+            "examples": [
+              "t2_m5qt8m97x"
+            ],
+            "description": "The ID of the profile to list posts for. Must match pattern ^t2_.*"
+          }
+        },
+        "description": "Request parameters for listing posts by profile."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_PRODUCT_CATALOGS",
+      "name": "List Product Catalogs",
+      "description": "Tool to retrieve details for all product catalogs belonging to a business. Use when you need to list all catalogs for a specific business ID. Rate limit: 7000 requests/300s (burst: 3000 requests/60s).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Product Catalog"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListProductCatalogsRequest",
+        "required": [
+          "business_id"
+        ],
+        "properties": {
+          "business_id": {
+            "type": "string",
+            "title": "Business Id",
+            "examples": [
+              "1e200a0b-4e98-32cc-dd47-3006e4c85bb2"
+            ],
+            "description": "The ID of the parent business."
+          }
+        },
+        "description": "Request model for listing product catalogs for a business."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_PRODUCT_FEEDS",
+      "name": "List Product Feeds",
+      "description": "Tool to retrieve metadata for all feeds in a product catalog. Use when you need to list all feeds for a specific catalog ID to view feed configurations, URLs, and schedules.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Product Catalog"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListProductFeedsRequest",
+        "required": [
+          "catalog_id"
+        ],
+        "properties": {
+          "catalog_id": {
+            "type": "string",
+            "title": "Catalog Id",
+            "examples": [
+              "d98e8409-36a8-43e4-9998-9693b6ece338"
+            ],
+            "description": "The ID of the parent product catalog."
+          }
+        },
+        "description": "Request model for listing product feeds in a catalog."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_PRODUCT_SETS",
+      "name": "List Product Sets",
+      "description": "Tool to retrieve all product sets in a catalog. Use when you need to list product sets for a specific catalog ID. Rate limit: 7000 requests/300s (burst: 3000 requests/60s).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Product Catalog"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListProductSetsRequest",
+        "required": [
+          "catalog_id"
+        ],
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "examples": [
+              50
+            ],
+            "description": "The number of items to be returned per page."
+          },
+          "catalog_id": {
+            "type": "string",
+            "title": "Catalog Id",
+            "examples": [
+              "39c92b42-3b19-4457-ab86-08db8a05b1d8"
+            ],
+            "description": "The ID of the parent product catalog."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "examples": [
+              "nextToken"
+            ],
+            "description": "The token for the page to retrieve (for pagination)."
+          }
+        },
+        "description": "Request model for listing product sets in a catalog."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_PRODUCTS_IN_PRODUCT_CATALOG",
+      "name": "List Products In Product Catalog",
+      "description": "Tool to retrieve all products in a Reddit Ads product catalog. Use when you need to list products for advertising campaigns, with optional filtering by approval status, search terms, or specific product IDs.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Product Catalog"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListProductsInProductCatalogRequest",
+        "required": [
+          "catalog_id"
+        ],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Ids",
+            "examples": [
+              [
+                "product123",
+                "product456"
+              ]
+            ],
+            "description": "Optional list of specific product IDs to filter by. When provided, only products matching these IDs will be returned."
+          },
+          "search": {
+            "type": "string",
+            "title": "Search",
+            "examples": [
+              "shoes",
+              "running"
+            ],
+            "description": "Search query to filter products by title, description, or other text fields."
+          },
+          "page.size": {
+            "type": "integer",
+            "title": "Page.Size",
+            "minimum": 1,
+            "examples": [
+              50,
+              100
+            ],
+            "description": "Number of products to return per page. Controls pagination size for the results."
+          },
+          "catalog_id": {
+            "type": "string",
+            "title": "Catalog Id",
+            "examples": [
+              "d98e8409-36a8-43e4-9998-9693b6ece338"
+            ],
+            "description": "The ID of the product catalog to list products from."
+          },
+          "page.token": {
+            "type": "string",
+            "title": "Page.Token",
+            "examples": [
+              "nextToken123"
+            ],
+            "description": "Token for retrieving a specific page of results. Use the token from pagination.next_url or pagination.previous_url to navigate through pages."
+          },
+          "approval_decision": {
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "type": "string",
+            "title": "ApprovalDecision",
+            "description": "Enum for product approval decisions in Reddit Ads."
+          }
+        },
+        "description": "Request model for listing products in a product catalog."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_PRODUCTS_IN_PRODUCT_SET",
+      "name": "List Products In Product Set",
+      "description": "Tool to retrieve all products in a Reddit Ads product set. Use when you need to list products within a specific product set, with optional filtering by approval status, issue codes, search terms, or specific product IDs.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Product Catalog"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListProductsInProductSetRequest",
+        "required": [
+          "product_set_id"
+        ],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Ids",
+            "examples": [
+              [
+                "product123",
+                "product456"
+              ]
+            ],
+            "description": "Optional list of specific product IDs to filter by. When provided, only products matching these IDs will be returned."
+          },
+          "search": {
+            "type": "string",
+            "title": "Search",
+            "examples": [
+              "shoes",
+              "running"
+            ],
+            "description": "Search query to filter products by title, description, or other text fields."
+          },
+          "page.size": {
+            "type": "integer",
+            "title": "Page.Size",
+            "minimum": 1,
+            "examples": [
+              50,
+              100
+            ],
+            "description": "Number of products to return per page. Controls pagination size for the results."
+          },
+          "issue_code": {
+            "enum": [
+              "INVALID_ADDITIONAL_IMAGE_LINKS",
+              "INVALID_SALE_PRICE",
+              "INVALID_SALE_PRICE_EFFECTIVE_DATE",
+              "INVALID_EXPIRATION_DATE",
+              "IMAGE_PROCESSING_ERROR",
+              "IMAGE_REJECTED",
+              "LOW_IMAGE_QUALITY",
+              "INVALID_CUSTOM_LABEL_0",
+              "INVALID_CUSTOM_LABEL_1",
+              "INVALID_CUSTOM_LABEL_2",
+              "INVALID_CUSTOM_LABEL_3",
+              "INVALID_CUSTOM_LABEL_4",
+              "INVALID_GOOGLE_PRODUCT_CATEGORY",
+              "INVALID_PRODUCT_TYPE",
+              "INVALID_BRAND",
+              "INVALID_GTIN",
+              "INVALID_MPN",
+              "INVALID_ITEM_GROUP_ID",
+              "INVALID_COST_OF_GOODS_SOLD",
+              "INVALID_AVAILABILITY",
+              "INVALID_MOBILE_LINK",
+              "INVALID_PLATFORM_SPECIFIC_LINK",
+              "INVALID_AVERAGE_REVIEW_RATING",
+              "INVALID_NUMBER_OF_RATINGS",
+              "INVALID_CONDITION",
+              "INVALID_AGE_GROUP",
+              "INVALID_GENDER",
+              "INVALID_COLOR",
+              "INVALID_SIZE",
+              "INVALID_SIZE_TYPE",
+              "INVALID_MATERIAL",
+              "INVALID_PATTERN",
+              "INVALID_CUSTOM_NUMBER_0",
+              "INVALID_CUSTOM_NUMBER_1",
+              "INVALID_CUSTOM_NUMBER_2",
+              "INVALID_CUSTOM_NUMBER_3",
+              "INVALID_CUSTOM_NUMBER_4",
+              "INVALID_PRODUCT_DETAIL",
+              "INVALID_PRODUCT_HIGHLIGHT",
+              "INVALID_LIFESTYLE_IMAGE_LINK",
+              "INVALID_IS_BUNDLE",
+              "INCOMPATIBLE_WITH_FUTURE_RELEASE"
+            ],
+            "type": "string",
+            "title": "IssueCode",
+            "description": "Enum for product issue codes that can be used to filter products."
+          },
+          "page.token": {
+            "type": "string",
+            "title": "Page.Token",
+            "examples": [
+              "nextToken123"
+            ],
+            "description": "Token for retrieving a specific page of results. Use the token from pagination.next_url or pagination.previous_url to navigate through pages."
+          },
+          "product_set_id": {
+            "type": "string",
+            "title": "Product Set Id",
+            "examples": [
+              "3cefbd19-d9bd-48eb-819b-67dd944da4de"
+            ],
+            "description": "The ID of the product set to list products from."
+          },
+          "approval_decision": {
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "type": "string",
+            "title": "ApprovalDecision",
+            "description": "Enum for product approval decisions in Reddit Ads."
+          }
+        },
+        "description": "Request model for listing products in a product set."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_PROFILES_BY_AD_ACCOUNT",
+      "name": "List Profiles By Ad Account",
+      "description": "Tool to list profiles by ad account from Reddit Ads API. Use when you need to retrieve all profiles associated with a specific ad account. Rate limit: 100 requests per 60 seconds (Business Manager tier).",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Profiles"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListProfilesByAdAccountRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "maximum": 100,
+            "minimum": 1,
+            "examples": [
+              25,
+              50
+            ],
+            "description": "The number of items to be returned per page. Must be between 1 and 100."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "examples": [
+              "eyJjdXJzb3IiOiJuZXh0VG9rZW4ifQ=="
+            ],
+            "description": "The token for the page to retrieve. Use the next_url or previous_url from pagination response to navigate pages."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the ad account to list profiles for. Example: 'a2_imh76hh7e126'."
+          }
+        },
+        "description": "Request parameters for listing profiles by ad account."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_SAVED_AUDIENCES",
+      "name": "List Saved Audiences",
+      "description": "Tool to list saved audiences for a Reddit ad account. Use when you need to retrieve saved audience configurations with their targeting details. Rate limit: 400 requests per 60 seconds (Campaign Management Read).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Campaign Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListSavedAudiencesRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "description": "The number of items to be returned by page. Must be a positive integer."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve. Use this for pagination to fetch subsequent pages."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the ad account to list saved audiences for."
+          }
+        },
+        "description": "Request model for listing saved audiences."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_STRUCTURED_POSTS",
+      "name": "List Structured Posts",
+      "description": "Tool to list structured posts for a profile or retrieve up to 10 specific structured posts by ID. Use when you need to retrieve structured posts owned by a Reddit Ads profile. Rate limit: Creative Management Read - 200 requests per 60 seconds.",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Creative Management",
+        "important"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListStructuredPostsRequest",
+        "required": [
+          "profile_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Id",
+            "examples": [
+              [
+                "t3_1rm5i21",
+                "t3_abc123"
+              ]
+            ],
+            "description": "List of specific post IDs to filter by. Returns up to 10 specific structured posts by ID owned by the profile."
+          },
+          "type": {
+            "enum": [
+              "CAROUSEL",
+              "IMAGE",
+              "TEXT",
+              "VIDEO"
+            ],
+            "type": "string",
+            "title": "PostType",
+            "description": "Type of structured post."
+          },
+          "source": {
+            "enum": [
+              "ORGANIC",
+              "PROMOTED"
+            ],
+            "type": "string",
+            "title": "PostSource",
+            "description": "Source of structured post."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "examples": [
+              10,
+              25,
+              50
+            ],
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "examples": [
+              "t2_m5qt8m97x"
+            ],
+            "description": "The ID of the profile to list posts for. This is a required path parameter."
+          }
+        },
+        "description": "Request parameters for listing structured posts by profile."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_TIME_ZONES",
+      "name": "List Time Zones",
+      "description": "Tool to retrieve all available time zones from Reddit Ads API for campaign scheduling. Use when you need to get a list of time zones for setting campaign schedules or display times. Rate limit: Campaign Management Read - 400 requests per 60 seconds.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Targeting Taxonomy"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListTimeZonesRequest",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "examples": [
+              10,
+              25,
+              50
+            ],
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          }
+        },
+        "description": "Request model for listing all time zones. Supports pagination for navigating through large result sets."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_LIST_USER_CUSTOM_AUDIENCES",
+      "name": "List User Custom Audiences",
+      "description": "Tool to list all Custom Audiences under an ad account. Use when you need to retrieve custom audiences for targeting in Reddit Ads campaigns. Rate limit: 500 requests per 60 seconds (Targeting Taxonomy).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "custom_audiences"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListUserCustomAudiencesRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Optional field used for filtering by a specific custom audience name."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "description": "The number of items to be returned by page."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "a2_imh76hh7e126"
+            ],
+            "description": "The ID of the parent ad account (e.g., 'a2_imh76hh7e126')."
+          }
+        }
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_QUERY_AD_ACCOUNTS",
+      "name": "Query Ad Accounts",
+      "description": "Tool to query ad accounts by business with optional filtering by actors, assets, roles, or custom filter string. Use when you need to retrieve ad accounts for a specific business with filtering capabilities. Rate Limit: Business Manager - 100 requests per 60 seconds.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Ad Account Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "QueryAdAccountsRequest",
+        "required": [
+          "business_id"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "title": "QueryDataFilter",
+            "properties": {
+              "roles": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Roles",
+                "description": "Only return ad accounts to which specified actors do not have these roles."
+              },
+              "actors": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "title": "ActorFilter",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "title": "Id",
+                      "description": "Actor ID to filter by."
+                    }
+                  },
+                  "description": "Filter for actor access to ad accounts."
+                },
+                "title": "Actors",
+                "description": "Only return ad accounts to which the specified actors do not have access."
+              },
+              "assets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "title": "AssetFilter",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "title": "Id",
+                      "description": "Asset ID to filter by."
+                    }
+                  },
+                  "description": "Filter for asset access to ad accounts."
+                },
+                "title": "Assets",
+                "description": "Only return ad accounts that have access to these assets."
+              },
+              "filter": {
+                "type": "string",
+                "title": "Filter",
+                "description": "Filter string to query the entity. If null, the response contains all ad accounts within the business."
+              }
+            },
+            "description": "Filter criteria for querying ad accounts.",
+            "additionalProperties": false
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "description": "The number of items to be returned by page."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve."
+          },
+          "business_id": {
+            "type": "string",
+            "title": "Business Id",
+            "examples": [
+              "1e200a0b-4e98-32cc-dd47-3006e4c85bb2"
+            ],
+            "description": "The ID of the business to query ad accounts for."
+          }
+        },
+        "description": "Request model for querying ad accounts by business."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_QUERY_FUNDING_INSTRUMENTS_BY_BUSINESS",
+      "name": "Query funding instruments by business",
+      "description": "Query funding instruments (credit lines) by business with pagination support. Use when you need to retrieve or filter funding instruments for a Reddit Ads business account. Requires adsread OAuth scope. Rate limit: 30 requests per 60 seconds (Billing category).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Billing"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "QueryFundingInstrumentsByBusinessRequest",
+        "required": [
+          "business_id"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "title": "QueryFundingInstrumentsData",
+            "properties": {
+              "mode": {
+                "enum": [
+                  "ACTIVE",
+                  "ALL"
+                ],
+                "type": "string",
+                "title": "FundingInstrumentMode",
+                "description": "Mode for filtering funding instruments."
+              },
+              "partner_business_id": {
+                "type": "string",
+                "title": "Partner Business Id",
+                "description": "When a partner business ID is provided the endpoint returns funding that is shared with the given partner only. When null the endpoint lists all funding instruments owned by the business id in the path."
+              },
+              "funding_instrument_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Funding Instrument Ids",
+                "examples": [
+                  [
+                    "246",
+                    "12345"
+                  ]
+                ],
+                "description": "A list of credit line IDs to filter by."
+              }
+            },
+            "description": "Data payload for querying funding instruments.",
+            "additionalProperties": false
+          },
+          "search": {
+            "type": "string",
+            "title": "Search",
+            "description": "A search term to filter funding instruments by name, ID, or type."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "description": "The number of items to be returned by page."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve."
+          },
+          "business_id": {
+            "type": "string",
+            "title": "Business Id",
+            "examples": [
+              "1e200a0b-4e98-32cc-dd47-3006e4c85bb2"
+            ],
+            "description": "The ID of the business to query funding instruments for."
+          }
+        },
+        "description": "Request schema for querying funding instruments by business."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_SEARCH_COMMUNITIES",
+      "name": "Search Communities",
+      "description": "Tool to search for Reddit communities based on their name or topic. Use when you need to find subreddits for ad targeting purposes. Returns all communities if no query is provided.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "Targeting Taxonomy"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchCommunitiesRequest",
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "examples": [
+              "technology",
+              "gaming",
+              "science"
+            ],
+            "description": "A string that will be used to query (search) for communities by name or by topics. If parameter is empty or not included, it will return all subreddits."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 1,
+            "examples": [
+              10,
+              25,
+              50
+            ],
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          }
+        },
+        "description": "Request model for searching communities. Supports filtering by name or topic and pagination for large result sets."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_UPDATE_AD_ACCOUNT",
+      "name": "Update Ad Account",
+      "description": "Tool to update a Reddit ad account configuration. Use when you need to modify account settings like name, attribution windows, excluded communities/keywords, or account approval state. Subject to Campaign Management Write rate limit: 200 requests per 60 seconds.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "updateHint",
+        "Ad Account Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateAdAccountRequest",
+        "required": [
+          "ad_account_id",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "title": "Data",
+            "properties": {
+              "name": {
+                "type": "string",
+                "title": "Name",
+                "maxLength": 500,
+                "minLength": 3,
+                "description": "The ad account name. Must be between 3 and 500 characters"
+              },
+              "type": {
+                "enum": [
+                  "MANAGED",
+                  "SELF_SERVE"
+                ],
+                "type": "string",
+                "title": "AccountType",
+                "description": "Type of ad account."
+              },
+              "admin_approval": {
+                "enum": [
+                  "ADMIN",
+                  "BANNED",
+                  "NEEDS_ID_VERIFICATION",
+                  "PENDING",
+                  "SUSPENDED",
+                  "SUSPICIOUS",
+                  "TRUSTED",
+                  "VALID"
+                ],
+                "type": "string",
+                "title": "AdminApproval",
+                "description": "Employee-set state for the account."
+              },
+              "spend_cap_type": {
+                "enum": [
+                  "LIFETIME"
+                ],
+                "type": "string",
+                "title": "SpendCapType",
+                "description": "Type of spend cap applied to the ad account."
+              },
+              "attribution_type": {
+                "enum": [
+                  "ALL_CONVERSION",
+                  "CLICK_THROUGH_CONVERSION",
+                  "VIEW_THROUGH_CONVERSION"
+                ],
+                "type": "string",
+                "title": "AttributionType",
+                "description": "Attribution type for CPA bid types."
+              },
+              "excluded_keywords": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Excluded Keywords",
+                "description": "Account-level list of excluded keywords for targeting"
+              },
+              "suspension_reason": {
+                "enum": [
+                  "ADVERTISING_POLICY",
+                  "BEHAVIOR",
+                  "FRAUD",
+                  "OTHER",
+                  "KYC_CHECK_FAILED"
+                ],
+                "type": "string",
+                "title": "SuspensionReason",
+                "description": "Reason why the ad account was suspended."
+              },
+              "excluded_communities": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Excluded Communities",
+                "description": "Account-level list of excluded subreddit communities"
+              },
+              "view_attribution_window": {
+                "enum": [
+                  "DAY",
+                  "WEEK",
+                  "MONTH"
+                ],
+                "type": "string",
+                "title": "AttributionWindow",
+                "description": "Attribution window for reporting."
+              },
+              "click_attribution_window": {
+                "enum": [
+                  "DAY",
+                  "WEEK",
+                  "MONTH"
+                ],
+                "type": "string",
+                "title": "AttributionWindow",
+                "description": "Attribution window for reporting."
+              },
+              "pixel_partner_preferences": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Pixel Partner Preferences",
+                "description": "List of pixel partners allowed by the advertiser"
+              },
+              "primary_contact_member_id": {
+                "type": "string",
+                "title": "Primary Contact Member Id",
+                "description": "The ID of the primary contact member for this account"
+              }
+            },
+            "description": "Ad account fields to update. Only include fields you want to modify",
+            "additionalProperties": false
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "pattern": "^(t2|a2)_.*",
+            "examples": [
+              "a2_imh76hh7e126",
+              "t2_example123"
+            ],
+            "description": "The ID of the ad account to update. Must start with 't2_' or 'a2_'"
+          }
+        },
+        "description": "Request to update a Reddit ad account."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_UPDATE_BUSINESS",
+      "name": "Update Business",
+      "description": "Tool to update a business by ID in Reddit Ads. Use when you need to modify business settings such as name, industry, country, or contact information. Rate limit: 100 requests per 60 seconds for Business Manager operations.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "updateHint",
+        "Business Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateBusinessRequest",
+        "required": [
+          "business_id",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "title": "Data",
+            "properties": {
+              "name": {
+                "type": "string",
+                "title": "Name",
+                "examples": [
+                  "Klicker",
+                  "Acme Corporation"
+                ],
+                "description": "The name of the business."
+              },
+              "phone": {
+                "type": "string",
+                "title": "Phone",
+                "examples": [
+                  "+14155551234"
+                ],
+                "description": "The phone number of the business."
+              },
+              "country": {
+                "type": "string",
+                "title": "Country",
+                "examples": [
+                  "USA",
+                  "GBR",
+                  "CAN"
+                ],
+                "description": "The ISO 3166-1 alpha-3 country code of the business (e.g., USA, GBR, CAN)."
+              },
+              "industry": {
+                "enum": [
+                  "ADULT",
+                  "ADVERTISING",
+                  "ALCOHOL",
+                  "AUTO",
+                  "CLOTHING_AND_FASHION",
+                  "CONSULTING",
+                  "CONSUMER_PACKAGED_GOODS",
+                  "DATING",
+                  "EDUCATION",
+                  "EMPLOYMENT",
+                  "ENTERTAINMENT",
+                  "FINANCIAL_SERVICES",
+                  "GAMBLING_AND_FANTASY_SPORTS",
+                  "GAMING",
+                  "HEALTH_AND_BEAUTY",
+                  "OTHER",
+                  "POLITICS_AND_GOVERNMENT",
+                  "PUBLISHING",
+                  "REAL_ESTATE",
+                  "RESTAURANTS_AND_FOOD",
+                  "RETAIL_AND_ECOMMERCE",
+                  "SPORTS",
+                  "TECH_B2B",
+                  "TECH_B2C",
+                  "TECH_OTHER",
+                  "TRAVEL"
+                ],
+                "type": "string",
+                "title": "IndustryType",
+                "examples": [
+                  "RETAIL_AND_ECOMMERCE",
+                  "TECH_B2C"
+                ],
+                "description": "Enum representing the industry types for a business."
+              },
+              "website_url": {
+                "type": "string",
+                "title": "Website Url",
+                "examples": [
+                  "https://www.example.com"
+                ],
+                "description": "The website URL for the business."
+              },
+              "agency_affiliated": {
+                "type": "boolean",
+                "title": "Agency Affiliated",
+                "description": "Whether the business is affiliated with an agency."
+              },
+              "primary_contact_id": {
+                "type": "string",
+                "title": "Primary Contact Id",
+                "description": "The member_id for the primary contact of the business."
+              }
+            },
+            "description": "The business data to update.",
+            "additionalProperties": false
+          },
+          "business_id": {
+            "type": "string",
+            "title": "Business Id",
+            "examples": [
+              "1e200a0b-4e98-32cc-dd47-3006e4c85bb2"
+            ],
+            "description": "The ID of the business to update."
+          }
+        },
+        "description": "Request parameters to update a business in Reddit Ads."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_UPDATE_CAMPAIGN",
+      "name": "Update Campaign",
+      "description": "Tool to update a campaign by ID in Reddit Ads. Use when you need to modify campaign settings such as name, status, budget, or targeting parameters. Rate limit: 200 requests per 60 seconds (Campaign Management Write).",
+      "version": "20260826_00",
+      "tags": [
+        "updateHint",
+        "Campaign Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateCampaignRequest",
+        "required": [
+          "campaign_id",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "title": "Data",
+            "properties": {
+              "name": {
+                "type": "string",
+                "title": "Name",
+                "examples": [
+                  "Summer Campaign 2024"
+                ],
+                "maxLength": 500,
+                "minLength": 3,
+                "description": "The campaign name."
+              },
+              "app_id": {
+                "type": "string",
+                "title": "App Id",
+                "examples": [
+                  "com.example.app"
+                ],
+                "description": "The app ID on either the Apple App Store or Google Play Store. For use with app installs campaigns."
+              },
+              "bid_type": {
+                "enum": [
+                  "CPC",
+                  "CPM",
+                  "CPV6"
+                ],
+                "type": "string",
+                "title": "BidType",
+                "description": "Bid type for the campaign."
+              },
+              "end_time": {
+                "type": "string",
+                "title": "End Time",
+                "examples": [
+                  "2024-12-31T23:59:59Z"
+                ],
+                "description": "ISO 8601 timestamp when the campaign will stop delivering. Required if start_time is provided. If unspecified, the campaign will run continuously starting today. Only works when is_campaign_budget_optimization is true."
+              },
+              "bid_value": {
+                "type": "integer",
+                "title": "Bid Value",
+                "examples": [
+                  10000
+                ],
+                "description": "The amount to pay in microcurrency per bidding event. Only works when is_campaign_budget_optimization is true and optional when bid_strategy is MAXIMIZE_VOLUME. If set at campaign level, it cannot be set at ad group level."
+              },
+              "goal_type": {
+                "enum": [
+                  "LIFETIME_SPEND",
+                  "DAILY_SPEND"
+                ],
+                "type": "string",
+                "title": "GoalType",
+                "description": "Campaign goal type."
+              },
+              "objective": {
+                "enum": [
+                  "APP_INSTALLS",
+                  "CATALOG_SALES",
+                  "CLICKS",
+                  "CONVERSIONS",
+                  "IMPRESSIONS",
+                  "LEAD_GENERATION",
+                  "VIDEO_VIEWABLE_IMPRESSIONS"
+                ],
+                "type": "string",
+                "title": "Objective",
+                "description": "Campaign objective type."
+              },
+              "spend_cap": {
+                "type": "integer",
+                "title": "Spend Cap",
+                "examples": [
+                  5000000
+                ],
+                "description": "Campaign lifetime spend cap in microcurrency. This field works for both CBO (campaign budget optimization) and non-CBO campaigns."
+              },
+              "goal_value": {
+                "type": "integer",
+                "title": "Goal Value",
+                "examples": [
+                  1000000
+                ],
+                "description": "Campaign level goal value in micros. Only works when is_campaign_budget_optimization is true."
+              },
+              "start_time": {
+                "type": "string",
+                "title": "Start Time",
+                "examples": [
+                  "2024-01-01T00:00:00Z"
+                ],
+                "description": "ISO 8601 timestamp when the campaign will begin to deliver. Required if end_time is provided. If unspecified, the campaign will run continuously starting today. Only works when is_campaign_budget_optimization is true."
+              },
+              "bid_strategy": {
+                "enum": [
+                  "BIDLESS",
+                  "MAXIMIZE_VOLUME",
+                  "TARGET_CPX"
+                ],
+                "type": "string",
+                "title": "BidStrategy",
+                "description": "Bid strategy for the campaign."
+              },
+              "ad_account_id": {
+                "type": "string",
+                "title": "Ad Account Id",
+                "examples": [
+                  "t2_abc123"
+                ],
+                "description": "The ID of the ad account. Must match pattern ^(t2|a2)_.*"
+              },
+              "invoice_label": {
+                "type": "string",
+                "title": "Invoice Label",
+                "examples": [
+                  "Q1 2024 Campaign"
+                ],
+                "maxLength": 80,
+                "description": "A freeform editable text field for agencies that can be used for tracking and reconciliation purposes."
+              },
+              "configured_status": {
+                "enum": [
+                  "ACTIVE",
+                  "ARCHIVED",
+                  "DELETED",
+                  "PAUSED"
+                ],
+                "type": "string",
+                "title": "ConfiguredStatus",
+                "description": "Configured status for the campaign."
+              },
+              "optimization_goal": {
+                "type": "string",
+                "title": "Optimization Goal",
+                "examples": [
+                  "VIDEO_VIEW_6S"
+                ],
+                "description": "The event you want to measure for this campaign. Required when is_campaign_budget_optimization is true for conversions or video view campaigns. This can't be changed later."
+              },
+              "conversion_pixel_id": {
+                "type": "string",
+                "title": "Conversion Pixel Id",
+                "examples": [
+                  "t2_pixel123"
+                ],
+                "description": "The campaign Conversion Pixel ID used for optimization. Only works when is_campaign_budget_optimization is true. This cannot be changed after publishing the campaign."
+              },
+              "skadnetwork_metadata": {
+                "type": "object",
+                "title": "SkadnetworkMetadata",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "title": "Status",
+                    "description": "Status of the SKAdNetwork source ID."
+                  }
+                },
+                "description": "SKAdNetwork metadata for the campaign.",
+                "additionalProperties": false
+              },
+              "funding_instrument_id": {
+                "type": "string",
+                "title": "Funding Instrument Id",
+                "examples": [
+                  "t2_funding123"
+                ],
+                "description": "Campaign level funding instrument ID."
+              },
+              "special_ad_categories": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Special Ad Categories",
+                "examples": [
+                  [
+                    "EMPLOYMENT",
+                    "HOUSING"
+                  ]
+                ],
+                "description": "List of special ad categories (advertising content that require compliance with regulations and policies) related to the campaign."
+              },
+              "view_through_conversion_type": {
+                "enum": [
+                  "SEVEN_DAY_CLICKS",
+                  "SEVEN_DAY_CLICKS_ONE_DAY_VIEW"
+                ],
+                "type": "string",
+                "title": "ViewThroughConversionType",
+                "description": "View-through conversion type."
+              }
+            },
+            "description": "Campaign data to update.",
+            "additionalProperties": false
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id",
+            "examples": [
+              "2451508441785140582"
+            ],
+            "description": "The ID of the campaign to update."
+          }
+        },
+        "description": "Request model for updating a Reddit Ads campaign."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_UPDATE_PRODUCT_CATALOG",
+      "name": "Update Product Catalog",
+      "description": "Tool to update a product catalog's name or attached Pixel IDs in Reddit Ads. Use when you need to modify catalog settings such as name or event sources.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "updateHint",
+        "Product Catalog"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateProductCatalogRequest",
+        "required": [
+          "catalog_id",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "title": "Data",
+            "properties": {
+              "name": {
+                "type": "string",
+                "title": "Name",
+                "examples": [
+                  "Updated Catalog Name",
+                  "My Product Catalog"
+                ],
+                "maxLength": 200,
+                "minLength": 1,
+                "description": "The name of the product catalog."
+              },
+              "event_sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Event Sources",
+                "examples": [
+                  [
+                    "pixel-id-1",
+                    "pixel-id-2"
+                  ]
+                ],
+                "description": "The list of the attached Reddit Pixel IDs."
+              }
+            },
+            "description": "The catalog data to update.",
+            "additionalProperties": false
+          },
+          "catalog_id": {
+            "type": "string",
+            "title": "Catalog Id",
+            "examples": [
+              "39c92b42-3b19-4457-ab86-08db8a05b1d8"
+            ],
+            "description": "The ID of the product catalog to update."
+          }
+        },
+        "description": "Request parameters to update a product catalog in Reddit Ads."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_UPDATE_PRODUCT_FEED",
+      "name": "Update Product Feed",
+      "description": "Tool to update a product feed's metadata in Reddit Ads. Use when you need to modify feed properties such as name, URL, mode, authentication credentials, or schedule configuration.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "updateHint",
+        "Product Catalog"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateProductFeedRequest",
+        "required": [
+          "feed_id",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "title": "Data",
+            "properties": {
+              "url": {
+                "type": "string",
+                "title": "Url",
+                "examples": [
+                  "https://example.com/feed.xml",
+                  "https://example.com/products.csv"
+                ],
+                "description": "The URL of the product feed to fetch."
+              },
+              "mode": {
+                "enum": [
+                  "REPLACE",
+                  "UPDATE"
+                ],
+                "type": "string",
+                "title": "FeedMode",
+                "examples": [
+                  "UPDATE",
+                  "REPLACE"
+                ],
+                "description": "Enum representing the update mode of a product feed."
+              },
+              "name": {
+                "type": "string",
+                "title": "Name",
+                "examples": [
+                  "Updated Test Feed",
+                  "My Product Feed"
+                ],
+                "minLength": 1,
+                "description": "The name of the feed."
+              },
+              "password": {
+                "type": "string",
+                "title": "Password",
+                "maxLength": 100,
+                "description": "The password needed to access the URL (for authenticated feeds)."
+              },
+              "schedule": {
+                "type": "object",
+                "title": "ProductFeedSchedule",
+                "properties": {
+                  "hour": {
+                    "type": "integer",
+                    "title": "Hour",
+                    "description": "Hour of the day for scheduled imports (0-23)."
+                  },
+                  "minute": {
+                    "type": "integer",
+                    "title": "Minute",
+                    "description": "Minute of the hour for scheduled imports (0-59)."
+                  },
+                  "interval": {
+                    "type": "string",
+                    "title": "Interval",
+                    "description": "Interval type for scheduled imports (e.g., 'DAILY', 'WEEKLY', 'MONTHLY')."
+                  },
+                  "timezone": {
+                    "type": "object",
+                    "title": "Timezone",
+                    "description": "Timezone configuration for scheduled imports.",
+                    "additionalProperties": true
+                  },
+                  "is_paused": {
+                    "type": "boolean",
+                    "title": "Is Paused",
+                    "description": "Whether the scheduled imports are paused."
+                  },
+                  "day_of_week": {
+                    "type": "string",
+                    "title": "Day Of Week",
+                    "description": "Day of the week for scheduled imports (e.g., 'MONDAY', 'TUESDAY')."
+                  },
+                  "day_of_month": {
+                    "type": "integer",
+                    "title": "Day Of Month",
+                    "description": "Day of the month for scheduled imports (1-31)."
+                  },
+                  "interval_count": {
+                    "type": "integer",
+                    "title": "Interval Count",
+                    "description": "Number of intervals between scheduled imports."
+                  },
+                  "next_import_at": {
+                    "type": "string",
+                    "title": "Next Import At",
+                    "description": "ISO 8601 timestamp of the next scheduled import."
+                  }
+                },
+                "description": "Schedule configuration for product feed updates.",
+                "additionalProperties": false
+              },
+              "username": {
+                "type": "string",
+                "title": "Username",
+                "maxLength": 100,
+                "description": "The username needed to access the URL (for authenticated feeds)."
+              }
+            },
+            "description": "The product feed data to update.",
+            "additionalProperties": false
+          },
+          "feed_id": {
+            "type": "string",
+            "title": "Feed Id",
+            "examples": [
+              "442fcc08-27ad-4a8c-86eb-d84cfd412f9e"
+            ],
+            "description": "The ID of the product feed to update."
+          }
+        },
+        "description": "Request parameters to update a product feed in Reddit Ads."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_UPDATE_PRODUCT_SET",
+      "name": "Update Product Set",
+      "description": "Tool to update a product set's name and filter rules in Reddit Ads. Use when you need to modify the name or filter conditions of an existing product set.",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "updateHint",
+        "Product Catalog"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateProductSetRequest",
+        "required": [
+          "product_set_id",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "title": "Data",
+            "properties": {
+              "name": {
+                "type": "string",
+                "title": "Name",
+                "examples": [
+                  "Updated Test Product Set",
+                  "My Product Set"
+                ],
+                "maxLength": 100,
+                "minLength": 1,
+                "description": "The name of the product set."
+              },
+              "filter": {
+                "type": "string",
+                "title": "Filter",
+                "examples": [
+                  "{\"product_type\": {\"eq\": \"electronics\"}}",
+                  "{}"
+                ],
+                "description": "The filter rule that defines the set of products in the catalog. Must be a valid JSON string defining filter conditions (e.g., '{\"product_type\": {\"eq\": \"electronics\"}}'). Learn about filter rules at https://ads-api.reddit.com/docs/v3/#manage-product-catalogs."
+              }
+            },
+            "description": "The product set data to update.",
+            "additionalProperties": false
+          },
+          "product_set_id": {
+            "type": "string",
+            "title": "Product Set Id",
+            "examples": [
+              "ceb777c0-9c41-4972-8a31-18fb41937176"
+            ],
+            "description": "The ID of the product set to update."
+          }
+        },
+        "description": "Request parameters to update a product set in Reddit Ads."
+      }
+    },
+    {
+      "slug": "REDDIT_ADS_UPDATE_SAVED_AUDIENCE",
+      "name": "Update Saved Audience",
+      "description": "Tool to update a saved audience by ID in Reddit Ads. Use when you need to modify saved audience settings such as name, targeting criteria, or status. Rate limit: 200 requests per 60 seconds (Campaign Management Write).",
+      "version": "20260826_00",
+      "tags": [
+        "important",
+        "updateHint",
+        "Campaign Management"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateSavedAudienceRequest",
+        "required": [
+          "saved_audience_id",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "title": "Data",
+            "properties": {
+              "id": {
+                "type": "string",
+                "title": "Id",
+                "description": "The unique identifier of the saved audience"
+              },
+              "name": {
+                "type": "string",
+                "title": "Name",
+                "examples": [
+                  "Updated Test Saved Audience"
+                ],
+                "maxLength": 500,
+                "minLength": 3,
+                "description": "The name of the saved audience (3-500 characters)"
+              },
+              "type": {
+                "enum": [
+                  "CUSTOMER_LIST",
+                  "ENGAGEMENT_RETARGETING",
+                  "LOOKALIKE",
+                  "PIXEL_RETARGETING",
+                  "REDDIT_AUDIENCE"
+                ],
+                "type": "string",
+                "title": "SavedAudienceType",
+                "description": "Type of saved audience."
+              },
+              "status": {
+                "enum": [
+                  "DELETED",
+                  "INVALID",
+                  "INVALID_CHILD_AUDIENCE",
+                  "PROCESSING",
+                  "VALID",
+                  "INVALID_DATA_SOURCE"
+                ],
+                "type": "string",
+                "title": "SavedAudienceStatus",
+                "description": "Status of the saved audience."
+              },
+              "targeting": {
+                "type": "object",
+                "title": "Targeting",
+                "properties": {
+                  "gender": {
+                    "type": "string",
+                    "title": "Gender",
+                    "description": "Gender to target (e.g., 'male', 'female', 'all')"
+                  },
+                  "devices": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Devices",
+                    "description": "List of device types to target (e.g., 'mobile', 'desktop', 'tablet')"
+                  },
+                  "carriers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Carriers",
+                    "description": "List of mobile carrier IDs to target"
+                  },
+                  "keywords": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Keywords",
+                    "description": "List of keywords to target for contextual targeting"
+                  },
+                  "interests": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Interests",
+                    "description": "List of interest IDs to target. Use Reddit's interest taxonomy IDs"
+                  },
+                  "view_modes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "View Modes",
+                    "description": "List of view modes to target (e.g., 'card', 'classic')"
+                  },
+                  "communities": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Communities",
+                    "description": "List of subreddit names to target (without 'r/' prefix)"
+                  },
+                  "geolocations": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Geolocations",
+                    "description": "List of geographic location codes to target (e.g., ['US', 'CA', 'GB']). Use ISO 3166-1 alpha-2 country codes or more specific region/city codes"
+                  },
+                  "expand_targeting": {
+                    "type": "boolean",
+                    "title": "Expand Targeting",
+                    "description": "Whether to enable expanded targeting to reach similar audiences beyond exact targeting criteria"
+                  },
+                  "excluded_keywords": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Excluded Keywords",
+                    "description": "List of keywords to exclude from targeting"
+                  },
+                  "excluded_interests": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Excluded Interests",
+                    "description": "List of interest IDs to exclude from targeting"
+                  },
+                  "custom_audience_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Custom Audience Ids",
+                    "description": "List of custom audience IDs to include in targeting"
+                  },
+                  "excluded_communities": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Excluded Communities",
+                    "description": "List of subreddit names to exclude from targeting"
+                  },
+                  "excluded_geolocations": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Excluded Geolocations",
+                    "description": "List of geographic location codes to exclude from targeting"
+                  },
+                  "suppression_event_types": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Suppression Event Types",
+                    "description": "List of event types to suppress from targeting"
+                  },
+                  "excluded_custom_audience_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Excluded Custom Audience Ids",
+                    "description": "List of custom audience IDs to exclude from targeting"
+                  }
+                },
+                "description": "Targeting configuration for the saved audience.",
+                "additionalProperties": false
+              },
+              "created_at": {
+                "type": "string",
+                "title": "Created At",
+                "examples": [
+                  "2023-03-27T21:18:39Z"
+                ],
+                "description": "The time that this entity was created represented in ISO 8601"
+              },
+              "updated_at": {
+                "type": "string",
+                "title": "Updated At",
+                "description": "The date and time the saved audience was last updated in ISO 8601 format"
+              },
+              "ad_account_id": {
+                "type": "string",
+                "title": "Ad Account Id",
+                "description": "The unique identifier of the account. Must match pattern ^(t2|a2)_.*"
+              },
+              "delivery_status": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Delivery Status",
+                "description": "An array of delivery status strings for this ad group"
+              },
+              "size_range_lower": {
+                "type": "integer",
+                "title": "Size Range Lower",
+                "description": "The lower bound of the size range of the saved audience"
+              },
+              "size_range_upper": {
+                "type": "integer",
+                "title": "Size Range Upper",
+                "description": "The upper bound of the size range of the saved audience"
+              },
+              "active_ad_groups_count": {
+                "type": "integer",
+                "title": "Active Ad Groups Count",
+                "minimum": 0,
+                "description": "The number of active ad groups that use this saved audience"
+              }
+            },
+            "description": "Saved audience data to update",
+            "additionalProperties": false
+          },
+          "saved_audience_id": {
+            "type": "string",
+            "title": "Saved Audience Id",
+            "examples": [
+              "2451508624422555068"
+            ],
+            "description": "The ID of the saved audience to update"
+          }
+        },
+        "description": "Request model for updating a saved audience."
+      }
+    }
+  ]
+}

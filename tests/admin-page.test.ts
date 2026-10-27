@@ -8974,7 +8974,7 @@ test('Agent connection setup retains the complete preset catalog', async () => {
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    101,
+    105,
   );
 });
 
@@ -9294,7 +9294,7 @@ test('legacy Google access does not hide fresh Google connection presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 101);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 105);
 });
 
 test('every catalog connector opens an Agent-owned setup flow', async () => {
@@ -9336,15 +9336,19 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
           managedCatalogFixture('one-drive-managed', 'one_drive', 'OneDrive'),
           managedCatalogFixture('outlook-managed', 'outlook', 'Outlook'),
           managedCatalogFixture('pagerduty-managed', 'pagerduty', 'PagerDuty'),
+          managedCatalogFixture('pinterest-ads-managed', 'pinterest_ads', 'Pinterest Ads'),
           managedCatalogFixture('pipedrive-managed', 'pipedrive', 'Pipedrive'),
           managedCatalogFixture('quickbooks-managed', 'quickbooks', 'QuickBooks'),
+          managedCatalogFixture('reddit-ads-managed', 'reddit_ads', 'Reddit Ads'),
           managedCatalogFixture('salesforce-managed', 'salesforce', 'Salesforce'),
           managedCatalogFixture('semrush-managed', 'semrush', 'Semrush'),
           managedCatalogFixture('share-point-managed', 'share_point', 'SharePoint'),
           managedCatalogFixture('square-managed', 'square', 'Square'),
+          managedCatalogFixture('trello-managed', 'trello', 'Trello'),
           managedCatalogFixture('webex-managed', 'webex', 'Webex'),
           managedCatalogFixture('wrike-managed', 'wrike', 'Wrike'),
           managedCatalogFixture('zoho-managed', 'zoho', 'Zoho CRM'),
+          managedCatalogFixture('zoom-managed', 'zoom', 'Zoom'),
         ],
       },
     },
@@ -9369,7 +9373,7 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 101);
+  assert.equal(presetIds.length, 105);
 });
 
 test('Agent-owned Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {

@@ -1,0 +1,682 @@
+{
+  "toolkit": "pinterest_ads",
+  "version": "20260826_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Pinterest Ads",
+  "description": "Read Pinterest ad accounts, campaigns, ad groups, ads, and performance analytics, and rename or pause them.",
+  "securityDescription": "Pinterest sign-in opens through Composio. Agents act as the signed-in Pinterest user and can read the ad accounts that user owns or can reach, including accounts shared through Business Access, with their campaigns, ad groups, ads, performance analytics, and targeting options. With write access, Agents can rename or pause up to 30 campaigns, ad groups, or ads at a time. Agents cannot spend money: they cannot resume or start delivery, create campaigns, ad groups, or ads, change budgets, bids, schedules, or targeting, archive or delete anything, or change account or billing settings.",
+  "preset": {
+    "category": "business",
+    "accent": "#E60023"
+  },
+  "validationCapability": "pinterest_ads.list_ad_accounts",
+  "review": {
+    "add": [
+      "PINTEREST_ADS_GET_ANALYTICS",
+      "PINTEREST_ADS_GET_METRICS_READY_STATE",
+      "PINTEREST_ADS_GET_TARGETING_OPTIONS",
+      "PINTEREST_ADS_LIST_ADS",
+      "PINTEREST_ADS_LIST_AD_ACCOUNTS",
+      "PINTEREST_ADS_LIST_AD_GROUPS",
+      "PINTEREST_ADS_LIST_CAMPAIGNS",
+      "PINTEREST_ADS_UPDATE_ADS",
+      "PINTEREST_ADS_UPDATE_AD_GROUPS",
+      "PINTEREST_ADS_UPDATE_CAMPAIGNS"
+    ],
+    "drop": {},
+    "allowArguments": {},
+    "allowValues": {
+      "PINTEREST_ADS_UPDATE_ADS": {
+        "updates[].status": {
+          "values": [
+            "PAUSED"
+          ],
+          "reason": "ACTIVE restarts delivery and spend under the existing budget; Agents can only pause."
+        }
+      },
+      "PINTEREST_ADS_UPDATE_AD_GROUPS": {
+        "updates[].status": {
+          "values": [
+            "PAUSED"
+          ],
+          "reason": "ACTIVE restarts delivery and spend under the existing budget; Agents can only pause."
+        }
+      },
+      "PINTEREST_ADS_UPDATE_CAMPAIGNS": {
+        "updates[].status": {
+          "values": [
+            "PAUSED"
+          ],
+          "reason": "ACTIVE restarts delivery and spend under the existing budget; Agents can only pause."
+        }
+      }
+    }
+  },
+  "capabilities": [
+    {
+      "id": "pinterest_ads.get_analytics",
+      "tool": "PINTEREST_ADS_GET_ANALYTICS",
+      "toolName": "pinterest_ads_get_analytics",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get synchronous Pinterest Ads performance metrics for an advertiser or selected campaigns, ad groups, or ads over a date range.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "SPEND_IN_MICRO_DOLLAR",
+                "PAID_IMPRESSION",
+                "TOTAL_IMPRESSION",
+                "TOTAL_CLICKTHROUGH",
+                "OUTBOUND_CLICK_1",
+                "CTR",
+                "OUTBOUND_CTR_1",
+                "CPC_IN_MICRO_DOLLAR",
+                "CPM_IN_MICRO_DOLLAR",
+                "COST_PER_OUTBOUND_CLICK_IN_DOLLAR",
+                "TOTAL_ENGAGEMENT",
+                "ENGAGEMENT_RATE",
+                "TOTAL_CONVERSIONS",
+                "TOTAL_PAGE_VISIT",
+                "TOTAL_SIGNUP",
+                "TOTAL_CHECKOUT",
+                "TOTAL_ADD_TO_CART",
+                "TOTAL_LEAD",
+                "CHECKOUT_ROAS",
+                "TOTAL_VIDEO_3SEC_VIEWS",
+                "TOTAL_VIDEO_P100_COMPLETE",
+                "TOTAL_WEB_CHECKOUT",
+                "TOTAL_WEB_CHECKOUT_VALUE_IN_MICRO_DOLLAR",
+                "CAMPAIGN_ID",
+                "AD_GROUP_ID",
+                "AD_ID"
+              ]
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Supported Pinterest metrics and identifiers to return. MICRO_DOLLAR values are advertiser-currency microunits."
+          },
+          "end_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "UTC report end date; must be on or after start_date and at most 90 days after it."
+          },
+          "entity_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Campaign, ad-group, or ad IDs for the chosen entity_level. Required unless entity_level is AD_ACCOUNT; forbidden for AD_ACCOUNT."
+          },
+          "start_date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "UTC report start date. It may be at most 90 days before today, or 8 days before today when granularity is HOUR."
+          },
+          "granularity": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "TOTAL",
+              "DAY",
+              "HOUR",
+              "WEEK",
+              "MONTH"
+            ],
+            "description": "Time grouping for metric rows: TOTAL, DAY, HOUR, WEEK, or MONTH. HOUR no longer provides conversion metrics, is limited to the previous 8 days, and has a 3-day maximum range for campaign, ad-group, and ad reports."
+          },
+          "entity_level": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "AD_ACCOUNT",
+              "CAMPAIGN",
+              "AD_GROUP",
+              "AD"
+            ],
+            "description": "Reporting level. Entity IDs are required for CAMPAIGN, AD_GROUP, and AD, and forbidden for AD_ACCOUNT."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Advertiser account whose performance data to read."
+          },
+          "view_window_days": {
+            "type": "integer",
+            "description": "Pinterest Tag view-attribution window in days."
+          },
+          "click_window_days": {
+            "type": "integer",
+            "description": "Pinterest Tag click-attribution window in days."
+          },
+          "conversion_report_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "TIME_OF_AD_ACTION",
+              "TIME_OF_CONVERSION"
+            ],
+            "description": "Attribute conversion rows to the ad interaction date or conversion date."
+          }
+        },
+        "required": [
+          "ad_account_id",
+          "entity_level",
+          "start_date",
+          "end_date",
+          "columns",
+          "granularity"
+        ]
+      }
+    },
+    {
+      "id": "pinterest_ads.get_metrics_ready_state",
+      "tool": "PINTEREST_ADS_GET_METRICS_READY_STATE",
+      "toolName": "pinterest_ads_get_metrics_ready_state",
+      "lane": "read",
+      "effect": "read",
+      "description": "Check whether Pinterest conversion and non-conversion metrics are finalized for a UTC report date before relying on analytics results.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "UTC analytics report date to check, in YYYY-MM-DD format."
+          }
+        },
+        "required": [
+          "date"
+        ]
+      }
+    },
+    {
+      "id": "pinterest_ads.get_targeting_options",
+      "tool": "PINTEREST_ADS_GET_TARGETING_OPTIONS",
+      "toolName": "pinterest_ads_get_targeting_options",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get Pinterest's valid targeting values for a targeting type, such as age buckets, gender, locale, location, interests, or keywords.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional advertiser account context. Omit to retrieve options for the connected Pinterest user."
+          },
+          "targeting_type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "APPTYPE",
+              "GENDER",
+              "LOCALE",
+              "AGE_BUCKET",
+              "LOCATION",
+              "GEO",
+              "INTEREST",
+              "KEYWORD",
+              "AUDIENCE_INCLUDE",
+              "AUDIENCE_EXCLUDE"
+            ],
+            "description": "Pinterest targeting dimension whose valid values to retrieve."
+          }
+        },
+        "required": [
+          "targeting_type"
+        ]
+      }
+    },
+    {
+      "id": "pinterest_ads.list_ad_accounts",
+      "tool": "PINTEREST_ADS_LIST_AD_ACCOUNTS",
+      "toolName": "pinterest_ads_list_ad_accounts",
+      "lane": "read",
+      "effect": "read",
+      "description": "List advertiser accounts the connected Pinterest user owns or can access, including the IDs needed by all other Ads tools.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 250,
+            "description": "Maximum advertiser accounts in this page (1-250)."
+          },
+          "next_cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Continuation cursor returned by a previous call. Omit for the first page."
+          },
+          "include_shared_accounts": {
+            "type": "boolean",
+            "description": "Include ad accounts shared with the connected user through Business Access."
+          }
+        }
+      }
+    },
+    {
+      "id": "pinterest_ads.list_ad_groups",
+      "tool": "PINTEREST_ADS_LIST_AD_GROUPS",
+      "toolName": "pinterest_ads_list_ad_groups",
+      "lane": "read",
+      "effect": "read",
+      "description": "List ad groups for an advertiser, filter by parent campaigns, or look up specific ad groups by ID.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASCENDING",
+              "DESCENDING"
+            ],
+            "description": "Sort by ad-group ID; higher IDs are newer."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 250,
+            "description": "Maximum ad groups in this page (1-250)."
+          },
+          "next_cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Continuation cursor returned by a previous call. Repeat the same filters when continuing."
+          },
+          "ad_group_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Optional ad-group IDs to look up. Pinterest marks this filter beta, so availability may vary by advertiser."
+          },
+          "campaign_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Optional parent campaign IDs used to filter ad groups."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Advertiser account ID returned by LIST_AD_ACCOUNTS."
+          },
+          "entity_statuses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "ACTIVE",
+                "PAUSED",
+                "ARCHIVED",
+                "DRAFT",
+                "DELETED_DRAFT"
+              ]
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Statuses to include. If omitted, Pinterest returns only ACTIVE and PAUSED ad groups."
+          },
+          "translate_interests_to_names": {
+            "type": "boolean",
+            "description": "Return interest targeting as readable names instead of topic IDs."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ]
+      }
+    },
+    {
+      "id": "pinterest_ads.list_ads",
+      "tool": "PINTEREST_ADS_LIST_ADS",
+      "toolName": "pinterest_ads_list_ads",
+      "lane": "read",
+      "effect": "read",
+      "description": "List ads for an advertiser, filter by one hierarchy level, or look up specific ads by ID. Archived and draft ads must be requested explicitly with entity_statuses.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASCENDING",
+              "DESCENDING"
+            ],
+            "description": "Sort by ad ID. Higher IDs are associated with more recently added ads."
+          },
+          "ad_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Optional ad IDs to look up. Cannot be combined with campaign_ids or ad_group_ids; omit all ID filters to list ads."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 250,
+            "description": "Maximum ads in this page (1-250)."
+          },
+          "next_cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Continuation cursor returned by a previous call. Repeat the same filters when continuing."
+          },
+          "ad_group_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Optional parent ad-group IDs used to filter ads. This beta filter may not be available to every advertiser and cannot be combined with campaign_ids or ad_ids."
+          },
+          "campaign_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Optional parent campaign IDs used to filter ads. Cannot be combined with ad_group_ids or ad_ids."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Advertiser account ID returned by LIST_AD_ACCOUNTS."
+          },
+          "entity_statuses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "ACTIVE",
+                "PAUSED",
+                "ARCHIVED",
+                "DRAFT",
+                "DELETED_DRAFT"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Statuses to include. If omitted, Pinterest returns only ACTIVE and PAUSED ads."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ]
+      }
+    },
+    {
+      "id": "pinterest_ads.list_campaigns",
+      "tool": "PINTEREST_ADS_LIST_CAMPAIGNS",
+      "toolName": "pinterest_ads_list_campaigns",
+      "lane": "read",
+      "effect": "read",
+      "description": "List campaigns for an advertiser, or look up specific campaigns by ID using campaign_ids. Archived and draft campaigns must be requested explicitly with entity_statuses.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ASCENDING",
+              "DESCENDING"
+            ],
+            "description": "Sort by campaign ID; higher IDs are newer."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 250,
+            "description": "Maximum campaigns in this page (1-250)."
+          },
+          "next_cursor": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Continuation cursor returned by a previous call. Repeat the same filters when continuing."
+          },
+          "campaign_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "description": "Optional campaign IDs to look up; omit to list campaigns."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Advertiser account ID returned by LIST_AD_ACCOUNTS."
+          },
+          "entity_statuses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "ACTIVE",
+                "PAUSED",
+                "ARCHIVED",
+                "DRAFT",
+                "DELETED_DRAFT"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Statuses to include. If omitted Pinterest returns only ACTIVE and PAUSED campaigns."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ]
+      }
+    },
+    {
+      "id": "pinterest_ads.update_ad_groups",
+      "tool": "PINTEREST_ADS_UPDATE_AD_GROUPS",
+      "toolName": "pinterest_ads_update_ad_groups",
+      "lane": "write",
+      "effect": "destructive",
+      "description": "Rename, pause, or resume up to 30 existing ad groups. Setting status to ACTIVE can restart delivery and incur spend under existing budgets. Budget, bid, targeting, schedule, and restricted-setting changes are not exposed.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pinterest Ads: Update Ad Groups",
+      "input": {
+        "type": "object",
+        "properties": {
+          "updates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "ID of the ad group to update."
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "New ad-group name. Omit to leave the name unchanged."
+                },
+                "status": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "enum": [
+                    "PAUSED"
+                  ],
+                  "description": "Delivery status to apply. ACTIVE can restart delivery and incur spend under existing budgets; PAUSED stops delivery."
+                }
+              },
+              "required": [
+                "id"
+              ]
+            },
+            "maxItems": 30,
+            "minItems": 1,
+            "description": "One to 30 ad-group changes. IDs must be unique; each item must set a new name, ACTIVE status, or PAUSED status."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Advertiser account that owns every ad group being updated."
+          }
+        },
+        "required": [
+          "ad_account_id",
+          "updates"
+        ]
+      }
+    },
+    {
+      "id": "pinterest_ads.update_ads",
+      "tool": "PINTEREST_ADS_UPDATE_ADS",
+      "toolName": "pinterest_ads_update_ads",
+      "lane": "write",
+      "effect": "destructive",
+      "description": "Rename, pause, or resume up to 30 existing Pinterest ads. Setting status to ACTIVE can restart delivery and incur spend under existing budgets. Creative, Pin, destination, tracking, and disclosure changes are not exposed.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pinterest Ads: Update Ads",
+      "input": {
+        "type": "object",
+        "properties": {
+          "updates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 18,
+                  "description": "Pinterest ad ID to update."
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 255,
+                  "description": "New ad name. Blank names are not accepted."
+                },
+                "status": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "enum": [
+                    "PAUSED"
+                  ],
+                  "description": "Delivery status to set. ACTIVE can restart delivery and incur spend under existing budgets; PAUSED stops delivery."
+                }
+              },
+              "required": [
+                "id"
+              ]
+            },
+            "maxItems": 30,
+            "minItems": 1,
+            "description": "One to 30 ad updates. IDs must be unique, and each item must set a name, an ACTIVE status, or a PAUSED status."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Advertiser account that owns every ad being updated."
+          }
+        },
+        "required": [
+          "ad_account_id",
+          "updates"
+        ]
+      }
+    },
+    {
+      "id": "pinterest_ads.update_campaigns",
+      "tool": "PINTEREST_ADS_UPDATE_CAMPAIGNS",
+      "toolName": "pinterest_ads_update_campaigns",
+      "lane": "write",
+      "effect": "destructive",
+      "description": "Rename, pause, or resume up to 30 existing campaigns. Setting status to ACTIVE can restart delivery and incur spend under existing budgets. Budget, schedule, objective, archive, and restricted-setting changes are not exposed.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Pinterest Ads: Update Campaigns",
+      "input": {
+        "type": "object",
+        "properties": {
+          "updates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 18,
+                  "description": "Campaign ID to update."
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "description": "Optional non-empty replacement campaign name."
+                },
+                "status": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "enum": [
+                    "PAUSED"
+                  ],
+                  "description": "Optional campaign status. ACTIVE can restart delivery and incur spend under the campaign's existing budget; PAUSED stops delivery."
+                }
+              },
+              "required": [
+                "id"
+              ]
+            },
+            "maxItems": 30,
+            "minItems": 1,
+            "description": "Campaign changes (1-30). Each item requires a unique campaign ID and at least one of non-empty name or ACTIVE/PAUSED status."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 18,
+            "description": "Advertiser account that owns every campaign being updated."
+          }
+        },
+        "required": [
+          "ad_account_id",
+          "updates"
+        ]
+      }
+    }
+  ]
+}

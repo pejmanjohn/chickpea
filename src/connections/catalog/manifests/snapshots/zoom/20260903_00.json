@@ -1,0 +1,2178 @@
+{
+  "toolkit": {
+    "slug": "zoom",
+    "name": "Zoom",
+    "version": "20260903_00",
+    "description": "Zoom is a video conferencing and online meeting platform featuring breakout rooms, screen sharing, and integrations with various enterprise tools",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      }
+    ],
+    "currentUserEndpoint": "https://api.zoom.us/v2/users/me"
+  },
+  "tools": [
+    {
+      "slug": "ZOOM_CREATE_A_MEETING",
+      "name": "Create a meeting",
+      "description": "Enable Zoom meeting creation via user-level apps with \"me\". \"Start_url\" for hosts expires in 2 hours, or 90 days for \"custCreate\" users. Renew via API, capped at 100 requests/day. Requires \"meeting:write\" permission, subject to medium rate limit.",
+      "version": "20260903_00",
+      "tags": [
+        "Meetings",
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateAMeetingRequest",
+        "properties": {
+          "type": {
+            "type": "integer",
+            "title": "Type",
+            "default": 2,
+            "description": "The type of meeting. * `1` - An instant meeting.  * `2` - A scheduled meeting.  * `3` - A recurring meeting with no fixed time.  * `8` - A recurring meeting with fixed time. ",
+            "human_parameter_description": "Choose what kind of meeting this will be: instant, scheduled, or recurring."
+          },
+          "topic": {
+            "type": "string",
+            "title": "Topic",
+            "description": "The meeting's topic.",
+            "human_parameter_description": "Provide a title for your meeting."
+          },
+          "agenda": {
+            "type": "string",
+            "title": "Agenda",
+            "description": "The meeting's agenda. This value has a maximum length of 2,000 characters. ",
+            "human_parameter_description": "A brief overview of what the meeting will cover."
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": "me",
+            "description": "The user's user ID or email address. For user-level apps, pass the `me` value. Defaults to `me` for user-level apps. ",
+            "human_parameter_description": "Your user ID or email. If you're scheduling for yourself, use 'me'. Defaults to 'me'."
+          },
+          "duration": {
+            "type": "integer",
+            "title": "Duration",
+            "description": "The meeting's scheduled duration, in minutes. This field is only used for scheduled meetings (`2`).  Ignored for all other meeting types.",
+            "human_parameter_description": "How long you expect the meeting to last, in minutes."
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "description": "The passcode required to join the meeting. By default, a passcode can **only** have a maximum length of 10 characters and only contain alphanumeric characters and the `@`, `-`, `_`, and `*` characters.  * If the account owner or administrator has configured [minimum passcode requirement settings](https://support.zoom.us/hc/en-us/articles/360033559832-Meeting-and-webinar-passwords#h_a427384b-e383-4f80-864d-794bf0a37604), the passcode **must** meet those requirements.  * If passcode requirements are enabled, use the [**Get user settings**](https://developers.zoom.us/docs/api-reference/zoom-api/methods#operation/userSettings) API or the [**Get account settings**](https://developers.zoom.us/docs/api-reference/zoom-api/ma#operation/accountSettings) API to get the requirements. ",
+            "human_parameter_description": "The code participants need to enter to join the meeting."
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone",
+            "description": "The timezone to assign to the `start_time` value. This field is only used for scheduled or recurring meetings with a fixed time. For a list of supported timezones and their formats, see our [timezone list](https://developers.zoom.us/docs/api/rest/other-references/abbreviation-lists/#timezones).  Omitting this silently falls back to the account's timezone, which may shift meeting times for participants.",
+            "human_parameter_description": "Specify the timezone for the meeting schedule."
+          },
+          "start_time": {
+            "type": "string",
+            "title": "Start Time",
+            "format": "date-time",
+            "description": "The meeting's start time. This field is only used for scheduled or recurring meetings with a fixed time. This supports local time and GMT formats.  * To set a meeting's start time in GMT, use the `yyyy-MM-ddTHH:mm:ssZ` date-time format. For example, `2020-03-31T12:02:00Z`.  * To set a meeting's start time using a specific timezone, use the `yyyy-MM-ddTHH:mm:ss` date-time format and specify the [timezone ID](https://developers.zoom.us/docs/api/rest/other-references/abbreviation-lists/#timezones) in the `timezone` field. If you do not specify a timezone, the `timezone` value defaults to your Zoom account's timezone. You can also use `UTC` for the `timezone` value. **Note:** If no `start_time` is set for a scheduled meeting, the `start_time` is set at the current time and the meeting type changes to an instant meeting, which expires after 30 days. ",
+            "human_parameter_description": "Specify when the meeting will begin."
+          },
+          "template_id": {
+            "type": "string",
+            "title": "Template Id",
+            "description": "The account admin meeting template ID used to schedule a meeting using a [meeting template](https://support.zoom.us/hc/en-us/articles/360036559151-Meeting-templates). For a list of account admin-provided meeting templates, use the [**List meeting templates**](https://developers.zoom.us/docs/api-reference/zoom-api/methods#operation/listMeetingTemplates) API.  * At this time, this field **only** accepts account admin meeting template IDs.  * To enable the account admin meeting templates feature, [contact Zoom support](https://support.zoom.us/hc/en-us). ",
+            "human_parameter_description": "Provide the template ID for scheduling this meeting."
+          },
+          "pre_schedule": {
+            "type": "boolean",
+            "title": "Pre Schedule",
+            "default": false,
+            "description": "Whether to create a prescheduled meeting via the [GSuite app](https://support.zoom.us/hc/en-us/articles/360020187492-Zoom-for-GSuite-add-on). This **only** supports the meeting `type` value of `2` (scheduled meetings) and `3` (recurring meetings with no fixed time).  * `true` - Create a prescheduled meeting.  * `false` - Create a regular meeting. ",
+            "human_parameter_description": "Specify if this is a meeting set up in advance through GSuite."
+          },
+          "schedule_for": {
+            "type": "string",
+            "title": "Schedule For",
+            "description": "The email address or user ID of the user to schedule a meeting for.",
+            "human_parameter_description": "Provide the email or ID of the user for whom you are scheduling this meeting."
+          },
+          "settings__audio": {
+            "enum": [
+              "both",
+              "telephony",
+              "voip",
+              "thirdParty"
+            ],
+            "type": "string",
+            "title": "Settings  Audio",
+            "default": "both",
+            "description": "How participants join the audio portion of the meeting. * `both` - Both telephony and VoIP.  * `telephony` - Telephony only.  * `voip` - VoIP only.  * `thirdParty` - Third party audio conference. ",
+            "human_parameter_description": "Decide how people can connect to audio during the meeting."
+          },
+          "tracking_fields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "title": "Tracking Fields",
+            "description": "Information about the meeting's tracking fields.",
+            "human_parameter_description": "List any tracking fields you want to include for this meeting."
+          },
+          "default_password": {
+            "type": "boolean",
+            "title": "Default Password",
+            "default": false,
+            "description": "Whether to generate a default passcode using the user's settings. This value defaults to `false`.  If this value is `true` and the user has the PMI setting enabled with a passcode, then the user's meetings will use the PMI passcode. It will **not** use a default passcode. ",
+            "human_parameter_description": "Choose whether to auto-generate a passcode based on your settings."
+          },
+          "recurrence__type": {
+            "type": "integer",
+            "title": "Recurrence  Type",
+            "default": 2,
+            "description": "Recurrence meeting types.  `1` - Daily.    `2` - Weekly.    `3` - Monthly. ",
+            "human_parameter_description": "Select how the meeting will repeat: daily, weekly, or monthly."
+          },
+          "settings__use__pmi": {
+            "type": "boolean",
+            "title": "Settings  Use  Pmi",
+            "default": false,
+            "description": "Whether to use a [Personal Meeting ID (PMI)](https://developers.zoom.us/docs/api/rest/using-zoom-apis/#understanding-personal-meeting-id-pmi) instead of a generated meeting ID. This field is only used for scheduled meetings (`2`), instant meetings (`1`), or recurring meetings with no fixed time (`3`). This value defaults to `false`. ",
+            "human_parameter_description": "Select if you want to use your Personal Meeting ID for this meeting."
+          },
+          "settings__jbh__time": {
+            "type": "integer",
+            "title": "Settings  Jbh  Time",
+            "description": "If the value of the `join_before_host` field is `true`, this field indicates the time limits when a participant can join a meeting before the meeting's host. * `0` - Allow the participant to join the meeting at anytime. * `5` - Allow the participant to join 5 minutes before the meeting's start time. * `10` - Allow the participant to join 10 minutes before the meeting's start time. ",
+            "human_parameter_description": "Set how early participants can join before the host."
+          },
+          "settings__resources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "MeetingResource",
+              "required": [
+                "resource_id",
+                "resource_type"
+              ],
+              "properties": {
+                "resource_id": {
+                  "type": "string",
+                  "title": "Resource Id",
+                  "description": "Unique identifier of the resource."
+                },
+                "resource_type": {
+                  "type": "string",
+                  "title": "Resource Type",
+                  "description": "Type of resource (e.g., 'room', 'equipment')."
+                }
+              },
+              "description": "Meeting resource configuration."
+            },
+            "title": "Settings  Resources",
+            "description": "The meeting's resources. Each resource must include resource_id and resource_type fields.",
+            "human_parameter_description": "List any resources associated with this meeting."
+          },
+          "settings__watermark": {
+            "type": "boolean",
+            "title": "Settings  Watermark",
+            "default": false,
+            "description": "Whether to add a watermark when viewing a shared screen.",
+            "human_parameter_description": "Select if a watermark should appear when sharing screens."
+          },
+          "settings__cn__meeting": {
+            "type": "boolean",
+            "title": "Settings  Cn  Meeting",
+            "default": false,
+            "description": "Whether to host the meeting in China (CN). This value defaults to `false`. ",
+            "human_parameter_description": "Select if this meeting will take place in China."
+          },
+          "settings__focus__mode": {
+            "type": "boolean",
+            "title": "Settings  Focus  Mode",
+            "description": "Whether to enable the [**Focus Mode** feature](https://support.zoom.us/hc/en-us/articles/360061113751-Using-focus-mode) when the meeting starts. ",
+            "human_parameter_description": "Enable Focus Mode if you want attendees to concentrate on the meeting."
+          },
+          "settings__host__video": {
+            "type": "boolean",
+            "title": "Settings  Host  Video",
+            "description": "Whether to start meetings with the host video on.",
+            "human_parameter_description": "Choose if the host's video should be on when the meeting starts."
+          },
+          "settings__in__meeting": {
+            "type": "boolean",
+            "title": "Settings  In  Meeting",
+            "default": false,
+            "description": "Whether to host the meeting in India (IN). This value defaults to `false`. ",
+            "human_parameter_description": "Select if the meeting is to be hosted in India."
+          },
+          "recurrence__end__times": {
+            "type": "integer",
+            "title": "Recurrence  End  Times",
+            "default": 1,
+            "description": "Select how many times the meeting should recur before it is canceled. If `end_times` is set to 0, it means there is no end time. The maximum number of recurring is 60. Cannot be used with `end_date_time`. ",
+            "human_parameter_description": "How many times the meeting should repeat before it's stopped."
+          },
+          "settings__contact__name": {
+            "type": "string",
+            "title": "Settings  Contact  Name",
+            "description": "The contact name for meeting registration.",
+            "human_parameter_description": "Provide a contact name for registration assistance."
+          },
+          "settings__waiting__room": {
+            "type": "boolean",
+            "title": "Settings  Waiting  Room",
+            "description": "Whether to enable the [**Waiting Room** feature](https://support.zoom.us/hc/en-us/articles/115000332726-Waiting-Room). If this value is `true`, this **disables** the `join_before_host` setting. ",
+            "human_parameter_description": "Choose if you want to enable a Waiting Room to control entry."
+          },
+          "recurrence__monthly__day": {
+            "type": "integer",
+            "title": "Recurrence  Monthly  Day",
+            "default": 1,
+            "description": "Use this field **only if you're scheduling a recurring meeting of type** `3` to state the day in a month when the meeting should recur. The value range is from 1 to 31. For the meeting to recur on 23rd of each month, provide `23` as this field's value and `1` as the `repeat_interval` field's value. Instead, if you would like the meeting to recur every three months, on 23rd of the month, change the value of the `repeat_interval` field to `3`. ",
+            "human_parameter_description": "Specify which day of the month the meeting will occur if recurring."
+          },
+          "recurrence__weekly__days": {
+            "enum": [
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7"
+            ],
+            "type": "string",
+            "title": "Recurrence  Weekly  Days",
+            "default": "1",
+            "description": "This field is required if you're scheduling a recurring meeting of type `2` to state the days of the week when the meeting should repeat. The value must be a single number between `1` to `7` in string format. For instance, if the meeting should recur on Sunday, provide `1` as this field's value. To set the meeting to occur on multiple days, you must call the API multiple times or use a different recurrence pattern. `1` - Sunday. `2` - Monday. `3` - Tuesday. `4` - Wednesday. `5` - Thursday. `6` - Friday. `7` - Saturday.",
+            "human_parameter_description": "The day of the week the meeting will occur (single value only)."
+          },
+          "settings__approval__type": {
+            "type": "integer",
+            "title": "Settings  Approval  Type",
+            "default": 2,
+            "description": "Enable meeting registration approval. * `0` - Automatically approve registration. * `1` - Manually approve registration. * `2` - No registration required. This value defaults to `2`. ",
+            "human_parameter_description": "Select how registration approvals will be handled for this meeting."
+          },
+          "settings__contact__email": {
+            "type": "string",
+            "title": "Settings  Contact  Email",
+            "description": "The contact email address for meeting registration.",
+            "human_parameter_description": "Provide a contact email for registration queries."
+          },
+          "recurrence__monthly__week": {
+            "type": "integer",
+            "title": "Recurrence  Monthly  Week",
+            "description": "Use this field **only if you're scheduling a recurring meeting of type** `3` to state the week of the month when the meeting should recur. If you use this field, you must also use the `monthly_week_day` field to state the day of the week when the meeting should recur.     `-1` - Last week of the month.    `1` - First week of the month.    `2` - Second week of the month.    `3` - Third week of the month.    `4` - Fourth week of the month. ",
+            "human_parameter_description": "State which week of the month the meeting will happen if recurring."
+          },
+          "settings__auto__recording": {
+            "enum": [
+              "local",
+              "cloud",
+              "none"
+            ],
+            "type": "string",
+            "title": "Settings  Auto  Recording",
+            "default": "none",
+            "description": "The automatic recording settings.  * `local` - Record the meeting locally.  * `cloud` - Record the meeting to the cloud.  * `none` - Auto-recording disabled. This value defaults to `none`. ",
+            "human_parameter_description": "Choose where to save the meeting recordings automatically."
+          },
+          "settings__encryption__type": {
+            "enum": [
+              "enhanced_encryption",
+              "e2ee"
+            ],
+            "type": "string",
+            "title": "EncryptionTypeEnm",
+            "description": "The type of [end-to-end (E2EE) encryption](https://support.zoom.us/hc/en-us/articles/360048660871) to use for the meeting.  * `enhanced_encryption` - Enhanced encryption. Encryption is stored in the cloud when you enable this option.  * `e2ee` - End-to-end encryption. The encryption key is stored on your local device and **cannot** be obtained by anyone else. When you use E2EE encryption, [certain features](https://support.zoom.us/hc/en-us/articles/360048660871), such as cloud recording or phone and SIP/H.323 dial-in, are **disabled**. ",
+            "human_parameter_description": "Choose the level of encryption for this meeting."
+          },
+          "settings__private__meeting": {
+            "type": "boolean",
+            "title": "Settings  Private  Meeting",
+            "description": "Whether to set the meeting as private.",
+            "human_parameter_description": "Choose if you want this meeting to be private."
+          },
+          "recurrence__end__date__time": {
+            "type": "string",
+            "title": "Recurrence  End  Date  Time",
+            "format": "date-time",
+            "description": "Select the final date when the meeting will recur before it is canceled. Should be in UTC time, such as 2017-11-25T12:00:00Z. Cannot be used with `end_times`. ",
+            "human_parameter_description": "The last date the meeting will occur, in UTC format."
+          },
+          "settings__internal__meeting": {
+            "type": "boolean",
+            "title": "Settings  Internal  Meeting",
+            "default": false,
+            "description": "Whether to set the meeting as an internal meeting.",
+            "human_parameter_description": "Choose if this meeting is for internal participants only."
+          },
+          "settings__meeting__invitees": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "title": "Settings  Meeting  Invitees",
+            "description": "A list of the meeting's invitees.",
+            "human_parameter_description": "List the people you are inviting to this meeting."
+          },
+          "settings__mute__upon__entry": {
+            "type": "boolean",
+            "title": "Settings  Mute  Upon  Entry",
+            "default": false,
+            "description": "Whether to mute participants upon entry.",
+            "human_parameter_description": "Choose whether all participants should be muted when they join."
+          },
+          "recurrence__repeat__interval": {
+            "type": "integer",
+            "title": "Recurrence  Repeat  Interval",
+            "description": "Define the interval when the meeting should recur. For instance, to schedule a meeting that recurs every two months, set this field's value as `2` and the value of the `type` parameter as `3`.  For a daily meeting, the maximum interval you can set is `90` days. For a weekly meeting the maximum interval that you can set is  of `12` weeks. For a monthly meeting, there is a maximum of `3` months.  ",
+            "human_parameter_description": "Specify how often the meeting should repeat."
+          },
+          "settings__alternative__hosts": {
+            "type": "string",
+            "title": "Settings  Alternative  Hosts",
+            "description": "A semicolon-separated list of the meeting's alternative hosts\" email addresses or IDs. ",
+            "human_parameter_description": "Provide email addresses of other people who can host this meeting."
+          },
+          "settings__join__before__host": {
+            "type": "boolean",
+            "title": "Settings  Join  Before  Host",
+            "default": false,
+            "description": "Whether participants can join the meeting before its host. This field is only used for scheduled meetings (`2`) or recurring meetings (`3` and `8`). This value defaults to `false`. If the [**Waiting Room** feature](https://support.zoom.us/hc/en-us/articles/115000332726-Waiting-Room) is enabled, this setting is **disabled**. ",
+            "human_parameter_description": "Specify if attendees can join the meeting before the host arrives."
+          },
+          "settings__participant__video": {
+            "type": "boolean",
+            "title": "Settings  Participant  Video",
+            "description": "Whether to start meetings with the participant video on.",
+            "human_parameter_description": "Select if participant video should be on at the start."
+          },
+          "settings__registration__type": {
+            "type": "integer",
+            "title": "Settings  Registration  Type",
+            "default": 1,
+            "description": "The meeting's registration type.  * `1` - Attendees register once and can attend any meeting occurrence.  * `2` - Attendees must register for each meeting occurrence.  * `3` - Attendees register once and can select one or more meeting occurrences to attend. This field is only for recurring meetings with fixed times (`8`). This value defaults to `1`. ",
+            "human_parameter_description": "Choose how attendees will register for this meeting."
+          },
+          "settings__close__registration": {
+            "type": "boolean",
+            "title": "Settings  Close  Registration",
+            "default": false,
+            "description": "Whether to close registration after the event date. This value defaults to `false`. ",
+            "human_parameter_description": "Choose if registration should close once the meeting date has passed."
+          },
+          "settings__email__notification": {
+            "type": "boolean",
+            "title": "Settings  Email  Notification",
+            "default": true,
+            "description": "Whether to send email notifications to [alternative hosts](https://support.zoom.us/hc/en-us/articles/208220166) and [users with scheduling privileges](https://support.zoom.us/hc/en-us/articles/201362803-Scheduling-privilege). This value defaults to `true`. ",
+            "human_parameter_description": "Decide if email notifications should be sent about this meeting."
+          },
+          "settings__show__share__button": {
+            "type": "boolean",
+            "title": "Settings  Show  Share  Button",
+            "description": "Whether to include social media sharing buttons on the meeting's registration page. This setting is only applied to meetings with registration enabled. ",
+            "human_parameter_description": "Decide if sharing options should be displayed on the registration page."
+          },
+          "recurrence__monthly__week__day": {
+            "type": "integer",
+            "title": "Recurrence  Monthly  Week  Day",
+            "description": "Use this field **only if you're scheduling a recurring meeting of type** `3` to state a specific day in a week when the monthly meeting should recur. To use this field, you must also use the `monthly_week` field.      `1` - Sunday.    `2` - Monday.    `3` - Tuesday.    `4` -  Wednesday.    `5` - Thursday.    `6` - Friday.    `7` - Saturday. ",
+            "human_parameter_description": "Indicate the specific day of the week for monthly recurrences."
+          },
+          "settings__breakout__room__rooms": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "title": "Settings  Breakout  Room  Rooms",
+            "description": "Information about the breakout rooms.",
+            "human_parameter_description": "Provide details about the breakout rooms."
+          },
+          "settings__authentication__option": {
+            "type": "string",
+            "title": "Settings  Authentication  Option",
+            "description": "If the `meeting_authentication` value is `true`, the type of authentication required for users to join a meeting. To get this value, use the `authentication_options` array's `id` value in the [**Get user settings**](https://developers.zoom.us/docs/api-reference/zoom-api/methods#operation/userSettings) API response. ",
+            "human_parameter_description": "Specify the type of authentication required to join."
+          },
+          "settings__breakout__room__enable": {
+            "type": "boolean",
+            "title": "Settings  Breakout  Room  Enable",
+            "description": "Whether to enable the [**Breakout Room pre-assign**](https://support.zoom.us/hc/en-us/articles/360032752671-Pre-assigning-participants-to-breakout-rooms) option. ",
+            "human_parameter_description": "Enable breakout rooms for group discussions during the meeting."
+          },
+          "settings__audio__conference__info": {
+            "type": "string",
+            "title": "Settings  Audio  Conference  Info",
+            "description": "Third party audio conference info.",
+            "human_parameter_description": "Enter any details needed for third-party audio connections."
+          },
+          "settings__authentication__domains": {
+            "type": "string",
+            "title": "Settings  Authentication  Domains",
+            "description": "The meeting's authenticated domains. Only Zoom users whose email address contains an authenticated domain can join the meeting. Comma-separate multiple domains or use a wildcard for listing domains. ",
+            "human_parameter_description": "Specify the domains that can authenticate for this meeting."
+          },
+          "settings__meeting__authentication": {
+            "type": "boolean",
+            "title": "Settings  Meeting  Authentication",
+            "description": "If true, only [authenticated](https://support.zoom.us/hc/en-us/articles/360037117472-Authentication-Profiles-for-Meetings-and-Webinars) users can join the meeting. ",
+            "human_parameter_description": "Choose if only authenticated users should be allowed to join."
+          },
+          "settings__allow__multiple__devices": {
+            "type": "boolean",
+            "title": "Settings  Allow  Multiple  Devices",
+            "description": "Whether to allow attendees to join a meeting from multiple devices. This setting is only applied to meetings with registration enabled. ",
+            "human_parameter_description": "Decide if attendees can connect from more than one device during the meeting."
+          },
+          "settings__host__save__video__order": {
+            "type": "boolean",
+            "title": "Settings  Host  Save  Video  Order",
+            "description": "Whether the **Allow host to save video order** feature is enabled.",
+            "human_parameter_description": "Choose if hosts can save the video layout preferences."
+          },
+          "settings__authentication__exception": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "AuthenticationException",
+              "required": [
+                "name",
+                "email"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "title": "Name",
+                  "description": "Name of the participant who can bypass authentication."
+                },
+                "email": {
+                  "type": "string",
+                  "title": "Email",
+                  "description": "Email address of the participant who can bypass authentication."
+                }
+              },
+              "description": "Authentication exception configuration."
+            },
+            "title": "Settings  Authentication  Exception",
+            "description": "A list of participants that can bypass meeting authentication. These participants will receive a unique meeting invite. Each exception must include name and email fields.",
+            "human_parameter_description": "List any participants who should bypass authentication."
+          },
+          "settings__push__change__to__calendar": {
+            "type": "boolean",
+            "title": "Settings  Push  Change  To  Calendar",
+            "default": false,
+            "description": "Whether to push meeting changes to the calendar.   To enable this feature, configure the **Configure Calendar and Contacts Service** in the user's profile page of the Zoom web portal and enable the **Automatically sync Zoom calendar events information bi-directionally between Zoom and integrated calendars.** setting in the **Settings** page of the Zoom web portal. * `true` - Push meeting changes to the calendar. * `false` - Do not push meeting changes to the calendar. ",
+            "human_parameter_description": "Choose if you want changes to the meeting to be synced with your calendar."
+          },
+          "settings__global__dial__in__countries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Settings  Global  Dial  In  Countries",
+            "description": "A list of available global dial-in countries.",
+            "human_parameter_description": "List the countries participants can call from to join the meeting."
+          },
+          "settings__auto__start__meeting__summary": {
+            "type": "boolean",
+            "title": "Settings  Auto  Start  Meeting  Summary",
+            "default": false,
+            "description": "Whether to automatically start a meeting summary.",
+            "human_parameter_description": "Choose if you want the meeting summary to start automatically."
+          },
+          "settings__participant__focused__meeting": {
+            "type": "boolean",
+            "title": "Settings  Participant  Focused  Meeting",
+            "default": false,
+            "description": "Whether to set the meeting as a participant focused meeting.",
+            "human_parameter_description": "Choose if this meeting should focus on participant engagement."
+          },
+          "settings__alternative__host__update__polls": {
+            "type": "boolean",
+            "title": "Settings  Alternative  Host  Update  Polls",
+            "description": "Whether the **Allow alternative hosts to add or edit polls** feature is enabled. This requires Zoom version 5.8.0 or higher. ",
+            "human_parameter_description": "Select if alternative hosts should have the ability to manage polls."
+          },
+          "settings__language__interpretation__enable": {
+            "type": "boolean",
+            "title": "Settings  Language  Interpretation  Enable",
+            "description": "Whether to enable [language interpretation](https://support.zoom.us/hc/en-us/articles/360034919791-Language-interpretation-in-meetings-and-webinars) for the meeting. ",
+            "human_parameter_description": "Enable language interpretation to assist non-native speakers in the meeting."
+          },
+          "settings__registrants__confirmation__email": {
+            "type": "boolean",
+            "title": "Settings  Registrants  Confirmation  Email",
+            "description": "Whether to send registrants an email confirmation.  * `true` - Send a confirmation email.  * `false` - Do not send a confirmation email. ",
+            "human_parameter_description": "Specify if registrants should receive confirmation emails."
+          },
+          "settings__registrants__email__notification": {
+            "type": "boolean",
+            "title": "Settings  Registrants  Email  Notification",
+            "description": "Whether to send registrants email notifications about their registration approval, cancellation, or rejection. * `true` - Send an email notification. * `false` - Do not send an email notification.  Set this value to `true` to also use the `registrants_confirmation_email` parameter. ",
+            "human_parameter_description": "Choose if registrants should receive notifications about their registration."
+          },
+          "settings__additional__data__center__regions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Settings  Additional  Data  Center  Regions",
+            "description": "Add additional meeting [data center regions](https://support.zoom.us/hc/en-us/articles/360042411451-Selecting-data-center-regions-for-hosted-meetings-and-webinars). Provide this value as an array of [country codes](https://developers.zoom.us/docs/api/rest/other-references/abbreviation-lists/#countries) for the countries available as data center regions in the [**Account Profile**](https://zoom.us/account/setting) interface but have been opted out of in the [user settings](https://zoom.us/profile). For example, the data center regions selected in your [**Account Profile**](https://zoom.us/account) are `Europe`, `Hong Kong SAR`, `Australia`, `India`, `Japan`, `China`, `United States`, and `Canada`. However, in the [**My Profile**](https://zoom.us/profile) settings, you did **not** select `India` and `Japan` for meeting and webinar traffic routing. To include `India` and `Japan` as additional data centers, use the `[IN, TY]` value for this field. ",
+            "human_parameter_description": "List any additional countries for meeting data center regions."
+          },
+          "settings__continuous__meeting__chat__enable": {
+            "type": "boolean",
+            "title": "Settings  Continuous  Meeting  Chat  Enable",
+            "description": "Whether to enable the **Enable continuous meeting chat** setting.",
+            "human_parameter_description": "Specify if chat should remain open continuously."
+          },
+          "settings__approved_denied_regions__denied__list": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Settings  Approved Denied Regions  Denied  List",
+            "description": "The list of blocked countries or regions.",
+            "human_parameter_description": "List the countries that will be blocked from joining."
+          },
+          "settings__auto__start__ai__companion__questions": {
+            "type": "boolean",
+            "title": "Settings  Auto  Start  Ai  Companion  Questions",
+            "default": false,
+            "description": "Whether to automatically start AI Companion questions.",
+            "human_parameter_description": "Select if you want AI Companion questions to start automatically."
+          },
+          "settings__language__interpretation__interpreters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "LanguageInterpreter",
+              "required": [
+                "email",
+                "languages"
+              ],
+              "properties": {
+                "email": {
+                  "type": "string",
+                  "title": "Email",
+                  "description": "Email address of the language interpreter."
+                },
+                "languages": {
+                  "type": "string",
+                  "title": "Languages",
+                  "description": "Languages the interpreter can translate. Format: 'source_language:target_language' (e.g., 'en:es' for English to Spanish)."
+                }
+              },
+              "description": "Language interpreter configuration."
+            },
+            "title": "Settings  Language  Interpretation  Interpreters",
+            "description": "Information about the meeting's language interpreters. Each interpreter must include email and languages fields.",
+            "human_parameter_description": "Provide details of the interpreters available for language assistance."
+          },
+          "settings__sign__language__interpretation__enable": {
+            "type": "boolean",
+            "title": "Settings  Sign  Language  Interpretation  Enable",
+            "description": "Whether to enable [sign language interpretation](https://support.zoom.us/hc/en-us/articles/9644962487309-Using-sign-language-interpretation-in-a-meeting-or-webinar) for the meeting. ",
+            "human_parameter_description": "Enable sign language interpretation for accessibility."
+          },
+          "settings__alternative__hosts__email__notification": {
+            "type": "boolean",
+            "title": "Settings  Alternative  Hosts  Email  Notification",
+            "default": true,
+            "description": "Whether to send email notifications to alternative hosts. This value defaults to `true`. ",
+            "human_parameter_description": "Choose whether to notify alternative hosts via email."
+          },
+          "settings__approved_denied_regions__approved__list": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Settings  Approved Denied Regions  Approved  List",
+            "description": "The list of approved countries or regions.",
+            "human_parameter_description": "List the countries allowed to join this meeting."
+          },
+          "settings__meeting__chat__auto__add__external__users": {
+            "type": "boolean",
+            "title": "Settings  Meeting  Chat  Auto  Add  External  Users",
+            "description": "Whether to enable the **Automatically add invited external users** setting. ",
+            "human_parameter_description": "Choose if invited external users should be automatically added to the chat."
+          },
+          "settings__sign__language__interpretation__interpreters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "SignLanguageInterpreter",
+              "required": [
+                "email",
+                "sign_language"
+              ],
+              "properties": {
+                "email": {
+                  "type": "string",
+                  "title": "Email",
+                  "description": "Email address of the sign language interpreter."
+                },
+                "sign_language": {
+                  "type": "string",
+                  "title": "Sign Language",
+                  "description": "Sign language the interpreter uses (e.g., 'American Sign Language', 'British Sign Language')."
+                }
+              },
+              "description": "Sign language interpreter configuration."
+            },
+            "title": "Settings  Sign  Language  Interpretation  Interpreters",
+            "description": "Information about the meeting's sign language interpreters. Each interpreter must include email and sign_language fields.",
+            "human_parameter_description": "Specify the sign language interpreters for the meeting."
+          },
+          "settings__approved__or__denied__countries__or__regions__enable": {
+            "type": "boolean",
+            "title": "Settings  Approved  Or  Denied  Countries  Or  Regions  Enable",
+            "description": "Whether to enable the [**Approve or block entry for users from specific countries/regions**](https://support.zoom.us/hc/en-us/articles/360060086231-Approve-or-block-entry-for-users-from-specific-countries-regions) setting. ",
+            "human_parameter_description": "Choose if you want to restrict entry based on countries."
+          },
+          "settings__approved__or__denied__countries__or__regions__method": {
+            "enum": [
+              "approve",
+              "deny"
+            ],
+            "type": "string",
+            "title": "MethodEnm",
+            "description": "Whether to allow or block users from specific countries or regions. * `approve` - Allow users from specific countries or regions to join the meeting. If you select this setting, include the approved countries or regions in the `approved_list` field.  * `deny` - Block users from specific countries or regions from joining the meeting. If you select this setting, include the blocked countries or regions in the `denied_list` field. ",
+            "human_parameter_description": "Choose to approve or block users based on their location."
+          }
+        },
+        "description": "Request schema for `CreateAMeeting`"
+      }
+    },
+    {
+      "slug": "ZOOM_DELETE_A_MEETING",
+      "name": "Delete a meeting",
+      "description": "Delete or cancel a scheduled Zoom meeting. Use occurrence_id to delete a specific occurrence of a recurring meeting. Supports notification options for hosts and registrants. Returns HTTP 204 on success. Rate limit: Light. Required scopes: meeting:write or meeting:write:admin.",
+      "version": "20260903_00",
+      "tags": [
+        "important",
+        "destructiveHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Meetings"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DeleteAMeetingRequest",
+        "required": [
+          "meeting_id"
+        ],
+        "properties": {
+          "meeting_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Meeting Id",
+            "description": "The meeting ID or meeting UUID to delete/cancel. When storing this value in your database, store it as a long format integer and not an integer. Meeting IDs can be more than 10 digits.",
+            "human_parameter_name": "Meeting ID",
+            "human_parameter_description": "Enter the meeting ID (numeric) or UUID of the meeting you want to delete or cancel."
+          },
+          "occurrence_id": {
+            "type": "string",
+            "title": "Occurrence Id",
+            "description": "The meeting occurrence ID to delete a specific occurrence of a recurring meeting. If provided, only that occurrence will be deleted. If not provided and the meeting is recurring, all occurrences will be deleted.",
+            "human_parameter_name": "Occurrence ID",
+            "human_parameter_description": "For recurring meetings, provide the specific occurrence ID to delete only that instance. Leave empty to delete all occurrences."
+          },
+          "schedule_for_reminder": {
+            "type": "boolean",
+            "title": "Schedule For Reminder",
+            "description": "Whether to send a notification to the host and alternative hosts about the meeting cancellation. Set to true to notify the meeting host and alternative hosts.",
+            "human_parameter_name": "Notify Host/Alt Hosts",
+            "human_parameter_description": "Choose whether to send an email notification to the host and alternative hosts about the cancellation."
+          },
+          "cancel_meeting_reminder": {
+            "type": "boolean",
+            "title": "Cancel Meeting Reminder",
+            "description": "Whether to send a cancellation notification to meeting registrants. Set to true to notify all registrants that the meeting has been cancelled.",
+            "human_parameter_name": "Notify Registrants",
+            "human_parameter_description": "Choose whether to send a cancellation email to all registered participants."
+          }
+        },
+        "description": "Request schema for `DeleteAMeeting`"
+      }
+    },
+    {
+      "slug": "ZOOM_DELETE_RECORDING_FILE",
+      "name": "Delete recording file",
+      "description": "Deletes a specific cloud recording file from a meeting or webinar. This action is irreversible when using the 'delete' action - the file cannot be recovered once permanently removed. Use this action when you need to remove an individual recording file (such as a specific video, audio, transcript, or chat file) rather than all recordings for a meeting. Requires the account to have Cloud Recording enabled. Rate limit: Light.",
+      "version": "20260903_00",
+      "tags": [
+        "important",
+        "destructiveHint",
+        "idempotentHint",
+        "openWorldHint",
+        "Cloud Recording"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "DeleteRecordingFileRequest",
+        "required": [
+          "meetingId",
+          "recordingId"
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "trash",
+              "delete"
+            ],
+            "type": "string",
+            "title": "Action",
+            "default": "trash",
+            "examples": [
+              "trash"
+            ],
+            "description": "The delete action to perform: 'trash' (default) moves the recording file to trash where it can be recovered; 'delete' permanently removes the recording file and cannot be undone."
+          },
+          "meetingId": {
+            "type": "string",
+            "title": "Meeting Id",
+            "examples": [
+              "85746065"
+            ],
+            "description": "The meeting ID or meeting UUID that contains the recording file you want to delete. If a numeric meeting ID is provided, the recording from the latest meeting instance is targeted. Also accepts webinar ID or UUID."
+          },
+          "recordingId": {
+            "type": "string",
+            "title": "Recording Id",
+            "examples": [
+              "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+            ],
+            "description": "The unique identifier of the specific recording file to delete. This ID can be obtained from the Get Meeting Recordings endpoint."
+          }
+        },
+        "description": "Request schema for `DeleteRecordingFile`"
+      }
+    },
+    {
+      "slug": "ZOOM_GET_A_MEETING",
+      "name": "Get a meeting",
+      "description": "Retrieves detailed information about a Zoom meeting by its ID. Returns comprehensive meeting data including topic, schedule, URLs, passwords, settings, and for recurring meetings, occurrence details and recurrence patterns. For recurring meetings, defaults to the latest occurrence unless occurrence_id or show_previous_occurrences is specified. Returned start_time must be interpreted using the meeting's timezone field. Requires meeting:read scope. Rate limit: LIGHT.",
+      "version": "20260903_00",
+      "tags": [
+        "Meetings",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAMeetingRequest",
+        "required": [
+          "meeting_id"
+        ],
+        "properties": {
+          "meeting_id": {
+            "type": "string",
+            "title": "Meeting Id",
+            "description": "The meeting's ID.   When storing this value in your database, store it as a long format integer and **not** an integer. Meeting IDs can be more than 10 digits.  UUID-style meeting IDs containing a leading '/' or '//' must be double-URL-encoded before use.",
+            "human_parameter_name": "Meeting ID",
+            "human_parameter_description": "The unique ID of the meeting you want to view. Copy it from the Zoom invite or your meeting list; use the full number exactly as shown."
+          },
+          "occurrence_id": {
+            "type": "string",
+            "title": "Occurrence Id",
+            "description": "Meeting occurrence ID. Provide this field to view meeting details of a particular occurrence of the [recurring meeting](https://support.zoom.us/hc/en-us/articles/214973206-Scheduling-Recurring-Meetings). ",
+            "human_parameter_name": "Occurrence ID",
+            "human_parameter_description": "If the meeting is recurring, provide the specific occurrence ID to view details for that one instance (date and time) of the series."
+          },
+          "show_previous_occurrences": {
+            "type": "boolean",
+            "title": "Show Previous Occurrences",
+            "description": "Set this field's value to `true` to view meeting details of all previous occurrences of a [recurring meeting](https://support.zoom.us/hc/en-us/articles/214973206-Scheduling-Recurring-Meetings).  ",
+            "human_parameter_name": "Show Previous Occurrences",
+            "human_parameter_description": "Turn this on to include details for all past instances of a recurring meeting. Leave it off if you only need the upcoming meeting or a specific occurrence."
+          }
+        },
+        "description": "Request schema for `GetAMeeting`"
+      }
+    },
+    {
+      "slug": "ZOOM_GET_A_MEETING_SUMMARY",
+      "name": "Get a meeting summary (Paid accounts only)",
+      "description": "IMPORTANT: This action requires a PAID Zoom account (Pro, Business, or Enterprise plan). Free Zoom accounts cannot use this feature and will receive a 400 error. Additionally requires: - AI Companion feature enabled in account settings - Meeting must not be end-to-end encrypted (E2EE) - Meeting summary must be enabled and generated for the meeting Rate limit: LIGHT. Response fields such as `summary_details` and `next_steps` are optional and may be absent or empty arrays.",
+      "version": "20260903_00",
+      "tags": [
+        "Meetings",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAMeetingSummaryRequest",
+        "required": [
+          "meetingId"
+        ],
+        "properties": {
+          "meetingId": {
+            "type": "string",
+            "title": "Meeting Id",
+            "description": "The meeting’s past instance UUID (e.g. ‘aDYlohsHRtCd4ii1uC2+hA==’). This endpoint only accepts instance UUIDs from list_past_meeting_instances or past_meetings — the definition UUID from list_meetings will NOT work.",
+            "human_parameter_name": "Meeting Instance UUID",
+            "human_parameter_description": "The past meeting instance UUID. Get this from list_past_meeting_instances (not list_meetings). The definition UUID from list_meetings will return ‘Meeting does not exist’."
+          }
+        },
+        "description": "Request schema for `GetAMeetingSummary`"
+      }
+    },
+    {
+      "slug": "ZOOM_GET_A_WEBINAR",
+      "name": "Get a webinar",
+      "description": "Access Zoom Webinar details requires Pro or higher plan and Webinar add-on. Scopes include `webinar:read:admin` and `webinar:read`. Granular scopes and a 'LIGHT' rate limit also apply.",
+      "version": "20260903_00",
+      "tags": [
+        "Webinars",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAWebinarRequest",
+        "required": [
+          "webinar_id"
+        ],
+        "properties": {
+          "webinar_id": {
+            "type": "string",
+            "title": "Webinar Id",
+            "description": "The webinar's ID or universally unique ID (UUID).",
+            "human_parameter_name": "Webinar ID",
+            "human_parameter_description": "The unique identifier of the webinar you want to retrieve. You can use the numeric Webinar ID or the webinar's UUID from Zoom."
+          },
+          "occurrence_id": {
+            "type": "string",
+            "title": "Occurrence Id",
+            "description": "Unique identifier for an occurrence of a recurring webinar. [Recurring webinars](https://support.zoom.us/hc/en-us/articles/216354763-How-to-Schedule-A-Recurring-Webinar) can have a maximum of 50 occurrences. When you create a recurring Webinar using [**Create a webinar**](https://developers.zoom.us) API, you can retrieve the Occurrence ID from the response of the API call. ",
+            "human_parameter_name": "Occurrence ID",
+            "human_parameter_description": "If the webinar is recurring, provide the specific occurrence ID to get details for that instance. Leave this blank if you don't need a specific occurrence."
+          },
+          "show_previous_occurrences": {
+            "type": "boolean",
+            "title": "Show Previous Occurrences",
+            "description": "Set the value of this field to `true` if you would like to view Webinar details of all previous occurrences of a recurring Webinar. ",
+            "human_parameter_name": "Show Previous Occurrences",
+            "human_parameter_description": "Turn this on to include details from past occurrences of a recurring webinar. Leave it off to see only the current or upcoming occurrence."
+          }
+        },
+        "description": "Request schema for `GetAWebinar`"
+      }
+    },
+    {
+      "slug": "ZOOM_GET_MEETING_RECORDINGS",
+      "name": "Get meeting recordings",
+      "description": "To download meeting recordings, use `download_url`. Include OAuth token in the header for passcode-protected ones. Supports `recording:read` and `phone_recording:read:admin` scopes, with a `LIGHT` rate limit. Requires a paid Zoom plan with cloud recording enabled; missing entitlements return empty results or entitlement errors, not system failures. Error code 3301 means no cloud recording exists for the meeting — an expected empty-result case.",
+      "version": "20260903_00",
+      "tags": [
+        "Cloud Recording",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetMeetingRecordingsRequest",
+        "required": [
+          "meeting_id"
+        ],
+        "properties": {
+          "ttl": {
+            "type": "integer",
+            "title": "Ttl",
+            "description": "The `download_access_token` Time to Live (TTL) value. This parameter is only valid if the `include_fields` query parameter contains the `download_access_token` value. ",
+            "human_parameter_name": "TTL",
+            "human_parameter_description": "How long the download access token should stay valid, in seconds. Only set this when you've included 'download_access_token' above."
+          },
+          "meeting_id": {
+            "type": "string",
+            "title": "Meeting Id",
+            "description": "To get a meeting's cloud recordings, provide the meeting ID or UUID. If providing the meeting ID instead of UUID, the response will be for the latest meeting instance. To get a webinar's cloud recordings, provide the webinar's ID or UUID. If providing the webinar ID instead of UUID, the response will be for the latest webinar instance.",
+            "human_parameter_name": "Meeting ID",
+            "human_parameter_description": "The meeting or webinar ID/UUID whose cloud recordings you want to retrieve. If you use a regular meeting ID instead of a UUID, we'll return the latest occurrence."
+          },
+          "include_fields": {
+            "type": "string",
+            "title": "Include Fields",
+            "description": "Set to 'download_access_token' to include a JWT token for downloading the meeting's recordings. This token can be appended to download URLs.",
+            "human_parameter_name": "Include Fields",
+            "human_parameter_description": "Optional extras to include with the results. Set to 'download_access_token' if you plan to download the recording files directly."
+          }
+        },
+        "description": "Request schema for `GetMeetingRecordings`"
+      }
+    },
+    {
+      "slug": "ZOOM_GET_PAST_MEETING_PARTICIPANTS",
+      "name": "Get past meeting participants",
+      "description": "Retrieves the list of participants who attended a past (ended) Zoom meeting. Requires a paid Zoom account (Pro or higher). Meeting must have ended with at least one participant (excluding solo meetings). Use meeting ID for the latest instance, or instance UUID for a specific occurrence.",
+      "version": "20260903_00",
+      "tags": [
+        "Meetings",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetPastMeetingParticipantsRequest",
+        "required": [
+          "meeting_id"
+        ],
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 30,
+            "description": "The number of records returned within a single API call.",
+            "human_parameter_name": "Page Size",
+            "human_parameter_description": "How many participants to return in one page of results. Larger numbers show more at once; smaller numbers make pages load faster."
+          },
+          "meeting_id": {
+            "type": "string",
+            "title": "Meeting Id",
+            "description": "The meeting's numeric ID or instance UUID. If you provide a numeric meeting ID, the API returns participants for the latest meeting instance. If you provide a UUID, it must be an *instance* UUID (from list_past_meeting_instances), not the series UUID from list_meetings.",
+            "human_parameter_name": "Meeting ID",
+            "human_parameter_description": "The numeric meeting ID or instance UUID. For recurring meetings, use list_past_meeting_instances to get the instance UUID for a specific occurrence. The series UUID from list_meetings will not work."
+          },
+          "next_page_token": {
+            "type": "string",
+            "title": "Next Page Token",
+            "description": "Use the next page token to paginate through large result sets. A next page token is returned whenever the set of available results exceeds the current page size. This token's expiration period is 15 minutes.  Exhaust all pages by repeatedly calling with the returned token until it is absent; stopping early silently omits remaining participants.",
+            "human_parameter_name": "Next Page Token",
+            "human_parameter_description": "Use the token from a previous call to get the next page of participants. Leave this blank to start with the first page."
+          }
+        },
+        "description": "Request schema for `GetPastMeetingParticipants`"
+      }
+    },
+    {
+      "slug": "ZOOM_GET_USER",
+      "name": "Get a user",
+      "description": "Retrieves detailed information about a specific Zoom user by ID, email, or 'me'. Returns user type, role, license info, and account metadata. Use when you need to check user type/license or retrieve user profile details.",
+      "version": "20260903_00",
+      "tags": [
+        "Users",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetUserRequest",
+        "required": [
+          "user_id"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "description": "The user ID or email address of the user. For user-level apps, pass the `me` value to fetch the authenticated user.",
+            "human_parameter_name": "User ID",
+            "human_parameter_description": "The Zoom user ID, email address, or 'me' for the authenticated user. Use this to specify which user's information you want to retrieve."
+          },
+          "login_type": {
+            "type": "integer",
+            "title": "Login Type",
+            "description": "The user's login method: `0` - Facebook OAuth, `1` - Google OAuth, `24` - Apple OAuth, `27` - Microsoft OAuth, `97` - Mobile device, `98` - RingCentral OAuth, `99` - API user, `100` - Zoom Work email, `101` - Single Sign-On (SSO). The following login methods are only available in China: `11` - Phone number, `21` - WeChat, `23` - Alipay.",
+            "human_parameter_name": "Login Type",
+            "human_parameter_description": "Filter by the user's login method (e.g., Google OAuth, SSO, API user). Leave empty if you don't need to filter by login type."
+          },
+          "encrypted_email": {
+            "type": "boolean",
+            "title": "Encrypted Email",
+            "description": "Whether the email address in the response should be encrypted. Set to `true` to encrypt the email in the response.",
+            "human_parameter_name": "Encrypted Email",
+            "human_parameter_description": "Set to true if you want the email address in the response to be encrypted for privacy."
+          },
+          "search_by_unique_id": {
+            "type": "boolean",
+            "title": "Search By Unique Id",
+            "description": "Whether to search for the user by their unique ID (UID). Set to `true` to search by the user's unique ID instead of their user ID.",
+            "human_parameter_name": "Search By Unique ID",
+            "human_parameter_description": "Set to true to search for the user by their unique ID instead of regular user ID."
+          }
+        },
+        "description": "Request schema for `GetUser`"
+      }
+    },
+    {
+      "slug": "ZOOM_LIST_ALL_RECORDINGS",
+      "name": "List all recordings",
+      "description": "This text details how to list Zoom cloud recordings for a user, notably by using \"me\" for user-level apps and requiring an OAuth token for access. It requires a Pro plan, Cloud Recording enabled, and has a MEDIUM rate limit.",
+      "version": "20260903_00",
+      "tags": [
+        "Cloud Recording",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListAllRecordingsRequest",
+        "required": [
+          "user_id"
+        ],
+        "properties": {
+          "mc": {
+            "type": "string",
+            "title": "Mc",
+            "default": "false",
+            "description": "The query metadata of the recording if using an on-premise meeting connector for the meeting. ",
+            "human_parameter_name": "Metadata Query",
+            "human_parameter_description": "Set to 'true' to include metadata from an on‑premise meeting connector; otherwise leave as 'false'. Most users can ignore this."
+          },
+          "to": {
+            "type": "string",
+            "title": "To",
+            "description": "The end date in \"yyyy-mm-dd\" UTC format. Maximum date range from start is 1 month. If no value is provided, defaults to the day after the 'from' date.",
+            "human_parameter_name": "End Date",
+            "human_parameter_description": "The latest date to include (UTC, yyyy-mm-dd). Must be within 1 month of start date."
+          },
+          "from": {
+            "type": "string",
+            "title": "From",
+            "description": "The start date in \"yyyy-mm-dd\" UTC format. Maximum date range is 1 month - if a larger range is requested, the API will adjust the 'from' date to be 1 month before the 'to' date. If no value is provided, defaults to current date. Note: trash files cannot be filtered by date range.",
+            "human_parameter_name": "Start Date",
+            "human_parameter_description": "The earliest date to include (UTC, yyyy-mm-dd). Maximum range is 1 month from the end date."
+          },
+          "trash": {
+            "type": "boolean",
+            "title": "Trash",
+            "default": false,
+            "description": "The query trash. * `true` - List recordings from trash.   * `false` - Do not list recordings from the trash.   The default value is `false`. If you set it to `true`, you can use the `trash_type` property to indicate the type of Cloud recording that you need to retrieve.  ",
+            "human_parameter_name": "Include Trash",
+            "human_parameter_description": "Choose whether to include recordings that are in the trash. Turn this on if you’re looking for deleted recordings."
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "description": "The user's ID or email address. For user-level apps, pass the `me` value. Using another user's ID instead of `me` requires admin-level permissions.",
+            "human_parameter_name": "User ID",
+            "human_parameter_description": "The email address or ID of the user whose recordings you want to view. Use 'me' to access your own recordings."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 30,
+            "description": "The number of records returned within a single API call.",
+            "human_parameter_name": "Page Size",
+            "human_parameter_description": "How many recordings to return per page. Larger numbers show more results at once; smaller numbers load faster."
+          },
+          "meeting_id": {
+            "type": "string",
+            "title": "Meeting Id",
+            "description": "The meeting ID as a string (e.g., \"1234567890\"). Zoom meeting IDs can exceed 10 digits and must be represented as strings to avoid JavaScript Number precision issues (IDs may exceed 2^53).",
+            "human_parameter_name": "Meeting ID",
+            "human_parameter_description": "Provide a specific meeting ID to only return recordings from that meeting. Leave blank to see recordings from all meetings."
+          },
+          "trash_type": {
+            "type": "string",
+            "title": "Trash Type",
+            "default": "meeting_recordings",
+            "description": "The type of cloud recording to retrieve from the trash.     *   `meeting_recordings`: List all meeting recordings from the trash.    *  `recording_file`: List all individual recording files from the trash.  ",
+            "human_parameter_name": "Trash Type",
+            "human_parameter_description": "When including trash, choose whether to list whole meeting recordings or individual recording files. Use 'meeting_recordings' for full meetings or 'recording_file' for individual files."
+          },
+          "next_page_token": {
+            "type": "string",
+            "title": "Next Page Token",
+            "description": "The next page token paginates through a large set of results. A next page token returns whenever the set of available results exceeds the current page size. The expiration period for this token is 15 minutes. Loop calls until `next_page_token` is empty to retrieve all records; results are silently truncated at `page_size` per call.",
+            "human_parameter_name": "Next Page Token",
+            "human_parameter_description": "If you’re continuing from a previous list, paste the token you received to fetch the next page of recordings."
+          }
+        },
+        "description": "Request schema for `ListAllRecordings`"
+      }
+    },
+    {
+      "slug": "ZOOM_LIST_MEETING_SUMMARY_TEMPLATES",
+      "name": "List meeting summary templates",
+      "description": "Tool to retrieve a list of meeting summary templates for a specified user. Use when you need to view available meeting summary templates or select a template for meeting summaries.",
+      "version": "20260903_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Meetings"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListMeetingSummaryTemplatesRequest",
+        "required": [
+          "userId"
+        ],
+        "properties": {
+          "userId": {
+            "type": "string",
+            "title": "User Id",
+            "description": "The user ID or email address of the user. Use 'me' for the authenticated user.",
+            "human_parameter_name": "User ID",
+            "human_parameter_description": "The Zoom user ID, email address, or 'me' for the authenticated user. Use this to specify which user's meeting summary templates you want to retrieve."
+          }
+        },
+        "description": "Request schema for `ListMeetingSummaryTemplates`"
+      }
+    },
+    {
+      "slug": "ZOOM_LIST_MEETINGS",
+      "name": "List meetings",
+      "description": "This Zoom API lists a user's scheduled meetings using the `me` value for user-level apps, excluding instant meetings and only showing unexpired ones. Requires specific scopes and has a `MEDIUM` rate limit. No server-side filtering by topic, agenda, or text fields; all such filtering must be done client-side. `meetingId` values exceed 32-bit integer range; treat as full-length numeric or string identifiers.",
+      "version": "20260903_00",
+      "tags": [
+        "Meetings",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListMeetingsRequest",
+        "required": [
+          "user_id"
+        ],
+        "properties": {
+          "to": {
+            "type": "string",
+            "title": "To",
+            "description": "The end date.",
+            "human_parameter_name": "End Date",
+            "human_parameter_description": "The latest meeting date to include in your results. Use with Start Date to filter by a date range."
+          },
+          "from": {
+            "type": "string",
+            "title": "From",
+            "description": "The start date.",
+            "human_parameter_name": "Start Date",
+            "human_parameter_description": "The earliest meeting date to include in your results. Set this to limit the list to a specific date range."
+          },
+          "type": {
+            "enum": [
+              "scheduled",
+              "live",
+              "upcoming",
+              "upcoming_meetings",
+              "previous_meetings"
+            ],
+            "type": "string",
+            "title": "Type",
+            "default": "scheduled",
+            "description": "The type of meeting.  * `scheduled` - All valid previous (unexpired) meetings, live meetings, and upcoming scheduled meetings.  * `live` - All the ongoing meetings.  * `upcoming` - All upcoming meetings, including live meetings.  * `upcoming_meetings` - All upcoming meetings, including live meetings.  * `previous_meetings` - All the previous meetings. ",
+            "human_parameter_name": "Meeting Type",
+            "human_parameter_description": "Choose which kinds of meetings to list (scheduled, live, upcoming, or previous). Use this to narrow the results to what you need."
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "description": "The user's user ID or email address. For user-level apps, pass the `me` value. ",
+            "human_parameter_name": "User ID",
+            "human_parameter_description": "The email address or Zoom user ID of the person whose meetings you want to list. Use 'me' to view your own meetings."
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone",
+            "description": "The timezone to assign to the `from` and `to` value. For a list of supported timezones and their formats, see our [timezone list](https://developers.zoom.us/docs/api/rest/other-references/abbreviation-lists/#timezones). ",
+            "human_parameter_name": "Timezone",
+            "human_parameter_description": "The time zone used to interpret the start and end dates. Choose the time zone that matches where the meetings are scheduled."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 30,
+            "description": "The number of records returned within a single API call.",
+            "human_parameter_name": "Page Size",
+            "human_parameter_description": "How many meetings to return per page. Larger numbers show more at once; smaller numbers may load faster."
+          },
+          "page_number": {
+            "type": "integer",
+            "title": "Page Number",
+            "description": "The page number of the current page in the returned records.",
+            "human_parameter_name": "Page Number",
+            "human_parameter_description": "Which page of results you want to see. Start at 1 and increase to move through pages."
+          },
+          "next_page_token": {
+            "type": "string",
+            "title": "Next Page Token",
+            "description": "Use the next page token to paginate through large result sets. A next page token is returned whenever the set of available results exceeds the current page size. This token's expiration period is 15 minutes. Iterate until `next_page_token` is empty/null to avoid missing meetings. Do not introduce long delays between paginated requests as the token expires after 15 minutes.",
+            "human_parameter_name": "Next Page Token",
+            "human_parameter_description": "Paste the token from the previous response to get the next page of results. Leave empty to start from the first page."
+          }
+        },
+        "description": "Request schema for `ListMeetings`"
+      }
+    },
+    {
+      "slug": "ZOOM_LIST_PAST_MEETING_INSTANCES",
+      "name": "List past meeting instances",
+      "description": "Tool to retrieve all UUIDs for past instances of a given meeting. Use when you need to get the list of all occurrences (instances) of a recurring meeting that have already ended. Each instance has a unique UUID that can be used to query specific details about that occurrence.",
+      "version": "20260903_00",
+      "tags": [
+        "Meetings",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListPastMeetingInstancesRequest",
+        "required": [
+          "meetingId"
+        ],
+        "properties": {
+          "meetingId": {
+            "type": "string",
+            "title": "Meeting Id",
+            "description": "The meeting's numeric ID (e.g. '83767991819'). This endpoint only accepts numeric meeting IDs, not UUIDs. Use the numeric meeting ID to retrieve the list of all past instance UUIDs for a recurring meeting.",
+            "human_parameter_name": "Meeting ID",
+            "human_parameter_description": "The numeric meeting ID for which you want to retrieve all past instances. UUIDs are not supported by this endpoint — use the numeric ID from your Zoom dashboard or list_meetings."
+          }
+        },
+        "description": "Request schema for `ListPastMeetingInstances`"
+      }
+    },
+    {
+      "slug": "ZOOM_LIST_WEBINAR_PARTICIPANTS",
+      "name": "List webinar participants",
+      "description": "Get a list of past webinar participants with a Pro plan or above plus an add-on. Requires specific scopes and has a medium rate limit.",
+      "version": "20260903_00",
+      "tags": [
+        "Webinars",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListWebinarParticipantsRequest",
+        "required": [
+          "webinar_id"
+        ],
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 30,
+            "description": "The number of records returned within a single API call.",
+            "human_parameter_name": "Page Size",
+            "human_parameter_description": "How many participants to return per page of results. Increase this to see more at once; decrease it for smaller, faster responses."
+          },
+          "webinar_id": {
+            "type": "string",
+            "title": "Webinar Id",
+            "description": "The webinar's ID or universally unique ID (UUID). If you provide a webinar ID, the API returns a response for the latest webinar instance.",
+            "human_parameter_name": "Webinar ID",
+            "human_parameter_description": "The unique ID of the webinar whose participants you want to view. Copy the webinar ID or UUID from Zoom to retrieve the attendee list for that session."
+          },
+          "next_page_token": {
+            "type": "string",
+            "title": "Next Page Token",
+            "description": "Use the next page token to paginate through large result sets. A next page token is returned whenever the set of available results exceeds the current page size. This token's expiration period is 15 minutes. ",
+            "human_parameter_name": "Next Page Token",
+            "human_parameter_description": "Use this token from a previous response to continue listing participants. It fetches the next page of results where the last request left off."
+          }
+        },
+        "description": "Request schema for `ListWebinarParticipants`"
+      }
+    },
+    {
+      "slug": "ZOOM_LIST_WEBINAR_REGISTRANTS",
+      "name": "List webinar registrants",
+      "description": "Retrieves the list of registrants for a webinar with registration enabled. This endpoint returns registrants (people who registered for the webinar), not participants (people who attended). Use this action when you need to view registrant details for CRM sync, reporting, or managing approvals for registration-based webinars. Supports filtering by occurrence, status (approved/pending/denied), and tracking source for targeted queries.",
+      "version": "20260903_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "Webinars"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListWebinarRegistrantsRequest",
+        "required": [
+          "webinar_id"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "approved",
+              "pending",
+              "denied"
+            ],
+            "type": "string",
+            "title": "RegistrantStatus",
+            "examples": [
+              "approved"
+            ],
+            "description": "Status filter for webinar registrants"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 25,
+            "maximum": 300,
+            "minimum": 1,
+            "examples": [
+              25
+            ],
+            "description": "The number of records returned within a single API call. Maximum is 300."
+          },
+          "webinar_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Webinar Id",
+            "examples": [
+              "99887766554"
+            ],
+            "description": "The webinar's ID or universally unique ID (UUID). When storing this value in your database, store it as a long format integer."
+          },
+          "occurrence_id": {
+            "type": "string",
+            "title": "Occurrence Id",
+            "examples": [
+              "1648194360000"
+            ],
+            "description": "The webinar occurrence ID for which to list registrants. Use this to filter registrants for a specific occurrence of a recurring webinar."
+          },
+          "next_page_token": {
+            "type": "string",
+            "title": "Next Page Token",
+            "examples": [
+              "IAfJX3jsOLW7w3dokmFl84zOa0MAVGyMEB2"
+            ],
+            "description": "Use the next page token to paginate through large result sets. A next page token is returned whenever the set of available results exceeds the current page size. This token's expiration period is 15 minutes."
+          },
+          "tracking_source_id": {
+            "type": "string",
+            "title": "Tracking Source Id",
+            "examples": [
+              "track_12345"
+            ],
+            "description": "Filter registrants by tracking source ID. Use this to get registrants attributed to a specific campaign or source."
+          }
+        },
+        "description": "Request schema for `ListWebinarRegistrants`"
+      }
+    },
+    {
+      "slug": "ZOOM_LIST_WEBINARS",
+      "name": "List webinars",
+      "description": "The API lists all scheduled webinars for Zoom users with a webinar plan, using `me` for user-level apps. It only shows unexpired webinars for hosts broadcasting to up to 10,000 attendees. Requires Pro plan upwards and specific scopes. Rate limit: MEDIUM.",
+      "version": "20260903_00",
+      "tags": [
+        "Webinars",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListWebinarsRequest",
+        "required": [
+          "user_id"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "scheduled",
+              "upcoming"
+            ],
+            "type": "string",
+            "title": "Type",
+            "default": "scheduled",
+            "description": "The type of webinar.  * `scheduled` - All valid previous (unexpired) webinars, live webinars, and upcoming scheduled webinars.  * `upcoming` - All upcoming webinars, including live webinars. ",
+            "human_parameter_name": "Webinar Type",
+            "human_parameter_description": "Choose which webinars to show—either scheduled (including past unexpired, live, and upcoming) or only upcoming and live. This helps you focus on the timeframe you care about."
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "description": "The user's user ID or email address. For user-level apps, pass the `me` value. ",
+            "human_parameter_name": "User ID",
+            "human_parameter_description": "The email address or ID of the Zoom user whose webinars you want to list. Use 'me' to list your own webinars."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 30,
+            "description": "The number of records returned within a single API call.",
+            "human_parameter_name": "Page Size",
+            "human_parameter_description": "How many webinars to return per page. Increase this to see more results at once, or lower it for smaller pages."
+          },
+          "page_number": {
+            "type": "integer",
+            "title": "Page Number",
+            "description": "**Deprecated** We will no longer support this field in a future release. Instead, use the `next_page_token` for pagination. ",
+            "human_parameter_name": "Page Number",
+            "human_parameter_description": "Which page of results you want to view, starting at 1. This option is being phased out—use next_page_token when available."
+          },
+          "next_page_token": {
+            "type": "string",
+            "title": "Next Page Token",
+            "description": "Token for fetching the next page of results. Received from the previous response's next_page_token field.",
+            "human_parameter_name": "Next Page Token",
+            "human_parameter_description": "Use this token to fetch the next page of results. Get it from the previous response. Leave empty for the first page."
+          }
+        },
+        "description": "Request schema for `ListWebinars`"
+      }
+    },
+    {
+      "slug": "ZOOM_SEARCH_COMPANY_CONTACTS",
+      "name": "Search company contacts",
+      "description": "Tool to search company contacts in Zoom by first name, last name, or email. Use when you need to find specific contacts within the organization. Supports pagination for large result sets and optionally includes presence status.",
+      "version": "20260903_00",
+      "tags": [
+        "Contacts",
+        "important",
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "SearchCompanyContactsRequest",
+        "required": [
+          "search_key"
+        ],
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 30,
+            "maximum": 50,
+            "minimum": 1,
+            "description": "The number of records to be returned with a single API call. Default value is 30, maximum is 50."
+          },
+          "search_key": {
+            "type": "string",
+            "title": "Search Key",
+            "examples": [
+              "john",
+              "doe@example.com"
+            ],
+            "description": "Provide the keyword - either first name, last name or email of the contact whom you have to search for."
+          },
+          "next_page_token": {
+            "type": "string",
+            "title": "Next Page Token",
+            "description": "The next page token is used to paginate through large result sets. A next page token will be returned whenever the set of available results exceeds the current page size. The expiration period for this token is 15 minutes."
+          },
+          "query_presence_status": {
+            "type": "boolean",
+            "title": "Query Presence Status",
+            "description": "Set `query_presence_status` to `true` in order to include the presence status of a contact in the response."
+          }
+        },
+        "description": "Request schema for `SearchCompanyContacts`"
+      }
+    },
+    {
+      "slug": "ZOOM_UPDATE_A_MEETING",
+      "name": "Update a meeting",
+      "description": "To update a meeting via API, ensure `start_time` is future-dated; `recurrence` is needed. Limit: 100 requests/day, 100 updates/meeting in 24 hrs. Requires `meeting:write` and `meeting:write:admin` scopes, with a `LIGHT` rate limit.",
+      "version": "20260903_00",
+      "tags": [
+        "Meetings",
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateAMeetingRequest",
+        "required": [
+          "meeting_id"
+        ],
+        "properties": {
+          "type": {
+            "type": "integer",
+            "title": "Type",
+            "default": 2,
+            "description": "Meeting types.  `1` - Instant meeting.    `2` - Scheduled meeting.    `3` - Recurring meeting with no fixed time.    `8` - Recurring meeting with a fixed time. ",
+            "human_parameter_description": "Select the type of meeting you are scheduling."
+          },
+          "topic": {
+            "type": "string",
+            "title": "Topic",
+            "description": "Meeting topic.",
+            "human_parameter_description": "Enter a clear title for the meeting."
+          },
+          "agenda": {
+            "type": "string",
+            "title": "Agenda",
+            "description": "Meeting description.",
+            "human_parameter_description": "Provide a brief description of the meeting agenda."
+          },
+          "duration": {
+            "type": "integer",
+            "title": "Duration",
+            "description": "Meeting duration in minutes. Used for scheduled meetings only.",
+            "human_parameter_description": "Specify how long the meeting will last in minutes."
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "description": "Meeting passcode. Passcodes may only contain these characters [a-z A-Z 0-9 @ - _ *] and can have a maximum of 10 characters. **Note** If the account owner or the admin has configured [minimum passcode requirement settings](https://support.zoom.us/hc/en-us/articles/360033559832-Meeting-and-webinar-passwords#h_a427384b-e383-4f80-864d-794bf0a37604), the passcode value provided here must meet those requirements.         If the requirements are enabled, view those requirements by calling either the [**Get user settings**](https://developers.zoom.us) API or the [**Get account settings**](https://developers.zoom.us) API. ",
+            "human_parameter_description": "Enter a passcode for the meeting that participants will need to join."
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone",
+            "description": "The timezone to assign to the `start_time` value. Only use this field ifor scheduled or recurring meetings with a fixed time. For a list of supported timezones and their formats, see our [timezone list](https://developers.zoom.us/docs/api/rest/other-references/abbreviation-lists/#timezones). ",
+            "human_parameter_description": "Specify the timezone in which the meeting will take place."
+          },
+          "meeting_id": {
+            "type": "string",
+            "title": "Meeting Id",
+            "description": "The meeting's ID as a string (e.g., \"1234567890\"). Zoom meeting IDs can be greater than 10 digits and must be represented as strings to avoid JavaScript Number precision issues (IDs may exceed 2^53).",
+            "human_parameter_description": "Provide the unique ID of the meeting you want to update."
+          },
+          "start_time": {
+            "type": "string",
+            "title": "Start Time",
+            "format": "date-time",
+            "description": "Meeting start time. When using a format like `yyyy-MM-dd\"T\"HH:mm:ss\"Z\"`, always use GMT time. When using a format like `yyyy-MM-dd\"T\"HH:mm:ss`, use local time and specify the time zone. Only used for scheduled meetings and recurring meetings with a fixed time. ",
+            "human_parameter_description": "Indicate the exact start time of the meeting."
+          },
+          "template_id": {
+            "type": "string",
+            "title": "Template Id",
+            "description": "Unique identifier of the meeting template.  [Schedule the meeting from a meeting template](https://support.zoom.us/hc/en-us/articles/360036559151-Meeting-templates#h_86f06cff-0852-4998-81c5-c83663c176fb). Retrieve this field's value by calling the [List meeting templates](https://developers.zoom.us/docs/api/rest/reference/zoom-api/methods/#operation/listMeetingTemplates) API. ",
+            "human_parameter_description": "Provide the ID of the meeting template to be used."
+          },
+          "pre_schedule": {
+            "type": "boolean",
+            "title": "Pre Schedule",
+            "default": false,
+            "description": "Whether to create a prescheduled meeting through the [GSuite app](https://support.zoom.us/hc/en-us/articles/360020187492-Zoom-for-GSuite-add-on). This **only** supports the meeting `type` value of `2` - scheduled meetings- and `3` - recurring meetings with no fixed time.  * `true` - Create a prescheduled meeting.  * `false` - Create a regular meeting. ",
+            "human_parameter_description": "Choose whether to create a meeting that can be scheduled in advance."
+          },
+          "schedule_for": {
+            "type": "string",
+            "title": "Schedule For",
+            "description": "The email address or `userId` of the user to schedule a meeting for.",
+            "human_parameter_description": "Provide the email or ID of the user for whom the meeting is being scheduled."
+          },
+          "occurrence_id": {
+            "type": "string",
+            "title": "Occurrence Id",
+            "description": "Meeting occurrence ID. Support change of agenda, `start_time`, duration, or settings {`host_video`, `participant_video`, `join_before_host`, `mute_upon_entry`, `waiting_room`, `watermark`, `auto_recording`}.  Omitting this field applies changes to the entire recurring series.",
+            "human_parameter_description": "Specify the occurrence of the meeting you want to modify if it's part of a recurring set."
+          },
+          "settings__audio": {
+            "enum": [
+              "both",
+              "telephony",
+              "voip",
+              "thirdParty"
+            ],
+            "type": "string",
+            "title": "Settings  Audio",
+            "default": "both",
+            "description": "Determine how participants can join the audio portion of the meeting.    `both` - Both Telephony and VoIP.    `telephony` - Telephony only.    `voip` - VoIP only.    `thirdParty` - Third party audio conference. ",
+            "human_parameter_description": "Select how participants can connect to the meeting audio."
+          },
+          "tracking_fields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "title": "Tracking Fields",
+            "description": "Tracking fields.",
+            "human_parameter_description": "Include any tracking information related to the meeting."
+          },
+          "recurrence__type": {
+            "type": "integer",
+            "title": "Recurrence  Type",
+            "default": 1,
+            "description": "Recurrence meeting types. **Required when meeting type is 3 (recurring with no fixed time) or 8 (recurring with fixed time).**   `1` - Daily.    `2` - Weekly.    `3` - Monthly. ",
+            "human_parameter_description": "Select the type of recurrence for the meeting, such as daily or weekly."
+          },
+          "settings__use__pmi": {
+            "type": "boolean",
+            "title": "Settings  Use  Pmi",
+            "default": false,
+            "description": "Use a [personal meeting ID (PMI)](https://developers.zoom.us/docs/api/rest/using-zoom-apis/#understanding-personal-meeting-id-pmi). Only used for scheduled meetings and recurring meetings with no fixed time. ",
+            "human_parameter_description": "Select whether to use your personal meeting ID for scheduling."
+          },
+          "settings__jbh__time": {
+            "type": "integer",
+            "title": "Settings  Jbh  Time",
+            "description": "If the value of `join_before_host` field is set to true, use this field to indicate time limits for a participant to join a meeting before a host. *  `0` - Allow participant to join anytime. *  `5` - Allow participant to join 5 minutes before meeting start time.  * `10` - Allow participant to join 10 minutes before meeting start time. ",
+            "human_parameter_description": "Set how early participants can join before the host arrives."
+          },
+          "settings__resources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "MeetingResource",
+              "required": [
+                "resource_id",
+                "resource_type"
+              ],
+              "properties": {
+                "resource_id": {
+                  "type": "string",
+                  "title": "Resource Id",
+                  "description": "Unique identifier of the resource."
+                },
+                "resource_type": {
+                  "type": "string",
+                  "title": "Resource Type",
+                  "description": "Type of resource (e.g., 'room', 'equipment')."
+                }
+              },
+              "description": "Meeting resource configuration."
+            },
+            "title": "Settings  Resources",
+            "description": "The meeting's resources. Each resource must include resource_id and resource_type fields.",
+            "human_parameter_description": "Provide information on resources associated with this meeting."
+          },
+          "settings__watermark": {
+            "type": "boolean",
+            "title": "Settings  Watermark",
+            "default": false,
+            "description": "Add a watermark when viewing a shared screen.",
+            "human_parameter_description": "Select whether to display a watermark on shared content."
+          },
+          "settings__cn__meeting": {
+            "type": "boolean",
+            "title": "Settings  Cn  Meeting",
+            "default": false,
+            "description": "Host the meeting in China.",
+            "human_parameter_description": "Choose whether to host the meeting specifically in China."
+          },
+          "settings__focus__mode": {
+            "type": "boolean",
+            "title": "Settings  Focus  Mode",
+            "description": "Whether the [**Focus Mode** feature](https://support.zoom.us/hc/en-us/articles/360061113751-Using-focus-mode) is enabled when the meeting starts. ",
+            "human_parameter_description": "Select if you want to enable Focus Mode during the meeting."
+          },
+          "settings__host__video": {
+            "type": "boolean",
+            "title": "Settings  Host  Video",
+            "description": "Start video when the host joins the meeting.",
+            "human_parameter_description": "Choose whether the host's video will start automatically."
+          },
+          "settings__in__meeting": {
+            "type": "boolean",
+            "title": "Settings  In  Meeting",
+            "default": false,
+            "description": "Host meeting in India.",
+            "human_parameter_description": "Indicate if the meeting is specifically hosted in India."
+          },
+          "recurrence__end__times": {
+            "type": "integer",
+            "title": "Recurrence  End  Times",
+            "default": 1,
+            "description": "Select how many times the meeting should recur before it is canceled. If `end_times` is set to 0, it means there is no end time. The maximum number of recurrences is 60. Cannot be used with `end_date_time`. ",
+            "human_parameter_description": "Enter the total number of times the meeting should happen."
+          },
+          "settings__custom__keys": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "title": "Settings  Custom  Keys",
+            "description": "Custom keys and values assigned to the meeting.",
+            "human_parameter_description": "Include any additional custom information related to the meeting."
+          },
+          "settings__contact__name": {
+            "type": "string",
+            "title": "Settings  Contact  Name",
+            "description": "Contact name for registration.",
+            "human_parameter_description": "Enter the name of the contact person for meeting queries."
+          },
+          "settings__waiting__room": {
+            "type": "boolean",
+            "title": "Settings  Waiting  Room",
+            "default": false,
+            "description": "Enable waiting room.",
+            "human_parameter_description": "Choose if you want to enable a waiting room for participants before the meeting starts."
+          },
+          "recurrence__monthly__day": {
+            "type": "integer",
+            "title": "Recurrence  Monthly  Day",
+            "default": 1,
+            "description": "Use this field **only if you're scheduling a recurring meeting of type** `3` to state the day in a month when the meeting should recur. The value range is from 1 to 31. For instance, if the meeting should recur on 23rd of each month, provide `23` as this field's value and `1` as the `repeat_interval` field's value. If the meeting should recur every three months on 23rd of the month, change the `repeat_interval` field's value to `3`. ",
+            "human_parameter_description": "Provide the day of the month for the recurring meeting."
+          },
+          "recurrence__weekly__days": {
+            "enum": [
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7"
+            ],
+            "type": "string",
+            "title": "Recurrence  Weekly  Days",
+            "default": "1",
+            "description": "This field is required if you're scheduling a recurring meeting of type `2`, to state which days of the week the meeting should repeat. The value must be a single number between `1` to `7` in string format. For instance, if the meeting should recur on Sunday, provide `1` as this field's value. To set the meeting to occur on multiple days, you must call the API multiple times or use a different recurrence pattern. `1` - Sunday. `2` - Monday. `3` - Tuesday. `4` - Wednesday. `5` - Thursday. `6` - Friday. `7` - Saturday.",
+            "human_parameter_description": "The day of the week the meeting will occur (single value only)."
+          },
+          "settings__approval__type": {
+            "type": "integer",
+            "title": "Settings  Approval  Type",
+            "default": 2,
+            "description": "Enable registration and set approval for the registration. Note that this feature requires the host to be of **Licensed** user type. **Registration cannot be enabled for a basic user.**          `0` - Automatically approve.    `1` - Manually approve.    `2` - No registration required. ",
+            "human_parameter_description": "Select how registration requests are handled for this meeting."
+          },
+          "settings__calendar__type": {
+            "type": "integer",
+            "title": "Settings  Calendar  Type",
+            "description": "The type of calendar integration used to schedule the meeting.  * `1` - [Zoom Outlook add-in](https://support.zoom.us/hc/en-us/articles/360031592971-Getting-started-with-Outlook-plugin-and-add-in)  * `2` - [Zoom for Google Workspace add-on](https://support.zoom.us/hc/en-us/articles/360020187492-Using-the-Zoom-for-Google-Workspace-add-on) Works with the `private_meeting` field to determine whether to share details of meetings. ",
+            "human_parameter_description": "Specify which calendar service is used for scheduling the meeting."
+          },
+          "settings__contact__email": {
+            "type": "string",
+            "title": "Settings  Contact  Email",
+            "description": "Contact email for registration.",
+            "human_parameter_description": "Provide a contact email for participants who may have questions about the meeting."
+          },
+          "settings__enforce__login": {
+            "type": "boolean",
+            "title": "Settings  Enforce  Login",
+            "description": "Only signed in users can join this meeting. **This field is deprecated and will not be supported in the future.**          As an alternative, use the `meeting_authentication`, `authentication_option`, and `authentication_domains` fields to understand the [authentication configurations](https://support.zoom.us/hc/en-us/articles/360037117472-Authentication-Profiles-for-Meetings-and-Webinars) set for the meeting. ",
+            "human_parameter_description": "Decide if only logged-in users can participate in this meeting."
+          },
+          "recurrence__monthly__week": {
+            "type": "integer",
+            "title": "Recurrence  Monthly  Week",
+            "description": "Use this field **only if you're scheduling a recurring meeting of type** `3` to state the week of the month when the meeting should recur. If you use this field, you must also use the `monthly_week_day` field to state the day of the week when the meeting should recur.     `-1` - Last week of the month.    `1` - First week of the month.    `2` - Second week of the month.    `3` - Third week of the month.    `4` - Fourth week of the month. ",
+            "human_parameter_description": "Specify which week of the month the meeting should occur."
+          },
+          "settings__auto__recording": {
+            "enum": [
+              "local",
+              "cloud",
+              "none"
+            ],
+            "type": "string",
+            "title": "Settings  Auto  Recording",
+            "default": "none",
+            "description": "Automatic recording.   `local` - Record on local.    `cloud` -  Record on cloud.    `none` - Disabled. ",
+            "human_parameter_description": "Select whether to automatically record the meeting and where to store it."
+          },
+          "settings__encryption__type": {
+            "enum": [
+              "enhanced_encryption",
+              "e2ee"
+            ],
+            "type": "string",
+            "title": "EncryptionTypeEnm",
+            "description": "Choose between enhanced encryption and [end-to-end encryption](https://support.zoom.us/hc/en-us/articles/360048660871) when starting or a meeting. When using end-to-end encryption, several features such cloud recording and phone/SIP/H.323 dial-in, will be **automatically disabled**.    `enhanced_encryption` - Enhanced encryption. Encryption is stored in the cloud if you enable this option.      `e2ee` - [End-to-end encryption](https://support.zoom.us/hc/en-us/articles/360048660871). The encryption key is stored in your local device and can not be obtained by anyone else. Enabling this setting also **disables** the features join before host, cloud recording, streaming, live transcription, breakout rooms, polling, 1:1 private chat, and meeting reactions. ",
+            "human_parameter_description": "Select the encryption method to use for this meeting, keeping in mind which features are disabled."
+          },
+          "settings__private__meeting": {
+            "type": "boolean",
+            "title": "Settings  Private  Meeting",
+            "description": "Whether the meeting is set as private.",
+            "human_parameter_description": "Select if this meeting should be private and not visible to everyone."
+          },
+          "recurrence__end__date__time": {
+            "type": "string",
+            "title": "Recurrence  End  Date  Time",
+            "format": "date-time",
+            "description": "Select the final date when the meeting recurs before it is canceled. Should be in UTC time, such as 2017-11-25T12:00:00Z. Cannot be used with `end_times`. ",
+            "human_parameter_description": "Indicate when the final meeting occurrence will be."
+          },
+          "settings__internal__meeting": {
+            "type": "boolean",
+            "title": "Settings  Internal  Meeting",
+            "default": false,
+            "description": "Whether to set the meeting as an internal meeting.",
+            "human_parameter_description": "Indicate if this meeting is meant for internal participants only."
+          },
+          "settings__meeting__invitees": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "title": "Settings  Meeting  Invitees",
+            "description": "A list of the meeting's invitees.",
+            "human_parameter_description": "Include the details of individuals you are inviting to the meeting."
+          },
+          "settings__mute__upon__entry": {
+            "type": "boolean",
+            "title": "Settings  Mute  Upon  Entry",
+            "default": false,
+            "description": "Mute participants upon entry.",
+            "human_parameter_description": "Choose whether participants should automatically be muted when they enter."
+          },
+          "recurrence__repeat__interval": {
+            "type": "integer",
+            "title": "Recurrence  Repeat  Interval",
+            "description": "Define the interval when the meeting should recur. For instance, to schedule a meeting that recurs every two months, set this field's value as `2` and the `type` parameter's value to `3`.  For a daily meeting, the maximum interval is `90` days. For a weekly meeting, the maximum interval is `12` weeks. For a monthly meeting, the maximum value is `3` months.  ",
+            "human_parameter_description": "Set how often the meeting should repeat, like every week or month."
+          },
+          "settings__alternative__hosts": {
+            "type": "string",
+            "title": "Settings  Alternative  Hosts",
+            "description": "A semicolon-separated list of the meeting's alternative hosts\" email addresses or IDs. ",
+            "human_parameter_description": "List the email addresses of co-hosts who can help manage the meeting."
+          },
+          "settings__join__before__host": {
+            "type": "boolean",
+            "title": "Settings  Join  Before  Host",
+            "default": false,
+            "description": "Allow participants to join the meeting before the host starts the meeting. Only used for scheduled or recurring meetings. ",
+            "human_parameter_description": "Allow participants to enter the meeting before the host."
+          },
+          "settings__participant__video": {
+            "type": "boolean",
+            "title": "Settings  Participant  Video",
+            "description": "Start video when participants join the meeting.",
+            "human_parameter_description": "Decide if participants' video should start automatically."
+          },
+          "settings__registration__type": {
+            "type": "integer",
+            "title": "Settings  Registration  Type",
+            "default": 1,
+            "description": "Registration type. Used for recurring meeting with fixed time only.  `1` - Attendees register once and can attend any of the occurrences.    `2` - Attendees need to register for each occurrence to attend.    `3` - Attendees register once and can choose one or more occurrences to attend. ",
+            "human_parameter_description": "Indicate how attendees will register for the meeting."
+          },
+          "settings__close__registration": {
+            "type": "boolean",
+            "title": "Settings  Close  Registration",
+            "default": false,
+            "description": "Close registration after the event date.",
+            "human_parameter_description": "Decide if registration should close after the event starts."
+          },
+          "settings__email__notification": {
+            "type": "boolean",
+            "title": "Settings  Email  Notification",
+            "default": true,
+            "description": "Whether to send email notifications to [alternative hosts](https://support.zoom.us/hc/en-us/articles/208220166) and [users with scheduling privileges](https://support.zoom.us/hc/en-us/articles/201362803-Scheduling-privilege). This value defaults to `true`. ",
+            "human_parameter_description": "Choose whether to send email notifications about meeting updates."
+          },
+          "settings__show__share__button": {
+            "type": "boolean",
+            "title": "Settings  Show  Share  Button",
+            "description": "Show social share buttons on the meeting registration page. This setting only works for meetings that require [registration](https://support.zoom.us/hc/en-us/articles/211579443-Setting-up-registration-for-a-meeting). ",
+            "human_parameter_description": "Choose whether to allow sharing of the meeting registration link."
+          },
+          "recurrence__monthly__week__day": {
+            "type": "integer",
+            "title": "Recurrence  Monthly  Week  Day",
+            "description": "Use this field only if you\"re scheduling a recurring meeting of type `3` to state a specific day in a week when a monthly meeting should recur. To use this field, you must also use the `monthly_week` field.      `1` - Sunday.    `2` - Monday.    `3` - Tuesday.    `4` -  Wednesday.    `5` - Thursday.    `6` - Friday.    `7` - Saturday. ",
+            "human_parameter_description": "Indicate which day of the week the monthly meeting should occur."
+          },
+          "settings__authentication__name": {
+            "type": "string",
+            "title": "Settings  Authentication  Name",
+            "description": "Authentication name set in the [authentication profile](https://support.zoom.us/hc/en-us/articles/360037117472-Authentication-Profiles-for-Meetings-and-Webinars#h_5c0df2e1-cfd2-469f-bb4a-c77d7c0cca6f). ",
+            "human_parameter_description": "Provide the name of the authentication profile for this meeting."
+          },
+          "settings__breakout__room__rooms": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "title": "Settings  Breakout  Room  Rooms",
+            "description": "Create room(s).",
+            "human_parameter_description": "Define the breakout rooms and their respective participants."
+          },
+          "settings__authentication__option": {
+            "type": "string",
+            "title": "Settings  Authentication  Option",
+            "description": "Meeting authentication option ID.",
+            "human_parameter_description": "Specify the authentication option that will be used for the meeting."
+          },
+          "settings__breakout__room__enable": {
+            "type": "boolean",
+            "title": "Settings  Breakout  Room  Enable",
+            "description": "Set this field's value to `true` to enable the [breakout room pre-assign](https://support.zoom.us/hc/en-us/articles/360032752671-Pre-assigning-participants-to-breakout-rooms#h_36f71353-4190-48a2-b999-ca129861c1f4) option. ",
+            "human_parameter_description": "Enable the feature that allows participants to be pre-assigned to breakout rooms."
+          },
+          "settings__audio__conference__info": {
+            "type": "string",
+            "title": "Settings  Audio  Conference  Info",
+            "description": "Third party audio conference info.",
+            "human_parameter_description": "Provide any additional audio conference details if needed."
+          },
+          "settings__authentication__domains": {
+            "type": "string",
+            "title": "Settings  Authentication  Domains",
+            "description": "If user has configured [Sign Into Zoom with Specified Domains](https://support.zoom.us/hc/en-us/articles/360037117472-Authentication-Profiles-for-Meetings-and-Webinars#h_5c0df2e1-cfd2-469f-bb4a-c77d7c0cca6f) option, this will list the domains that are authenticated. ",
+            "human_parameter_description": "List the domains that are allowed for users to authenticate their Zoom accounts."
+          },
+          "settings__enforce__login__domains": {
+            "type": "string",
+            "title": "Settings  Enforce  Login  Domains",
+            "description": "Only signed in users with specified domains can join meetings. **This field is deprecated and will not be supported in the future.**          As an alternative, use the `meeting_authentication`, `authentication_option`. and `authentication_domains` fields to understand the [authentication configurations](https://support.zoom.us/hc/en-us/articles/360037117472-Authentication-Profiles-for-Meetings-and-Webinars) set for the meeting. ",
+            "human_parameter_description": "Restrict meeting access to users from specific domains."
+          },
+          "settings__meeting__authentication": {
+            "type": "boolean",
+            "title": "Settings  Meeting  Authentication",
+            "description": "`true`- Only authenticated users can join meetings.",
+            "human_parameter_description": "Select if only signed-in users can participate."
+          },
+          "settings__allow__multiple__devices": {
+            "type": "boolean",
+            "title": "Settings  Allow  Multiple  Devices",
+            "description": "Allow attendees to join the meeting from multiple devices. This setting only works for meetings that require [registration](https://support.zoom.us/hc/en-us/articles/211579443-Setting-up-registration-for-a-meeting). ",
+            "human_parameter_description": "Choose whether participants can join the meeting from different devices."
+          },
+          "settings__host__save__video__order": {
+            "type": "boolean",
+            "title": "Settings  Host  Save  Video  Order",
+            "description": "Whether the **Allow host to save video order** feature is enabled.",
+            "human_parameter_description": "Decide if the host should be able to save the video order."
+          },
+          "settings__authentication__exception": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "AuthenticationException",
+              "required": [
+                "name",
+                "email"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "title": "Name",
+                  "description": "Name of the participant who can bypass authentication."
+                },
+                "email": {
+                  "type": "string",
+                  "title": "Email",
+                  "description": "Email address of the participant who can bypass authentication."
+                }
+              },
+              "description": "Authentication exception configuration."
+            },
+            "title": "Settings  Authentication  Exception",
+            "description": "The participants added here will receive unique meeting invite links and bypass authentication. Each exception must include name and email fields.",
+            "human_parameter_description": "Add participants who will bypass normal authentication requirements."
+          },
+          "settings__global__dial__in__numbers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "title": "Settings  Global  Dial  In  Numbers",
+            "description": "Global dial-in countries or regions",
+            "human_parameter_description": "List the global dial-in numbers that participants can use."
+          },
+          "settings__global__dial__in__countries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Settings  Global  Dial  In  Countries",
+            "description": "List of global dial-in countries",
+            "human_parameter_description": "Provide a list of countries available for dial-in."
+          },
+          "settings__auto__start__meeting__summary": {
+            "type": "boolean",
+            "title": "Settings  Auto  Start  Meeting  Summary",
+            "default": false,
+            "description": "Whether to automatically start meeting summary.",
+            "human_parameter_description": "Select if a summary should be automatically generated after the meeting."
+          },
+          "settings__participant__focused__meeting": {
+            "type": "boolean",
+            "title": "Settings  Participant  Focused  Meeting",
+            "default": false,
+            "description": "Whether to set the meeting as a participant focused meeting.",
+            "human_parameter_description": "Choose whether this meeting is focused on participant interactions."
+          },
+          "settings__alternative__host__update__polls": {
+            "type": "boolean",
+            "title": "Settings  Alternative  Host  Update  Polls",
+            "description": "Whether the **Allow alternative hosts to add or edit polls** feature is enabled. This requires Zoom version 5.8.0 or higher. ",
+            "human_parameter_description": "Choose if alternative hosts can manage polls during the meeting."
+          },
+          "settings__language__interpretation__enable": {
+            "type": "boolean",
+            "title": "Settings  Language  Interpretation  Enable",
+            "description": "Whether to enable [language interpretation](https://support.zoom.us/hc/en-us/articles/360034919791-Language-interpretation-in-meetings-and-webinars) for the meeting. ",
+            "human_parameter_description": "Choose if language interpretation is needed for the meeting."
+          },
+          "settings__registrants__confirmation__email": {
+            "type": "boolean",
+            "title": "Settings  Registrants  Confirmation  Email",
+            "description": "Whether to send registrants an email confirmation. * `true` - Send a confirmation email. * `false` - Do not send a confirmation email. ",
+            "human_parameter_description": "Choose whether to send confirmation emails to those who register."
+          },
+          "settings__registrants__email__notification": {
+            "type": "boolean",
+            "title": "Settings  Registrants  Email  Notification",
+            "description": "Whether to send registrants email notifications about their registration approval, cancellation, or rejection. * `true` - Send an email notification. * `false` - Do not send an email notification.  Set this value to `true` to also use the `registrants_confirmation_email` parameter. ",
+            "human_parameter_description": "Decide if registrants will receive notifications about their registration."
+          },
+          "settings__continuous__meeting__chat__enable": {
+            "type": "boolean",
+            "title": "Settings  Continuous  Meeting  Chat  Enable",
+            "description": "Whether to enable the **Enable continuous meeting chat** setting.",
+            "human_parameter_description": "Choose if continuous chat should be allowed during the meeting."
+          },
+          "settings__approved_denied_regions__denied__list": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Settings  Approved Denied Regions  Denied  List",
+            "description": "List of countries or regions from where participants can not join this meeting.  ",
+            "human_parameter_description": "Specify which countries are blocked from joining the meeting."
+          },
+          "settings__auto__start__ai__companion__questions": {
+            "type": "boolean",
+            "title": "Settings  Auto  Start  Ai  Companion  Questions",
+            "default": false,
+            "description": "Whether to automatically start AI Companion questions.",
+            "human_parameter_description": "Choose if AI-assisted questions should be initiated automatically."
+          },
+          "settings__language__interpretation__interpreters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "LanguageInterpreter",
+              "required": [
+                "email",
+                "languages"
+              ],
+              "properties": {
+                "email": {
+                  "type": "string",
+                  "title": "Email",
+                  "description": "Email address of the language interpreter."
+                },
+                "languages": {
+                  "type": "string",
+                  "title": "Languages",
+                  "description": "Languages the interpreter can translate. Format: 'source_language:target_language' (e.g., 'en:es' for English to Spanish)."
+                }
+              },
+              "description": "Language interpreter configuration."
+            },
+            "title": "Settings  Language  Interpretation  Interpreters",
+            "description": "Information about the meeting's language interpreters. Each interpreter must include email and languages fields.",
+            "human_parameter_description": "Provide details about the interpreters who will assist during the meeting."
+          },
+          "settings__sign__language__interpretation__enable": {
+            "type": "boolean",
+            "title": "Settings  Sign  Language  Interpretation  Enable",
+            "description": "Whether to enable [sign language interpretation](https://support.zoom.us/hc/en-us/articles/9644962487309-Using-sign-language-interpretation-in-a-meeting-or-webinar) for the meeting. ",
+            "human_parameter_description": "Specify if sign language interpretation should be offered."
+          },
+          "settings__alternative__hosts__email__notification": {
+            "type": "boolean",
+            "title": "Settings  Alternative  Hosts  Email  Notification",
+            "default": true,
+            "description": "Flag to determine whether to send email notifications to alternative hosts, default value is true. ",
+            "human_parameter_description": "Decide if you want alternative hosts to receive email notifications."
+          },
+          "settings__approved_denied_regions__approved__list": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Settings  Approved Denied Regions  Approved  List",
+            "description": "List of countries or regions from where participants can join this meeting.  ",
+            "human_parameter_description": "Specify which countries are allowed to join the meeting."
+          },
+          "settings__meeting__chat__auto__add__external__users": {
+            "type": "boolean",
+            "title": "Settings  Meeting  Chat  Auto  Add  External  Users",
+            "description": "Whether to enable the **Automatically add invited external users** setting. ",
+            "human_parameter_description": "Select if invited external users should be automatically added to the chat."
+          },
+          "settings__sign__language__interpretation__interpreters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "SignLanguageInterpreter",
+              "required": [
+                "email",
+                "sign_language"
+              ],
+              "properties": {
+                "email": {
+                  "type": "string",
+                  "title": "Email",
+                  "description": "Email address of the sign language interpreter."
+                },
+                "sign_language": {
+                  "type": "string",
+                  "title": "Sign Language",
+                  "description": "Sign language the interpreter uses (e.g., 'American Sign Language', 'British Sign Language')."
+                }
+              },
+              "description": "Sign language interpreter configuration."
+            },
+            "title": "Settings  Sign  Language  Interpretation  Interpreters",
+            "description": "Information about the meeting's sign language interpreters. Each interpreter must include email and sign_language fields.",
+            "human_parameter_description": "List the interpreters who will provide sign language support."
+          },
+          "settings__approved__or__denied__countries__or__regions__enable": {
+            "type": "boolean",
+            "title": "Settings  Approved  Or  Denied  Countries  Or  Regions  Enable",
+            "description": "`true` - Setting enabled to either allow users or block users from specific regions to join your meetings.   `false` - Setting disabled. ",
+            "human_parameter_description": "Choose whether to enable the region restrictions for this meeting."
+          },
+          "settings__approved__or__denied__countries__or__regions__method": {
+            "enum": [
+              "approve",
+              "deny"
+            ],
+            "type": "string",
+            "title": "MethodEnm",
+            "description": "Specify whether to allow users from specific regions to join this meeting, or block users from specific regions from joining this meeting.   `approve` - Allow users from specific regions or countries to join this meeting. If this setting is selected, include the approved regions or countries in the `approved_list`.    `deny` - Block users from specific regions or countries from joining this meeting. If this setting is selected, include the approved regions or countries in the `denied_list` ",
+            "human_parameter_description": "Choose to either approve or deny access based on user location."
+          }
+        },
+        "description": "Request schema for `UpdateAMeeting`"
+      }
+    }
+  ]
+}

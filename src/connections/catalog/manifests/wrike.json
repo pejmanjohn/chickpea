@@ -57,6 +57,8 @@
         "addParents": "Adds the task to another folder or project, which shares it with everyone who can see that folder.",
         "addSuperTasks": "Moves the task under another task.",
         "convertToCustomItemType": "Changes the item's type, which can change its fields and workflow.",
+        "customFields": "Changes an existing task's custom field values, which can drive workflows and reports other people rely on.",
+        "dates": "Changes an existing task's start and due dates, which moves work on the schedules of everyone assigned to it.",
         "removeParents": "Removes the task from a folder or project, which changes who can see it.",
         "removeSuperTasks": "Moves the task out from under its parent task."
       }
@@ -1082,11 +1084,11 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "Wrike: Modify task",
       "withheldArguments": {
-        "dates": "unsupported schema",
+        "dates": "reviewer: Changes an existing task's start and due dates, which moves work on the schedules of everyone assigned to it.",
         "addParents": "reviewer: Adds the task to another folder or project, which shares it with everyone who can see that folder.",
         "addShareds": "changes sharing, visibility, permissions, membership, or who acts",
         "addFollowers": "changes sharing, visibility, permissions, membership, or who acts",
-        "customFields": "unsupported schema",
+        "customFields": "reviewer: Changes an existing task's custom field values, which can drive workflows and reports other people rely on.",
         "addSuperTasks": "reviewer: Moves the task under another task.",
         "removeParents": "reviewer: Removes the task from a folder or project, which changes who can see it.",
         "removeShareds": "changes sharing, visibility, permissions, membership, or who acts",

@@ -62,15 +62,19 @@ test('the managed catalog retains Google Workspace contracts and adds productivi
       'one_drive',
       'outlook',
       'pagerduty',
+      'pinterest_ads',
       'pipedrive',
       'quickbooks',
+      'reddit_ads',
       'salesforce',
       'semrush',
       'share_point',
       'square',
+      'trello',
       'webex',
       'wrike',
       'zoho',
+      'zoom',
     ],
   );
   assert.deepEqual(
@@ -312,6 +316,9 @@ test('every managed connector has a safe read-only canary manifest', () => {
     assert.equal(capability?.connectorToolkit, connector.toolkit);
     assert.equal(capability?.accessLane, 'read');
     assert.equal(capability?.effect, 'read');
+    if (manifest.requiredArguments.length === 0) {
+      assert.ok(v.is(capability!.input, manifest.arguments), `${connector.toolkit} canary arguments`);
+    }
   }
 });
 

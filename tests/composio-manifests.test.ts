@@ -15,7 +15,6 @@ import {
 } from '../src/connections/catalog/composio-manifests.ts';
 import googleMaps from '../src/connections/catalog/manifests/google_maps.json' with { type: 'json' };
 import linkedin from '../src/connections/catalog/manifests/linkedin.json' with { type: 'json' };
-import trello from '../src/connections/catalog/manifests/trello.json' with { type: 'json' };
 import { MANAGED_CONNECTOR_CATALOG, createManagedConnectorCatalog } from '../src/connections/catalog/index.ts';
 import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
@@ -67,7 +66,7 @@ function lanes(manifest: ComposioManifest): Record<string, string> {
 
 const PILOT_MANIFESTS = [
   ...COMPOSIO_MANIFESTS,
-  ...[googleMaps, linkedin, trello].map((value) => parseComposioManifest(value)),
+  ...[googleMaps, linkedin].map((value) => parseComposioManifest(value)),
 ];
 
 const pilotManifest = (toolkit: string) => structuredClone(
@@ -443,6 +442,26 @@ test('link, act-as, and overwrite rules see through optional wrappers, arrays, a
   assert.deepEqual(capability('ACME_CREATE_FOLDERS').withheldArguments, { conflict_modes: 'can replace an existing item' });
 });
 
+test('a bare url or link value is a link mode only on an argument that picks the output', () => {
+  const { manifest } = draftComposioManifest(snapshot([
+    tool('ACME_GET_AUTHORITY_PROFILE', ['readOnlyHint'], {
+      type: 'object',
+      properties: {
+        target: { type: 'string' },
+        target_type: { type: 'string', enum: ['root_domain', 'domain', 'subdomain', 'url'] },
+        by: { type: 'array', items: { type: 'string', enum: ['$flow', 'url', 'link'] } },
+        return_type: { type: 'string', enum: ['content', 'url'] },
+        kind: { type: 'string', enum: ['inline', 'link'], description: 'Chooses how the results are returned.' },
+      },
+      required: ['target', 'target_type'],
+    }),
+  ]));
+  const capability = manifest.capabilities.find(({ tool: name }) => name === 'ACME_GET_AUTHORITY_PROFILE')!;
+  const link = 'can make the provider mint a link anyone holding it can open';
+  assert.deepEqual(Object.keys(capability.input.properties), ['target', 'target_type', 'by']);
+  assert.deepEqual(capability.withheldArguments, { return_type: link, kind: link });
+});
+
 test('a reviewer cannot keep a withheld argument on a read, and the error names why the rule withholds it', () => {
   const search = tool('ACME_SEARCH_FILES', ['readOnlyHint'], {
     type: 'object', properties: { query: { type: 'string' }, as_user: { type: 'string' } },
@@ -787,6 +806,9 @@ test('reviewed manifests keep expiry, import, credential, and system arguments f
     ['mailchimp', 'MAILCHIMP_UPDATE_CAMPAIGN_SETTINGS', 'rss__opts__feed__url'],
     ['mailchimp', 'MAILCHIMP_ADD_CAMPAIGN', 'rss__opts__feed__url'],
     ['pipedrive', 'PIPEDRIVE_UPDATE_PERSON_V2', 'phones'],
+    ...['REDDIT_ADS_CREATE_CAMPAIGN', 'REDDIT_ADS_UPDATE_CAMPAIGN'].flatMap((slug) => ['data.bid_strategy',
+      'data.bid_type', 'data.bid_value', 'data.goal_type', 'data.goal_value', 'data.spend_cap']
+      .map((argument) => ['reddit_ads', slug, argument] as [string, string, string])),
   ];
   // A rule change cannot release these: the review withholds each one by name.
   const reviewed: Array<[toolkit: string, tool: string, argument: string]> = [
@@ -808,13 +830,21 @@ test('reviewed manifests keep expiry, import, credential, and system arguments f
     ['klaviyo', 'KLAVIYO_UPDATE_PROFILE', 'data__meta__patch__properties__unset'],
     ['microsoft_teams', 'MICROSOFT_TEAMS_CREATE_MEETING', 'chat_info'],
     ['microsoft_teams', 'MICROSOFT_TEAMS_CREATE_MEETING', 'lobby_bypass_settings'],
+    ['square', 'SQUARE_UPDATE_CUSTOMER', 'reference_id'],
+    ['trello', 'TRELLO_ADD_BOARDS', 'prefs__calendarFeedEnabled'],
     ['trello', 'TRELLO_GET_MEMBERS_BY_ID_MEMBER', 'tokens'],
     ['wrike', 'WRIKE_CREATE_TASK', 'parents'],
     ['wrike', 'WRIKE_CREATE_TASK', 'superTasks'],
-    ...['addParents', 'addSuperTasks', 'convertToCustomItemType', 'removeParents', 'removeSuperTasks']
+    ...['addParents', 'addSuperTasks', 'convertToCustomItemType', 'customFields', 'dates', 'removeParents',
+      'removeSuperTasks']
       .map((argument) => ['wrike', 'WRIKE_MODIFY_TASK', argument] as [string, string, string]),
     ...['ZOHO_CREATE_CONTACT', 'ZOHO_CREATE_DEAL', 'ZOHO_CREATE_LEAD']
       .map((slug) => ['zoho', slug, 'lar_id'] as [string, string, string]),
+    ['zoom', 'ZOOM_GET_MEETING_RECORDINGS', 'include_fields'],
+    ...['ZOOM_CREATE_A_MEETING', 'ZOOM_UPDATE_A_MEETING'].flatMap((slug) => ['schedule_for',
+      'settings__alternative__hosts', 'settings__join__before__host', 'settings__meeting__authentication',
+      'settings__resources', 'settings__use__pmi', 'settings__waiting__room']
+      .map((argument) => ['zoom', slug, argument] as [string, string, string])),
   ];
   const offered = (schema: unknown, path: string[]): boolean => {
     const properties = (schema as { properties?: Record<string, unknown> }).properties ?? {};
@@ -829,6 +859,132 @@ test('reviewed manifests keep expiry, import, credential, and system arguments f
   for (const [toolkit, slug, argument] of reviewed) {
     const capability = pilotManifest(toolkit).capabilities.find(({ tool: name }) => name === slug)!;
     assert.match(capability.withheldArguments![argument]!, /^reviewer: /, `${slug}.${argument} is withheld by review`);
+  }
+});
+
+test('write tools lose budget, bid, and spend arguments, and a CRM field that records a budget stays', () => {
+  const { manifest } = draftComposioManifest(snapshot([tool('ACME_UPDATE_CAMPAIGN', ['updateHint'], {
+    type: 'object',
+    properties: {
+      campaign_id: { type: 'string' },
+      name: { type: 'string' },
+      daily_budget: { type: 'integer' },
+      bidAmount: { type: 'integer' },
+      spend_cap: { type: 'integer' },
+      goal_value: { type: 'integer', description: 'Campaign goal value in micros.' },
+      goal_type: { type: 'string', enum: ['LIFETIME_SPEND', 'DAILY_SPEND'] },
+      BudgetedCost: { type: 'number' },
+    },
+    required: ['campaign_id'],
+  })]));
+  const capability = manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_UPDATE_CAMPAIGN')!;
+  const spend = 'sets a budget, bid, or spend amount';
+  assert.deepEqual(Object.keys(capability.input.properties), ['campaign_id', 'name', 'BudgetedCost']);
+  assert.deepEqual(capability.withheldArguments,
+    { daily_budget: spend, bidAmount: spend, spend_cap: spend, goal_value: spend, goal_type: spend });
+});
+
+test('review.allowValues narrows a string enum the model can set and fails on a value the input does not offer', () => {
+  const campaigns = snapshot([tool('ACME_UPDATE_CAMPAIGNS', ['updateHint', 'destructiveHint'], {
+    type: 'object',
+    properties: {
+      updates: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { id: { type: 'string' }, status: { type: 'string', enum: ['ACTIVE', 'PAUSED'] } },
+          required: ['id'],
+        },
+      },
+      priority: { anyOf: [{ type: 'string', enum: ['LOW', 'HIGH'] }, { type: 'integer' }] },
+    },
+    required: ['updates'],
+  })]);
+  const reviewed = (allowValues: NonNullable<ComposioManifest['review']['allowValues']>) => ({
+    ...draftComposioManifest(campaigns).manifest,
+    review: { add: ['ACME_UPDATE_CAMPAIGNS'], drop: {}, allowArguments: {}, allowValues },
+  });
+  const pause = { values: ['PAUSED'], reason: 'ACTIVE restarts delivery and spend.' };
+
+  const { manifest, report } = draftComposioManifest(campaigns, reviewed({ ACME_UPDATE_CAMPAIGNS: { 'updates[].status': pause } }));
+  const input = compileComposioManifest(manifest).capabilities.find(({ id }) => id === 'acme.update_campaigns')!.input;
+  assert.equal(v.is(input, { updates: [{ id: '1', status: 'PAUSED' }] }), true);
+  assert.equal(v.is(input, { updates: [{ id: '1', status: 'ACTIVE' }] }), false);
+  assert.deepEqual(report.allowedValues, [{ tool: 'ACME_UPDATE_CAMPAIGNS', argument: 'updates[].status', values: ['PAUSED'] }]);
+  assert.deepEqual(checkComposioManifest(manifest, campaigns), []);
+
+  for (const [argument, values] of [
+    ['updates[].status', ['DRAFT']], ['updates[].id', ['1']], ['status', ['PAUSED']], ['priority', ['LOW']],
+  ] as const) {
+    assert.throws(
+      () => draftComposioManifest(campaigns, reviewed({ ACME_UPDATE_CAMPAIGNS: { [argument]: { ...pause, values: [...values] } } })),
+      /review\.allowValues names ACME_UPDATE_CAMPAIGNS/,
+      argument,
+    );
+  }
+});
+
+test('review.allowValues leaves out a tool whose argument defaults to a value the review does not keep', () => {
+  const enumOf = { type: 'string', enum: ['ACTIVE', 'PAUSED'] };
+  const draft = (status: Record<string, unknown>) => {
+    const campaign = snapshot([tool('ACME_UPDATE_CAMPAIGN', ['updateHint', 'destructiveHint'], {
+      type: 'object', properties: { id: { type: 'string' }, status }, required: ['id'],
+    })]);
+    return draftComposioManifest(campaign, {
+      ...draftComposioManifest(campaign).manifest,
+      review: {
+        add: ['ACME_UPDATE_CAMPAIGN'], drop: {}, allowArguments: {},
+        allowValues: { ACME_UPDATE_CAMPAIGN: { status: { values: ['PAUSED'], reason: 'ACTIVE restarts delivery and spend.' } } },
+      },
+    });
+  };
+  const offered = (status: Record<string, unknown>) =>
+    draft(status).manifest.capabilities.some(({ tool: slug }) => slug === 'ACME_UPDATE_CAMPAIGN');
+
+  for (const status of [{ ...enumOf, default: 'ACTIVE' }, { anyOf: [enumOf, { type: 'null' }], default: 'ACTIVE' }]) {
+    assert.equal(offered(status), false, JSON.stringify(status));
+    assert.deepEqual(draft(status).report.excluded,
+      [{ tool: 'ACME_UPDATE_CAMPAIGN', reason: 'status defaults to a value review.allowValues does not keep' }]);
+  }
+  for (const status of [enumOf, { ...enumOf, default: 'PAUSED' }, { anyOf: [enumOf, { type: 'null' }], default: null }]) {
+    assert.equal(offered(status), true, JSON.stringify(status));
+  }
+});
+
+test('paid-ads status writes can only pause, and a new Reddit campaign starts paused', () => {
+  const pinterest = (status: string) => ({ ad_account_id: '1', updates: [{ id: '2', status }] });
+  const pauseOnly: Array<[capability: string, input: (status: string) => Record<string, unknown>]> = [
+    ['pinterest_ads.update_ad_groups', pinterest],
+    ['pinterest_ads.update_ads', pinterest],
+    ['pinterest_ads.update_campaigns', pinterest],
+    ['reddit_ads.update_campaign', (status) => ({ campaign_id: 'c', data: { configured_status: status } })],
+    ['reddit_ads.create_campaign',
+      (status) => ({ ad_account_id: 'a2_x', data: { name: 'Draft', objective: 'CLICKS', configured_status: status } })],
+  ];
+  for (const [id, input] of pauseOnly) {
+    const schema = MANAGED_CONNECTOR_CATALOG.capability(id)!.input;
+    assert.equal(v.is(schema, input('PAUSED')), true, `${id} pauses`);
+    for (const status of ['ACTIVE', 'ARCHIVED', 'DELETED']) {
+      assert.equal(v.is(schema, input(status)), false, `${id} refuses ${status}`);
+    }
+  }
+  assert.equal(v.is(MANAGED_CONNECTOR_CATALOG.capability('reddit_ads.create_campaign')!.input,
+    { ad_account_id: 'a2_x', data: { name: 'Draft', objective: 'CLICKS' } }), false,
+  'a new campaign must name its status, and PAUSED is the only one');
+});
+
+test('reviewer drops stay out of their manifests', () => {
+  // A rule change cannot release these: the review drops each one by name.
+  const dropped: Array<[toolkit: string, tool: string]> = [
+    ['contentful', 'CONTENTFUL_QUERY_ASSET_COLLECTION'],
+    ['contentful', 'CONTENTFUL_QUERY_GRAPHQL_CONTENT_TYPE_COLLECTION'],
+    ['zoom', 'ZOOM_GET_A_MEETING'],
+    ['zoom', 'ZOOM_GET_A_WEBINAR'],
+  ];
+  for (const [toolkit, slug] of dropped) {
+    const manifest = pilotManifest(toolkit);
+    assert.ok(manifest.review.drop[slug], `${slug} is dropped by review`);
+    assert.equal(manifest.capabilities.some(({ tool: name }) => name === slug), false, `${slug} is not offered`);
   }
 });
 
@@ -1185,15 +1341,19 @@ const FRESHDESK_POLICY: ConnectionAccountManagedPolicy = {
   allowedCapabilities: ['freshdesk.currently_authenticated_agent', 'freshdesk.add_note_to_ticket'],
 };
 
-function recordingProvider(data: Record<string, unknown>, calls: Array<Record<string, unknown>>) {
+function recordingProvider(
+  data: Record<string, unknown>,
+  calls: Array<Record<string, unknown>>,
+  policy: ConnectionAccountManagedPolicy = FRESHDESK_POLICY,
+) {
   return new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
     getConnectedAccount: async () => ({
-      id: FRESHDESK_POLICY.accountRef,
+      id: policy.accountRef,
       status: 'ACTIVE',
       isDisabled: false,
-      toolkit: 'freshdesk',
-      userId: FRESHDESK_POLICY.principalRef,
+      toolkit: policy.toolkit,
+      userId: policy.principalRef,
     }),
     createClient: async () => ({
       sessions: { async create() { throw new Error('session execution must not be used'); } },
@@ -1267,6 +1427,77 @@ test('connection validation runs the manifest validation capability', async () =
   assert.deepEqual(calls.map(({ tool: slug, arguments: args }) => ({ slug, args })), [
     { slug: 'FRESHDESK_CURRENTLY_AUTHENTICATED_AGENT', args: {} },
   ]);
+});
+
+test('connection validation sends the manifest validationArguments to its validation capability', async () => {
+  const policy: ConnectionAccountManagedPolicy = {
+    ...FRESHDESK_POLICY,
+    toolkit: 'zoom',
+    accountRef: 'ca_zoom',
+    allowedCapabilities: ['zoom.get_user', 'zoom.list_meetings'],
+  };
+  const calls: Array<Record<string, unknown>> = [];
+  await recordingProvider({ id: 'user' }, calls, policy).validate({ policy });
+
+  assert.deepEqual(calls.map(({ tool: slug, arguments: args }) => ({ slug, args })), [
+    { slug: 'ZOOM_GET_USER', args: { user_id: 'me' } },
+  ]);
+});
+
+test('a validation capability may need input only when validationArguments supply it within its schema', () => {
+  const getUser = tool('ACME_GET_USER', ['readOnlyHint'], {
+    type: 'object',
+    properties: {
+      user_id: { type: 'string', maxLength: 64 },
+      detail: { type: 'string', enum: ['basic', 'full'] },
+    },
+    required: ['user_id'],
+  });
+  const tools = [getUser, tool('ACME_LIST_MEETINGS', ['readOnlyHint'], {
+    type: 'object', properties: { user_id: { type: 'string' } }, required: ['user_id'],
+  })];
+  const value = (validationArguments: Record<string, unknown>) => {
+    const { manifest } = draftComposioManifest({ ...snapshot(tools), tools }, undefined, {
+      validationArguments: { user_id: 'me' },
+    });
+    return { ...structuredClone(manifest), validationArguments };
+  };
+
+  assert.throws(() => draftComposioManifest({ ...snapshot(tools), tools }), /no read tool whose required input/);
+  const { manifest, report } = draftComposioManifest({ ...snapshot(tools), tools }, undefined, {
+    validationArguments: { user_id: 'me' },
+  });
+  assert.equal(manifest.validationCapability, 'acme.get_user');
+  assert.deepEqual(manifest.validationArguments, { user_id: 'me' });
+  assert.deepEqual(report.validationArguments, { user_id: 'me' });
+  assert.deepEqual(draftComposioManifest({ ...snapshot(tools), tools }, manifest).manifest, manifest);
+  assert.deepEqual(parseComposioManifest(value({ user_id: 'me', detail: 'full' })).validationArguments,
+    { user_id: 'me', detail: 'full' });
+
+  for (const rejected of [{ user_id: 'me', include_deleted: true }, { detail: 'full' }, { user_id: 7 },
+    { user_id: 'me', detail: 'everything' }, { user_id: 'x'.repeat(65) }]) {
+    assert.throws(() => parseComposioManifest(value(rejected)), /validation capability whose input accepts/,
+      JSON.stringify(rejected));
+  }
+  for (const malformed of [{}, { user_id: { nested: 'me' } }, { user_id: ['me'] }]) {
+    assert.throws(() => parseComposioManifest(value(malformed)), /invalid at validationArguments/,
+      JSON.stringify(malformed));
+  }
+});
+
+test('a draft names a validationArguments key the validation capability no longer accepts', () => {
+  const getUser = (properties: Record<string, unknown>) => [tool('ACME_GET_USER', ['readOnlyHint'], {
+    type: 'object', properties: { user_id: { type: 'string', maxLength: 64 }, ...properties }, required: ['user_id'],
+  })];
+  const validationArguments = { user_id: 'me', detail: 'full' };
+  const before = getUser({ detail: { type: 'string', enum: ['basic', 'full'] } });
+  const { manifest } = draftComposioManifest({ ...snapshot(before), tools: before }, undefined, { validationArguments });
+  assert.deepEqual(manifest.validationArguments, validationArguments);
+
+  const after = getUser({});
+  const stale = /validationArguments names detail, which ACME_GET_USER input does not accept/;
+  assert.throws(() => draftComposioManifest({ ...snapshot(after), tools: after }, manifest), stale);
+  assert.throws(() => draftComposioManifest({ ...snapshot(after), tools: after }, undefined, { validationArguments }), stale);
 });
 
 test('update tools lose requester and identity arguments; create tools keep them except email addresses', () => {
@@ -1444,11 +1675,9 @@ const CARD_POLICY: ConnectionAccountManagedPolicy = {
 
 type ToolResult = { data: Record<string, unknown>; error?: string | null; successful?: boolean };
 
-/** Trello is held out of the catalog, so the provider executes its manifest by injection. */
 function trelloProvider(execute: (slug: string) => ToolResult, calls: string[]) {
   return new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
-    manifests: [pilotManifest('trello')],
     getConnectedAccount: async () => { throw new Error('status unavailable'); },
     createClient: async () => ({
       sessions: { async create() { throw new Error('session execution must not be used'); } },

@@ -28,7 +28,12 @@
       "SQUARE_UPDATE_LOCATION": "Changes the business name, contact details, and hours customers see on receipts and online.",
       "SQUARE_UPSERT_CATALOG_OBJECT": "Catalog items set prices at the register and online, and every item field is outside the bounded schema."
     },
-    "allowArguments": {}
+    "allowArguments": {},
+    "withholdArguments": {
+      "SQUARE_UPDATE_CUSTOMER": {
+        "reference_id": "Links the profile to a record in another system, as Gorgias's external_id does; changing it can attach the profile to someone else's record there."
+      }
+    }
   },
   "capabilities": [
     {
@@ -1362,6 +1367,7 @@
       "sideEffectLabel": "Square: Update Customer",
       "withheldArguments": {
         "phone_number": "changes who the record belongs to or how a person is identified",
+        "reference_id": "reviewer: Links the profile to a record in another system, as Gorgias's external_id does; changing it can attach the profile to someone else's record there.",
         "email_address": "names an address a message goes to or comes from"
       },
       "input": {
@@ -1493,11 +1499,6 @@
             "type": "string",
             "maxLength": 500,
             "description": "A business name associated with the customer profile. Max 500 characters."
-          },
-          "reference_id": {
-            "type": "string",
-            "maxLength": 100,
-            "description": "An optional second ID used to associate the customer profile with an entity in another system. Max 100 characters."
           }
         },
         "required": [

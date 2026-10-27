@@ -411,6 +411,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     accent: '#04AC38',
     logoId: 'pagerduty',
   }, {
+    id: 'pinterest-ads-managed',
+    managedToolkit: 'pinterest_ads',
+    providerId: 'pinterest_ads',
+    name: 'Pinterest Ads',
+    description: 'Read Pinterest ad accounts, campaigns, ad groups, ads, and performance analytics, and rename or pause them.',
+    category: 'business',
+    accent: '#E60023',
+    logoId: 'pinterest_ads',
+  }, {
     id: 'pipedrive-managed',
     managedToolkit: 'pipedrive',
     providerId: 'pipedrive',
@@ -429,6 +438,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     accent: '#2CA01C',
     logoId: 'quickbooks',
   }, {
+    id: 'reddit-ads-managed',
+    managedToolkit: 'reddit_ads',
+    providerId: 'reddit_ads',
+    name: 'Reddit Ads',
+    description: 'Read Reddit Ads campaigns, ad groups, ads, audiences, and performance reports, pause campaigns, and draft paused campaigns.',
+    category: 'business',
+    accent: '#FF4500',
+    logoId: 'reddit_ads',
+  }, {
     id: 'salesforce-managed',
     managedToolkit: 'salesforce',
     providerId: 'salesforce',
@@ -442,7 +460,7 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     managedToolkit: 'semrush',
     providerId: 'semrush',
     name: 'Semrush',
-    description: 'Look up keyword search volume, cost per click, and difficulty in Semrush\'s regional databases.',
+    description: 'Look up keyword search volume, cost per click, and difficulty, and backlink and Authority Score summaries for domains and URLs.',
     category: 'search',
     accent: '#C190FF',
     logoId: 'semrush',
@@ -464,6 +482,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     category: 'business',
     accent: '#000000',
     logoId: 'square',
+  }, {
+    id: 'trello-managed',
+    managedToolkit: 'trello',
+    providerId: 'trello',
+    name: 'Trello',
+    description: 'Find, create, and update cards, lists, and boards the connected account can reach.',
+    category: 'project',
+    accent: '#0052CC',
+    logoId: 'trello',
   }, {
     id: 'webex-managed',
     managedToolkit: 'webex',
@@ -491,6 +518,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     category: 'business',
     accent: '#006EB9',
     logoId: 'zoho',
+  }, {
+    id: 'zoom-managed',
+    managedToolkit: 'zoom',
+    providerId: 'zoom',
+    name: 'Zoom',
+    description: 'Review meetings, recordings, summaries, participants, and webinars, and schedule or update meetings.',
+    category: 'business',
+    accent: '#0B5CFF',
+    logoId: 'zoom',
   }]);
   assert.equal(CONNECTION_CATALOG_PRESETS.some(({ id }) => id === 'notion'), false);
   assert.equal(CONNECTION_CATALOG_PRESETS.some(({ id }) => id === 'notion-managed'), true);

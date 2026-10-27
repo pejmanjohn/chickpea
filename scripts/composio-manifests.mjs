@@ -19,7 +19,7 @@ import {
 const USAGE = `Usage:
   npm run connectors:composio -- snapshot <toolkit> --from <export-directory>
   npm run connectors:composio -- snapshot <toolkit> --fetch   (reads COMPOSIO_API_KEY; GET requests only)
-  npm run connectors:composio -- draft <toolkit> [--report <file>]
+  npm run connectors:composio -- draft <toolkit> [--report <file>] [--validation-arguments <json>]
   npm run connectors:composio -- check`;
 
 const { positionals, values } = parseArgs({
@@ -28,6 +28,7 @@ const { positionals, values } = parseArgs({
     from: { type: 'string' },
     fetch: { type: 'boolean' },
     report: { type: 'string' },
+    'validation-arguments': { type: 'string' },
   },
 });
 const [command, toolkit] = positionals;
@@ -57,7 +58,9 @@ if (command === 'check') {
     throw new Error(`Expected exactly one snapshot for ${toolkit}; run the snapshot command first`);
   }
   const snapshot = await readSnapshot(toolkit, versions[0].slice(0, -'.json'.length));
-  const { manifest, report } = draftComposioManifest(snapshot, await readManifest(toolkit));
+  const validationArguments = values['validation-arguments'] === undefined
+    ? undefined : JSON.parse(values['validation-arguments']);
+  const { manifest, report } = draftComposioManifest(snapshot, await readManifest(toolkit), { validationArguments });
   await writeFile(
     path.join(MANIFEST_DIRECTORY, `${toolkit}.json`),
     `${JSON.stringify(manifest, null, 2)}\n`,

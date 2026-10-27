@@ -546,5 +546,33 @@ export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
   "semrush": {
     "svg": "<svg viewBox=\"-4.5 -4.5 56 56\" xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\"><path d=\"M32.54 9c-2.22 0-4.65.81-7.35 2.23L11 19h12L0 31h25l-13 7.06L32.9 38c7.84-.2 14.1-6.6 14.1-14.5S40.5 9 32.54 9\" fill=\"#C190FF\"/></svg>",
     "full": true
+  },
+  // Official Trello site icon, served as a static raster.
+  // Source: https://trello.com/ (retrieved 2026-10-27).
+  // Asset: https://www.trello.com/favicon.ico (256 px PNG frame, scaled to 180 px)
+  "trello": {
+    "svg": "<img src=\"/connectors/trello.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Zoom app icon, served as a static raster.
+  // Source: https://developers.zoom.us/ (retrieved 2026-10-27).
+  // Asset: https://developers.zoom.us/favicon.ico (256 px PNG frame, scaled to 180 px)
+  "zoom": {
+    "svg": "<img src=\"/connectors/zoom.png\" alt=\"\">",
+    "raster": true
+  },
+  // Official Pinterest mask icon, filled with Pinterest red #E60023. Embedded for self-hosted/offline rendering.
+  // Source: https://ads.pinterest.com/ (retrieved 2026-10-27).
+  // Asset: https://s.pinimg.com/webapp/pinterest_favicon-70db4fa7.svg
+  "pinterest_ads": {
+    "svg": "<svg viewBox=\"0 0 500 500\" xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\"><path fill=\"#E60023\" d=\"M157.2,481.8c-3.1-28.4-0.9-55.6,5.3-81.9l25-107.7c-4.1-13.1-7.2-28.1-7.2-43.1c0-35,16.9-60,43.4-60 c18.4,0,31.9,12.8,31.9,37.5c0,7.8-1.6,16.6-4.7,26.6L240,289.2c-2.2,6.9-3.1,13.4-3.1,19.1c0,25,19.1,39.1,43.4,39.1 c43.4,0,74.4-45,74.4-103.3c0-65-42.5-106.5-105.3-106.5c-70,0-114.4,45.6-114.4,109c0,25.6,7.8,49.4,23.1,65.6 c-5,8.4-10.3,10-18.4,10c-25,0-48.8-35.3-48.8-83.3c0-83.1,66.6-149.2,160-149.2c98.1,0,159.7,68.4,159.7,152.6 c0,84.9-60,148.6-124.7,148.6c-25.6,0-48.1-10.9-63.8-30.6l-12.8,51.9c-6.9,26.9-17.2,52.2-33.8,76.6 c23.4,7.2,46.6,11.3,74.4,11.3c138.1,0,250.1-111.8,250.1-249.8S388.1,0.1,250,0.1S-0.1,111.9-0.1,249.9 C-0.1,354.5,64.4,444.6,157.2,481.8\"/></svg>",
+    "full": true
+  },
+  // Official Reddit icon from the Reddit for Business site, served as a static raster.
+  // Source: https://business.reddit.com/ (retrieved 2026-10-27).
+  // Asset: https://cdn.prod.website-files.com/685eb01de588fa3e7e23b7c0/68d3919f090a0cf78515d82e_655d0b5f441d17d8e09cf031_Reddit_Favicon_FullColor256.png (scaled to 180 px)
+  "reddit_ads": {
+    "svg": "<img src=\"/connectors/reddit_ads.png\" alt=\"\">",
+    "raster": true
   }
 };

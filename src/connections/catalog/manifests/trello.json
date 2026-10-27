@@ -6,7 +6,7 @@
   },
   "label": "Trello",
   "description": "Find, create, and update cards, lists, and boards the connected account can reach.",
-  "securityDescription": "Trello sign-in opens through Composio. Agents can read every board, list, card, and member the connected Trello account can reach; Chickpea adds no board picker. With write access, Agents can create boards, lists, and cards, comment on cards, and edit cards, including archiving a card or moving it to another list on the same board. Before a move, Chickpea checks that the target list is on the card's board. New boards keep Trello's default visibility. Agents cannot delete anything, change board visibility or permissions, invite people or assign card members, add a board to a Workspace, move a card to another board, copy boards, lists, or cards, or attach files.",
+  "securityDescription": "Trello sign-in opens through Composio. Agents can read every board, list, card, and member the connected Trello account can reach; Chickpea adds no board picker. With write access, Agents can create boards, lists, and cards, comment on cards, and edit cards, including archiving a card or moving it to another list on the same board. Before a move, Chickpea checks that the target list is on the card's board. New boards keep Trello's default visibility. Agents cannot delete anything, change board visibility or permissions, turn on a board's calendar feed, invite people or assign card members, add a board to a Workspace, move a card to another board, copy boards, lists, or cards, or attach files.",
   "preset": {
     "category": "project",
     "accent": "#0052CC"
@@ -27,6 +27,9 @@
     },
     "allowArguments": {},
     "withholdArguments": {
+      "TRELLO_ADD_BOARDS": {
+        "prefs__calendarFeedEnabled": "Turns on the board's iCal feed, a secret URL that shows its cards' due dates to anyone who has it, without sign-in."
+      },
       "TRELLO_GET_MEMBERS_BY_ID_MEMBER": {
         "tokens": "Lists the member's API tokens; token records are credential administration, not board data."
       }
@@ -55,7 +58,8 @@
         "prefs_invitations": "changes sharing, visibility, permissions, membership, or who acts",
         "prefs__invitations": "changes sharing, visibility, permissions, membership, or who acts",
         "prefs_permissionLevel": "changes sharing, visibility, permissions, membership, or who acts",
-        "prefs__permissionLevel": "changes sharing, visibility, permissions, membership, or who acts"
+        "prefs__permissionLevel": "changes sharing, visibility, permissions, membership, or who acts",
+        "prefs__calendarFeedEnabled": "reviewer: Turns on the board's iCal feed, a secret URL that shows its cards' due dates to anyone who has it, without sign-in."
       },
       "input": {
         "type": "object",
@@ -144,11 +148,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Name for the yellow label (0-16384 characters); corresponds to API parameter 'labelNames/yellow'."
-          },
-          "prefs__calendarFeedEnabled": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Whether the calendar feed is enabled; corresponds to API parameter 'prefs/calendarFeedEnabled'."
           }
         },
         "description": "Request schema for `AddBoards`"

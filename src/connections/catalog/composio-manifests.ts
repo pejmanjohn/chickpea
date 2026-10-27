@@ -21,15 +21,19 @@ import microsoftTeams from './manifests/microsoft_teams.json' with { type: 'json
 import oneDrive from './manifests/one_drive.json' with { type: 'json' };
 import outlook from './manifests/outlook.json' with { type: 'json' };
 import pagerduty from './manifests/pagerduty.json' with { type: 'json' };
+import pinterestAds from './manifests/pinterest_ads.json' with { type: 'json' };
 import pipedrive from './manifests/pipedrive.json' with { type: 'json' };
 import quickbooks from './manifests/quickbooks.json' with { type: 'json' };
+import redditAds from './manifests/reddit_ads.json' with { type: 'json' };
 import salesforce from './manifests/salesforce.json' with { type: 'json' };
 import semrush from './manifests/semrush.json' with { type: 'json' };
 import sharePoint from './manifests/share_point.json' with { type: 'json' };
 import square from './manifests/square.json' with { type: 'json' };
+import trello from './manifests/trello.json' with { type: 'json' };
 import webex from './manifests/webex.json' with { type: 'json' };
 import wrike from './manifests/wrike.json' with { type: 'json' };
 import zoho from './manifests/zoho.json' with { type: 'json' };
+import zoom from './manifests/zoom.json' with { type: 'json' };
 import type {
   ManagedAccessLane,
   ManagedConnectorDefinition,
@@ -119,12 +123,22 @@ export interface ComposioManifest {
     aliases?: string[] | undefined;
   };
   validationCapability: string;
+  /**
+   * Fixed arguments for the validation call, such as Zoom's `user_id: "me"`,
+   * checked against its input schema. The model never supplies them.
+   */
+  validationArguments?: Record<string, string | number | boolean> | undefined;
   review: {
     add: string[];
     drop: Record<string, string>;
     allowArguments: Record<string, string[]>;
     /** Arguments no rule withholds that the reviewer keeps from the model, with the reason. */
     withholdArguments?: Record<string, Record<string, string>> | undefined;
+    /**
+     * String enum arguments the reviewer narrows to the listed values, with the reason,
+     * such as a status that may only be set to `PAUSED`.
+     */
+    allowValues?: Record<string, Record<string, { values: string[]; reason: string }>> | undefined;
   };
   capabilities: ComposioManifestCapability[];
 }
@@ -156,11 +170,20 @@ const ManifestShape = v.strictObject({
     aliases: v.optional(v.pipe(v.array(Text(80)), v.minLength(1), v.maxLength(4))),
   }),
   validationCapability: Text(192),
+  validationArguments: v.optional(v.pipe(
+    v.record(Text(128), v.union([Text(200), v.pipe(v.number(), v.finite()), v.boolean()])),
+    v.minEntries(1),
+    v.maxEntries(8),
+  )),
   review: v.strictObject({
     add: v.array(ToolSlug),
     drop: v.record(ToolSlug, Text(240)),
     allowArguments: v.record(ToolSlug, v.pipe(v.array(Text(200)), v.minLength(1))),
     withholdArguments: v.optional(v.record(ToolSlug, v.record(Text(200), Text(240)))),
+    allowValues: v.optional(v.record(ToolSlug, v.record(Text(200), v.strictObject({
+      values: v.pipe(v.array(Text(200)), v.minLength(1)),
+      reason: Text(240),
+    })))),
   }),
   capabilities: v.pipe(v.array(v.strictObject({
     id: Text(192),
@@ -225,8 +248,9 @@ export function parseComposioManifest(value: unknown): ComposioManifest {
     }
   }
   const validation = capabilities.find(({ id }) => id === manifest.validationCapability);
-  if (!validation || validation.lane !== 'read' || validation.input.required) {
-    throw new Error(`Composio manifest ${manifest.toolkit} needs a read validation capability without required input`);
+  if (!validation || validation.lane !== 'read' ||
+      !v.is(compileInputSchema(validation.input), manifest.validationArguments ?? {})) {
+    throw new Error(`Composio manifest ${manifest.toolkit} needs a read validation capability whose input accepts its validationArguments`);
   }
   return { ...manifest, capabilities };
 }
@@ -286,22 +310,25 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
   oneDrive,
   outlook,
   pagerduty,
+  pinterestAds,
   pipedrive,
   quickbooks,
+  redditAds,
   salesforce,
   semrush,
   sharePoint,
   square,
+  trello,
   webex,
   wrike,
   zoho,
+  zoom,
 ].map((value) => parseComposioManifest(value));
 
 /** Reviewed manifests the generator still checks but the catalog does not ship, with the reason. */
 export const HELD_COMPOSIO_MANIFESTS: Readonly<Record<string, string>> = {
-  google_maps: "Validation runs with no arguments, and every Google Maps read needs input: geocoding needs an address, coordinates, or a place ID, and Composio's own current-user check uses a fixed place ID",
+  google_maps: "Every Google Maps read needs input, so validation needs validationArguments nobody has chosen and checked: geocoding needs an address, coordinates, or a place ID, and Composio's own current-user check uses a fixed place ID",
   linkedin: "Its only write, posting, publishes by default: lifecycleState defaults to PUBLISHED and visibility is required, so no withheld argument can hold a post as a draft, and every connector ships read and write tools",
-  trello: "Composio's hosted Connect Link for its managed OAuth1 config fails with \"Link session not found or expired\"",
 };
 
 function parseInputSchema(value: unknown, depth: number, where: string): ManifestInputSchema {
