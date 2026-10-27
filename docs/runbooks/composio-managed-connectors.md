@@ -11,13 +11,15 @@ Chickpea owns:
 - team versus personal ownership and account selection;
 - stable per-organization or per-membership Composio user IDs;
 - the capability ceiling granted to each account and Agent binding;
-- write confirmation and current-member authorization;
+- the read or read-and-write lane of each connection, and current-member authorization;
 - schedule dependency state, local revocation state, and reconnect UX;
 - the small, stable tool surface exposed to the model.
 
 Composio owns OAuth credentials, token refresh, Connect Link, and upstream Google API execution. Chickpea persists only the opaque connected-account reference and the non-secret policy. The remote principal and account reference are omitted from the durable runtime plan and model context.
 
 Every invocation re-reads the live Chickpea account and Agent binding, pins one exact Composio account, and executes one reviewed Composio tool at a dated toolkit version. Multiple accounts that could satisfy the same tool group fail closed instead of making an implicit account choice.
+
+Connector writes do not ask for a per-call confirmation. The Admin's **Read** or **Read and write** choice for the connection is the write boundary: a read-only connection never receives write tools, and a write-lane capability runs whenever the Agent judges that it fits the task. Assign each capability's lane carefully, because a tool that changes data but sits in the read lane would run on a read-only connection.
 
 ## Readiness matrix
 
@@ -156,7 +158,7 @@ HubSpot is bound to one exact Composio connected account. During validation, Chi
 | `hubspot.meetings.create` | `HUBSPOT_CREATE_MEETING` | `hubspot_create_meeting` |
 | `hubspot.associations.create` | `HUBSPOT_CREATE_OBJECT_ASSOCIATION` | `hubspot_create_association` |
 
-Search is limited to contacts, companies, deals, tickets, notes, tasks, meetings, and calls. Chickpea accepts one bounded filter group, one sort, a page size of at most 100, and only the reviewed common property set for each object type. Creates and updates use typed fields that Chickpea converts to a provider property map; the model cannot submit arbitrary/custom property dictionaries. Returned records include stable IDs, selected allowlisted properties, display names, timestamps, pipeline/stage values where requested, and a pagination cursor. Every create, update, or association requires Chickpea's normal side-effect confirmation. A timeout after dispatch is ambiguous and must be verified by stable record ID/search before retrying.
+Search is limited to contacts, companies, deals, tickets, notes, tasks, meetings, and calls. Chickpea accepts one bounded filter group, one sort, a page size of at most 100, and only the reviewed common property set for each object type. Creates and updates use typed fields that Chickpea converts to a provider property map; the model cannot submit arbitrary/custom property dictionaries. Returned records include stable IDs, selected allowlisted properties, display names, timestamps, pipeline/stage values where requested, and a pagination cursor. Creates, updates, and associations are available only on a **Read and write** connection. A timeout after dispatch is ambiguous and must be verified by stable record ID/search before retrying.
 
 Privacy/GDPR operations, archive/delete/merge, bulk and import APIs, schema and pipeline administration, workflows, marketing publication, raw API passthrough, and triggers are absent. As of 2026-08-23, Composio says its default HubSpot OAuth app is still awaiting HubSpot approval, so users may see a **Connecting an unverified app** warning. The connection can work after explicit acceptance. Composio-managed auth can remove only optional scopes already present on that app; use a custom auth config later if Chickpea needs its own approved branding or a different scope set. HubSpot triggers are intentionally disabled because Composio requires each user to provide a HubSpot app ID and developer API key, and Chickpea has no trigger-ingestion contract.
 
@@ -206,7 +208,7 @@ After OAuth, Chickpea lists accessible roots, inspects whether each is a manager
 
 The model never provides GAQL. Each report builds a fixed query from a reviewed resource, fixed identity fields, an allowlist of eight metrics, a valid date range of at most 366 days, optional enabled/paused status, one allowlisted order field, and at most 500 rows. The provider customer ID is inserted after Chickpea authorization. Free-form fields, queries, summary settings, and raw operation arrays are absent.
 
-Every create is single-entity and paused. Rename and pause are reversible writes. Campaign, ad-group, keyword, or ad enablement is external publication. Budget create/update is `spend_or_budget`; it requires the amount in micros and the selected account's three-letter currency, and Chickpea checks that currency against structured metadata captured during resource selection rather than parsing the display label. A customer whose currency is absent cannot be selected for a spend lane. The normal side-effect gate must show the selected account plus the campaign/entity/change; budget confirmation must show the currency and amount. A timeout or post-dispatch provider failure after any mutation is ambiguous: do not retry until an allowlisted report or stable resource ID proves the remote state.
+Every create is single-entity and paused. Rename and pause are reversible writes. Campaign, ad-group, keyword, or ad enablement is external publication. Budget create/update is `spend_or_budget`; it requires the amount in micros and the selected account's three-letter currency, and Chickpea checks that currency against structured metadata captured during resource selection rather than parsing the display label. A customer whose currency is absent cannot be selected for a spend lane, and a budget call whose currency differs from the selected account fails before dispatch. A timeout or post-dispatch provider failure after any mutation is ambiguous: do not retry until an allowlisted report or stable resource ID proves the remote state.
 
 Billing, user/access management, account creation, conversion upload, customer lists, labels, bidding-strategy/asset/targeting passthrough, remove/delete, partial-failure bulk mutation, raw GAQL, and arbitrary API calls are absent.
 
@@ -235,7 +237,7 @@ YouTube remains pending after OAuth until an Admin selects at least one discover
 | Public discovery | bounded search | `YOUTUBE_SEARCH_YOU_TUBE` |
 | Publication | comment/reply, bounded upload, metadata/visibility, thumbnail | Narrow YouTube write tools |
 
-Every write is `external_publish`, including a private playlist or upload, because it changes a durable third-party account. Confirmation must identify the selected channel and the visibility or audience-impacting fields. Delete, account/permission administration, subscriptions, ratings, reports, bulk moderation, arbitrary caption content, raw API calls, and passthrough provider tools are absent.
+Every write is `external_publish`, including a private playlist or upload, because it changes a durable third-party account. Writes are available only on a **Read and write** connection and act only on the selected channel. Delete, account/permission administration, subscriptions, ratings, reports, bulk moderation, arbitrary caption content, raw API calls, and passthrough provider tools are absent.
 
 Uploads accept only a model-visible `/workspace/...` reference. Chickpea freezes that file under a trusted random name, caps it at 8 MB, checks the declared MP4, WebM, or QuickTime signature, and keeps the bytes only for the invocation. The provider receives a Composio-staged object, never the model's path. A successful upload, video/thumbnail update, playlist mutation, or comment mutation is read back by stable ID before the tool reports verified success. If dispatch times out or read-back cannot prove the resource, the result is ambiguous and must never be retried automatically.
 
@@ -447,7 +449,7 @@ Before enabling a customer workspace, prove in staging:
 - personal and team ownership, including two Google accounts for one member;
 - wrong-user polling rejection, stale-project rejection, and completion replay rejection;
 - expired-account webhook, fail-closed tool calls, reconnect-in-place, and schedule review;
-- exact remote-account deletion, duplicate-account survivor behavior, provider outage behavior, result redaction, and side-effect confirmation;
+- exact remote-account deletion, duplicate-account survivor behavior, provider outage behavior, result redaction, and the absence of write tools on read-only connections;
 - p50/p95 connector latency, Composio operation volume, rate-limit headroom, and hosted cost from the connector usage report.
 
 ## Operational limits

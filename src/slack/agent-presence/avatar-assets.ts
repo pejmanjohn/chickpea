@@ -11,8 +11,8 @@ import { base64ToBytes } from '../../security/base64url.ts';
 import { fnv1aHash } from './hash.ts';
 
 // Uploads are stored as sent, minus embedded metadata. The Worker no longer
-// decodes or resizes images: the wasm codec that did so cost 600 KiB of the
-// compressed Worker size budget for a cosmetic step. The Admin UI downscales
+// decodes or resizes images: the wasm codec that did so added about 600 KiB
+// (gzip) to the Worker for a cosmetic step. The Admin UI downscales
 // oversized photos in the browser before upload, and these caps bound what a
 // direct API client can store per revision.
 const MAX_AGENT_AVATAR_BYTES = 512 * 1_024;
