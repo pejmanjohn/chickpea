@@ -46,7 +46,7 @@ const SLACK_LOGO_DATA_URL =
 /**
  * Values the Admin application script reads at start-up. The script itself is
  * a static asset (see assets/admin-ui); it used to be inlined here, which put
- * ~250 KiB of compressed browser code inside the Worker's size budget.
+ * ~250 KiB (gzip) of browser code inside the Worker's upload budget.
  */
 export function adminUiConfig(input: {
   isCloudflare: boolean;

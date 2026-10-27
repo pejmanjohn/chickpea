@@ -59,7 +59,7 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
         <section class="flow-content">
           ${agentIdentity(agent, input.avatarUrl)}
           <h1 id="flow-title">Connect ${escapeHtml(connector)} to ${escapeHtml(agent.name)}</h1>
-          <p class="setup-lead">${escapeHtml(agent.name)} can use ${escapeHtml(connector)} when you ask. <br>Updates still require your confirmation.</p>
+          <p class="setup-lead">${escapeHtml(agent.name)} can use ${escapeHtml(connector)} when you ask.</p>
           <section class="setup-card">
             <div class="connector-row">
               ${connectorLogo(setup)}

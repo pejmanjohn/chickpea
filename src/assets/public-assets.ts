@@ -10,7 +10,7 @@ export const ONBOARDING_ASSET_FILES = [
 ] as const;
 
 // The Admin application ships as static assets rather than inline markup so
-// the Cloudflare Worker's compressed size budget holds server code only.
+// the Cloudflare Worker's size budget holds server code only.
 export const ADMIN_UI_SCRIPT_PATH = 'admin-ui/admin.js';
 export const ADMIN_UI_STYLESHEET_PATH = 'admin-ui/admin.css';
 export const ADMIN_UI_ASSET_PATHS = [ADMIN_UI_SCRIPT_PATH, ADMIN_UI_STYLESHEET_PATH] as const;

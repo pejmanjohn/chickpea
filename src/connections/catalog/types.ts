@@ -23,7 +23,7 @@ export interface ManagedCapabilityDefinition {
   maxResultBytes: number;
   /** Optional closed grammar correction; never rendered copy. */
   semantic?: ManagedCapabilitySemanticOverride;
-  /** Human-readable action checked by Chickpea's side-effect gate. */
+  /** Human-readable change summary, required on non-read capabilities. No runtime gate reads it. */
   sideEffectLabel?: string;
   /** Conservative provider quota reservation made before remote dispatch. */
   quota?: readonly {
