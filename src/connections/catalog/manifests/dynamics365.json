@@ -1,0 +1,840 @@
+{
+  "toolkit": "dynamics365",
+  "version": "20261027_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Dynamics 365",
+  "description": "Search accounts, contacts, leads, opportunities, and cases, and create or update records.",
+  "securityDescription": "Dynamics 365 sign-in opens through Composio, which also asks for the organization's Dynamics subdomain. Agents act as the signed-in Dynamics user and read the accounts, contacts, leads, campaigns, opportunities, cases, phone calls, activities, and sales order lines that user can see. With write access, Agents can create accounts, contacts, leads, opportunities, cases, tasks, and text notes, and update leads, opportunities, and cases, one record per call. A new contact or lead can include its email address; automations the organization set up can still email new records, as they do for records people create. Agents cannot delete records, assign a record to another owner, change an existing lead's email address or phone number, attach files to notes, create or change invoices, sales orders, products, or price lists, send email, or manage users, roles, security, or table definitions.",
+  "preset": {
+    "category": "business",
+    "accent": "#0B53CE"
+  },
+  "validationCapability": "dynamics365.who_am_i",
+  "review": {
+    "add": [
+      "DYNAMICS365_CREATE_TASK",
+      "DYNAMICS365_DYNAMICSCRM_CREATE_CASE",
+      "DYNAMICS365_DYNAMICSCRM_CREATE_CONTACT",
+      "DYNAMICS365_DYNAMICSCRM_CREATE_LEAD",
+      "DYNAMICS365_DYNAMICSCRM_CREATE_OPPORTUNITY",
+      "DYNAMICS365_DYNAMICSCRM_GET_ALL_LEADS",
+      "DYNAMICS365_DYNAMICSCRM_GET_A_LEAD",
+      "DYNAMICS365_DYNAMICSCRM_UPDATE_CASE",
+      "DYNAMICS365_DYNAMICSCRM_UPDATE_LEAD",
+      "DYNAMICS365_DYNAMICSCRM_UPDATE_OPPORTUNITY",
+      "DYNAMICS365_QUERY_ACCOUNTS",
+      "DYNAMICS365_QUERY_CAMPAIGNS",
+      "DYNAMICS365_QUERY_CONTACTS",
+      "DYNAMICS365_QUERY_ENTITY_DATA"
+    ],
+    "drop": {},
+    "allowArguments": {
+      "DYNAMICS365_DYNAMICSCRM_CREATE_CONTACT": [
+        "emailaddress1"
+      ],
+      "DYNAMICS365_DYNAMICSCRM_CREATE_LEAD": [
+        "emailaddress1"
+      ]
+    },
+    "withholdArguments": {
+      "DYNAMICS365_CREATE_ANNOTATION": {
+        "document_body": "Notes are text only; attaching files is out of scope.",
+        "file_name": "Notes are text only; attaching files is out of scope.",
+        "mime_type": "Notes are text only; attaching files is out of scope."
+      }
+    }
+  },
+  "capabilities": [
+    {
+      "id": "dynamics365.create_annotation",
+      "tool": "DYNAMICS365_CREATE_ANNOTATION",
+      "toolName": "dynamics365_create_annotation",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Create a text or attachment note, optionally linked to a supported record.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dynamics 365: Create Annotation",
+      "withheldArguments": {
+        "file_name": "reviewer: Notes are text only; attaching files is out of scope.",
+        "mime_type": "reviewer: Notes are text only; attaching files is out of scope.",
+        "document_body": "reviewer: Notes are text only; attaching files is out of scope."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "Note title."
+          },
+          "note_text": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "description": "Text content of the note."
+          },
+          "parent_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Parent record GUID; supply together with parent_type."
+          },
+          "parent_type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "account",
+              "contact",
+              "incident",
+              "lead",
+              "opportunity",
+              "product",
+              "invoice",
+              "salesorder",
+              "campaign",
+              "email",
+              "task",
+              "appointment",
+              "phonecall",
+              "knowledgearticle",
+              "workflow"
+            ],
+            "description": "Supported parent record type for the note."
+          }
+        },
+        "required": [
+          "subject"
+        ],
+        "description": "Parameters for creating a Dynamics 365 note."
+      }
+    },
+    {
+      "id": "dynamics365.create_task",
+      "tool": "DYNAMICS365_CREATE_TASK",
+      "toolName": "dynamics365_create_task",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Create a Dataverse task activity and return its selected representation.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dynamics 365: Create Task",
+      "input": {
+        "type": "object",
+        "properties": {
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated Dataverse task fields to return after creation. Defaults to activityid."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Task subject."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Task details."
+          },
+          "priority_code": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2,
+            "description": "Task priority: 0 low, 1 normal, or 2 high."
+          },
+          "scheduled_end": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Due date and time in ISO 8601 format."
+          },
+          "scheduled_start": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Scheduled start in ISO 8601 format."
+          },
+          "percent_complete": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Task completion percentage from 0 to 100."
+          }
+        },
+        "required": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "id": "dynamics365.dynamicscrm_create_account",
+      "tool": "DYNAMICS365_DYNAMICSCRM_CREATE_ACCOUNT",
+      "toolName": "dynamics365_dynamicscrm_create_account",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new account entity record in Dynamics CRM using the Web API.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dynamics 365: Create Account",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name of the new account to be created."
+          },
+          "revenue": {
+            "type": "number",
+            "description": "The revenue associated with the account."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A description of the account."
+          },
+          "creditonhold": {
+            "type": "boolean",
+            "description": "Indicates whether the account is on credit hold."
+          },
+          "accountcategorycode": {
+            "type": "integer",
+            "description": "The category code of the account."
+          }
+        }
+      }
+    },
+    {
+      "id": "dynamics365.dynamicscrm_create_case",
+      "tool": "DYNAMICS365_DYNAMICSCRM_CREATE_CASE",
+      "toolName": "dynamics365_dynamicscrm_create_case",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new case (incident) entity record in Dynamics CRM using the Web API.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dynamics 365: Create Case",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The subject or title of the case."
+          },
+          "account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A reference to the related account. Format: '/accounts(GUID)'"
+          },
+          "contact_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A reference to the related contact. Format: '/contacts(GUID)'"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A detailed description of the issue or inquiry."
+          },
+          "prioritycode": {
+            "type": "integer",
+            "description": "The priority level of the case (e.g., 1 for Low, 2 for Normal, 3 for High)."
+          },
+          "caseorigincode": {
+            "type": "integer",
+            "description": "The source of the case. Valid values: 1 (Phone), 2 (Email), 3 (Web)."
+          }
+        },
+        "description": "Request model for creating a case in Dynamics CRM."
+      }
+    },
+    {
+      "id": "dynamics365.dynamicscrm_create_contact",
+      "tool": "DYNAMICS365_DYNAMICSCRM_CREATE_CONTACT",
+      "toolName": "dynamics365_dynamicscrm_create_contact",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Creates a new contact entity record in Dynamics CRM using the Web API.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dynamics 365: Create Contact",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "jobtitle": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The job title of the contact."
+          },
+          "lastname": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The last name of the contact."
+          },
+          "firstname": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The first name of the contact."
+          },
+          "telephone1": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The primary telephone number of the contact."
+          },
+          "mobilephone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The mobile phone number of the contact."
+          },
+          "address1_city": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The city of the contact's address."
+          },
+          "emailaddress1": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The primary email address of the contact."
+          },
+          "address1_country": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The country of the contact's address."
+          },
+          "address1_postalcode": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The postal code of the contact's address."
+          },
+          "address1_stateorprovince": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The state or province of the contact's address."
+          }
+        }
+      }
+    },
+    {
+      "id": "dynamics365.dynamicscrm_create_lead",
+      "tool": "DYNAMICS365_DYNAMICSCRM_CREATE_LEAD",
+      "toolName": "dynamics365_dynamicscrm_create_lead",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Creates a new lead entity record in Dynamics CRM using the Web API.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dynamics 365: Create Lead",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A brief description or title for the lead."
+          },
+          "lastname": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The last name of the lead."
+          },
+          "firstname": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The first name of the lead."
+          },
+          "telephone1": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The primary telephone number of the lead."
+          },
+          "companyname": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The company name associated with the lead. May be enforced as required by some CRM configurations; omitting it can cause the request to be rejected."
+          },
+          "emailaddress1": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The primary email address of the lead."
+          }
+        }
+      }
+    },
+    {
+      "id": "dynamics365.dynamicscrm_create_opportunity",
+      "tool": "DYNAMICS365_DYNAMICSCRM_CREATE_OPPORTUNITY",
+      "toolName": "dynamics365_dynamicscrm_create_opportunity",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new opportunity entity record in Dynamics CRM using the Web API. Some CRM configurations enforce `estimatedclosedate` and a transaction currency at the server level even though they are schema-optional; omitting them may cause the request to be rejected.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dynamics 365: Create Opportunity",
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name or title of the opportunity. This is a required field."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A brief description of the opportunity."
+          },
+          "estimatedvalue": {
+            "type": "number",
+            "description": "The anticipated revenue from the opportunity."
+          },
+          "estimatedclosedate": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The expected close date of the opportunity in 'YYYY-MM-DD' format."
+          },
+          "customer_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The GUID of the related account (without curly braces). Optional."
+          },
+          "customer_contact_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The GUID of the related contact (without curly braces). Optional."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "id": "dynamics365.dynamicscrm_get_a_lead",
+      "tool": "DYNAMICS365_DYNAMICSCRM_GET_A_LEAD",
+      "toolName": "dynamics365_dynamicscrm_get_a_lead",
+      "lane": "read",
+      "effect": "read",
+      "description": "Dynamicscrm get a lead",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "lead_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the lead to retrieve (GUID format) Use the value exactly as returned by Dynamics CRM tools — do not reformat or truncate."
+          }
+        },
+        "required": [
+          "lead_id"
+        ]
+      }
+    },
+    {
+      "id": "dynamics365.dynamicscrm_get_all_leads",
+      "tool": "DYNAMICS365_DYNAMICSCRM_GET_ALL_LEADS",
+      "toolName": "dynamics365_dynamicscrm_get_all_leads",
+      "lane": "read",
+      "effect": "read",
+      "description": "Dynamicscrm get all leads",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "description": "Maximum number of leads to return"
+          },
+          "skip": {
+            "type": "integer",
+            "description": "Number of leads to skip for pagination"
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData filter criteria for leads (e.g., contains(fullname,'John')) Date filters require ISO 8601 format (e.g., createdon gt 2024-01-01T00:00:00Z)."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of fields to return (e.g., fullname,emailaddress1)"
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Field to order by (e.g., createdon desc)"
+          }
+        }
+      }
+    },
+    {
+      "id": "dynamics365.dynamicscrm_update_case",
+      "tool": "DYNAMICS365_DYNAMICSCRM_UPDATE_CASE",
+      "toolName": "dynamics365_dynamicscrm_update_case",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing case (incident) entity record in Dynamics CRM using the Web API.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dynamics 365: Update Case",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The subject or title of the case."
+          },
+          "case_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier (GUID) of the case to update."
+          },
+          "statuscode": {
+            "type": "integer",
+            "description": "The current status of the case (e.g., 1 for Active, 2 for In Progress, 3 for Resolved)."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A detailed description of the issue or inquiry."
+          },
+          "prioritycode": {
+            "type": "integer",
+            "description": "The priority level of the case (e.g., 1 for High, 2 for Normal, 3 for Low)."
+          }
+        },
+        "required": [
+          "case_id"
+        ]
+      }
+    },
+    {
+      "id": "dynamics365.dynamicscrm_update_lead",
+      "tool": "DYNAMICS365_DYNAMICSCRM_UPDATE_LEAD",
+      "toolName": "dynamics365_dynamicscrm_update_lead",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing lead entity record in Dynamics CRM using the Web API.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dynamics 365: Update Lead",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "telephone1": "changes who the record belongs to or how a person is identified",
+        "emailaddress1": "names an address a message goes to or comes from"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "lead_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier (GUID) of the lead to update. Must be passed exactly as returned by Dynamics CRM lookup tools — no added braces or modified dash formatting."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A brief description or title for the lead."
+          },
+          "lastname": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Last name of the lead."
+          },
+          "firstname": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "First name of the lead."
+          },
+          "companyname": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Name of the company associated with the lead."
+          }
+        },
+        "required": [
+          "lead_id"
+        ]
+      }
+    },
+    {
+      "id": "dynamics365.dynamicscrm_update_opportunity",
+      "tool": "DYNAMICS365_DYNAMICSCRM_UPDATE_OPPORTUNITY",
+      "toolName": "dynamics365_dynamicscrm_update_opportunity",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing opportunity entity record in Dynamics CRM using the Web API. Some updates may be rejected if required relational fields (e.g., transactioncurrency) are absent from the record, even though they are not exposed as explicit parameters.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Dynamics 365: Update Opportunity",
+      "withheldArguments": {
+        "user_id": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The name or title of the opportunity."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A brief description of the opportunity."
+          },
+          "estimatedvalue": {
+            "type": "number",
+            "description": "The anticipated revenue from the opportunity."
+          },
+          "opportunity_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier (GUID) of the opportunity to update. Use the GUID exactly as returned by CRM lookup or list tools — reformatting the value will cause the update to fail."
+          },
+          "salesstagecode": {
+            "type": "integer",
+            "description": "The current sales stage (e.g., 1 for Qualify, 2 for Develop, 3 for Propose)."
+          },
+          "estimatedclosedate": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The expected close date of the opportunity in 'YYYY-MM-DD' format."
+          },
+          "opportunityratingcode": {
+            "type": "integer",
+            "description": "The rating of the opportunity (e.g., 1 for Cold, 2 for Warm, 3 for Hot)."
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ]
+      }
+    },
+    {
+      "id": "dynamics365.query_accounts",
+      "tool": "DYNAMICS365_QUERY_ACCOUNTS",
+      "toolName": "dynamics365_query_accounts",
+      "lane": "read",
+      "effect": "read",
+      "description": "List or filter Dynamics accounts with projection, ordering, and bounded results. Optionally include the matching count, expand related resources, or aggregate and group records. Returns an OData next link when another page is available.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "description": "Maximum number of accounts to return"
+          },
+          "apply": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $apply expression for aggregation or grouping"
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $expand expression for related resources"
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $filter expression"
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated account fields to return"
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData ordering expression"
+          },
+          "include_count": {
+            "type": "boolean",
+            "description": "Include the matching record count"
+          }
+        }
+      }
+    },
+    {
+      "id": "dynamics365.query_campaigns",
+      "tool": "DYNAMICS365_QUERY_CAMPAIGNS",
+      "toolName": "dynamics365_query_campaigns",
+      "lane": "read",
+      "effect": "read",
+      "description": "List, filter, expand, or aggregate Dynamics campaigns. Use this action to select campaign fields, order and bound results, include related records, request a matching count, or group and aggregate campaign data with OData. Results include an OData next link when another page is available.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "description": "Maximum number of campaigns to return"
+          },
+          "apply": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $apply aggregation or grouping expression"
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $expand expression for related records"
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $filter expression"
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated campaign fields to return"
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData ordering expression"
+          },
+          "include_count": {
+            "type": "boolean",
+            "description": "Include the matching record count"
+          }
+        }
+      }
+    },
+    {
+      "id": "dynamics365.query_contacts",
+      "tool": "DYNAMICS365_QUERY_CONTACTS",
+      "toolName": "dynamics365_query_contacts",
+      "lane": "read",
+      "effect": "read",
+      "description": "List or filter Dynamics contacts with selected fields and ordering. Optionally include the matching count, expand related resources, or aggregate and group records. Results are bounded and include an OData next link when another page is available.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "description": "Maximum number of contacts to return"
+          },
+          "apply": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $apply expression for aggregation or grouping"
+          },
+          "expand": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $expand expression for related resources"
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $filter expression"
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated contact fields to return"
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData ordering expression"
+          },
+          "include_count": {
+            "type": "boolean",
+            "description": "Include the matching record count"
+          }
+        }
+      }
+    },
+    {
+      "id": "dynamics365.query_entity_data",
+      "tool": "DYNAMICS365_QUERY_ENTITY_DATA",
+      "toolName": "dynamics365_query_entity_data",
+      "lane": "read",
+      "effect": "read",
+      "description": "Query supported CRM collections and return one bounded page plus its next link.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "description": "Maximum number of records to return, from 1 through 5000."
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData $filter expression."
+          },
+          "select": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated Dataverse property names."
+          },
+          "orderby": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "OData ordering expression."
+          },
+          "skiptoken": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Exact $skiptoken value from a prior @odata.nextLink."
+          },
+          "entity_set": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "activitypointers",
+              "contacts",
+              "incidents",
+              "opportunities",
+              "phonecalls",
+              "salesorderdetails"
+            ],
+            "description": "Dataverse collection to query: contacts, incidents, phonecalls, activitypointers, opportunities, or salesorderdetails."
+          }
+        },
+        "required": [
+          "entity_set"
+        ]
+      }
+    },
+    {
+      "id": "dynamics365.who_am_i",
+      "tool": "DYNAMICS365_WHO_AM_I",
+      "toolName": "dynamics365_who_am_i",
+      "lane": "read",
+      "effect": "read",
+      "description": "Return the connected Dataverse caller's identity IDs.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

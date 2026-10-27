@@ -1,0 +1,761 @@
+{
+  "toolkit": "cal",
+  "version": "20261015_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Cal.com",
+  "description": "Review bookings and availability, reschedule bookings, and update availability schedules.",
+  "securityDescription": "Cal.com sign-in opens through Composio. Agents can read the signed-in person's bookings and attendees, event types, available slots, availability schedules, connected calendars and busy times, and their teams' bookings. With write access, Agents can reschedule a booking, which notifies its attendees, hold an open slot briefly, and change the person's availability schedules. Agents cannot create, cancel, decline, or confirm bookings, add or edit attendees, change event types, prices, or booking links, connect calendars or apps, or manage teams, organizations, webhooks, or API keys.",
+  "preset": {
+    "category": "business",
+    "accent": "#111111"
+  },
+  "validationCapability": "cal.retrieve_my_information",
+  "review": {
+    "add": [
+      "CAL_FETCH_ALL_BOOKINGS",
+      "CAL_FETCH_SCHEDULE_BY_ID",
+      "CAL_GET_AVAILABLE_SLOTS_INFO",
+      "CAL_RESCHEDULE_BOOKING_BY_UID",
+      "CAL_RETRIEVE_BOOKING_DETAILS_BY_UID",
+      "CAL_RETRIEVE_EVENT_TYPE_BY_ID",
+      "CAL_RETRIEVE_SCHEDULES_LIST",
+      "CAL_UPDATE_SCHEDULE_BY_ID"
+    ],
+    "drop": {
+      "CAL_CANCEL_BOOKING_VIA_UID": "Cancelling emails every attendee and gives the slot away; it cannot be undone without the attendee booking again.",
+      "CAL_CONNECT_TO_CALENDAR": "Starts or checks an external calendar connection; calendar integration setup is out of scope.",
+      "CAL_EDIT_BOOKING_BY_ID": "Its status field can set CANCELLED or REJECTED, which cancels the booking and notifies attendees; reschedule_booking_by_uid covers moving a booking.",
+      "CAL_EDIT_EVENT_TYPE_BY_ID": "Changes a public booking page: its price and currency, a redirect URL every booker is sent to, and the slug in its booking link.",
+      "CAL_GET_ORGANIZATION_ID": "Organization administration is out of scope.",
+      "CAL_POST_NEW_BOOKING_REQUEST": "Creating a booking emails an invitation to the attendee and every guest, who can be anyone.",
+      "CAL_RETRIEVE_TEAM_MEMBERSHIPS": "Team membership tools are out of scope.",
+      "CAL_RETRIEVE_USERS_IN_ORGANIZATION": "Organization membership tools are out of scope."
+    },
+    "allowArguments": {},
+    "withholdArguments": {
+      "CAL_RESCHEDULE_BOOKING_BY_UID": {
+        "rescheduledBy": "Names who rescheduled the booking; the event type owner's email confirms the new time automatically, so the Agent would act as the owner."
+      }
+    }
+  },
+  "capabilities": [
+    {
+      "id": "cal.fetch_all_bookings",
+      "tool": "CAL_FETCH_ALL_BOOKINGS",
+      "toolName": "cal_fetch_all_bookings",
+      "lane": "read",
+      "effect": "read",
+      "description": "Fetches a list of bookings, optionally filtered by status, attendee, date range, or by event/team IDs (which must belong to/include the authenticated user respectively), with support for pagination and sorting.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "description": "Number of bookings to skip from the beginning of results (for pagination)."
+          },
+          "take": {
+            "type": "integer",
+            "description": "Maximum number of bookings to return (for pagination)."
+          },
+          "status": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "upcoming",
+                "recurring",
+                "past",
+                "cancelled",
+                "unconfirmed"
+              ]
+            },
+            "maxItems": 100,
+            "description": "Filter bookings by status. Provide a list of status values (e.g., `[\"upcoming\", \"past\"]`)."
+          },
+          "teamId": {
+            "type": "integer",
+            "description": "Filter bookings by a single team ID (numeric) of which the user is a member."
+          },
+          "sortEnd": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort results by booking end time."
+          },
+          "teamsIds": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings by one or more team IDs (comma-separated numeric IDs) of which the user is a member."
+          },
+          "beforeEnd": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings ending before this ISO 8601 date or date-time string."
+          },
+          "sortStart": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort results by booking start time."
+          },
+          "afterStart": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings starting after this ISO 8601 date or date-time string."
+          },
+          "eventTypeId": {
+            "type": "integer",
+            "description": "Filter bookings by a single event type ID (numeric) belonging to the user."
+          },
+          "sortCreated": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort results by booking creation time."
+          },
+          "attendeeName": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings by the name of an attendee."
+          },
+          "eventTypeIds": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings by one or more event type IDs (comma-separated numeric IDs) belonging to the user."
+          },
+          "attendeeEmail": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings by the exact email address of an attendee."
+          }
+        },
+        "description": "Request schema for `FetchAllBookings`"
+      }
+    },
+    {
+      "id": "cal.fetch_schedule_by_id",
+      "tool": "CAL_FETCH_SCHEDULE_BY_ID",
+      "toolName": "cal_fetch_schedule_by_id",
+      "lane": "read",
+      "effect": "read",
+      "description": "Fetches comprehensive details for a specific, existing schedule using its `scheduleId`.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "scheduleId": {
+            "type": "integer",
+            "description": "Unique identifier of the schedule to retrieve."
+          }
+        },
+        "required": [
+          "scheduleId"
+        ],
+        "description": "Request schema for fetching detailed information about a specific schedule by its ID."
+      }
+    },
+    {
+      "id": "cal.get_available_slots_info",
+      "tool": "CAL_GET_AVAILABLE_SLOTS_INFO",
+      "toolName": "cal_get_available_slots_info",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves available time slots for scheduling by considering existing bookings and availability, based on criteria like a specified time range and event type.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "endTime": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "End date and time in UTC (ISO 8601 format) until which to fetch available slots. Must be after `startTime`."
+          },
+          "orgSlug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug identifying the organization to which the event type or users belong. This can be used to scope the availability search within a specific organization."
+          },
+          "duration": {
+            "type": "integer",
+            "description": "The desired duration of the time slots in minutes. This is typically used for dynamic events where the slot length is not fixed by the event type."
+          },
+          "timeZone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The IANA time zone identifier (e.g., 'America/New_York', 'Europe/Berlin', 'UTC') in which the available slots should be calculated and returned. If omitted, a default timezone may apply."
+          },
+          "startTime": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Start date and time in UTC (ISO 8601 format) from which to fetch available slots. Must be before `endTime`."
+          },
+          "slotFormat": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "range",
+              "time"
+            ],
+            "description": "Determines the format of the returned slot times. Use \"range\" to get start and end times for each slot; use \"time\" to get only the start times."
+          },
+          "eventTypeId": {
+            "type": "integer",
+            "description": "Unique numeric identifier for the event type."
+          },
+          "usernameList": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Required for dynamic or collective event types to specify the users whose availability should be considered."
+          },
+          "eventTypeSlug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The URL-friendly string identifier (slug) of the event type. Can be used as an alternative to `eventTypeId`."
+          },
+          "rescheduleUid": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of an existing booking that is being rescheduled. Providing this helps find slots suitable for the reschedule context."
+          }
+        },
+        "required": [
+          "startTime",
+          "endTime",
+          "eventTypeId"
+        ],
+        "description": "Defines the parameters for requesting available time slots."
+      }
+    },
+    {
+      "id": "cal.get_destination_calendars",
+      "tool": "CAL_GET_DESTINATION_CALENDARS",
+      "toolName": "cal_get_destination_calendars",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all destination calendars configured for the authenticated user. Use when you need to find where new bookings will be created.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request schema for retrieving destination calendars."
+      }
+    },
+    {
+      "id": "cal.get_team_bookings",
+      "tool": "CAL_GET_TEAM_BOOKINGS",
+      "toolName": "cal_get_team_bookings",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all bookings for a specified team, optionally filtered by status, attendee details, date ranges, or event type IDs, with support for pagination and sorting.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "description": "Number of bookings to skip from the beginning of results (for pagination)."
+          },
+          "take": {
+            "type": "integer",
+            "description": "Maximum number of bookings to return (for pagination)."
+          },
+          "status": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "enum": [
+                "upcoming",
+                "recurring",
+                "past",
+                "cancelled",
+                "unconfirmed"
+              ],
+              "description": "Status values for filtering bookings."
+            },
+            "maxItems": 100,
+            "description": "Filter bookings by status. Provide a list of status values to filter by multiple statuses."
+          },
+          "teamId": {
+            "type": "integer",
+            "description": "The unique numeric identifier of the team whose bookings you want to retrieve."
+          },
+          "sortEnd": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort order for end time."
+          },
+          "beforeEnd": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings ending before this ISO 8601 date or date-time string."
+          },
+          "sortStart": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort order for start time."
+          },
+          "afterStart": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings starting after this ISO 8601 date or date-time string."
+          },
+          "bookingUid": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings by the unique booking UID."
+          },
+          "eventTypeId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings by a single event type ID belonging to the team."
+          },
+          "sortCreated": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort order for creation time."
+          },
+          "attendeeName": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings by the name of an attendee."
+          },
+          "eventTypeIds": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings by one or more event type IDs (comma-separated) belonging to the team."
+          },
+          "attendeeEmail": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Filter bookings by the exact email address of an attendee."
+          }
+        },
+        "required": [
+          "teamId"
+        ],
+        "description": "Request schema for `GetTeamBookings`"
+      }
+    },
+    {
+      "id": "cal.get_teams_list",
+      "tool": "CAL_GET_TEAMS_LIST",
+      "toolName": "cal_get_teams_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves all teams the user belongs to, including their names and members.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request schema for `GetTeamsList`; this action takes no parameters."
+      }
+    },
+    {
+      "id": "cal.list_attendees",
+      "tool": "CAL_LIST_ATTENDEES",
+      "toolName": "cal_list_attendees",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all attendees from Cal.com. Use when you need to get a complete list of all attendees across all bookings.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request schema for listing all attendees."
+      }
+    },
+    {
+      "id": "cal.list_event_types",
+      "tool": "CAL_LIST_EVENT_TYPES",
+      "toolName": "cal_list_event_types",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves Cal event types, filterable by `username` (required if `eventSlug` is provided), multiple `usernames`, or organization details (`orgSlug` or `orgId`).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "orgId": {
+            "type": "integer",
+            "description": "The unique identifier (ID) of the user's organization. If provided, `orgSlug` is not required. Fetches event types associated with this organization."
+          },
+          "orgSlug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug of the user's organization. If provided, `orgId` is not required. Fetches event types associated with this organization."
+          },
+          "username": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The username of the user whose event types are to be retrieved. If provided alone, fetches all event types for this user."
+          },
+          "eventSlug": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The slug of a specific event type to retrieve. If provided, `username` must also be supplied, as multiple users can have events with the same slug."
+          },
+          "usernames": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A comma-separated string of usernames to retrieve dynamic event types for multiple users simultaneously (e.g., 'alice,bob')."
+          }
+        },
+        "description": "Request schema for `ListEventTypes`"
+      }
+    },
+    {
+      "id": "cal.reschedule_booking_by_uid",
+      "tool": "CAL_RESCHEDULE_BOOKING_BY_UID",
+      "toolName": "cal_reschedule_booking_by_uid",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Reschedules an existing booking (identified by `bookingUid`) to a new time. Requires the booking UID and the new start time in ISO 8601 format. Optionally, you can provide a rescheduling reason and the email of the person rescheduling.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Cal.com: Reschedule booking by uid",
+      "withheldArguments": {
+        "rescheduledBy": "reviewer: Names who rescheduled the booking; the event type owner's email confirms the new time automatically, so the Agent would act as the owner.",
+        "emailVerificationCode": "names an address a message goes to or comes from"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The new start time for the booking in ISO 8601 format with timezone (e.g., '2024-08-13T10:00:00Z')."
+          },
+          "bookingUid": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier (UID) of the booking that needs to be rescheduled."
+          },
+          "reschedulingReason": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The reason for rescheduling the booking."
+          }
+        },
+        "required": [
+          "bookingUid",
+          "start"
+        ],
+        "description": "Request schema for rescheduling a booking by its UID."
+      }
+    },
+    {
+      "id": "cal.reserve_slot_for_event",
+      "tool": "CAL_RESERVE_SLOT_FOR_EVENT",
+      "toolName": "cal_reserve_slot_for_event",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Temporarily reserves an available time slot for an existing and bookable event type, useful for high-demand slots to prevent double-bookings while the user completes the booking.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Cal.com: Reserve slot for event",
+      "input": {
+        "type": "object",
+        "properties": {
+          "bookingUid": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional unique identifier, typically used for events with seats to associate the reservation with a specific booking or seat. This can be used to retrieve details of a seated event booking."
+          },
+          "eventTypeId": {
+            "type": "integer",
+            "description": "The unique identifier for the event type for which the time slot is being reserved."
+          },
+          "slotUtcEndDate": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The end date and time of the slot to be reserved, in UTC (ISO 8601 format)."
+          },
+          "slotUtcStartDate": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The start date and time of the slot to be reserved, in UTC (ISO 8601 format)."
+          }
+        },
+        "required": [
+          "eventTypeId",
+          "slotUtcStartDate",
+          "slotUtcEndDate"
+        ],
+        "description": "Request schema for reserving a time slot for an event."
+      }
+    },
+    {
+      "id": "cal.retrieve_booking_details_by_uid",
+      "tool": "CAL_RETRIEVE_BOOKING_DETAILS_BY_UID",
+      "toolName": "cal_retrieve_booking_details_by_uid",
+      "lane": "read",
+      "effect": "read",
+      "description": "Fetches comprehensive details for an existing booking, identified by its `bookingUid`.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "bookingUid": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier (UID) of the booking."
+          }
+        },
+        "required": [
+          "bookingUid"
+        ],
+        "description": "Specifies the booking to retrieve by its unique identifier."
+      }
+    },
+    {
+      "id": "cal.retrieve_calendar_busy_times",
+      "tool": "CAL_RETRIEVE_CALENDAR_BUSY_TIMES",
+      "toolName": "cal_retrieve_calendar_busy_times",
+      "lane": "read",
+      "effect": "read",
+      "description": "To find busy calendar slots for scheduling/conflict detection, call this with a valid `credentialId`, an `externalId` accessible by it, and a recognized IANA `loggedInUsersTz`; returns only busy intervals, not event details or free slots. Use credentialId/externalId for single calendar queries.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "dateTo": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The end date and time for querying busy times in ISO 8601 datetime format. If timezone is omitted, `loggedInUsersTz` is assumed."
+          },
+          "dateFrom": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The start date and time for querying busy times, preferably in ISO 8601 format (e.g., 'YYYY-MM-DDTHH:mm:ssZ' or 'YYYY-MM-DD'). If timezone is omitted, `loggedInUsersTz` is assumed. If not provided, the system may use a default start time (e.g., the current time)."
+          },
+          "externalId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The external identifier of the specific calendar to query. This should be the actual calendar ID from the provider, not the calendar type."
+          },
+          "credentialId": {
+            "type": "integer",
+            "description": "The numeric identifier for the credential associated with the calendar account to be queried."
+          },
+          "loggedInUsersTz": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The IANA timezone string of the logged-in user (e.g., 'America/New_York', 'Europe/London'). This is used to correctly interpret `dateFrom` and `dateTo` if they don't contain explicit timezone information."
+          }
+        },
+        "required": [
+          "loggedInUsersTz",
+          "credentialId",
+          "externalId"
+        ],
+        "description": "Request schema for `RetrieveCalendarBusyTimes`"
+      }
+    },
+    {
+      "id": "cal.retrieve_calendar_list",
+      "tool": "CAL_RETRIEVE_CALENDAR_LIST",
+      "toolName": "cal_retrieve_calendar_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a list of all calendar summaries (no event details) associated with the authenticated user's account.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request schema for `RetrieveCalendarList`."
+      }
+    },
+    {
+      "id": "cal.retrieve_event_type_by_id",
+      "tool": "CAL_RETRIEVE_EVENT_TYPE_BY_ID",
+      "toolName": "cal_retrieve_event_type_by_id",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves comprehensive details for a specific, existing Cal.com event type using its unique ID; this is a read-only action and does not return associated events or bookings.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "eventTypeId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier for the event type. This is typically a numerical value or a UUID string and can be found in the URL when viewing event type settings (e.g., `https://app.cal.com/event-types/<eventTypeId>`) or via other API endpoints that list event types."
+          }
+        },
+        "required": [
+          "eventTypeId"
+        ],
+        "description": "Request schema for retrieving an event type by its unique identifier."
+      }
+    },
+    {
+      "id": "cal.retrieve_my_information",
+      "tool": "CAL_RETRIEVE_MY_INFORMATION",
+      "toolName": "cal_retrieve_my_information",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves the authenticated user's core profile information (e.g., name, email, timezone); does not retrieve related data like calendar events or schedules.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request schema for retrieving the authenticated user's profile."
+      }
+    },
+    {
+      "id": "cal.retrieve_schedules_list",
+      "tool": "CAL_RETRIEVE_SCHEDULES_LIST",
+      "toolName": "cal_retrieve_schedules_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieve all availability schedules for the authenticated Cal.com user. This action returns a list of schedules that define when a user is available for bookings. Each schedule includes availability time blocks, timezone, and whether it's the default schedule. Use this to: - List all configured schedules for a user - Find the default schedule (isDefault=true) - Get schedule IDs for use with other actions like updating or deleting schedules Returns an empty list if no schedules are configured.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request schema for retrieving all availability schedules for the authenticated user."
+      }
+    },
+    {
+      "id": "cal.update_schedule_by_id",
+      "tool": "CAL_UPDATE_SCHEDULE_BY_ID",
+      "toolName": "cal_update_schedule_by_id",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates an existing schedule by its ID, allowing partial modification of properties; providing `availability` or `overrides` replaces them entirely.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Cal.com: Update schedule by ID",
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Descriptive name for the schedule."
+          },
+          "timeZone": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "IANA timezone string for the schedule (e.g., 'America/New_York')."
+          },
+          "isDefault": {
+            "type": "boolean",
+            "description": "Set as the default schedule."
+          },
+          "overrides": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "Specific date for the override."
+                },
+                "endTime": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "End time for the override on the specified date."
+                },
+                "startTime": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "Start time for the override on the specified date."
+                }
+              },
+              "required": [
+                "date",
+                "startTime",
+                "endTime"
+              ],
+              "description": "Defines a specific date and time that overrides the regular schedule availability."
+            },
+            "maxItems": 100,
+            "description": "List of override objects for specific date/time adjustments. If provided, *replaces* existing overrides."
+          },
+          "scheduleId": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the schedule to be updated."
+          },
+          "availability": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "days": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 20000,
+                    "enum": [
+                      "Monday",
+                      "Tuesday",
+                      "Wednesday",
+                      "Thursday",
+                      "Friday",
+                      "Saturday",
+                      "Sunday"
+                    ]
+                  },
+                  "maxItems": 100,
+                  "description": "Specifies the days of the week this availability period is active."
+                },
+                "endTime": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "End time for the availability period."
+                },
+                "startTime": {
+                  "type": "string",
+                  "maxLength": 20000,
+                  "description": "Start time for the availability period."
+                }
+              },
+              "required": [
+                "days",
+                "startTime",
+                "endTime"
+              ],
+              "description": "Defines a recurring availability period within a schedule."
+            },
+            "maxItems": 100,
+            "description": "List of availability objects for regular weekly recurring availability. If provided, *replaces* existing availability."
+          }
+        },
+        "required": [
+          "scheduleId"
+        ],
+        "description": "Request schema for updating an existing schedule by its ID."
+      }
+    }
+  ]
+}

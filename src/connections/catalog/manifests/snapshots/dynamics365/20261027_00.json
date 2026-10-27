@@ -1,0 +1,971 @@
+{
+  "toolkit": {
+    "slug": "dynamics365",
+    "name": "Dynamics 365",
+    "version": "20261027_00",
+    "description": "Dynamics 365 from Microsoft combines CRM, ERP, and productivity apps to streamline sales, marketing, customer service, and operations in one integrated platform",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": [
+          "subdomain"
+        ]
+      }
+    ],
+    "currentUserEndpoint": "https://{{subdomain}}.api.crm.dynamics.com/api/data/v9.0/WhoAmI"
+  },
+  "tools": [
+    {
+      "slug": "DYNAMICS365_CREATE_ANNOTATION",
+      "name": "Create Annotation",
+      "description": "Create a text or attachment note, optionally linked to a supported record.",
+      "version": "20261027_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateAnnotationRequest",
+        "required": [
+          "subject"
+        ],
+        "properties": {
+          "subject": {
+            "type": "string",
+            "title": "Subject",
+            "minLength": 1,
+            "description": "Note title."
+          },
+          "file_name": {
+            "type": "string",
+            "title": "File Name",
+            "minLength": 1,
+            "description": "Attachment file name."
+          },
+          "mime_type": {
+            "type": "string",
+            "title": "Mime Type",
+            "minLength": 1,
+            "description": "Attachment MIME type."
+          },
+          "note_text": {
+            "type": "string",
+            "title": "Note Text",
+            "minLength": 1,
+            "description": "Text content of the note."
+          },
+          "parent_id": {
+            "type": "string",
+            "title": "Parent Id",
+            "format": "uuid",
+            "description": "Parent record GUID; supply together with parent_type."
+          },
+          "parent_type": {
+            "enum": [
+              "account",
+              "contact",
+              "incident",
+              "lead",
+              "opportunity",
+              "product",
+              "invoice",
+              "salesorder",
+              "campaign",
+              "email",
+              "task",
+              "appointment",
+              "phonecall",
+              "knowledgearticle",
+              "workflow"
+            ],
+            "type": "string",
+            "title": "Parent Type",
+            "description": "Supported parent record type for the note."
+          },
+          "document_body": {
+            "type": "string",
+            "title": "Document Body",
+            "minLength": 1,
+            "description": "Base64-encoded attachment data."
+          }
+        },
+        "description": "Parameters for creating a Dynamics 365 note."
+      }
+    },
+    {
+      "slug": "DYNAMICS365_CREATE_TASK",
+      "name": "Create Task",
+      "description": "Create a Dataverse task activity and return its selected representation.",
+      "version": "20261027_00",
+      "tags": [
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateTaskRequest",
+        "required": [
+          "subject"
+        ],
+        "properties": {
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "description": "Comma-separated Dataverse task fields to return after creation. Defaults to activityid."
+          },
+          "subject": {
+            "type": "string",
+            "title": "Subject",
+            "description": "Task subject."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "Task details."
+          },
+          "priority_code": {
+            "type": "integer",
+            "title": "Priority Code",
+            "maximum": 2,
+            "minimum": 0,
+            "description": "Task priority: 0 low, 1 normal, or 2 high."
+          },
+          "scheduled_end": {
+            "type": "string",
+            "title": "Scheduled End",
+            "description": "Due date and time in ISO 8601 format."
+          },
+          "scheduled_start": {
+            "type": "string",
+            "title": "Scheduled Start",
+            "description": "Scheduled start in ISO 8601 format."
+          },
+          "percent_complete": {
+            "type": "integer",
+            "title": "Percent Complete",
+            "maximum": 100,
+            "minimum": 0,
+            "description": "Task completion percentage from 0 to 100."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_DYNAMICSCRM_CREATE_ACCOUNT",
+      "name": "Create Account",
+      "description": "Creates a new account entity record in Dynamics CRM using the Web API.",
+      "version": "20261027_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateAccountRequest",
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": "",
+            "description": "The name of the new account to be created."
+          },
+          "revenue": {
+            "type": "number",
+            "title": "Revenue",
+            "default": 0,
+            "description": "The revenue associated with the account."
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": "me",
+            "description": "The user's ID or 'me' for the authenticated user."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": "",
+            "description": "A description of the account."
+          },
+          "creditonhold": {
+            "type": "boolean",
+            "title": "Creditonhold",
+            "default": false,
+            "description": "Indicates whether the account is on credit hold."
+          },
+          "accountcategorycode": {
+            "type": "integer",
+            "title": "Accountcategorycode",
+            "default": 1,
+            "description": "The category code of the account."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_DYNAMICSCRM_CREATE_CASE",
+      "name": "Create Case",
+      "description": "Creates a new case (incident) entity record in Dynamics CRM using the Web API.",
+      "version": "20261027_00",
+      "tags": [
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateCaseRequest",
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": "",
+            "description": "The subject or title of the case."
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": "me",
+            "description": "The user's ID or 'me' for the authenticated user."
+          },
+          "account_id": {
+            "type": "string",
+            "title": "Account Id",
+            "default": "",
+            "description": "A reference to the related account. Format: '/accounts(GUID)'"
+          },
+          "contact_id": {
+            "type": "string",
+            "title": "Contact Id",
+            "default": "",
+            "description": "A reference to the related contact. Format: '/contacts(GUID)'"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": "",
+            "description": "A detailed description of the issue or inquiry."
+          },
+          "prioritycode": {
+            "type": "integer",
+            "title": "Prioritycode",
+            "default": 1,
+            "description": "The priority level of the case (e.g., 1 for Low, 2 for Normal, 3 for High)."
+          },
+          "caseorigincode": {
+            "type": "integer",
+            "title": "Caseorigincode",
+            "default": 1,
+            "description": "The source of the case. Valid values: 1 (Phone), 2 (Email), 3 (Web)."
+          }
+        },
+        "description": "Request model for creating a case in Dynamics CRM."
+      }
+    },
+    {
+      "slug": "DYNAMICS365_DYNAMICSCRM_CREATE_CONTACT",
+      "name": "Create Contact",
+      "description": "Creates a new contact entity record in Dynamics CRM using the Web API.",
+      "version": "20261027_00",
+      "tags": [
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateContactRequest",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": "me",
+            "description": "The user's ID or 'me' for the authenticated user."
+          },
+          "jobtitle": {
+            "type": "string",
+            "title": "Jobtitle",
+            "default": "",
+            "description": "The job title of the contact."
+          },
+          "lastname": {
+            "type": "string",
+            "title": "Lastname",
+            "default": "",
+            "description": "The last name of the contact."
+          },
+          "firstname": {
+            "type": "string",
+            "title": "Firstname",
+            "default": "",
+            "description": "The first name of the contact."
+          },
+          "telephone1": {
+            "type": "string",
+            "title": "Telephone1",
+            "default": "",
+            "description": "The primary telephone number of the contact."
+          },
+          "mobilephone": {
+            "type": "string",
+            "title": "Mobilephone",
+            "default": "",
+            "description": "The mobile phone number of the contact."
+          },
+          "address1_city": {
+            "type": "string",
+            "title": "Address1 City",
+            "default": "",
+            "description": "The city of the contact's address."
+          },
+          "emailaddress1": {
+            "type": "string",
+            "title": "Emailaddress1",
+            "default": "",
+            "description": "The primary email address of the contact."
+          },
+          "address1_country": {
+            "type": "string",
+            "title": "Address1 Country",
+            "default": "",
+            "description": "The country of the contact's address."
+          },
+          "address1_postalcode": {
+            "type": "string",
+            "title": "Address1 Postalcode",
+            "default": "",
+            "description": "The postal code of the contact's address."
+          },
+          "address1_stateorprovince": {
+            "type": "string",
+            "title": "Address1 Stateorprovince",
+            "default": "",
+            "description": "The state or province of the contact's address."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_DYNAMICSCRM_CREATE_LEAD",
+      "name": "Create Lead",
+      "description": "Creates a new lead entity record in Dynamics CRM using the Web API.",
+      "version": "20261027_00",
+      "tags": [
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateLeadRequest",
+        "properties": {
+          "subject": {
+            "type": "string",
+            "title": "Subject",
+            "default": "",
+            "description": "A brief description or title for the lead."
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": "me",
+            "description": "The user's ID or 'me' for the authenticated user. Set explicitly when creating leads on behalf of other users in multi-user or automated workflows."
+          },
+          "lastname": {
+            "type": "string",
+            "title": "Lastname",
+            "default": "",
+            "description": "The last name of the lead."
+          },
+          "firstname": {
+            "type": "string",
+            "title": "Firstname",
+            "default": "",
+            "description": "The first name of the lead."
+          },
+          "telephone1": {
+            "type": "string",
+            "title": "Telephone1",
+            "default": "",
+            "description": "The primary telephone number of the lead."
+          },
+          "companyname": {
+            "type": "string",
+            "title": "Companyname",
+            "default": "",
+            "description": "The company name associated with the lead. May be enforced as required by some CRM configurations; omitting it can cause the request to be rejected."
+          },
+          "emailaddress1": {
+            "type": "string",
+            "title": "Emailaddress1",
+            "default": "",
+            "description": "The primary email address of the lead."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_DYNAMICSCRM_CREATE_OPPORTUNITY",
+      "name": "Create Opportunity",
+      "description": "Creates a new opportunity entity record in Dynamics CRM using the Web API. Some CRM configurations enforce `estimatedclosedate` and a transaction currency at the server level even though they are schema-optional; omitting them may cause the request to be rejected.",
+      "version": "20261027_00",
+      "tags": [
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateOpportunityRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name or title of the opportunity. This is a required field."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": "",
+            "description": "A brief description of the opportunity."
+          },
+          "estimatedvalue": {
+            "type": "number",
+            "title": "Estimatedvalue",
+            "description": "The anticipated revenue from the opportunity."
+          },
+          "estimatedclosedate": {
+            "type": "string",
+            "title": "Estimatedclosedate",
+            "default": "",
+            "description": "The expected close date of the opportunity in 'YYYY-MM-DD' format."
+          },
+          "customer_account_id": {
+            "type": "string",
+            "title": "Customer Account Id",
+            "default": "",
+            "description": "The GUID of the related account (without curly braces). Optional."
+          },
+          "customer_contact_id": {
+            "type": "string",
+            "title": "Customer Contact Id",
+            "default": "",
+            "description": "The GUID of the related contact (without curly braces). Optional."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_DYNAMICSCRM_GET_A_LEAD",
+      "name": "Dynamicscrm get a lead",
+      "description": "Dynamicscrm get a lead",
+      "version": "20261027_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetLeadRequest",
+        "required": [
+          "lead_id"
+        ],
+        "properties": {
+          "lead_id": {
+            "type": "string",
+            "title": "Lead Id",
+            "description": "The ID of the lead to retrieve (GUID format) Use the value exactly as returned by Dynamics CRM tools — do not reformat or truncate."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_DYNAMICSCRM_GET_ALL_LEADS",
+      "name": "Dynamicscrm get all leads",
+      "description": "Dynamicscrm get all leads",
+      "version": "20261027_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAllLeadsRequest",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "description": "Maximum number of leads to return"
+          },
+          "skip": {
+            "type": "integer",
+            "title": "Skip",
+            "description": "Number of leads to skip for pagination"
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "OData filter criteria for leads (e.g., contains(fullname,'John')) Date filters require ISO 8601 format (e.g., createdon gt 2024-01-01T00:00:00Z)."
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "description": "Comma-separated list of fields to return (e.g., fullname,emailaddress1)"
+          },
+          "orderby": {
+            "type": "string",
+            "title": "Orderby",
+            "description": "Field to order by (e.g., createdon desc)"
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_DYNAMICSCRM_UPDATE_CASE",
+      "name": "Update Case",
+      "description": "Updates an existing case (incident) entity record in Dynamics CRM using the Web API.",
+      "version": "20261027_00",
+      "tags": [
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateCaseRequest",
+        "required": [
+          "case_id"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": "",
+            "description": "The subject or title of the case."
+          },
+          "case_id": {
+            "type": "string",
+            "title": "Case Id",
+            "description": "The unique identifier (GUID) of the case to update."
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": "me",
+            "description": "The user's ID or 'me' for the authenticated user."
+          },
+          "statuscode": {
+            "type": "integer",
+            "title": "Statuscode",
+            "default": 1,
+            "description": "The current status of the case (e.g., 1 for Active, 2 for In Progress, 3 for Resolved)."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": "",
+            "description": "A detailed description of the issue or inquiry."
+          },
+          "prioritycode": {
+            "type": "integer",
+            "title": "Prioritycode",
+            "default": 1,
+            "description": "The priority level of the case (e.g., 1 for High, 2 for Normal, 3 for Low)."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_DYNAMICSCRM_UPDATE_LEAD",
+      "name": "Update Lead",
+      "description": "Updates an existing lead entity record in Dynamics CRM using the Web API.",
+      "version": "20261027_00",
+      "tags": [
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateLeadRequest",
+        "required": [
+          "lead_id"
+        ],
+        "properties": {
+          "lead_id": {
+            "type": "string",
+            "title": "Lead Id",
+            "description": "The unique identifier (GUID) of the lead to update. Must be passed exactly as returned by Dynamics CRM lookup tools — no added braces or modified dash formatting."
+          },
+          "subject": {
+            "type": "string",
+            "title": "Subject",
+            "default": "",
+            "description": "A brief description or title for the lead."
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": "me",
+            "description": "The user's ID or 'me' for the authenticated user."
+          },
+          "lastname": {
+            "type": "string",
+            "title": "Lastname",
+            "default": "",
+            "description": "Last name of the lead."
+          },
+          "firstname": {
+            "type": "string",
+            "title": "Firstname",
+            "default": "",
+            "description": "First name of the lead."
+          },
+          "telephone1": {
+            "type": "string",
+            "title": "Telephone1",
+            "default": "",
+            "description": "Primary phone number of the lead."
+          },
+          "companyname": {
+            "type": "string",
+            "title": "Companyname",
+            "default": "",
+            "description": "Name of the company associated with the lead."
+          },
+          "emailaddress1": {
+            "type": "string",
+            "title": "Emailaddress1",
+            "default": "",
+            "description": "Primary email address of the lead."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_DYNAMICSCRM_UPDATE_OPPORTUNITY",
+      "name": "Update Opportunity",
+      "description": "Updates an existing opportunity entity record in Dynamics CRM using the Web API. Some updates may be rejected if required relational fields (e.g., transactioncurrency) are absent from the record, even though they are not exposed as explicit parameters.",
+      "version": "20261027_00",
+      "tags": [
+        "openWorldHint",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateOpportunityRequest",
+        "required": [
+          "opportunity_id"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": "",
+            "description": "The name or title of the opportunity."
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": "me",
+            "description": "The user's ID or 'me' for the authenticated user."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": "",
+            "description": "A brief description of the opportunity."
+          },
+          "estimatedvalue": {
+            "type": "number",
+            "title": "Estimatedvalue",
+            "default": 0,
+            "description": "The anticipated revenue from the opportunity."
+          },
+          "opportunity_id": {
+            "type": "string",
+            "title": "Opportunity Id",
+            "description": "The unique identifier (GUID) of the opportunity to update. Use the GUID exactly as returned by CRM lookup or list tools — reformatting the value will cause the update to fail."
+          },
+          "salesstagecode": {
+            "type": "integer",
+            "title": "Salesstagecode",
+            "default": 0,
+            "description": "The current sales stage (e.g., 1 for Qualify, 2 for Develop, 3 for Propose)."
+          },
+          "estimatedclosedate": {
+            "type": "string",
+            "title": "Estimatedclosedate",
+            "default": "",
+            "description": "The expected close date of the opportunity in 'YYYY-MM-DD' format."
+          },
+          "opportunityratingcode": {
+            "type": "integer",
+            "title": "Opportunityratingcode",
+            "default": 0,
+            "description": "The rating of the opportunity (e.g., 1 for Cold, 2 for Warm, 3 for Hot)."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_QUERY_ACCOUNTS",
+      "name": "Query accounts",
+      "description": "List or filter Dynamics accounts with projection, ordering, and bounded results. Optionally include the matching count, expand related resources, or aggregate and group records. Returns an OData next link when another page is available.",
+      "version": "20261027_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "QueryAccountsRequest",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "maximum": 5000,
+            "minimum": 1,
+            "description": "Maximum number of accounts to return"
+          },
+          "apply": {
+            "type": "string",
+            "title": "Apply",
+            "description": "OData $apply expression for aggregation or grouping"
+          },
+          "expand": {
+            "type": "string",
+            "title": "Expand",
+            "description": "OData $expand expression for related resources"
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "OData $filter expression"
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "description": "Comma-separated account fields to return"
+          },
+          "orderby": {
+            "type": "string",
+            "title": "Orderby",
+            "description": "OData ordering expression"
+          },
+          "include_count": {
+            "type": "boolean",
+            "title": "Include Count",
+            "default": false,
+            "description": "Include the matching record count"
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_QUERY_CAMPAIGNS",
+      "name": "Query campaigns",
+      "description": "List, filter, expand, or aggregate Dynamics campaigns. Use this action to select campaign fields, order and bound results, include related records, request a matching count, or group and aggregate campaign data with OData. Results include an OData next link when another page is available.",
+      "version": "20261027_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "QueryCampaignsRequest",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "maximum": 5000,
+            "minimum": 1,
+            "description": "Maximum number of campaigns to return"
+          },
+          "apply": {
+            "type": "string",
+            "title": "Apply",
+            "description": "OData $apply aggregation or grouping expression"
+          },
+          "expand": {
+            "type": "string",
+            "title": "Expand",
+            "description": "OData $expand expression for related records"
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "OData $filter expression"
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "description": "Comma-separated campaign fields to return"
+          },
+          "orderby": {
+            "type": "string",
+            "title": "Orderby",
+            "description": "OData ordering expression"
+          },
+          "include_count": {
+            "type": "boolean",
+            "title": "Include Count",
+            "default": false,
+            "description": "Include the matching record count"
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_QUERY_CONTACTS",
+      "name": "Query contacts",
+      "description": "List or filter Dynamics contacts with selected fields and ordering. Optionally include the matching count, expand related resources, or aggregate and group records. Results are bounded and include an OData next link when another page is available.",
+      "version": "20261027_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "QueryContactsRequest",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "maximum": 5000,
+            "minimum": 1,
+            "description": "Maximum number of contacts to return"
+          },
+          "apply": {
+            "type": "string",
+            "title": "Apply",
+            "description": "OData $apply expression for aggregation or grouping"
+          },
+          "expand": {
+            "type": "string",
+            "title": "Expand",
+            "description": "OData $expand expression for related resources"
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "OData $filter expression"
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "description": "Comma-separated contact fields to return"
+          },
+          "orderby": {
+            "type": "string",
+            "title": "Orderby",
+            "description": "OData ordering expression"
+          },
+          "include_count": {
+            "type": "boolean",
+            "title": "Include Count",
+            "default": false,
+            "description": "Include the matching record count"
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_QUERY_ENTITY_DATA",
+      "name": "Query Entity Data",
+      "description": "Query supported CRM collections and return one bounded page plus its next link.",
+      "version": "20261027_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "QueryEntityDataRequest",
+        "required": [
+          "entity_set"
+        ],
+        "properties": {
+          "top": {
+            "type": "integer",
+            "title": "Top",
+            "maximum": 5000,
+            "minimum": 1,
+            "description": "Maximum number of records to return, from 1 through 5000."
+          },
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "OData $filter expression."
+          },
+          "select": {
+            "type": "string",
+            "title": "Select",
+            "description": "Comma-separated Dataverse property names."
+          },
+          "orderby": {
+            "type": "string",
+            "title": "Orderby",
+            "description": "OData ordering expression."
+          },
+          "skiptoken": {
+            "type": "string",
+            "title": "Skiptoken",
+            "description": "Exact $skiptoken value from a prior @odata.nextLink."
+          },
+          "entity_set": {
+            "enum": [
+              "activitypointers",
+              "contacts",
+              "incidents",
+              "opportunities",
+              "phonecalls",
+              "salesorderdetails"
+            ],
+            "type": "string",
+            "title": "Entity Set",
+            "description": "Dataverse collection to query: contacts, incidents, phonecalls, activitypointers, opportunities, or salesorderdetails."
+          }
+        }
+      }
+    },
+    {
+      "slug": "DYNAMICS365_WHO_AM_I",
+      "name": "Get Caller Identity",
+      "description": "Return the connected Dataverse caller's identity IDs.",
+      "version": "20261027_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "idempotentHint",
+        "auth"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "WhoAmIRequest",
+        "properties": {},
+        "description": "The current connected account's identity. Takes no parameters."
+      }
+    }
+  ]
+}

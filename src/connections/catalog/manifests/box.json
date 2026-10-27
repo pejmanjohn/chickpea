@@ -28,9 +28,13 @@
     "allowArguments": {},
     "withholdArguments": {
       "BOX_FIND_FILE_FOR_SHARED_LINK": {
-        "boxapi": "Carries the shared link and its password in one header."
+        "boxapi": "Carries the shared link and its password in one header.",
+        "fields": "Can request expiring_embed_link, a preview URL anyone holding it can open."
       },
       "BOX_GET_FILE_INFORMATION": {
+        "fields": "Can request expiring_embed_link, a preview URL anyone holding it can open."
+      },
+      "BOX_LIST_ITEMS_IN_FOLDER": {
         "fields": "Can request expiring_embed_link, a preview URL anyone holding it can open."
       },
       "BOX_LIST_RECENTLY_ACCESSED_ITEMS": {
@@ -149,7 +153,7 @@
       "maxResultBytes": 65536,
       "withheldArguments": {
         "boxapi": "reviewer: Carries the shared link and its password in one header.",
-        "fields": "unsupported schema",
+        "fields": "reviewer: Can request expiring_embed_link, a preview URL anyone holding it can open.",
         "shared_link_password": "carries a credential the model would supply itself"
       },
       "input": {
@@ -323,7 +327,7 @@
       "description": "Retrieves a page of items in a folder. These items can be files, folders, and web links. To request more information about the folder itself, like its size, use the [Get a folder](#get-folders-id) endpoint instead.",
       "maxResultBytes": 65536,
       "withheldArguments": {
-        "fields": "unsupported schema"
+        "fields": "reviewer: Can request expiring_embed_link, a preview URL anyone holding it can open."
       },
       "input": {
         "type": "object",
