@@ -105,7 +105,6 @@ const ACCESS_DESCRIPTION = /\b(?:permissions?|visibility|visible to|public|priva
 const CONTAINER_TOKENS = new Set(`
   account board company folder organization parent project space team workspace
 `.trim().split(/\s+/));
-const COPY_SOURCE_PREFIXES = new Set(['id', 'keep', 'url']);
 /**
  * An email address on any write, create included, is a place mail can go: a
  * ticket's requester receives every reply, so a free requester email on
@@ -122,7 +121,7 @@ const IDENTITY_TOKENS = new Set(`
 
 const WITHHELD_ACCESS = 'changes sharing, visibility, permissions, membership, or who acts';
 const WITHHELD_MOVE = 'moves the record to another container';
-const WITHHELD_COPY = 'copies content from another record';
+const WITHHELD_COPY = 'copies content from another record, URL, or file';
 const WITHHELD_RECIPIENT = 'names an address a message goes to or comes from';
 const WITHHELD_IDENTITY = 'changes who the record belongs to or how a person is identified';
 
@@ -143,7 +142,7 @@ function withheldArgumentReason(
   const description = isPlainObject(schema) && typeof schema.description === 'string' ? schema.description : '';
   if (tokens.some((token) => ACCESS_TOKENS.has(token)) || ACCESS_TEXT.test(compact) ||
       ACCESS_DESCRIPTION.test(description)) return WITHHELD_ACCESS;
-  if (tokens.at(-1) === 'source' && COPY_SOURCE_PREFIXES.has(tokens[0] ?? '')) return WITHHELD_COPY;
+  if ((tokens.length > 1 && tokens.at(-1) === 'source') || tokens[0]?.startsWith('file')) return WITHHELD_COPY;
   if (tokens.some((token) => RECIPIENT_TOKENS.has(token) || token.startsWith('notify')) ||
       ADDRESS_LEADING_TOKENS.has(tokens[0] ?? '') || compact.includes('replyto')) return WITHHELD_RECIPIENT;
   const identifier = tokens[0] === 'id' || tokens.at(-1) === 'id' || tokens.at(-1) === 'ids';

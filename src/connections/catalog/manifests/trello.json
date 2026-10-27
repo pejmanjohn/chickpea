@@ -6,7 +6,7 @@
   },
   "label": "Trello",
   "description": "Find, create, and update cards, lists, and boards the connected account can reach.",
-  "securityDescription": "Trello sign-in opens through Composio. Agents can read every board, list, card, and member the connected Trello account can reach; Chickpea adds no board picker. With write access, Agents can create boards, lists, and cards, comment on cards, and edit cards, including archiving a card or moving it to another list on the same board. Before a move, Chickpea checks that the target list is on the card's board. New boards keep Trello's default visibility. Agents cannot delete anything, change board visibility or permissions, invite people or assign card members, add a board to a Workspace, move a card to another board, or copy boards, lists, or cards.",
+  "securityDescription": "Trello sign-in opens through Composio. Agents can read every board, list, card, and member the connected Trello account can reach; Chickpea adds no board picker. With write access, Agents can create boards, lists, and cards, comment on cards, and edit cards, including archiving a card or moving it to another list on the same board. Before a move, Chickpea checks that the target list is on the card's board. New boards keep Trello's default visibility. Agents cannot delete anything, change board visibility or permissions, invite people or assign card members, add a board to a Workspace, move a card to another board, copy boards, lists, or cards, or attach files.",
   "preset": {
     "category": "project",
     "accent": "#0052CC"
@@ -39,10 +39,10 @@
       "sideEffectLabel": "Trello: Add board",
       "withheldArguments": {
         "prefs_voting": "changes sharing, visibility, permissions, membership, or who acts",
-        "idBoardSource": "copies content from another record",
+        "idBoardSource": "copies content from another record, URL, or file",
         "prefs__voting": "changes sharing, visibility, permissions, membership, or who acts",
         "idOrganization": "changes sharing, visibility, permissions, membership, or who acts",
-        "keepFromSource": "copies content from another record",
+        "keepFromSource": "copies content from another record, URL, or file",
         "prefs_comments": "changes sharing, visibility, permissions, membership, or who acts",
         "prefs_selfJoin": "changes sharing, visibility, permissions, membership, or who acts",
         "prefs__comments": "changes sharing, visibility, permissions, membership, or who acts",
@@ -160,9 +160,10 @@
       "sideEffectLabel": "Trello: Add card",
       "withheldArguments": {
         "idMembers": "changes sharing, visibility, permissions, membership, or who acts",
-        "urlSource": "copies content from another record",
-        "idCardSource": "copies content from another record",
-        "keepFromSource": "copies content from another record"
+        "urlSource": "copies content from another record, URL, or file",
+        "fileSource": "copies content from another record, URL, or file",
+        "idCardSource": "copies content from another record, URL, or file",
+        "keepFromSource": "copies content from another record, URL, or file"
       },
       "input": {
         "type": "object",
@@ -206,11 +207,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Comma-separated list of label IDs to add. Each ID must be a 24-character hexadecimal string."
-          },
-          "fileSource": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Binary data of a file to attach."
           },
           "subscribed": {
             "type": "string",
@@ -269,7 +265,7 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "Trello: Add new list to board",
       "withheldArguments": {
-        "idListSource": "copies content from another record"
+        "idListSource": "copies content from another record, URL, or file"
       },
       "input": {
         "type": "object",
@@ -1390,9 +1386,10 @@
       "withheldArguments": {
         "idBoard": "moves the record to another container",
         "idMembers": "changes sharing, visibility, permissions, membership, or who acts",
-        "urlSource": "copies content from another record",
-        "idCardSource": "copies content from another record",
-        "keepFromSource": "copies content from another record"
+        "urlSource": "copies content from another record, URL, or file",
+        "fileSource": "copies content from another record, URL, or file",
+        "idCardSource": "copies content from another record, URL, or file",
+        "keepFromSource": "copies content from another record, URL, or file"
       },
       "preconditions": [
         {
@@ -1462,11 +1459,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Comma-separated list of label IDs to apply, replacing existing labels. To preserve existing labels, fetch current `idLabels`, append new ones, and submit the combined list."
-          },
-          "fileSource": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The URL of a file to be attached to the card. Trello will fetch and attach the file from this URL."
           },
           "subscribed": {
             "type": "string",

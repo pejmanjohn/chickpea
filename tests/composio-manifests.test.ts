@@ -246,6 +246,36 @@ test('write tools lose sharing, permission, move, and copy arguments, and the re
   );
 });
 
+test('write tools lose file and copy-source arguments but keep a plain source field', () => {
+  const text = { type: 'string' };
+  const { manifest } = draftComposioManifest(snapshot([
+    tool('ACME_CREATE_CARD', ['createHint'], {
+      type: 'object',
+      properties: {
+        name: text,
+        source: { type: 'integer', description: 'Channel the card came from.' },
+        fileSource: { type: 'string', description: 'Binary data of a file to attach.' },
+        file_url: text,
+        files: { type: 'array', items: text },
+        templateSource: text,
+      },
+    }),
+  ]));
+  const card = manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_CREATE_CARD')!;
+
+  assert.deepEqual(Object.keys(card.input.properties), ['name', 'source']);
+  assert.deepEqual(Object.keys(card.withheldArguments!), ['fileSource', 'file_url', 'files', 'templateSource']);
+
+  for (const [id, card] of [
+    ['trello.add_cards', { idList: 'l'.repeat(24), name: 'Ship it' }],
+    ['trello.update_cards_by_id_card', { idCard: 'c'.repeat(24), name: 'Ship it' }],
+  ] as const) {
+    const input = MANAGED_CONNECTOR_CATALOG.capability(id)!.input;
+    assert.equal(v.safeParse(input, card).success, true, id);
+    assert.equal(v.safeParse(input, { ...card, fileSource: 'aGVsbG8=' }).success, false, id);
+  }
+});
+
 test('a write that needs a permission argument is administrative and needs an explicit reviewer opt-in', () => {
   const share = tool('ACME_SHARE_BOARD', ['updateHint'], {
     type: 'object',
