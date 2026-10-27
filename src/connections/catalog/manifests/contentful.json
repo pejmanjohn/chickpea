@@ -935,7 +935,8 @@
       "description": "Tool to retrieve multiple assets with pagination and filtering via GraphQL API. Use when you need to query assets from Contentful with advanced filtering, sorting, and locale selection. Supports preview mode and fallback locale options.",
       "maxResultBytes": 65536,
       "withheldArguments": {
-        "where": "unsupported schema"
+        "where": "unsupported schema",
+        "access_token": "carries a credential the model would supply itself"
       },
       "input": {
         "type": "object",
@@ -975,12 +976,6 @@
             "minLength": 1,
             "description": "ID of the space to query assets from"
           },
-          "access_token": {
-            "type": "string",
-            "maxLength": 20000,
-            "minLength": 1,
-            "description": "Content Delivery API (CDA) access token. If not provided, will attempt to use token from metadata. Required for GraphQL Content API access. You can obtain this from the space's API keys."
-          },
           "use_fallback_locale": {
             "type": "boolean",
             "description": "When set to false, fields without a value in the requested locale return null instead of the fallback locale. Default is true"
@@ -1001,7 +996,8 @@
       "description": "Tool to query a collection of entries for a specific content type using GraphQL. Use when you need to fetch multiple entries with filtering, sorting, pagination, or preview mode. The query field name must be the camelCase content type ID with 'Collection' suffix (e.g., 'blogPostCollection').",
       "maxResultBytes": 65536,
       "withheldArguments": {
-        "variables": "unsupported schema"
+        "variables": "unsupported schema",
+        "access_token": "carries a credential the model would supply itself"
       },
       "input": {
         "type": "object",
@@ -1017,12 +1013,6 @@
             "maxLength": 64,
             "minLength": 1,
             "description": "ID of the Contentful space"
-          },
-          "access_token": {
-            "type": "string",
-            "maxLength": 20000,
-            "minLength": 1,
-            "description": "Content Delivery API (CDA) access token. If not provided, will attempt to use token from metadata. Required for GraphQL Content API access."
           },
           "environment_id": {
             "type": "string",
