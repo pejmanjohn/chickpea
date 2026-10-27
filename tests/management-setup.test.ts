@@ -1065,7 +1065,7 @@ test('connector setup refuses the Chickpea system Agent before issuing a sign-in
     }, { agentId: CHICKPEA_AGENT_ID, connector: 'Meta Ads', ownerKind: 'member' }),
     (error: unknown) => error instanceof ManagementError &&
       error.code === 'invalid_request' &&
-      /Chickpea cannot hold connections/.test(error.message));
+      /The Chickpea system Agent cannot hold connections/.test(error.message));
     assert.equal(await management.getSetup('setup_system_agent_connector'), undefined);
   } finally {
     identity.close();

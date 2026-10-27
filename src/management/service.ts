@@ -1399,7 +1399,7 @@ export class WorkspaceManagementService {
     if (agent.kind === 'system') {
       throw new ManagementError(
         'invalid_request',
-        `${agent.name} cannot hold connections. Choose the user Agent that will use this service, or create one first, then prepare its connector setup.`,
+        `The ${agent.name} system Agent cannot hold connections. Choose the user Agent that will use this service, or create one first, then prepare its connector setup.`,
       );
     }
     const connector = resolveConnectorCatalogPreset(input.connector);
