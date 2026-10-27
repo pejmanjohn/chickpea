@@ -7444,6 +7444,37 @@ test('MCP OAuth start accepts the full scope list a vendor preset requests', asy
   } finally { fixture.store.close(); fixture.settings.close(); }
 });
 
+test('an Agent saves a connection whose server lists more than 50 tools', async () => {
+  const fixture = harness();
+  try {
+    const names = Array.from({ length: 56 }, (_, index) => `gitlab_tool_${index}`);
+    const created = await fixture.store.createAgent({
+      id: 'agent_many_tools', name: 'Code review', instructions: 'Review merge requests.', enabled: true,
+      model: 'local-stub/security', skills: [], apiConnections: [], repositories: [],
+      mcpServers: [{
+        id: 'gitlab', displayName: 'GitLab', url: 'https://gitlab.example.com/api/v4/mcp',
+        transport: 'streamable-http', authMode: 'none', headerNames: [], enabled: true,
+        lifecycleStatus: 'ready', statusText: 'Connected',
+        discoveredTools: names.map((name) => ({ name })), allowedTools: names,
+      }],
+    });
+    const { credentialRef: _credentialRef, ...policy } = created.mcpServers[0]!;
+    const saved = await fixture.app.request(`http://localhost/admin/api/agents/${created.id}`, {
+      method: 'PATCH', headers: auth(),
+      body: JSON.stringify({
+        expectedRevision: created.revision,
+        credentialConfigurationBinding: agentCredentialConfigurationBinding(created.credentialIncarnation),
+        mcpServers: [{ ...policy, displayName: 'GitLab.com' }],
+      }),
+    });
+    assert.equal(saved.status, 200, await saved.clone().text());
+    const stored = (await fixture.store.getAgent(created.id)).mcpServers[0]!;
+    assert.equal(stored.displayName, 'GitLab.com');
+    assert.deepEqual(stored.discoveredTools.map((tool) => tool.name), names);
+    assert.deepEqual(stored.allowedTools, names);
+  } finally { fixture.store.close(); fixture.settings.close(); }
+});
+
 test('members cannot configure the installation Meta app', async () => {
   const fixture = harness(new FakeTransport(), {}, {}, { userId: 'member', membershipId: 'membership_member', organizationId: 'org_oss', role: 'member', authenticatorKind: 'test_slack_session', credentialId: 'session_member', correlationId: 'test_member', machine: false });
   try {

@@ -362,7 +362,7 @@ import {
   unstageMcpSecretCleanup,
   type ResolvedMcpSecrets,
 } from '../config/mcp-secrets.ts';
-import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
+import { discoverMcpTools, MAX_MCP_TOOLS, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import {
   modelEffortChoiceError,
@@ -1146,7 +1146,7 @@ const mcpToolPoliciesSchema = v.pipe(v.record(v.pipe(v.string(), v.minLength(1),
   argumentConstraints: v.optional(v.pipe(v.record(v.pipe(v.string(), v.minLength(1), v.maxLength(120)),
     v.pipe(v.array(v.pipe(v.string(), v.maxLength(120))), v.minLength(1), v.maxLength(50))),
     v.check((fields) => Object.keys(fields).length <= 32))),
-})), v.check((policies) => Object.keys(policies).length <= 50));
+})), v.check((policies) => Object.keys(policies).length <= MAX_MCP_TOOLS));
 
 const mcpIdentitySchema = v.object({
   workspaceName: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(160))),
@@ -1173,11 +1173,11 @@ const mcpServerSchema = v.pipe(
     enabled: v.boolean(),
     lifecycleStatus: v.picklist(['pending', 'ready', 'failed']),
     statusText: v.pipe(v.string(), v.maxLength(300)),
-    discoveredTools: v.pipe(v.array(mcpToolInfoSchema), v.maxLength(50)),
+    discoveredTools: v.pipe(v.array(mcpToolInfoSchema), v.maxLength(MAX_MCP_TOOLS)),
     toolPolicies: v.optional(mcpToolPoliciesSchema),
     allowedTools: v.pipe(
       v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
-      v.maxLength(50),
+      v.maxLength(MAX_MCP_TOOLS),
     ),
     oauthScope: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4096))),
     lastCheckedAt: v.optional(v.number()),
@@ -9041,7 +9041,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.put('/admin/api/agents/:agentId/connections/:connectionAccountId/mcp/tools', async (c) => {
     const parsed = v.safeParse(v.object({
       expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
-      allowedTools: v.pipe(v.array(v.pipe(v.string(), v.minLength(1), v.maxLength(256))), v.maxLength(128)),
+      allowedTools: v.pipe(v.array(v.pipe(v.string(), v.minLength(1), v.maxLength(256))), v.maxLength(MAX_MCP_TOOLS)),
       toolPolicies: v.optional(mcpToolPoliciesSchema),
       approvedAccountIds: v.optional(v.pipe(v.array(v.pipe(v.string(), v.trim(), v.regex(/^(?:act_)?[0-9]{1,32}$/))), v.maxLength(50))),
     }), await readJson(c.req));

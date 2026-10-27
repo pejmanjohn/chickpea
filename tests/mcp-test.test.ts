@@ -9,6 +9,7 @@ import { classifyMcpError, safeMcpFailureText } from '../src/config/mcp-errors.t
 import {
   connectMcp,
   discoverMcpTools,
+  MAX_MCP_TOOLS,
   projectMcpToolInputSchema,
   type McpConnectInput,
   type McpServerConnection,
@@ -148,9 +149,9 @@ test('protocol discovery preserves true, false and absent read-only declarations
   assert.ok(methods.includes('tools/list'));
 });
 
-test('Meta protocol discovery scans past 50 tools and retains reviewed reporting tools', async () => {
+test('Meta protocol discovery scans past the generic tool cap and retains reviewed reporting tools', async () => {
   const cursors: Array<string | undefined> = [];
-  const first = Array.from({ length: 60 }, (_, index) =>
+  const first = Array.from({ length: MAX_MCP_TOOLS + 10 }, (_, index) =>
     protocolTool(`unsupported_${String(index).padStart(3, '0')}`));
   const fetch = pagedProtocolFetch({
     '': { tools: first, nextCursor: 'reporting' },
@@ -180,11 +181,23 @@ test('Meta protocol discovery scans past 50 tools and retains reviewed reporting
   assert.deepEqual(cursors, [undefined, 'reporting']);
 });
 
-test('generic protocol discovery keeps the first 50 tools and does not scan later pages', async () => {
+test('generic protocol discovery keeps every tool a 56-tool server lists across pages', async () => {
+  const names = Array.from({ length: 56 }, (_, index) => `gitlab_${String(index).padStart(2, '0')}`);
+  const fetch = pagedProtocolFetch({
+    '': { tools: names.slice(0, 40).map((name) => protocolTool(name)), nextCursor: 'later' },
+    later: { tools: names.slice(40).map((name) => protocolTool(name)) },
+  });
+
+  const result = await discoverMcpTools(baseInput, undefined, () => fetch);
+
+  assert.deepEqual(result.tools.map((entry) => entry.name), names);
+});
+
+test('generic protocol discovery stops at the tool cap and does not scan later pages', async () => {
   const cursors: Array<string | undefined> = [];
   const fetch = pagedProtocolFetch({
     '': {
-      tools: Array.from({ length: 60 }, (_, index) => protocolTool(`generic_${index}`, index === 0
+      tools: Array.from({ length: MAX_MCP_TOOLS + 10 }, (_, index) => protocolTool(`generic_${index}`, index === 0
         ? { type: 'object', properties: { accounts: { type: 'array', items: { type: 'string' } } } }
         : { type: 'object' })),
       nextCursor: 'later',
@@ -194,11 +207,11 @@ test('generic protocol discovery keeps the first 50 tools and does not scan late
 
   const result = await discoverMcpTools(baseInput, undefined, () => fetch);
 
-  assert.equal(result.tools.length, 50);
+  assert.equal(result.tools.length, MAX_MCP_TOOLS);
   assert.equal(result.tools[0]?.name, 'generic_0');
   assert.equal(result.tools[0]?.inputSchema?.ambiguous, true,
     'generic tools remain discoverable even when their schema cannot prove Meta account scoping');
-  assert.equal(result.tools[49]?.name, 'generic_49');
+  assert.equal(result.tools.at(-1)?.name, `generic_${MAX_MCP_TOOLS - 1}`);
   assert.deepEqual(cursors, [undefined]);
 });
 
@@ -857,14 +870,16 @@ test('discoverMcpTools omits title/description when absent (exactOptional-safe)'
   assert.ok(!('description' in t), 'no description key when empty');
 });
 
-test('discoverMcpTools caps at 50 tools', async () => {
-  const many = Array.from({ length: 75 }, (_, i) => tool('mcp__srv__t' + i, 'd'));
-  const conn = fakeConnection(many);
-  const { fn } = stubConnect(conn);
-  const result = await discoverMcpTools(baseInput, fn);
-  assert.equal(result.tools.length, 50);
-  assert.equal(result.tools[0]?.name, 't0');
-  assert.equal(result.tools[49]?.name, 't49');
+test('discoverMcpTools keeps a 56-tool server whole and caps longer lists', async () => {
+  const fiftySix = Array.from({ length: 56 }, (_, i) => tool('mcp__srv__t' + i, 'd'));
+  const whole = await discoverMcpTools(baseInput, stubConnect(fakeConnection(fiftySix)).fn);
+  assert.deepEqual(whole.tools.map((entry) => entry.name), fiftySix.map((_, i) => 't' + i));
+
+  const many = Array.from({ length: MAX_MCP_TOOLS + 25 }, (_, i) => tool('mcp__srv__t' + i, 'd'));
+  const capped = await discoverMcpTools(baseInput, stubConnect(fakeConnection(many)).fn);
+  assert.equal(capped.tools.length, MAX_MCP_TOOLS);
+  assert.equal(capped.tools[0]?.name, 't0');
+  assert.equal(capped.tools.at(-1)?.name, `t${MAX_MCP_TOOLS - 1}`);
 });
 
 test('discoverMcpTools rejects at the connect deadline when connect hangs', async () => {
