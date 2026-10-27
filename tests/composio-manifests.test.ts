@@ -139,6 +139,55 @@ test('a read-tagged tool whose name or description writes is excluded, never pla
   ]);
 });
 
+test('no tool, read or write, picks who it acts as or makes the provider mint a shareable link', () => {
+  const text = (description = 'Text.') => ({ type: 'string', description });
+  const exportMode = (fallback: string) =>
+    ({ type: 'string', enum: ['return_text', 'store_and_link'], default: fallback });
+  const { manifest, report } = draftComposioManifest(snapshot([
+    tool('ACME_SEARCH_FILES', ['readOnlyHint'], {
+      type: 'object',
+      properties: {
+        query: text(),
+        type: { type: 'string', enum: ['file', 'folder', 'web_link'] },
+        include_recent_shared_links: { type: 'boolean' },
+        'Acme-API-Select-User': text('Team member whose account the call reads.'),
+        'Acme-API-Path-Root': text('Namespace that paths resolve in.'),
+      },
+    }),
+    tool('ACME_EXPORT_FILE', ['readOnlyHint'], {
+      type: 'object', properties: { path: text(), mode: exportMode('return_text') }, required: ['path'],
+    }),
+    tool('ACME_EXPORT_LINK', ['readOnlyHint'], {
+      type: 'object', properties: { path: text(), mode: exportMode('store_and_link') }, required: ['path'],
+    }),
+    {
+      ...tool('ACME_RENDER_IMAGES', ['readOnlyHint'], { type: 'object', properties: { ids: text() } }),
+      description: 'Render nodes as images. Returns a map of node IDs to temporary image URLs.',
+    },
+    tool('ACME_CREATE_SHARED_LINK', ['createHint'], { type: 'object', properties: { path: text() } }),
+    tool('ACME_UPDATE_DOCUMENT', ['updateHint'], {
+      type: 'object',
+      properties: { path: text(), title: text(), as_user: text(), create_download_link: { type: 'boolean' } },
+      required: ['path'],
+    }),
+  ]));
+  const capability = (slug: string) => manifest.capabilities.find(({ tool: name }) => name === slug)!;
+  const excluded = (slug: string) => report.excluded.find(({ tool: name }) => name === slug)?.reason;
+
+  assert.deepEqual(Object.keys(capability('ACME_SEARCH_FILES').input.properties),
+    ['query', 'type', 'include_recent_shared_links']);
+  assert.deepEqual(capability('ACME_SEARCH_FILES').withheldArguments, {
+    'Acme-API-Select-User': 'picks the user, admin, or namespace the call acts as',
+    'Acme-API-Path-Root': 'picks the user, admin, or namespace the call acts as',
+  });
+  assert.deepEqual(capability('ACME_EXPORT_FILE').withheldArguments,
+    { mode: 'can make the provider mint a link anyone holding it can open' });
+  assert.deepEqual(Object.keys(capability('ACME_UPDATE_DOCUMENT').input.properties), ['path', 'title']);
+  assert.match(excluded('ACME_EXPORT_LINK') ?? '', /mode mints a shareable link by default/);
+  assert.match(excluded('ACME_RENDER_IMAGES') ?? '', /read lint hit "temporary image URLs"/);
+  assert.match(excluded('ACME_CREATE_SHARED_LINK') ?? '', /^external_publish/);
+});
+
 test('the check rejects a write tool hand-moved into the read lane', async () => {
   const manifest = pilotManifest('trello');
   const card = manifest.capabilities.find(({ tool: slug }) => slug === 'TRELLO_UPDATE_CARDS_BY_ID_CARD')!;

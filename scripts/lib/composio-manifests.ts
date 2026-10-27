@@ -95,7 +95,19 @@ const REVIEW_REQUIRED_EFFECTS = new Set<ManagedEffectClass>([
 ]);
 const ADMINISTRATIVE = /(?:^|_)(ADMIN|ADMINS|AGENT|AGENTS|API_KEY|API_KEYS|AUDIT|CREDENTIAL|CREDENTIALS|GROUP|GROUPS|INTEGRATION|INTEGRATIONS|MEMBER|MEMBERS|MEMBERSHIP|MEMBERSHIPS|ORGANIZATION|ORGANIZATIONS|PASSWORD|PASSWORDS|PERMISSION|PERMISSIONS|POLICIES|POLICY|ROLE|ROLES|SCIM|SECRET|SECRETS|SETTING|SETTINGS|SLA|SSO|TEAM|TEAMS|TOKEN|TOKENS|USER|USERS|WEBHOOK|WEBHOOKS|WORKSPACE|WORKSPACES)(?:_|$)/;
 const SPEND = /(?:^|_)(BID|BIDS|BILL|BILLING|BILLS|BUDGET|BUDGETS|BUY|CHARGE|CHARGES|CHECKOUT|INVOICE|INVOICES|ORDER|ORDERS|PAY|PAYMENT|PAYMENTS|PAYOUT|PAYOUTS|PURCHASE|REFUND|REFUNDS|SUBSCRIPTION|SUBSCRIPTIONS|TRANSFER|TRANSFERS)(?:_|$)/;
-const PUBLISH = /(?:^|_)(BROADCAST|COMMENT|COMMENTS|EMAIL|EMAILS|FORWARD|INVITE|MESSAGE|MESSAGES|NOTIFY|OUTBOUND|POST|PUBLISH|REPLY|SEND|SHARE)(?:_|$)/;
+const PUBLISH = /(?:^|_)(BROADCAST|COMMENT|COMMENTS|EMAIL|EMAILS|FORWARD|INVITE|MESSAGE|MESSAGES|NOTIFY|OUTBOUND|POST|PUBLISH|REPLY|SEND|SHARE|SHARED)(?:_|$)/;
+
+/** Picks who or where a call acts, such as Dropbox's `Dropbox-API-Select-User` header. Withheld on reads too. */
+const ACTING = /(?:^|_)(?:select_(?:user|admin|member)|as_user|act_as|on_behalf_of|impersonat\w*|path_root)(?:_|$)/;
+/**
+ * A mode or flag that makes the provider mint a link anyone holding it can
+ * open, such as Dropbox export's `store_and_link`. `web_link` names a kind of
+ * item, and `include_recent_shared_links` filters, so a link alone does not count.
+ */
+const LINK_TOKENS = new Set(['link', 'links', 'url', 'urls']);
+const LINK_MINT_TOKENS = new Set(words('create generate make mint presigned public signed store temp temporary'));
+/** A read whose result is such a link: "temporary image URLs", "the public URL". */
+const LINK_MINT_DESCRIPTION = /\b(?:temporary|public|shareable|presigned)\s+(?:[\w()-]+\s+){0,2}(?:urls?|links?)\b/i;
 
 /**
  * Who can see, follow, or act on a record. Company domains count, because
@@ -148,6 +160,25 @@ const WITHHELD_COPY = 'copies content from another record, URL, or file';
 const WITHHELD_RECIPIENT = 'names an address a message goes to or comes from';
 const WITHHELD_IDENTITY = 'changes who the record belongs to or how a person is identified';
 const WITHHELD_OVERWRITE = 'can replace an existing item';
+const WITHHELD_ACTING = 'picks the user, admin, or namespace the call acts as';
+const WITHHELD_LINK = 'can make the provider mint a link anyone holding it can open';
+
+function argumentTokens(name: string): string[] {
+  return name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+function mintsLink(text: string): boolean {
+  const tokens = argumentTokens(text);
+  return tokens.some((token) => LINK_TOKENS.has(token)) && tokens.some((token) => LINK_MINT_TOKENS.has(token));
+}
+
+/** Rules for every tool, reads included: who the call acts as, and modes that mint a shareable link. */
+function anyToolWithheldReason(name: string, schema: unknown): string | undefined {
+  if (ACTING.test(argumentTokens(name).join('_'))) return WITHHELD_ACTING;
+  return mintsLink(name) || enumValues(schema).some((value) => typeof value === 'string' && mintsLink(value))
+    ? WITHHELD_LINK
+    : undefined;
+}
 
 /** A tool with both hints counts as a create. `other` is a delete, whose IDs name the record itself. */
 type WriteKind = 'create' | 'update' | 'other';
@@ -170,7 +201,7 @@ function withheldArgumentReason(
   required: boolean,
   kind: WriteKind,
 ): string | undefined {
-  const tokens = name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const tokens = argumentTokens(name);
   const compact = tokens.join('');
   const description = isPlainObject(schema) && typeof schema.description === 'string' ? schema.description : '';
   if (tokens.some((token) => ACCESS_TOKENS.has(token)) || ACCESS_TEXT.test(compact) ||
@@ -255,7 +286,7 @@ function classify(tool: ComposioSnapshotTool, name: string): Classification {
   if (hints.length === 0) return { excluded: 'no read or write hint' };
   if (hints.includes('readOnlyHint')) {
     if (hints.length > 1) return { excluded: 'conflicting hints' };
-    const hit = readLaneLintHit(name, tool.description);
+    const hit = readLaneLintHit(name, tool.description) ?? LINK_MINT_DESCRIPTION.exec(tool.description)?.[0];
     return hit ? { excluded: `read lint hit "${hit}"; never reclassified` } : { lane: 'read', effect: 'read' };
   }
   if (hints.includes('destructiveHint')) return { lane: 'write', effect: 'destructive' };
@@ -375,11 +406,17 @@ function deriveNode(
         const childWhere = where ? `${where}.${key}` : key;
         const reviewed = context.deny.get(childWhere);
         const withheld = reviewed === undefined
-          ? context.write && withheldArgumentReason(key, child, required.has(key), context.write)
+          ? anyToolWithheldReason(key, child) ??
+            (context.write && withheldArgumentReason(key, child, required.has(key), context.write))
           : `reviewer: ${reviewed}`;
         if (withheld && (reviewed !== undefined || !context.allow.has(childWhere))) {
           if (reviewed !== undefined && required.has(key)) {
             return { unsupported: `required argument ${childWhere} is withheld by review` };
+          }
+          // Leaving out an argument whose default mints a link would still mint one.
+          if (withheld === WITHHELD_LINK && isPlainObject(child) && typeof child.default === 'string' &&
+              mintsLink(child.default)) {
+            return { unsupported: `${childWhere} mints a shareable link by default` };
           }
           // Withholding an argument whose default overwrites would still overwrite.
           const overwritesByDefault = withheld === WITHHELD_OVERWRITE && isPlainObject(child) &&

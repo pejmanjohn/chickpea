@@ -46,7 +46,7 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "Dropbox: Add tag to file or folder",
       "withheldArguments": {
-        "Dropbox-API-Select-User": "changes sharing, visibility, permissions, membership, or who acts"
+        "Dropbox-API-Select-User": "picks the user, admin, or namespace the call acts as"
       },
       "input": {
         "type": "object",
@@ -138,18 +138,12 @@
       "effect": "read",
       "description": "Tool to export non-downloadable Dropbox files (especially Dropbox Paper) to Markdown/HTML/plain text and return usable content. Use when you need to access content from files that cannot be downloaded directly, such as Dropbox Paper documents or Google Docs stored in Dropbox. Requires files.content.read scope.",
       "maxResultBytes": 65536,
+      "withheldArguments": {
+        "mode": "can make the provider mint a link anyone holding it can open"
+      },
       "input": {
         "type": "object",
         "properties": {
-          "mode": {
-            "type": "string",
-            "maxLength": 20000,
-            "enum": [
-              "return_text",
-              "store_and_link"
-            ],
-            "description": "'return_text': return exported text directly (truncated safely if very large). 'store_and_link': create a temporary Dropbox download link to the original file."
-          },
           "path": {
             "type": "string",
             "maxLength": 20000,
@@ -737,6 +731,9 @@
       "effect": "read",
       "description": "Tool to search for files and folders in Dropbox by name or content, optionally scoped to a path, with pagination support. Results paginate via cursor (up to 100 per page); check `has_more` in the response and re-fetch with the cursor until `has_more` is false. Newly indexed items may have a brief delay before appearing. Verify `path_display` and `.tag` (file vs folder) on each result before acting, as multiple similar-named items may match. Results are limited to items visible to the authenticated user.",
       "maxResultBytes": 65536,
+      "withheldArguments": {
+        "Dropbox-API-Select-User": "picks the user, admin, or namespace the call acts as"
+      },
       "input": {
         "type": "object",
         "properties": {
@@ -829,11 +826,6 @@
               }
             },
             "description": "Options for match field highlighting. If not provided, default options will be used."
-          },
-          "Dropbox-API-Select-User": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Team member ID (format: dbmid:...) required when using team tokens. Specifies which team member's account to operate on."
           }
         }
       }
