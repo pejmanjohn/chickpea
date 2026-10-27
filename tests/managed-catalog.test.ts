@@ -312,6 +312,9 @@ test('every managed connector has a safe read-only canary manifest', () => {
     assert.equal(capability?.connectorToolkit, connector.toolkit);
     assert.equal(capability?.accessLane, 'read');
     assert.equal(capability?.effect, 'read');
+    if (manifest.requiredArguments.length === 0) {
+      assert.ok(v.is(capability!.input, manifest.arguments), `${connector.toolkit} canary arguments`);
+    }
   }
 });
 

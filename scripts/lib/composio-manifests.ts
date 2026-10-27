@@ -49,6 +49,7 @@ export interface DraftReport {
   toolkit: string;
   version: string;
   validationCapability: string;
+  validationArguments?: ComposioManifest['validationArguments'];
   read: string[];
   write: Array<{ tool: string; effect: ManagedEffectClass }>;
   excluded: Array<{ tool: string; reason: string }>;
@@ -533,6 +534,7 @@ function deriveNode(
 export function draftComposioManifest(
   snapshot: ComposioSnapshot,
   previous?: ComposioManifest,
+  options: { validationArguments?: ComposioManifest['validationArguments'] } = {},
 ): { manifest: ComposioManifest; report: DraftReport } {
   const toolkit = snapshot.toolkit.slug;
   if (previous && previous.toolkit !== toolkit) throw new Error('previous manifest belongs to another toolkit');
@@ -628,12 +630,18 @@ export function draftComposioManifest(
     if (write) report.write.push({ tool: tool.slug, effect });
     else report.read.push(tool.slug);
   }
-  const validationCandidates = capabilities.filter(({ lane, input }) => lane === 'read' && !input.required);
+  const validationArguments = options.validationArguments ?? previous?.validationArguments;
+  const validationCandidates = capabilities.filter(({ lane, input }) => lane === 'read' &&
+    (input.required ?? []).every((argument) => validationArguments?.[argument] !== undefined));
   const validation = validationCandidates.find(({ id }) => id === previous?.validationCapability) ??
     validationCandidates.find(({ tool }) => /(?:^|_)(WHO_AM_I|ME|CURRENT|AUTHENTICATED|ACCOUNT|PROFILE)(?:_|$)/.test(tool)) ??
     validationCandidates[0];
-  if (!validation) throw new Error(`${toolkit} has no read tool without required input to validate a connection`);
+  if (!validation) {
+    throw new Error(`${toolkit} has no read tool whose required input validationArguments supply; ` +
+      'pass fixed arguments with --validation-arguments');
+  }
   report.validationCapability = validation.id;
+  if (validationArguments) report.validationArguments = validationArguments;
   const manifest: ComposioManifest = {
     toolkit,
     version: snapshot.toolkit.version,
@@ -643,6 +651,7 @@ export function draftComposioManifest(
     securityDescription: previous?.securityDescription ?? defaultSecurityDescription(label, auth),
     preset: previous?.preset ?? { category: 'business', accent: '#000000' },
     validationCapability: validation.id,
+    ...(validationArguments ? { validationArguments } : {}),
     review: {
       add: [...add].sort(),
       drop: Object.fromEntries(Object.entries(drop).sort()),
@@ -688,7 +697,7 @@ export function checkComposioManifest(value: unknown, snapshot: ComposioSnapshot
   }
   if (!isDeepStrictEqual(manifest.auth, expected.auth)) problems.push(`${where} auth differs from the snapshot`);
   if (manifest.validationCapability !== expected.validationCapability) {
-    problems.push(`${where} validation capability is not a read tool without required input`);
+    problems.push(`${where} validation capability is not a read tool whose required input validationArguments supply`);
   }
   const expectedByTool = new Map(expected.capabilities.map((capability) => [capability.tool, capability]));
   for (const capability of manifest.capabilities) {
@@ -832,7 +841,8 @@ export function renderDraftReport(report: DraftReport): string {
   const lines = [
     `# ${report.toolkit} ${report.version}`,
     '',
-    `Validation capability: \`${report.validationCapability}\``,
+    `Validation capability: \`${report.validationCapability}\`` +
+      (report.validationArguments ? ` with \`${JSON.stringify(report.validationArguments)}\`` : ''),
     '',
     `## Read lane (${report.read.length})`,
     ...report.read.map((tool) => `- \`${tool}\``),

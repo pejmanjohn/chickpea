@@ -119,6 +119,11 @@ export interface ComposioManifest {
     aliases?: string[] | undefined;
   };
   validationCapability: string;
+  /**
+   * Fixed arguments for the validation call, such as Zoom's `user_id: "me"`,
+   * checked against its input schema. The model never supplies them.
+   */
+  validationArguments?: Record<string, string | number | boolean> | undefined;
   review: {
     add: string[];
     drop: Record<string, string>;
@@ -156,6 +161,11 @@ const ManifestShape = v.strictObject({
     aliases: v.optional(v.pipe(v.array(Text(80)), v.minLength(1), v.maxLength(4))),
   }),
   validationCapability: Text(192),
+  validationArguments: v.optional(v.pipe(
+    v.record(Text(128), v.union([Text(200), v.pipe(v.number(), v.finite()), v.boolean()])),
+    v.minEntries(1),
+    v.maxEntries(8),
+  )),
   review: v.strictObject({
     add: v.array(ToolSlug),
     drop: v.record(ToolSlug, Text(240)),
@@ -225,8 +235,9 @@ export function parseComposioManifest(value: unknown): ComposioManifest {
     }
   }
   const validation = capabilities.find(({ id }) => id === manifest.validationCapability);
-  if (!validation || validation.lane !== 'read' || validation.input.required) {
-    throw new Error(`Composio manifest ${manifest.toolkit} needs a read validation capability without required input`);
+  if (!validation || validation.lane !== 'read' ||
+      !v.is(compileInputSchema(validation.input), manifest.validationArguments ?? {})) {
+    throw new Error(`Composio manifest ${manifest.toolkit} needs a read validation capability whose input accepts its validationArguments`);
   }
   return { ...manifest, capabilities };
 }
@@ -299,7 +310,7 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
 
 /** Reviewed manifests the generator still checks but the catalog does not ship, with the reason. */
 export const HELD_COMPOSIO_MANIFESTS: Readonly<Record<string, string>> = {
-  google_maps: "Validation runs with no arguments, and every Google Maps read needs input: geocoding needs an address, coordinates, or a place ID, and Composio's own current-user check uses a fixed place ID",
+  google_maps: "Every Google Maps read needs input, so validation needs validationArguments nobody has chosen and checked: geocoding needs an address, coordinates, or a place ID, and Composio's own current-user check uses a fixed place ID",
   linkedin: "Its only write, posting, publishes by default: lifecycleState defaults to PUBLISHED and visibility is required, so no withheld argument can hold a post as a draft, and every connector ships read and write tools",
   trello: "Composio's hosted Connect Link for its managed OAuth1 config fails with \"Link session not found or expired\"",
 };

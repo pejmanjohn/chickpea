@@ -1289,6 +1289,47 @@ test('connection validation runs the manifest validation capability', async () =
   ]);
 });
 
+test('a validation capability may need input only when validationArguments supply it within its schema', () => {
+  const getUser = tool('ACME_GET_USER', ['readOnlyHint'], {
+    type: 'object',
+    properties: {
+      user_id: { type: 'string', maxLength: 64 },
+      detail: { type: 'string', enum: ['basic', 'full'] },
+    },
+    required: ['user_id'],
+  });
+  const tools = [getUser, tool('ACME_LIST_MEETINGS', ['readOnlyHint'], {
+    type: 'object', properties: { user_id: { type: 'string' } }, required: ['user_id'],
+  })];
+  const value = (validationArguments: Record<string, unknown>) => {
+    const { manifest } = draftComposioManifest({ ...snapshot(tools), tools }, undefined, {
+      validationArguments: { user_id: 'me' },
+    });
+    return { ...structuredClone(manifest), validationArguments };
+  };
+
+  assert.throws(() => draftComposioManifest({ ...snapshot(tools), tools }), /no read tool whose required input/);
+  const { manifest, report } = draftComposioManifest({ ...snapshot(tools), tools }, undefined, {
+    validationArguments: { user_id: 'me' },
+  });
+  assert.equal(manifest.validationCapability, 'acme.get_user');
+  assert.deepEqual(manifest.validationArguments, { user_id: 'me' });
+  assert.deepEqual(report.validationArguments, { user_id: 'me' });
+  assert.deepEqual(draftComposioManifest({ ...snapshot(tools), tools }, manifest).manifest, manifest);
+  assert.deepEqual(parseComposioManifest(value({ user_id: 'me', detail: 'full' })).validationArguments,
+    { user_id: 'me', detail: 'full' });
+
+  for (const rejected of [{ user_id: 'me', include_deleted: true }, { detail: 'full' }, { user_id: 7 },
+    { user_id: 'me', detail: 'everything' }, { user_id: 'x'.repeat(65) }]) {
+    assert.throws(() => parseComposioManifest(value(rejected)), /validation capability whose input accepts/,
+      JSON.stringify(rejected));
+  }
+  for (const malformed of [{}, { user_id: { nested: 'me' } }, { user_id: ['me'] }]) {
+    assert.throws(() => parseComposioManifest(value(malformed)), /invalid at validationArguments/,
+      JSON.stringify(malformed));
+  }
+});
+
 test('update tools lose requester and identity arguments; create tools keep them except email addresses', () => {
   const contact = {
     type: 'object',

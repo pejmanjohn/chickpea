@@ -12,8 +12,10 @@ export const MANAGED_CONNECTOR_CANARY_MANIFESTS: Readonly<
   Record<string, ManagedConnectorCanaryManifest>
 > = Object.freeze({
   ...Object.fromEntries(MANAGED_CONNECTOR_CATALOG.list().flatMap(({ toolkit }) => {
-    const validation = composioManifest(toolkit)?.validationCapability;
-    return validation ? [[toolkit, manifest(validation)]] : [];
+    const generated = composioManifest(toolkit);
+    return generated
+      ? [[toolkit, manifest(generated.validationCapability, generated.validationArguments)]]
+      : [];
   })),
   gmail: manifest('gmail.profile.read'),
   googlecalendar: manifest('calendar.calendars.list', { maxResults: 10 }),

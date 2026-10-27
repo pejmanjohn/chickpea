@@ -1950,7 +1950,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         const result = await executeComposioTool(client, input.policy, {
           toolkit: validation.toolkit,
           tool: validation.tool,
-          arguments: {},
+          arguments: { ...manifest.validationArguments },
           signal,
         });
         if (result.error) {
