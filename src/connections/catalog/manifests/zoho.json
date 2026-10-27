@@ -55,6 +55,17 @@
       "ZOHO_CREATE_LEAD": [
         "Email"
       ]
+    },
+    "withholdArguments": {
+      "ZOHO_CREATE_CONTACT": {
+        "lar_id": "Runs an assignment rule, which sets the record owner and can notify that person."
+      },
+      "ZOHO_CREATE_DEAL": {
+        "lar_id": "Runs an assignment rule, which sets the record owner and can notify that person."
+      },
+      "ZOHO_CREATE_LEAD": {
+        "lar_id": "Runs an assignment rule, which sets the record owner and can notify that person."
+      }
     }
   },
   "capabilities": [
@@ -137,6 +148,7 @@
       "sideEffectLabel": "Zoho CRM: Create Contact in Zoho CRM",
       "withheldArguments": {
         "owner": "changes sharing, visibility, permissions, membership, or who acts",
+        "lar_id": "reviewer: Runs an assignment rule, which sets the record owner and can notify that person.",
         "lead_source": "copies content from another record, URL, or file",
         "secondary_email": "names an address a message goes to or comes from"
       },
@@ -162,11 +174,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Job title of the contact"
-          },
-          "lar_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Assignment rule ID. Kept as a string to preserve Zoho's 19-digit IDs safely."
           },
           "mobile": {
             "type": "string",
@@ -376,6 +383,7 @@
       "sideEffectLabel": "Zoho CRM: Create Deal in Zoho CRM",
       "withheldArguments": {
         "Owner": "changes sharing, visibility, permissions, membership, or who acts",
+        "lar_id": "reviewer: Runs an assignment rule, which sets the record owner and can notify that person.",
         "Lead_Source": "copies content from another record, URL, or file",
         "Campaign_Source": "copies content from another record, URL, or file"
       },
@@ -390,11 +398,6 @@
           "Amount": {
             "type": "number",
             "description": "The monetary value of the deal in the account's currency. Use decimal format for fractional amounts."
-          },
-          "lar_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Assignment rule ID. Kept as a string to preserve Zoho's 19-digit IDs safely."
           },
           "trigger": {
             "type": "array",
@@ -743,6 +746,7 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "Zoho CRM: Create Lead in Zoho CRM",
       "withheldArguments": {
+        "lar_id": "reviewer: Runs an assignment rule, which sets the record owner and can notify that person.",
         "Lead_Source": "changes sharing, visibility, permissions, membership, or who acts",
         "Secondary_Email": "names an address a message goes to or comes from"
       },
@@ -788,11 +792,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Street address of the lead"
-          },
-          "lar_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Lead assignment rule ID to apply when creating the lead. This determines which user the lead will be assigned to based on predefined rules"
           },
           "Company": {
             "type": "string",

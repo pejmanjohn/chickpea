@@ -14,7 +14,6 @@
   "validationCapability": "googlemeet.list_conference_records",
   "review": {
     "add": [
-      "GOOGLEMEET_CREATE_MEMBER",
       "GOOGLEMEET_GET_MEET",
       "GOOGLEMEET_GET_SMART_NOTE",
       "GOOGLEMEET_GET_TRANSCRIPT",

@@ -5,8 +5,8 @@
     "mode": "managed_oauth"
   },
   "label": "Webex",
-  "description": "Read Webex spaces, messages, teams, and people, and create new spaces.",
-  "securityDescription": "Webex sign-in opens through Composio. Agents can read the spaces and teams the signed-in person belongs to, their messages and memberships, and people in the organization's directory. With write access, Agents can create a new space with only the person in it. Agents cannot post, edit, or delete messages, add or remove members or moderators, rename, lock, or delete spaces or teams, or manage webhooks. Webex meetings, recordings, and transcripts are not available.",
+  "description": "Webex messaging only: read spaces, messages, teams, and people, and create new spaces.",
+  "securityDescription": "Webex sign-in opens through Composio. This connector covers Webex messaging only; Webex meetings, recordings, and transcripts are not available. Agents can read the spaces and teams the signed-in person belongs to, their messages and memberships, and people in the organization's directory. With write access, Agents can create a new space with only the person in it. Agents cannot post, edit, or delete messages, add or remove members or moderators, rename, lock, or delete spaces or teams, or manage webhooks.",
   "preset": {
     "category": "business",
     "accent": "#00BCEB"

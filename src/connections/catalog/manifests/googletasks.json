@@ -6,7 +6,7 @@
   },
   "label": "Google Tasks",
   "description": "Review task lists and create, update, complete, or move tasks.",
-  "securityDescription": "Google sign-in opens through Composio. Agents can read the person's task lists and tasks. With write access, Agents can create task lists and tasks, rename lists, and edit, complete, and move tasks, including between the person's own lists. An edit can also mark a task deleted; Google Tasks still lists deleted tasks on request. Agents cannot delete task lists, clear completed tasks, or reach anyone else's tasks.",
+  "securityDescription": "Google sign-in opens through Composio. Agents can read the person's task lists and tasks. With write access, Agents can create task lists and tasks, rename lists, and edit, complete, and move tasks, including between the person's own lists. Agents cannot delete tasks or task lists, clear completed tasks, or reach anyone else's tasks.",
   "preset": {
     "category": "project",
     "accent": "#4285F4"
@@ -28,7 +28,20 @@
     "drop": {
       "GOOGLETASKS_UPDATE_TASK_FULL": "A full replace clears every field the Agent leaves out, such as notes or the due date; patch_task covers edits."
     },
-    "allowArguments": {}
+    "allowArguments": {
+      "GOOGLETASKS_MOVE_TASK": [
+        "destinationTasklist",
+        "parent"
+      ]
+    },
+    "withholdArguments": {
+      "GOOGLETASKS_INSERT_TASK": {
+        "deleted": "Marks the task deleted; this connector does not delete tasks."
+      },
+      "GOOGLETASKS_PATCH_TASK": {
+        "deleted": "Marks the task deleted; this connector does not delete tasks."
+      }
+    }
   },
   "capabilities": [
     {
@@ -113,6 +126,9 @@
       "description": "Creates a new task in a given `tasklist_id`, optionally as a subtask of an existing `task_parent` or positioned after an existing `task_previous` sibling, where both `task_parent` and `task_previous` must belong to the same `tasklist_id` if specified. IMPORTANT: Date fields (due, completed) accept various formats like '28 Sep 2025', '11:59 PM, 22 Sep 2025', or ISO format '2025-09-21T15:30:00Z' and will automatically convert them to RFC3339 format required by the API. Not idempotent — repeated calls with identical parameters create duplicate tasks; track returned task IDs to avoid duplication. High-volume inserts may trigger 403 rateLimitExceeded or 429; apply exponential backoff.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Google Tasks: Insert Task",
+      "withheldArguments": {
+        "deleted": "reviewer: Marks the task deleted; this connector does not delete tasks."
+      },
       "input": {
         "type": "object",
         "properties": {
@@ -153,10 +169,6 @@
               "completed"
             ],
             "description": "Status of the task. Must be either 'needsAction' (task is pending) or 'completed' (task is done). Defaults to 'needsAction' if not provided."
-          },
-          "deleted": {
-            "type": "boolean",
-            "description": "Whether the task has been deleted. Deleted tasks are marked but not immediately removed, allowing for recovery. Default: false"
           },
           "completed": {
             "type": "string",
@@ -343,13 +355,10 @@
       "tool": "GOOGLETASKS_MOVE_TASK",
       "toolName": "googletasks_move_task",
       "lane": "write",
-      "effect": "reversible_write",
+      "effect": "administrative",
       "description": "Moves the specified task to another position in the task list or to a different task list. Use cases: - Reorder tasks within a list (use 'previous' parameter) - Create subtasks by moving a task under a parent (use 'parent' parameter) - Move tasks between different task lists (use 'destinationTasklist' parameter) - Move a subtask back to top-level (omit 'parent' parameter)",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Google Tasks: Move Task",
-      "withheldArguments": {
-        "destinationTasklist": "moves the record to another container"
-      },
       "input": {
         "type": "object",
         "properties": {
@@ -372,6 +381,11 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Source task list identifier where the task currently exists. Use '@default' for the user's primary task list, or provide a specific task list ID obtained from 'List Task Lists'. The task must exist in this list."
+          },
+          "destinationTasklist": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Destination task list identifier. If set, the task is moved from the source tasklist to this list. Omit to reorder within the same list. Note: Recurrent tasks cannot be moved between lists."
           }
         },
         "required": [
@@ -389,6 +403,9 @@
       "description": "Partially updates an existing task (identified by `task_id`) within a specific Google Task list (identified by `tasklist_id`), modifying only the provided attributes from `TaskInput` (e.g., `title`, `notes`, `due` date, `status`) and requiring both the task and list to exist.",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Google Tasks: Patch Task",
+      "withheldArguments": {
+        "deleted": "reviewer: Marks the task deleted; this connector does not delete tasks."
+      },
       "input": {
         "type": "object",
         "properties": {
@@ -430,10 +447,6 @@
               "completed"
             ],
             "description": "Current status of the task. Must be either 'needsAction' (task is pending) or 'completed' (task is done)."
-          },
-          "deleted": {
-            "type": "boolean",
-            "description": "Whether the task has been deleted. Deleted tasks are marked but not immediately removed, allowing for recovery. Default: false"
           },
           "task_id": {
             "type": "string",

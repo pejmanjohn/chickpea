@@ -6,7 +6,7 @@
   },
   "label": "Google Maps",
   "description": "Search places, get directions and travel times, and convert addresses and coordinates.",
-  "securityDescription": "Google sign-in opens through Composio. Agents can search places, read place details and photos, geocode addresses and coordinates, look up time zones, and compute routes and travel times. With write access, Agents can also start rendering an aerial video of a US address. Google Maps holds no account data for Agents to change, and map embed links are not available.",
+  "securityDescription": "Google sign-in opens through Composio. Agents can search places, read place details, geocode addresses and coordinates, look up time zones, and compute routes and travel times. With write access, Agents can also start rendering an aerial video of a US address. Google Maps holds no account data for Agents to change, and place photos and map embed links are not available.",
   "preset": {
     "category": "search",
     "accent": "#34A853"

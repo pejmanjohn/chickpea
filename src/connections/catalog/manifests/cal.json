@@ -14,11 +14,9 @@
   "validationCapability": "cal.retrieve_my_information",
   "review": {
     "add": [
-      "CAL_CANCEL_BOOKING_VIA_UID",
       "CAL_FETCH_ALL_BOOKINGS",
       "CAL_FETCH_SCHEDULE_BY_ID",
       "CAL_GET_AVAILABLE_SLOTS_INFO",
-      "CAL_POST_NEW_BOOKING_REQUEST",
       "CAL_RESCHEDULE_BOOKING_BY_UID",
       "CAL_RETRIEVE_BOOKING_DETAILS_BY_UID",
       "CAL_RETRIEVE_EVENT_TYPE_BY_ID",
@@ -31,10 +29,16 @@
       "CAL_EDIT_BOOKING_BY_ID": "Its status field can set CANCELLED or REJECTED, which cancels the booking and notifies attendees; reschedule_booking_by_uid covers moving a booking.",
       "CAL_EDIT_EVENT_TYPE_BY_ID": "Changes a public booking page: its price and currency, a redirect URL every booker is sent to, and the slug in its booking link.",
       "CAL_GET_ORGANIZATION_ID": "Organization administration is out of scope.",
+      "CAL_POST_NEW_BOOKING_REQUEST": "Creating a booking emails an invitation to the attendee and every guest, who can be anyone.",
       "CAL_RETRIEVE_TEAM_MEMBERSHIPS": "Team membership tools are out of scope.",
       "CAL_RETRIEVE_USERS_IN_ORGANIZATION": "Organization membership tools are out of scope."
     },
-    "allowArguments": {}
+    "allowArguments": {},
+    "withholdArguments": {
+      "CAL_RESCHEDULE_BOOKING_BY_UID": {
+        "rescheduledBy": "Names who rescheduled the booking; the event type owner's email confirms the new time automatically, so the Agent would act as the owner."
+      }
+    }
   },
   "capabilities": [
     {
@@ -439,6 +443,7 @@
       "maxResultBytes": 65536,
       "sideEffectLabel": "Cal.com: Reschedule booking by uid",
       "withheldArguments": {
+        "rescheduledBy": "reviewer: Names who rescheduled the booking; the event type owner's email confirms the new time automatically, so the Agent would act as the owner.",
         "emailVerificationCode": "names an address a message goes to or comes from"
       },
       "input": {
@@ -453,11 +458,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "The unique identifier (UID) of the booking that needs to be rescheduled."
-          },
-          "rescheduledBy": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Email of the person who is rescheduling the booking. If event type owner email is provided, rescheduled booking will be automatically confirmed."
           },
           "reschedulingReason": {
             "type": "string",

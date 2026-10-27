@@ -285,7 +285,7 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
 
 /** Reviewed manifests the generator still checks but the catalog does not ship, with the reason. */
 export const HELD_COMPOSIO_MANIFESTS: Readonly<Record<string, string>> = {
-  google_maps: 'Validation runs with no arguments, and every Google Maps read needs input: geocoding needs an address, coordinates, or a place ID, and Composio\'s own current-user check uses a fixed place ID',
+  google_maps: "Validation runs with no arguments, and every Google Maps read needs input: geocoding needs an address, coordinates, or a place ID, and Composio's own current-user check uses a fixed place ID",
   trello: "Composio's hosted Connect Link for its managed OAuth1 config fails with \"Link session not found or expired\"",
 };
 

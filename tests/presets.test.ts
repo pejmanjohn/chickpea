@@ -414,7 +414,7 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     managedToolkit: 'webex',
     providerId: 'webex',
     name: 'Webex',
-    description: 'Read Webex spaces, messages, teams, and people, and create new spaces.',
+    description: 'Webex messaging only: read spaces, messages, teams, and people, and create new spaces.',
     category: 'business',
     accent: '#00BCEB',
     logoId: 'webex',
