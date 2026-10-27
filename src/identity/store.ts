@@ -2742,7 +2742,7 @@ export class IdentityStoreLogic {
 
   consumeInvitation(input: ConsumeInvitationInput): IdentityResolution {
     return this.db.transaction(() => {
-      const at = input.at ?? this.now();
+      const at = this.now();
       this.expirePendingInvitations(at);
       const invitation = this.requiredInvitation(input.invitationId);
       if (invitation.status !== 'pending') throw identityError('invitation_not_pending', 'Invitation is unavailable.');

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mock, test } from 'node:test';
+import { test } from 'node:test';
 
 import { Hono } from 'hono';
 
@@ -674,7 +674,7 @@ test('direct schedules are absent from shared list, detail, and mutation surface
   }
 });
 
-test('private schedule projections are readable only to proven Channel members across global and Agent APIs', async () => {
+test('private schedule projections are readable only to proven Channel members across global and Agent APIs', async (t) => {
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-private-member-')), 'state.db');
   const routines = new SqliteRoutineStore(path);
   const work = new SqliteWorkStore(path);
@@ -941,13 +941,12 @@ test('private schedule projections are readable only to proven Channel members a
       state: 'active',
     }, attentionReference.revision);
 
-    const warn = mock.method(console, 'warn', () => undefined);
+    const warn = t.mock.method(console, 'warn', () => undefined);
     const unsupportedResume = await appFor(true, false).request(controlUrl, {
       method: 'POST',
       headers: controlHeaders('unsupported-resume'),
       body: JSON.stringify({ action: 'resume', expectedVersion: 2 }),
     });
-    warn.mock.restore();
     assert.equal(unsupportedResume.status, 400);
     assert.deepEqual(await unsupportedResume.json(), { error: 'routines_unavailable_on_target' });
     assert.deepEqual(

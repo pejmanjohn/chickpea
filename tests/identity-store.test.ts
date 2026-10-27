@@ -3,7 +3,11 @@ import { test } from 'node:test';
 
 import { IdentityStateError } from '../src/identity/errors.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
-import type { CreateInvitationInput, ResendInvitationInput } from '../src/identity/types.ts';
+import type {
+  ConsumeInvitationInput,
+  CreateInvitationInput,
+  ResendInvitationInput,
+} from '../src/identity/types.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 
 const NOW = 1_786_000_000_000;
@@ -436,6 +440,18 @@ test('pending Slack invitations expire on the store clock and the same tuple the
     now += ttl - 1;
     assert.equal((await store.findInvitation('b'.repeat(64)))?.id, first.id);
     now += 1;
+    await assert.rejects(
+      () => store.consumeInvitation({
+        invitationId: first.id,
+        locatorHash: 'b'.repeat(64),
+        slackTeamId: TEAM,
+        slackUserId: 'UINVITED1',
+        betterAuthUserId: 'ba_user_expired',
+        betterAuthMembershipId: 'ba_member_expired',
+        at: first.createdAt + 1,
+      } as ConsumeInvitationInput),
+      (error: unknown) => error instanceof IdentityStateError && error.code === 'invitation_not_pending',
+    );
     assert.equal(await store.findInvitation('b'.repeat(64)), undefined);
     assert.equal((await store.listInvitations()).find((row) => row.id === first.id)?.status, 'expired');
     const replacement = await store.createInvitation({

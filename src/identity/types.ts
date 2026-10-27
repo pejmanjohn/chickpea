@@ -820,7 +820,6 @@ export interface ConsumeInvitationInput {
   displayName?: string | null;
   betterAuthUserId: string;
   betterAuthMembershipId: string;
-  at?: number;
 }
 
 export interface CreatePersonalTokenRecordInput {
