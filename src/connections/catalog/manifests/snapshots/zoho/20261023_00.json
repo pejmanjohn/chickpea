@@ -12038,6 +12038,7 @@
         "Attachments"
       ],
       "deprecated": false,
+      "returnsHostedFile": true,
       "input": {
         "type": "object",
         "title": "DownloadRecordAttachmentRequest",
@@ -12089,6 +12090,7 @@
         "Record Photos"
       ],
       "deprecated": false,
+      "returnsHostedFile": true,
       "input": {
         "type": "object",
         "title": "DownloadRecordPhotoRequest",

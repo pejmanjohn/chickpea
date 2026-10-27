@@ -2019,6 +2019,7 @@
         "Places search & details"
       ],
       "deprecated": false,
+      "returnsHostedFile": true,
       "input": {
         "type": "object",
         "title": "PlacePhotoRequest",

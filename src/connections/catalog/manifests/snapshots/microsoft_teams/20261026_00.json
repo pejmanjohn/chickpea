@@ -3186,6 +3186,7 @@
         "meeting"
       ],
       "deprecated": false,
+      "returnsHostedFile": true,
       "input": {
         "type": "object",
         "title": "GetMeetingRecordingContentRequest",

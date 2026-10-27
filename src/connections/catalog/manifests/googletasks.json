@@ -347,6 +347,9 @@
       "description": "Moves the specified task to another position in the task list or to a different task list. Use cases: - Reorder tasks within a list (use 'previous' parameter) - Create subtasks by moving a task under a parent (use 'parent' parameter) - Move tasks between different task lists (use 'destinationTasklist' parameter) - Move a subtask back to top-level (omit 'parent' parameter)",
       "maxResultBytes": 65536,
       "sideEffectLabel": "Google Tasks: Move Task",
+      "withheldArguments": {
+        "destinationTasklist": "moves the record to another container"
+      },
       "input": {
         "type": "object",
         "properties": {
@@ -369,11 +372,6 @@
             "type": "string",
             "maxLength": 20000,
             "description": "Source task list identifier where the task currently exists. Use '@default' for the user's primary task list, or provide a specific task list ID obtained from 'List Task Lists'. The task must exist in this list."
-          },
-          "destinationTasklist": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Destination task list identifier. If set, the task is moved from the source tasklist to this list. Omit to reorder within the same list. Note: Recurrent tasks cannot be moved between lists."
           }
         },
         "required": [

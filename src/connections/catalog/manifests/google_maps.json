@@ -357,14 +357,12 @@
       "effect": "read",
       "description": "Convert addresses into geographic coordinates (latitude and longitude) and vice versa (reverse geocoding), or get an address for a Place ID. Uses the Geocoding API v4 (v4beta) which supports OAuth2 authentication. Exactly one of `address`, `latlng`, or `place_id` must be provided per request; omitting all three or mixing incompatible combinations yields no useful results.",
       "maxResultBytes": 65536,
+      "withheldArguments": {
+        "key": "carries a credential the model would supply itself"
+      },
       "input": {
         "type": "object",
         "properties": {
-          "key": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Your application's API key. If not provided, will be extracted from connection metadata."
-          },
           "bounds": {
             "type": "string",
             "maxLength": 20000,
@@ -731,41 +729,6 @@
           "longitude",
           "radius"
         ]
-      }
-    },
-    {
-      "id": "google_maps.place_photo",
-      "tool": "GOOGLE_MAPS_PLACE_PHOTO",
-      "toolName": "google_maps_place_photo",
-      "lane": "read",
-      "effect": "read",
-      "description": "Retrieves high quality photographic content from the Google Maps Places database. Use when you need to download a place photo using a photo_reference obtained from Place Details, Nearby Search, or Text Search requests. Images are scaled proportionally to fit within specified dimensions.",
-      "maxResultBytes": 65536,
-      "input": {
-        "type": "object",
-        "properties": {
-          "maxwidth": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1600,
-            "description": "Maximum desired width of the image in pixels (1-1600). Image will be scaled proportionally. You must specify either maxwidth, maxheight, or both."
-          },
-          "maxheight": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1600,
-            "description": "Maximum desired height of the image in pixels (1-1600). Image will be scaled proportionally. You must specify either maxwidth, maxheight, or both."
-          },
-          "photo_reference": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "A string identifier that uniquely identifies a photo. Can be either: (1) A full photo resource name in format 'places/{place_id}/photos/{photo}' from the new Places API, or (2) Just the photo reference string from legacy API. Obtained from Place Details, Nearby Search, or Text Search requests. Note: Photo references cannot be cached and may expire over time."
-          }
-        },
-        "required": [
-          "photo_reference"
-        ],
-        "description": "Request parameters for retrieving a Place Photo."
       }
     },
     {

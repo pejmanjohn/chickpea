@@ -13,6 +13,7 @@ import {
   parseComposioManifest,
   type ComposioManifest,
 } from '../src/connections/catalog/composio-manifests.ts';
+import googleMaps from '../src/connections/catalog/manifests/google_maps.json' with { type: 'json' };
 import trello from '../src/connections/catalog/manifests/trello.json' with { type: 'json' };
 import { MANAGED_CONNECTOR_CATALOG, createManagedConnectorCatalog } from '../src/connections/catalog/index.ts';
 import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
@@ -62,7 +63,7 @@ function lanes(manifest: ComposioManifest): Record<string, string> {
   return Object.fromEntries(manifest.capabilities.map(({ tool: slug, lane }) => [slug, lane]));
 }
 
-const PILOT_MANIFESTS = [...COMPOSIO_MANIFESTS, parseComposioManifest(trello)];
+const PILOT_MANIFESTS = [...COMPOSIO_MANIFESTS, parseComposioManifest(googleMaps), parseComposioManifest(trello)];
 
 const pilotManifest = (toolkit: string) => structuredClone(
   PILOT_MANIFESTS.find((manifest) => manifest.toolkit === toolkit)!,
@@ -310,8 +311,9 @@ test('every committed snapshot marks the tools that return a file on Composio st
   }
   assert.deepEqual(marked.sort(), [
     'BITBUCKET_DOWNLOAD_REPOSITORY_ARCHIVE', 'BOX_DOWNLOAD_FILE', 'DROPBOX_READ_FILE', 'FIGMA_DOWNLOAD_FIGMA_IMAGES',
-    'ONE_DRIVE_DOWNLOAD_FILE', 'OUTLOOK_DOWNLOAD_OUTLOOK_ATTACHMENT', 'SALESFORCE_GET_FILE_CONTENT',
-    'SHARE_POINT_DOWNLOAD_FILE_BY_SERVER_RELATIVE_URL',
+    'GOOGLE_MAPS_PLACE_PHOTO', 'MICROSOFT_TEAMS_GET_MEETING_RECORDING_CONTENT', 'ONE_DRIVE_DOWNLOAD_FILE',
+    'OUTLOOK_DOWNLOAD_OUTLOOK_ATTACHMENT', 'SALESFORCE_GET_FILE_CONTENT', 'SHARE_POINT_DOWNLOAD_FILE_BY_SERVER_RELATIVE_URL',
+    'ZOHO_DOWNLOAD_RECORD_ATTACHMENT', 'ZOHO_DOWNLOAD_RECORD_PHOTO',
   ]);
 });
 
