@@ -6,7 +6,7 @@
   },
   "label": "Dropbox",
   "description": "Search and read files and Paper docs, create folders and Paper docs, and restore earlier file versions.",
-  "securityDescription": "Dropbox sign-in opens through Composio. Agents act as the signed-in Dropbox user and reach what that user can reach. With write access, Agents can create folders, create and edit Paper docs, tag files and folders, and restore a file to an earlier version from its history. A doc created or edited in a shared folder is visible to that folder's members. Agents cannot upload, move, copy, rename, or delete files or folders, create shared links, temporary links, or file requests, share folders, add or remove members, or change team, sharing, or account settings.",
+  "securityDescription": "Dropbox sign-in opens through Composio. Agents act as the signed-in Dropbox user and reach what that user can reach. With write access, Agents can create folders, create Paper docs, tag files and folders, and restore a file to an earlier version from its history. A doc created in a shared folder is visible to that folder's members. Agents cannot edit existing Paper docs, upload, move, copy, rename, or delete files or folders, create shared links, temporary links, or file requests, share folders, add or remove members, or change team, sharing, or account settings.",
   "preset": {
     "category": "docs",
     "accent": "#0061FE"
@@ -21,8 +21,7 @@
       "DROPBOX_LIST_FILE_REVISIONS",
       "DROPBOX_LIST_PAPER_DOCS",
       "DROPBOX_LIST_SHARED_FOLDERS",
-      "DROPBOX_READ_FILE",
-      "DROPBOX_UPDATE_PAPER_DOCUMENT"
+      "DROPBOX_READ_FILE"
     ],
     "drop": {
       "DROPBOX_COPY_FILE_OR_FOLDER": "Copies into any path, including a shared folder other people can open.",
@@ -31,7 +30,8 @@
       "DROPBOX_DELETE_FILE": "Deletes a file or folder for everyone who shares it; recovery depends on the plan's history window.",
       "DROPBOX_MOVE_FILE_OR_FOLDER": "Moves across folders, including into or out of shared folders, which changes who can open the item.",
       "DROPBOX_SAVE_COPY_REFERENCE": "Copies a file from another Dropbox account by an opaque reference the person cannot inspect.",
-      "DROPBOX_SHARE_FOLDER": "Shares a folder with other people."
+      "DROPBOX_SHARE_FOLDER": "Shares a folder with other people.",
+      "DROPBOX_UPDATE_PAPER_DOCUMENT": "Its required doc_update_policy accepts overwrite, which replaces the whole doc, and a required argument cannot be withheld."
     },
     "allowArguments": {}
   },
@@ -890,62 +890,6 @@
           }
         },
         "description": "Request to search across property templates for particular property field values."
-      }
-    },
-    {
-      "id": "dropbox.update_paper_document",
-      "tool": "DROPBOX_UPDATE_PAPER_DOCUMENT",
-      "toolName": "dropbox_update_paper_document",
-      "lane": "write",
-      "effect": "reversible_write",
-      "description": "Tool to update an existing Dropbox Paper document with new content in Markdown, HTML, or plain text format. Use when you need to modify, append, prepend, or overwrite content in an existing Paper doc. This endpoint does not support apps with the app folder permission.",
-      "maxResultBytes": 65536,
-      "sideEffectLabel": "Dropbox: Update Paper Document",
-      "input": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Path to the existing Paper doc in Dropbox to update. MUST include the .paper extension at the end (e.g., '/My Documents/Notes.paper')."
-          },
-          "content": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Content to add or replace in the Paper document based on the update policy."
-          },
-          "import_format": {
-            "type": "string",
-            "maxLength": 20000,
-            "enum": [
-              "plain_text",
-              "markdown",
-              "html"
-            ],
-            "description": "Format of the provided content: plain_text, markdown, or html."
-          },
-          "paper_revision": {
-            "type": "integer",
-            "description": "The paper revision number. Required when doc_update_policy is 'update'. This value must match the current revision of the doc or an error will be returned."
-          },
-          "doc_update_policy": {
-            "type": "string",
-            "maxLength": 20000,
-            "enum": [
-              "append",
-              "prepend",
-              "overwrite",
-              "update"
-            ],
-            "description": "Policy for updating the document: 'append' adds content to the end, 'prepend' adds content to the beginning, 'overwrite' replaces all content, 'update' merges content intelligently (requires paper_revision)."
-          }
-        },
-        "required": [
-          "path",
-          "content",
-          "import_format",
-          "doc_update_policy"
-        ]
       }
     },
     {
