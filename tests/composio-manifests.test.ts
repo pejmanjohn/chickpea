@@ -859,6 +859,28 @@ test('reviewed manifests keep expiry, import, credential, and system arguments f
   }
 });
 
+test('write tools lose budget, bid, and spend arguments, and a CRM field that records a budget stays', () => {
+  const { manifest } = draftComposioManifest(snapshot([tool('ACME_UPDATE_CAMPAIGN', ['updateHint'], {
+    type: 'object',
+    properties: {
+      campaign_id: { type: 'string' },
+      name: { type: 'string' },
+      daily_budget: { type: 'integer' },
+      bidAmount: { type: 'integer' },
+      spend_cap: { type: 'integer' },
+      goal_value: { type: 'integer', description: 'Campaign goal value in micros.' },
+      goal_type: { type: 'string', enum: ['LIFETIME_SPEND', 'DAILY_SPEND'] },
+      BudgetedCost: { type: 'number' },
+    },
+    required: ['campaign_id'],
+  })]));
+  const capability = manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_UPDATE_CAMPAIGN')!;
+  const spend = 'sets a budget, bid, or spend amount';
+  assert.deepEqual(Object.keys(capability.input.properties), ['campaign_id', 'name', 'BudgetedCost']);
+  assert.deepEqual(capability.withheldArguments,
+    { daily_budget: spend, bidAmount: spend, spend_cap: spend, goal_value: spend, goal_type: spend });
+});
+
 test('review.allowValues narrows a string enum the model can set and fails on a value the input does not offer', () => {
   const campaigns = snapshot([tool('ACME_UPDATE_CAMPAIGNS', ['updateHint', 'destructiveHint'], {
     type: 'object',

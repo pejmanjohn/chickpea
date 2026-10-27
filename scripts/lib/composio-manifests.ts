@@ -185,6 +185,12 @@ const RECIPIENT_TOKENS = new Set(words(`
 `));
 /** `to_emails`, `from_email`, and `to` address a message; `applicable_to` does not. */
 const ADDRESS_LEADING_TOKENS = new Set(['from', 'to']);
+/**
+ * Ad budgets and bids: `bid_value`, `daily_budget`, `spend_cap`, a goal type of
+ * `LIFETIME_SPEND`, or Reddit's `goal_value`, which is a budget in micros.
+ */
+const SPEND_TOKENS = new Set(['bid', 'bids', 'budget', 'budgets', 'spend', 'spending']);
+const SPEND_DESCRIPTION = /\bmicro-?currency\b|\bin micros\b/i;
 /** Any token containing `phone` counts too: `phones`, Dynamics' `telephone1`. */
 const IDENTITY_TOKENS = new Set(words(`
   external facebook instagram linkedin login logins mobile mobiles password requester twitter username usernames
@@ -196,6 +202,7 @@ const WITHHELD_AUDIENCE = 'puts the record under a company or product, which can
 const WITHHELD_COPY = 'copies content from another record, URL, or file';
 const WITHHELD_RECIPIENT = 'names an address a message goes to or comes from';
 const WITHHELD_IDENTITY = 'changes who the record belongs to or how a person is identified';
+const WITHHELD_SPEND = 'sets a budget, bid, or spend amount';
 const WITHHELD_OVERWRITE = 'can replace an existing item';
 const WITHHELD_ACTING = 'picks the user, admin, or namespace the call acts as';
 const WITHHELD_LINK = 'can make the provider mint a link anyone holding it can open';
@@ -247,10 +254,10 @@ function writeKind(tags: readonly string[]): WriteKind {
 
 /**
  * Writes run without a per-call confirmation, so a write tool's schema is the
- * gate. These rules withhold arguments that widen access, copy from another
- * record, address a message to someone, place a new record under a company or
- * product, or, on update, move a record out of its container or change who it
- * belongs to.
+ * gate. These rules withhold arguments that widen access, set a budget or bid,
+ * copy from another record, address a message to someone, place a new record
+ * under a company or product, or, on update, move a record out of its container
+ * or change who it belongs to.
  */
 function withheldArgumentReason(
   name: string,
@@ -267,6 +274,9 @@ function withheldArgumentReason(
       enumValues(schema).some((value) => typeof value === 'string' && OVERWRITE.test(value))) {
     return WITHHELD_OVERWRITE;
   }
+  if (tokens.some((token) => SPEND_TOKENS.has(token)) || SPEND_DESCRIPTION.test(description) ||
+      enumValues(schema).some((value) => typeof value === 'string' &&
+        argumentTokens(value).some((token) => SPEND_TOKENS.has(token)))) return WITHHELD_SPEND;
   // A file name such as `file_name` labels an attachment without supplying its content.
   if ((tokens.length > 1 && tokens.at(-1) === 'source') ||
       (tokens[0]?.startsWith('file') && !['filename', 'filenames'].includes(compact))) return WITHHELD_COPY;
