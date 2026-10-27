@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import type { SlackStateStore } from '../src/slack/claim-store.ts';
 import { writeSlackInstallationCredentials } from '../src/slack/installation-credentials.ts';
@@ -15,7 +16,7 @@ const WORKSPACE_ID = 'T_RUNTIME_SUMMARY';
 
 test('Slack connection GET exposes bounded gateway status without restart or installation mutation', async () => {
   const settings = new SqliteSettingsStore(':memory:');
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   let statusCalls = 0;
   let restartCalls = 0;
   try {

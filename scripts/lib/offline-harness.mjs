@@ -38,6 +38,7 @@ export function loadFake() {
 
 export async function seedOfflineDemoChannelConfig(stateDbPath, options = {}) {
   const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
+  const { agentRoutineDeletion } = await loadTsModule('src/routines/store.ts');
   const { createDemoStarterAgent, demoAgentChannelGrants } =
     await loadTsModule('src/config/seed.ts');
 
@@ -49,7 +50,7 @@ export async function seedOfflineDemoChannelConfig(stateDbPath, options = {}) {
       }]
     : demoAgentChannelGrants;
 
-  const store = new SqliteConfigStore(stateDbPath, {
+  const store = new SqliteConfigStore(stateDbPath, agentRoutineDeletion, {
     agents: [createDemoStarterAgent()],
     grants: demoGrants,
   });
@@ -87,6 +88,7 @@ export async function seedOfflineSlackAuthority({
 }) {
   const { SqliteIdentityStore } = await loadTsModule('src/identity/store.ts');
   const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
+  const { agentRoutineDeletion } = await loadTsModule('src/routines/store.ts');
   const { PersonalTokenService } = await loadTsModule('src/auth/personal-token.ts');
   const ownerModule = await loadTsModule('tests/helpers/slack-owner.ts');
   const keyringModule = await loadTsModule('src/slack/credential-keyring.ts');
@@ -140,7 +142,7 @@ export async function seedOfflineSlackAuthority({
       candidateRevision: connected.revision,
       expectedActiveRevision: app.revision,
     });
-    const config = new SqliteConfigStore(stateDbPath);
+    const config = new SqliteConfigStore(stateDbPath, agentRoutineDeletion);
     try {
       const installation = await config.ensureWorkspaceInstallation({
         workspaceId: teamId,

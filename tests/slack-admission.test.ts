@@ -8,6 +8,7 @@ import type { SlackOidcGateway, SlackOidcProof } from '../src/auth/slack-oidc.ts
 import { mintSetupCapability } from '../src/auth/setup-capability.mjs';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { SlackAppCreationService, openSlackSetupTransaction } from '../src/slack/app-creation.ts';
@@ -527,7 +528,7 @@ async function installedFixture() {
   const clock = { now: NOW };
   const now = () => clock.now;
   const identity = new SqliteIdentityStore(':memory:', { now });
-  const config = new SqliteConfigStore(':memory:');
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const settings = new SqliteSettingsStore(':memory:');
   const credentials = { state: identity, keyring: generateCredentialKeyring('key_v1') };
   const minted = await mintSetupCapability({ now });

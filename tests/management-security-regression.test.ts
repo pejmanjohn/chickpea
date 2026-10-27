@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import type { FlueObservation } from '@flue/runtime';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
 import { exportWorkspaceRecipe } from '../src/management/recipes.ts';
 import {
@@ -171,7 +172,7 @@ test('tool discovery and portable recipe exports exclude secret and authority co
     assert.doesNotMatch(JSON.stringify(descriptions), new RegExp(value));
   }
 
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     await config.createAgent({
       id: 'agent_secure',

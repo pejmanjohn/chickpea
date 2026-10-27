@@ -4,6 +4,7 @@ import { test, type TestContext } from 'node:test';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { AgentAppLifecycle, CustomAgentConfig } from '../src/config/types.ts';
 import type { AgentSlackAppsHost } from '../src/slack/agent-apps/host.ts';
 import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/index.ts';
@@ -69,7 +70,7 @@ function waiting(startedBy = OWNER): AgentAppLifecycle {
 }
 
 async function fixture(t: TestContext, app: AgentAppLifecycle = waiting()) {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   const created = await config.createAgent({

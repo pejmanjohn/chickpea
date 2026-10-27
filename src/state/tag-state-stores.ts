@@ -11,7 +11,7 @@ import {
 import { IdentityStoreLogic } from '../identity/store.ts';
 import { ManagementStoreLogic } from '../management/store.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
-import { RoutineStoreLogic } from '../routines/store.ts';
+import { agentRoutineDeletion, RoutineStoreLogic } from '../routines/store.ts';
 import { SlackStateLogic } from '../slack/claim-store.ts';
 import { GatewayInboxStoreLogic } from '../slack/gateway/inbox.ts';
 import { SlackRunPresentationStoreLogic } from '../slack/run-presentations.ts';
@@ -79,7 +79,7 @@ export function buildTagStateStores(
           }
         : {}),
     }),
-    config: new ConfigStoreLogic(db, undefined, (transaction) => new RoutineStoreLogic(transaction)),
+    config: new ConfigStoreLogic(db, agentRoutineDeletion),
     snapshots: new SnapshotStoreLogic(db),
     slack: new SlackStateLogic(db),
     settings: new SettingsStoreLogic(db),

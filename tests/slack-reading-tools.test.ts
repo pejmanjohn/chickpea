@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { encodeBase64Url } from '../src/security/base64url.ts';
 import { clearSlackContextNameCache } from '../src/slack/context-names.ts';
 import type { SlackReadGate } from '../src/slack/read-budget.ts';
@@ -283,7 +284,7 @@ test('the shared app reads 15 rows a page; the install\'s own app may read more'
 });
 
 test('an exhausted budget answers the current thread from the record, other threads with a retry time', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   try {
     await store.putSlackPublicContext({ workspaceId: WORKSPACE, channelId: CURRENT.channelId, rootTs: CURRENT.threadTs,
       messageTs: CURRENT.threadTs, role: 'app', authorId: 'B0PD', authorName: 'PagerDuty', text: 'RECORDED ALERT' });
@@ -308,7 +309,7 @@ test('a capped first page of the current thread marks the record\'s gap on the s
     { user: REQUESTER, ts: CURRENT.messageTs, thread_ts: CURRENT.threadTs, text: 'what is this?' },
   ] });
   for (const gated of [true, false]) {
-    const store = new SqliteConfigStore(':memory:');
+    const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
     try {
       await service(slackClient({ replies: page }), gate(Infinity, gated), store)
         .readThread({ target: { channelId: CURRENT.channelId, ts: CURRENT.threadTs } });
@@ -425,7 +426,7 @@ test('each call honors its own abort signal, not an earlier call\'s', async () =
 });
 
 test('the record fallback serves only the current thread, never another thread in this channel', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   try {
     await store.putSlackPublicContext({ workspaceId: WORKSPACE, channelId: CURRENT.channelId, rootTs: CURRENT.threadTs,
       messageTs: CURRENT.threadTs, role: 'human', authorId: REQUESTER, text: 'RECORDED ROOT' });
@@ -450,7 +451,7 @@ test('the record fallback serves only the current thread, never another thread i
 });
 
 test('the record fallback answers a reply link or reply ts in the current thread', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   try {
     await store.putSlackPublicContext({ workspaceId: WORKSPACE, channelId: CURRENT.channelId, rootTs: CURRENT.threadTs,
       messageTs: CURRENT.threadTs, role: 'human', authorId: REQUESTER, text: 'RECORDED ROOT' });

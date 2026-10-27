@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
 import {
   createManagedConnectionProviderRegistry,
@@ -52,7 +53,7 @@ if (dataModifying && process.env.COMPOSIO_ALLOW_WRITE_CANARY !== '1') {
 const workspaceId = 'T_COMPOSIO_VERIFY';
 const agentId = 'agent_composio_verify';
 const membershipId = 'membership_composio_verify';
-const config = new SqliteConfigStore(':memory:', { agents: [] });
+const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
 const settings = new SqliteSettingsStore(':memory:');
 const usage = new SqliteUsageStore(':memory:');
 const provider = new ComposioManagedConnectionProvider({ apiKey });

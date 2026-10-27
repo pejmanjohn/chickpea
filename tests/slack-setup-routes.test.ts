@@ -15,6 +15,7 @@ import { mintSetupCapability } from '../src/auth/setup-capability.mjs';
 import { slackAuthorizationHandoffScript } from '../src/auth/setup-handoff.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { closeNodeStateStores } from '../src/config/state-backend.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
@@ -444,7 +445,7 @@ test('Admin setup rejects a chunk-sized oversized form before parsing or calling
 test('public bot-install routes use an independent narrow browser cookie and never require it to be the setup capability', async () => {
   let routeNow = NOW;
   const identity = new SqliteIdentityStore(':memory:', { now: () => routeNow });
-  const config = new SqliteConfigStore(':memory:');
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const settings = new SqliteSettingsStore(':memory:');
   const authority = await mintSetupCapability({ now: () => NOW });
   const slackCredentials = { state: identity, keyring: generateCredentialKeyring('key_v1') };
@@ -648,7 +649,7 @@ test('public bot-install routes use an independent narrow browser cookie and nev
 
 test('public Slack callback is rate limited without exchanging an unrecognized state', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const config = new SqliteConfigStore(':memory:');
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const settings = new SqliteSettingsStore(':memory:');
   const authority = await mintSetupCapability({ now: () => NOW });
   let exchangeCalls = 0;

@@ -48,7 +48,7 @@ import {
   RoutineRuntimeError,
 } from '../src/routines/runtime.ts';
 import { hashRoutineValue, routineDestinationBindingDigest } from '../src/routines/ids.ts';
-import { RoutineStoreLogic, SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, RoutineStoreLogic, SqliteRoutineStore } from '../src/routines/store.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
 import { attachedContainerPlan } from './helpers/attached-container-plan.ts';
@@ -980,7 +980,7 @@ test('a private schedule whose thread can no longer take its result is not credi
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-direct-thread-credit-'));
   const path = join(dir, 'state.db');
   const store = new SqliteRoutineStore(path, () => NOW);
-  const configStore = new SqliteConfigStore(path, { agents: [] });
+  const configStore = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   resetInstallationAdmissionForTests();
   configureInstallationAdmission(async () => 'admitted');
   const creditBacks: CreditBackReason[] = [];
@@ -1451,7 +1451,7 @@ test('a direct schedule with permanently missing Agent authority fails and auto-
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-direct-authority-loss-'));
   const path = join(dir, 'state.db');
   const store = new SqliteRoutineStore(path, () => NOW);
-  const configStore = new SqliteConfigStore(path, { agents: [] });
+  const configStore = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   const destination = {
     kind: 'direct_thread' as const,
     conversationId: 'D_DIRECT',
@@ -1528,7 +1528,7 @@ test('a definitive private-thread rejection pauses recurring work and posts one 
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-direct-thread-recovery-'));
   const path = join(dir, 'state.db');
   const store = new SqliteRoutineStore(path, () => NOW);
-  const configStore = new SqliteConfigStore(path, { agents: [] });
+  const configStore = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   const destination = {
     kind: 'direct_thread' as const,
     conversationId: 'D_DIRECT',
@@ -1674,7 +1674,7 @@ test('a Slack outage during the private-use check leaves a DM routine on; leavin
     const dir = mkdtempSync(join(tmpdir(), `chickpea-private-use-${suffix}-`));
     const path = join(dir, 'state.db');
     const store = new SqliteRoutineStore(path, () => NOW);
-    const configStore = new SqliteConfigStore(path, { agents: [] });
+    const configStore = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
     try {
       const agent = await configStore.createAgent({
         id: 'agent_room', name: 'Room Agent', instructions: 'Run private work.', enabled: true,
@@ -2373,7 +2373,7 @@ test('routine deadline bounds a stalled durable Usage owner before dispatch', { 
 test('routine Usage and Work settle with the same canonical execution correlation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-correlation-'));
   const path = join(directory, 'state.sqlite');
-  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
+  const configuration = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
   const routines = new SqliteRoutineStore(path, () => NOW);
   const usage = new SqliteUsageStore(':memory:');
   const work = new SqliteWorkStore(path, { now: () => NOW });
@@ -2425,7 +2425,7 @@ test('routine Usage and Work settle with the same canonical execution correlatio
 async function interruptedHostedAttempt(t: TestContext, name: string, dispatched: boolean) {
   const directory = mkdtempSync(join(tmpdir(), `chickpea-routine-${name}-`));
   const path = join(directory, 'state.sqlite');
-  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
+  const configuration = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
   const routines = new SqliteRoutineStore(path, () => NOW);
   const usage = new SqliteUsageStore(':memory:');
   const work = new SqliteWorkStore(path, { now: () => NOW });
@@ -2617,7 +2617,7 @@ test('a cancelled occurrence\'s settlement that cannot be written is reported, n
 test('permanent Work initialization failure is one gap and never redispatches', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-work-gap-'));
   const path = join(directory, 'state.sqlite');
-  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
+  const configuration = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
   const routines = new SqliteRoutineStore(path, () => NOW);
   const telemetry = telemetrySink();
   const events: string[] = [];
@@ -2659,7 +2659,7 @@ test('routine deadline bounds a stalled durable Work owner before dispatch', { t
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-work-deadline-'));
   const path = join(directory, 'state.sqlite');
-  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
+  const configuration = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
   const routines = new SqliteRoutineStore(path, () => NOW);
   const telemetry = telemetrySink();
   const events: string[] = [];
@@ -2710,7 +2710,7 @@ test('routine deadline bounds a stalled durable Work owner before dispatch', { t
 test('Work terminal failure after Slack delivery cannot post or replay twice', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-terminal-gap-'));
   const path = join(directory, 'state.sqlite');
-  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
+  const configuration = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
   const routines = new SqliteRoutineStore(path, () => NOW);
   const durableWork = new SqliteWorkStore(path, { now: () => NOW });
   const telemetry = telemetrySink();

@@ -79,6 +79,7 @@ Object.assign(process.env, {
 });
 
 let SqliteRoutineStore;
+let agentRoutineDeletion;
 let SqliteConfigStore;
 let SqliteIdentityStore;
 let backend;
@@ -275,7 +276,7 @@ async function seedSchedule(routineId) {
     idempotencyKey: `offline:create:${routineId}`,
   });
   const identity = new SqliteIdentityStore(statePath);
-  const config = new SqliteConfigStore(statePath);
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion);
   try {
     const actor = await identity.resolveSlackIdentity(WORKSPACE_ID, USER_ID);
     assert(actor?.membership?.id, 'Offline Slack member was not seeded.');
@@ -308,7 +309,7 @@ function deliveredMarkers() {
 let failure;
 try {
   const fakeModule = await loadFake();
-  ({ SqliteRoutineStore } = await loadTsModule('src/routines/store.ts'));
+  ({ agentRoutineDeletion, SqliteRoutineStore } = await loadTsModule('src/routines/store.ts'));
   ({ SqliteConfigStore } = await loadTsModule('src/config/store.ts'));
   ({ SqliteIdentityStore } = await loadTsModule('src/identity/store.ts'));
   backend = new fakeModule.FakeSlackBackend({
@@ -343,7 +344,7 @@ try {
     appId: 'ADEMO',
     botUserId: BOT_USER_ID,
   });
-  const config = new SqliteConfigStore(statePath);
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion);
   try {
     await config.updateAgent(AGENT_ID, { model: 'local-stub/parity-stub-1' });
   } finally {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
   GATEWAY_BINDING_SETTING,
@@ -14,7 +15,7 @@ import { SlackTransportError } from '../src/slack/transport/types.ts';
 const gatewayBaseUrl = process.env.CHICKPEA_GATEWAY_BASE_URL
   ?? 'https://chickpea-slack-gateway.pejmanjohn.workers.dev';
 const settings = new SqliteSettingsStore(':memory:');
-const config = new SqliteConfigStore(':memory:');
+const config = new SqliteConfigStore(':memory:', agentRoutineDeletion);
 const client = new GatewayDeploymentClient({
   settings,
   config,

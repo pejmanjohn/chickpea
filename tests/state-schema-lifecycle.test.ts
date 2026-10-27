@@ -18,7 +18,7 @@ import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import { GatewayInboxStoreLogic } from '../src/slack/gateway/inbox.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 import { MemoryStoreLogic } from '../src/memory/store.ts';
-import { RoutineStoreLogic } from '../src/routines/store.ts';
+import { agentRoutineDeletion, RoutineStoreLogic } from '../src/routines/store.ts';
 import { UsageStoreLogic } from '../src/usage/store.ts';
 import { ManagementStoreLogic } from '../src/management/store.ts';
 import { WorkStoreLogic } from '../src/work/store.ts';
@@ -43,7 +43,7 @@ function recording(inner: StateDb): { db: StateDb; statements: string[] } {
 }
 
 function constructAll(db: StateDb) {
-  const identity = new IdentityStoreLogic(db); const config = new ConfigStoreLogic(db);
+  const identity = new IdentityStoreLogic(db); const config = new ConfigStoreLogic(db, agentRoutineDeletion);
   new SnapshotStoreLogic(db); new SlackStateLogic(db); const settings = new SettingsStoreLogic(db);
   new TurnJobStoreLogic(db); new GatewayInboxStoreLogic(db); new SlackRunPresentationStoreLogic(db);
   new MemoryStoreLogic(db); new RoutineStoreLogic(db); new UsageStoreLogic(db);

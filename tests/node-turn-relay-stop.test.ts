@@ -10,6 +10,7 @@ import { activityStatus } from '../src/activity/status.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { closeNodeStateStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import {
   SqliteSlackStateStore,
@@ -54,7 +55,7 @@ before(async () => {
   // A turn that runs for real reads its Agent and installation from here.
   previousStatePath = process.env.SLACK_STATE_DB_PATH;
   process.env.SLACK_STATE_DB_PATH = statePath;
-  const config = new SqliteConfigStore(statePath, { agents: [] });
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   const assignment = nodeAssignment();
   await config.createAgent(assignment.agent);
   const installation = await config.ensureWorkspaceInstallation({

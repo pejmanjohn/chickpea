@@ -9,7 +9,7 @@ import { hashRoutineValue, routineDestinationBindingDigest } from '../src/routin
 import { ROUTINE_LIMITS } from '../src/routines/limits.ts';
 import { normalizeRoutineSchedule } from '../src/routines/schedule.ts';
 import { RoutineService } from '../src/routines/service.ts';
-import { RoutineStoreLogic, SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, RoutineStoreLogic, SqliteRoutineStore } from '../src/routines/store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
   RoutineStateError,
@@ -370,7 +370,7 @@ test('direct routines stay inert until their exact Agent reference is bound and 
   const path = join(dir, 'state.db');
   let clock = CREATED_AT;
   const store = new SqliteRoutineStore(path, () => clock);
-  const config = new SqliteConfigStore(path, { agents: [] });
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   const destination = {
     kind: 'direct_thread' as const,
     conversationId: 'D_MEMBER',
@@ -681,7 +681,7 @@ test('a direct binding mismatch stays inert and cannot fall back to Channel auth
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-routine-direct-mismatch-'));
   const path = join(dir, 'state.db');
   const store = new SqliteRoutineStore(path, () => CREATED_AT);
-  const config = new SqliteConfigStore(path, { agents: [] });
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   const destination = {
     kind: 'direct_thread' as const,
     conversationId: 'D_MEMBER',
@@ -1559,7 +1559,7 @@ test('a recurring private routine reserves one content-free root notice when fai
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-routine-private-pause-notice-'));
   const path = join(dir, 'state.db');
   const store = new SqliteRoutineStore(path, () => CREATED_AT);
-  const config = new SqliteConfigStore(path, { agents: [] });
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   const destination = {
     kind: 'direct_thread' as const,
     conversationId: 'D_PRIVATE_NOTICE',
@@ -1725,7 +1725,7 @@ test('confirmed deletion scrubs product-owned bodies but retains hashes, runs, a
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-routine-delete-'));
   const path = join(dir, 'state.db');
   const store = new SqliteRoutineStore(path, () => CREATED_AT);
-  const config = new SqliteConfigStore(path, { agents: [] });
+  const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
   try {
     const routine = await confirmDraft(store, createDraft(), 'delete-create');
     const agent = await config.createAgent({

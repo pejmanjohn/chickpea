@@ -6,6 +6,7 @@ import { test } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
 import { usageEstimatesEnabled } from '../src/usage/pricing/estimate.ts';
 import { usageRuntimeRecordingEnabled } from '../src/usage/runtime-recorder.ts';
@@ -250,7 +251,7 @@ test('Usage public and redacted serializers expose canonical Run IDs without ret
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-usage-redaction-')), 'state.db');
   const usage = new SqliteUsageStore(path);
   const work = new SqliteWorkStore(path);
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const privateCanary = 'PRIVATE_USAGE_LABEL_<script>alert(81)</script>';
   try {
     await seedUsageRun(work, 'public', 'public');
@@ -359,7 +360,7 @@ test('Usage activity names a renamed Channel by its current label without rewrit
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-usage-rename-')), 'state.db');
   const usage = new SqliteUsageStore(path);
   const work = new SqliteWorkStore(path);
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     await seedUsageRun(work, 'public', 'public');
     await config.putChannel({

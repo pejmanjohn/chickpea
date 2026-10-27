@@ -14,6 +14,7 @@ import {
 import { installationOwnershipOf, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { closeNodeStateStores, getIdentityStore, type PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
@@ -98,7 +99,7 @@ async function turnState(t: TestContext): Promise<IdentityStore> {
     });
     rmSync(directory, { recursive: true, force: true });
   });
-  const config = new SqliteConfigStore(statePath, { agents: [] });
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   await config.createAgent(ASSIGNMENT.agent);
   const installation = await config.ensureWorkspaceInstallation({
     workspaceId: TEAM, transportMode: 'direct', defaultAgentId: ASSIGNMENT.agentId,

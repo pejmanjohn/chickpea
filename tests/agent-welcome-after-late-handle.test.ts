@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
   completeAgentWelcomeDelivery,
@@ -82,7 +83,7 @@ function agentWhoseHandleCollided(): CustomAgentConfig {
 }
 
 function fixture() {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const groups: SlackUserGroup[] = [];
   const group = (id: string) => {

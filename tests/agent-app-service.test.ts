@@ -5,6 +5,7 @@ import { crc32, deflateSync } from 'node:zlib';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { AgentAppLifecycle, CustomAgentConfig } from '../src/config/types.ts';
 import type { AgentSlackAppsHost } from '../src/slack/agent-apps/host.ts';
 import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/index.ts';
@@ -210,7 +211,7 @@ async function fixture(
   t: TestContext,
   options: { token?: boolean; avatarPx?: number; userGroupId?: string | undefined; permissionMissing?: boolean } = {},
 ): Promise<Fixture> {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   const support = await config.createAgent(agent('agent_support', 'Support', 'support', 'userGroupId' in options ? options.userGroupId : 'S1'));

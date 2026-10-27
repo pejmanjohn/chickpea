@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { SlackPublicContextEntry } from '../src/config/types.ts';
 import { mentionedHandleWords } from '../src/slack/agent-asks.ts';
 import { clearSlackContextNameCache, resolveSlackContextNames } from '../src/slack/context-names.ts';
@@ -120,7 +121,7 @@ const GRANTING_STATE = {
 };
 
 async function withStore(run: (store: SqliteConfigStore) => Promise<void>): Promise<void> {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   try {
     for (const id of ['agent_oncall', 'agent_other']) {
       await store.createAgent({ id, name: id, instructions: '', enabled: true, lifecycle: 'active',

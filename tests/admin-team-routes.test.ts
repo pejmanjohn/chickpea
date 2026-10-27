@@ -10,6 +10,7 @@ import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -249,7 +250,7 @@ test('membership updates delegate to the shared management service', async () =>
     slackUserId: 'UMANAGED1',
     displayName: 'Managed Member',
   });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const revoked: string[] = [];
   const store = withBetterAuthUser(identity, member.resolution!.membership.id, 'ba_user_managed');

@@ -5,6 +5,7 @@ import type { AuthPrincipal } from '../src/auth/types.ts';
 import { AuthorizationError } from '../src/auth/permissions.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { ConnectionAccountManagedPolicy } from '../src/config/types.ts';
 import {
@@ -219,7 +220,7 @@ test('Google Ads keeps explicit restricted developer-token configurations fail c
 });
 
 test('managed validation persists only the display-safe provider grant summary', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -301,7 +302,7 @@ function principal(membershipId = 'membership_alice'): AuthPrincipal {
 }
 
 test('a demoted Team connection creator cannot manage the account through any Agent lane', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let discoverCalls = 0;
   let validateCalls = 0;
@@ -584,7 +585,7 @@ test('Composio revocation delegates exact remote-account deletion', async () => 
 });
 
 test('managed invocation rechecks Chickpea authority and the live capability ceiling', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   const usageWindowStart = Date.now() - 60_000;
@@ -792,7 +793,7 @@ test('managed invocation rechecks Chickpea authority and the live capability cei
 });
 
 test('Google productivity tools execute reads and writes through the Agent runtime on their bound accounts', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   const calls: Array<{
@@ -945,7 +946,7 @@ test('Google productivity tools execute reads and writes through the Agent runti
 });
 
 test('managed Notion reads and writes through its exact Agent-bound account without replacing Native Notion', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   const calls: Array<{
@@ -1054,7 +1055,7 @@ test('managed Notion reads and writes through its exact Agent-bound account with
 });
 
 test('managed setup rejects a second owner lane for the same Agent and toolkit', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -1099,7 +1100,7 @@ test('managed setup rejects a second owner lane for the same Agent and toolkit',
 });
 
 test('managed personal owner lanes are isolated per member on the same Agent', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -1150,7 +1151,7 @@ test('managed personal owner lanes are isolated per member on the same Agent', a
 });
 
 test('managed account imports reject a duplicate remote account before provider validation', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let validationCalls = 0;
   const provider: ManagedConnectionProvider = {
@@ -1200,7 +1201,7 @@ test('managed account imports reject a duplicate remote account before provider 
 });
 
 test('managed remote lookup never returns an account from another workspace', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -1243,7 +1244,7 @@ test('managed remote lookup never returns an account from another workspace', as
 });
 
 test('managed reconnect preserves the Chickpea account and deletes the previous remote account', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const calls: string[] = [];
   const provider: ManagedConnectionProvider = {
@@ -1305,7 +1306,7 @@ test('managed reconnect preserves the Chickpea account and deletes the previous 
 });
 
 test('managed reconnect keeps a resource-incomplete account pending', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -1358,7 +1359,7 @@ test('managed reconnect keeps a resource-incomplete account pending', async () =
 });
 
 test('managed Agent bindings keep their original ceiling when reauthorization broadens the account', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -1434,7 +1435,7 @@ test('managed Agent bindings keep their original ceiling when reauthorization br
 });
 
 test('two Agents may separately authorize the same external managed identity', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -1537,7 +1538,7 @@ test('two Agents may separately authorize the same external managed identity', a
 });
 
 test('replayed expiry handling finishes pausing schedules after a partial first delivery', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -1590,7 +1591,7 @@ test('replayed expiry handling finishes pausing schedules after a partial first 
 });
 
 test('provider reconciliation fails closed, pauses schedules, and restores only matched lineage', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -1747,7 +1748,7 @@ test('provider reconciliation fails closed, pauses schedules, and restores only 
 });
 
 test('an archived Agent restores its schedules across a managed provider outage', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -1876,7 +1877,7 @@ test('an archived Agent restores its schedules across a managed provider outage'
 });
 
 test('provider reconciliation batches accounts and skips completed work on retry', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -1972,7 +1973,7 @@ test('provider reconciliation batches accounts and skips completed work on retry
 });
 
 test('provider reconciliation treats account revision races as retryable work', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const service = new ConnectionAccountService({
     config,
@@ -2065,7 +2066,7 @@ test('provider reconciliation treats account revision races as retryable work', 
 });
 
 test('legacy lineage is adopted only after successful concurrent execution', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let validateCalls = 0;
   let executeCalls = 0;
@@ -2178,7 +2179,7 @@ test('legacy lineage is adopted only after successful concurrent execution', asy
 });
 
 test('execution blocks stale provider lineage before remote account validation or tool dispatch', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let validateCalls = 0;
   let executeCalls = 0;
@@ -2239,7 +2240,7 @@ test('execution blocks stale provider lineage before remote account validation o
 });
 
 test('an unreadable deployment generation fails closed without demoting connected accounts', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const unreadableSettings = new Proxy(settings, {
     get(target, property, receiver) {
@@ -2317,7 +2318,7 @@ test('an unreadable deployment generation fails closed without demoting connecte
 });
 
 test('a transient provider execution failure does not demote a healthy local account', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let transient = false;
   let executeCalls = 0;
@@ -2378,7 +2379,7 @@ test('a transient provider execution failure does not demote a healthy local acc
 });
 
 test('an execution-time authorization failure demotes the account and pauses schedules', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -2444,7 +2445,7 @@ test('an execution-time authorization failure demotes the account and pauses sch
 });
 
 test('an expiry demotion store failure preserves the actionable authorization error', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const expired = new ManagedAuthorizationExpiredError({
     providerTool: 'GMAIL_FETCH_EMAILS',
@@ -2506,7 +2507,7 @@ test('an expiry demotion store failure preserves the actionable authorization er
 });
 
 test('managed provider validation failure leaves no persisted account', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -2544,7 +2545,7 @@ test('managed provider validation failure leaves no persisted account', async ()
 });
 
 test('failed managed revocation stays fail closed and pauses dependent schedules', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let executionCalls = 0;
   const provider: ManagedConnectionProvider = {
@@ -2618,7 +2619,7 @@ test('failed managed revocation stays fail closed and pauses dependent schedules
 });
 
 test('Agent deletion keeps ownership records when provider cleanup fails', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const service = new ConnectionAccountService({
     config,
@@ -2680,7 +2681,7 @@ test('Agent deletion keeps ownership records when provider cleanup fails', async
 });
 
 test('Agent deletion validates its revision before revoking any owned connection', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let revokeCalls = 0;
   const service = new ConnectionAccountService({
@@ -2741,7 +2742,7 @@ test('Agent deletion validates its revision before revoking any owned connection
 });
 
 test('an Agent editor can delete accounts authorized by another member of that Agent', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let revokeCalls = 0;
   const service = new ConnectionAccountService({
@@ -2800,7 +2801,7 @@ test('an Agent editor can delete accounts authorized by another member of that A
 });
 
 test('Agent deletion revokes its accounts before removing bindings and the Agent', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let revokeCalls = 0;
   const service = new ConnectionAccountService({
@@ -2856,7 +2857,7 @@ test('Agent deletion revokes its accounts before removing bindings and the Agent
 });
 
 test('managed revocation reports a retryable conflict before touching the remote grant', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let revokeCalls = 0;
   const provider: ManagedConnectionProvider = {
@@ -2921,7 +2922,7 @@ test('managed revocation reports a retryable conflict before touching the remote
 });
 
 test('YouTube quota exhaustion blocks the provider before dispatch', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   let executionCalls = 0;
@@ -2995,7 +2996,7 @@ test('YouTube quota exhaustion blocks the provider before dispatch', async () =>
 
 test('pre-dispatch validation releases only provably unused YouTube quota buckets', async () => {
   const fixedNow = Date.UTC(2026, 7, 23, 12);
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:', () => fixedNow);
   let executionCalls = 0;

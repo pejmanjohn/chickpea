@@ -44,6 +44,7 @@ import { storedCredentialMetadata } from '../src/config/model-credential-refs.ts
 import { OPENAI_API_IMAGE_DEFAULT_MODEL_ID } from '../src/config/initial-image-default.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { CONNECTOR_PAGE_FONTS, fontFaceCss } from '../src/assets/fonts.ts';
 import { formatManagementSetupReceipt } from '../src/management/receipts.ts';
@@ -185,7 +186,7 @@ test('the initiating member claims one authenticated browser and completes an ex
   let sequence = 0;
   const identity = new SqliteIdentityStore(':memory:', { now: () => now });
   const owner = await createSlackOwner(identity, { now, suffix: 'delegated-setup' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -549,7 +550,7 @@ test('an Agent-owned managed setup commits once and emits one receipt', async ()
 
 test('public setup routes reject oversized streamed bodies before buffering', async () => {
   const management = new SqliteManagementStore(':memory:');
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     const app = createManagementSetupRoutes({ management, config, settings });
@@ -594,7 +595,7 @@ test('stored provider replacement issues its link directly and reissue invalidat
   let capabilitySequence = 0;
   const identity = new SqliteIdentityStore(':memory:', { now: () => now });
   const owner = await createSlackOwner(identity, { now, suffix: 'provider-replacement' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   try {
     const service = new WorkspaceManagementService({
@@ -649,7 +650,7 @@ test('stored provider replacement issues its link directly and reissue invalidat
 test('management provider impact includes the Workspace default and inheriting Agents', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'provider-impact' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   try {
     const agent = await config.createAgent({
@@ -726,7 +727,7 @@ test('a provider key is validated in the browser lane and never enters MCP state
   let sequence = 0;
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'provider-add' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
@@ -815,7 +816,7 @@ test('a provider key is validated in the browser lane and never enters MCP state
 test('provider setup rechecks current Admin authority before claim and completion', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'provider-authority' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
@@ -907,7 +908,7 @@ test('provider setup rechecks current Admin authority before claim and completio
 test('legacy Agent OAuth setup rechecks current edit authority before start and callback', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'legacy-oauth-authority' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -1025,7 +1026,7 @@ test('legacy Agent OAuth setup rechecks current edit authority before start and 
 test('Meta Ads management setup uses the canonical callback and requires explicit scoped access', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'meta-ads-review' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -1354,7 +1355,7 @@ test('Meta Ads management setup uses the canonical callback and requires explici
 test('repository setup reserves workspace-global GitHub App creation for current Admins', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'repository-authority' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -1465,7 +1466,7 @@ test('repository setup reserves workspace-global GitHub App creation for current
 test('an API setup cannot cross an Agent delete-recreate race before the ready transition', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'api-incarnation-race' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const agentInput = {
@@ -1545,7 +1546,7 @@ test('an API setup cannot cross an Agent delete-recreate race before the ready t
 test('a failed older API setup cannot erase a newer same-incarnation credential', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'api-same-ref-race' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -1693,7 +1694,7 @@ test('a credential API connection added over MCP is ready to run once its setup 
 test('a setup link needs authority over its connection account, not only the Agent', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'account-authority' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -1755,7 +1756,7 @@ test('a setup link needs authority over its connection account, not only the Age
 test('an MCP header setup stores one credential and records the tools the server offers', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-header-setup' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -1833,7 +1834,7 @@ test('an MCP header setup stores one credential and records the tools the server
 test('an MCP OAuth setup signs in to its connection account and marks it ready', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-oauth-setup' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -1938,7 +1939,7 @@ test('an MCP OAuth setup link completes for an account stored with a bare-origin
   const configPath = join(directory, 'config.db');
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-bare-origin' });
-  const config = new SqliteConfigStore(configPath, { agents: [] });
+  const config = new SqliteConfigStore(configPath, agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -2018,7 +2019,7 @@ test('an MCP OAuth setup link completes for an account stored with a bare-origin
 test('an API OAuth setup stores its client on the connection account and marks it ready', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'api-oauth-setup' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const originalFetch = globalThis.fetch;
@@ -2115,7 +2116,7 @@ test('an older provider setup link cannot overwrite a newer rotation', async () 
   let capability = 0;
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'provider-stale-link' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
@@ -2197,7 +2198,7 @@ test('invalid replacement input is cleared while the prior provider credential s
   let sequence = 0;
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'provider-invalid' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { AgentRevisionConflictError } from '../src/config/errors.ts';
 import type { CustomAgentConfig, UserGroupPresence } from '../src/config/types.ts';
@@ -32,7 +33,7 @@ function turn(patch: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {
 }
 
 async function fixture() {
-  const store = new SqliteConfigStore(':memory:', { agents: [createDemoStarterAgent()] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
   const first = await store.getAgent('agent_default');
   const support = await store.createAgent({
     id: 'agent_support', name: 'Support', description: 'Answers support questions',

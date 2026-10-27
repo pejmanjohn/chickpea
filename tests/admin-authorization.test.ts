@@ -12,7 +12,7 @@ import type { AuthPrincipal } from '../src/auth/types.ts';
 import { provisionSlackInteractionMember } from '../src/auth/slack-admission.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
-import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
@@ -94,7 +94,7 @@ test('shared Slack reconnect is POST-only and requires Admin configuration autho
 
 test('an Agent editor may take over Runs as but cannot grant another member authority', async () => {
   const identity = new SqliteIdentityStore(':memory:');
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const routines = new SqliteRoutineStore(':memory:');
   try {
     const owner = await createSlackOwner(identity, {

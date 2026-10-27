@@ -7,6 +7,7 @@ import { mcpOAuthSettingKeys } from '../src/config/mcp-oauth.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ConnectionAccountInput } from '../src/config/types.ts';
 import { revokeInstallationConnections } from '../src/connections/hosted-revocation.ts';
 import { createManagedConnectionProviderRegistry, type ManagedConnectionProvider } from '../src/connections/managed.ts';
@@ -34,7 +35,7 @@ function provider(deleted: string[]): ManagedConnectionProvider {
 }
 
 async function installation(t: TestContext, installationId: string) {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   await config.createAgent({

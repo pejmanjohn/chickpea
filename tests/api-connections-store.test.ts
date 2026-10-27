@@ -7,6 +7,7 @@ import { test } from 'node:test';
 
 import { validConnectionCredentialRef } from '../src/config/connection-credential-binding.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ApiConnectionConfig, CustomAgentConfig } from '../src/config/types.ts';
 
 function connection(overrides: Partial<ApiConnectionConfig> = {}): ApiConnectionConfig {
@@ -57,7 +58,7 @@ function publicConnection(connection: ApiConnectionConfig): Omit<ApiConnectionCo
 }
 
 test('SqliteConfigStore round-trips every apiConnection field through create and update', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     const createdConnection = connection();
     const created = agent([createdConnection]);
@@ -96,7 +97,7 @@ test('SqliteConfigStore defaults invalid api_connections_json to an empty list',
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-api-connections-'));
   const path = join(dir, 'state.db');
   try {
-    const first = new SqliteConfigStore(path, { agents: [] });
+    const first = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
     const created = agent([connection()]);
     await first.createAgent(created);
     first.close();
@@ -108,7 +109,7 @@ test('SqliteConfigStore defaults invalid api_connections_json to an empty list',
     );
     db.close();
 
-    const second = new SqliteConfigStore(path, { agents: [] });
+    const second = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
     assert.deepEqual((await second.getAgent(created.id)).apiConnections, []);
     second.close();
   } finally {

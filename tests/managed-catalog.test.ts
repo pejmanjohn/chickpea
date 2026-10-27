@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import * as v from 'valibot';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { MANAGED_CONNECTOR_CANARY_MANIFESTS } from '../src/connections/canary-manifests.ts';
@@ -594,7 +595,7 @@ test('the config store adds resource constraints to a pre-migration binding tabl
   const databasePath = join(directory, 'state.sqlite');
   t.after(() => rmSync(directory, { recursive: true, force: true }));
 
-  const initial = new SqliteConfigStore(databasePath, { agents: [] });
+  const initial = new SqliteConfigStore(databasePath, agentRoutineDeletion, { agents: [] });
   initial.close();
   const legacy = new DatabaseSync(databasePath);
   legacy.exec(`DROP TABLE config_agent_connection_bindings;
@@ -610,7 +611,7 @@ test('the config store adds resource constraints to a pre-migration binding tabl
   )`);
   legacy.close();
 
-  const config = new SqliteConfigStore(databasePath, { agents: [] });
+  const config = new SqliteConfigStore(databasePath, agentRoutineDeletion, { agents: [] });
   try {
     await config.createAgent({
       id: 'agent_migration',
@@ -678,7 +679,7 @@ test('the config store adds resource constraints to a pre-migration binding tabl
 test('resource selection revalidates fresh discovery and stores provider IDs outside the response', async () => {
   const connector = syntheticResourceConnector();
   const catalog = createManagedConnectorCatalog([connector]);
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let validations = 0;
   const provider: ManagedConnectionProvider = {
@@ -839,7 +840,7 @@ test('resource selection revalidates fresh discovery and stores provider IDs out
 
 test('resource selection can save an item from the bounded window of a longer provider list', async () => {
   const connector = syntheticResourceConnector();
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const owner = resourceOwner();
   const provider: ManagedConnectionProvider = {
@@ -902,7 +903,7 @@ test('resource selection can save an item from the bounded window of a longer pr
 
 test('resource selection replaces the sole Agent ceiling instead of accumulating prior choices', async () => {
   const connector = syntheticResourceConnector();
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const owner = resourceOwner();
   const providerResources = Array.from({ length: 257 }, (_, index) => ({
@@ -997,7 +998,7 @@ test('resource selection replaces the sole Agent ceiling instead of accumulating
 });
 
 test('config persistence rejects managed account resource ceilings above 256', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     await assert.rejects(config.putConnectionAccount({
       id: 'connection_oversized_resources', workspaceId: 'T_RESOURCE_LIMIT', ownerKind: 'team',
@@ -1022,7 +1023,7 @@ test('config persistence rejects managed account resource ceilings above 256', a
 test('a newly authorized resource connector creates its binding without runtime authority', async () => {
   const connector = syntheticResourceConnector();
   const catalog = createManagedConnectorCatalog([connector]);
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let validations = 0;
   const provider: ManagedConnectionProvider = {

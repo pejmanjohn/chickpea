@@ -20,6 +20,7 @@ import {
 } from '../src/slack/agent-presence/avatar-assets.ts';
 import { prepareGeneratedGatewayAgentAvatar } from '../src/slack/agent-presence/gateway-avatar.ts';
 import { ConfigStoreLogic } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -69,7 +70,7 @@ test('all automatic rendering, including unversioned seeds, uses a committed gal
 test('direct creation and seed fixtures persist approved defaults before the first read', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: [createDemoStarterAgent()] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
     const indexes = new Set<number>();
     indexes.add(defaultAgentAvatarIndex(store.getAgent('agent_default').slackPresence!.avatar.seed!));
     for (let index = 1; index < 12; index += 1) {
@@ -85,7 +86,7 @@ test('direct creation and seed fixtures persist approved defaults before the fir
 test('generated gateway avatar preparation publishes and persists the immutable URL once', async () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, { agents: [createDemoStarterAgent()] });
+    const store = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
     const current = store.getAgent('agent_default');
     let publications = 0;
     const prepared = await prepareGeneratedGatewayAgentAvatar({
@@ -119,7 +120,7 @@ test('upgrade replaces legacy defaults once while preserving historical URLs and
   const db = openStateDb(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {
-    const original = new ConfigStoreLogic(db, { agents: [createDemoStarterAgent()] });
+    const original = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
     const before = original.getAgent('agent_default');
     const legacyPresence = {
       ...before.slackPresence!,
@@ -132,7 +133,7 @@ test('upgrade replaces legacy defaults once while preserving historical URLs and
       slackPresence: { ...before.slackPresence!, avatar: { kind: 'uploaded', revision: 3, url: 'https://images.test/custom.png' } },
     });
     const approved = original.createAgent({ ...createDemoStarterAgent(), id: 'already_approved' });
-    const migratedStore = new ConfigStoreLogic(db, { agents: [] });
+    const migratedStore = new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] });
     const migrated = migratedStore.getAgent(before.id);
     const avatar = migrated.slackPresence!.avatar;
     assert.equal(migrated.revision, before.revision + 1);
@@ -166,7 +167,7 @@ test('upgrade replaces legacy defaults once while preserving historical URLs and
     // Deflate output varies by Node/zlib build; historical pixels must not.
     assert.equal(digest(data), '381495047fc2009a8ae43078fa113fc2d20f9ed4adeca33e44232ed36c9de9f7');
     assert.equal(await readAgentAvatarAsset({ settings, agentId: before.id, revision: 3, avatar }), undefined);
-    assert.deepEqual(new ConfigStoreLogic(db, { agents: [] }).getAgent(before.id), migrated);
+    assert.deepEqual(new ConfigStoreLogic(db, agentRoutineDeletion, { agents: [] }).getAgent(before.id), migrated);
 
     const customReplacement = migratedStore.updateAgent(before.id, {
       slackPresence: { ...migrated.slackPresence!, avatar: { kind: 'uploaded', revision: 3, url: 'https://images.test/replacement.png' } },

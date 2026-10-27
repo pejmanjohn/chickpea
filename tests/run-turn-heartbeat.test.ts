@@ -8,6 +8,7 @@ import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import {
@@ -98,7 +99,7 @@ let previousStatePath: string | undefined;
 before(async () => {
   previousStatePath = process.env.SLACK_STATE_DB_PATH;
   process.env.SLACK_STATE_DB_PATH = heartbeatStatePath;
-  const store = new SqliteConfigStore(heartbeatStatePath, { agents: [] });
+  const store = new SqliteConfigStore(heartbeatStatePath, agentRoutineDeletion, { agents: [] });
   await store.createAgent(assignment.agent);
   const installation = await store.ensureWorkspaceInstallation({
     workspaceId: assignment.workspaceId,
@@ -2633,7 +2634,7 @@ test('a lease lost after visible activity and agent completion settles a frozen-
     ...assignmentWithoutModel,
     agent: assignment.agent,
   };
-  const config = new SqliteConfigStore(':memory:', { agents: [assignment.agent] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [assignment.agent] });
   const memory = new SqliteMemoryStateStore(':memory:');
   const installation = await config.ensureWorkspaceInstallation({
     workspaceId: assignment.workspaceId,

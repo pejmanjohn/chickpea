@@ -45,6 +45,7 @@ import {
 import { registerPiProvider, registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import { closeNodeStateStores, type PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
@@ -388,7 +389,7 @@ async function turnState(t: TestContext): Promise<void> {
     });
     rmSync(directory, { recursive: true, force: true });
   });
-  const config = new SqliteConfigStore(statePath, { agents: [] });
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   await config.createAgent(TURN_ASSIGNMENT.agent);
   const installation = await config.ensureWorkspaceInstallation({
     workspaceId: TURN_ASSIGNMENT.workspaceId, transportMode: 'direct', defaultAgentId: TURN_ASSIGNMENT.agentId,

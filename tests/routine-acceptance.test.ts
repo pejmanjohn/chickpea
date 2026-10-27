@@ -34,7 +34,7 @@ import {
 } from '../src/routines/runtime.ts';
 import { normalizeRoutineSchedule } from '../src/routines/schedule.ts';
 import { RoutineScheduler } from '../src/routines/scheduler.ts';
-import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineCapability } from '../src/routines/scheduler-adapter.ts';
 import { RoutineService } from '../src/routines/service.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from '../src/routines/types.ts';
@@ -111,7 +111,7 @@ async function seedDirectAcceptanceRoutine(
   routine: RoutineDefinition;
   ownerAgentId: string;
 }> {
-  const configStore = new SqliteConfigStore(statePath, { agents: [] });
+  const configStore = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   const store = new SqliteRoutineStore(statePath, () => now);
   const ownerAgentId = `agent_direct_owner_${suffix}`;
   const destination = {

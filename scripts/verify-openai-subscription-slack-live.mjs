@@ -72,15 +72,16 @@ let spawned;
 try {
   await seedOfflineDemoChannelConfig(stateDbPath);
 
-  const [{ SqliteConfigStore }, { SqliteSettingsStore }, { openAiSubscriptionSettingKeys }, { saveOpenAiAuthMethod }] =
+  const [{ SqliteConfigStore }, { agentRoutineDeletion }, { SqliteSettingsStore }, { openAiSubscriptionSettingKeys }, { saveOpenAiAuthMethod }] =
     await Promise.all([
       loadTsModule('src/config/store.ts'),
+      loadTsModule('src/routines/store.ts'),
       loadTsModule('src/config/settings-store.ts'),
       loadTsModule('src/openai-subscription/credentials.ts'),
       loadTsModule('src/config/openai-auth.ts'),
     ]);
 
-  const config = new SqliteConfigStore(stateDbPath);
+  const config = new SqliteConfigStore(stateDbPath, agentRoutineDeletion);
   const sourceSettings = new SqliteSettingsStore(sourceStatePath);
   const targetSettings = new SqliteSettingsStore(stateDbPath);
   try {

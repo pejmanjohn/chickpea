@@ -12,6 +12,7 @@ import { invalidateProviderKeyCache, PROVIDER_KEY_SETTING_KEYS } from '../src/co
 import { invalidateProviderModelCache } from '../src/config/provider-models.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
@@ -25,7 +26,7 @@ function hostedAdmin() {
   invalidateProviderModelCache();
   invalidateProviderKeyCache();
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   app.route('/', createAdminRoutes({ store: config, settings, usage, ...testAdminAuthority(ADMIN_TOKEN) }));

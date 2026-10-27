@@ -10,6 +10,7 @@ import { classifyCandidateTurn } from '../src/channels/slack.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { createGatewaySlackWebClient } from '../src/slack/gateway/web-client.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
@@ -134,7 +135,7 @@ test('a hosted candidate classifier leaves the shared read to its turn', async (
   const previous = keys.map((key) => process.env[key]);
   for (const key of keys) process.env[key] = ':memory:';
   closeNodeStateStores();
-  const config = new SqliteConfigStore(':memory:');
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   t.after(() => {
     config.close();
     closeNodeStateStores();

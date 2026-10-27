@@ -4,6 +4,7 @@ import { deflateSync } from 'node:zlib';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
   agentAvatarUrl,
@@ -72,7 +73,7 @@ test('an Agent\'s user group takes its name unless another group already has it'
 });
 
 test('Slack create-time handle collisions retain safe alternative suggestions', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   transport.createError = new SlackTransportError(
     'usergroups.create',
@@ -98,7 +99,7 @@ test('Slack create-time handle collisions retain safe alternative suggestions', 
 });
 
 test('a handle collision keeps its suggestions only until the next outcome', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   transport.createError = new SlackTransportError('usergroups.create', 'handle_already_exists');
   try {
@@ -135,7 +136,7 @@ test('a handle collision keeps its suggestions only until the next outcome', asy
 });
 
 test('renaming a published Agent to a handle Slack already uses offers suggested handles', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -219,7 +220,7 @@ test('Slack name and handle collisions each name their own fix', () => {
 });
 
 test('publishing verifies actor membership, joins a public Channel, and creates one alias', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support Triage', 'support'));
@@ -251,7 +252,7 @@ test('publishing verifies actor membership, joins a public Channel, and creates 
 });
 
 test('publishing into a renamed Channel refreshes its stored Channel and grant labels', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support Triage', 'support'));
@@ -287,7 +288,7 @@ test('publishing into a renamed Channel refreshes its stored Channel and grant l
 });
 
 test('publishing activates a private Chickpea-created draft before enabling its Channel grant', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent({
@@ -314,7 +315,7 @@ test('publishing activates a private Chickpea-created draft before enabling its 
 });
 
 test('publication fails closed when the actor is not a member or Chickpea needs a private invite', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
     const notMember = new FakeSlackTransport();
@@ -348,7 +349,7 @@ test('publication fails closed when the actor is not a member or Chickpea needs 
 });
 
 test('a failed republish never downgrades an existing active Channel grant', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -374,7 +375,7 @@ test('a failed republish never downgrades an existing active Channel grant', asy
 });
 
 test('Slack policy denial saves needs-attention state with the exact role recovery path', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   transport.createError = new SlackTransportError('usergroups.create', 'permission_denied');
   try {
@@ -421,7 +422,7 @@ test('revoked or displaced shared-app authority gives reconnect, not generic Ret
 });
 
 test('retry adopts an exact group after an ambiguous create and never creates a duplicate', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   transport.ambiguousCreate = true;
   try {
@@ -451,7 +452,7 @@ test('retry adopts an exact group after an ambiguous create and never creates a 
 });
 
 test('retry never adopts a foreign same-handle group after an ambiguous create', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   transport.ambiguousCreate = true;
   transport.ambiguousCreatePersistsGroup = false;
@@ -489,7 +490,7 @@ test('retry never adopts a foreign same-handle group after an ambiguous create',
 });
 
 test('a handle edit racing Slack creation converges on one updated user group', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -518,7 +519,7 @@ test('a handle edit racing Slack creation converges on one updated user group', 
 });
 
 test('an Agent named like another Slack user group publishes under a distinct group name until that name frees up', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   transport.groups.push({ id: 'S_HELP', name: 'Support', handle: 'help', disabled: false });
   try {
@@ -545,7 +546,7 @@ test('an Agent named like another Slack user group publishes under a distinct gr
 });
 
 test('a user group that takes the Agent\'s name mid-create is a name collision, and Retry publishes around it', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   const listed = transport.listUserGroups.bind(transport);
   transport.listUserGroups = async () => {
@@ -575,7 +576,7 @@ test('a user group that takes the Agent\'s name mid-create is a name collision, 
 });
 
 test('archive disables the alias and removes grants; restore enables the same alias', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -600,7 +601,7 @@ test('archive disables the alias and removes grants; restore enables the same al
 });
 
 test('failed Slack restore stays retryable with an active desired state', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -633,7 +634,7 @@ test('failed Slack restore stays retryable with an active desired state', async 
 });
 
 test('Retry never resurrects an archived Agent or its Slack user group', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -654,7 +655,7 @@ test('Retry never resurrects an archived Agent or its Slack user group', async (
 });
 
 test('uploaded avatars create immutable revisions while generated avatars vary by seed', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -691,7 +692,7 @@ test('uploaded avatars create immutable revisions while generated avatars vary b
 });
 
 test('uploaded avatars can publish through shared gateway storage before saving their public URL', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -730,7 +731,7 @@ test('uploaded avatars can publish through shared gateway storage before saving 
 });
 
 test('concurrent avatar uploads reserve distinct immutable URLs', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -760,7 +761,7 @@ test('concurrent avatar uploads reserve distinct immutable URLs', async () => {
 });
 
 test('avatar upload rejects raster signatures that do not decode', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -782,7 +783,7 @@ test('avatar upload rejects raster signatures that do not decode', async () => {
 });
 
 test('JPEG and WebP uploads keep their pixels but lose embedded metadata', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -945,7 +946,7 @@ const PUBLISH_SUPPORT = {
 };
 
 test('publishing into a public Channel posts one top-level welcome under the Agent with its live handle', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent({
@@ -975,7 +976,7 @@ test('publishing into a public Channel posts one top-level welcome under the Age
 });
 
 test('a second Agent added to a Channel Chickpea already joined posts its own welcome', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   transport.channel.member = true;
   try {
@@ -994,7 +995,7 @@ test('a second Agent added to a Channel Chickpea already joined posts its own we
 });
 
 test('republishing an active grant, a private Channel, and welcome-off post no welcome', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -1048,7 +1049,7 @@ function bringingIn(bot: Pick<SlackTransport, 'postMessage'>): AgentAppPresenceH
 }
 
 test('an Agent with its own Slack app greets a public Channel only as its own bot once that bot is in, without a persona', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const chickpea = new FakeSlackTransport();
   chickpea.channel.member = true;
   const ownBot = new FakeSlackTransport();
@@ -1078,7 +1079,7 @@ test('an Agent with its own Slack app greets a public Channel only as its own bo
 });
 
 test("an app Agent's welcome promises unmentioned thread replies only where Chickpea's bot is known to be in the Channel", async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   transport.channel.member = true;
   const ownBot = new FakeSlackTransport();
@@ -1110,7 +1111,7 @@ test("an app Agent's welcome promises unmentioned thread replies only where Chic
 test('a welcome Slack refuses never fails the publication', async (t) => {
   const warnings: string[] = [];
   t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   transport.postError = new SlackTransportError('chat.postMessage', 'channel_not_found');
   try {
@@ -1253,7 +1254,7 @@ class FakeSlackTransport implements SlackTransport {
 
 
 test('a workspace default Agent\'s denied archive takes its replacement now, so Retry can finish', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -1280,7 +1281,7 @@ test('a workspace default Agent\'s denied archive takes its replacement now, so 
 });
 
 test('archive finishes when the Agent\'s user group no longer exists in Slack', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -1297,7 +1298,7 @@ test('archive finishes when the Agent\'s user group no longer exists in Slack', 
 });
 
 test('archive takes only Slack\'s documented not-found code as proof a missing user group is gone', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -1318,7 +1319,7 @@ test('archive takes only Slack\'s documented not-found code as proof a missing u
 });
 
 test('archive refuses a not-found answer for a user group Slack still lists', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -1338,7 +1339,7 @@ test('archive refuses a not-found answer for a user group Slack still lists', as
 });
 
 test('restore finishes when Slack says the handle is already enabled', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -1358,7 +1359,7 @@ test('restore finishes when Slack says the handle is already enabled', async () 
 });
 
 test('a workspace default Agent keeps its default when marking it for archive fails', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await store.createAgent(agent('agent_support', 'Support', 'support'));
@@ -1384,7 +1385,7 @@ test('a workspace default Agent keeps its default when marking it for archive fa
 });
 
 test('archive retry finishes when Slack says an Owner already deactivated the handle', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -1407,7 +1408,7 @@ test('archive retry finishes when Slack says an Owner already deactivated the ha
 
 for (const externallyDisabled of [false, true]) {
   test(`archive retry preserves disabled intent after Slack denial (already disabled: ${externallyDisabled})`, async () => {
-    const config = new SqliteConfigStore(':memory:', { agents: [] });
+    const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
     const transport = new FakeSlackTransport();
     try {
       await config.createAgent(agent('agent_support', 'Support', 'support'));

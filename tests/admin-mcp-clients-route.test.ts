@@ -7,6 +7,7 @@ import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { MCP_CLIENT_IDS, mcpClientsPayload } from '../src/management/mcp-client-config.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
@@ -36,7 +37,7 @@ const member: AuthPrincipal = {
 
 function harness(principal: AuthPrincipal) {
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   app.route('/', createAdminRoutes({

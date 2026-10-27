@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type {
   AgentAppLifecycle,
   AgentAppPresence,
@@ -104,7 +105,7 @@ function slackThatRefuses(allowed: Partial<SlackTransport> = {}): SlackTransport
 }
 
 test('stored presence without a kind reads back exactly as written', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     const written = await storeAgent(config, 'agent_support', 'Support', userGroup('support', 'S1'));
     const read = (await config.getAgent('agent_support')).slackPresence;
@@ -116,7 +117,7 @@ test('stored presence without a kind reads back exactly as written', async () =>
 });
 
 test('an Agent app presence round-trips through the store', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     const written = await storeAgent(config, 'agent_support', 'Support', agentApp('support', ACTIVE, { released: { userGroupId: 'S1' } }));
     const read = (await config.getAgent('agent_support')).slackPresence;
@@ -128,7 +129,7 @@ test('an Agent app presence round-trips through the store', async () => {
 });
 
 test('a stored health never outranks the lifecycle it summarizes', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     const stale: AgentAppPresence = {
       ...agentApp('support', {
@@ -156,7 +157,7 @@ test('a stored health never outranks the lifecycle it summarizes', async () => {
 });
 
 test('reconciling, retrying or publishing an Agent app never touches Slack user groups', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = slackThatRefuses({
     async lookupChannel() { return { id: 'C_SUPPORT', name: 'support', private: false, member: true, archived: false }; },
     async channelHasMember() { return true; },
@@ -189,7 +190,7 @@ test('reconciling, retrying or publishing an Agent app never touches Slack user 
 });
 
 test("publishing an Agent brings its own app's bot into the Channel through the host, before the welcome, and reports where it is", async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const channels = {
     C_PUBLIC: { id: 'C_PUBLIC', name: 'support', private: false, member: true, archived: false },
     C_PRIVATE: { id: 'C_PRIVATE', name: 'secret', private: true, member: true, archived: false },
@@ -257,7 +258,7 @@ test('a live Agent app is addressed by its bot user, a waiting one not at all, a
 });
 
 test('directory repair never writes a user group onto an Agent app', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     const presence = await storeAgent(config, 'agent_support', 'Support', agentApp('support', ACTIVE));
     await config.putAgentChannelGrant({
@@ -284,7 +285,7 @@ test('directory repair never writes a user group onto an Agent app', async () =>
 });
 
 test('archiving an Agent app retires the app first, and refuses without a host for it', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     await storeAgent(config, 'agent_support', 'Support', agentApp('support', ACTIVE, { released: { userGroupId: 'S1' } }));
     const transport = slackThatRefuses();

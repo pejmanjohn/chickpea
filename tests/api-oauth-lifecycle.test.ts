@@ -7,6 +7,7 @@ import {
 } from '../src/config/api-oauth.ts';
 import { googleWorkspaceApiPolicy } from '../src/config/api-oauth-policy.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { OAuthRefreshTelemetryEvent } from '../src/config/oauth-refresh-telemetry.ts';
 import { apiOAuthLifecycleDependencies } from '../src/connections/api-oauth-lifecycle.ts';
@@ -17,7 +18,7 @@ import {
 } from '../src/connections/runtime.ts';
 
 async function fixture(ownerKind: 'member' | 'team' = 'member') {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const agentId = 'agent_oauth';
   const workspaceId = 'T_OAUTH';

@@ -46,7 +46,8 @@ try {
     botUserId: 'UBOT',
   });
   const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
-  const config = new SqliteConfigStore(statePath);
+  const { agentRoutineDeletion } = await loadTsModule('src/routines/store.ts');
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion);
   const installation = await config.getWorkspaceInstallation('TDEMO');
   assert(installation, 'Offline workspace installation was not seeded.');
   await config.updateWorkspaceInstallation(

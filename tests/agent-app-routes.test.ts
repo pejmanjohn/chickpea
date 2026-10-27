@@ -6,6 +6,7 @@ import type { AuthPrincipal } from '../src/auth/types.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { type AgentSlackAppsHost, configureAgentSlackApps, withAgentSlackAppHandoff } from '../src/slack/agent-apps/host.ts';
@@ -75,7 +76,7 @@ async function adminApp(
     role?: AuthPrincipal['role']; machine?: boolean; port?: boolean; slack?: Partial<AgentAppSlackApi>; permissionMissing?: boolean;
   } = {},
 ) {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); configureAgentSlackApps(undefined); });
   const support = await config.createAgent(agent('agent_support'));
@@ -209,7 +210,7 @@ test("without the Owner's user-group permission a pasted token is kept, nothing 
 });
 
 test('the public allow and callback paths exist only with the port and an Owner handoff', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); configureAgentSlackApps(undefined); });
   const support = await config.createAgent(agent('agent_support'));

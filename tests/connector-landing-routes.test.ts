@@ -15,6 +15,7 @@ import {
 import type { ConnectionAccount } from '../src/config/types.ts';
 import { McpOAuthError, type StartMcpOAuthInput } from '../src/config/mcp-oauth.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import {
   createManagedConnectionProviderRegistry,
@@ -42,7 +43,7 @@ function mcpOAuthState(
 test('a native connector welcome link stays on the dedicated setup surface until Continue', async (t) => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, { now: NOW, suffix: 'native-connector-landing' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
 
@@ -571,7 +572,7 @@ test('a native connector welcome link stays on the dedicated setup surface until
 test('catalog replacement requires management authority and rolls back failed writes', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, { now: NOW, suffix: 'catalog-replacement' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
 
@@ -896,7 +897,7 @@ async function catalogReconnectHarness(input: {
 }) {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, { now: NOW, suffix: input.suffix });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const workspaceId = owner.user.slackTeamId;
@@ -1119,7 +1120,7 @@ test('a Meta Ads reconnect link shows the access the account already has, locked
 test('the managed connector link is reusable and completes from the dedicated page', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, { now: NOW, suffix: 'connector-landing' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const authorizeInputs: Array<{
@@ -1406,7 +1407,7 @@ test('the managed connector link is reusable and completes from the dedicated pa
 async function managedReconnectHarness(suffix: string, allowedCapabilities: string[]) {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, { now: NOW, suffix });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const authorized: string[][] = [];
@@ -1593,7 +1594,7 @@ function formInputs(html: string) {
 test('BugSnag Slack setup stays pending through OAuth until reviewed tool access is saved', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, { now: NOW, suffix: 'bugsnag-landing' });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {

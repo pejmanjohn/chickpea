@@ -4,6 +4,7 @@ import { test } from 'node:test';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import {
@@ -455,7 +456,7 @@ async function recoveryFixture(options: {
 } = {}) {
   const clock = { now: NOW };
   const identity = new SqliteIdentityStore(':memory:', { now: () => clock.now });
-  const config = new SqliteConfigStore(':memory:');
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const settings = new SqliteSettingsStore(':memory:');
   const credentials = { state: identity, keyring: generateCredentialKeyring('key_v1') };
   const manifest = buildSlackAppManifest({

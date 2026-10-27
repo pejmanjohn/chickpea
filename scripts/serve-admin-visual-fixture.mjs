@@ -740,7 +740,7 @@ export async function startAdminVisualFixture(options = {}) {
     const { SqliteSettingsStore } = await loadTsModule('src/config/settings-store.ts');
     const { PROVIDER_KEY_SETTING_KEYS } = await loadTsModule('src/config/provider-keys.ts');
     const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
-    const { SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
+    const { agentRoutineDeletion, SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
     const { RoutineService } = await loadTsModule('src/routines/service.ts');
     const { SqliteUsageStore } = await loadTsModule('src/usage/store.ts');
     const { SqliteWorkStore } = await loadTsModule('src/work/store.ts');
@@ -767,7 +767,7 @@ export async function startAdminVisualFixture(options = {}) {
     invalidateSlackChannelsCache();
     invalidateStoredSlackCredentials();
 
-    const store = new SqliteConfigStore(stateDbPath, {
+    const store = new SqliteConfigStore(stateDbPath, agentRoutineDeletion, {
       agents: visualAgents(),
       grants: [],
     });

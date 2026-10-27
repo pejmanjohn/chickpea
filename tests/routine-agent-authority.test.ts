@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import { executeSlackScheduleCommand } from '../src/routines/slack-command.ts';
 
 import { provisionSlackInteractionMember } from '../src/auth/slack-admission.ts';
@@ -41,7 +41,7 @@ const WORKSPACE = 'T_AUTHORITY';
 const CHANNEL = 'C_SUPPORT';
 
 test('exact schedule dependencies govern disconnects, mounting, metadata edits, and legacy references', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const identity = new SqliteIdentityStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -108,7 +108,7 @@ test('exact schedule dependencies govern disconnects, mounting, metadata edits, 
 });
 
 test('only a creation binds a routine that has no schedule reference', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const identity = new SqliteIdentityStore(':memory:');
   try {
     const owner = await createSlackOwner(identity, { teamId: WORKSPACE, userId: 'U_UNBOUND', suffix: 'unbound_edit' });
@@ -163,7 +163,7 @@ test('the Durable Object stores delete an Agent\'s live routines with the Agent'
 });
 
 test('direct schedules bind and resolve a full member without any Channel grant', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const identity = new SqliteIdentityStore(':memory:');
   try {
     const owner = await createSlackOwner(identity, {
@@ -288,7 +288,7 @@ test('direct schedules bind and resolve a full member without any Channel grant'
 });
 
 test('Agent schedules capture one Runs as authority and safely reassign future runs', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const identity = new SqliteIdentityStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const connections = new ConnectionAccountService({
@@ -567,7 +567,7 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
 });
 
 test('routine authority uses only the Runs as member account exactly bound to the Agent', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const identity = new SqliteIdentityStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const connections = new ConnectionAccountService({
@@ -824,7 +824,7 @@ for (const legacy of [false, true]) {
   test(`saved task authority is fenced through delayed binding and controls (legacy=${legacy})`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'routine-binding-fence-'));
     const path = join(dir, 'state.sqlite');
-    const config = new SqliteConfigStore(path, { agents: [] });
+    const config = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
     const routines = new SqliteRoutineStore(path);
     const identity = new SqliteIdentityStore(':memory:');
     try {

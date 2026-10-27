@@ -15,6 +15,7 @@ import {
 import { installationOwnershipOf, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { closeNodeStateStores, type PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { configureRunReview } from '../src/review/port.ts';
 import type { RunReviewRecordV1 } from '../src/review/record.ts';
@@ -80,7 +81,7 @@ async function turnState(t: TestContext): Promise<void> {
     });
     rmSync(directory, { recursive: true, force: true });
   });
-  const config = new SqliteConfigStore(statePath, { agents: [] });
+  const config = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   await config.createAgent(ASSIGNMENT.agent);
   const installation = await config.ensureWorkspaceInstallation({
     workspaceId: TEAM, transportMode: 'direct', defaultAgentId: ASSIGNMENT.agentId,
@@ -339,7 +340,7 @@ test('a Channel mention copies the name and size of the file it carried, never i
   await turnState(t);
   const port = reviewPort();
   const channelId = 'CREVIEW2';
-  const config = new SqliteConfigStore(process.env.TAG_DB_PATH!, { agents: [] });
+  const config = new SqliteConfigStore(process.env.TAG_DB_PATH!, agentRoutineDeletion, { agents: [] });
   await config.putAgentChannelGrant({
     workspaceId: TEAM, channelId, agentId: ASSIGNMENT.agentId, status: 'active',
     createdByMembershipId: 'membership_owner', channelLabel: 'team', channelIsPrivate: false,

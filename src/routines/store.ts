@@ -1,7 +1,7 @@
 import { AuditStoreLogic } from '../audit/store.ts';
 import { parseSlackArtifactReceipts } from '../slack/artifact-receipts.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
-import { ConfigStoreLogic } from '../config/store.ts';
+import { ConfigStoreLogic, type AgentRoutineDeletion } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
@@ -325,7 +325,7 @@ export class RoutineStoreLogic {
   ) {
     this.audit = new AuditStoreLogic(db);
     if (schemaInstallRequired(db)) this.initializeSchema();
-    this.config = new ConfigStoreLogic(db);
+    this.config = new ConfigStoreLogic(db, agentRoutineDeletion);
     this.work = new WorkStoreLogic(db, { now });
   }
 
@@ -3889,6 +3889,9 @@ export class RoutineStoreLogic {
     );
   }
 }
+
+/** Deletes an Agent's live routines for ConfigStoreLogic, which cannot import this module. */
+export const agentRoutineDeletion = (db: StateDb): AgentRoutineDeletion => new RoutineStoreLogic(db);
 
 /** Node backend: target-neutral routine logic over node:sqlite. */
 export interface SqliteRoutineStore extends RoutineStore {

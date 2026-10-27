@@ -11,6 +11,7 @@ import {
 } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { beginOnboardingJourney } from '../src/config/onboarding-state.ts';
 import type {
   OpenAiSubscriptionAuthorizationProtocol,
@@ -79,7 +80,7 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
       accountId: 'provider-account-secret',
     }),
   };
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   await installTestWorkspace(config);
@@ -218,7 +219,7 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
 });
 
 test('a first OpenAI API key initializes an unset image role without changing chat auth', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); invalidateProviderKeyCache(); });
   await installTestWorkspace(config);
@@ -250,7 +251,7 @@ test('a first OpenAI API key initializes an unset image role without changing ch
 });
 
 test('an explicitly cleared image role remains unset when an OpenAI API key is first added', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); invalidateProviderKeyCache(); });
   await installTestWorkspace(config);
@@ -280,7 +281,7 @@ test('an explicitly cleared image role remains unset when an OpenAI API key is f
 });
 
 test('a concurrent image choice wins the first-key default without failing key completion', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); invalidateProviderKeyCache(); });
   await installTestWorkspace(config);
@@ -332,7 +333,7 @@ test('a concurrent image choice wins the first-key default without failing key c
 });
 
 test('an image-role storage failure does not fail or expose a completed API-key connection', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); invalidateProviderKeyCache(); });
   await installTestWorkspace(config);
@@ -379,7 +380,7 @@ test('an image-role storage failure does not fail or expose a completed API-key 
 
 test('subscription reauthorization does not initialize an image role', async (t) => {
   let currentTime = 1_800_000_100_000;
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   await installTestWorkspace(config);
@@ -444,7 +445,7 @@ test('subscription reauthorization does not initialize an image role', async (t)
 });
 
 test('a stored Subscription selection remains explicit across summaries, models, and API-key changes', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   await settings.setSetting(MODEL_CATALOG_SETTING_KEYS.mode, 'bundled');
@@ -522,7 +523,7 @@ test('a stored Subscription selection remains explicit across summaries, models,
 });
 
 test('subscription-only readiness supports workspace defaults and onboarding model selection', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   await settings.setSetting(MODEL_CATALOG_SETTING_KEYS.mode, 'bundled');
@@ -584,7 +585,7 @@ test('subscription-only readiness supports workspace defaults and onboarding mod
 });
 
 test('Cloudflare exposes ChatGPT plan setup while rejecting legacy Codex device authorization', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   await settings.setSetting('provider.openai.authMethod', 'subscription');
@@ -670,7 +671,7 @@ test('Cloudflare exposes ChatGPT plan setup while rejecting legacy Codex device 
 });
 
 test('OpenAI subscription admin routes map safe failure codes to stable HTTP statuses', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   let startError: unknown = new Error('unexpected provider detail');
@@ -726,7 +727,7 @@ test('Cloudflare ChatGPT setup requires a human owner and keeps native handoff s
     else Reflect.deleteProperty(globalThis, 'navigator');
   });
   for (const role of ['owner', 'admin', 'member'] as const) {
-    const config = new SqliteConfigStore(':memory:', { agents: [] });
+    const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
     const settings = new SqliteSettingsStore(':memory:');
     t.after(() => { config.close(); settings.close(); });
     const principal = { userId: 'test', membershipId: 'test', organizationId: 'org_oss', role,

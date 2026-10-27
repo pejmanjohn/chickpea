@@ -5,6 +5,7 @@ import { createBetterAuthRuntimeRoutes } from '../src/auth/better-auth-runtime.t
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
@@ -30,7 +31,7 @@ test('recovery-only health gate admits no normal session or Slack auth route', a
 
 test('hidden recovery route mints only an operational repair session and keeps normal control-plane routes closed', async () => {
   const identity = new SqliteIdentityStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const settings = new SqliteSettingsStore(':memory:');
   const credentials = { state: identity, keyring: generateCredentialKeyring('key_v1') };
   const token = 'a'.repeat(64);

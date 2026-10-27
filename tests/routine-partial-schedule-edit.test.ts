@@ -7,7 +7,7 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 import {
   executeSlackScheduleCommand,
 } from '../src/routines/slack-command.ts';
-import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = Date.UTC(2026, 10, 1, 8, 45);
@@ -21,7 +21,7 @@ test(`partial schedule edit preserves canonical timing: ${edit}`, async () => {
     teamId: 'T_SCHEDULE_COMMAND',
     suffix: 'schedule-command',
   });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const routines = new SqliteRoutineStore(':memory:', () => now);
   try {
     const agent = await config.createAgent({

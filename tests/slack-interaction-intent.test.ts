@@ -6,6 +6,7 @@ import { configureModelRequestRecorder, resetModelAccessForTests } from '../src/
 import { saveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { commitOpenAiSubscriptionCredentials } from '../src/openai-subscription/credentials.ts';
 import { clearOpenAiSubscriptionTransport } from '../src/openai-subscription/transport.ts';
 import {
@@ -566,7 +567,7 @@ test('the stateless classifier has no tools and treats Slack context as data', (
 });
 
 test('every Agent receives shared Slack teammate defaults before voice overrides and guardrail', async () => {
-  const store = new SqliteConfigStore(':memory:', {
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, {
     agents: [{
       id: 'agent_custom', name: 'Custom', instructions: 'Use a playful voice.', enabled: true,
       model: 'local-stub/interaction-test',

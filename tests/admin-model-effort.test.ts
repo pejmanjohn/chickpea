@@ -7,6 +7,7 @@ import { createAdminRoutes } from '../src/admin/routes.ts';
 import { PROVIDER_KEY_SETTING_KEYS, invalidateProviderKeyCache } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { FAKE_PROVIDER_KEYS } from './helpers/fake-providers.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
@@ -23,7 +24,7 @@ async function withAdmin(run: (fixture: {
 }) => Promise<void>): Promise<void> {
   invalidateProviderKeyCache();
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   app.route('/', createAdminRoutes({

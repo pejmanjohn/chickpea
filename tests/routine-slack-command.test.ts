@@ -12,7 +12,7 @@ import {
   executeSlackScheduleCommand,
   SlackScheduleCommandError,
 } from '../src/routines/slack-command.ts';
-import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = Date.UTC(2026, 7, 27, 12);
@@ -24,7 +24,7 @@ test('the shared schedule command replays save and immediate run effects once', 
     teamId: 'T_SCHEDULE_COMMAND',
     suffix: 'schedule-command',
   });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const routines = new SqliteRoutineStore(':memory:', () => NOW);
   try {
     const agent = await config.createAgent({
@@ -145,7 +145,7 @@ test('authority failure leaves a durable safe routine state', async () => {
     teamId: 'T_SCHEDULE_AUTHORITY',
     suffix: 'schedule-authority',
   });
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const routines = new SqliteRoutineStore(':memory:', () => NOW);
   try {
     const agent = await config.createAgent({
@@ -211,7 +211,7 @@ test('a direct schedule retry activates the saved pending routine without report
   });
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-direct-schedule-retry-'));
   const database = join(directory, 'state.sqlite');
-  const config = new SqliteConfigStore(database, { agents: [] });
+  const config = new SqliteConfigStore(database, agentRoutineDeletion, { agents: [] });
   const routines = new SqliteRoutineStore(database, () => NOW);
   try {
     const agent = await config.createAgent({

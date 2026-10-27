@@ -32,6 +32,7 @@ import {
 } from '../src/slack/public-context.ts';
 import type { SlackPublicContextEntry } from '../src/config/types.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import {
   currentMessageOnlyContext,
@@ -134,7 +135,7 @@ test('the conversation image listing rides in the request, before the current me
 });
 
 test('candidate classification recovers a retained correction beyond its two-page scan', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const turn = threadTurn({ messageTs: '1100.000000', text: 'Please use the correction for the report.' });
   try {
     const agent = await store.createAgent({ id: 'agent_classifier', name: 'Classifier fixture', instructions: '',
@@ -205,7 +206,7 @@ test('hydrated Slack rich-text destinations remain available to prompt assembly'
 });
 
 test('a capped forward scan omits its stale segment and recovers retained recent corrections', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const turn = threadTurn({ messageTs: '1201.000000' });
   const pages = Array.from({ length: 6 }, (_, page) => ({
     messages: Array.from({ length: 50 }, (_, row) => humanMsg(page * 50 + row + 1, `${1001 + page * 50 + row}.000000`)),
@@ -245,7 +246,7 @@ test('a capped forward scan omits its stale segment and recovers retained recent
 });
 
 test('retained edits supersede stale copies, exclude future revisions, and deletion removes context', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const turn = threadTurn();
   const base = { workspaceId: 'T1', channelId: 'C1', rootTs: turn.threadTs, role: 'human' as const, messageTs: '1900.000000' };
   try {
@@ -323,7 +324,7 @@ test('short thread (single page) is returned intact', async () => {
 });
 
 test('new runtime prompts retain Agent replies from the admitted thread only', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   try {
     for (const id of ['agent_support', 'agent_other']) await store.createAgent({ id, name: id, instructions: '', enabled: true, lifecycle: 'active', creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
     const base = { workspaceId: 'T1', channelId: 'C1', rootTs: '1000.0000', role: 'agent' as const, agentId: 'agent_support' };
@@ -355,7 +356,7 @@ test('new runtime prompts retain Agent replies from the admitted thread only', a
 });
 
 test('top-level DMs retain this Agent replies across roots with filters before the limit', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   try {
     for (const id of ['agent_support', 'agent_other']) await store.createAgent({ id, name: id, instructions: '', enabled: true, lifecycle: 'active', creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
     const first = threadTurn({ channelId: 'D1', contextMode: 'dm_history', messageTs: '1000.0000', threadTs: '1000.0000' });
@@ -420,7 +421,7 @@ test('an admitted v1 top-level DM preserves only permitted other-root history th
   const hydrated = await hydrateSlackContextViaWebClient(fakeClientWithReplyPages([{
     messages: [{ user: turn.userId, type: 'message', text: turn.text, ts: turn.messageTs }],
   }]) as never, turn);
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   try {
     await store.createAgent({ id: 'agent_support', name: 'Support', instructions: '', enabled: true, lifecycle: 'active', creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
     await store.putSlackPublicContext({ workspaceId: 'T1', channelId: 'D1', rootTs: '1789300000.000100', messageTs: '1789300000.000100', role: 'human', text: 'PRIVATE_OTHER_ROOT_REQUEST' });
@@ -502,7 +503,7 @@ test('request time uses a validated profile zone or an explicit UTC fallback', (
 });
 
 test('recent DM replies are bounded by message count and public text budget', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   try {
     await store.createAgent({ id: 'agent_support', name: 'Support', instructions: '', enabled: true, lifecycle: 'active', creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
     for (let index = 0; index < 25; index += 1) {
@@ -625,7 +626,7 @@ test('public handoff keeps the newest 20 visible messages within 12,000 characte
 });
 
 test('Slack edits and deletes reconcile only already-recorded public messages', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const listUrl = 'https://acme.example.slack.com/lists/T1/F0LIST123';
   try {
     await store.putSlackPublicContext({
@@ -1086,7 +1087,7 @@ test('assembling the prompt context keeps the trigger\'s files, from the read or
   read.messages = read.messages.map((message) => ({ ...message, files }));
   assert.deepEqual(triggerFiles(await assembleRetainedSlackContext(read, turn)), [files]);
 
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   try {
     await store.putSlackPublicContext({
       workspaceId: turn.workspaceId, channelId: turn.channelId, rootTs: turn.threadTs,
@@ -1119,7 +1120,7 @@ test('the thread path collects the trigger row without a second read', async () 
 });
 
 test('an Agent answering after the Agents a person mentioned before it reads their replies', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const agents = [
     { agentId: 'agent_finance', name: 'Finance', handle: 'finance' },
     { agentId: 'agent_legal', name: 'Legal', handle: 'legal' },

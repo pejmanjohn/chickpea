@@ -72,13 +72,13 @@ try {
   const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
   const { SqliteSettingsStore } = await loadTsModule('src/config/settings-store.ts');
   const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
-  const { SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
+  const { agentRoutineDeletion, SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
   const { RoutineService } = await loadTsModule('src/routines/service.ts');
   const { SqliteUsageStore } = await loadTsModule('src/usage/store.ts');
   const { SqliteWorkStore } = await loadTsModule('src/work/store.ts');
   const { SqliteIdentityStore } = await loadTsModule('src/identity/store.ts');
   const statePath = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-ui-')), 'state.db');
-  store = new SqliteConfigStore(statePath, { agents: [], grants: [] });
+  store = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [], grants: [] });
   settings = new SqliteSettingsStore(statePath);
   memory = new SqliteMemoryStateStore(statePath);
   routines = new SqliteRoutineStore(statePath);

@@ -12,6 +12,7 @@ import {
 } from '../src/config/errors.ts';
 import type { StateRpcResult, TagStateRpc } from '../src/config/state-rpc.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import type {
   AgentChannelGrant,
@@ -39,7 +40,7 @@ function agent(id: string, name: string) {
 }
 
 test('a fresh install seeds no user Agent and makes Chickpea the installation default', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   try {
     assert.deepEqual(await store.listUserAgents(), []);
     const installation = await store.ensureWorkspaceInstallation({
@@ -61,7 +62,7 @@ test('a fresh install seeds no user Agent and makes Chickpea the installation de
 });
 
 test('a compatibility install still requires and designates one user default Agent', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   try {
     await assert.rejects(
       store.ensureWorkspaceInstallation({
@@ -85,7 +86,7 @@ test('a compatibility install still requires and designates one user default Age
 });
 
 test('one Chickpea deployment cannot bind a second Slack workspace', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   try {
     await store.ensureWorkspaceInstallation({
       workspaceId: 'T_PRIMARY',
@@ -108,7 +109,7 @@ test('one Chickpea deployment cannot bind a second Slack workspace', async () =>
 });
 
 test('Agent grants are many-to-many and thread routes retain their coordinate', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     await store.createAgent(agent('agent_support', 'Support'));
     await store.createAgent(agent('agent_sales', 'Sales'));
@@ -161,7 +162,7 @@ test('Agent grants are many-to-many and thread routes retain their coordinate', 
 });
 
 test('the designated default Agent cannot be archived without a replacement', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [createDemoStarterAgent()] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
   try {
     await store.ensureWorkspaceInstallation({
       workspaceId: 'T_PLATFORM',
@@ -190,7 +191,7 @@ test('the designated default Agent cannot be archived without a replacement', as
 });
 
 test('archive and restore round-trip grants and only schedules paused by that archive', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     await store.createAgent(agent('agent_support', 'Support'));
     const activeGrant = await store.putAgentChannelGrant({
@@ -286,7 +287,7 @@ test('archive and restore round-trip grants and only schedules paused by that ar
 });
 
 test('connection accounts bind once and schedule references retain creator authority', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     await store.createAgent(agent('agent_support', 'Support'));
     await store.createAgent(agent('agent_sales', 'Sales'));
@@ -382,7 +383,7 @@ test('connection accounts bind once and schedule references retain creator autho
 });
 
 test('connection binding ownership is atomic and workspace-scoped', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     await store.createAgent(agent('agent_support', 'Support'));
     await store.createAgent(agent('agent_sales', 'Sales'));
@@ -456,7 +457,7 @@ test('connection binding ownership is atomic and workspace-scoped', async () => 
 });
 
 test('managed remote account references are committed only once', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {
     await store.createAgent(agent('agent_support', 'Support'));
     await store.createAgent(agent('agent_sales', 'Sales'));
@@ -533,7 +534,7 @@ test('schema startup fails closed instead of choosing among duplicate binding ow
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-connection-owner-'));
   const databasePath = join(directory, 'state.db');
   try {
-    const store = new SqliteConfigStore(databasePath, { agents: [] });
+    const store = new SqliteConfigStore(databasePath, agentRoutineDeletion, { agents: [] });
     await store.createAgent(agent('agent_support', 'Support'));
     await store.createAgent(agent('agent_sales', 'Sales'));
     const account = await store.putConnectionAccount({
@@ -576,7 +577,7 @@ test('schema startup fails closed instead of choosing among duplicate binding ow
     raw.close();
 
     assert.throws(
-      () => new SqliteConfigStore(databasePath, { agents: [] }),
+      () => new SqliteConfigStore(databasePath, agentRoutineDeletion, { agents: [] }),
       (error: unknown) => {
         assert.ok(error instanceof Error);
         assert.match(error.message, /ownership preflight failed.*connection_duplicate/);

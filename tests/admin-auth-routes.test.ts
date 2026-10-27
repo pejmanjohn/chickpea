@@ -6,6 +6,7 @@ import { createBetterAuth, type BetterAuthAdmissionOperation } from '../src/auth
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
@@ -45,7 +46,7 @@ test('Sign out ends the Better Auth session and lands on Slack sign-in; a cross-
   const secret = Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => (index * 29 + 3) % 256)).toString('base64url');
   const backend = new NodeBetterAuthBackend(':memory:');
   const identity = new SqliteIdentityStore(':memory:');
-  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     let admission: BetterAuthAdmissionOperation | null = null;

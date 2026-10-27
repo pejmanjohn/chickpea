@@ -7,6 +7,7 @@ import { CfManagementStore } from '../src/config/cf-state-proxies.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { TagStateRpc } from '../src/config/state-rpc.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import type { ManagementRpcRequest, PutManagementChangeSetProposalInput } from '../src/management/types.ts';
@@ -73,7 +74,7 @@ test('Agent proposal query scopes before limiting, includes completed records, a
 });
 
 test('Agent proposal details are own-requester, read-only, and project only this Agent instruction changes', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const settings = new SqliteSettingsStore(':memory:');
   const management = new SqliteManagementStore(':memory:');
   let linked = true;

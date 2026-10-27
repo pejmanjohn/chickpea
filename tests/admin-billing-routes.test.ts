@@ -16,6 +16,7 @@ import {
 import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/config/platform-funding.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
@@ -64,7 +65,7 @@ function admin(t: TestContext, options: {
   anthropicKeySaved?: boolean; openaiKeySaved?: boolean; config?: SqliteConfigStore;
 }) {
   configurePlatformBilling(options.port);
-  const config = options.config ?? new SqliteConfigStore(':memory:', { agents: [] });
+  const config = options.config ?? new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   t.after(() => { configurePlatformBilling(undefined); config.close(); settings.close(); usage.close(); });
@@ -244,7 +245,7 @@ async function switchingHost(
     ...NO_RUN_FEES,
   });
   t.after(() => resetPlatformFundingForTests());
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   await config.ensureWorkspaceInstallation({ workspaceId: 'T_BILLING', transportMode: 'direct', teamId: 'T_BILLING' });
   const chosen = image ? await config.putWorkspaceModelRole({ workspaceId: 'T_BILLING', role: 'image', ...image }, 0) : undefined;
   return { request: admin(t, { port, config, anthropicKeySaved: true, ...keys }), config, chosen };
