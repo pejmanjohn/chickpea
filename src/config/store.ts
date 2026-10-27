@@ -79,6 +79,7 @@ import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { schemaInstallRequired, type SqlParam, type StateDb } from '../state/state-db.ts';
 import { addColumnIfMissing, tableExists } from '../state/schema-links.ts';
 import { agentModelEffortAfterPatch, isModelEffort, type ModelEffort } from './model-effort.ts';
+import { canonicalMcpServerUrl, sameMcpServerUrl } from './mcp-url.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { normalizeAgentAppPresence } from '../slack/agent-apps/index.ts';
@@ -1939,10 +1940,13 @@ export class ConfigStoreLogic {
   }
 
   putConnectionAccount(
-    input: ConnectionAccountInput,
+    submitted: ConnectionAccountInput,
     expectedRevision?: number,
   ): ConnectionAccount {
-    validateConnectionAccountInput(input);
+    validateConnectionAccountInput(submitted);
+    const input = submitted.policy.kind === 'mcp'
+      ? { ...submitted, policy: { ...submitted.policy, url: canonicalMcpServerUrl(submitted.policy.url) } }
+      : submitted;
     if (input.policy.kind === 'managed' && input.lifecycle !== 'revoked') {
       const adapterId = input.policy.adapterId.trim().toLowerCase();
       const duplicate = this.db.get(
@@ -2448,7 +2452,7 @@ export class ConfigStoreLogic {
           target.credentialRef !== undefined &&
           connection.credentialRef === target.credentialRef &&
           connection.authMode === 'oauth' &&
-          connection.url === target.serverUrl,
+          sameMcpServerUrl(connection.url, target.serverUrl),
       );
       if (index < 0) return false;
       const mcpServers = agent.mcpServers.slice();

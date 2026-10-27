@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  canonicalMcpServerUrl,
   createMcpGuardedFetch,
   nodePinnedFetch,
+  sameMcpServerUrl,
   validateMcpUrl,
   type McpAddressResolver,
 } from '../src/config/mcp-url.ts';
@@ -49,6 +51,19 @@ test('accepts public IP literals and RFC-1918 boundary IPs just outside private 
     const result = validateMcpUrl(input);
     assert.equal(result.ok, true, input + ' should be accepted');
   }
+});
+
+test('a bare origin and its root-slash form are the same MCP server', () => {
+  assert.equal(canonicalMcpServerUrl('https://mcp.example.com'), 'https://mcp.example.com/');
+  assert.equal(sameMcpServerUrl('https://mcp.example.com', 'https://mcp.example.com/'), true);
+  assert.equal(sameMcpServerUrl('https://MCP.example.com./mcp#x', 'https://mcp.example.com/mcp'), true);
+  assert.equal(sameMcpServerUrl('https://mcp.example.com', 'https://mcp.example.com/mcp'), false);
+  assert.equal(sameMcpServerUrl('https://mcp.example.com/mcp', 'https://mcp.example.com/mcp/'), false);
+});
+
+test('a blocked MCP URL keeps the form it was stored in', () => {
+  assert.equal(canonicalMcpServerUrl('https://localhost'), 'https://localhost');
+  assert.equal(sameMcpServerUrl('https://localhost', 'https://localhost/'), false);
 });
 
 test('rejects non-https schemes', () => {

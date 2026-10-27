@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import { canonicalMcpServerUrl } from './mcp-url.ts';
 import type { ApiConnectionConfig, McpConnectionConfig } from './types.ts';
 
 const CREDENTIAL_REF_PATTERN = /^connection_[0-9a-f]{32}$/;
@@ -81,7 +82,11 @@ export function sameMcpCredentialPolicy(
   left: McpConnectionConfig,
   right: McpConnectionConfig,
 ): boolean {
-  return canonicalMcpCredentialPolicy(left) === canonicalMcpCredentialPolicy(right);
+  // Only the comparison canonicalizes the URL: changing the bound policy text
+  // would change the binding of every credential saved under a raw URL.
+  const policy = (connection: McpConnectionConfig) =>
+    canonicalMcpCredentialPolicy({ ...connection, url: canonicalMcpServerUrl(connection.url) });
+  return policy(left) === policy(right);
 }
 
 export function mcpCredentialBinding(connection: McpConnectionConfig): string {

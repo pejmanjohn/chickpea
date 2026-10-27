@@ -13,7 +13,7 @@ import {
   validConnectionCredentialRef,
 } from '../config/connection-credential-binding.ts';
 import type { McpSecretRef } from '../config/mcp-secrets.ts';
-import { validateMcpUrl } from '../config/mcp-url.ts';
+import { sameMcpServerUrl, validateMcpUrl } from '../config/mcp-url.ts';
 import type { OAuthRefreshTelemetryEvent } from '../config/oauth-refresh-telemetry.ts';
 import { OAUTH_KEEPALIVE_AGE_MS } from '../config/oauth-shared.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
@@ -222,8 +222,7 @@ async function isCurrentCredential(
         account.policy.authMode !== 'oauth' ||
         (attemptId !== undefined && account.policy.oauthAttemptId !== attemptId)) return false;
     if (account.policy.kind === 'mcp') {
-      const validated = validateMcpUrl(account.policy.url);
-      return credential.lane === 'mcp' && validated.ok && validated.url === target;
+      return credential.lane === 'mcp' && sameMcpServerUrl(account.policy.url, target);
     }
     return credential.lane === 'api' && account.policy.oauthProvider === target;
   }
@@ -231,11 +230,10 @@ async function isCurrentCredential(
     const agent = await config.getAgent(credential.ref.agentId);
     if (credential.lane === 'mcp') {
       const server = agent.mcpServers.find(({ id }) => id === credential.ref.connectionId);
-      const validated = server ? validateMcpUrl(server.url) : undefined;
       return !!server && server.enabled && server.authMode === 'oauth' &&
         (credential.ref.credentialRef === undefined ||
           server.credentialRef === credential.ref.credentialRef) &&
-        server.lifecycleStatus === 'ready' && !!validated?.ok && validated.url === target;
+        server.lifecycleStatus === 'ready' && sameMcpServerUrl(server.url, target);
     }
     const connection = agent.apiConnections.find(({ id }) => id === credential.ref.connectionId);
     return !!connection && connection.enabled && connection.authMode === 'oauth' &&

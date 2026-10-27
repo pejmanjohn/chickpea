@@ -4,6 +4,7 @@ import {
   type ConnectionAccountSecretRef,
 } from '../config/connector-secrets.ts';
 import { getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
+import { sameMcpServerUrl } from '../config/mcp-url.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type {
   AgentConnectionBinding,
@@ -635,7 +636,7 @@ function samePersonalAuthorizationPolicy(
       (template.presetId ?? '') === (candidate.presetId ?? '');
   }
   if (template.kind === 'mcp' && candidate.kind === 'mcp') {
-    return template.authMode === candidate.authMode && template.url === candidate.url &&
+    return template.authMode === candidate.authMode && sameMcpServerUrl(template.url, candidate.url) &&
       (template.presetId ?? '') === (candidate.presetId ?? '');
   }
   return template.kind === 'managed' && candidate.kind === 'managed' &&
