@@ -2533,6 +2533,7 @@ export class ConfigStoreLogic {
       }
       this.requireAgentHasNoBlockingReferences(agentId);
       this.deleteRevokedAgentConnectionBindings(agentId);
+      this.deleteAgentThreadRoutes(agentId);
       const deleted = this.db.run(
         'DELETE FROM config_agents WHERE id = ? AND revision = ? AND credential_incarnation = ?',
         agentId,
@@ -2576,6 +2577,7 @@ export class ConfigStoreLogic {
       }
       this.requireAgentHasNoBlockingReferences(agentId);
       this.deleteRevokedAgentConnectionBindings(agentId);
+      this.deleteAgentThreadRoutes(agentId);
       const deleted = this.db.run(
         'DELETE FROM config_agents WHERE id = ? AND revision = ? AND credential_incarnation = ?',
         agentId,
@@ -2737,6 +2739,18 @@ export class ConfigStoreLogic {
     if (blockers.length > 0) {
       throw new AgentStillReferencedError(agentId, blockers.join(', '));
     }
+  }
+
+  /** A deleted Agent's threads fall back to ordinary routing; each route's public context goes with it. */
+  private deleteAgentThreadRoutes(agentId: string): void {
+    const routes = this.db.all(
+      'SELECT workspace_id, channel_id, thread_ts FROM config_agent_thread_routes WHERE agent_id = ?',
+      agentId,
+    );
+    for (const route of routes) {
+      this.deleteSlackPublicContextRoot(String(route.workspace_id), String(route.channel_id), String(route.thread_ts));
+    }
+    this.db.run('DELETE FROM config_agent_thread_routes WHERE agent_id = ?', agentId);
   }
 
   private deleteRevokedAgentConnectionBindings(agentId: string): void {
