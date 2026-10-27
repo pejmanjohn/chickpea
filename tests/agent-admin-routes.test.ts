@@ -6653,6 +6653,10 @@ test('Admin deletes an archived Agent that still owns a Slack thread route', asy
     await fixture.store.putAgentThreadRoute({
       workspaceId: 'T_TEST', channelId: 'D_OWNER', threadTs: '1790000000.000100', agentId: 'agent_support', agentGeneration: 1,
     });
+    await fixture.store.putSlackPublicContext({
+      workspaceId: 'T_TEST', channelId: 'D_OWNER', rootTs: '1790000000.000100', messageTs: '1790000000.000100',
+      role: 'human', text: 'Set up a support Agent.',
+    });
     const archived = await supportAgentRequest(fixture.app, 'POST', '/archive', {
       expectedRevision: (await fixture.store.getAgent('agent_support')).revision,
     });
@@ -6669,6 +6673,8 @@ test('Admin deletes an archived Agent that still owns a Slack thread route', asy
     await assert.rejects(fixture.store.getAgent('agent_support'), UnknownAgentError);
     assert.equal(await fixture.store.getAgentThreadRoute('T_TEST', 'D_OWNER', '1790000000.000100'), undefined,
       'the thread falls back to ordinary routing');
+    assert.deepEqual(await fixture.store.listSlackPublicContext('T_TEST', 'D_OWNER', '1790000000.000100'), [],
+      'the thread record goes with the route');
   } finally {
     fixture.store.close();
     fixture.settings.close();
