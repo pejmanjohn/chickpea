@@ -100,13 +100,16 @@ const SPEND = /(?:^|_)(BID|BIDS|BILL|BILLING|BILLS|BUDGET|BUDGETS|BUY|CHARGE|CHA
 const PUBLISH = /(?:^|_)(BROADCAST|COMMENT|COMMENTS|EMAIL|EMAILS|FORWARD|INVITE|MESSAGE|MESSAGES|NOTIFY|OUTBOUND|POST|PUBLISH|REPLY|SEND|SHARE|SHARED)(?:_|$)/;
 
 /** Picks who or where a call acts, such as Dropbox's `Dropbox-API-Select-User` header. Withheld on reads too. */
-const ACTING = /(?:^|_)(?:select_(?:user|admin|member)|as_user|act_as|on_behalf_of|impersonat\w*|path_root|sudo|run_as|actor_id)(?:_|$)/;
+const ACTING = /(?:^|_)(?:select_(?:user|admin|member)|as_user|as_admin|act_as|on_behalf_of|impersonat\w*|path_root|sudo|run_as|actor|delegated_user)(?:_|$)/;
 /**
  * A token, key, or password the model would type in itself, such as Box's
- * download `access_token`. Pagination tokens and record keys are not credentials.
+ * download `access_token`. Pagination tokens and record keys are not credentials,
+ * an ID such as Cal.com's `credentialId` names a record, and a boolean such as
+ * `is_passcode_required` carries no secret.
  */
-const CREDENTIAL = /(?:^|_)(?:access_token|oauth_token|auth_token|id_token|refresh_token|api_key|apikey|bearer|authorization|client_secret|secrets?|password|passwd|credentials?|private_key)(?:_|$)/;
-const CREDENTIAL_DESCRIPTION = /\b(?:api key|(?:oauth|access|bearer)\s+tokens?|pre-?authenticat\w*)\b/i;
+const CREDENTIAL = /(?:^|_)(?:access_token|oauth_token|auth_token|id_token|refresh_token|api_token|session_token|sas_token|api_key|apikey|app_key|bearer|authorization|client_secret|secrets?|password|passwd|passcode|credentials?|private_key|jwt)(?:_|$)/;
+const CREDENTIAL_DESCRIPTION =
+  /\b(?:api[- ]?(?:key|token)s?|(?:oauth|access|bearer|session|auth(?:entication)?)\s+tokens?|pre-?authenticat\w*)\b/i;
 /**
  * A mode or flag that makes the provider mint a link anyone holding it can
  * open, such as Dropbox export's `store_and_link` or a `format` of `url`.
@@ -115,12 +118,17 @@ const CREDENTIAL_DESCRIPTION = /\b(?:api key|(?:oauth|access|bearer)\s+tokens?|p
  */
 const LINK_TOKENS = new Set(['link', 'links', 'url', 'urls']);
 const LINK_MINT_TOKENS = new Set(words(`
-  create download generate get make mint presigned public share signed store temp temporary
+  create direct download embed expiring generate get make mint presigned preview public share signed store
+  temp temporary thumbnail
 `));
+/** Option values that return a link in place of content on their own. */
+const LINK_VALUES = new Set([...LINK_TOKENS, 'presigned']);
 /** A read whose result is such a link: "temporary image URLs", "Returned image URLs expire". */
 const LINK_MINT_DESCRIPTION = new RegExp([
   String.raw`\b(?:temporary|public|shareable|pre-?signed|signed|expiring|pre-?authenticated)\s+(?:[\w()-]+\s+){0,2}(?:urls?|links?)\b`,
-  String.raw`\b(?:urls?|links?)\s+(?:that\s+|which\s+)?(?:will\s+|may\s+)?(?:expire|are\s+external)\b`,
+  String.raw`\b(?:urls?|links?)\s+(?:that\s+|which\s+)?(?:will\s+|may\s+)?(?:expires?|(?:is|are)\s+external)\b`,
+  String.raw`\bvalid\s+for\s+\d+\s+(?:seconds?|minutes?|hours?|days?)\b`,
+  String.raw`\b(?:short-lived|time-limited|unauthenticated)\b`,
 ].join('|'), 'i');
 
 /**
@@ -146,8 +154,8 @@ const OVERWRITE = /^(?:overwrite|replace)$/i;
 const CONTAINER_TOKENS = new Set(words(`
   account board company folder organization parent product project space team workspace
 `));
-/** On update, these name where the record goes even without an ID: `parents`, `destination_folder`. */
-const LOCATION_TOKENS = new Set(['destination', 'parents']);
+/** On update, these name where the record goes even without an ID: `parents`, `new_parent`, `move_to`. */
+const LOCATION_TOKENS = new Set(['destination', 'move', 'parent', 'parents']);
 /**
  * Withheld on create too. A Freshdesk ticket's company shows it to that
  * company's contacts who can view all its tickets, and its product picks the
@@ -161,13 +169,13 @@ const AUDIENCE_CONTAINER_TOKENS = new Set(['company', 'product']);
  * create-ticket would undo a reply bound to the requester.
  */
 const RECIPIENT_TOKENS = new Set(words(`
-  attendee attendees bcc cc email emails participant participants recipient recipients
+  attendee attendees bcc cc participant participants recipient recipients
 `));
 /** `to_emails`, `from_email`, and `to` address a message; `applicable_to` does not. */
 const ADDRESS_LEADING_TOKENS = new Set(['from', 'to']);
+/** Any token containing `phone` counts too: `phones`, Dynamics' `telephone1`. */
 const IDENTITY_TOKENS = new Set(words(`
-  external facebook instagram linkedin login logins mobile mobiles password phone phones requester twitter
-  username usernames
+  external facebook instagram linkedin login logins mobile mobiles password requester twitter username usernames
 `));
 
 const WITHHELD_ACCESS = 'changes sharing, visibility, permissions, membership, or who acts';
@@ -194,14 +202,19 @@ function mintsLink(text: string): boolean {
 
 /** An option value such as `store_and_link`, or a bare `url` that returns a link in place of content. */
 function linkValue(value: unknown): boolean {
-  return typeof value === 'string' && (mintsLink(value) || LINK_TOKENS.has(value.trim().toLowerCase()));
+  return typeof value === 'string' && (mintsLink(value) || LINK_VALUES.has(value.trim().toLowerCase()));
 }
 
 /** Rules for every tool, reads included: who the call acts as, credentials, and modes that mint a shareable link. */
 function anyToolWithheldReason(name: string, schema: unknown): string | undefined {
-  const tokens = argumentTokens(name).join('_');
-  if (ACTING.test(tokens)) return WITHHELD_ACTING;
-  if (CREDENTIAL.test(tokens) || CREDENTIAL_DESCRIPTION.test(descriptionOf(schema))) return WITHHELD_CREDENTIAL;
+  const tokens = argumentTokens(name);
+  const joined = tokens.join('_');
+  if (ACTING.test(joined)) return WITHHELD_ACTING;
+  const carriesValue = !['id', 'ids'].includes(tokens.at(-1) ?? '') &&
+    !(isPlainObject(schema) && schema.type === 'boolean');
+  if (carriesValue && (CREDENTIAL.test(joined) || CREDENTIAL_DESCRIPTION.test(descriptionOf(schema)))) {
+    return WITHHELD_CREDENTIAL;
+  }
   return mintsLink(name) || enumValues(schema).some(linkValue) ? WITHHELD_LINK : undefined;
 }
 
@@ -235,8 +248,11 @@ function withheldArgumentReason(
       enumValues(schema).some((value) => typeof value === 'string' && OVERWRITE.test(value))) {
     return WITHHELD_OVERWRITE;
   }
-  if ((tokens.length > 1 && tokens.at(-1) === 'source') || tokens[0]?.startsWith('file')) return WITHHELD_COPY;
-  if (tokens.some((token) => RECIPIENT_TOKENS.has(token) || token.startsWith('notify')) ||
+  // A file name such as `file_name` labels an attachment without supplying its content.
+  if ((tokens.length > 1 && tokens.at(-1) === 'source') ||
+      (tokens[0]?.startsWith('file') && !['filename', 'filenames'].includes(compact))) return WITHHELD_COPY;
+  // `email` is a prefix because Dynamics' `emailaddress1` runs its words together.
+  if (tokens.some((token) => RECIPIENT_TOKENS.has(token) || token.startsWith('email') || token.startsWith('notify')) ||
       ADDRESS_LEADING_TOKENS.has(tokens[0] ?? '') || compact.includes('replyto')) return WITHHELD_RECIPIENT;
   // Box's `parent: { id }` names the destination folder as an object rather than a flat `parent_id`,
   // and OneDrive's `parent_reference: { path }` by path.
@@ -251,7 +267,9 @@ function withheldArgumentReason(
   if (kind === 'create' && identifier && tokens.some((token) => AUDIENCE_CONTAINER_TOKENS.has(token))) {
     return WITHHELD_AUDIENCE;
   }
-  if (kind === 'update' && tokens.some((token) => IDENTITY_TOKENS.has(token))) return WITHHELD_IDENTITY;
+  if (kind === 'update' && tokens.some((token) => IDENTITY_TOKENS.has(token) || token.includes('phone'))) {
+    return WITHHELD_IDENTITY;
+  }
   return undefined;
 }
 
@@ -325,7 +343,8 @@ function classify(tool: ComposioSnapshotTool, name: string): Classification {
     : { lane: 'write', effect: writeEffect(name) };
 }
 
-type Derived<T> = { schema: T } | { unsupported: string };
+/** `excludesTool` marks a problem that leaving out the enclosing object would not fix. */
+type Derived<T> = { schema: T } | { unsupported: string; excludesTool?: true };
 
 interface DeriveContext {
   /** Withhold access, move, and copy arguments; only write tools set this. */
@@ -446,7 +465,7 @@ function deriveNode(
           const defaults = defaultValues(child);
           // Leaving out an argument whose default mints a link would still mint one.
           if (withheld === WITHHELD_LINK && defaults.some((value) => value === true || linkValue(value))) {
-            return { unsupported: `${childWhere} mints a shareable link by default` };
+            return { unsupported: `${childWhere} mints a shareable link by default`, excludesTool: true };
           }
           // Withholding an argument whose default overwrites would still overwrite.
           const overwritesByDefault = withheld === WITHHELD_OVERWRITE &&
@@ -465,13 +484,15 @@ function deriveNode(
           context.withheld[childWhere] = withheld;
           continue;
         }
-        const derived = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/.test(key) &&
+        const derived: Derived<ManifestInputSchema> = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/.test(key) &&
             Object.keys(properties).length < COMPOSIO_MANIFEST_LIMITS.properties
           ? deriveNode(child, depth + 1, childWhere, context)
           : { unsupported: `${childWhere} exceeds the property limit or naming rule` };
         if ('schema' in derived) {
           properties[key] = derived.schema;
           if (withheld) context.allowedKept[childWhere] = withheld;
+        } else if (derived.excludesTool) {
+          return derived;
         } else if (required.has(key)) {
           return { unsupported: `required argument ${derived.unsupported}` };
         } else {
@@ -505,6 +526,10 @@ export function draftComposioManifest(
   const drop = previous?.review.drop ?? {};
   const allowArguments = previous?.review.allowArguments ?? {};
   const withholdArguments = previous?.review.withholdArguments ?? {};
+  const overridden = [...add].filter((slug) => slug in drop);
+  if (overridden.length > 0) {
+    throw new Error(`review.add names ${overridden.join(', ')}, which review.drop also names; keep only the decision that applies`);
+  }
   const kept = new Map(previous?.capabilities.map((capability) => [capability.tool, capability]) ?? []);
   const prefix = `${toolkit.toUpperCase()}_`;
   const report: DraftReport = {
@@ -839,11 +864,17 @@ function connectedAccountFields(value: unknown): string[] {
     : [];
 }
 
-/** Composio marks a schema it fills with a file on its own storage, URL included, with `file_downloadable`. */
+/**
+ * Composio marks a schema it fills with a file on its own storage, URL included, with `file_downloadable`.
+ * Some toolkits leave the mark off but still return the storage URL as `s3url`.
+ */
 function marksDownloadableFile(schema: unknown): boolean {
   if (Array.isArray(schema)) return schema.some(marksDownloadableFile);
   if (!isPlainObject(schema)) return false;
-  return schema.file_downloadable === true || Object.values(schema).some(marksDownloadableFile);
+  const properties = isPlainObject(schema.properties) ? Object.keys(schema.properties) : [];
+  return schema.file_downloadable === true || schema.file_downloadable === 'true' ||
+    properties.some((name) => argumentTokens(name).join('') === 's3url') ||
+    Object.values(schema).some(marksDownloadableFile);
 }
 
 /** Enum values of an argument, its `anyOf` branches, and the items of an array argument. */

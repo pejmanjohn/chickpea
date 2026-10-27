@@ -2,13 +2,18 @@ import * as v from 'valibot';
 
 import bitbucket from './manifests/bitbucket.json' with { type: 'json' };
 import box from './manifests/box.json' with { type: 'json' };
+import cal from './manifests/cal.json' with { type: 'json' };
 import dropbox from './manifests/dropbox.json' with { type: 'json' };
+import dynamics365 from './manifests/dynamics365.json' with { type: 'json' };
 import excel from './manifests/excel.json' with { type: 'json' };
 import figma from './manifests/figma.json' with { type: 'json' };
 import freshdesk from './manifests/freshdesk.json' with { type: 'json' };
 import github from './manifests/github.json' with { type: 'json' };
 import googlebigquery from './manifests/googlebigquery.json' with { type: 'json' };
+import googlemeet from './manifests/googlemeet.json' with { type: 'json' };
+import googletasks from './manifests/googletasks.json' with { type: 'json' };
 import mailchimp from './manifests/mailchimp.json' with { type: 'json' };
+import microsoftTeams from './manifests/microsoft_teams.json' with { type: 'json' };
 import oneDrive from './manifests/one_drive.json' with { type: 'json' };
 import outlook from './manifests/outlook.json' with { type: 'json' };
 import pagerduty from './manifests/pagerduty.json' with { type: 'json' };
@@ -16,6 +21,8 @@ import pipedrive from './manifests/pipedrive.json' with { type: 'json' };
 import quickbooks from './manifests/quickbooks.json' with { type: 'json' };
 import salesforce from './manifests/salesforce.json' with { type: 'json' };
 import sharePoint from './manifests/share_point.json' with { type: 'json' };
+import webex from './manifests/webex.json' with { type: 'json' };
+import zoho from './manifests/zoho.json' with { type: 'json' };
 import type {
   ManagedAccessLane,
   ManagedConnectorDefinition,
@@ -253,13 +260,18 @@ export function compileComposioManifest(manifest: ComposioManifest): ManagedConn
 export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
   bitbucket,
   box,
+  cal,
   dropbox,
+  dynamics365,
   excel,
   figma,
   freshdesk,
   github,
   googlebigquery,
+  googlemeet,
+  googletasks,
   mailchimp,
+  microsoftTeams,
   oneDrive,
   outlook,
   pagerduty,
@@ -267,10 +279,13 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
   quickbooks,
   salesforce,
   sharePoint,
+  webex,
+  zoho,
 ].map((value) => parseComposioManifest(value));
 
 /** Reviewed manifests the generator still checks but the catalog does not ship, with the reason. */
 export const HELD_COMPOSIO_MANIFESTS: Readonly<Record<string, string>> = {
+  google_maps: "Validation runs with no arguments, and every Google Maps read needs input: geocoding needs an address, coordinates, or a place ID, and Composio's own current-user check uses a fixed place ID",
   trello: "Composio's hosted Connect Link for its managed OAuth1 config fails with \"Link session not found or expired\"",
 };
 

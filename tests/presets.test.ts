@@ -14,6 +14,7 @@ import {
   GOOGLE_WORKSPACE_SERVICE_PRESETS,
   MANAGED_CONNECTOR_PRESETS,
   CONNECTION_CATALOG_PRESETS,
+  connectorCatalogLookupNames,
   getConnectorPreset,
   matchingConnectorCatalogPresets,
   presetLanes,
@@ -238,6 +239,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     accent: '#0061D5',
     logoId: 'box',
   }, {
+    id: 'cal-managed',
+    managedToolkit: 'cal',
+    providerId: 'cal',
+    name: 'Cal.com',
+    description: 'Review bookings and availability, reschedule bookings, and update availability schedules.',
+    category: 'business',
+    accent: '#111111',
+    logoId: 'cal',
+  }, {
     id: 'dropbox-managed',
     managedToolkit: 'dropbox',
     providerId: 'dropbox',
@@ -246,6 +256,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     category: 'docs',
     accent: '#0061FE',
     logoId: 'dropbox',
+  }, {
+    id: 'dynamics365-managed',
+    managedToolkit: 'dynamics365',
+    providerId: 'dynamics365',
+    name: 'Dynamics 365',
+    description: 'Search accounts, contacts, leads, opportunities, and cases, and create or update records.',
+    category: 'business',
+    accent: '#0B53CE',
+    logoId: 'dynamics365',
   }, {
     id: 'excel-managed',
     managedToolkit: 'excel',
@@ -293,6 +312,24 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     accent: '#669DF6',
     logoId: 'googlebigquery',
   }, {
+    id: 'googlemeet-managed',
+    managedToolkit: 'googlemeet',
+    providerId: 'googlemeet',
+    name: 'Google Meet',
+    description: 'Review past meetings, participants, recordings, and transcripts, and create meeting spaces.',
+    category: 'docs',
+    accent: '#00AC47',
+    logoId: 'googlemeet',
+  }, {
+    id: 'googletasks-managed',
+    managedToolkit: 'googletasks',
+    providerId: 'googletasks',
+    name: 'Google Tasks',
+    description: 'Review task lists and create, update, complete, or move tasks.',
+    category: 'project',
+    accent: '#4285F4',
+    logoId: 'googletasks',
+  }, {
     id: 'mailchimp-managed',
     managedToolkit: 'mailchimp',
     providerId: 'mailchimp',
@@ -301,6 +338,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     category: 'business',
     accent: '#FFE01B',
     logoId: 'mailchimp',
+  }, {
+    id: 'microsoft-teams-managed',
+    managedToolkit: 'microsoft_teams',
+    providerId: 'microsoft_teams',
+    name: 'Microsoft Teams',
+    description: 'Read chats, channel conversations, meetings, and transcripts, and create meeting links.',
+    category: 'business',
+    accent: '#6264A7',
+    logoId: 'microsoft_teams',
   }, {
     id: 'one-drive-managed',
     managedToolkit: 'one_drive',
@@ -364,6 +410,24 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     category: 'docs',
     accent: '#038387',
     logoId: 'share_point',
+  }, {
+    id: 'webex-managed',
+    managedToolkit: 'webex',
+    providerId: 'webex',
+    name: 'Webex',
+    description: 'Webex messaging only: read spaces, messages, teams, and people, and create new spaces.',
+    category: 'business',
+    accent: '#00BCEB',
+    logoId: 'webex',
+  }, {
+    id: 'zoho-managed',
+    managedToolkit: 'zoho',
+    providerId: 'zoho',
+    name: 'Zoho CRM',
+    description: 'Search and update leads, contacts, accounts, deals, and activities in one Zoho CRM account.',
+    category: 'business',
+    accent: '#006EB9',
+    logoId: 'zoho',
   }]);
   assert.equal(CONNECTION_CATALOG_PRESETS.some(({ id }) => id === 'notion'), false);
   assert.equal(CONNECTION_CATALOG_PRESETS.some(({ id }) => id === 'notion-managed'), true);
@@ -784,4 +848,12 @@ test('reusable connector catalog is the shared Agent-facing lookup', () => {
 test('a manifest connector resolves by the alias its preset declares', () => {
   assert.deepEqual(matchingConnectorCatalogPresets('bigquery').map(({ id }) => id), ['googlebigquery-managed']);
   assert.deepEqual(matchingConnectorCatalogPresets('Google BigQuery').map(({ id }) => id), ['googlebigquery-managed']);
+});
+
+test('every catalog id, name, and alias resolves to exactly one preset', () => {
+  for (const preset of CONNECTION_CATALOG_PRESETS) {
+    for (const lookup of connectorCatalogLookupNames(preset)) {
+      assert.deepEqual(matchingConnectorCatalogPresets(lookup).map(({ id }) => id), [preset.id], lookup);
+    }
+  }
 });

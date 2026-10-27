@@ -1,0 +1,503 @@
+{
+  "toolkit": "googletasks",
+  "version": "20260911_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Google Tasks",
+  "description": "Review task lists and create, update, complete, or move tasks.",
+  "securityDescription": "Google sign-in opens through Composio. Agents can read the person's task lists and tasks. With write access, Agents can create task lists and tasks, rename lists, and edit, complete, and move tasks, including between the person's own lists. Agents cannot delete tasks or task lists, clear completed tasks, or reach anyone else's tasks.",
+  "preset": {
+    "category": "project",
+    "accent": "#4285F4"
+  },
+  "validationCapability": "googletasks.list_task_lists",
+  "review": {
+    "add": [
+      "GOOGLETASKS_CREATE_TASK_LIST",
+      "GOOGLETASKS_GET_TASK",
+      "GOOGLETASKS_GET_TASK_LIST",
+      "GOOGLETASKS_INSERT_TASK",
+      "GOOGLETASKS_LIST_ALL_TASKS",
+      "GOOGLETASKS_LIST_TASKS",
+      "GOOGLETASKS_LIST_TASK_LISTS",
+      "GOOGLETASKS_MOVE_TASK",
+      "GOOGLETASKS_PATCH_TASK",
+      "GOOGLETASKS_PATCH_TASK_LIST"
+    ],
+    "drop": {
+      "GOOGLETASKS_UPDATE_TASK_FULL": "A full replace clears every field the Agent leaves out, such as notes or the due date; patch_task covers edits."
+    },
+    "allowArguments": {
+      "GOOGLETASKS_MOVE_TASK": [
+        "destinationTasklist",
+        "parent"
+      ]
+    },
+    "withholdArguments": {
+      "GOOGLETASKS_INSERT_TASK": {
+        "deleted": "Marks the task deleted; this connector does not delete tasks."
+      },
+      "GOOGLETASKS_PATCH_TASK": {
+        "deleted": "Marks the task deleted; this connector does not delete tasks."
+      }
+    }
+  },
+  "capabilities": [
+    {
+      "id": "googletasks.create_task_list",
+      "tool": "GOOGLETASKS_CREATE_TASK_LIST",
+      "toolName": "googletasks_create_task_list",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new task list with the specified title and returns a tasklist_id. Use the returned tasklist_id (not the title) when calling GOOGLETASKS_INSERT_TASK or other task operations. Duplicate titles are permitted by the API, so verify existing lists before creating to avoid unintended duplicates.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Google Tasks: Create a task list",
+      "input": {
+        "type": "object",
+        "properties": {
+          "tasklist_title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Title for the new task list. The maximum allowed length is 1024 characters."
+          }
+        },
+        "required": [
+          "tasklist_title"
+        ]
+      }
+    },
+    {
+      "id": "googletasks.get_task",
+      "tool": "GOOGLETASKS_GET_TASK",
+      "toolName": "googletasks_get_task",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieve a specific Google Task. REQUIRES both `tasklist_id` and `task_id`. Tasks cannot be retrieved by ID alone - you must always specify which task list contains the task. Use this to refresh task details before display or edits rather than relying on potentially stale results from GOOGLETASKS_LIST_TASKS.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "REQUIRED. Unique identifier of the Google Task to retrieve. Must be used together with tasklist_id."
+          },
+          "tasklist_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "REQUIRED. Unique identifier of the Google Tasks list containing the task. You must always provide this parameter - tasks cannot be retrieved by task_id alone."
+          }
+        },
+        "required": [
+          "tasklist_id",
+          "task_id"
+        ]
+      }
+    },
+    {
+      "id": "googletasks.get_task_list",
+      "tool": "GOOGLETASKS_GET_TASK_LIST",
+      "toolName": "googletasks_get_task_list",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves a specific task list from the user's Google Tasks if the `tasklist_id` exists for the authenticated user.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "tasklist_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the task list to retrieve, assigned by Google Tasks when the list is created."
+          }
+        },
+        "required": [
+          "tasklist_id"
+        ]
+      }
+    },
+    {
+      "id": "googletasks.insert_task",
+      "tool": "GOOGLETASKS_INSERT_TASK",
+      "toolName": "googletasks_insert_task",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Creates a new task in a given `tasklist_id`, optionally as a subtask of an existing `task_parent` or positioned after an existing `task_previous` sibling, where both `task_parent` and `task_previous` must belong to the same `tasklist_id` if specified. IMPORTANT: Date fields (due, completed) accept various formats like '28 Sep 2025', '11:59 PM, 22 Sep 2025', or ISO format '2025-09-21T15:30:00Z' and will automatically convert them to RFC3339 format required by the API. Not idempotent — repeated calls with identical parameters create duplicate tasks; track returned task IDs to avoid duplication. High-volume inserts may trigger 403 rateLimitExceeded or 429; apply exponential backoff.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Google Tasks: Insert Task",
+      "withheldArguments": {
+        "deleted": "reviewer: Marks the task deleted; this connector does not delete tasks."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier for the task. Generated by Google Tasks API when creating a task. Used for updating or deleting existing tasks."
+          },
+          "due": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Due date for the task (optional). NOTE: Google Tasks only stores the date portion (YYYY-MM-DD) - any time component provided will be automatically stripped before sending to the API. Google Tasks API requires dates in RFC3339 format (e.g., 2025-09-22T13:48:27Z)."
+          },
+          "etag": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ETag of the resource for concurrency control. Prevents accidental overwrites when multiple clients modify the same task. Auto-generated by the API."
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 8192,
+            "description": "Additional details or description for the task. Supports plain text only (no HTML/markdown). Maximum 8192 characters. Example: 'Include Q3 sales data and projections'"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 1024,
+            "description": "Title/name of the task (REQUIRED). This is the main text displayed for the task. Maximum 1024 characters. Example: 'Complete quarterly report'"
+          },
+          "hidden": {
+            "type": "boolean",
+            "description": "Whether the task is hidden from the default view. Hidden tasks can still be accessed via API but won't show in UI. Default: false"
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "needsAction",
+              "completed"
+            ],
+            "description": "Status of the task. Must be either 'needsAction' (task is pending) or 'completed' (task is done). Defaults to 'needsAction' if not provided."
+          },
+          "completed": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Date/time when the task was marked as completed. Only applicable when status='completed'. Unlike 'due', this field preserves the time component. Google Tasks API requires dates in RFC3339 format (e.g., 2025-09-22T13:48:27Z). We automatically convert various human-readable formats to RFC3339: Accepted formats: • 2025-09-28T23:59:00Z → RFC3339/ISO-8601 format (preferred) - September 28, 2025 at 11:59 PM UTC • 28 Sep 2025 → Simple date format - Will be converted to midnight UTC on that date •"
+          },
+          "task_parent": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Identifier of an existing task to serve as parent; if provided, creates a subtask, otherwise a top-level task in the specified list."
+          },
+          "tasklist_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Task list identifier where the new task will be created. Valid values: (1) '@default' - special identifier that references the user's default/primary task list, or (2) an actual task list ID obtained from the 'List Task Lists' action (GOOGLETASKS_LIST_TASK_LISTS). Task list IDs are opaque strings generated by Google (typically base64-encoded, e.g., 'MDQ1NTEzMjc4OTM5MzM0NTY4NzE6MDow')."
+          },
+          "task_previous": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Identifier of an existing task after which the new task will be placed, at the same hierarchical level (as a sibling)."
+          }
+        },
+        "required": [
+          "title",
+          "tasklist_id"
+        ],
+        "description": "Defines the request for creating a new task. Inherits common task properties (e.g., title, notes, due date) from `TaskInput` and adds specific parameters for task placement within a Google Tasks list."
+      }
+    },
+    {
+      "id": "googletasks.list_all_tasks",
+      "tool": "GOOGLETASKS_LIST_ALL_TASKS",
+      "toolName": "googletasks_list_all_tasks",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all tasks across all of the user's task lists with optional filters. Use when the agent needs to see all tasks without knowing which list to query first. Each returned task is annotated with its tasklist_id and tasklist_title for context.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "dueMax": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Only include tasks due on or before this date. Google Tasks API requires dates in RFC3339 format (e.g., 2025-09-22T13:48:27Z). We automatically convert various human-readable formats to RFC3339: Accepted formats: • 2025-09-28T23:59:00Z → RFC3339/ISO-8601 format (preferred) - September 28, 2025 at 11:59 PM UTC • 28 Sep 2025 → Simple date format - Will be converted to midnight UTC on that date • 11:59 PM, 22 Sep 2025 → Time with date - Assumes UTC timezone if not specified • 1:00 PM, 21 Sep 2025"
+          },
+          "dueMin": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Only include tasks due on or after this date. Google Tasks API requires dates in RFC3339 format (e.g., 2025-09-22T13:48:27Z). We automatically convert various human-readable formats to RFC3339: Accepted formats: • 2025-09-28T23:59:00Z → RFC3339/ISO-8601 format (preferred) - September 28, 2025 at 11:59 PM UTC • 28 Sep 2025 → Simple date format - Will be converted to midnight UTC on that date • 11:59 PM, 22 Sep 2025 → Time with date - Assumes UTC timezone if not specified • 1:00 PM, 21 Sep 2025 →"
+          },
+          "showHidden": {
+            "type": "boolean",
+            "description": "Include hidden tasks in results. Defaults to false."
+          },
+          "updatedMin": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Only include tasks updated on or after this date. Google Tasks API requires dates in RFC3339 format (e.g., 2025-09-22T13:48:27Z). We automatically convert various human-readable formats to RFC3339: Accepted formats: • 2025-09-28T23:59:00Z → RFC3339/ISO-8601 format (preferred) - September 28, 2025 at 11:59 PM UTC • 28 Sep 2025 → Simple date format - Will be converted to midnight UTC on that date • 11:59 PM, 22 Sep 2025 → Time with date - Assumes UTC timezone if not specified • 1:00 PM, 21 Sep"
+          },
+          "showDeleted": {
+            "type": "boolean",
+            "description": "Include deleted tasks in results. Defaults to false."
+          },
+          "completedMax": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Only include tasks completed on or before this date. Google Tasks API requires dates in RFC3339 format (e.g., 2025-09-22T13:48:27Z). We automatically convert various human-readable formats to RFC3339: Accepted formats: • 2025-09-28T23:59:00Z → RFC3339/ISO-8601 format (preferred) - September 28, 2025 at 11:59 PM UTC • 28 Sep 2025 → Simple date format - Will be converted to midnight UTC on that date • 11:59 PM, 22 Sep 2025 → Time with date - Assumes UTC timezone if not specified • 1:00 PM, 21 Sep"
+          },
+          "completedMin": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Only include tasks completed on or after this date. Google Tasks API requires dates in RFC3339 format (e.g., 2025-09-22T13:48:27Z). We automatically convert various human-readable formats to RFC3339: Accepted formats: • 2025-09-28T23:59:00Z → RFC3339/ISO-8601 format (preferred) - September 28, 2025 at 11:59 PM UTC • 28 Sep 2025 → Simple date format - Will be converted to midnight UTC on that date • 11:59 PM, 22 Sep 2025 → Time with date - Assumes UTC timezone if not specified • 1:00 PM, 21 Sep"
+          },
+          "showAssigned": {
+            "type": "boolean",
+            "description": "Include tasks assigned to the current user in results. Defaults to false."
+          },
+          "showCompleted": {
+            "type": "boolean",
+            "description": "Include completed tasks in results. Defaults to true."
+          },
+          "max_tasks_total": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000,
+            "description": "Hard limit on total number of tasks returned across all lists to prevent large payloads. Defaults to 1000."
+          }
+        }
+      }
+    },
+    {
+      "id": "googletasks.list_task_lists",
+      "tool": "GOOGLETASKS_LIST_TASK_LISTS",
+      "toolName": "googletasks_list_task_lists",
+      "lane": "read",
+      "effect": "read",
+      "description": "Fetches the authenticated user's task lists from Google Tasks; results may be paginated. Response contains task lists under the `items` key. Multiple lists may share similar names — confirm the correct list by ID before passing to other tools.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "pageToken": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Token for the page of results to return; omit for the first page, use `nextPageToken` from a previous response for subsequent pages."
+          },
+          "maxResults": {
+            "type": "integer",
+            "description": "Maximum number of task lists to return per page. Capped at 100; values above 100 are silently truncated to 100."
+          }
+        }
+      }
+    },
+    {
+      "id": "googletasks.list_tasks",
+      "tool": "GOOGLETASKS_LIST_TASKS",
+      "toolName": "googletasks_list_tasks",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieves tasks from a Google Tasks list; all date/time strings must be RFC3339 UTC, and `showCompleted` must be true if `completedMin` or `completedMax` are specified. Response key for tasks is `tasks` (not `items`). No full-text search; filter client-side by title/notes. Results ordered by position, not by date.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "dueMax": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Exclude tasks due after this date. Google Tasks API requires dates in RFC3339 format (e.g., 2025-09-22T13:48:27Z). We automatically convert various human-readable formats to RFC3339: Accepted formats: • 2025-09-28T23:59:00Z → RFC3339/ISO-8601 format (preferred) - September 28, 2025 at 11:59 PM UTC • 28 Sep 2025 → Simple date format - Will be converted to midnight UTC on that date • 11:59 PM, 22 Sep 2025 → Time with date - Assumes UTC timezone if not specified • 1:00 PM, 21 Sep 2025 → 12-hour"
+          },
+          "dueMin": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Exclude tasks due before this date. Google Tasks API requires dates in RFC3339 format (e.g., 2025-09-22T13:48:27Z). We automatically convert various human-readable formats to RFC3339: Accepted formats: • 2025-09-28T23:59:00Z → RFC3339/ISO-8601 format (preferred) - September 28, 2025 at 11:59 PM UTC • 28 Sep 2025 → Simple date format - Will be converted to midnight UTC on that date • 11:59 PM, 22 Sep 2025 → Time with date - Assumes UTC timezone if not specified • 1:00 PM, 21 Sep 2025 → 12-hour"
+          },
+          "pageToken": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Token from a previous list operation for fetching a specific page; if omitted, retrieves the first page."
+          },
+          "maxResults": {
+            "type": "integer",
+            "description": "Maximum number of tasks to return. API default: 20, maximum: 100. Use `nextPageToken` from the response in successive calls until absent to avoid missing tasks beyond the first page."
+          },
+          "showHidden": {
+            "type": "boolean",
+            "description": "Include hidden tasks. Defaults to false."
+          },
+          "updatedMin": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Lower bound for task's last modification time (for syncing). Google Tasks API requires dates in RFC3339 format (e.g., 2025-09-22T13:48:27Z). We automatically convert various human-readable formats to RFC3339: Accepted formats: • 2025-09-28T23:59:00Z → RFC3339/ISO-8601 format (preferred) - September 28, 2025 at 11:59 PM UTC • 28 Sep 2025 → Simple date format - Will be converted to midnight UTC on that date • 11:59 PM, 22 Sep 2025 → Time with date - Assumes UTC timezone if not specified • 1:00"
+          },
+          "showDeleted": {
+            "type": "boolean",
+            "description": "Include deleted tasks. Defaults to false."
+          },
+          "tasklist_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Identifier of the task list. Use '@default' for the user's primary list, or provide a task list ID from GOOGLETASKS_LIST_TASK_LISTS. The common aliases 'primary', 'default', and '@primary' are normalized to '@default'."
+          },
+          "completedMax": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Exclude tasks completed after this date. Google Tasks API requires dates in RFC3339 format (e.g., 2025-09-22T13:48:27Z). We automatically convert various human-readable formats to RFC3339: Accepted formats: • 2025-09-28T23:59:00Z → RFC3339/ISO-8601 format (preferred) - September 28, 2025 at 11:59 PM UTC • 28 Sep 2025 → Simple date format - Will be converted to midnight UTC on that date • 11:59 PM, 22 Sep 2025 → Time with date - Assumes UTC timezone if not specified • 1:00 PM, 21 Sep 2025 →"
+          },
+          "completedMin": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Exclude tasks completed before this date. Google Tasks API requires dates in RFC3339 format (e.g., 2025-09-22T13:48:27Z). We automatically convert various human-readable formats to RFC3339: Accepted formats: • 2025-09-28T23:59:00Z → RFC3339/ISO-8601 format (preferred) - September 28, 2025 at 11:59 PM UTC • 28 Sep 2025 → Simple date format - Will be converted to midnight UTC on that date • 11:59 PM, 22 Sep 2025 → Time with date - Assumes UTC timezone if not specified • 1:00 PM, 21 Sep 2025 →"
+          },
+          "showCompleted": {
+            "type": "boolean",
+            "description": "Include completed tasks. Defaults to true. (See action docstring for interaction with `completedMin`/`Max`)."
+          }
+        },
+        "required": [
+          "tasklist_id"
+        ]
+      }
+    },
+    {
+      "id": "googletasks.move_task",
+      "tool": "GOOGLETASKS_MOVE_TASK",
+      "toolName": "googletasks_move_task",
+      "lane": "write",
+      "effect": "administrative",
+      "description": "Moves the specified task to another position in the task list or to a different task list. Use cases: - Reorder tasks within a list (use 'previous' parameter) - Create subtasks by moving a task under a parent (use 'parent' parameter) - Move tasks between different task lists (use 'destinationTasklist' parameter) - Move a subtask back to top-level (omit 'parent' parameter)",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Google Tasks: Move Task",
+      "input": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Task identifier of the task to move. Must be a valid task ID from the source tasklist. Obtain this from 'List Tasks' or 'Insert Task' actions."
+          },
+          "parent": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "New parent task identifier. If provided, the task becomes a subtask of this parent. The parent must exist in the destination list (or source list if no destinationTasklist is specified). Omit to move task to top level."
+          },
+          "previous": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "New previous sibling task identifier. The task will be positioned immediately after this sibling. Omit to position the task first among its siblings. Must exist in the same list as the task's destination (destinationTasklist if specified, otherwise source tasklist). Cross-list sibling references are unsupported."
+          },
+          "tasklist": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Source task list identifier where the task currently exists. Use '@default' for the user's primary task list, or provide a specific task list ID obtained from 'List Task Lists'. The task must exist in this list."
+          },
+          "destinationTasklist": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Destination task list identifier. If set, the task is moved from the source tasklist to this list. Omit to reorder within the same list. Note: Recurrent tasks cannot be moved between lists."
+          }
+        },
+        "required": [
+          "tasklist",
+          "task"
+        ]
+      }
+    },
+    {
+      "id": "googletasks.patch_task",
+      "tool": "GOOGLETASKS_PATCH_TASK",
+      "toolName": "googletasks_patch_task",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Partially updates an existing task (identified by `task_id`) within a specific Google Task list (identified by `tasklist_id`), modifying only the provided attributes from `TaskInput` (e.g., `title`, `notes`, `due` date, `status`) and requiring both the task and list to exist.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Google Tasks: Patch Task",
+      "withheldArguments": {
+        "deleted": "reviewer: Marks the task deleted; this connector does not delete tasks."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Unique identifier for the task. Generated by Google Tasks API when creating a task. Used for updating or deleting existing tasks."
+          },
+          "due": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Due date for the task (optional). NOTE: Google Tasks only stores the date portion (YYYY-MM-DD) - any time component provided will be automatically stripped before sending to the API. Accepts RFC3339 format (e.g., '2025-09-28T23:59:00Z') or various human-readable formats like '28 Sep 2025', '11:59 PM, 22 Sep 2025'. Normalized to midnight UTC — naive local dates without timezone offset may shift ±1 day. Time-based reminders are not supported via this field."
+          },
+          "etag": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "ETag of the resource for concurrency control. Prevents accidental overwrites when multiple clients modify the same task. Auto-generated by the API."
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 8192,
+            "description": "Additional details or description for the task. Supports plain text only (no HTML/markdown). Maximum 8192 characters. Example: 'Include Q3 sales data and projections'"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "description": "Title/name of the task. This is the main text displayed for the task. Maximum 1024 characters. Example: 'Complete quarterly report'"
+          },
+          "hidden": {
+            "type": "boolean",
+            "description": "Whether the task is hidden from the default view. Hidden tasks can still be accessed via API but won't show in UI. Default: false"
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "needsAction",
+              "completed"
+            ],
+            "description": "Current status of the task. Must be either 'needsAction' (task is pending) or 'completed' (task is done)."
+          },
+          "task_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Identifier of the Google Task to be updated within the specified task list."
+          },
+          "completed": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Date/time when the task was marked as completed. Only applicable when status='completed'. Unlike 'due', this field preserves the time component. Accepts RFC3339 format or human-readable date formats. Malformed or non-RFC3339 values will be rejected."
+          },
+          "tasklist_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Identifier of the Google Task list that contains the task to be updated."
+          }
+        },
+        "required": [
+          "tasklist_id",
+          "task_id"
+        ],
+        "description": "Request model for PATCH task operation. All task fields are optional to support partial updates."
+      }
+    },
+    {
+      "id": "googletasks.patch_task_list",
+      "tool": "GOOGLETASKS_PATCH_TASK_LIST",
+      "toolName": "googletasks_patch_task_list",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Updates the title of an existing Google Tasks task list.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Google Tasks: Patch task list",
+      "input": {
+        "type": "object",
+        "properties": {
+          "tasklist_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The unique identifier of the task list to be updated."
+          },
+          "updated_title": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The new title for the task list. Optional for PATCH semantics - only include if you want to update the title. Maximum length: 1024 characters."
+          }
+        },
+        "required": [
+          "tasklist_id"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,1136 @@
+{
+  "toolkit": {
+    "slug": "googlemeet",
+    "name": "Google Meet",
+    "version": "20261026_00",
+    "description": "Google Meet is a secure video conferencing platform that integrates with Google Workspace, facilitating remote meetings, screen sharing, and chat",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      }
+    ],
+    "currentUserEndpoint": "https://meet.googleapis.com/v2/conferenceRecords"
+  },
+  "tools": [
+    {
+      "slug": "GOOGLEMEET_CREATE_MEET",
+      "name": "Create Google Meet Space",
+      "description": "Creates a new Google Meet space with optional configuration. Does not attach to any calendar event — calendar linking requires a separate Calendar tool call. Capture `meetingUri`, `meetingCode`, and `space.name` from the response immediately for downstream lookups. Requires `meetings.space.created` OAuth scope. Returns HTTP 429 under rapid calls; apply exponential backoff. Use when you need a meeting space with specific access controls, moderation, recording, or transcription settings.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "spaces",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateMeetRequest",
+        "properties": {
+          "config": {
+            "type": "object",
+            "title": "SpaceConfig",
+            "properties": {
+              "accessType": {
+                "enum": [
+                  "ACCESS_TYPE_UNSPECIFIED",
+                  "OPEN",
+                  "TRUSTED",
+                  "RESTRICTED"
+                ],
+                "type": "string",
+                "title": "AccessType",
+                "description": "Access type determining who can join without knocking. Default: user's default access settings or RESTRICTED."
+              },
+              "moderation": {
+                "enum": [
+                  "MODERATION_UNSPECIFIED",
+                  "OFF",
+                  "ON"
+                ],
+                "type": "string",
+                "title": "ModerationMode",
+                "description": "Pre-configured moderation mode for the meeting. Controls whether moderation features are enabled."
+              },
+              "artifactConfig": {
+                "type": "object",
+                "title": "ArtifactConfig",
+                "properties": {
+                  "recordingConfig": {
+                    "type": "object",
+                    "title": "RecordingConfig",
+                    "properties": {
+                      "autoRecordingGeneration": {
+                        "enum": [
+                          "AUTO_GENERATION_TYPE_UNSPECIFIED",
+                          "OFF",
+                          "ON"
+                        ],
+                        "type": "string",
+                        "title": "AutoGenerationType",
+                        "description": "Controls automatic recording generation. Determines if meetings are automatically recorded."
+                      }
+                    },
+                    "description": "Configuration for automatic recording of meetings.",
+                    "additionalProperties": false
+                  },
+                  "smartNotesConfig": {
+                    "type": "object",
+                    "title": "SmartNotesConfig",
+                    "properties": {
+                      "autoSmartNotesGeneration": {
+                        "enum": [
+                          "AUTO_GENERATION_TYPE_UNSPECIFIED",
+                          "OFF",
+                          "ON"
+                        ],
+                        "type": "string",
+                        "title": "AutoGenerationType",
+                        "description": "Controls automatic smart notes generation. Determines if AI-generated meeting summaries are created."
+                      }
+                    },
+                    "description": "Configuration for automatic smart notes generation.",
+                    "additionalProperties": false
+                  },
+                  "transcriptionConfig": {
+                    "type": "object",
+                    "title": "TranscriptionConfig",
+                    "properties": {
+                      "autoTranscriptionGeneration": {
+                        "enum": [
+                          "AUTO_GENERATION_TYPE_UNSPECIFIED",
+                          "OFF",
+                          "ON"
+                        ],
+                        "type": "string",
+                        "title": "AutoGenerationType",
+                        "description": "Controls automatic transcription generation. Determines if meeting audio is automatically transcribed."
+                      }
+                    },
+                    "description": "Configuration for automatic transcription of meetings.",
+                    "additionalProperties": false
+                  }
+                },
+                "description": "Configuration for meeting artifacts like recordings, transcriptions, and smart notes.",
+                "additionalProperties": false
+              },
+              "entryPointAccess": {
+                "enum": [
+                  "ENTRY_POINT_ACCESS_UNSPECIFIED",
+                  "ALL",
+                  "CREATOR_APP_ONLY"
+                ],
+                "type": "string",
+                "title": "EntryPointAccess",
+                "description": "Defines which entry points can be used to join meetings in this space. Default: ALL."
+              },
+              "moderationRestrictions": {
+                "type": "object",
+                "title": "ModerationRestrictions",
+                "properties": {
+                  "chatRestriction": {
+                    "enum": [
+                      "RESTRICTION_TYPE_UNSPECIFIED",
+                      "NO_RESTRICTION",
+                      "HOSTS_ONLY"
+                    ],
+                    "type": "string",
+                    "title": "RestrictionType",
+                    "description": "Restriction level for chat functionality during moderated meetings."
+                  },
+                  "presentRestriction": {
+                    "enum": [
+                      "RESTRICTION_TYPE_UNSPECIFIED",
+                      "NO_RESTRICTION",
+                      "HOSTS_ONLY"
+                    ],
+                    "type": "string",
+                    "title": "RestrictionType",
+                    "description": "Restriction level for screen sharing/presenting during moderated meetings."
+                  },
+                  "reactionRestriction": {
+                    "enum": [
+                      "RESTRICTION_TYPE_UNSPECIFIED",
+                      "NO_RESTRICTION",
+                      "HOSTS_ONLY"
+                    ],
+                    "type": "string",
+                    "title": "RestrictionType",
+                    "description": "Restriction level for reactions during moderated meetings."
+                  },
+                  "defaultJoinAsViewerType": {
+                    "enum": [
+                      "DEFAULT_JOIN_AS_VIEWER_TYPE_UNSPECIFIED",
+                      "OFF",
+                      "ON"
+                    ],
+                    "type": "string",
+                    "title": "DefaultJoinAsViewerType",
+                    "description": "Determines if participants join as viewers by default during moderated meetings."
+                  }
+                },
+                "description": "Restrictions applied to meeting features when moderation is enabled.",
+                "additionalProperties": false
+              },
+              "attendanceReportGenerationType": {
+                "enum": [
+                  "ATTENDANCE_REPORT_GENERATION_TYPE_UNSPECIFIED",
+                  "GENERATE_REPORT",
+                  "DO_NOT_GENERATE"
+                ],
+                "type": "string",
+                "title": "AttendanceReportGenerationType",
+                "description": "Controls whether attendance reports are automatically generated for meetings in this space."
+              }
+            },
+            "description": "Optional configuration for the meeting space. If not provided, default settings will be used. Key sub-fields: `accessType` and `entryPointAccess` default to permissive values — set explicitly when audience or access level is known, as permissive defaults may conflict with organizational policies. Invalid combinations of these fields or moderation settings may be rejected based on domain/account policies. Recording and transcription features require a Workspace edition that supports cloud recording; personal accounts may not support these options.",
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_CREATE_MEMBER",
+      "name": "Create Member",
+      "description": "Create a member in a Google Meet space, optionally assigning a co-host role. Members configured with a role can join the space without knocking. Supply the space resource name and the member's email address.",
+      "version": "20261026_00",
+      "tags": [
+        "members",
+        "openWorldHint",
+        "createHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "CreateMemberRequest",
+        "required": [
+          "parent",
+          "email"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Optional. Identifier of the member. Format: spaces/{space}/members/{member}."
+          },
+          "role": {
+            "enum": [
+              "ROLE_UNSPECIFIED",
+              "COHOST"
+            ],
+            "type": "string",
+            "title": "Role",
+            "description": "Optional. Meeting role assigned to the member. COHOST assigns the co-host role. ROLE_UNSPECIFIED leaves the contributor or viewer role to be determined on joining, based on meeting configuration."
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "Required for creation. Email address of the member."
+          },
+          "fields": {
+            "type": "string",
+            "title": "Fields",
+            "description": "Optional partial-response field selector. Defaults to name,email,role,user at the provider."
+          },
+          "parent": {
+            "type": "string",
+            "title": "Parent",
+            "examples": [
+              "spaces/jQCFfuBOdN5z"
+            ],
+            "description": "Required. Resource name of the meeting space. Format: spaces/{space}."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_END_ACTIVE_CONFERENCE",
+      "name": "End active conference",
+      "description": "Ends an active conference in a Google Meet space. REQUIRES 'space_name' parameter (e.g., 'spaces/jQCFfuBOdN5z' or just 'jQCFfuBOdN5z'). Use when you need to terminate an ongoing conference in a specified space. This operation only succeeds if a conference is actively running in the space. You must always provide the space_name to identify which space's conference to end. Immediately drops all active participants — obtain explicit user confirmation before calling.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "destructiveHint",
+        "idempotentHint",
+        "openWorldHint",
+        "meeting_control",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "EndActiveConferenceRequest",
+        "required": [
+          "space_name"
+        ],
+        "properties": {
+          "space_name": {
+            "type": "string",
+            "title": "Space Name",
+            "examples": [
+              "spaces/jQCFfuBOdN5z",
+              "jQCFfuBOdN5z"
+            ],
+            "description": "REQUIRED. Resource name of the space in the format 'spaces/{space}' where {space} is a unique, case-sensitive server-generated ID. Example: 'spaces/jQCFfuBOdN5z'. This can be the full resource name including the 'spaces/' prefix or just the space ID. You must always provide this parameter."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_GET_CONFERENCE_RECORD_BY_NAME",
+      "name": "Get conference record by name",
+      "description": "Tool to get a specific conference record by its resource name. Use when you have the conference record ID and need to retrieve detailed information about a single meeting instance.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "conferenceRecords"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetConferenceRecordByNameRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "conferenceRecords/GLkPdCDLsjSXet2-QH9dDxIPOAIIigIgABgECA"
+            ],
+            "description": "Required. Resource name of the conference record. Format: 'conferenceRecords/{conference_record}' where {conference_record} is a unique ID for each instance of a call within a space. Example: 'conferenceRecords/GLkPdCDLsjSXet2-QH9dDxIPOAIIigIgABgECA'"
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_GET_MEET",
+      "name": "Get Meet details",
+      "description": "Retrieve details of a Google Meet space using its unique identifier. Newly created spaces may return incomplete data; retry after 1–3 seconds if needed.",
+      "version": "20261026_00",
+      "tags": [
+        "openWorldHint",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetMeetRequest",
+        "required": [
+          "space_name"
+        ],
+        "properties": {
+          "space_name": {
+            "type": "string",
+            "title": "Space Name",
+            "examples": [
+              "mV63iV9-KxoB"
+            ],
+            "description": "The unique identifier (space ID) for the Google Meet space. Provide only the raw space ID without the 'spaces/' prefix. Example: 'mV63iV9-KxoB'."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_GET_MEMBER",
+      "name": "Get Member",
+      "description": "Get a configured Google Meet space member by resource name, including their email and meeting role. Use when the space and member identifiers are already known.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "members"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetMemberRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "spaces/abc-defg-hij/members/member-123"
+            ],
+            "description": "Required. Resource name of the member: spaces/{space}/members/{member}."
+          },
+          "fields": {
+            "type": "string",
+            "title": "Fields",
+            "description": "Optional partial-response field selector. If omitted, the API defaults to name,email,role,user. Can request other supported system fields."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_GET_PARTICIPANT",
+      "name": "Get Participant",
+      "description": "Get a Google Meet conference participant by resource name, including their identity and first-join/last-leave times. Use when the conference record and participant IDs are known.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "participants"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetParticipantRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "conferenceRecords/record-123/participants/participant-456"
+            ],
+            "description": "Required. Participant resource name: conferenceRecords/{record}/participants/{id}."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_GET_PARTICIPANT_SESSION",
+      "name": "Get Participant Details",
+      "description": "Retrieves detailed information about a specific participant session from a Google Meet conference record. Returns session details including start time and end time for a single join/leave session. A participant session represents each unique join or leave session when a user joins a conference from a device. If a user joins multiple times from the same device, each join creates a new session. PREREQUISITE: You must first obtain the participant session resource name. Use LIST_PARTICIPANT_SESSIONS with a conference record ID and participant ID to get available sessions and their resource names. The 'name' parameter is REQUIRED and must be in the format: 'conferenceRecords/{conference_record}/participants/{participant}/participantSessions/{participant_session}'",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "conferenceRecords",
+        "participants",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetParticipantSessionRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "conferenceRecords/abc-123-def/participants/xyz-456/participantSessions/pqr-789"
+            ],
+            "description": "Required. Full resource name of the participant session to retrieve. Format: 'conferenceRecords/{conference_record}/participants/{participant}/participantSessions/{participant_session}'. You can obtain this value from the 'name' field returned by the LIST_PARTICIPANT_SESSIONS action."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_GET_RECORDING",
+      "name": "Get Recording",
+      "description": "Get a Google Meet recording's metadata by resource name, including its state, timestamps, and Google Drive destination when available. Use when the conference record and recording identifiers are known; this does not download the recording file.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "recordings"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetRecordingRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "conferenceRecords/conference-123/recordings/recording-456"
+            ],
+            "description": "Required. Resource name of the recording: conferenceRecords/{record}/recordings/{id}."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_GET_SMART_NOTE",
+      "name": "Get Smart Note",
+      "description": "Get metadata for a Google Meet smart note generated by Take Notes with Gemini. Use when the conference record and smart note identifiers are known. Returns state, timestamps, and the Google Docs destination when available, not the full note content. Fetch document content separately with the Google Docs API.",
+      "version": "20261026_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint",
+        "smartNotes"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetSmartNoteRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "conferenceRecords/conference-123/smartNotes/note-456"
+            ],
+            "description": "Required. Resource name of the smart note: conferenceRecords/{record}/smartNotes/{note}."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_GET_TRANSCRIPT",
+      "name": "Get Transcript",
+      "description": "Retrieves a specific transcript by its resource name. Returns transcript details including state (STARTED, ENDED, FILE_GENERATED), start/end times, and Google Docs destination. PREREQUISITE: Obtain the transcript resource name first by using GET_TRANSCRIPTS_BY_CONFERENCE_RECORD_ID or construct it from known IDs.",
+      "version": "20261026_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint",
+        "transcript"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTranscriptRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "conferenceRecords/GLkPdCDLsjSXet2-QH9dDxIPOAIIigIgABgECA/transcripts/0964dbd3-dc84-4515-a227-21e04ae2a4ab"
+            ],
+            "description": "Required. Resource name of the transcript. Format: 'conferenceRecords/{conferenceRecord}/transcripts/{transcript}'. You can obtain this from the 'Get Transcripts by Conference Record ID' action or construct it using known conference record and transcript IDs."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_GET_TRANSCRIPT_ENTRY",
+      "name": "Get Transcript Entry",
+      "description": "Fetches a single transcript entry by resource name for targeted inspection or incremental processing. Use when you have a specific transcript entry resource name and need to retrieve its details (text, speaker, timestamps, language). PREREQUISITE: Obtain the transcript entry resource name first by using LIST_TRANSCRIPT_ENTRIES or construct it from known IDs. The 'name' parameter is REQUIRED and must follow the format: 'conferenceRecords/{conferenceRecordId}/transcripts/{transcriptId}/entries/{entryId}'",
+      "version": "20261026_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint",
+        "conferenceRecords"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTranscriptEntryRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "conferenceRecords/abc-123-def/transcripts/xyz-456/entries/entry-789"
+            ],
+            "description": "Required. Full resource name of the transcript entry. Format: 'conferenceRecords/{conferenceRecordId}/transcripts/{transcriptId}/entries/{entryId}'. You can obtain this from the LIST_TRANSCRIPT_ENTRIES action or construct it using known conference record, transcript, and entry IDs."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_GET_TRANSCRIPTS_BY_CONFERENCE_RECORD_ID",
+      "name": "Get transcripts by conference record ID",
+      "description": "Retrieves all transcripts for a specific Google Meet conference using its conference_record_id. Transcripts require processing time after a meeting ends — empty results may be transient; retry after a delay before concluding no transcripts exist. Returns results only if transcription was enabled during the meeting and permitted by the organizer's domain policies; an empty list may also indicate transcription was never generated.",
+      "version": "20261026_00",
+      "tags": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTranscriptsByConferenceRecordIdRequest",
+        "required": [
+          "conference_record_id"
+        ],
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "maximum": 100,
+            "minimum": 1,
+            "description": "Maximum number of transcripts to return. The service might return fewer than this value. If unspecified, at most 10 transcripts are returned. The maximum value is 100; values above 100 are coerced to 100."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "Page token returned from a previous list call, used to retrieve the next page of results."
+          },
+          "conference_record_id": {
+            "type": "string",
+            "title": "Conference Record Id",
+            "examples": [
+              "kRyYx8b7vNDsLpR1tG_cNjFUQBoBRhHIMoGJAJkBCQ"
+            ],
+            "description": "Unique identifier of the conference record. This is the ID portion from the conference record resource name (format: 'conferenceRecords/{id}'). You can obtain valid conference record IDs by using the 'List Conference Records' action or from the 'name' field in conference record responses. Example ID: 'kRyYx8b7vNDsLpR1tG_cNjFUQBoBRhHIMoGJAJkBCQ'. Do NOT pass the full resource name - only the ID portion after 'conferenceRecords/'. A single meeting code can map to multiple conference_record_id values across rejoin sessions; verify the correct record using UTC time or metadata from 'List Conference Records' before calling."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_LIST_CONFERENCE_RECORDS",
+      "name": "List Conference Records",
+      "description": "Tool to list conference records. Use when you need to retrieve a list of past conferences, optionally filtering them by criteria like meeting code, space name, or time range.",
+      "version": "20261026_00",
+      "tags": [
+        "googlemeet",
+        "conference",
+        "list",
+        "important",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListConferenceRecordsRequest",
+        "properties": {
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "description": "Optional. User specified filtering condition in EBNF format. Filterable fields: `space.meeting_code`, `space.name`, `start_time`, `end_time`. Examples: `space.name = \"spaces/NAME\"`, `space.meeting_code = \"abc-mnop-xyz\"`, `start_time>=\"2024-01-01T00:00:00.000Z\" AND start_time<=\"2024-01-02T00:00:00.000Z\"`, `end_time IS NULL` Time values must be RFC3339 UTC (e.g., `2024-01-01T00:00:00.000Z`); non-UTC timezones or reversed bounds silently omit records. Unsupported fields or malformed expressions silently return empty or over-narrowed results. A single `space.meeting_code` may match multiple records if the code was reused; combine with time filters to isolate the target record."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "maximum": 100,
+            "minimum": 1,
+            "description": "Maximum number of conference records to return. The service might return fewer than this value. If unspecified, at most 25 conference records are returned. The maximum value is 100; values above 100 are coerced to 100."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "Page token returned from previous List Call. Loop using the returned `page_token` until no token is returned to retrieve the complete result set."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_LIST_MEMBERS",
+      "name": "List Members",
+      "description": "List configured members of a Google Meet space, including their email and meeting role. Use to discover space member resource names, not participants attending a conference. Follow nextPageToken to retrieve subsequent pages.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "members"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListMembersRequest",
+        "required": [
+          "parent"
+        ],
+        "properties": {
+          "fields": {
+            "type": "string",
+            "title": "Fields",
+            "description": "Optional system partial-response field selector. If omitted, the API defaults to name,email,role,user. Can request other supported system fields."
+          },
+          "parent": {
+            "type": "string",
+            "title": "Parent",
+            "examples": [
+              "spaces/abc-defg-hij"
+            ],
+            "description": "Required. Space to list configured members for. Format: spaces/{space}."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 0,
+            "description": "Maximum number of members to return. If omitted or 0, at most 250 members are returned. The service may return fewer. Values above the maximum of 500 are coerced to 500 by the service; this maximum may change."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "Page token returned from a previous list call. Provide it to retrieve the next page."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_LIST_PARTICIPANT_SESSIONS",
+      "name": "List Participant Sessions",
+      "description": "Lists all participant sessions for a specific participant in a Google Meet conference. A participant session represents each unique join or leave session when a user joins a conference from a device. If a user joins multiple times from the same device, each join creates a new session. Returns session details including start time and end time for each session.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "googlemeet",
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListParticipantSessionsRequest",
+        "required": [
+          "conference_record_id",
+          "participant_id"
+        ],
+        "properties": {
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "examples": [
+              "end_time IS NULL"
+            ],
+            "description": "Optional. User-specified filtering condition in EBNF format. Filterable fields include `start_time` and `end_time`. Time values must use RFC3339 UTC format (e.g., `start_time >= '2024-01-01T00:00:00Z'`). Unsupported field names or malformed expressions may silently narrow or drop results rather than raising errors. Reversed bounds or incorrect timezone conversion will produce empty results."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "maximum": 250,
+            "minimum": 1,
+            "examples": [
+              100
+            ],
+            "description": "Optional. Maximum number of participant sessions to return. The service might return fewer than this value. If unspecified, at most 100 participant sessions are returned. The maximum value is 250; values above 250 are coerced to 250."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "examples": [
+              "CiAKGjBpNDBibWxqNGx..."
+            ],
+            "description": "Optional. Page token returned from a previous list call, used to retrieve the next page of results. Iterate using successive `page_token` values until the response omits `page_token` to avoid silently missing sessions."
+          },
+          "participant_id": {
+            "type": "string",
+            "title": "Participant Id",
+            "examples": [
+              "xyz-456"
+            ],
+            "description": "Required. The unique identifier of the participant within the conference. Example: 'xyz-456'."
+          },
+          "conference_record_id": {
+            "type": "string",
+            "title": "Conference Record Id",
+            "examples": [
+              "abc-123-def"
+            ],
+            "description": "Required. The unique identifier of the conference record. Example: 'abc-123-def'."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_LIST_PARTICIPANTS",
+      "name": "List Participants",
+      "description": "Lists the participants in a conference record. By default, ordered by join time descending. Use to retrieve all participants who joined a specific Google Meet conference, with support for filtering active participants (where `latest_end_time IS NULL`).",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "participants"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListParticipantsRequest",
+        "required": [
+          "parent"
+        ],
+        "properties": {
+          "filter": {
+            "type": "string",
+            "title": "Filter",
+            "examples": [
+              "latest_end_time IS NULL"
+            ],
+            "description": "Optional. User-specified filtering condition in EBNF format. Filterable fields: `earliest_start_time`, `latest_end_time`. Example: `latest_end_time IS NULL` returns active participants in the conference."
+          },
+          "parent": {
+            "type": "string",
+            "title": "Parent",
+            "examples": [
+              "conferenceRecords/abc-123-def"
+            ],
+            "description": "Required. Format: conferenceRecords/{conference_record}. The conference record ID can be obtained from the LIST_CONFERENCE_RECORDS action."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "maximum": 250,
+            "minimum": 1,
+            "examples": [
+              100
+            ],
+            "description": "Optional. Maximum number of participants to return. The service might return fewer than this value. If unspecified, at most 100 participants are returned. The maximum value is 250; values above 250 are coerced to 250."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "examples": [
+              "CiAKGjBpNDBibWxqNGx..."
+            ],
+            "description": "Optional. Page token returned from a previous list call, used to retrieve the next page of results."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_LIST_RECORDINGS",
+      "name": "List Recordings",
+      "description": "Tool to list recording resources from a conference record. Use when you need to retrieve recordings from a specific Google Meet conference. Recordings are created when meeting recording is enabled and saved to Google Drive as MP4 files.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "recordings"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListRecordingsRequest",
+        "required": [
+          "parent"
+        ],
+        "properties": {
+          "parent": {
+            "type": "string",
+            "title": "Parent",
+            "examples": [
+              "conferenceRecords/GLkPdCDLsjSXet2-QH9dDxIPOAIIigIgABgECA"
+            ],
+            "description": "Required. The conference record to list recordings for. Format: conferenceRecords/{conference_record}"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "maximum": 100,
+            "minimum": 1,
+            "description": "Maximum number of recordings to return. The service may return fewer than this value. If unspecified, at most 10 recordings are returned. The maximum value is 100; values above 100 are coerced to 100."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "Page token returned from a previous list call. Provide this to retrieve the subsequent page. When paginating, all other parameters provided to the list call must match the call that provided the page token."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_LIST_SMART_NOTES",
+      "name": "List Smart Notes",
+      "description": "List metadata for smart notes generated by Take Notes with Gemini in a Google Meet conference. Returns resource names, generation states, timestamps, and Google Docs destinations, not note text. Follow nextPageToken to retrieve subsequent pages.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "readOnlyHint",
+        "openWorldHint",
+        "smartNotes"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListSmartNotesRequest",
+        "required": [
+          "parent"
+        ],
+        "properties": {
+          "parent": {
+            "type": "string",
+            "title": "Parent",
+            "examples": [
+              "conferenceRecords/record-123"
+            ],
+            "description": "Required. Conference record to list smart notes for. Format: conferenceRecords/{conference_record}."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "minimum": 0,
+            "description": "Maximum number of smart notes to return. If unspecified, at most 10 are returned. The service may return fewer. Values above 100 are coerced to 100 by the service; this maximum may change."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "description": "Page token returned from a previous list call. Provide it to retrieve the next page."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_LIST_TRANSCRIPT_ENTRIES",
+      "name": "List Transcript Entries",
+      "description": "Tool to list structured transcript entries (speaker/time/text segments) for a specific Google Meet transcript. Use when you need to access the detailed content of a transcript, including individual spoken segments with timestamps and speaker information. Note: The transcript entries returned by the API might not match the transcription in Google Docs due to interleaved speakers or post-generation modifications.",
+      "version": "20261026_00",
+      "tags": [
+        "important",
+        "openWorldHint",
+        "readOnlyHint",
+        "transcript"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListTranscriptEntriesRequest",
+        "required": [
+          "conference_record_id",
+          "transcript_id"
+        ],
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "maximum": 100,
+            "minimum": 1,
+            "examples": [
+              10
+            ],
+            "description": "Maximum number of transcript entries to return. The service might return fewer than this value. If unspecified, at most 10 entries are returned. The maximum value is 100; values above 100 are coerced to 100."
+          },
+          "page_token": {
+            "type": "string",
+            "title": "Page Token",
+            "examples": [
+              "CiAKGjBpNDBibWxqNGx..."
+            ],
+            "description": "Page token returned from a previous list call, used to retrieve the next page of results."
+          },
+          "transcript_id": {
+            "type": "string",
+            "title": "Transcript Id",
+            "examples": [
+              "xyz-456"
+            ],
+            "description": "The unique identifier of the transcript within the conference record."
+          },
+          "conference_record_id": {
+            "type": "string",
+            "title": "Conference Record Id",
+            "examples": [
+              "abc-123-def"
+            ],
+            "description": "The unique identifier of the conference record."
+          }
+        }
+      }
+    },
+    {
+      "slug": "GOOGLEMEET_UPDATE_SPACE",
+      "name": "Update Google Meet Space",
+      "description": "Updates the settings of an existing Google Meet space. Requires organizer/host privileges and the meetings.space.created OAuth scope. REQUIRED PARAMETER: - name: The space identifier (e.g., 'spaces/jQCFfuBOdN5z'). This is always required to identify which space to update. OPTIONAL PARAMETERS: - config: The new configuration settings to apply (accessType, entryPointAccess, moderation, etc.) - updateMask: Specify which fields to update. If omitted, all provided config fields are updated. Example: To change access type, provide name='spaces/abc123' and config={'accessType': 'OPEN'}",
+      "version": "20261026_00",
+      "tags": [
+        "googlemeet",
+        "spaces",
+        "important",
+        "updateHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateSpaceRequest",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "spaces/jQCFfuBOdN5z"
+            ],
+            "description": "REQUIRED. The unique identifier of the Google Meet space to update. Format: 'spaces/{space}' where {space} is the space ID."
+          },
+          "config": {
+            "type": "object",
+            "title": "SpaceConfig",
+            "properties": {
+              "accessType": {
+                "enum": [
+                  "ACCESS_TYPE_UNSPECIFIED",
+                  "OPEN",
+                  "TRUSTED",
+                  "RESTRICTED"
+                ],
+                "type": "string",
+                "title": "AccessType",
+                "description": "Access type of the meeting space."
+              },
+              "moderation": {
+                "enum": [
+                  "MODERATION_UNSPECIFIED",
+                  "OFF",
+                  "ON"
+                ],
+                "type": "string",
+                "title": "ModerationMode",
+                "description": "The pre-configured moderation mode for the Meeting."
+              },
+              "artifactConfig": {
+                "type": "object",
+                "title": "ArtifactConfig",
+                "properties": {
+                  "recordingConfig": {
+                    "type": "object",
+                    "title": "RecordingConfig",
+                    "properties": {
+                      "autoRecordingGeneration": {
+                        "enum": [
+                          "AUTO_GENERATION_TYPE_UNSPECIFIED",
+                          "OFF",
+                          "ON"
+                        ],
+                        "type": "string",
+                        "title": "AutoGenerationType",
+                        "description": "Defines whether a meeting space is automatically recorded."
+                      }
+                    },
+                    "description": "Configuration for recording.",
+                    "additionalProperties": false
+                  },
+                  "smartNotesConfig": {
+                    "type": "object",
+                    "title": "SmartNotesConfig",
+                    "properties": {
+                      "autoSmartNotesGeneration": {
+                        "enum": [
+                          "AUTO_GENERATION_TYPE_UNSPECIFIED",
+                          "OFF",
+                          "ON"
+                        ],
+                        "type": "string",
+                        "title": "AutoGenerationType",
+                        "description": "Defines whether to automatically generate a summary and recap of the meeting."
+                      }
+                    },
+                    "description": "Configuration for auto-smart-notes. Note: This object only contains recording, transcription, and smart notes configs - NOT attendance report settings.",
+                    "additionalProperties": false
+                  },
+                  "transcriptionConfig": {
+                    "type": "object",
+                    "title": "TranscriptionConfig",
+                    "properties": {
+                      "autoTranscriptionGeneration": {
+                        "enum": [
+                          "AUTO_GENERATION_TYPE_UNSPECIFIED",
+                          "OFF",
+                          "ON"
+                        ],
+                        "type": "string",
+                        "title": "AutoGenerationType",
+                        "description": "Defines whether the content of a meeting is automatically transcribed."
+                      }
+                    },
+                    "description": "Configuration for auto-transcript.",
+                    "additionalProperties": false
+                  }
+                },
+                "description": "Configuration pertaining to the auto-generated artifacts.",
+                "additionalProperties": false
+              },
+              "entryPointAccess": {
+                "enum": [
+                  "ENTRY_POINT_ACCESS_UNSPECIFIED",
+                  "ALL",
+                  "CREATOR_APP_ONLY"
+                ],
+                "type": "string",
+                "title": "EntryPointAccess",
+                "description": "Defines the entry points that can be used to join meetings."
+              },
+              "moderationRestrictions": {
+                "type": "object",
+                "title": "ModerationRestrictions",
+                "properties": {
+                  "chatRestriction": {
+                    "enum": [
+                      "RESTRICTION_TYPE_UNSPECIFIED",
+                      "NO_RESTRICTION",
+                      "HOSTS_ONLY"
+                    ],
+                    "type": "string",
+                    "title": "RestrictionType",
+                    "description": "Defines who has permission to send chat messages."
+                  },
+                  "presentRestriction": {
+                    "enum": [
+                      "RESTRICTION_TYPE_UNSPECIFIED",
+                      "NO_RESTRICTION",
+                      "HOSTS_ONLY"
+                    ],
+                    "type": "string",
+                    "title": "RestrictionType",
+                    "description": "Defines who has permission to share their screen."
+                  },
+                  "reactionRestriction": {
+                    "enum": [
+                      "RESTRICTION_TYPE_UNSPECIFIED",
+                      "NO_RESTRICTION",
+                      "HOSTS_ONLY"
+                    ],
+                    "type": "string",
+                    "title": "RestrictionType",
+                    "description": "Defines who has permission to send reactions."
+                  },
+                  "defaultJoinAsViewerType": {
+                    "enum": [
+                      "DEFAULT_JOIN_AS_VIEWER_TYPE_UNSPECIFIED",
+                      "OFF",
+                      "ON"
+                    ],
+                    "type": "string",
+                    "title": "DefaultJoinAsViewerType",
+                    "description": "Defines whether to restrict the default role assigned to users as viewer."
+                  }
+                },
+                "description": "When moderation.ON, these restrictions go into effect.",
+                "additionalProperties": false
+              },
+              "attendanceReportGenerationType": {
+                "enum": [
+                  "ATTENDANCE_REPORT_GENERATION_TYPE_UNSPECIFIED",
+                  "GENERATE_REPORT",
+                  "DO_NOT_GENERATE"
+                ],
+                "type": "string",
+                "title": "AttendanceReportGenerationType",
+                "description": "Whether attendance report is enabled for the meeting space. This is a top-level config field, NOT part of artifactConfig."
+              }
+            },
+            "description": "Configuration settings to update for the meeting space. Provide the fields you want to modify (e.g., accessType, entryPointAccess, moderation settings). Some settings (moderation modes, attendanceReportGenerationType, artifact generation) require specific Google Workspace editions and admin policies; unsupported settings may apply silently with no effect. Certain combinations of accessType, entryPointAccess, or moderation values may be rejected based on domain or account policies.",
+            "additionalProperties": false
+          },
+          "updateMask": {
+            "type": "string",
+            "title": "Update Mask",
+            "examples": [
+              "config.accessType",
+              "config.accessType,config.entryPointAccess"
+            ],
+            "description": "Field mask specifying which fields to update. Comma-separated list of fully qualified field names (e.g., \"config.accessType,config.entryPointAccess\"). If not provided, only the fields you explicitly set in config will be updated. WARNING: Using \"*\" will attempt to update ALL config fields, which may cause errors if required fields like attendanceReportGenerationType are not provided. Recommend specifying only the fields being updated."
+          }
+        }
+      }
+    }
+  ]
+}
