@@ -31,6 +31,7 @@ import trello from './manifests/trello.json' with { type: 'json' };
 import webex from './manifests/webex.json' with { type: 'json' };
 import wrike from './manifests/wrike.json' with { type: 'json' };
 import zoho from './manifests/zoho.json' with { type: 'json' };
+import zoom from './manifests/zoom.json' with { type: 'json' };
 import type {
   ManagedAccessLane,
   ManagedConnectorDefinition,
@@ -308,6 +309,7 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
   webex,
   wrike,
   zoho,
+  zoom,
 ].map((value) => parseComposioManifest(value));
 
 /** Reviewed manifests the generator still checks but the catalog does not ship, with the reason. */

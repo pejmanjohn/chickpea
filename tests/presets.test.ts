@@ -500,6 +500,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     category: 'business',
     accent: '#006EB9',
     logoId: 'zoho',
+  }, {
+    id: 'zoom-managed',
+    managedToolkit: 'zoom',
+    providerId: 'zoom',
+    name: 'Zoom',
+    description: 'Review meetings, recordings, summaries, participants, and webinars, and schedule or update meetings.',
+    category: 'business',
+    accent: '#0B5CFF',
+    logoId: 'zoom',
   }]);
   assert.equal(CONNECTION_CATALOG_PRESETS.some(({ id }) => id === 'notion'), false);
   assert.equal(CONNECTION_CATALOG_PRESETS.some(({ id }) => id === 'notion-managed'), true);

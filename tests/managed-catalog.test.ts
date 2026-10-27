@@ -72,6 +72,7 @@ test('the managed catalog retains Google Workspace contracts and adds productivi
       'webex',
       'wrike',
       'zoho',
+      'zoom',
     ],
   );
   assert.deepEqual(

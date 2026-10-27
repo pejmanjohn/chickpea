@@ -1204,15 +1204,19 @@ const FRESHDESK_POLICY: ConnectionAccountManagedPolicy = {
   allowedCapabilities: ['freshdesk.currently_authenticated_agent', 'freshdesk.add_note_to_ticket'],
 };
 
-function recordingProvider(data: Record<string, unknown>, calls: Array<Record<string, unknown>>) {
+function recordingProvider(
+  data: Record<string, unknown>,
+  calls: Array<Record<string, unknown>>,
+  policy: ConnectionAccountManagedPolicy = FRESHDESK_POLICY,
+) {
   return new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
     getConnectedAccount: async () => ({
-      id: FRESHDESK_POLICY.accountRef,
+      id: policy.accountRef,
       status: 'ACTIVE',
       isDisabled: false,
-      toolkit: 'freshdesk',
-      userId: FRESHDESK_POLICY.principalRef,
+      toolkit: policy.toolkit,
+      userId: policy.principalRef,
     }),
     createClient: async () => ({
       sessions: { async create() { throw new Error('session execution must not be used'); } },
@@ -1285,6 +1289,21 @@ test('connection validation runs the manifest validation capability', async () =
 
   assert.deepEqual(calls.map(({ tool: slug, arguments: args }) => ({ slug, args })), [
     { slug: 'FRESHDESK_CURRENTLY_AUTHENTICATED_AGENT', args: {} },
+  ]);
+});
+
+test('connection validation sends the manifest validationArguments to its validation capability', async () => {
+  const policy: ConnectionAccountManagedPolicy = {
+    ...FRESHDESK_POLICY,
+    toolkit: 'zoom',
+    accountRef: 'ca_zoom',
+    allowedCapabilities: ['zoom.get_user', 'zoom.list_meetings'],
+  };
+  const calls: Array<Record<string, unknown>> = [];
+  await recordingProvider({ id: 'user' }, calls, policy).validate({ policy });
+
+  assert.deepEqual(calls.map(({ tool: slug, arguments: args }) => ({ slug, args })), [
+    { slug: 'ZOOM_GET_USER', args: { user_id: 'me' } },
   ]);
 });
 

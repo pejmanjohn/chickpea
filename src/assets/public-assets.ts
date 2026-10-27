@@ -36,6 +36,7 @@ export const PUBLIC_ASSET_PATHS = [
     'cal', 'webex', 'canva',
     'adzviser', 'supermetrics', 'windsor-ai',
     'trello',
+    'zoom',
   ].map((name) => `connectors/${name}.png`),
 ];
 const publicPaths = new Set(PUBLIC_ASSET_PATHS);

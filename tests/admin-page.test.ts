@@ -8974,7 +8974,7 @@ test('Agent connection setup retains the complete preset catalog', async () => {
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    102,
+    103,
   );
 });
 
@@ -9294,7 +9294,7 @@ test('legacy Google access does not hide fresh Google connection presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 102);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 103);
 });
 
 test('every catalog connector opens an Agent-owned setup flow', async () => {
@@ -9346,6 +9346,7 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
           managedCatalogFixture('webex-managed', 'webex', 'Webex'),
           managedCatalogFixture('wrike-managed', 'wrike', 'Wrike'),
           managedCatalogFixture('zoho-managed', 'zoho', 'Zoho CRM'),
+          managedCatalogFixture('zoom-managed', 'zoom', 'Zoom'),
         ],
       },
     },
@@ -9370,7 +9371,7 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 102);
+  assert.equal(presetIds.length, 103);
 });
 
 test('Agent-owned Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {

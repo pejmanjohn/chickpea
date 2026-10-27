@@ -553,5 +553,12 @@ export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
   "trello": {
     "svg": "<img src=\"/connectors/trello.png\" alt=\"\">",
     "raster": true
+  },
+  // Official Zoom app icon, served as a static raster.
+  // Source: https://developers.zoom.us/ (retrieved 2026-10-27).
+  // Asset: https://developers.zoom.us/favicon.ico (256 px PNG frame, scaled to 180 px)
+  "zoom": {
+    "svg": "<img src=\"/connectors/zoom.png\" alt=\"\">",
+    "raster": true
   }
 };
