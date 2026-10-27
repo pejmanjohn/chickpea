@@ -15,6 +15,7 @@ import type {
   McpConnectionToolInfo,
 } from '../config/types.ts';
 import { CONNECTION_ID_PATTERN } from '../config/agent-write-rules.ts';
+import { canonicalMcpServerUrl } from '../config/mcp-url.ts';
 import { canonicalJson } from './contracts.ts';
 import { AgentWriteRuleError } from './types.ts';
 
@@ -454,7 +455,7 @@ function apiConnectionFromAccount(id: string, { account, binding }: AgentConnect
 function mcpAccountPolicy(connection: McpConnectionConfig): ConnectionAccountMcpPolicy {
   return {
     kind: 'mcp',
-    url: connection.url,
+    url: canonicalMcpServerUrl(connection.url),
     transport: connection.transport,
     authMode: connection.authMode,
     headerNames: [...connection.headerNames],

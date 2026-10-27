@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import { canonicalMcpServerUrl } from './mcp-url.ts';
 import type { ApiConnectionConfig, McpConnectionConfig } from './types.ts';
 
 const CREDENTIAL_REF_PATTERN = /^connection_[0-9a-f]{32}$/;
@@ -81,13 +82,15 @@ export function sameMcpCredentialPolicy(
   left: McpConnectionConfig,
   right: McpConnectionConfig,
 ): boolean {
-  return canonicalMcpCredentialPolicy(left) === canonicalMcpCredentialPolicy(right);
+  return comparableMcpCredentialPolicy(left) === comparableMcpCredentialPolicy(right);
 }
 
 export function mcpCredentialBinding(connection: McpConnectionConfig): string {
   if (!validConnectionCredentialRef(connection.credentialRef)) {
     throw new Error('MCP connection credential binding is unavailable');
   }
+  // Hashes the URL as stored: an operator's MCP_AGENT_*_BINDING variable
+  // pins this value, so canonicalizing here would orphan it for raw URLs.
   return credentialBinding('mcp', connection.credentialRef, canonicalMcpCredentialPolicy(connection));
 }
 
@@ -138,9 +141,14 @@ export function connectionAccountCredentialBinding(
     connection.lane,
     secretRefId,
     connection.lane === 'mcp'
-      ? canonicalMcpCredentialPolicy(connection.policy)
+      ? comparableMcpCredentialPolicy(connection.policy)
       : canonicalApiCredentialPolicy(connection.policy),
   );
+}
+
+/** The policy with its server URL in canonical form, so a row stored raw matches its rewrite. */
+function comparableMcpCredentialPolicy(connection: McpConnectionConfig): string {
+  return canonicalMcpCredentialPolicy({ ...connection, url: canonicalMcpServerUrl(connection.url) });
 }
 
 function canonicalMcpCredentialPolicy(connection: McpConnectionConfig): string {

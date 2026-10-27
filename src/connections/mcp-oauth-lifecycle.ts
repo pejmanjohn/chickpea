@@ -1,7 +1,7 @@
 import { connectionAccountIdFromOAuthRef } from '../config/api-oauth.ts';
 import { mcpOAuthSettingKeys, type McpOAuthDependencies } from '../config/mcp-oauth.ts';
 import type { McpSecretRef } from '../config/mcp-secrets.ts';
-import { validateMcpUrl } from '../config/mcp-url.ts';
+import { sameMcpServerUrl } from '../config/mcp-url.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { findConnectionAccountForOAuthRef, markConnectionAccountNeedsAttention } from './store.ts';
@@ -29,8 +29,7 @@ export function mcpOAuthLifecycleDependencies(
       const account = await findAccount(ref);
       if (!account || account.revision !== expectedRevision || account.lifecycle !== 'ready' ||
           account.policy.kind !== 'mcp' || account.policy.authMode !== 'oauth') return;
-      const validated = validateMcpUrl(account.policy.url);
-      if (!validated.ok || validated.url !== serverUrl) return;
+      if (!sameMcpServerUrl(account.policy.url, serverUrl)) return;
       // Only a credential that is still absent: a reconnect or concurrent
       // refresh that stored a replacement token wins over this report.
       if (await settings.getSetting(mcpOAuthSettingKeys(ref)[2])) return;

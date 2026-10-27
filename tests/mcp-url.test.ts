@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  canonicalMcpServerUrl,
   createMcpGuardedFetch,
   nodePinnedFetch,
+  sameMcpServerUrl,
   validateMcpUrl,
   type McpAddressResolver,
 } from '../src/config/mcp-url.ts';
@@ -48,6 +50,26 @@ test('accepts public IP literals and RFC-1918 boundary IPs just outside private 
   ]) {
     const result = validateMcpUrl(input);
     assert.equal(result.ok, true, input + ' should be accepted');
+  }
+});
+
+test('a bare origin and its root-slash form are the same MCP server', () => {
+  assert.equal(canonicalMcpServerUrl('https://mcp.example.com'), 'https://mcp.example.com/');
+  assert.equal(sameMcpServerUrl('https://mcp.example.com', 'https://mcp.example.com/'), true);
+  assert.equal(sameMcpServerUrl('https://MCP.example.com./mcp#x', 'https://mcp.example.com/mcp'), true);
+  assert.equal(sameMcpServerUrl('https://mcp.example.com', 'https://mcp.example.com/mcp'), false);
+  assert.equal(sameMcpServerUrl('https://mcp.example.com/mcp', 'https://mcp.example.com/mcp/'), false);
+});
+
+test('a URL the guard rejects never equals an accepted MCP server URL', () => {
+  for (const [rejected, accepted] of [
+    ['http://mcp.example.com/mcp', 'https://mcp.example.com/mcp'],
+    ['https://user:secret@mcp.example.com', 'https://MCP.example.com.'],
+  ] as const) {
+    assert.equal(validateMcpUrl(rejected).ok, false, rejected);
+    assert.equal(sameMcpServerUrl(rejected, accepted), false, `${rejected} vs ${accepted}`);
+    assert.equal(sameMcpServerUrl(accepted, rejected), false, `${accepted} vs ${rejected}`);
+    assert.equal(validateMcpUrl(canonicalMcpServerUrl(accepted)).ok, true, `${accepted} stays accepted`);
   }
 });
 

@@ -8,7 +8,7 @@ import {
 import { McpOAuthError, resolveMcpOAuthAccessToken } from '../config/mcp-oauth.ts';
 import { buildMcpRequestHeaders } from '../config/mcp-secrets.ts';
 import { discoverMcpTools, type McpDiscoveryResult } from '../config/mcp-test.ts';
-import { validateMcpUrl, type createMcpGuardedFetch } from '../config/mcp-url.ts';
+import { sameMcpServerUrl, validateMcpUrl, type createMcpGuardedFetch } from '../config/mcp-url.ts';
 import { resolveConnectionAccountMcpSecrets } from '../config/profile-mcp.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -114,7 +114,7 @@ export async function testManagedMcpConnection(
           ...mcpOAuthLifecycleDependencies(input.config, input.settings, actor.workspaceId),
           validateConnection: async (_ref, serverUrl, _revision, attemptId) => {
             const policy = (await effective())?.policy;
-            return policy?.kind === 'mcp' && policy.authMode === 'oauth' && policy.url === serverUrl &&
+            return policy?.kind === 'mcp' && policy.authMode === 'oauth' && sameMcpServerUrl(policy.url, serverUrl) &&
               (attemptId === undefined || policy.oauthAttemptId === attemptId);
           },
         },
