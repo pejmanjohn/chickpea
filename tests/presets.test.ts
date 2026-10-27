@@ -310,6 +310,14 @@ test('Sentry and Intercom use their official hosted OAuth MCPs while Monday stay
   assert.match(monday.notes ?? '', /keeps the existing token path/);
 });
 
+test('the Stripe MCP preset asks for the agent-tagged restricted key its server will require', () => {
+  const stripe = getConnectorPreset('stripe');
+  assert.ok(stripe && 'auth' in stripe);
+  assert.deepEqual(stripe.auth, { kind: 'bearer', placeholder: 'rk_live_…' });
+  assert.match(stripe.tokenDocsHint ?? '', /Authorizing agent access to your account/);
+  assert.match(stripe.notes ?? '', /agent-tagged restricted key/);
+});
+
 test('the Granola MCP preset uses browser OAuth with the advertised resource scope', () => {
   assert.deepEqual(getConnectorPreset('granola'), {
     id: 'granola',

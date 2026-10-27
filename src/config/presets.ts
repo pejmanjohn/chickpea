@@ -350,8 +350,10 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     transport: 'streamable-http',
     auth: { kind: 'bearer', placeholder: 'rk_live_…' },
     tokenDocsUrl: 'https://dashboard.stripe.com/apikeys',
-    tokenDocsHint: 'Stripe → Developers → API keys',
-    notes: 'Use a restricted key (rk_), not a full secret key.',
+    tokenDocsHint:
+      'Stripe → Developers → API keys → Create restricted key, then choose "Authorizing agent access to your account"',
+    notes:
+      "Use an agent-tagged restricted key. From December 2026, Stripe's MCP server refuses secret keys and restricted keys without the agent tag. Stripe's approval rules apply to agent keys and by default hold refunds, payouts, and subscription cancellations for a designated reviewer.",
   },
   {
     id: 'cloudflare-api',
