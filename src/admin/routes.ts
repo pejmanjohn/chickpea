@@ -364,6 +364,7 @@ import {
   type ResolvedMcpSecrets,
 } from '../config/mcp-secrets.ts';
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
+import { MAX_MCP_OAUTH_SCOPE_LENGTH, MAX_MCP_TOOLS } from '../config/mcp-limits.ts';
 import { sameMcpServerUrl, validateMcpUrl } from '../config/mcp-url.ts';
 import {
   modelEffortChoiceError,
@@ -1133,6 +1134,8 @@ const skillsSchema = v.pipe(
   v.check((skills) => skillsWriteProblem(skills) === undefined, 'skills are invalid'),
 );
 
+const oauthScopeSchema = v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(MAX_MCP_OAUTH_SCOPE_LENGTH)));
+
 // A single discovered-tool record stored on a Connection's last successful
 // test. Bounded to keep the profile row small (matches types.ts limits).
 const mcpToolInfoSchema = v.object({
@@ -1147,7 +1150,7 @@ const mcpToolPoliciesSchema = v.pipe(v.record(v.pipe(v.string(), v.minLength(1),
   argumentConstraints: v.optional(v.pipe(v.record(v.pipe(v.string(), v.minLength(1), v.maxLength(120)),
     v.pipe(v.array(v.pipe(v.string(), v.maxLength(120))), v.minLength(1), v.maxLength(50))),
     v.check((fields) => Object.keys(fields).length <= 32))),
-})), v.check((policies) => Object.keys(policies).length <= 50));
+})), v.check((policies) => Object.keys(policies).length <= MAX_MCP_TOOLS));
 
 const mcpIdentitySchema = v.object({
   workspaceName: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(160))),
@@ -1174,13 +1177,13 @@ const mcpServerSchema = v.pipe(
     enabled: v.boolean(),
     lifecycleStatus: v.picklist(['pending', 'ready', 'failed']),
     statusText: v.pipe(v.string(), v.maxLength(300)),
-    discoveredTools: v.pipe(v.array(mcpToolInfoSchema), v.maxLength(50)),
+    discoveredTools: v.pipe(v.array(mcpToolInfoSchema), v.maxLength(MAX_MCP_TOOLS)),
     toolPolicies: v.optional(mcpToolPoliciesSchema),
     allowedTools: v.pipe(
       v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
-      v.maxLength(50),
+      v.maxLength(MAX_MCP_TOOLS),
     ),
-    oauthScope: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4096))),
+    oauthScope: oauthScopeSchema,
     lastCheckedAt: v.optional(v.number()),
     identity: v.optional(mcpIdentitySchema),
     presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
@@ -1506,7 +1509,7 @@ const mcpSecretsPutSchema = v.object({
 });
 
 const mcpOAuthStartSchema = v.object({
-  scope: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1024))),
+  scope: oauthScopeSchema,
 });
 
 const mcpSecretsDeleteSchema = v.object({
@@ -1542,7 +1545,7 @@ const agentApiOAuthClientSchema = v.object({
 });
 
 const connectionAccountOAuthStartSchema = v.object({
-  scope: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1024))),
+  scope: oauthScopeSchema,
   continuation: v.optional(v.object({
     workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9_]{2,32}$/)),
     channelId: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128)),
@@ -9047,7 +9050,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.put('/admin/api/agents/:agentId/connections/:connectionAccountId/mcp/tools', async (c) => {
     const parsed = v.safeParse(v.object({
       expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
-      allowedTools: v.pipe(v.array(v.pipe(v.string(), v.minLength(1), v.maxLength(256))), v.maxLength(128)),
+      allowedTools: v.pipe(v.array(v.pipe(v.string(), v.minLength(1), v.maxLength(256))), v.maxLength(MAX_MCP_TOOLS)),
       toolPolicies: v.optional(mcpToolPoliciesSchema),
       approvedAccountIds: v.optional(v.pipe(v.array(v.pipe(v.string(), v.trim(), v.regex(/^(?:act_)?[0-9]{1,32}$/))), v.maxLength(50))),
     }), await readJson(c.req));

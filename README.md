@@ -161,7 +161,7 @@ Every connection belongs to one Agent for its lifetime. A **team account** is sh
 
 Selected connection capabilities authorize the Agent to carry out the requested task. The model uses the conversation and saved instructions to determine intent, without requiring particular words or an extra confirmation merely because a tool can write. Explicit read-only permissions, preview-only requests, and saved confirmation requirements remain in force. Conversation text and API results cannot expand connection grants. The [Security Model](#security-model) has the full list.
 
-What you can connect, 62 presets in all. 13 run through a single Composio key; the other 49 go through the vendor's hosted MCP server or a direct API:
+What you can connect, 67 presets in all. 13 run through a single Composio key; the other 54 go through the vendor's hosted MCP server or a direct API:
 
 <table>
   <tr>
@@ -194,42 +194,49 @@ What you can connect, 62 presets in all. 13 run through a single Composio key; t
     <td>Ahrefs</td>
     <td><img src="https://cdn.simpleicons.org/airtable" width="14" height="14" alt=""> Airtable</td>
     <td>Amplitude</td>
+    <td>Apollo.io</td>
     <td><img src="https://cdn.simpleicons.org/atlassian" width="14" height="14" alt=""> Atlassian</td>
-    <td><img src="https://cdn.simpleicons.org/betterstack/000000/ffffff" width="14" height="14" alt=""> Better Stack</td>
   </tr>
   <tr>
+    <td>Attio</td>
+    <td><img src="https://cdn.simpleicons.org/betterstack/000000/ffffff" width="14" height="14" alt=""> Better Stack</td>
     <td>BugSnag</td>
     <td><img src="https://cdn.simpleicons.org/calendly" width="14" height="14" alt=""> Calendly</td>
     <td>Clay</td>
-    <td><img src="https://cdn.simpleicons.org/clickhouse" width="14" height="14" alt=""> ClickHouse</td>
-    <td>Close</td>
   </tr>
   <tr>
+    <td><img src="https://cdn.simpleicons.org/clickhouse" width="14" height="14" alt=""> ClickHouse</td>
+    <td><img src="https://cdn.simpleicons.org/clickup" width="14" height="14" alt=""> ClickUp</td>
+    <td>Close</td>
     <td><img src="https://cdn.simpleicons.org/cloudflare" width="14" height="14" alt=""> Cloudflare</td>
     <td>Customer.io</td>
+  </tr>
+  <tr>
     <td><img src="https://cdn.simpleicons.org/datadog" width="14" height="14" alt=""> Datadog</td>
     <td>Exa</td>
     <td>Fathom</td>
-  </tr>
-  <tr>
     <td>Firecrawl</td>
     <td>Fireflies</td>
-    <td>Gamma</td>
-    <td><img src="https://cdn.simpleicons.org/grafana" width="14" height="14" alt=""> Grafana Cloud</td>
-    <td>Granola</td>
   </tr>
   <tr>
+    <td>Gamma</td>
+    <td><img src="https://cdn.simpleicons.org/gitlab" width="14" height="14" alt=""> GitLab</td>
+    <td><img src="https://cdn.simpleicons.org/grafana" width="14" height="14" alt=""> Grafana Cloud</td>
+    <td>Granola</td>
     <td>Honeycomb</td>
+  </tr>
+  <tr>
     <td><img src="https://cdn.simpleicons.org/huggingface" width="14" height="14" alt=""> Hugging Face</td>
     <td>incident.io</td>
     <td><img src="https://cdn.simpleicons.org/intercom/000000/ffffff" width="14" height="14" alt=""> Intercom</td>
     <td><img src="https://cdn.simpleicons.org/linear" width="14" height="14" alt=""> Linear</td>
+    <td><img src="https://cdn.simpleicons.org/lucid/282C33/ffffff" width="14" height="14" alt=""> Lucid</td>
   </tr>
   <tr>
-    <td><img src="https://cdn.simpleicons.org/lucid/282C33/ffffff" width="14" height="14" alt=""> Lucid</td>
     <td>LunarCrush</td>
     <td>Mercury</td>
     <td><img src="https://cdn.simpleicons.org/meta" width="14" height="14" alt=""> Meta Ads</td>
+    <td><img src="https://cdn.simpleicons.org/miro/050038/ffffff" width="14" height="14" alt=""> Miro</td>
     <td>Monday.com</td>
   </tr>
   <tr>

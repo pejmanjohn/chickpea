@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { skillImportSourceSchema } from '../config/skill-provenance.ts';
 
 import { AGENT_ID_PATTERN } from '../config/agent-id.ts';
+import { MAX_MCP_OAUTH_SCOPE_LENGTH, MAX_MCP_TOOLS } from '../config/mcp-limits.ts';
 import { MODEL_EFFORTS } from '../config/model-effort.ts';
 import { MODEL_ROLES } from '../config/types.ts';
 import {
@@ -65,8 +66,8 @@ export const zMcpConnection = z.strictObject({
   headerNames: z.array(zText(120)).max(32),
   enabled: z.boolean(),
   toolPolicies: zMcpToolPolicies.optional(),
-  allowedTools: z.array(zText(120)).max(500),
-  oauthScope: zOptionalText(2_000).optional(),
+  allowedTools: z.array(zText(120)).max(MAX_MCP_TOOLS),
+  oauthScope: zOptionalText(MAX_MCP_OAUTH_SCOPE_LENGTH).optional(),
   presetId: zId.optional(),
 });
 /** Writable API connection policy; the service owns status and credential binding. */
@@ -439,8 +440,8 @@ export const vMcpConnection = v.strictObject({
     effect: v.picklist(['read', 'write']),
     argumentConstraints: v.optional(v.record(vt(120), va(vt(120), 50))),
   }))),
-  allowedTools: va(vt(120), 500),
-  oauthScope: v.optional(vot(2_000)),
+  allowedTools: va(vt(120), MAX_MCP_TOOLS),
+  oauthScope: v.optional(vot(MAX_MCP_OAUTH_SCOPE_LENGTH)),
   presetId: v.optional(vid),
 });
 export const vApiConnection = v.strictObject({

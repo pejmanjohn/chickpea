@@ -12,6 +12,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
 import { McpBlockedUrlError } from './mcp-errors.ts';
+import { MAX_MCP_TOOLS } from './mcp-limits.ts';
 import {
   META_ADS_ACCOUNT_HELPER,
   META_ADS_FIELD_HELPER,
@@ -47,7 +48,7 @@ import type {
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 8_000;
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
-const MAX_TOOLS = 50;
+export { MAX_MCP_TOOLS };
 const MAX_META_DISCOVERY_RAW_TOOLS = 1_024;
 const MAX_META_DISCOVERY_PAGES = 20;
 const MAX_META_DISCOVERY_TIMEOUT_MS = 30_000;
@@ -91,7 +92,8 @@ const connectWithFlueV2: McpConnector = (name, definition) =>
   createMcpConnection({ name, ...definition });
 
 /**
- * Connect + list tools + close. Generic servers retain their first 50 tools.
+ * Connect + list tools + close. Generic servers retain their first
+ * `MAX_MCP_TOOLS` tools.
  * Meta Ads scans a separately bounded complete catalog and retains only the
  * reviewed reporting tools, including schema-incompatible entries that the UI
  * must explain. Throws classifiable errors; callers map via classify/safeText.
@@ -171,7 +173,7 @@ async function discoverProtocolTools(
           }
           if (metaAds && !isReviewedMetaAdsTool(tool.name)) continue;
           if (tool.execution?.taskSupport === 'required') continue;
-          if (!metaAds && tools.length >= MAX_TOOLS) break;
+          if (!metaAds && tools.length >= MAX_MCP_TOOLS) break;
           if (!supportedToolName(tool.name)) continue;
           const description = truncate(tool.description, DESCRIPTION_MAX);
           const title = truncate(tool.title ?? tool.annotations?.title, 160);
@@ -194,7 +196,7 @@ async function discoverProtocolTools(
         if (metaAds && cursor && pageCount >= MAX_META_DISCOVERY_PAGES) {
           throw new Error('Meta Ads MCP discovery exceeded the page limit.');
         }
-      } while (cursor && (metaAds || tools.length < MAX_TOOLS));
+      } while (cursor && (metaAds || tools.length < MAX_MCP_TOOLS));
     };
     if (metaAds) {
       await raceDeadline(
@@ -288,7 +290,7 @@ function mapTools(id: string, tools: ToolDefinition[], metaAds = false): McpConn
         throw new Error(`Meta Ads MCP discovery returned duplicate reviewed tool ${name}.`);
       }
       reviewedNames.add(name);
-    } else if (mapped.length >= MAX_TOOLS) {
+    } else if (mapped.length >= MAX_MCP_TOOLS) {
       break;
     }
     if (!supportedToolName(name)) continue;
