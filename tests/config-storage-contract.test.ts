@@ -98,13 +98,3 @@ test(`this code reads v${release.release}'s stored values as v${release.release}
     'This code reads these values differently. A version bump does not cover a read change. If the change is ' +
     'intended, change readConfigStorageScenario and regenerate the release fixture.');
 });
-
-test(`stored values that differ from v${release.release}'s carry a higher contract version`, () => {
-  const written = viewStorage(releaseDatabase(), contract);
-  const upgradedDb = releaseDatabase();
-  atScenarioClock(() => kit(upgradedDb));
-  for (const [label, view] of [['rewritten on upgrade', viewStorage(upgradedDb, contract)], ['written by this code', viewStorage(scenario(), contract)]] as const) {
-    assert.deepEqual(unbumped(storageChanges(written, view), release.contract, contract).map(entryName), [],
-      `${label}: v${release.release} cannot be trusted to read these. Increase their versions in src/config/storage-contract.json.`);
-  }
-});

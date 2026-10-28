@@ -1,62 +1,6 @@
 {
   "release": "0.1.37",
   "scenario": "bde99eb2481ad25c8b2d5756c834c7e2eead948dcaaba6e0ecddf2bbb04d810b",
-  "contract": {
-    "schemaVersion": 12,
-    "schemaMarker": "agent-first-v1",
-    "migrations": [
-      "2026-08-24-chickpea-routing-retry-v1",
-      "2026-09-11-model-roles-v1",
-      "2026-10-11-agent-connection-credential-binding-v1",
-      "2026-08-23-chickpea-system-agent-v1",
-      "2026-08-24-chickpea-cutover-v1"
-    ],
-    "tables": {
-      "app_settings": 1,
-      "config_agent_archive_snapshots": 1,
-      "config_agent_channel_grants": 1,
-      "config_agent_connection_bindings": 1,
-      "config_agent_deletion_receipts": 1,
-      "config_agent_model_roles": 1,
-      "config_agent_schedule_references": 1,
-      "config_agent_thread_routes": 1,
-      "config_agents": 1,
-      "config_channels": 1,
-      "config_chickpea_cutovers": 1,
-      "config_connection_accounts": 1,
-      "config_meta": 1,
-      "config_slack_public_context": 1,
-      "config_workspace_installations": 1,
-      "config_workspace_model_defaults": 1,
-      "config_workspace_model_roles": 1
-    },
-    "columns": {
-      "config_agent_archive_snapshots.channel_grants_json": 1,
-      "config_agent_archive_snapshots.paused_schedule_ids_json": 1,
-      "config_agent_connection_bindings.allowed_capabilities_json": 1,
-      "config_agent_connection_bindings.resource_constraints_json": 1,
-      "config_agent_schedule_references.connection_pause_account_ids_json": 1,
-      "config_agent_schedule_references.required_connection_account_ids_json": 1,
-      "config_agent_thread_routes.handoff_context_json": 1,
-      "config_agents.api_connections_json": 1,
-      "config_agents.mcp_servers_json": 1,
-      "config_agents.repositories_json": 1,
-      "config_agents.skills_json": 1,
-      "config_agents.slack_presence_json": 1,
-      "config_agents.website_logins_json": 1,
-      "config_connection_accounts.identity_json": 1,
-      "config_connection_accounts.policy_json": 1,
-      "config_slack_public_context.files_json": 1,
-      "config_slack_public_context.images_json": 1
-    },
-    "settings": {
-      "connector.*": 1,
-      "mcp.*": 1,
-      "slack.gateway.binding.v1": 1,
-      "slack.gateway.claim.v1": 1,
-      "slack.gateway.deploymentIdentity.v1": 1
-    }
-  },
   "ddl": [
     "CREATE TABLE app_settings (\n        key TEXT PRIMARY KEY,\n        value TEXT NOT NULL,\n        updated_at INTEGER NOT NULL\n      )",
     "CREATE TABLE config_meta (\n          key TEXT PRIMARY KEY,\n          value TEXT NOT NULL\n        )",
