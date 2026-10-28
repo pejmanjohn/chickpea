@@ -24,6 +24,7 @@ export interface ConnectorLandingPageInput {
     ownerKind: 'member' | 'team';
     access?: 'read' | 'write' | 'reporting' | 'editing';
   };
+  changingSelection?: string;
   accessReview?: {
     tools: Array<{
       name: string;
@@ -50,16 +51,23 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
     ? managedConnectorWriteSummary(setup.target.provider, connector)
     : connectorCopy.accessSummary;
   const failureMessage = input.failureMessage ?? '';
+  const selection = input.changingSelection;
+  const heading = selection
+    ? `Change which ${connector} ${selection} ${agent.name} can use`
+    : `Connect ${connector} to ${agent.name}`;
+  const lead = selection
+    ? `${connector} shows the ${selection} ${agent.name} can use now. Check ${selection} to add them or uncheck ${selection} to remove them.`
+    : `${agent.name} can use ${connector} when you ask.`;
   return pageShell({
-    title: `Connect ${connector} to ${agent.name}`,
+    title: heading,
     surface: 'connector-setup',
     content: `
       <main class="flow-shell setup-shell" aria-labelledby="flow-title">
         ${brandHeader()}
         <section class="flow-content">
           ${agentIdentity(agent, input.avatarUrl)}
-          <h1 id="flow-title">Connect ${escapeHtml(connector)} to ${escapeHtml(agent.name)}</h1>
-          <p class="setup-lead">${escapeHtml(agent.name)} can use ${escapeHtml(connector)} when you ask.</p>
+          <h1 id="flow-title">${escapeHtml(heading)}</h1>
+          <p class="setup-lead">${escapeHtml(lead)}</p>
           <section class="setup-card">
             <div class="connector-row">
               ${connectorLogo(setup)}

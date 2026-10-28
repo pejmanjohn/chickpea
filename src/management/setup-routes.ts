@@ -1370,6 +1370,9 @@ async function managedConnectionPageInput(
       accessLane: 'write',
     }).status === 'ready';
     const reconnecting = await reconnectAccount(setup, dependencies.config);
+    const changingSelection = reconnecting?.lifecycle === 'ready'
+      ? dependencies.catalog.connector(setup.target.provider)?.providerSelection?.label
+      : undefined;
     return {
       setup,
       agent,
@@ -1382,6 +1385,7 @@ async function managedConnectionPageInput(
             },
           }
         : {}),
+      ...(changingSelection ? { changingSelection } : {}),
       ...(avatarUrl ? { avatarUrl } : {}),
     };
   } catch {

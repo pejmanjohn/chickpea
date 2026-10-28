@@ -73,6 +73,21 @@ export class ManagedConnectionLaneExistsError extends Error {
   }
 }
 
+export function managedOwnerLaneAccount(
+  accounts: readonly ConnectionAccount[],
+  enabledAccountIds: ReadonlySet<string>,
+  lane: { ownerKind: 'team' | 'member'; membershipId: string; toolkit: string },
+): ConnectionAccount | undefined {
+  return accounts.find((account) =>
+    enabledAccountIds.has(account.id) &&
+    account.lifecycle !== 'revoked' &&
+    account.ownerKind === lane.ownerKind &&
+    (lane.ownerKind === 'team' || account.ownerMembershipId === lane.membershipId) &&
+    account.policy.kind === 'managed' &&
+    account.policy.adapterId.trim().toLowerCase() === 'composio' &&
+    account.policy.toolkit === lane.toolkit);
+}
+
 class ManagedSetupCompletionLostError extends Error {
   readonly name = 'ManagedSetupCompletionLostError';
 }
@@ -169,15 +184,11 @@ export async function startManagedAuthorizationFlow(
         bindings.filter((binding) => binding.enabled)
           .map((binding) => binding.connectionAccountId),
       );
-      const existingOwnerLane = accounts.find((account) =>
-        enabledAccountIds.has(account.id) &&
-        account.lifecycle !== 'revoked' &&
-        account.ownerKind === ownerKind &&
-        (ownerKind === 'team' || account.ownerMembershipId === input.principal.membershipId) &&
-        account.policy.kind === 'managed' &&
-        account.policy.adapterId.trim().toLowerCase() === 'composio' &&
-        account.policy.toolkit === connector.toolkit);
-      if (existingOwnerLane) {
+      if (managedOwnerLaneAccount(accounts, enabledAccountIds, {
+        ownerKind,
+        membershipId: input.principal.membershipId,
+        toolkit: connector.toolkit,
+      })) {
         throw new ManagedConnectionLaneExistsError(ownerKind, connector.label);
       }
     }
