@@ -65,6 +65,8 @@ type NotionScopeRule =
       lookups: 'cached' | 'live';
       /** The arguments that carry Notion-flavored Markdown, which may name other Notion objects. */
       content?: readonly string[];
+      /** An optional argument naming another object of `kind`, which must pass the same walk. */
+      alsoChecked?: string;
     };
 
 /** A Notion capability without a rule here does not compile. */
@@ -83,7 +85,9 @@ const NOTION_SCOPE_RULES = {
   },
   'notion.pages.update_properties': { phase: 'before', argument: 'row_id', kind: 'page', lookups: 'live' },
   // Block content travels as rich text, never as Markdown, so it cannot name another object.
-  'notion.pages.append_blocks': { phase: 'before', argument: 'parent_block_id', kind: 'block', lookups: 'live' },
+  'notion.pages.append_blocks': {
+    phase: 'before', argument: 'parent_block_id', kind: 'block', lookups: 'live', alsoChecked: 'after',
+  },
 } as const satisfies Record<NotionCapabilityId, NotionScopeRule>;
 
 /**
@@ -295,14 +299,23 @@ export function notionScopeGate(input: {
       }
       const id = parseNotionId(toolArguments[rule.argument]);
       if (!id) throw new NotionPageUnavailableError();
-      checked = id;
-      if (rule.phase === 'before') {
-        if (rule.content?.some((argument) => namesNotionObject(toolArguments[argument]))) {
-          throw new NotionPageUnavailableError();
-        }
-        if (!await reaches({ kind: rule.kind, id }, rule.lookups === 'live')) throw new NotionPageUnavailableError();
+      if (rule.phase === 'after') {
+        checked = id;
+        return { ...toolArguments, [rule.argument]: id };
       }
-      return { ...toolArguments, [rule.argument]: id };
+      if (rule.content?.some((argument) => namesNotionObject(toolArguments[argument]))) {
+        throw new NotionPageUnavailableError();
+      }
+      const named = { [rule.argument]: id };
+      if (rule.alsoChecked !== undefined && toolArguments[rule.alsoChecked] !== undefined) {
+        const also = parseNotionId(toolArguments[rule.alsoChecked]);
+        if (!also) throw new NotionPageUnavailableError();
+        named[rule.alsoChecked] = also;
+      }
+      for (const target of Object.values(named)) {
+        if (!await reaches({ kind: rule.kind, id: target }, rule.lookups === 'live')) throw new NotionPageUnavailableError();
+      }
+      return { ...toolArguments, ...named };
     },
     async after(data) {
       if (rule.phase === 'search') return filterSearch(data);

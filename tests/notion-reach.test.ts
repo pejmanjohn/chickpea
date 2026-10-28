@@ -332,6 +332,26 @@ test('a scoped Agent cannot create a page whose title or Markdown names another 
   assert.deepEqual(calls.map(({ tool }) => tool), ['NOTION_CREATE_NOTION_PAGE'], 'an unscoped Agent is unchanged');
 });
 
+test('the block a limited Agent appends after passes the same live walk as the parent, by its canonical id', async () => {
+  const OUTSIDE_BLOCK = id('b7');
+  const world = () => notionWorld({ pages: { [OUTSIDE_BLOCK]: { type: 'page_id', page_id: HIDDEN } } });
+  const append = (provider: ComposioManagedConnectionProvider, afterBlockId: string) => provider.execute({
+    policy: ONLY_ROOT, capability: 'notion.pages.append_blocks',
+    arguments: { parentBlockId: GRANDCHILD, afterBlockId, blocks: [{ type: 'paragraph', content: 'More' }] },
+  });
+  const inside = world();
+  await append(inside.provider, bare(BLOCK));
+  assert.equal(inside.calls.at(-1)?.tool, 'NOTION_ADD_MULTIPLE_PAGE_CONTENT');
+  assert.equal(inside.calls.at(-1)?.arguments.after, BLOCK);
+  assert.ok(inside.lookups().some(({ arguments: arguments_ }) => arguments_.block_id === BLOCK), 'looked up live');
+
+  for (const afterBlockId of [OUTSIDE_BLOCK, bare(HIDDEN), 'the intro paragraph']) {
+    const { provider, calls } = world();
+    await assert.rejects(append(provider, afterBlockId), isRefusal, afterBlockId);
+    assert.equal(calls.some(({ tool }) => tool === 'NOTION_ADD_MULTIPLE_PAGE_CONTENT'), false, afterBlockId);
+  }
+});
+
 test('a scoped read of a page the sign-in cannot see gets the same refusal as a page outside the scope', async () => {
   for (const [capability, target] of [['notion.pages.get', HIDDEN], ['notion.databases.get', HIDDEN_TASKS]] as const) {
     const refusal = async (pageId: string) => {
