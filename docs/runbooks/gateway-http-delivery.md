@@ -34,10 +34,12 @@ sending it, allowing maintenance to reconcile a lost response. Ordinary
 maintenance leaves an explicit rollback in socket mode. Restoring an older Worker
 binary alone is not a transport rollback. Preserve the inbox and binding.
 
-The v0.1.8 updater performs this switch before restoring previous code. Its
-`gateway-transport-then-previous-code` release policy makes older updaters refuse
-the transition. Authenticated deployment readiness registers a version- and
-binding-scoped recovery digest; the private receipt retains the capability.
+The updater performs this switch before restoring previous code. Releases
+v0.1.8 through v0.1.37 declared it as the `gateway-transport-then-previous-code`
+release policy, which makes older updaters refuse the transition. Later
+releases declare no policy, and the updater assumes this one. Authenticated
+deployment readiness registers a version- and binding-scoped recovery digest;
+the private receipt retains the capability.
 Recovery must receive confirmation of healthy socket delivery before downgrade.
 A new authenticated upgrade receipt explicitly resumes HTTP; maintenance and
 retries of the recovery receipt retain socket delivery.

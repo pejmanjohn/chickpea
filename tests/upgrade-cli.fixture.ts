@@ -61,7 +61,7 @@ export function fixture(t: any, wranglerProfile?: string, authoredPolicy = true)
   for (const version of ['0.1.0', '0.1.1']) {
     put(join(origin, 'package.json'), JSON.stringify({ type: 'module', version, ...(authoredPolicy ? { allowScripts: { 'fixture-unused@1.0.0': false } } : {}) }));
     put(join(origin, 'package-lock.json'), JSON.stringify({ version, packages: { '': { version } } }));
-    put(join(origin, 'release.json'), JSON.stringify({ formatVersion: 1, version, storageGeneration: 1, recovery: 'gateway-transport-then-previous-code', supportedOrigins: version === '0.1.0' ? [] : ['0.1.0'], migrations: migrationDigests(origin) }));
+    put(join(origin, 'release.json'), JSON.stringify({ formatVersion: 1, version, storageGeneration: 1, supportedOrigins: version === '0.1.0' ? [] : ['0.1.0'], migrations: migrationDigests(origin) }));
     git(['add', '.']); git(['commit', '--quiet', '-m', version]);
     commits[version] = git(['rev-parse', 'HEAD']); git(['tag', `v${version}`]);
   }

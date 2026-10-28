@@ -3,7 +3,6 @@
   "version": "0.1.37",
   "storageGeneration": 1,
   "supportedOrigins": [],
-  "recovery": "gateway-transport-then-previous-code",
   "migrations": {
     "d1": "a22d9e323396cf1c464c3f87a4c89fa435e0cc56e16119d9ed6570aecf32155a",
     "workerConfiguration": "70f010e8a324e1809d68ce796ee16f8bdfef3262ebdeafc8e8c3f07b5869dd54",

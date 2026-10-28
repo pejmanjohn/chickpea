@@ -15,8 +15,6 @@ import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from '
 import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
 import { prepareNpmInstallPolicy } from './lib/npm-install-policy.mjs';
 
-import { TRANSPORT_RECOVERY } from './lib/release-manifest.mjs';
-
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HELP = `Chickpea guided upgrades (Cloudflare)
 
@@ -224,7 +222,9 @@ export async function runUpgrade(args = process.argv.slice(2)) {
     const previous = verifyReleaseSource(previousRoot, receipt.previous);
     const destination = verifyReleaseSource(destinationRoot, receipt.destination);
     assertCompatibleRelease(previous.manifest, destination.manifest);
-    if (destination.manifest.recovery === TRANSPORT_RECOVERY) {
+    // Releases before v0.1.8 declared `recovery: previous-code-only`. Every later
+    // one installs transport recovery, and since v0.1.38 none declares it.
+    if (destination.manifest.recovery !== 'previous-code-only') {
       if (!receipt.recovery) {
         if (readEvent(directory)?.knownVersions?.length) throw new Error('Deployed upgrade is missing its recovery authority. Preserve the receipt.');
         receipt.recovery = createRecoveryAuthority();

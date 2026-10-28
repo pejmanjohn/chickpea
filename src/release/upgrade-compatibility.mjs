@@ -7,10 +7,6 @@ const MIGRATION_KEYS = Object.freeze([
   'configuration',
   'work',
 ]);
-const RECOVERY_POLICIES = new Set([
-  'previous-code-only',
-  'gateway-transport-then-previous-code',
-]);
 
 function record(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -25,9 +21,9 @@ function compareVersions(left, right) {
   return 0;
 }
 
-function invalid(code = 'invalid-release-contract') {
+function invalid() {
   const error = new Error('Invalid release upgrade contract.');
-  error.code = code;
+  error.code = 'invalid-release-contract';
   throw error;
 }
 
@@ -46,7 +42,6 @@ export function validateUpgradeManifest(value) {
       MIGRATION_KEYS.some((key) => !DIGEST.test(value.migrations[key]))) {
     invalid();
   }
-  if (!RECOVERY_POLICIES.has(value.recovery)) invalid('recovery-policy-unsupported');
   return value;
 }
 

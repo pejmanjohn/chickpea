@@ -11,7 +11,6 @@ export interface UpgradeManifest {
   version: string;
   storageGeneration: number;
   supportedOrigins: string[];
-  recovery: 'previous-code-only' | 'gateway-transport-then-previous-code';
   migrations: UpgradeMigrations;
 }
 

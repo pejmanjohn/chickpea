@@ -22,12 +22,10 @@ test('release validation rejects changed migration contents and inconsistent ver
   const { root, write } = sourceTree(t);
   write('package.json', JSON.stringify({ version: '0.1.0' }));
   write('package-lock.json', JSON.stringify({ version: '0.1.0', packages: { '': { version: '0.1.0' } } }));
-  const manifest = { formatVersion: 1, version: '0.1.0', storageGeneration: 1, supportedOrigins: [], recovery: 'previous-code-only', migrations: migrationDigests(root) };
+  const manifest = { formatVersion: 1, version: '0.1.0', storageGeneration: 1, supportedOrigins: [], migrations: migrationDigests(root) };
   assert.deepEqual(validateReleaseManifest(root, manifest), manifest);
-  assert.equal(validateReleaseManifest(root, { ...manifest, recovery: 'gateway-transport-then-previous-code' }).recovery, 'gateway-transport-then-previous-code');
   assert.throws(() => validateReleaseManifest(root, { ...manifest, version: '0.1.1' }), /version/);
   assert.throws(() => validateReleaseManifest(root, { ...manifest, supportedOrigins: ['0.1.0'] }), /origin/);
-  assert.throws(() => validateReleaseManifest(root, { ...manifest, recovery: 'snapshot' }), /recovery/);
   write('migrations/better-auth/0001.sql', 'DROP TABLE example;');
   assert.throws(() => validateReleaseManifest(root, manifest), /migration/);
 });
