@@ -10,6 +10,7 @@ import {
   getConnectorPreset,
 } from '../src/config/presets.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
+import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
 import {
   META_ADS_OAUTH_DEFAULT_SCOPE,
   META_ADS_OAUTH_MANAGEMENT_SCOPE,
@@ -11103,6 +11104,7 @@ test('editing a saved API connection shows a stored write-only credential placeh
 
 test('managed Notion is the only catalog option and explains the provider page boundary', async () => {
   const ready = { status: 'ready', missingConfiguration: [] };
+  const notion = MANAGED_CONNECTOR_CATALOG.connector('notion')!;
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: {
@@ -11115,7 +11117,7 @@ test('managed Notion is the only catalog option and explains the provider page b
           providerId: 'notion',
           label: 'Notion',
           description: 'Notion managed connector',
-          securityDescription: 'Choose only the pages and databases Chickpea may use. The Notion grant includes descendants made available by Notion.',
+          securityDescription: notion.securityDescription,
           access: { read: ready, write: ready },
         }],
       },
@@ -11136,8 +11138,9 @@ test('managed Notion is the only catalog option and explains the provider page b
       'data-action': 'connection-account-preset', 'data-preset': 'notion-managed',
     }),
   });
-  assert.match(harness.app.innerHTML, /Choose only the pages and databases Chickpea may use/);
-  assert.match(harness.app.innerHTML, /grant includes descendants made available by Notion/);
+  assert.match(harness.app.innerHTML, /choose only the pages and databases Chickpea may use\. Pages inside them are included\./);
+  assert.match(harness.app.innerHTML,
+    /To add or remove pages later, open the connection&#39;s menu and choose Change Notion pages\./);
   assert.doesNotMatch(harness.app.innerHTML, /Native Notion/);
   chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
