@@ -7934,3 +7934,58 @@ test('an Admin rename onto a taken handle still saves it with suggestions while 
     fixture.settings.close();
   }
 });
+
+test('an Agent\'s Notion row never sends its chosen page ids, or a title outside its choice, to the browser', async () => {
+  const plan = '1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d';
+  const journal = '9f8e7d6c-5b4a-4928-9706-f5e4d3c2b1a0';
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    await fixture.store.createAgentOwnedConnection({
+      account: {
+        id: 'connection_notion_team', workspaceId: 'T_TEST', ownerKind: 'team',
+        createdByMembershipId: 'membership_test_owner', providerId: 'notion', label: 'Notion · Team',
+        policy: {
+          kind: 'managed', adapterId: 'composio', toolkit: 'notion',
+          principalRef: 'chickpea:organization:org_oss', accountRef: 'ca_notion_team',
+          allowedCapabilities: ['notion.content.search'],
+          grantSummary: {
+            items: [
+              { id: plan, type: 'page', label: 'Launch plan' },
+              { id: journal, type: 'page', label: 'Maya journal' },
+            ],
+            truncated: false,
+          },
+        },
+        secretRefId: 'secret_notion_team', lifecycle: 'ready',
+      },
+      binding: {
+        agentId: 'agent_support', connectionAccountId: 'connection_notion_team', providerId: 'notion',
+        allowedCapabilities: ['notion.content.search'], enabled: true,
+        resourceConstraints: { notionPages: [plan] },
+      },
+    });
+
+    for (const path of ['/admin/api/agents/agent_support/connections', '/admin/api/connections']) {
+      const listed = await fixture.app.request(`http://localhost${path}?workspaceId=T_TEST`, { headers: auth() });
+      assert.equal(listed.status, 200, await listed.clone().text());
+      const body = await listed.json() as {
+        attached?: Array<{ account: { id: string; policy: { grantSummary?: { items: Array<{ label: string }> } } } }>;
+        accounts?: Array<{ account: { id: string; policy: { grantSummary?: { items: Array<{ label: string }> } } } }>;
+      };
+      const rows = body.attached ?? body.accounts ?? [];
+      assert.deepEqual(rows.map(({ account }) => account.id), ['connection_notion_team'], path);
+      assert.deepEqual(rows[0]!.account.policy.grantSummary?.items.map(({ label }) => label), ['Launch plan'], path);
+      const text = JSON.stringify(body);
+      for (const leaked of [plan, journal, 'notionPages', 'Maya journal']) {
+        assert.equal(text.includes(leaked), false, `${path}: ${leaked}`);
+      }
+    }
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});

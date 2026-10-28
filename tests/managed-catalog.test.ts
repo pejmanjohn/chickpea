@@ -24,6 +24,7 @@ import {
   createManagedConnectionProviderRegistry,
   type ManagedConnectionProvider,
 } from '../src/connections/managed.ts';
+import { projectEffectiveConnectionAccounts } from '../src/connections/runtime.ts';
 import {
   ConnectionAccountService,
   ManagedResourceSelectionError,
@@ -736,8 +737,80 @@ test('the config store adds resource constraints to a pre-migration binding tabl
     }
     assert.deepEqual(
       (await config.listAgentConnectionBindings('agent_migration'))[0]?.resourceConstraints,
-      {},
+      { unreadable: [] },
+      'a map that cannot be read is not read as no limit',
     );
+  } finally {
+    config.close();
+  }
+});
+
+test('a binding whose stored resource map cannot be read keeps no managed capability, and logs only its account', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-unreadable-binding-'));
+  const databasePath = join(directory, 'state.sqlite');
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const page = '6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d';
+  const config = new SqliteConfigStore(databasePath, agentRoutineDeletion, { agents: [] });
+  try {
+    await config.createAgent({
+      id: 'agent_docs', name: 'Docs', instructions: 'Use Notion.', enabled: true,
+      creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.putConnectionAccount({
+      id: 'connection_notion', workspaceId: 'T_UNREADABLE', ownerKind: 'team',
+      createdByMembershipId: 'membership_owner', providerId: 'notion', label: 'Notion',
+      policy: {
+        kind: 'managed', adapterId: 'composio', toolkit: 'notion',
+        principalRef: 'chickpea:organization:docs', accountRef: 'ca_notion',
+        allowedCapabilities: ['notion.pages.markdown'],
+      },
+      secretRefId: 'secret_notion', lifecycle: 'ready',
+    }, 0);
+    await config.putAgentConnectionBinding({
+      agentId: 'agent_docs', connectionAccountId: 'connection_notion', providerId: 'notion',
+      allowedCapabilities: ['notion.pages.markdown'], resourceConstraints: { notionPages: [page] }, enabled: true,
+    });
+    const effective = async () => {
+      const [connection] = projectEffectiveConnectionAccounts(
+        await config.listConnectionAccounts('T_UNREADABLE'),
+        await config.listAgentConnectionBindings('agent_docs'),
+        'membership_owner',
+      );
+      return connection?.policy.kind === 'managed' ? connection.policy : assert.fail('expected a managed policy');
+    };
+    assert.deepEqual((await effective()).allowedCapabilities, ['notion.pages.markdown']);
+    assert.deepEqual([...(await effective()).pageScope?.allow ?? []], [page]);
+
+    const stored = [
+      '{malformed',
+      JSON.stringify({ notionPages: Array.from({ length: 257 }, (_, index) => `${page.slice(0, -3)}${index.toString(16).padStart(3, '0')}`) }),
+      JSON.stringify({ notionPages: [page], 'not a key': [] }),
+    ];
+    for (const raw of stored) {
+      const inspection = new DatabaseSync(databasePath);
+      try {
+        inspection.prepare('UPDATE config_agent_connection_bindings SET resource_constraints_json = ?').run(raw);
+      } finally {
+        inspection.close();
+      }
+      const warnings: string[] = [];
+      const warn = t.mock.method(console, 'warn', (line: string) => { warnings.push(line); });
+      try {
+        const policy = await effective();
+        assert.deepEqual(policy.allowedCapabilities, [], raw.slice(0, 40));
+        assert.equal(policy.pageScope, undefined);
+      } finally {
+        warn.mock.restore();
+      }
+      assert.ok(warnings.length > 0, 'the unreadable map is logged');
+      for (const line of warnings) {
+        assert.deepEqual(JSON.parse(line), {
+          event: 'chickpea.managed_connection.binding_constraints_unreadable',
+          connectionAccountId: 'connection_notion',
+        });
+      }
+    }
   } finally {
     config.close();
   }

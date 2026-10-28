@@ -19,6 +19,8 @@ import type {
   ConnectionSelection,
   ConnectionRequestResolution,
   EffectiveConnectionAccount,
+  EffectiveConnectionPolicy,
+  EffectiveManagedPolicy,
   ManagedConnectionDeclaration,
   PersonalConnectionAuthorizationOption,
   TeamConnectionNeedingReconnect,
@@ -29,6 +31,7 @@ import {
   intersectManagedResourceConstraints,
   projectManagedResourceHandles,
 } from './catalog/index.ts';
+import { agentPageScope } from './notion-pages.ts';
 
 export async function resolveEffectiveConnectionAccounts(input: {
   config: Pick<ConfigStore, 'listConnectionAccounts' | 'listAgentConnectionBindings'>;
@@ -492,7 +495,7 @@ export async function resolveManagedConnectionForInvocation(input: {
     | 'getUser'
     | 'resolveSlackIdentity'
   >;
-}): Promise<EffectiveConnectionAccount & { policy: Extract<ConnectionAccountPolicy, { kind: 'managed' }> }> {
+}): Promise<EffectiveConnectionAccount & { policy: EffectiveManagedPolicy }> {
   if (!(await isActiveConnectionActor({
     identity: input.identity ?? getIdentityStore(input.env),
     workspaceId: input.workspaceId,
@@ -564,10 +567,11 @@ export function externalActionAuthorityInstructions(persistedAgentInstructions: 
   return [EXTERNAL_ACTION_AUTHORITY_PREAMBLE, savedAgentInstructionsBlock(persistedAgentInstructions)].join('\n');
 }
 
+/** The policy one Agent may use: its binding's ceiling and, for a page-scoped connector, the pages it may reach. */
 export function applyConnectionCapabilityCeiling(
   policy: ConnectionAccountPolicy,
   binding: AgentConnectionBinding,
-): ConnectionAccountPolicy {
+): EffectiveConnectionPolicy {
   // Managed bindings must always carry an explicit snapshot. Fail closed for
   // any legacy or malformed empty binding so broadening an account during
   // reauthorization can never silently broaden the Agent's authority.
@@ -584,6 +588,7 @@ export function applyConnectionCapabilityCeiling(
       policy.resourceConstraints,
       binding.resourceConstraints,
     );
+    const pageScope = connector.pageScope ? agentPageScope(binding.resourceConstraints) : undefined;
     return {
       ...policy,
       allowedCapabilities: resourceConstraints === undefined
@@ -594,6 +599,7 @@ export function applyConnectionCapabilityCeiling(
       ...(connector.resources?.length
         ? { resourceConstraints: resourceConstraints ?? {} }
         : {}),
+      ...(pageScope ? { pageScope } : {}),
     };
   }
   if (policy.kind === 'mcp') {

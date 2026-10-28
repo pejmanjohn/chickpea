@@ -62,6 +62,11 @@ export interface ManagedConnectorDefinition {
   providerSelection?: { label: string };
   /** Several Agents' accounts may share one connected account. Its rows then change together. */
   sharedSignIn?: boolean;
+  /**
+   * Chickpea limits which provider pages an Agent reaches: the binding's
+   * choice under this key. It is a scope, never an argument.
+   */
+  pageScope?: { key: 'notionPages' };
   resources?: readonly ManagedResourceDefinition[];
   capabilities: readonly ManagedCapabilityDefinition[];
 }

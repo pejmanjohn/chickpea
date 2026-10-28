@@ -513,14 +513,26 @@ const CONNECTIONS: readonly AgentOwnedConnectionInput[] = [
   },
 ];
 
-/** One Notion sign-in that two Agents share: the researcher connected it, the concierge joined it. */
+const NOTES_DATABASE = '5c3e1a2b-7d4f-4e6a-9b8c-0d1e2f3a4b5c';
+const NOTES_HANDBOOK = '6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d';
+
+/**
+ * One Notion sign-in that two Agents share: the researcher connected it, the
+ * concierge joined it and is limited to one of its pages.
+ */
 const NOTES_SIGN_IN: SignInGroupPolicy = {
   adapterId: 'composio',
   toolkit: 'notion',
   principalRef: 'principal_scenario',
   accountRef: 'account_scenario_notes',
   signIn: { person: 'notion:workspace-scenario:user-scenario', accessLane: 'write' },
-  grantSummary: { items: [{ type: 'database', label: 'Scenario Notes' }], truncated: true },
+  grantSummary: {
+    items: [
+      { id: NOTES_DATABASE, type: 'database', label: 'Scenario Notes' },
+      { id: NOTES_HANDBOOK, type: 'page', label: 'Scenario Handbook' },
+    ],
+    truncated: true,
+  },
   providerGeneration: 3,
   providerLineage: 'lineage_scenario',
 };
@@ -531,6 +543,7 @@ function notesConnection(
   createdByMembershipId: string,
   allowedCapabilities: string[],
   oauthAttemptId?: string,
+  notionPages?: string[],
 ): AgentOwnedConnectionInput {
   return {
     account: {
@@ -549,7 +562,14 @@ function notesConnection(
       secretRefId: `secret_${id}`,
       lifecycle: 'ready',
     },
-    binding: { agentId, connectionAccountId: id, providerId: 'notion', allowedCapabilities, enabled: true },
+    binding: {
+      agentId,
+      connectionAccountId: id,
+      providerId: 'notion',
+      allowedCapabilities,
+      ...(notionPages ? { resourceConstraints: { notionPages } } : {}),
+      enabled: true,
+    },
   };
 }
 
@@ -865,6 +885,7 @@ function writeConnections(config: ConfigStoreLogic): void {
       shared: NOTES_SIGN_IN,
       join: notesConnection(
         ACCOUNT_NOTES_SHARED, CONCIERGE, MEMBER, ['notion.content.search'], '2c3d4e5f-6071-4829-b0c1-d2e3f4a5b6c7',
+        [NOTES_HANDBOOK],
       ),
     });
   }

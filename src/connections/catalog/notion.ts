@@ -75,6 +75,24 @@ const PageAppendSchema = v.pipe(
   v.check((input) => JSON.stringify(input.blocks).length <= 100_000, 'Page blocks are too large'),
 );
 
+export const NOTION_CAPABILITY_IDS = [
+  'notion.content.search',
+  'notion.pages.get',
+  'notion.pages.markdown',
+  'notion.databases.get',
+  'notion.databases.query',
+  'notion.data_sources.query',
+  'notion.pages.create',
+  'notion.pages.update_properties',
+  'notion.pages.append_blocks',
+] as const;
+
+export type NotionCapabilityId = typeof NOTION_CAPABILITY_IDS[number];
+
+export function isNotionCapabilityId(id: string): id is NotionCapabilityId {
+  return (NOTION_CAPABILITY_IDS as readonly string[]).includes(id);
+}
+
 export const MANAGED_NOTION_CONNECTORS: readonly ManagedConnectorDefinition[] = [{
   id: 'notion-managed',
   toolkit: 'notion',
@@ -85,6 +103,7 @@ export const MANAGED_NOTION_CONNECTORS: readonly ManagedConnectorDefinition[] = 
     'In Notion, choose only the pages and databases Chickpea may use. Pages inside them are included. To add or remove pages later, open the connection\'s menu and choose Change Notion pages. Chickpea excludes archive, delete, sharing, permissions, and raw block APIs.',
   providerSelection: { label: 'pages' },
   sharedSignIn: true,
+  pageScope: { key: 'notionPages' },
   capabilities: [
     capability('notion.content.search', 'read', 'read', 'notion_search', 'Search accessible Notion pages and databases.', SearchSchema),
     capability('notion.pages.get', 'read', 'read', 'notion_get_page', 'Read one accessible Notion page and its properties.', PageIdSchema),
@@ -99,7 +118,7 @@ export const MANAGED_NOTION_CONNECTORS: readonly ManagedConnectorDefinition[] = 
 }] as const;
 
 function capability(
-  id: string,
+  id: NotionCapabilityId,
   accessLane: 'read' | 'write',
   effect: 'read' | 'reversible_write',
   toolName: string,

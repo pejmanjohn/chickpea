@@ -151,7 +151,7 @@ export function intersectManagedResourceConstraints(
 ): ManagedAccountResourceConstraints | undefined {
   const definitions = connector.resources ?? [];
   const account = isRecord(accountConstraints) ? accountConstraints : {};
-  const binding = isRecord(bindingConstraints) ? bindingConstraints : {};
+  const binding = withoutPageScope(connector, isRecord(bindingConstraints) ? bindingConstraints : {});
   const allowedKeys = new Set(definitions.map(({ key }) => key));
   if (
     Object.keys(account).some((key) => !allowedKeys.has(key)) ||
@@ -173,6 +173,15 @@ export function intersectManagedResourceConstraints(
     effective[definition.key] = selected as ManagedResourceSelection[];
   }
   return effective;
+}
+
+function withoutPageScope(
+  connector: ManagedConnectorDefinition,
+  constraints: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!connector.pageScope || !(connector.pageScope.key in constraints)) return constraints;
+  const { [connector.pageScope.key]: _scope, ...rest } = constraints;
+  return rest;
 }
 
 export function projectManagedResourceHandles(

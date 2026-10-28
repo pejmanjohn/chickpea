@@ -83,6 +83,7 @@ import {
   withSignInGroupPolicy,
 } from './sign-in-group.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
+import { NOTION_ID_PATTERN } from '../connections/notion-pages.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb } from '../state/node-state-db.ts';
 import { schemaInstallRequired, type SqlParam, type StateDb } from '../state/state-db.ts';
@@ -583,6 +584,11 @@ export interface ConfigStore {
     connectionAccountId: string,
   ): Promise<AgentConnectionBinding | undefined>;
   putAgentConnectionBinding(input: AgentConnectionBindingInput): Promise<AgentConnectionBinding>;
+  /** Writes `next` only while the stored binding reads as `expected`; undefined when another write came first. */
+  putAgentConnectionBindingIfUnchanged(
+    expected: AgentConnectionBinding,
+    next: AgentConnectionBindingInput,
+  ): Promise<AgentConnectionBinding | undefined>;
   listAgentScheduleReferences(agentId: string): Promise<AgentScheduleReference[]>;
   summarizeAdoptionInventory(): Promise<AdoptionInventorySummary>;
   getAgentScheduleReference(scheduleId: string): Promise<AgentScheduleReference | undefined>;
@@ -2197,6 +2203,21 @@ export class ConfigStoreLogic {
 
   putAgentConnectionBinding(input: AgentConnectionBindingInput): AgentConnectionBinding {
     return this.db.transaction(() => this.putAgentConnectionBindingRow(input));
+  }
+
+  putAgentConnectionBindingIfUnchanged(
+    expected: AgentConnectionBinding,
+    next: AgentConnectionBindingInput,
+  ): AgentConnectionBinding | undefined {
+    if (next.connectionAccountId !== expected.connectionAccountId) {
+      throw new Error('A binding is compared and written for one connection account');
+    }
+    return this.db.transaction(() => {
+      const current = this.getAgentConnectionBindingForAccount(expected.connectionAccountId);
+      return current && sameAgentConnectionBinding(current, expected)
+        ? this.putAgentConnectionBindingRow(next)
+        : undefined;
+    });
   }
 
   private putAgentConnectionBindingRow(input: AgentConnectionBindingInput): AgentConnectionBinding {
@@ -4437,7 +4458,8 @@ function validateConnectionAccountInput(input: ConnectionAccountInput): void {
       !Array.isArray(grantSummary.items) || grantSummary.items.length > 20 ||
       grantSummary.items.some((item) =>
         !item || (item.type !== 'page' && item.type !== 'database') ||
-        typeof item.label !== 'string' || !item.label.trim() || item.label.length > 240)
+        typeof item.label !== 'string' || !item.label.trim() || item.label.length > 240 ||
+        (item.id !== undefined && (typeof item.id !== 'string' || !NOTION_ID_PATTERN.test(item.id))))
     )) {
       throw new Error('Managed connection grant summary is invalid');
     }
@@ -4497,7 +4519,10 @@ function rowToAgentConnectionBinding(row: AgentConnectionBindingRow): AgentConne
   } catch {
     allowedCapabilities = [];
   }
-  const resourceConstraints = parseBindingResourceConstraints(row.resource_constraints_json);
+  const resourceConstraints = parseBindingResourceConstraints(
+    row.resource_constraints_json,
+    row.connection_account_id,
+  );
   return {
     agentId: row.agent_id,
     connectionAccountId: row.connection_account_id,
@@ -4508,6 +4533,14 @@ function rowToAgentConnectionBinding(row: AgentConnectionBindingRow): AgentConne
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+/** Whether two reads saw the same binding. Timestamps do not count, since two writes in one millisecond share them. */
+function sameAgentConnectionBinding(left: AgentConnectionBinding, right: AgentConnectionBinding): boolean {
+  return left.agentId === right.agentId && left.providerId === right.providerId &&
+    left.enabled === right.enabled &&
+    JSON.stringify(left.allowedCapabilities) === JSON.stringify(right.allowedCapabilities) &&
+    JSON.stringify(left.resourceConstraints ?? {}) === JSON.stringify(right.resourceConstraints ?? {});
 }
 
 function normalizeBindingResourceConstraints(
@@ -4532,13 +4565,22 @@ function normalizeBindingResourceConstraints(
   return normalized;
 }
 
+/**
+ * A map that cannot be read must not read as no limit. No connector has a
+ * resource key named `unreadable`, so the binding keeps no managed capability.
+ */
 function parseBindingResourceConstraints(
   raw: string | null | undefined,
+  connectionAccountId: string,
 ): NonNullable<AgentConnectionBinding['resourceConstraints']> {
   try {
     return normalizeBindingResourceConstraints(JSON.parse(raw ?? '{}') as never);
   } catch {
-    return {};
+    console.warn(JSON.stringify({
+      event: 'chickpea.managed_connection.binding_constraints_unreadable',
+      connectionAccountId,
+    }));
+    return { unreadable: [] };
   }
 }
 

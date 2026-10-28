@@ -1,3 +1,4 @@
+import { isRecord } from '../security/content-validation.ts';
 import { sha256Hex } from '../security/digest.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { canEditAgent, canManageOwnedResource, requirePermission, AuthorizationError } from '../auth/permissions.ts';
@@ -47,6 +48,7 @@ import { sameMcpServerUrl } from '../config/mcp-url.ts';
 import type {
   ManagedConnectionProviderRegistry,
   ManagedConnectionValidationResult,
+  ManagedPageListing,
 } from './managed.ts';
 import {
   MANAGED_CONNECTOR_CATALOG,
@@ -61,6 +63,19 @@ import {
   projectEffectiveConnectionAccounts,
   projectRecoverableConnectionAccounts,
 } from './runtime.ts';
+import {
+  MAX_NOTION_PAGES,
+  NOTION_PAGES_KEY,
+  agentPageScope,
+  pageRoots,
+  parseNotionId,
+  readAgentPageChoice,
+  writeAgentPageChoice,
+  type NotionId,
+  type NotionListedPage,
+  type NotionPageListing,
+  type NotionPageRoot,
+} from './notion-pages.ts';
 
 export interface ConnectionAccountServiceDependencies {
   config: ConfigStore;
@@ -84,8 +99,15 @@ export class ConnectionCredentialEntryUnavailableError extends Error {
   readonly name = 'ConnectionCredentialEntryUnavailableError';
 }
 
-/** Browser-safe projection shared by every Admin response carrying an account. */
-export function toConnectionAccountView(account: ConnectionAccount): ConnectionAccountView {
+/**
+ * Browser-safe projection shared by every Admin response carrying an account.
+ * A page-scoped connector's grant titles are limited to the pages `binding`'s
+ * Agent may reach; without its binding, none are sent. Page ids are never sent.
+ */
+export function toConnectionAccountView(
+  account: ConnectionAccount,
+  binding?: AgentConnectionBinding,
+): ConnectionAccountView {
   const { secretRefId: _secretRefId, policy, ...safeAccount } = account;
   if (policy.kind !== 'managed') {
     return {
@@ -98,6 +120,14 @@ export function toConnectionAccountView(account: ConnectionAccount): ConnectionA
   const {
     kind, adapterId, toolkit, allowedCapabilities, grantSummary, oauthAttemptId, resourceConstraints,
   } = policy;
+  const pageScoped = MANAGED_CONNECTOR_CATALOG.connector(toolkit)?.pageScope !== undefined;
+  const scope = binding && agentPageScope(binding.resourceConstraints);
+  const shown = (raw: string | undefined): boolean => {
+    if (!pageScoped) return true;
+    if (!binding) return false;
+    const id = parseNotionId(raw);
+    return !scope || (id !== undefined && scope.allow.has(id));
+  };
   return {
     ...safeAccount,
     policy: {
@@ -105,7 +135,14 @@ export function toConnectionAccountView(account: ConnectionAccount): ConnectionA
       adapterId,
       toolkit,
       allowedCapabilities,
-      ...(grantSummary ? { grantSummary } : {}),
+      ...(grantSummary
+        ? {
+            grantSummary: {
+              items: grantSummary.items.filter(({ id }) => shown(id)).map(({ type, label }) => ({ type, label })),
+              truncated: grantSummary.truncated,
+            },
+          }
+        : {}),
       ...(oauthAttemptId ? { oauthAttemptId } : {}),
       ...(resourceConstraints
         ? {
@@ -120,6 +157,12 @@ export function toConnectionAccountView(account: ConnectionAccount): ConnectionA
     },
     credentialConfigured: account.lifecycle === 'ready',
   };
+}
+
+/** A binding as the browser sees it, without the Agent's chosen Notion pages. */
+export function toAgentConnectionBindingView(binding: AgentConnectionBinding): AgentConnectionBinding {
+  if (binding.resourceConstraints?.[NOTION_PAGES_KEY] === undefined) return binding;
+  return { ...binding, resourceConstraints: writeAgentPageChoice(binding.resourceConstraints, undefined) };
 }
 
 export class ManagedConnectionProviderUnavailableError extends Error {
@@ -369,7 +412,17 @@ export class ConnectionAccountService {
 
   async listViews(workspaceId: string): Promise<ConnectionAccountView[]> {
     const accounts = await this.dependencies.config.listConnectionAccounts(workspaceId);
-    return accounts.map(toConnectionAccountView);
+    return Promise.all(accounts.map((account) => this.view(account)));
+  }
+
+  /** One account as the browser sees it, with the grant titles its Agent may reach; see toConnectionAccountView. */
+  async view(account: ConnectionAccount): Promise<ConnectionAccountView> {
+    const pageScoped = account.policy.kind === 'managed' &&
+      this.catalog().connector(account.policy.toolkit)?.pageScope !== undefined;
+    const binding = pageScoped
+      ? await this.dependencies.config.getAgentConnectionBindingForAccount(account.id)
+      : undefined;
+    return toConnectionAccountView(account, binding);
   }
 
   /** Return an account only after proving the caller owns its management lane. */
@@ -849,6 +902,7 @@ export class ConnectionAccountService {
         signInGroupAccessLane(connector, group),
         validation,
         input.principal.membershipId,
+        previous.signIn,
       ),
     };
     const lifecycle = connector.resources?.some((resource) =>
@@ -877,6 +931,8 @@ export class ConnectionAccountService {
     if (!replaced) throw new ManagedConnectionConflictError('Managed connection changed during authorization');
     this.captureConnectionReady(account.lifecycle, replaced, binding);
     logSignInRecorded(replaced);
+    const pages = connector.pageScope && validation?.pages && parsePageListing(validation.pages);
+    if (pages) await this.prunePageChoices(rotated, pages);
     if (previous.accountRef !== policy.accountRef) {
       try {
         await provider.revoke({ policy: previous });
@@ -901,6 +957,148 @@ export class ConnectionAccountService {
       }
     }
     return replaced;
+  }
+
+  /**
+   * The pages a Notion connection's sign-in reaches now, as one Agent sees
+   * them: whether the Agent is limited, and which pages it has chosen.
+   */
+  async agentPages(input: {
+    principal: AuthPrincipal;
+    agentId: string;
+    connectionAccountId: string;
+    signal?: AbortSignal;
+  }): Promise<{
+    mode: 'all' | 'only';
+    pages: Array<NotionPageRoot & { chosen: boolean }>;
+    complete: boolean;
+  }> {
+    const { account, binding } = await this.requireAgentOwnedAccount(input);
+    const { roots, complete } = pageRoots(await this.listPages(this.pageScopedPolicy(account), input.signal));
+    const choice = readAgentPageChoice(binding.resourceConstraints);
+    const chosen = choice && new Set(choice);
+    return {
+      mode: choice ? 'only' : 'all',
+      pages: roots.map(({ id, kind, label }) => ({ id, kind, label, chosen: !chosen || chosen.has(id) })),
+      complete,
+    };
+  }
+
+  /**
+   * Limit one Agent to chosen pages, or give it all of them again. Every
+   * chosen page must be one agentPages lists for this Agent now.
+   */
+  async setAgentPages(input: {
+    principal: AuthPrincipal;
+    agentId: string;
+    connectionAccountId: string;
+    expectedRevision: number;
+    choice: { mode: 'all' } | { mode: 'only'; pages: readonly string[] };
+    signal?: AbortSignal;
+  }): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
+    const requested = requestedPages(input.choice);
+    const { account, binding } = await this.requireAgentOwnedAccount(input);
+    if (account.revision !== input.expectedRevision) {
+      throw new ManagedResourceSelectionError('stale', 'Managed connection changed');
+    }
+    const policy = this.pageScopedPolicy(account);
+    let chosen: NotionId[] | undefined;
+    if (requested) {
+      const { roots } = pageRoots(await this.listPages(policy, input.signal));
+      const choosable = new Set(roots.map(({ id }) => id));
+      chosen = [...new Set(requested.map((raw) => {
+        const id = parseNotionId(raw);
+        if (!id || !choosable.has(id)) throw new ManagedResourceSelectionError('invalid', 'Notion page is not available');
+        return id;
+      }))];
+    }
+    // The listing took a while. As selectManagedResources does, let the store refuse a
+    // revision another edit has moved, then change only the choice on the binding as it is now.
+    let updatedAccount: ConnectionAccount;
+    try {
+      updatedAccount = await this.dependencies.config.putConnectionAccount(account, input.expectedRevision);
+    } catch (error) {
+      if (error instanceof ConnectionAccountRevisionConflictError) {
+        throw new ManagedResourceSelectionError('stale', 'Managed connection changed');
+      }
+      throw error;
+    }
+    const current = await this.dependencies.config.getAgentConnectionBindingForAccount(account.id);
+    if (!current || current.agentId !== binding.agentId) throw new AuthorizationError();
+    // A stored map that could not be read must not be saved back as if it were a choice.
+    if (current.resourceConstraints && 'unreadable' in current.resourceConstraints) {
+      throw new ManagedResourceSelectionError('invalid', 'Notion page choice is invalid');
+    }
+    const updatedBinding = await this.dependencies.config.putAgentConnectionBindingIfUnchanged(current, {
+      ...current,
+      resourceConstraints: writeAgentPageChoice(current.resourceConstraints, chosen),
+    });
+    if (!updatedBinding) throw new ManagedResourceSelectionError('stale', 'Managed connection changed');
+    return { account: updatedAccount, binding: updatedBinding };
+  }
+
+  private pageScopedPolicy(account: ConnectionAccount): ConnectionAccountManagedPolicy {
+    const connector = account.policy.kind === 'managed'
+      ? this.catalog().connector(account.policy.toolkit)
+      : undefined;
+    if (account.policy.kind !== 'managed' || account.lifecycle === 'revoked' ||
+        !connector?.pageScope || connector.providerId !== account.providerId) {
+      throw new ManagedResourceSelectionError('invalid', 'Page choice is unavailable for this connection');
+    }
+    return account.policy;
+  }
+
+  private async listPages(
+    policy: ConnectionAccountManagedPolicy,
+    signal?: AbortSignal,
+  ): Promise<NotionPageListing> {
+    const provider = this.dependencies.managedProviders?.get(policy.adapterId);
+    if (!provider?.listPages) {
+      throw new ManagedResourceSelectionError('unavailable', 'Managed page listing is unavailable');
+    }
+    let listing: ManagedPageListing;
+    try {
+      listing = await provider.listPages({ policy, ...(signal ? { signal } : {}) });
+    } catch {
+      throw new ManagedResourceSelectionError('unavailable', 'Managed page listing failed');
+    }
+    const parsed = parsePageListing(listing);
+    if (!parsed) throw new ManagedResourceSelectionError('unavailable', 'Managed page listing is invalid');
+    return parsed;
+  }
+
+  /** After signing in again, pages a whole listing leaves out leave every member's choice. */
+  private async prunePageChoices(
+    members: readonly ConnectionAccount[],
+    listing: NotionPageListing,
+  ): Promise<void> {
+    if (!listing.complete) return;
+    const listed = new Set(listing.pages.map(({ id }) => id));
+    for (const member of members) {
+      try {
+        // A write lands only on the binding it read, so a choice narrowed in between is read
+        // again rather than written back.
+        for (let attempt = 1; ; attempt += 1) {
+          const binding = await this.dependencies.config.getAgentConnectionBindingForAccount(member.id);
+          const choice = readAgentPageChoice(binding?.resourceConstraints);
+          if (!binding || choice === undefined || choice.every((id) => listed.has(id))) break;
+          const pruned = await this.dependencies.config.putAgentConnectionBindingIfUnchanged(binding, {
+            ...binding,
+            resourceConstraints: writeAgentPageChoice(
+              binding.resourceConstraints,
+              choice.filter((id) => listed.has(id)),
+            ),
+          });
+          if (pruned) break;
+          if (attempt === 3) throw new Error('Agent connection binding kept changing');
+        }
+      } catch {
+        console.warn(JSON.stringify({
+          event: 'chickpea.managed_connection.page_choice_update_deferred',
+          connectionAccountId: member.id,
+        }));
+      }
+    }
   }
 
   /** The auth-config lane a new sign-in for this managed account must use; see signInGroupAccessLane. */
@@ -1187,13 +1385,14 @@ function applyManagedValidation(
   if (typeof truncated !== 'boolean' || !Array.isArray(items) || items.length > 20 ||
       items.some((item) =>
         !item || (item.type !== 'page' && item.type !== 'database') ||
-        typeof item.label !== 'string' || !item.label.trim() || item.label.length > 240)) {
+        typeof item.label !== 'string' || !item.label.trim() || item.label.length > 240 ||
+        (item.id !== undefined && parseNotionId(item.id) !== item.id))) {
     throw new Error('Managed connection grant summary is invalid');
   }
   return {
     ...policy,
     grantSummary: {
-      items: items.map(({ type, label }) => ({ type, label: label.trim() })),
+      items: items.map(({ id, type, label }) => ({ ...(id ? { id } : {}), type, label: label.trim() })),
       truncated,
     },
   };
@@ -1212,14 +1411,20 @@ function signInGroupAccessLane(
     managedAccessLane(connector, policy.allowedCapabilities) === 'write') ? 'write' : 'read';
 }
 
-/** A connector whose sign-ins may be shared always records whose sign-in it is. */
+/**
+ * A connector whose sign-ins may be shared always records whose sign-in it
+ * is. When the provider could not be asked, a sign-in again keeps the person
+ * it already knows; only a provider that names nobody falls back to the signer.
+ */
 function managedSignIn(
   connector: ManagedConnectorDefinition,
   accessLane: ManagedAccessLane,
   validation: ManagedConnectionValidationResult | void,
   signerMembershipId: string,
+  previous?: ManagedSignIn,
 ): ManagedSignIn {
   const person = validation?.person ??
+    (validation?.personLookupFailed ? previous?.person : undefined) ??
     (connector.sharedSignIn ? `member:${signerMembershipId}` : undefined);
   return { ...(person ? { person } : {}), accessLane };
 }
@@ -1239,6 +1444,28 @@ function logSignInRecorded(account: ConnectionAccount): void {
     accessLane: policy.signIn.accessLane,
     personSource: policy.signIn.person?.startsWith('member:') ? 'member' : 'provider',
   }));
+}
+
+/** The pages a choice names, or undefined for all of them; any other choice is refused before Notion is asked. */
+function requestedPages(choice: unknown): readonly unknown[] | undefined {
+  const mode = isRecord(choice) ? choice.mode : undefined;
+  const pages = isRecord(choice) ? choice.pages : undefined;
+  if (mode === 'all') return undefined;
+  if (mode === 'only' && Array.isArray(pages) && pages.length <= MAX_NOTION_PAGES) return pages;
+  throw new ManagedResourceSelectionError('invalid', 'Notion page choice is invalid');
+}
+
+/** Every page in canonical form; undefined when the provider returned anything else. */
+function parsePageListing(listing: ManagedPageListing): NotionPageListing | undefined {
+  const pages = listing.pages.flatMap((page): NotionListedPage[] => {
+    const id = parseNotionId(page.id);
+    const parent = page.parent === undefined ? undefined : parseNotionId(page.parent);
+    return id === page.id && parent === page.parent && (page.kind === 'page' || page.kind === 'database') &&
+      typeof page.label === 'string'
+      ? [{ id, kind: page.kind, label: page.label, ...(parent ? { parent } : {}) }]
+      : [];
+  });
+  return pages.length === listing.pages.length ? { pages, complete: listing.complete === true } : undefined;
 }
 
 async function managedResourceHandle(resourceKey: string, providerRef: string): Promise<string> {

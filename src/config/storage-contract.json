@@ -31,7 +31,7 @@
     "config_agent_archive_snapshots.channel_grants_json": 1,
     "config_agent_archive_snapshots.paused_schedule_ids_json": 1,
     "config_agent_connection_bindings.allowed_capabilities_json": 1,
-    "config_agent_connection_bindings.resource_constraints_json": 1,
+    "config_agent_connection_bindings.resource_constraints_json": 2,
     "config_agent_schedule_references.connection_pause_account_ids_json": 1,
     "config_agent_schedule_references.required_connection_account_ids_json": 1,
     "config_agent_thread_routes.handoff_context_json": 1,
@@ -42,7 +42,7 @@
     "config_agents.slack_presence_json": 1,
     "config_agents.website_logins_json": 1,
     "config_connection_accounts.identity_json": 1,
-    "config_connection_accounts.policy_json": 3,
+    "config_connection_accounts.policy_json": 4,
     "config_slack_public_context.files_json": 1,
     "config_slack_public_context.images_json": 1
   },

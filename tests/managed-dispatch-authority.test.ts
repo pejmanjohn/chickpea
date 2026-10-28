@@ -169,3 +169,46 @@ for (const boundary of ['staging-request', 'upload', 'write'] as const) {
     assert.deepEqual(requests, boundary === 'staging-request' ? ['staging-request'] : ['staging-request', 'upload']);
   });
 }
+
+test('a Notion page choice that changes during a request denies the rest of it', async () => {
+  const before = '1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d';
+  const after = '9f8e7d6c-5b4a-4928-9706-f5e4d3c2b1a0';
+  let choice = [before];
+  const account = { id: 'a', workspaceId: 'T', providerId: 'notion', ownerKind: 'team', lifecycle: 'ready', policy: {
+    kind: 'managed', adapterId: 'composio', toolkit: 'notion', principalRef: 'u', accountRef: 'ca',
+    allowedCapabilities: ['notion.pages.get'],
+  } };
+  const config = {
+    async listConnectionAccounts() { return [account]; },
+    async listAgentConnectionBindings() {
+      return [{ agentId: 'agent', connectionAccountId: 'a', providerId: 'notion', enabled: true,
+        allowedCapabilities: ['notion.pages.get'], resourceConstraints: { notionPages: choice } }];
+    },
+  } as unknown as ConfigStore;
+  const identity = {
+    async getOrganization() { return { id: 'o', slackTeamId: 'T' }; },
+    async getMembership() { return { id: 'm', userId: 'u', organizationId: 'o', status: 'active' }; },
+    async getMembershipAccessOverlay() { return null; },
+    async getUser() { return { id: 'u', slackTeamId: 'T', slackUserId: 'U' }; },
+    async resolveSlackIdentity() { return { user: { id: 'u' }, membership: { id: 'm' }, binding: { membershipId: 'm' } }; },
+  } as unknown as IdentityStore;
+  const admitted: Array<ReadonlySet<string> | undefined> = [];
+  const provider = {
+    id: 'composio',
+    async validate() {},
+    async revoke() {},
+    async execute(input: Parameters<ComposioManagedConnectionProvider['execute']>[0]) {
+      admitted.push(input.policy.pageScope?.allow);
+      choice = [after];
+      await input.revalidateAuthority?.();
+      return { data: {} };
+    },
+  };
+
+  await assert.rejects(invokeManagedConnectionCapability({ config, identity,
+    providers: createManagedConnectionProviderRegistry([provider]),
+    workspaceId: 'T', agentId: 'agent', actorMembershipId: 'm', connectionAccountId: 'a',
+    capability: 'notion.pages.get', arguments: { pageId: before },
+  }), ManagedAuthorityDeniedError);
+  assert.deepEqual(admitted, [new Set([before])]);
+});

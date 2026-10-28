@@ -51,7 +51,10 @@ test('browser-safe managed account views omit provider credential lineage', () =
       providerGeneration: 9,
       providerLineage: 'f'.repeat(24),
       signIn: { person: 'notion:ws-1:user-1', accessLane: 'write' },
-      grantSummary: { items: [{ type: 'page', label: 'Roadmap' }], truncated: false },
+      grantSummary: {
+        items: [{ id: '1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d', type: 'page', label: 'Roadmap' }],
+        truncated: false,
+      },
     },
   });
   assert.equal('secretRefId' in view, false);
@@ -64,7 +67,7 @@ test('browser-safe managed account views omit provider credential lineage', () =
     allowedCapabilities: MANAGED_POLICY.allowedCapabilities,
     grantSummary: { items: [{ type: 'page', label: 'Roadmap' }], truncated: false },
   });
-  assert.doesNotMatch(JSON.stringify(view), /signIn|notion:ws-1|accessLane/);
+  assert.doesNotMatch(JSON.stringify(view), /signIn|notion:ws-1|accessLane|1a2b3c4d/);
 });
 
 const MANAGED_POLICY: ConnectionAccountManagedPolicy = {
@@ -3238,6 +3241,52 @@ test('a new managed account records who signed in and under which access lane', 
       { event: 'chickpea.managed_connection.sign_in_recorded', toolkit: 'notion', accessLane: 'write', personSource: 'member' },
     ]);
     assert.doesNotMatch(recorded.join('\n'), /ws-1|user-1|membership_alice|ca_notion/);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('signing in again keeps the known Notion person when Notion cannot be asked, and falls back to the signer only when Notion names nobody', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let answer: Awaited<ReturnType<ManagedConnectionProvider['validate']>> = { person: 'notion:ws-1:user-1' };
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate() { return answer; },
+    async execute() { return { data: { ok: true } }; },
+    async revoke() {},
+  };
+  const service = new ConnectionAccountService({
+    config, settings, managedProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_docs', name: 'Docs', instructions: 'Help.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_docs',
+    });
+    let { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_docs', workspaceId: 'T_MANAGED', ownerKind: 'team',
+      providerId: 'notion', label: 'Notion · Team', policy: { ...NOTION_SIGN_IN },
+    });
+    const signInAgain = async (accountRef: string) => {
+      account = await service.replaceManagedAuthorization({
+        principal: principal('membership_bob'), agentId: 'agent_docs',
+        connectionAccountId: account.id, expectedRevision: account.revision,
+        adapterId: 'composio', toolkit: 'notion', principalRef: NOTION_SIGN_IN.principalRef,
+        allowedCapabilities: [...NOTION_SIGN_IN.allowedCapabilities], accountRef,
+      });
+      return account.policy.kind === 'managed' ? account.policy.signIn?.person : undefined;
+    };
+
+    answer = { personLookupFailed: true };
+    assert.equal(await signInAgain('ca_notion_2'), 'notion:ws-1:user-1');
+    answer = {};
+    assert.equal(await signInAgain('ca_notion_3'), 'member:membership_bob');
   } finally {
     config.close();
     settings.close();
