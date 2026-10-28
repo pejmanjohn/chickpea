@@ -1009,11 +1009,24 @@ export class ConnectionAccountService {
         return id;
       }))];
     }
+    // The listing took a while. As selectManagedResources does, let the store refuse a
+    // revision another edit has moved, then change only the choice on the binding as it is now.
+    let updatedAccount: ConnectionAccount;
+    try {
+      updatedAccount = await this.dependencies.config.putConnectionAccount(account, input.expectedRevision);
+    } catch (error) {
+      if (error instanceof ConnectionAccountRevisionConflictError) {
+        throw new ManagedResourceSelectionError('stale', 'Managed connection changed');
+      }
+      throw error;
+    }
+    const current = await this.dependencies.config.getAgentConnectionBindingForAccount(account.id);
+    if (!current || current.agentId !== binding.agentId) throw new AuthorizationError();
     const updatedBinding = await this.dependencies.config.putAgentConnectionBinding({
-      ...binding,
-      resourceConstraints: writeAgentPageChoice(binding.resourceConstraints, chosen),
+      ...current,
+      resourceConstraints: writeAgentPageChoice(current.resourceConstraints, chosen),
     });
-    return { account, binding: updatedBinding };
+    return { account: updatedAccount, binding: updatedBinding };
   }
 
   private pageScopedPolicy(account: ConnectionAccount): ConnectionAccountManagedPolicy {

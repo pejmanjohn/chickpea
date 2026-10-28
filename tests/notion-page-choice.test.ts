@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { AuthorizationError } from '../src/auth/permissions.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { signInGroupPolicy } from '../src/config/sign-in-group.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -227,9 +228,17 @@ test('an Agent is offered the roots its sign-in lists, and may limit itself to t
     await assert.rejects(notion.service.setAgentPages({
       ...team, expectedRevision: ops.revision - 1, choice: { mode: 'only', pages: [TEAM_PLAN.id] },
     }), (error) => error instanceof ManagedResourceSelectionError && error.code === 'stale');
+    await assert.rejects(notion.service.setAgentPages({
+      ...team, principal: { ...principal('membership_zed'), role: 'member' },
+      expectedRevision: ops.revision, choice: { mode: 'only', pages: [TEAM_PLAN.id] },
+    }), AuthorizationError, 'someone who cannot edit the Agent cannot limit it');
     assert.deepEqual(await notion.reached('agent_ops'), ALL_SHARED, 'a refused choice changes nothing');
 
-    await notion.choose('agent_ops', { mode: 'only', pages: [TEAM_PLAN.id.replaceAll('-', '')] });
+    const limited = await notion.choose('agent_ops', { mode: 'only', pages: [TEAM_PLAN.id.replaceAll('-', '')] });
+    assert.equal(limited.account.revision, ops.revision + 1, 'a choice moves the account revision like any other edit');
+    await assert.rejects(notion.service.setAgentPages({
+      ...team, expectedRevision: ops.revision, choice: { mode: 'all' },
+    }), (error) => error instanceof ManagedResourceSelectionError && error.code === 'stale');
     assert.deepEqual(readAgentPageChoice((await notion.accountOf('agent_ops')).binding.resourceConstraints), [TEAM_PLAN.id]);
     assert.deepEqual(await notion.reached('agent_ops'), titles(TEAM_PLAN, TEAM_PLAN_NOTES));
     assert.deepEqual((await notion.service.agentPages(team)).pages.map(({ label, chosen }) => [label, chosen]), [

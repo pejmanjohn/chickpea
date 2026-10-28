@@ -419,6 +419,16 @@ test('reads follow cached parent edges; writes look every edge up again', async 
     revalidateAuthority: async () => { revalidations += 1; },
   });
   assert.equal(revalidations, lookups().length - before + 1, 'authority is rechecked before every lookup and the write');
+
+  // A read checks its parent after dispatch, when the client no longer rechecks on its own.
+  const { provider: fresh, calls: freshCalls } = notionWorld();
+  let afterRead = 0;
+  await fresh.execute({
+    policy: ONLY_ROOT, capability: 'notion.pages.get', arguments: { pageId: GRANDCHILD },
+    revalidateAuthority: async () => { afterRead += 1; },
+  });
+  assert.equal(freshCalls.length, 2, 'the read, then one lookup');
+  assert.equal(afterRead, 2, 'authority is rechecked before the read and again before its lookup');
 });
 
 test('the edge cache expires edges after five minutes and keeps at most 4,096', () => {
