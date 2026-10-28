@@ -1198,18 +1198,16 @@ function applyManagedValidation(
 }
 
 /**
- * The widest lane any account sharing one sign-in needs: its recorded lane, or
- * for an account connected before lanes were recorded, its capabilities'.
- * Signing in again on a narrower lane would take capabilities from the rest.
+ * The widest lane the accounts sharing one sign-in need now. Signing in again
+ * on a narrower lane would take capabilities from the rest; once no member
+ * writes, the next sign-in drops back to read.
  */
 function signInGroupAccessLane(
   connector: ManagedConnectorDefinition,
   members: readonly ConnectionAccount[],
 ): ManagedAccessLane {
-  return members.some(({ policy }) => policy.kind === 'managed' && (
-    policy.signIn?.accessLane === 'write' ||
-    managedAccessLane(connector, policy.allowedCapabilities) === 'write'
-  )) ? 'write' : 'read';
+  return members.some(({ policy }) => policy.kind === 'managed' &&
+    managedAccessLane(connector, policy.allowedCapabilities) === 'write') ? 'write' : 'read';
 }
 
 /** A connector whose sign-ins may be shared always records whose sign-in it is. */

@@ -604,17 +604,27 @@ test('a sign-in group gains an account only through a join, and only for a conne
       ),
       ManagedRemoteAccountAlreadyUsedError,
     );
-    const join = (policy: Partial<ConnectionAccountManagedPolicy> = {}) => store.applySignInGroup({
-      adapterId: 'composio',
-      accountRef: 'ca_notion',
-      members: groupMembers([notion]),
-      shared: sharedPolicy(notion),
-      join: teamManagedConnection('connection_notion_sales', 'agent_sales', 'notion', 'ca_notion', policy),
-    });
-    await assert.rejects(
-      join({ signIn: { person: 'notion:workspace-1:user-2', accessLane: 'read' } }),
-      ManagedSignInGroupConflictError,
-    );
+    const join = (
+      policy: Partial<ConnectionAccountManagedPolicy> = {},
+      account: Partial<AgentOwnedConnectionInput['account']> = {},
+    ) => {
+      const input = teamManagedConnection('connection_notion_sales', 'agent_sales', 'notion', 'ca_notion', policy);
+      return store.applySignInGroup({
+        adapterId: 'composio',
+        accountRef: 'ca_notion',
+        members: groupMembers([notion]),
+        shared: sharedPolicy(notion),
+        join: { ...input, account: { ...input.account, ...account } },
+      });
+    };
+    for (const [policy, account] of [
+      [{ signIn: { person: 'notion:workspace-1:user-2', accessLane: 'read' } }, {}],
+      [{ principalRef: 'chickpea:membership:membership_member' }, {}],
+      [{}, { ownerKind: 'member', ownerMembershipId: 'membership_member' }],
+    ] as const) {
+      await assert.rejects(join(policy, account), ManagedSignInGroupConflictError);
+    }
+    await assert.rejects(join({}, { workspaceId: 'T_OTHER' }), /belongs to workspace T_OTHER/);
     assert.equal(await store.getAgentConnectionBindingForAccount('connection_notion_sales'), undefined);
     assert.deepEqual((await store.listConnectionAccounts('T_PLATFORM')).map(({ id }) => id), [notion.id]);
 

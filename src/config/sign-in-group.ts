@@ -84,7 +84,8 @@ export function withSignInGroupPolicy(
 ): ConnectionAccountManagedPolicy {
   const own = Object.entries(policy)
     .filter(([field]) => POLICY_FIELDS[field as keyof typeof POLICY_FIELDS] !== 'shared');
-  return { ...Object.fromEntries(own), ...shared } as ConnectionAccountManagedPolicy;
+  return { ...Object.fromEntries(own), ...signInGroupPolicy(shared as ConnectionAccountManagedPolicy) } as
+    ConnectionAccountManagedPolicy;
 }
 
 function sharedFields<T extends Record<string, 'shared' | 'row'>>(fields: T): Array<SharedFields<T>> {
