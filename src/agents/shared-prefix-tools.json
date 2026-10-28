@@ -409,7 +409,7 @@
   },
   {
    "name": "prepare_connector_setup",
-   "description": "Create a safe browser handoff URL for connecting one catalog service to an editable Agent. Set ownerKind to \"member\" for a personal connection or \"team\" for a team-owned connection. The resulting connection belongs only to that Agent. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.",
+   "description": "Create a safe browser handoff URL for connecting one catalog service to an editable Agent. Set ownerKind to \"member\" for a personal connection or \"team\" for a team-owned connection. The resulting connection belongs only to that Agent. When the Agent already has this service as a managed sign-in connection (for example Notion, HubSpot, or a Google service), the link signs that same connection in again, so the person can change what the service shares with it, such as adding or removing Notion pages; its access level stays the same. A connection that needs attention is reconnected the same way. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.",
    "eager_input_streaming": true,
    "input_schema": {
     "type": "object",

@@ -58,6 +58,8 @@ export interface ManagedConnectorDefinition {
   label: string;
   description: string;
   securityDescription: string;
+  /** What the provider's own sign-in screen lets a person choose, such as Notion pages. Signing in again changes it. */
+  providerSelection?: { label: string };
   resources?: readonly ManagedResourceDefinition[];
   capabilities: readonly ManagedCapabilityDefinition[];
 }

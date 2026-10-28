@@ -1402,8 +1402,13 @@ test('the managed connector link is reusable and completes from the dedicated pa
   }
 });
 
-/** A HubSpot connection that needs attention on an Agent, and the reconnect link Slack gives the owner who asks for it. */
-async function managedReconnectHarness(suffix: string, allowedCapabilities: string[]) {
+async function managedReconnectHarness(
+  suffix: string,
+  allowedCapabilities: string[],
+  connection: { toolkit: string; connector: string; lifecycle: 'ready' | 'needs_attention' } =
+    { toolkit: 'hubspot', connector: 'HubSpot', lifecycle: 'needs_attention' },
+) {
+  const { toolkit, connector } = connection;
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, { now: NOW, suffix });
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
@@ -1417,11 +1422,11 @@ async function managedReconnectHarness(suffix: string, allowedCapabilities: stri
       authorized.push([...input.allowedCapabilities]);
       return {
         authorizationUrl: new URL('https://backend.composio.dev/link/reconnect'),
-        authorizationRef: 'authorization_hubspot_reconnect',
+        authorizationRef: `authorization_${toolkit}_reconnect`,
       };
     },
     async pollAuthorization(input) {
-      return { status: 'active', accountRef: input.authorizationRef, toolkit: 'hubspot' };
+      return { status: 'active', accountRef: input.authorizationRef, toolkit };
     },
     async validate() {},
     async execute() { return { data: {} }; },
@@ -1446,22 +1451,22 @@ async function managedReconnectHarness(suffix: string, allowedCapabilities: stri
     workspaceId: owner.user.slackTeamId, transportMode: 'direct', defaultAgentId: agent.id,
   });
   const account = await config.putConnectionAccount({
-    id: 'connection_hubspot_team',
+    id: `connection_${toolkit}_team`,
     workspaceId: owner.user.slackTeamId,
     ownerKind: 'team',
     createdByMembershipId: owner.membership.id,
-    providerId: 'hubspot',
-    label: 'HubSpot · Team',
+    providerId: toolkit,
+    label: `${connector} · Team`,
     policy: {
       kind: 'managed',
       adapterId: 'composio',
-      toolkit: 'hubspot',
+      toolkit,
       principalRef: managedPrincipalRef(principal, 'team', undefined)!,
-      accountRef: 'account_hubspot_expired',
+      accountRef: `account_${toolkit}_before`,
       allowedCapabilities,
     },
-    secretRefId: 'secret_hubspot_team',
-    lifecycle: 'needs_attention',
+    secretRefId: `secret_${toolkit}_team`,
+    lifecycle: connection.lifecycle,
   });
   const binding = await config.putAgentConnectionBinding({
     agentId: agent.id,
@@ -1482,7 +1487,7 @@ async function managedReconnectHarness(suffix: string, allowedCapabilities: stri
       kind: 'slack', workspaceId: owner.user.slackTeamId, channelId: 'D_SALES',
       threadTs: '1800200000.000200', agentId: agent.id,
     },
-  }, { agentId: agent.id, connector: 'HubSpot', ownerKind: 'team' });
+  }, { agentId: agent.id, connector, ownerKind: 'team' });
   const setupId = new URL(prepared.handoffUrl).pathname.split('/').at(-1)!;
   const app = createManagementSetupRoutes({
     identity, config, management, settings, now: () => NOW,
@@ -1522,6 +1527,38 @@ test('a Slack reconnect link re-authorizes a managed connection that needs atten
       'authorization_hubspot_reconnect');
     assert.deepEqual(await h.config.listAgentConnectionBindings(h.agent.id), [h.binding], 'the Agent binding is unchanged');
     assert.equal((await h.management.getSetup(h.setupId))?.connectionAccountId, h.account.id);
+  } finally {
+    h.close();
+  }
+});
+
+test('a Slack link for a ready Notion connection changes its pages on the same connection', async () => {
+  const h = await managedReconnectHarness('notion-pages', ['notion.content.search'],
+    { toolkit: 'notion', connector: 'Notion', lifecycle: 'ready' });
+  try {
+    const cookie = (await exchange(h.app, h.setupId)).headers.get('set-cookie')!.split(';')[0]!;
+    const page = await h.app.request(`http://localhost/setup/${h.setupId}`, { headers: { cookie } });
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /<h1 id="flow-title">Change which Notion pages Sales can use<\/h1>/);
+    assert.match(html,
+      /Notion shows the pages Sales can use now\. Check pages to add them or uncheck pages to remove them\./);
+
+    const started = await authorize(h.app, h.setupId, cookie, { ownerKind: 'team', access: 'read' });
+    assert.equal(started.status, 200, await started.clone().text());
+    const poll = await h.app.request(`http://localhost/setup/${h.setupId}/managed/poll`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', cookie, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(poll.status, 200, await poll.clone().text());
+
+    const accounts = await h.config.listConnectionAccounts(h.owner.user.slackTeamId);
+    assert.deepEqual(accounts.map(({ id, lifecycle }) => ({ id, lifecycle })),
+      [{ id: h.account.id, lifecycle: 'ready' }], 'the same connection, and no new one');
+    assert.equal(accounts[0]!.policy.kind === 'managed' ? accounts[0]!.policy.accountRef : undefined,
+      'authorization_notion_reconnect');
+    assert.deepEqual(await h.config.listAgentConnectionBindings(h.agent.id), [h.binding]);
   } finally {
     h.close();
   }

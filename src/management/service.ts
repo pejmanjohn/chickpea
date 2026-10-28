@@ -23,6 +23,7 @@ import {
   type ConnectorPreset,
 } from '../config/presets.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
+import { managedOwnerLaneAccount } from '../connections/managed-authorization-flow.ts';
 import {
   AgentExistsError,
   AgentRevisionConflictError,
@@ -1410,7 +1411,7 @@ export class WorkspaceManagementService {
       );
     }
     const baseUrl = await this.resolveSetupBaseUrl();
-    const reconnecting = await this.connectionNeedingReconnect(actor, agent, connector, input.ownerKind);
+    const reconnecting = await this.connectionToReconnect(actor, agent, connector, input.ownerKind);
     if (reconnecting) {
       return this.prepareConnectorReconnect(actor, agent, connector, reconnecting, baseUrl);
     }
@@ -1674,8 +1675,7 @@ export class WorkspaceManagementService {
     return scopes;
   }
 
-  /** The Agent's connection from this connector, in this owner's lane, that needs attention. */
-  private async connectionNeedingReconnect(
+  private async connectionToReconnect(
     actor: LiveManagementActor,
     agent: CustomAgentConfig,
     connector: ConnectorCatalogPreset,
@@ -1688,24 +1688,22 @@ export class WorkspaceManagementService {
       this.stores.config.listAgentConnectionBindings(agent.id),
     ]);
     const bound = new Set(bindings.filter(({ enabled }) => enabled).map(({ connectionAccountId }) => connectionAccountId));
-    const account = accounts.find(({ id, lifecycle, ownerKind: owner, ownerMembershipId, providerId, policy }) =>
-      bound.has(id) && lifecycle === 'needs_attention' && owner === ownerKind &&
-      (owner === 'team' || ownerMembershipId === actor.membershipId) &&
-      ('managedToolkit' in connector
-        ? policy.kind === 'managed' && policy.toolkit === connector.managedToolkit
-        : policy.kind !== 'managed' && (providerId === connector.id || policy.presetId === connector.id)));
+    const account = 'managedToolkit' in connector
+      ? managedOwnerLaneAccount(accounts, bound, {
+          ownerKind,
+          membershipId: actor.membershipId,
+          toolkit: connector.managedToolkit,
+        })
+      : accounts.find(({ id, lifecycle, ownerKind: owner, ownerMembershipId, providerId, policy }) =>
+          bound.has(id) && lifecycle === 'needs_attention' && owner === ownerKind &&
+          (owner === 'team' || ownerMembershipId === actor.membershipId) &&
+          policy.kind !== 'managed' && (providerId === connector.id || policy.presetId === connector.id));
     if (account && !canManageOwnedResource(managementActorPrincipal(actor), account)) {
       throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
     }
     return account;
   }
 
-  /**
-   * Reconnects an existing connection as Admin's Reconnect does: the same
-   * account signs in again and keeps its bindings and Agent grants. Slack gets
-   * a setup link fenced to that account; any other door gets the Agent's
-   * Admin page, where the connection's Reconnect button does the same.
-   */
   private async prepareConnectorReconnect(
     actor: LiveManagementActor,
     agent: CustomAgentConfig,

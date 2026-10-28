@@ -225,6 +225,61 @@ test('prepare_connector_setup reconnects a needs_attention connection in place o
     assert.deepEqual(bindings.map(({ connectionAccountId }) => connectionAccountId).sort(), [hubspot.id, linear.id].sort());
   }));
 
+test('prepare_connector_setup reconnects a ready managed connection so the person can change its access', () =>
+  withFixture('reconnect-ready-managed', async (f) => {
+    const agent = await seedAgent(f);
+    const notion = await bindAccount(f, agent.id, {
+      id: 'connection_notion_team',
+      ownerKind: 'team',
+      providerId: 'notion',
+      label: 'Notion · Team',
+      lifecycle: 'ready',
+      policy: {
+        kind: 'managed',
+        adapterId: 'composio',
+        toolkit: 'notion',
+        principalRef: 'chickpea:organization:test',
+        accountRef: 'account_notion',
+        allowedCapabilities: ['notion.content.search'],
+      },
+    });
+    const hubspot = await bindAccount(f, agent.id, hubspotAccount('pending'));
+    const linear = await bindAccount(f, agent.id, linearAccount('ready'));
+
+    const pending = await call(f, slackContext(f.owner, agent.id), 'prepare_connector_setup', {
+      connector: 'HubSpot',
+      ownerKind: 'team',
+    }) as PrepareConnectorSetupResult;
+    assert.equal(pending.reconnect?.connectionId, hubspot.id, 'a pending managed connection is reconnected too');
+
+    const viaSlack = await call(f, slackContext(f.owner, agent.id), 'prepare_connector_setup', {
+      connector: 'Notion',
+      ownerKind: 'team',
+    }) as PrepareConnectorSetupResult;
+    assert.deepEqual(viaSlack.reconnect, { connectionId: notion.id, label: 'Notion · Team' });
+    const setup = await f.management.getSetup(viaSlack.setupOperationId!);
+    assert.equal(setup?.action, 'managed_connection');
+    assert.equal(setup?.target.connectionId, notion.id, 'the link signs in again on the same connection');
+    assert.equal(setup?.target.replacement, true);
+
+    const viaMcp = await call(f, mcpContext(f.owner), 'prepare_connector_setup', {
+      agentId: agent.id,
+      connector: 'Notion',
+      ownerKind: 'team',
+    }) as PrepareConnectorSetupResult;
+    assert.deepEqual(viaMcp.reconnect, { connectionId: notion.id, label: 'Notion · Team' });
+    assert.equal(viaMcp.handoffUrl, `http://localhost/admin/agents/${agent.id}`);
+
+    const native = await call(f, slackContext(f.owner, agent.id), 'prepare_connector_setup', {
+      connector: 'Linear',
+      ownerKind: 'team',
+    }) as PrepareConnectorSetupResult;
+    assert.equal(native.reconnect, undefined, 'a ready non-managed connection still gets a fresh setup');
+    const nativeSetup = await f.management.getSetup(native.setupOperationId!);
+    assert.equal(nativeSetup?.target.replacement, false);
+    assert.notEqual(nativeSetup?.target.connectionId, linear.id);
+  }));
+
 test('inspect says which connections need reconnecting and how', () =>
   withFixture('reconnect-hint', async (f) => {
     const agent = await seedAgent(f);

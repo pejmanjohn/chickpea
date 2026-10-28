@@ -148,6 +148,7 @@ import {
 import {
   assertManagedAttemptPrincipal,
   discardManagedAuthorizationAfterAuthorityLoss,
+  managedOwnerLaneAccount,
   managedPrincipalRef,
 } from '../connections/managed-authorization-flow.ts';
 import {
@@ -176,6 +177,7 @@ import {
 import {
   MANAGED_CONNECTOR_CATALOG,
   type ManagedConnectorCatalog,
+  type ManagedConnectorDefinition,
 } from '../connections/catalog/index.ts';
 import { verifyComposioWebhook } from '../connections/composio-webhook.ts';
 import {
@@ -1719,13 +1721,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     Promise<ResolvedManagedProviderContext>
   >();
   const managedCatalog = options.managedConnectorCatalog ?? MANAGED_CONNECTOR_CATALOG;
-  const managedCatalogDescriptors = () => managedCatalog.list().map((connector) => ({
+  const managedCatalogDescriptor = (connector: ManagedConnectorDefinition) => ({
     id: connector.id,
     toolkit: connector.toolkit,
     providerId: connector.providerId,
     label: connector.label,
     description: connector.description,
-  }));
+    ...(connector.providerSelection ? { providerSelection: connector.providerSelection } : {}),
+  });
+  const managedCatalogDescriptors = () => managedCatalog.list().map(managedCatalogDescriptor);
   const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
   const snapshots = (c: Context) =>
     options.snapshots ?? getAgentSnapshotStore(c.env as PlatformEnv | undefined);
@@ -5137,7 +5141,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           (error.code === 'in_progress' || error.code === 'recovery_required')) {
         return c.json({
           error: 'managed_authorization_recovery_required',
-          message: 'The stored Google sign-in cannot be recovered automatically. Contact Chickpea support before retrying.',
+          message: 'The stored sign-in cannot be recovered automatically. Contact Chickpea support before retrying.',
         }, 409);
       }
       return internalError(c, error);
@@ -5224,18 +5228,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           bindings.filter((binding) => binding.enabled)
             .map((binding) => binding.connectionAccountId),
         );
-        const existingOwnerLane = accounts.find((account) =>
-          enabledAccountIds.has(account.id) &&
-          account.lifecycle !== 'revoked' &&
-          account.ownerKind === ownerKind &&
-          (ownerKind === 'team' || account.ownerMembershipId === principal.membershipId) &&
-          account.policy.kind === 'managed' &&
-          account.policy.adapterId.trim().toLowerCase() === 'composio' &&
-          account.policy.toolkit === connector.toolkit);
-        if (existingOwnerLane) {
+        if (managedOwnerLaneAccount(accounts, enabledAccountIds, {
+          ownerKind,
+          membershipId: principal.membershipId,
+          toolkit: connector.toolkit,
+        })) {
           return c.json({
             error: 'managed_connection_lane_exists',
-            message: `This Agent already has a ${ownerKind === 'team' ? 'team' : 'personal'} ${connector.label} connection. Disconnect it before connecting another account or changing its access.`,
+            message: `This Agent already has a ${ownerKind === 'team' ? 'team' : 'personal'} ${connector.label} connection. Use that connection's menu to sign in again or change what it shares, or disconnect it first.`,
           }, 409);
         }
       }
@@ -5456,13 +5456,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (error instanceof ManagedAuthorizationError && error.code === 'recovery_required') {
         return c.json({
           error: 'managed_authorization_recovery_required',
-          message: 'This Google sign-in needs administrator cleanup before another connection can start. Contact your Chickpea workspace owner.',
+          message: 'An earlier sign-in needs administrator cleanup before another connection can start. Contact your Chickpea workspace owner.',
         }, 409);
       }
       if (error instanceof ManagedAuthorizationError && error.code === 'in_progress') {
         return c.json({
           error: 'managed_authorization_in_progress',
-          message: 'A Google sign-in is already in progress in another browser. Finish that sign-in before starting another.',
+          message: 'A sign-in is already in progress in another browser. Finish that sign-in before starting another.',
         }, 409);
       }
       return internalError(c, error);
@@ -8820,11 +8820,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const byId = new Map(views.map((account) => [account.id, account]));
       const provider = providerContext.providers.get('composio');
       const managedConnectorCatalog = managedCatalog.list().map((connector) => ({
-        id: connector.id,
-        toolkit: connector.toolkit,
-        providerId: connector.providerId,
-        label: connector.label,
-        description: connector.description,
+        ...managedCatalogDescriptor(connector),
         securityDescription: connector.securityDescription,
         capabilities: connector.capabilities.map((capability) => ({
           id: capability.id,

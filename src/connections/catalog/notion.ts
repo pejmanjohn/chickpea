@@ -82,7 +82,8 @@ export const MANAGED_NOTION_CONNECTORS: readonly ManagedConnectorDefinition[] = 
   label: 'Notion',
   description: 'Search, read, create, and update the Notion pages and databases you approve.',
   securityDescription:
-    'Notion sign-in opens through Composio. In Notion, choose only the pages and databases Chickpea may use. That provider grant includes descendants Notion makes available; change it later by reconnecting. Chickpea excludes archive, delete, sharing, permissions, and raw block APIs.',
+    'In Notion, choose only the pages and databases Chickpea may use. Pages inside them are included. To add or remove pages later, open the connection\'s menu and choose Change Notion pages. Chickpea excludes archive, delete, sharing, permissions, and raw block APIs.',
+  providerSelection: { label: 'pages' },
   capabilities: [
     capability('notion.content.search', 'read', 'read', 'notion_search', 'Search accessible Notion pages and databases.', SearchSchema),
     capability('notion.pages.get', 'read', 'read', 'notion_get_page', 'Read one accessible Notion page and its properties.', PageIdSchema),
