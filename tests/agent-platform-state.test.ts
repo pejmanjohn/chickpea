@@ -651,6 +651,36 @@ test('a sign-in group gains an account only through a join, and only for a conne
   }
 });
 
+test('a sign-in group that is not ready accepts a new member only when the same change makes it ready', async () => {
+  const store = await platformStoreWithAgents('agent_support', 'agent_sales');
+  try {
+    const { account: notion } = await store.createAgentOwnedConnection(
+      teamManagedConnection('connection_notion_support', 'agent_support', 'notion', 'ca_notion'),
+    );
+    // Disconnect in flight: the row waits at needs_attention until the remote account is deleted.
+    const disconnecting = await store.putConnectionAccount(
+      { ...notion, lifecycle: 'needs_attention' }, notion.revision,
+    );
+    const join = (lifecycle?: 'ready') => store.applySignInGroup({
+      adapterId: 'composio',
+      accountRef: 'ca_notion',
+      members: groupMembers([disconnecting]),
+      shared: sharedPolicy(disconnecting),
+      ...(lifecycle ? { lifecycle } : {}),
+      join: teamManagedConnection('connection_notion_sales', 'agent_sales', 'notion', 'ca_notion'),
+    });
+    await assert.rejects(join(), ManagedSignInGroupConflictError);
+    assert.equal(await store.getAgentConnectionBindingForAccount('connection_notion_sales'), undefined);
+    assert.deepEqual(
+      (await store.listConnectionAccounts('T_PLATFORM')).map(({ id, lifecycle }) => [id, lifecycle]),
+      [[notion.id, 'needs_attention']],
+    );
+    assert.deepEqual((await join('ready')).map(({ lifecycle }) => lifecycle), ['ready', 'ready']);
+  } finally {
+    store.close();
+  }
+});
+
 test('one member of a sign-in group changes its own fields but never the fields its group shares', async () => {
   const store = await platformStoreWithAgents('agent_support', 'agent_sales');
   try {
