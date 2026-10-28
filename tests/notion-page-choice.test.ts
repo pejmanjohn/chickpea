@@ -344,6 +344,42 @@ test('a choice narrowed while a sign-in prunes it stays narrowed', async () => {
   }
 });
 
+test('a capability change landing while a page choice is saved is never written back', async () => {
+  const notion = await notionWorkspace();
+  try {
+    await notion.connect('ca_team');
+    const before = (await notion.accountOf('agent_ops')).binding;
+    const narrowed = before.allowedCapabilities.slice(0, -1);
+    assert.ok(narrowed.length > 0 && narrowed.length < before.allowedCapabilities.length);
+    notion.beforeNextBindingWrite(() => notion.config.putAgentConnectionBinding({ ...before, allowedCapabilities: narrowed }));
+    await assert.rejects(
+      notion.choose('agent_ops', { mode: 'only', pages: [TEAM_PLAN.id] }),
+      (error) => error instanceof ManagedResourceSelectionError && error.code === 'stale',
+    );
+    const after = (await notion.accountOf('agent_ops')).binding;
+    assert.deepEqual(after.allowedCapabilities, narrowed, 'the narrowing stands');
+    assert.equal(readAgentPageChoice(after.resourceConstraints), undefined, 'no choice was written over it');
+  } finally {
+    notion.close();
+  }
+});
+
+test('a binding whose stored map could not be read is not saved back as a choice', async () => {
+  const notion = await notionWorkspace();
+  try {
+    await notion.connect('ca_team');
+    const { binding } = await notion.accountOf('agent_ops');
+    await notion.config.putAgentConnectionBinding({ ...binding, resourceConstraints: { unreadable: [] } });
+    await assert.rejects(
+      notion.choose('agent_ops', { mode: 'only', pages: [TEAM_PLAN.id] }),
+      (error) => error instanceof ManagedResourceSelectionError && error.code === 'invalid',
+    );
+    assert.deepEqual((await notion.accountOf('agent_ops')).binding.resourceConstraints, { unreadable: [] });
+  } finally {
+    notion.close();
+  }
+});
+
 test('Admin rows show only the grant titles their Agent may reach, and never page ids', async () => {
   const notion = await notionWorkspace();
   try {

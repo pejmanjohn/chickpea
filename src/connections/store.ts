@@ -1025,10 +1025,15 @@ export class ConnectionAccountService {
     }
     const current = await this.dependencies.config.getAgentConnectionBindingForAccount(account.id);
     if (!current || current.agentId !== binding.agentId) throw new AuthorizationError();
-    const updatedBinding = await this.dependencies.config.putAgentConnectionBinding({
+    // A stored map that could not be read must not be saved back as if it were a choice.
+    if (current.resourceConstraints && 'unreadable' in current.resourceConstraints) {
+      throw new ManagedResourceSelectionError('invalid', 'Notion page choice is invalid');
+    }
+    const updatedBinding = await this.dependencies.config.putAgentConnectionBindingIfUnchanged(current, {
       ...current,
       resourceConstraints: writeAgentPageChoice(current.resourceConstraints, chosen),
     });
+    if (!updatedBinding) throw new ManagedResourceSelectionError('stale', 'Managed connection changed');
     return { account: updatedAccount, binding: updatedBinding };
   }
 
