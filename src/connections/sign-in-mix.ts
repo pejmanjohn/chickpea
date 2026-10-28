@@ -1,0 +1,103 @@
+import type { ConnectionAccount, ConnectionAccountOwnerKind } from '../config/types.ts';
+import type { ManagedConnectorDefinition } from './catalog/index.ts';
+
+/*
+ * Notion keeps one page list per person for Composio's Notion app, so one
+ * Notion account behind both a personal and a team connection would let team
+ * Agents reach pages shared for personal use. In a workspace, one account of a
+ * shared-sign-in connector therefore backs connections of one owner kind only.
+ */
+
+interface SignInLane {
+  connector: ManagedConnectorDefinition;
+  adapterId: string;
+  /** The owner kind of the connection being signed in. */
+  ownerKind: ConnectionAccountOwnerKind;
+  actorMembershipId: string;
+  /** The workspace's connection accounts. */
+  accounts: readonly ConnectionAccount[];
+}
+
+/** The member a connection's sign-in belongs to: a personal owner, or whoever created a team connection. */
+function signInSigner(account: ConnectionAccount): string | undefined {
+  return account.ownerKind === 'member' ? account.ownerMembershipId : account.createdByMembershipId;
+}
+
+/** A live connection of the other owner kind that the actor signed, checked before the provider opens. */
+export function actorSignedOtherKind(lane: SignInLane): ConnectionAccount | undefined {
+  return otherKindAccounts(lane).find((account) => signInSigner(account) === lane.actorMembershipId);
+}
+
+/**
+ * A live connection of the other owner kind that a completed sign-in would mix
+ * with: the same Notion person, or, when either person cannot be compared, a
+ * connection the actor signed.
+ */
+export function signInMix(
+  lane: SignInLane & { person: string | undefined },
+): ConnectionAccount | undefined {
+  return otherKindAccounts(lane).find((account) => {
+    const theirs = account.policy.kind === 'managed' ? account.policy.signIn?.person : undefined;
+    return providerNamed(lane.person) && providerNamed(theirs)
+      ? lane.person === theirs
+      : signInSigner(account) === lane.actorMembershipId;
+  });
+}
+
+/** Chickpea refused a completed sign-in and saved nothing; the message is for the person who signed in. */
+export class ManagedSignInMixError extends Error {
+  readonly name = 'ManagedSignInMixError';
+}
+
+/** Chickpea stopped before the provider opened; the person may continue with a different account. */
+export class ManagedSignInOtherKindError extends Error {
+  readonly name = 'ManagedSignInOtherKindError';
+}
+
+export function signInOtherKindNotice(
+  connector: ManagedConnectorDefinition,
+  otherKind: ConnectionAccountOwnerKind,
+): string {
+  const { label } = connector;
+  const pages = connector.providerSelection?.label ?? 'pages';
+  return `You already connected ${label} for ${ownerKindWord(otherKind)} use in this workspace. ` +
+    `One ${label} account can't be both personal and team here, so ${pages} shared for personal use stay out of team Agents. ` +
+    `To continue, sign in with a different ${label} account. Switch accounts in ${label} before you choose ${pages}.`;
+}
+
+export function signInMixRefusal(
+  connector: ManagedConnectorDefinition,
+  otherKind: ConnectionAccountOwnerKind,
+  /** Whether the person who signed in can change that connection's pages themselves. */
+  manageable: boolean,
+): string {
+  const { label } = connector;
+  const pages = connector.providerSelection?.label ?? 'pages';
+  const change = `Change ${label} ${pages}`;
+  return `Chickpea didn't connect ${label}. That ${label} account is already used for a ${ownerKindWord(otherKind)} connection in this workspace, ` +
+    `and one ${label} account can't be both personal and team here. ` +
+    `The ${pages} you just chose in ${label} stay shared with that connection. ` +
+    (manageable
+      ? `To remove them, open that connection's menu and choose ${change}.`
+      : `To remove them, ask whoever manages that connection to choose ${change} in its menu.`);
+}
+
+function otherKindAccounts(lane: SignInLane): ConnectionAccount[] {
+  if (!lane.connector.sharedSignIn) return [];
+  const adapterId = lane.adapterId.trim().toLowerCase();
+  return lane.accounts.filter((account) =>
+    account.lifecycle !== 'revoked' &&
+    account.ownerKind !== lane.ownerKind &&
+    account.policy.kind === 'managed' &&
+    account.policy.adapterId.trim().toLowerCase() === adapterId &&
+    account.policy.toolkit === lane.connector.toolkit);
+}
+
+/** Only a person the provider named can be compared; a `member:` fallback cannot. */
+function providerNamed(person: string | undefined): person is string {
+  return person?.startsWith('notion:') === true;
+}
+
+function ownerKindWord(ownerKind: ConnectionAccountOwnerKind): string {
+  return ownerKind === 'team' ? 'team' : 'personal';
+}
