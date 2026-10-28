@@ -5238,7 +5238,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (existingOwnerLane) {
           return c.json({
             error: 'managed_connection_lane_exists',
-            message: `This Agent already has a ${ownerKind === 'team' ? 'team' : 'personal'} ${connector.label} connection. Disconnect it before connecting another account or changing its access.`,
+            message: `This Agent already has a ${ownerKind === 'team' ? 'team' : 'personal'} ${connector.label} connection. Use that connection's menu to sign in again or change what it shares, or disconnect it first.`,
           }, 409);
         }
       }
