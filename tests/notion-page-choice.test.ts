@@ -68,6 +68,7 @@ async function notionWorkspace() {
     complete: true,
   });
   let accountRef = '';
+  let listings = 0;
   const signIns: ManagedConnectionProvider = {
     id: 'composio',
     async authorize() {
@@ -87,7 +88,10 @@ async function notionWorkspace() {
         pages,
       };
     },
-    async listPages() { return listing(); },
+    async listPages() {
+      listings += 1;
+      return listing();
+    },
     async execute() { return { data: {} }; },
     async revoke() {},
   };
@@ -176,7 +180,7 @@ async function notionWorkspace() {
     return reads.flat().sort();
   };
   return {
-    config, service, shared, connect, accountOf, choose, reached,
+    config, service, shared, connect, accountOf, choose, reached, listings: () => listings,
     close() { config.close(); settings.close(); },
   };
 }
@@ -250,6 +254,25 @@ test('an Agent is offered the roots its sign-in lists, and may limit itself to t
     await notion.choose('agent_ops', { mode: 'all' });
     assert.equal((await notion.service.agentPages(team)).mode, 'all');
     assert.deepEqual(await notion.reached('agent_ops'), ALL_SHARED);
+  } finally {
+    notion.close();
+  }
+});
+
+test('a page choice of another mode, or of more than 256 pages, is refused before Notion is asked', async () => {
+  const notion = await notionWorkspace();
+  try {
+    await notion.connect('ca_team');
+    await notion.choose('agent_ops', { mode: 'only', pages: [TEAM_PLAN.id] });
+    const listed = notion.listings();
+    const refused = (error: unknown) => error instanceof ManagedResourceSelectionError && error.code === 'invalid';
+    const tooMany = Array.from({ length: 257 }, (_, index) => id(`f${index.toString(16)}`));
+    for (const choice of [{ mode: 'none' }, { mode: 'only' }, { mode: 'only', pages: tooMany }, { pages: [TEAM_PLAN.id] }]) {
+      await assert.rejects(notion.choose('agent_ops', choice as never), refused, JSON.stringify(choice).slice(0, 40));
+    }
+    assert.equal(notion.listings(), listed, 'Notion was not asked');
+    assert.deepEqual(readAgentPageChoice((await notion.accountOf('agent_ops')).binding.resourceConstraints), [TEAM_PLAN.id]);
+    assert.deepEqual(await notion.reached('agent_ops'), titles(TEAM_PLAN, TEAM_PLAN_NOTES), 'the choice is unchanged');
   } finally {
     notion.close();
   }

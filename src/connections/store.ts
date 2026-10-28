@@ -1,3 +1,4 @@
+import { isRecord } from '../security/content-validation.ts';
 import { sha256Hex } from '../security/digest.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { canEditAgent, canManageOwnedResource, requirePermission, AuthorizationError } from '../auth/permissions.ts';
@@ -63,6 +64,7 @@ import {
   projectRecoverableConnectionAccounts,
 } from './runtime.ts';
 import {
+  MAX_NOTION_PAGES,
   NOTION_PAGES_KEY,
   agentPageScope,
   pageRoots,
@@ -994,16 +996,17 @@ export class ConnectionAccountService {
     choice: { mode: 'all' } | { mode: 'only'; pages: readonly string[] };
     signal?: AbortSignal;
   }): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
+    const requested = requestedPages(input.choice);
     const { account, binding } = await this.requireAgentOwnedAccount(input);
     if (account.revision !== input.expectedRevision) {
       throw new ManagedResourceSelectionError('stale', 'Managed connection changed');
     }
     const policy = this.pageScopedPolicy(account);
     let chosen: NotionId[] | undefined;
-    if (input.choice.mode === 'only') {
+    if (requested) {
       const { roots } = pageRoots(await this.listPages(policy, input.signal));
       const choosable = new Set(roots.map(({ id }) => id));
-      chosen = [...new Set(input.choice.pages.map((raw) => {
+      chosen = [...new Set(requested.map((raw) => {
         const id = parseNotionId(raw);
         if (!id || !choosable.has(id)) throw new ManagedResourceSelectionError('invalid', 'Notion page is not available');
         return id;
@@ -1430,6 +1433,15 @@ function logSignInRecorded(account: ConnectionAccount): void {
     accessLane: policy.signIn.accessLane,
     personSource: policy.signIn.person?.startsWith('member:') ? 'member' : 'provider',
   }));
+}
+
+/** The pages a choice names, or undefined for all of them; any other choice is refused before Notion is asked. */
+function requestedPages(choice: unknown): readonly unknown[] | undefined {
+  const mode = isRecord(choice) ? choice.mode : undefined;
+  const pages = isRecord(choice) ? choice.pages : undefined;
+  if (mode === 'all') return undefined;
+  if (mode === 'only' && Array.isArray(pages) && pages.length <= MAX_NOTION_PAGES) return pages;
+  throw new ManagedResourceSelectionError('invalid', 'Notion page choice is invalid');
 }
 
 /** Every page in canonical form; undefined when the provider returned anything else. */
