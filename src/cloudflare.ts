@@ -32,6 +32,7 @@ import {
   ConnectionAccountAlreadyBoundError,
   ConnectionAccountRevisionConflictError,
   ManagedRemoteAccountAlreadyUsedError,
+  ManagedSignInGroupConflictError,
   ReservedAgentIdentityError,
   UnknownAgentError,
   ModelRoleRevisionConflictError,
@@ -107,6 +108,8 @@ import type {
   AgentConnectionBindingInput,
   AgentOwnedConnection,
   AgentOwnedConnectionInput,
+  SignInGroupChange,
+  SignInReferenceRelease,
   AgentScheduleReference,
   AgentScheduleReferenceInput,
   AgentSnapshot,
@@ -1509,6 +1512,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.call((stores) => stores.config.createAgentOwnedConnection(input));
   }
 
+  async configApplySignInGroup(
+    change: SignInGroupChange,
+  ): Promise<StateRpcResult<ConnectionAccount[]>> {
+    return this.call((stores) => stores.config.applySignInGroup(change));
+  }
+
+  async configReleaseSignInReference(input: {
+    connectionAccountId: string;
+    expectedRevision: number;
+  }): Promise<StateRpcResult<SignInReferenceRelease>> {
+    return this.call((stores) => stores.config.releaseSignInReference(input));
+  }
+
   async configListAgentConnectionBindings(
     agentId: string,
   ): Promise<StateRpcResult<AgentConnectionBinding[]>> {
@@ -2859,6 +2875,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       }
       if (err instanceof ManagedRemoteAccountAlreadyUsedError) {
         return rpcError('managed_remote_account_already_used', err.message, {
+          adapterId: err.adapterId,
+          accountRef: err.accountRef,
+        });
+      }
+      if (err instanceof ManagedSignInGroupConflictError) {
+        return rpcError('managed_sign_in_group_conflict', err.message, {
           adapterId: err.adapterId,
           accountRef: err.accountRef,
         });

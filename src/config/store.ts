@@ -12,6 +12,7 @@ import {
   ConnectionAccountAlreadyBoundError,
   ConnectionAccountRevisionConflictError,
   ManagedRemoteAccountAlreadyUsedError,
+  ManagedSignInGroupConflictError,
   ModelRoleRevisionConflictError,
   ReservedAgentIdentityError,
   UnknownAgentError,
@@ -73,7 +74,15 @@ import {
   type WorkspaceInstallation,
   type WorkspaceInstallationPatch,
   MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY,
+  type SignInGroupChange,
+  type SignInReferenceRelease,
 } from './types.ts';
+import {
+  MANAGED_SIGN_IN_PERSON,
+  sameSignInGroup,
+  withSignInGroupPolicy,
+} from './sign-in-group.ts';
+import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb } from '../state/node-state-db.ts';
 import { schemaInstallRequired, type SqlParam, type StateDb } from '../state/state-db.ts';
@@ -562,6 +571,13 @@ export interface ConfigStore {
     expectedRevision?: number,
   ): Promise<ConnectionAccount>;
   createAgentOwnedConnection(input: AgentOwnedConnectionInput): Promise<AgentOwnedConnection>;
+  /** The only way to change a sign-in group's shared fields or add an account to it. */
+  applySignInGroup(change: SignInGroupChange): Promise<ConnectionAccount[]>;
+  /** Revoke this account when another live account shares its remote account; otherwise change nothing. */
+  releaseSignInReference(input: {
+    connectionAccountId: string;
+    expectedRevision: number;
+  }): Promise<SignInReferenceRelease>;
   listAgentConnectionBindings(agentId: string): Promise<AgentConnectionBinding[]>;
   getAgentConnectionBindingForAccount(
     connectionAccountId: string,
@@ -1954,24 +1970,36 @@ export class ConfigStoreLogic {
     const input = submitted.policy.kind === 'mcp'
       ? { ...submitted, policy: { ...submitted.policy, url: canonicalMcpServerUrl(submitted.policy.url) } }
       : submitted;
+    // Only applySignInGroup adds an account to a sign-in group or changes the
+    // fields its members share; one member may still change its own fields.
     if (input.policy.kind === 'managed' && input.lifecycle !== 'revoked') {
       const adapterId = input.policy.adapterId.trim().toLowerCase();
-      const duplicate = this.db.get(
-        `SELECT id FROM config_connection_accounts
-         WHERE id <> ?
-           AND lifecycle <> 'revoked'
-           AND json_extract(policy_json, '$.kind') = 'managed'
-           AND lower(trim(json_extract(policy_json, '$.adapterId'))) = ?
-           AND json_extract(policy_json, '$.accountRef') = ?
-         LIMIT 1`,
-        input.id,
-        adapterId,
-        input.policy.accountRef,
-      );
-      if (duplicate) {
+      const holders = this.liveManagedAccounts(adapterId, input.policy.accountRef);
+      if (holders.length > 0 && holders.every(({ id }) => id !== input.id)) {
         throw new ManagedRemoteAccountAlreadyUsedError(adapterId, input.policy.accountRef);
       }
     }
+    const row = this.db.get(
+      'SELECT * FROM config_connection_accounts WHERE id = ?',
+      input.id,
+    ) as unknown as ConnectionAccountRow | undefined;
+    const current = row && rowToConnectionAccount(row);
+    if (current?.policy.kind === 'managed' && current.lifecycle !== 'revoked' &&
+        input.lifecycle !== 'revoked') {
+      const adapterId = current.policy.adapterId.trim().toLowerCase();
+      const siblings = this.liveManagedAccounts(adapterId, current.policy.accountRef)
+        .filter(({ id }) => id !== current.id);
+      if (siblings.some((sibling) => !sameSignInGroup(sibling, input))) {
+        throw new ManagedSignInGroupConflictError(adapterId, current.policy.accountRef);
+      }
+    }
+    return this.writeConnectionAccount(input, expectedRevision);
+  }
+
+  private writeConnectionAccount(
+    input: ConnectionAccountInput,
+    expectedRevision?: number,
+  ): ConnectionAccount {
     const current = this.db.get(
       'SELECT * FROM config_connection_accounts WHERE id = ?',
       input.id,
@@ -2039,17 +2067,112 @@ export class ConfigStoreLogic {
     return this.listConnectionAccounts(input.workspaceId).find((account) => account.id === input.id)!;
   }
 
+  /** Every non-revoked managed account holding one remote account, in any workspace. */
+  private liveManagedAccounts(normalizedAdapterId: string, accountRef: string): ConnectionAccount[] {
+    return this.db.all(
+      `SELECT * FROM config_connection_accounts
+       WHERE lifecycle <> 'revoked'
+         AND json_extract(policy_json, '$.kind') = 'managed'
+         AND lower(trim(json_extract(policy_json, '$.adapterId'))) = ?
+         AND json_extract(policy_json, '$.accountRef') = ?
+       ORDER BY id`,
+      normalizedAdapterId,
+      accountRef,
+    ).map((row) => rowToConnectionAccount(row as unknown as ConnectionAccountRow));
+  }
+
   createAgentOwnedConnection(input: AgentOwnedConnectionInput): AgentOwnedConnection {
-    if (
-      input.binding.connectionAccountId !== input.account.id ||
-      input.binding.providerId !== input.account.providerId
-    ) {
-      throw new Error('Connection account and initial binding identity must match');
-    }
+    requireMatchingInitialBinding(input);
     return this.db.transaction(() => {
       const account = this.putConnectionAccount(input.account, 0);
       const binding = this.putAgentConnectionBindingRow(input.binding);
       return { account, binding };
+    });
+  }
+
+  applySignInGroup(change: SignInGroupChange): ConnectionAccount[] {
+    const adapterId = change.adapterId.trim().toLowerCase();
+    const conflict = () => new ManagedSignInGroupConflictError(adapterId, change.accountRef);
+    return this.db.transaction(() => {
+      const members = this.liveManagedAccounts(adapterId, change.accountRef);
+      const requested = new Map(change.members.map((member) => [member.connectionAccountId, member]));
+      if (members.length === 0 || requested.size !== change.members.length ||
+          requested.size !== members.length || members.some(({ id }) => !requested.has(id))) {
+        throw conflict();
+      }
+      for (const member of members) {
+        const { expectedRevision } = requested.get(member.id)!;
+        if (member.revision !== expectedRevision) {
+          throw new ConnectionAccountRevisionConflictError(member.id, expectedRevision, member.revision);
+        }
+      }
+      if (change.shared.accountRef !== change.accountRef &&
+          this.liveManagedAccounts(adapterId, change.shared.accountRef).length > 0) {
+        throw new ManagedRemoteAccountAlreadyUsedError(adapterId, change.shared.accountRef);
+      }
+      for (const member of members) {
+        if (member.policy.kind !== 'managed') throw conflict();
+        const allowedCapabilities = requested.get(member.id)!.allowedCapabilities;
+        const next: ConnectionAccountInput = {
+          ...member,
+          policy: withSignInGroupPolicy(
+            allowedCapabilities
+              ? { ...member.policy, allowedCapabilities: [...allowedCapabilities] }
+              : member.policy,
+            change.shared,
+          ),
+          lifecycle: change.lifecycle ?? member.lifecycle,
+        };
+        validateConnectionAccountInput(next);
+        this.writeConnectionAccount(next, member.revision);
+      }
+      if (change.join) {
+        const { account } = change.join;
+        requireMatchingInitialBinding(change.join);
+        validateConnectionAccountInput(account);
+        if (account.policy.kind !== 'managed' || account.lifecycle === 'revoked' ||
+            account.policy.accountRef !== change.shared.accountRef ||
+            MANAGED_CONNECTOR_CATALOG.connector(account.policy.toolkit)?.sharedSignIn !== true) {
+          throw new ManagedRemoteAccountAlreadyUsedError(adapterId, change.shared.accountRef);
+        }
+        this.writeConnectionAccount(account, 0);
+        this.putAgentConnectionBindingRow(change.join.binding);
+      }
+      const group = this.liveManagedAccounts(adapterId, change.shared.accountRef);
+      if (group.length !== members.length + (change.join ? 1 : 0) ||
+          group.some((account) => !sameSignInGroup(account, group[0]!))) {
+        throw conflict();
+      }
+      return group;
+    });
+  }
+
+  releaseSignInReference(input: {
+    connectionAccountId: string;
+    expectedRevision: number;
+  }): SignInReferenceRelease {
+    return this.db.transaction(() => {
+      const row = this.db.get(
+        'SELECT * FROM config_connection_accounts WHERE id = ?',
+        input.connectionAccountId,
+      ) as unknown as ConnectionAccountRow | undefined;
+      if (!row) throw new Error(`Unknown connection account ${input.connectionAccountId}`);
+      const account = rowToConnectionAccount(row);
+      if (account.revision !== input.expectedRevision) {
+        throw new ConnectionAccountRevisionConflictError(account.id, input.expectedRevision, account.revision);
+      }
+      if (account.policy.kind !== 'managed' || account.lifecycle === 'revoked') {
+        throw new Error('Only a live managed connection account holds a sign-in');
+      }
+      const holders = this.liveManagedAccounts(
+        account.policy.adapterId.trim().toLowerCase(),
+        account.policy.accountRef,
+      );
+      if (holders.every(({ id }) => id === account.id)) return { kind: 'last_reference' as const };
+      return {
+        kind: 'released' as const,
+        account: this.writeConnectionAccount({ ...account, lifecycle: 'revoked' }, account.revision),
+      };
     });
   }
 
@@ -4239,6 +4362,15 @@ function parseSlackPublicContextImages(value: string | null | undefined): SlackP
   }
 }
 
+function requireMatchingInitialBinding(input: AgentOwnedConnectionInput): void {
+  if (
+    input.binding.connectionAccountId !== input.account.id ||
+    input.binding.providerId !== input.account.providerId
+  ) {
+    throw new Error('Connection account and initial binding identity must match');
+  }
+}
+
 function validateConnectionAccountInput(input: ConnectionAccountInput): void {
   if (!input.id.trim() || !input.workspaceId.trim() || !input.providerId.trim()) {
     throw new Error('Connection account identity is incomplete');
@@ -4305,6 +4437,16 @@ function validateConnectionAccountInput(input: ConnectionAccountInput): void {
         typeof item.label !== 'string' || !item.label.trim() || item.label.length > 240)
     )) {
       throw new Error('Managed connection grant summary is invalid');
+    }
+    const signIn = input.policy.signIn;
+    if (signIn !== undefined && (
+      !signIn || typeof signIn !== 'object' ||
+      Object.keys(signIn).some((key) => key !== 'person' && key !== 'accessLane') ||
+      (signIn.accessLane !== 'read' && signIn.accessLane !== 'write') ||
+      (signIn.person !== undefined &&
+        (typeof signIn.person !== 'string' || !MANAGED_SIGN_IN_PERSON.test(signIn.person)))
+    )) {
+      throw new Error('Managed connection sign-in is invalid');
     }
   }
 }
