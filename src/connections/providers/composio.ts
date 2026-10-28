@@ -23,6 +23,8 @@ import type {
   ManagedConnectionExecutionInput,
   ManagedConnectionExecutionResult,
   ManagedConnectionProvider,
+  ManagedConnectionValidationResult,
+  ManagedPageListing,
 } from '../managed.ts';
 import {
   ManagedAuthorizationAllocatedError,
@@ -31,8 +33,22 @@ import {
   ManagedProviderRequestError,
 } from '../managed-errors.ts';
 import { manifestComposioCapabilities } from './composio/manifest-capabilities.ts';
-import { NotionEdgeCache, NotionPageUnavailableError, notionScopeGate } from './composio/notion-reach.ts';
+import {
+  NotionEdgeCache,
+  NotionPageUnavailableError,
+  notionDataSourceDatabase,
+  notionParent,
+  notionScopeGate,
+  type NotionParent,
+} from './composio/notion-reach.ts';
 import { isNotionCapabilityId } from '../catalog/notion.ts';
+import {
+  pageRoots,
+  parseNotionId,
+  type NotionId,
+  type NotionListedPage,
+  type NotionPageListing,
+} from '../notion-pages.ts';
 import { composioToolkitVersion } from './composio/versions.ts';
 
 interface ComposioSessionLike {
@@ -1824,13 +1840,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
   async validate(input: {
     policy: ConnectionAccountManagedPolicy;
     signal?: AbortSignal;
-  }): Promise<{
-    grantSummary?: {
-      items: Array<{ type: 'page' | 'database'; label: string }>;
-      truncated: boolean;
-    };
-    person?: string;
-  } | void> {
+  }): Promise<ManagedConnectionValidationResult | void> {
     const apiKey = this.requireApiKey();
     this.validateCapabilities(input.policy);
     const signal = boundedSignal(input.signal);
@@ -1944,27 +1954,22 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         }
       }
       if (input.policy.toolkit === 'notion') {
-        const search = COMPOSIO_CAPABILITIES['notion.content.search'];
-        if (!search) {
-          throw definiteManagedValidationFailure('Notion grant verification is unavailable');
-        }
         const client = await this.client(apiKey);
-        const result = await executeComposioTool(client, input.policy, {
-          toolkit: search.toolkit,
-          tool: search.tool,
-          arguments: {
-            fetch_type: 'all',
-            page_size: 20,
-          },
-          signal,
-        });
-        if (result.error) {
+        // About-me goes first so that the listing's calls cannot spend Notion's rate limit before it.
+        const person = await notionSignInPerson(client, input.policy, signal);
+        const pages = await listNotionPages(notionReader(client, input.policy, signal));
+        if (!pages) {
           throw definiteManagedValidationFailure('Notion grant verification failed', 1);
         }
-        const person = await notionSignInPerson(client, input.policy, signal);
+        const { roots, complete } = pageRoots(pages);
         return {
-          grantSummary: notionGrantSummary(result.data),
-          ...(person ? { person } : {}),
+          grantSummary: {
+            items: roots.slice(0, 20).map(({ id, kind, label }) => ({ id, type: kind, label })),
+            truncated: roots.length > 20 || !complete,
+          },
+          ...(person.status === 'named' ? { person: person.person } : {}),
+          ...(person.status === 'failed' ? { personLookupFailed: true as const } : {}),
+          pages,
         };
       }
     } catch (error) {
@@ -1980,6 +1985,23 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         },
       );
     }
+  }
+
+  async listPages(input: {
+    policy: ConnectionAccountManagedPolicy;
+    signal?: AbortSignal;
+  }): Promise<ManagedPageListing> {
+    if (input.policy.toolkit !== 'notion') throw new Error('Only Notion lists pages');
+    const apiKey = this.requireApiKey();
+    this.validateCapabilities(input.policy);
+    const client = await this.client(apiKey);
+    const pages = await listNotionPages(notionReader(client, input.policy, boundedSignal(input.signal)));
+    if (!pages) {
+      throw new ManagedProviderRequestError('provider_unavailable', 'Notion pages could not be listed', {
+        remoteCallCount: 1, providerToolCallCount: 1, capabilityToolDispatched: false,
+      });
+    }
+    return pages;
   }
 
   async execute(input: ManagedConnectionExecutionInput): Promise<ManagedConnectionExecutionResult> {
@@ -5252,54 +5274,147 @@ function projectNotionSearch(data: Record<string, unknown>): Record<string, unkn
 
 /**
  * The Notion person who approved this sign-in: Notion keeps one page list per
- * person and workspace. Absent when Notion does not name a user owner; the
- * caller then records the Chickpea member who signed in.
+ * person and workspace. `unnamed` when Notion answers without a user owner,
+ * so the caller records the Chickpea member who signed in; `failed` when the
+ * call itself fails, so a reconnect keeps the person it already knows.
  */
 async function notionSignInPerson(
   client: ComposioClientLike,
   policy: ConnectionAccountManagedPolicy,
   signal: AbortSignal,
-): Promise<string | undefined> {
+): Promise<{ status: 'named'; person: string } | { status: 'unnamed' } | { status: 'failed' }> {
+  let result: Awaited<ReturnType<typeof executeComposioTool>>;
   try {
-    const result = await executeComposioTool(client, policy, {
+    result = await executeComposioTool(client, policy, {
       toolkit: 'notion',
       tool: 'NOTION_GET_ABOUT_ME',
       arguments: {},
       signal,
     });
-    if (result.error) return undefined;
-    const source = isRecord(result.data.data) ? result.data.data : result.data;
-    const bot = isRecord(source.bot) ? source.bot : {};
-    const owner = isRecord(bot.owner) ? bot.owner : {};
-    const user = isRecord(owner.user) ? owner.user : {};
-    if (owner.type !== 'user' || typeof bot.workspace_id !== 'string' || typeof user.id !== 'string') {
-      return undefined;
-    }
-    const person = `notion:${bot.workspace_id}:${user.id}`;
-    return MANAGED_SIGN_IN_PERSON.test(person) ? person : undefined;
   } catch {
-    return undefined;
+    return { status: 'failed' };
   }
+  if (result.error) return { status: 'failed' };
+  const source = isRecord(result.data.data) ? result.data.data : result.data;
+  const bot = isRecord(source.bot) ? source.bot : {};
+  const owner = isRecord(bot.owner) ? bot.owner : {};
+  const user = isRecord(owner.user) ? owner.user : {};
+  if (owner.type !== 'user' || typeof bot.workspace_id !== 'string' || typeof user.id !== 'string') {
+    return { status: 'unnamed' };
+  }
+  const person = `notion:${bot.workspace_id}:${user.id}`;
+  return MANAGED_SIGN_IN_PERSON.test(person) ? { status: 'named', person } : { status: 'unnamed' };
 }
 
-function notionGrantSummary(data: Record<string, unknown>): {
-  items: Array<{ type: 'page' | 'database'; label: string }>;
-  truncated: boolean;
-} {
-  const projected = projectNotionSearch(data);
-  const sourceItems = Array.isArray(projected.items) ? projected.items : [];
-  const items = sourceItems.slice(0, 20).flatMap((item) => {
-    if (!isRecord(item)) return [];
-    const type = item.object === 'database' ? 'database' as const : 'page' as const;
-    const title = typeof item.title === 'string' && item.title.trim()
-      ? item.title.trim().slice(0, 240)
-      : `Untitled Notion ${type}`;
-    return [{ type, label: title }];
-  });
-  return {
-    items,
-    truncated: sourceItems.length > items.length || projected.has_more === true,
+/** Reads one Notion tool; undefined when the provider reports that the call did not succeed. */
+type NotionReader = (
+  tool: string,
+  arguments_: Record<string, unknown>,
+) => Promise<Record<string, unknown> | undefined>;
+
+function notionReader(
+  client: ComposioClientLike,
+  policy: ConnectionAccountManagedPolicy,
+  signal: AbortSignal,
+): NotionReader {
+  return async (tool, arguments_) => {
+    const result = await executeComposioTool(client, policy, {
+      toolkit: 'notion', tool, arguments: arguments_, signal,
+    });
+    if (result.error) return undefined;
+    return isRecord(result.data.data) ? result.data.data : result.data;
   };
+}
+
+const NOTION_LISTING_PAGES = 20;
+const NOTION_LISTING_LOOKUPS = 20;
+
+/**
+ * The pages and databases a Notion credential reaches, each with the page or
+ * database Notion names as its parent. A data source stands for its
+ * database. Undefined when the first listing call fails.
+ */
+async function listNotionPages(read: NotionReader): Promise<NotionPageListing | undefined> {
+  const listed = new Map<NotionId, {
+    kind: NotionListedPage['kind'];
+    label: string;
+    parent: NotionParent | 'unknown';
+  }>();
+  const dataSources = new Map<NotionId, NotionId>();
+  const unparented: NotionId[] = [];
+  const record = (
+    id: NotionId,
+    kind: NotionListedPage['kind'],
+    label: string | undefined,
+    parent: NotionParent | 'unknown' | 'missing',
+  ) => {
+    if (listed.has(id)) return;
+    if (parent === 'missing') unparented.push(id);
+    listed.set(id, {
+      kind,
+      label: label?.slice(0, 240) || `Untitled Notion ${kind}`,
+      parent: parent === 'missing' ? 'unknown' : parent,
+    });
+  };
+  let complete = false;
+  let cursor: string | undefined;
+  for (let pageNumber = 0; pageNumber < NOTION_LISTING_PAGES; pageNumber += 1) {
+    let source: Record<string, unknown> | undefined;
+    try {
+      source = await read('NOTION_FETCH_DATA', {
+        fetch_type: 'all',
+        page_size: 100,
+        ...(cursor ? { start_cursor: cursor } : {}),
+      });
+    } catch (error) {
+      if (pageNumber === 0) throw error;
+    }
+    if (!source) {
+      if (pageNumber === 0) return undefined;
+      break;
+    }
+    const results = Array.isArray(source.results) ? source.results : [];
+    const items = results.length > 0 ? results : Array.isArray(source.values) ? source.values : [];
+    for (const item of items) {
+      const id = isRecord(item) ? parseNotionId(item.id) : undefined;
+      if (!id || !isRecord(item)) continue;
+      const object = item.object ?? item.type;
+      if (object === 'data_source') {
+        const owner = notionDataSourceDatabase(item);
+        if (!owner) continue;
+        dataSources.set(id, owner.database);
+        record(owner.database, 'database', notionTitle(item), owner.parent ?? 'unknown');
+      } else if (object === 'page' || object === 'database') {
+        record(id, object, notionTitle(item), item.parent === undefined
+          ? 'missing'
+          : notionParent(item.parent) ?? 'unknown');
+      }
+    }
+    const next = typeof source.next_cursor === 'string' && source.next_cursor ? source.next_cursor : undefined;
+    if (source.has_more !== true || !next) {
+      complete = true;
+      break;
+    }
+    cursor = next;
+  }
+  for (const id of unparented.slice(0, NOTION_LISTING_LOOKUPS)) {
+    const item = listed.get(id)!;
+    try {
+      const object = item.kind === 'page'
+        ? await read('NOTION_RETRIEVE_PAGE', { page_id: id })
+        : await read('NOTION_FETCH_DATABASE', { database_id: id });
+      item.parent = notionParent(object?.parent) ?? 'unknown';
+    } catch {
+      // An unknown parent lists the item as a root: a noisier list, never a wider reach.
+    }
+  }
+  const pages = [...listed].map(([id, { kind, label, parent }]): NotionListedPage => {
+    const parentId = parent === 'unknown' || parent.kind === 'workspace' || parent.kind === 'block'
+      ? undefined
+      : parent.kind === 'data_source' ? dataSources.get(parent.id) : parent.id;
+    return { id, kind, label, ...(parentId ? { parent: parentId } : {}) };
+  });
+  return { pages, complete };
 }
 
 function notionTitle(source: Record<string, unknown>): string | undefined {

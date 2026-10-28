@@ -7,15 +7,19 @@ import {
   intersectManagedResourceConstraints,
 } from '../src/connections/catalog/index.ts';
 import {
+  pageRoots,
   parseNotionId,
   readAgentPageChoice,
   writeAgentPageChoice,
   type NotionId,
+  type NotionListedPage,
 } from '../src/connections/notion-pages.ts';
 import { applyConnectionCapabilityCeiling } from '../src/connections/runtime.ts';
 
 const id = (digit: string) => `${digit.repeat(8)}-${digit.repeat(4)}-${digit.repeat(4)}-${digit.repeat(4)}-${digit.repeat(12)}` as NotionId;
-const [A, B, C] = ['a', 'b', 'c'].map(id) as [NotionId, NotionId, NotionId];
+const [A, B, C, D, F] = ['a', 'b', 'c', 'd', 'f'].map(id) as [NotionId, NotionId, NotionId, NotionId, NotionId];
+const listed = (page: NotionId, parent?: NotionId): NotionListedPage =>
+  ({ id: page, kind: 'page', label: page.slice(0, 1), ...(parent ? { parent } : {}) });
 
 test('parseNotionId accepts dashed, bare and notion.so URL ids, and nothing else', () => {
   const canonical = '1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d';
@@ -50,6 +54,16 @@ test('a stored choice that does not parse narrows instead of widening', () => {
   assert.deepEqual(writeAgentPageChoice(undefined, []), { notionPages: [] });
   assert.throws(() => writeAgentPageChoice(undefined, Array.from({ length: 257 }, (_, index) =>
     `${index.toString(16).padStart(8, '0')}-0000-4000-8000-000000000000` as NotionId)), /at most 256/);
+});
+
+test('page roots are the listed pages no listed page contains, at most 256', () => {
+  const listing = { pages: [listed(A), listed(B, A), listed(C, F), listed(D)], complete: true };
+  assert.deepEqual(pageRoots(listing), { roots: [listed(A), listed(C, F), listed(D)], complete: true });
+  const wide = Array.from({ length: 257 }, (_, index) =>
+    listed(`${index.toString(16).padStart(8, '0')}-0000-4000-8000-000000000000` as NotionId));
+  const capped = pageRoots({ pages: wide, complete: true });
+  assert.equal(capped.roots.length, 256);
+  assert.equal(capped.complete, false, 'a list cut at 256 is not the whole list');
 });
 
 const NOTION_POLICY: ConnectionAccountManagedPolicy = {

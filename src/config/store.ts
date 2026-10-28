@@ -83,6 +83,7 @@ import {
   withSignInGroupPolicy,
 } from './sign-in-group.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
+import { NOTION_ID_PATTERN } from '../connections/notion-pages.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb } from '../state/node-state-db.ts';
 import { schemaInstallRequired, type SqlParam, type StateDb } from '../state/state-db.ts';
@@ -4437,7 +4438,8 @@ function validateConnectionAccountInput(input: ConnectionAccountInput): void {
       !Array.isArray(grantSummary.items) || grantSummary.items.length > 20 ||
       grantSummary.items.some((item) =>
         !item || (item.type !== 'page' && item.type !== 'database') ||
-        typeof item.label !== 'string' || !item.label.trim() || item.label.length > 240)
+        typeof item.label !== 'string' || !item.label.trim() || item.label.length > 240 ||
+        (item.id !== undefined && (typeof item.id !== 'string' || !NOTION_ID_PATTERN.test(item.id))))
     )) {
       throw new Error('Managed connection grant summary is invalid');
     }

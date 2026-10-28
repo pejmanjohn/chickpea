@@ -61,6 +61,7 @@ import {
   projectEffectiveConnectionAccounts,
   projectRecoverableConnectionAccounts,
 } from './runtime.ts';
+import { parseNotionId } from './notion-pages.ts';
 
 export interface ConnectionAccountServiceDependencies {
   config: ConfigStore;
@@ -105,7 +106,14 @@ export function toConnectionAccountView(account: ConnectionAccount): ConnectionA
       adapterId,
       toolkit,
       allowedCapabilities,
-      ...(grantSummary ? { grantSummary } : {}),
+      ...(grantSummary
+        ? {
+            grantSummary: {
+              items: grantSummary.items.map(({ type, label }) => ({ type, label })),
+              truncated: grantSummary.truncated,
+            },
+          }
+        : {}),
       ...(oauthAttemptId ? { oauthAttemptId } : {}),
       ...(resourceConstraints
         ? {
@@ -849,6 +857,7 @@ export class ConnectionAccountService {
         signInGroupAccessLane(connector, group),
         validation,
         input.principal.membershipId,
+        previous.signIn,
       ),
     };
     const lifecycle = connector.resources?.some((resource) =>
@@ -1187,13 +1196,14 @@ function applyManagedValidation(
   if (typeof truncated !== 'boolean' || !Array.isArray(items) || items.length > 20 ||
       items.some((item) =>
         !item || (item.type !== 'page' && item.type !== 'database') ||
-        typeof item.label !== 'string' || !item.label.trim() || item.label.length > 240)) {
+        typeof item.label !== 'string' || !item.label.trim() || item.label.length > 240 ||
+        (item.id !== undefined && parseNotionId(item.id) !== item.id))) {
     throw new Error('Managed connection grant summary is invalid');
   }
   return {
     ...policy,
     grantSummary: {
-      items: items.map(({ type, label }) => ({ type, label: label.trim() })),
+      items: items.map(({ id, type, label }) => ({ ...(id ? { id } : {}), type, label: label.trim() })),
       truncated,
     },
   };
@@ -1212,14 +1222,20 @@ function signInGroupAccessLane(
     managedAccessLane(connector, policy.allowedCapabilities) === 'write') ? 'write' : 'read';
 }
 
-/** A connector whose sign-ins may be shared always records whose sign-in it is. */
+/**
+ * A connector whose sign-ins may be shared always records whose sign-in it
+ * is. When the provider could not be asked, a sign-in again keeps the person
+ * it already knows; only a provider that names nobody falls back to the signer.
+ */
 function managedSignIn(
   connector: ManagedConnectorDefinition,
   accessLane: ManagedAccessLane,
   validation: ManagedConnectionValidationResult | void,
   signerMembershipId: string,
+  previous?: ManagedSignIn,
 ): ManagedSignIn {
   const person = validation?.person ??
+    (validation?.personLookupFailed ? previous?.person : undefined) ??
     (connector.sharedSignIn ? `member:${signerMembershipId}` : undefined);
   return { ...(person ? { person } : {}), accessLane };
 }

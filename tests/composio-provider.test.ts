@@ -2786,76 +2786,150 @@ test('productivity provider guards reject oversized and unsupported direct calls
   assert.equal(clientCreations, 0);
 });
 
-test('Notion validation verifies the provider grant and returns display-safe page summaries', async () => {
-  const calls: Array<Record<string, unknown>> = [];
-  const policy: ConnectionAccountManagedPolicy = {
-    ...POLICY,
-    toolkit: 'notion',
-    accountRef: 'ca_notion',
-    allowedCapabilities: ['notion.content.search'],
-  };
+const notionId = (seed: string) =>
+  `${seed.padEnd(8, '0')}-0000-4000-8000-${seed.padStart(12, '0')}`;
+
+function notionListingProvider(
+  policy: ConnectionAccountManagedPolicy,
+  respond: (tool: string, arguments_: Record<string, unknown>) => Record<string, unknown>,
+) {
+  const calls: Array<{ tool: string; arguments: Record<string, unknown> }> = [];
   const provider = new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
     getConnectedAccount: async () => ({
-      id: policy.accountRef,
-      status: 'ACTIVE',
-      isDisabled: false,
-      toolkit: 'notion',
-      userId: policy.principalRef,
+      id: policy.accountRef, status: 'ACTIVE', isDisabled: false,
+      toolkit: 'notion', userId: policy.principalRef,
     }),
     createClient: async () => ({
-      sessions: {
-        async create() { throw new Error('session execution must not be used'); },
-      },
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
       tools: {
         async execute(tool, input) {
-          calls.push({ tool, ...input });
+          calls.push({ tool, arguments: input.arguments });
           if (tool === 'NOTION_GET_ABOUT_ME') {
             return { data: {}, successful: false, error: 'about-me is unavailable' };
           }
-          return {
-            data: {
-              results: [
-                {
-                  id: 'page_1', object: 'page', url: 'https://notion.so/page-1',
-                  properties: {
-                    Name: { type: 'title', title: [{ plain_text: 'Launch plan' }] },
-                  },
-                  private_field: 'must not persist',
-                },
-                {
-                  id: 'database_1', object: 'database',
-                  title: [{ plain_text: 'Customer research' }],
-                },
-              ],
-              has_more: true,
-            },
-            successful: true,
-            error: null,
-          };
+          return { data: respond(tool, input.arguments), successful: true, error: null };
         },
       },
     }),
   });
+  return { provider, calls };
+}
 
-  const validation = await provider.validate({ policy });
+const NOTION_POLICY: ConnectionAccountManagedPolicy = {
+  ...POLICY,
+  toolkit: 'notion',
+  accountRef: 'ca_notion',
+  allowedCapabilities: ['notion.content.search'],
+};
 
-  assert.deepEqual(calls[0], {
-    tool: 'NOTION_FETCH_DATA',
-    userId: policy.principalRef,
-    connectedAccountId: policy.accountRef,
-    version: COMPOSIO_TOOLKIT_VERSIONS.notion,
-    arguments: { fetch_type: 'all', page_size: 20 },
-  });
+test('Notion validation asks who signed in first, lists every page with its parent, and summarizes the first twenty roots with their ids', async () => {
+  const [plans, child, research, row, orphan, archive, inline, source] =
+    ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8'].map(notionId) as [string, string, string, string, string, string, string, string];
+  const { provider, calls } = notionListingProvider(NOTION_POLICY, (_tool, arguments_) => arguments_.start_cursor
+    ? {
+        results: [
+          { id: archive, object: 'database', parent: { type: 'workspace', workspace: true }, title: [{ plain_text: 'Archive' }] },
+          { id: inline, object: 'page', parent: { type: 'block_id', block_id: notionId('b9') }, properties: {} },
+        ],
+        values: [],
+        has_more: false,
+        next_cursor: null,
+      }
+    : {
+        results: [
+          {
+            id: plans, object: 'page', url: 'https://notion.so/plans', parent: { type: 'workspace', workspace: true },
+            properties: { Name: { type: 'title', title: [{ plain_text: 'Plans' }] } },
+            private_field: 'must not persist',
+          },
+          { id: child, object: 'page', parent: { type: 'page_id', page_id: plans.toUpperCase() } },
+          {
+            id: source, object: 'data_source', title: [{ plain_text: 'Research' }],
+            parent: { type: 'database_id', database_id: research },
+            database_parent: { type: 'page_id', page_id: plans },
+          },
+          { id: row, object: 'page', parent: { type: 'data_source_id', data_source_id: source } },
+          { id: orphan, object: 'page', parent: { type: 'page_id', page_id: notionId('c1') }, title: 'Orphan' },
+        ],
+        values: [{ id: plans, title: 'Plans', type: 'page' }],
+        has_more: true,
+        next_cursor: 'cursor_2',
+      });
+
+  const validation = await provider.validate({ policy: NOTION_POLICY });
+
+  assert.deepEqual(calls.map(({ tool, arguments: arguments_ }) => [tool, arguments_]), [
+    ['NOTION_GET_ABOUT_ME', {}],
+    ['NOTION_FETCH_DATA', { fetch_type: 'all', page_size: 100 }],
+    ['NOTION_FETCH_DATA', { fetch_type: 'all', page_size: 100, start_cursor: 'cursor_2' }],
+  ]);
+  const roots = [
+    { id: plans, type: 'page', label: 'Plans' },
+    { id: orphan, type: 'page', label: 'Orphan' },
+    { id: archive, type: 'database', label: 'Archive' },
+    { id: inline, type: 'page', label: 'Untitled Notion page' },
+  ];
   assert.deepEqual(validation, {
-    grantSummary: {
-      items: [
-        { type: 'page', label: 'Launch plan' },
-        { type: 'database', label: 'Customer research' },
+    grantSummary: { items: roots, truncated: false },
+    personLookupFailed: true,
+    pages: {
+      pages: [
+        { id: plans, kind: 'page', label: 'Plans' },
+        { id: child, kind: 'page', label: 'Untitled Notion page', parent: plans },
+        { id: research, kind: 'database', label: 'Research', parent: plans },
+        { id: row, kind: 'page', label: 'Untitled Notion page', parent: research },
+        { id: orphan, kind: 'page', label: 'Orphan', parent: notionId('c1') },
+        { id: archive, kind: 'database', label: 'Archive' },
+        { id: inline, kind: 'page', label: 'Untitled Notion page' },
       ],
-      truncated: true,
+      complete: true,
     },
   });
+});
+
+test('Notion listing looks up parents a listing leaves out, and says when it stopped short', async () => {
+  const [page, database, nested] = ['d1', 'd2', 'd3'].map(notionId) as [string, string, string];
+  const { provider, calls } = notionListingProvider(NOTION_POLICY, (tool, arguments_) => {
+    if (tool === 'NOTION_RETRIEVE_PAGE') {
+      return arguments_.page_id === nested
+        ? { id: nested, parent: { type: 'database_id', database_id: database } }
+        : { id: page, parent: { type: 'workspace', workspace: true } };
+    }
+    if (tool === 'NOTION_FETCH_DATABASE') return { id: database, parent: { type: 'page_id', page_id: page } };
+    return {
+      values: [
+        { id: page, title: 'Handbook', type: 'page' },
+        { id: database, title: 'Tasks', type: 'database' },
+        { id: nested, title: 'Task', type: 'page' },
+      ],
+      has_more: false,
+    };
+  });
+  assert.deepEqual(await provider.listPages({ policy: NOTION_POLICY }), {
+    pages: [
+      { id: page, kind: 'page', label: 'Handbook' },
+      { id: database, kind: 'database', label: 'Tasks', parent: page },
+      { id: nested, kind: 'page', label: 'Task', parent: database },
+    ],
+    complete: true,
+  });
+  assert.deepEqual(calls.map(({ tool }) => tool), [
+    'NOTION_FETCH_DATA', 'NOTION_RETRIEVE_PAGE', 'NOTION_FETCH_DATABASE', 'NOTION_RETRIEVE_PAGE',
+  ]);
+
+  let served = 0;
+  const { provider: wide, calls: wideCalls } = notionListingProvider(NOTION_POLICY, () => ({
+    results: Array.from({ length: 100 }, () => ({
+      id: notionId(`e${(served += 1).toString(16)}`), object: 'page', parent: { type: 'workspace', workspace: true },
+    })),
+    has_more: true,
+    next_cursor: `cursor_${served}`,
+  }));
+  const listing = await wide.listPages({ policy: NOTION_POLICY });
+  assert.equal(listing.pages.length, 2_000);
+  assert.equal(listing.complete, false);
+  assert.equal(wideCalls.length, 20, 'listing reads at most twenty pages of results');
 });
 
 test('Notion validation names the Notion person who signed in, and nobody when Notion names no user', async () => {
@@ -2899,8 +2973,8 @@ test('Notion validation names the Notion person who signed in, and nobody when N
       person: { email: 'maya@example.com' },
     },
   });
-  assert.deepEqual(calls.map(({ tool }) => tool), ['NOTION_FETCH_DATA', 'NOTION_GET_ABOUT_ME']);
-  assert.deepEqual(calls[1], {
+  assert.deepEqual(calls.map(({ tool }) => tool), ['NOTION_GET_ABOUT_ME', 'NOTION_FETCH_DATA']);
+  assert.deepEqual(calls[0], {
     tool: 'NOTION_GET_ABOUT_ME',
     userId: policy.principalRef,
     connectedAccountId: policy.accountRef,
@@ -2917,8 +2991,28 @@ test('Notion validation names the Notion person who signed in, and nobody when N
   for (const owner of [{ type: 'workspace', workspace: true }, { type: 'user' }, { type: 'user', user: { id: 'has space' } }]) {
     const fallback = await validateWithOwner(owner);
     assert.equal(fallback.validation?.person, undefined);
+    assert.equal(fallback.validation?.personLookupFailed, undefined, 'Notion answered and named nobody');
     assert.deepEqual(fallback.validation?.grantSummary, { items: [], truncated: false });
   }
+
+  const unreachable = new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    getConnectedAccount: async () => ({
+      id: policy.accountRef, status: 'ACTIVE', isDisabled: false, toolkit: 'notion', userId: policy.principalRef,
+    }),
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: {
+        async execute(tool) {
+          if (tool === 'NOTION_GET_ABOUT_ME') throw new Error('socket hang up');
+          return { data: { results: [], has_more: false }, successful: true, error: null };
+        },
+      },
+    }),
+  });
+  const failed = await unreachable.validate({ policy });
+  assert.equal(failed?.person, undefined);
+  assert.equal(failed?.personLookupFailed, true);
 });
 
 test('Notion validation rejects a provider response that explicitly reports unsuccessful', async () => {
@@ -2973,6 +3067,7 @@ test('Notion exposes only curated exact tools and maps bounded provider argument
               data: {
                 results: [{
                   id: 'page_1', object: 'page', url: 'https://notion.so/page-1',
+                  parent: { type: 'page_id', page_id: '1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d' },
                   properties: {
                     Name: { type: 'title', title: [{ plain_text: 'Launch plan' }] },
                   },

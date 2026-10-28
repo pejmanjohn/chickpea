@@ -9,8 +9,9 @@ import type { NotionPageScope } from './notion-pages.ts';
 
 type ManagedConnectionAccountViewPolicy = Pick<
   ConnectionAccountManagedPolicy,
-  'kind' | 'adapterId' | 'toolkit' | 'allowedCapabilities' | 'grantSummary' | 'oauthAttemptId'
+  'kind' | 'adapterId' | 'toolkit' | 'allowedCapabilities' | 'oauthAttemptId'
 > & {
+  grantSummary?: { items: Array<{ type: 'page' | 'database'; label: string }>; truncated: boolean };
   resourceConstraints?: Record<string, Array<{ handle: string; label: string }>>;
 };
 

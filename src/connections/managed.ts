@@ -75,13 +75,24 @@ export interface ManagedResourceDiscoveryResult {
   nextCursor?: string;
 }
 
+/** The pages and databases a credential lists, each with the listed or unlisted parent Notion names. */
+export interface ManagedPageListing {
+  pages: Array<{ id: string; kind: 'page' | 'database'; label: string; parent?: string }>;
+  /** False when the provider had more to list than was read. */
+  complete: boolean;
+}
+
 export interface ManagedConnectionValidationResult {
   grantSummary?: {
-    items: Array<{ type: 'page' | 'database'; label: string }>;
+    items: Array<{ id?: string; type: 'page' | 'database'; label: string }>;
     truncated: boolean;
   };
   /** Who signed in, as the provider names them; see `ManagedSignIn.person`. */
   person?: string;
+  /** The provider could not be asked who signed in, as opposed to naming nobody. */
+  personLookupFailed?: true;
+  /** For a connector with a page scope: what this credential reaches now. */
+  pages?: ManagedPageListing;
 }
 
 export interface ManagedConnectionInvocationResult extends ManagedConnectionExecutionResult {
@@ -127,6 +138,11 @@ export interface ManagedConnectionProvider {
     policy: ConnectionAccountManagedPolicy;
     signal?: AbortSignal;
   }): Promise<ManagedConnectionValidationResult | void>;
+  /** For a connector with a page scope: the pages this credential reaches now. */
+  listPages?(input: {
+    policy: ConnectionAccountManagedPolicy;
+    signal?: AbortSignal;
+  }): Promise<ManagedPageListing>;
   execute(input: ManagedConnectionExecutionInput): Promise<ManagedConnectionExecutionResult>;
   quotaBudget?(input: {
     toolkit: string;

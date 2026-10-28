@@ -10,8 +10,26 @@ export const NOTION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 /** The binding resource-constraint key that holds an Agent's page choice. */
 export const NOTION_PAGES_KEY = 'notionPages';
 
-/** At most this many pages in one Agent's choice. */
+/** At most this many pages in one Agent's choice or one page list. */
 export const MAX_NOTION_PAGES = 256;
+
+/** A page or database a Notion credential lists. */
+export interface NotionListedPage {
+  id: NotionId;
+  kind: 'page' | 'database';
+  label: string;
+  /** The page or database Notion names as its parent; a data source stands for its database. */
+  parent?: NotionId;
+}
+
+export interface NotionPageListing {
+  pages: NotionListedPage[];
+  /** False when Notion had more to list than Chickpea read. */
+  complete: boolean;
+}
+
+/** A listed page or database that no other listed page contains. */
+export type NotionPageRoot = Omit<NotionListedPage, 'parent'>;
 
 /** An Agent limited to some pages reaches only those and what is inside them. */
 export interface NotionPageScope {
@@ -59,6 +77,13 @@ export function samePageScope(
 ): boolean {
   if (!left || !right) return left === right;
   return left.allow.size === right.allow.size && [...left.allow].every((id) => right.allow.has(id));
+}
+
+/** The listed pages no other listed page contains, at most 256. */
+export function pageRoots(listing: NotionPageListing): { roots: NotionListedPage[]; complete: boolean } {
+  const listed = new Set(listing.pages.map(({ id }) => id));
+  const roots = listing.pages.filter((page) => page.parent === undefined || !listed.has(page.parent));
+  return { roots: roots.slice(0, MAX_NOTION_PAGES), complete: listing.complete && roots.length <= MAX_NOTION_PAGES };
 }
 
 /** An Agent's "Only these pages" choice; undefined means all pages. Entries that do not parse are dropped. */

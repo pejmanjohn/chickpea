@@ -39,6 +39,22 @@ export function notionParent(value: unknown): NotionParent | undefined {
   }
 }
 
+/**
+ * The database a data source object names as its own parent, and that
+ * database's parent when Notion names it. Only the data source's own object
+ * places it, never a database's list of data sources.
+ */
+export function notionDataSourceDatabase(
+  dataSource: Record<string, unknown>,
+): { database: NotionId; parent?: NotionParent } | undefined {
+  const parent = notionParent(dataSource.parent);
+  if (parent?.kind !== 'database') return undefined;
+  const databaseParent = notionParent(dataSource.database_parent);
+  return databaseParent && databaseParent.kind !== 'database'
+    ? { database: parent.id, parent: databaseParent }
+    : { database: parent.id };
+}
+
 type NotionScopeRule =
   | { phase: 'search' }
   | { phase: 'after'; argument: string; kind: 'page' | 'database' }

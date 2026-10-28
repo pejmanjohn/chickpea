@@ -747,8 +747,11 @@ export type ManagedBindingResourceConstraints = Record<string, string[]>;
 export const MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY = 256;
 
 export interface ManagedProviderGrantSummary {
-  /** Display-only provider-grant evidence; never used as a local authorization list. */
-  items: Array<{ type: 'page' | 'database'; label: string }>;
+  /**
+   * Display-only provider-grant evidence; never used as a local authorization
+   * list. `id` (a canonical Notion id) lets a view show only an Agent's pages.
+   */
+  items: Array<{ id?: string; type: 'page' | 'database'; label: string }>;
   truncated: boolean;
 }
 
