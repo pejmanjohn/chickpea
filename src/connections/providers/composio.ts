@@ -2161,29 +2161,38 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         successful?: boolean | undefined;
         logId?: string | undefined;
       };
-      if (client.tools) {
-        result = await client.tools.execute(capability.tool, {
-          userId: input.policy.principalRef,
-          connectedAccountId: input.policy.accountRef,
-          version: providerVersion,
-          arguments: toolArguments,
-        }, { signal });
-      } else {
-        // Test/compatibility seam for injected clients. Production clients use
-        // the version-pinned direct execution path above.
-        const session = await client.sessions.create(
-          input.policy.principalRef,
-          sessionConfig(input.policy, capability.tool),
-          { signal },
-        );
-        result = await session.execute(
-          capability.tool,
-          toolArguments,
-          undefined,
-          { signal },
-        );
+      // A scoped read that fails, by its answer or by an error, says nothing about whether the
+      // page exists or is shared. An abort, a rate limit and a denied authority recheck keep theirs.
+      try {
+        if (client.tools) {
+          result = await client.tools.execute(capability.tool, {
+            userId: input.policy.principalRef,
+            connectedAccountId: input.policy.accountRef,
+            version: providerVersion,
+            arguments: toolArguments,
+          }, { signal });
+        } else {
+          // Test/compatibility seam for injected clients. Production clients use
+          // the version-pinned direct execution path above.
+          const session = await client.sessions.create(
+            input.policy.principalRef,
+            sessionConfig(input.policy, capability.tool),
+            { signal },
+          );
+          result = await session.execute(
+            capability.tool,
+            toolArguments,
+            undefined,
+            { signal },
+          );
+        }
+      } catch (error) {
+        if (notionGate?.checksAfterRead && !signal.aborted && safeHttpStatus(error) !== 429 &&
+            !(error instanceof ManagedAuthorityDeniedError)) {
+          throw new NotionPageUnavailableError();
+        }
+        throw error;
       }
-      // A scoped read that fails says nothing about whether the page exists or is shared.
       if (notionGate?.checksAfterRead && (result.successful === false || result.error)) {
         throw new NotionPageUnavailableError();
       }

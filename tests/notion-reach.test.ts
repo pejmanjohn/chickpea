@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import type { ConfigStore } from '../src/config/store.ts';
 import { createManagedConnectionProviderRegistry, invokeManagedConnectionCapability } from '../src/connections/managed.ts';
-import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
+import { ManagedAuthorityDeniedError, ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
 import { parseNotionId, type NotionId } from '../src/connections/notion-pages.ts';
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
 import { NotionEdgeCache } from '../src/connections/providers/composio/notion-reach.ts';
@@ -72,20 +72,32 @@ function notionWorld(options: {
   searchPaging?: Record<string, unknown>;
   /** Extra pages, by id, with their parent. */
   pages?: Record<string, Record<string, unknown>>;
+  /** The first call of this tool throws. */
+  throwOn?: { tool: string; error: () => unknown };
 } = {}) {
   const calls: Array<{ tool: string; arguments: Record<string, unknown> }> = [];
+  let statusProbes = 0;
+  let thrown = false;
   const notFound = { data: {}, successful: false, error: 'object_not_found' };
   const ok = (data: Record<string, unknown>) => ({ data, successful: true, error: null });
   const pages = { ...PAGES, ...options.pages };
   const blocks = { ...BLOCKS, ...options.pages };
   const provider = new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
+    getConnectedAccount: async () => {
+      statusProbes += 1;
+      return { id: 'ca_notion', status: 'ACTIVE', isDisabled: false, toolkit: 'notion', userId: 'chickpea:organization:org_1' };
+    },
     createClient: async () => ({
       sessions: { async create() { throw new Error('session execution must not be used'); } },
       tools: {
         async execute(tool, input) {
           const arguments_ = input.arguments;
           calls.push({ tool, arguments: arguments_ });
+          if (options.throwOn?.tool === tool && !thrown) {
+            thrown = true;
+            throw options.throwOn.error();
+          }
           // Notion itself accepts an id in any of its forms.
           const target = parseNotionId(arguments_.page_id ?? arguments_.database_id ?? arguments_.block_id) ?? '';
           if (LOOKUP_TOOLS.has(tool)) {
@@ -117,7 +129,7 @@ function notionWorld(options: {
     }),
   });
   const lookups = () => calls.filter(({ tool }) => LOOKUP_TOOLS.has(tool));
-  return { provider, calls, lookups };
+  return { provider, calls, lookups, statusProbes: () => statusProbes };
 }
 
 function scoped(allow?: NotionId[]): EffectiveManagedPolicy {
@@ -367,6 +379,46 @@ test('a scoped read of a page the sign-in cannot see gets the same refusal as a 
     assert.deepEqual(await refusal(UNSHARED), await refusal(target), capability);
     assert.deepEqual(await refusal(UNSHARED), ['validation_failed', "That Notion page isn't available to this Agent."]);
   }
+});
+
+test('a scoped read that throws gets the same refusal, without a status probe, unless it was aborted or rate limited', async () => {
+  const failed = (status?: number) => () => Object.assign(new Error('Notion request failed'), status ? { status } : {});
+  const reads = [
+    ['notion.pages.get', 'NOTION_RETRIEVE_PAGE', { pageId: HIDDEN }],
+    ['notion.databases.get', 'NOTION_FETCH_DATABASE', { databaseId: HIDDEN_TASKS }],
+  ] as const;
+  for (const [capability, tool, arguments_] of reads) {
+    for (const [label, error] of [['404', failed(404)], ['403', failed(403)], ['500', failed(500)], ['network', failed()]] as const) {
+      const { provider, statusProbes } = notionWorld({ throwOn: { tool, error } });
+      await assert.rejects(provider.execute({ policy: ONLY_ROOT, capability, arguments: arguments_ }), isRefusal, `${capability} ${label}`);
+      assert.equal(statusProbes(), 0, `${capability} ${label}: no connected-account probe`);
+    }
+    const throttled = notionWorld({ throwOn: { tool, error: failed(429) } });
+    await assert.rejects(
+      throttled.provider.execute({ policy: ONLY_ROOT, capability, arguments: arguments_ }),
+      (error) => error instanceof ManagedProviderRequestError && error.code === 'throttled',
+    );
+    const controller = new AbortController();
+    const aborted = notionWorld({
+      throwOn: { tool, error: () => { controller.abort(); return new DOMException('aborted', 'AbortError'); } },
+    });
+    await assert.rejects(
+      aborted.provider.execute({ policy: ONLY_ROOT, capability, arguments: arguments_, signal: controller.signal }),
+      (error) => error instanceof ManagedProviderRequestError && error.code === 'provider_unavailable',
+    );
+  }
+  const { provider: revoked } = notionWorld();
+  await assert.rejects(revoked.execute({
+    policy: ONLY_ROOT, capability: 'notion.pages.get', arguments: { pageId: GRANDCHILD },
+    revalidateAuthority: async () => { throw new ManagedAuthorityDeniedError('Actor suspended'); },
+  }), { code: 'validation_failed', message: 'Actor suspended' }, 'a denied authority recheck keeps its own reason');
+
+  const unlimited = notionWorld({ throwOn: { tool: 'NOTION_RETRIEVE_PAGE', error: failed(404) } });
+  await assert.rejects(
+    unlimited.provider.execute({ policy: scoped(), capability: 'notion.pages.get', arguments: { pageId: HIDDEN } }),
+    (error) => error instanceof ManagedProviderRequestError && error.code === 'provider_unavailable',
+  );
+  assert.equal(unlimited.statusProbes(), 1, 'an unlimited read is unchanged');
 });
 
 test('the walk refuses a page more than 24 levels down and a parent cycle, and stops looking', async () => {
