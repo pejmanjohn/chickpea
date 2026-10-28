@@ -94,18 +94,19 @@ export function toConnectionAccountView(account: ConnectionAccount): ConnectionA
       credentialConfigured: account.lifecycle === 'ready',
     };
   }
+  // Name each field sent, so a new policy field never reaches the browser by spread.
   const {
-    principalRef: _principalRef,
-    accountRef: _accountRef,
-    providerGeneration: _providerGeneration,
-    providerLineage: _providerLineage,
-    resourceConstraints,
-    ...safePolicy
+    kind, adapterId, toolkit, allowedCapabilities, grantSummary, oauthAttemptId, resourceConstraints,
   } = policy;
   return {
     ...safeAccount,
     policy: {
-      ...safePolicy,
+      kind,
+      adapterId,
+      toolkit,
+      allowedCapabilities,
+      ...(grantSummary ? { grantSummary } : {}),
+      ...(oauthAttemptId ? { oauthAttemptId } : {}),
       ...(resourceConstraints
         ? {
             resourceConstraints: Object.fromEntries(

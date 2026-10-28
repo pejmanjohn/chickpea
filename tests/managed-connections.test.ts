@@ -50,15 +50,21 @@ test('browser-safe managed account views omit provider credential lineage', () =
       ...MANAGED_POLICY,
       providerGeneration: 9,
       providerLineage: 'f'.repeat(24),
+      signIn: { person: 'notion:ws-1:user-1', accessLane: 'write' },
+      grantSummary: { items: [{ type: 'page', label: 'Roadmap' }], truncated: false },
     },
   });
   assert.equal('secretRefId' in view, false);
   assert.equal(view.policy.kind, 'managed');
   if (view.policy.kind !== 'managed') assert.fail('expected managed policy');
-  assert.equal('principalRef' in view.policy, false);
-  assert.equal('accountRef' in view.policy, false);
-  assert.equal('providerGeneration' in view.policy, false);
-  assert.equal('providerLineage' in view.policy, false);
+  assert.deepEqual(view.policy, {
+    kind: 'managed',
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    allowedCapabilities: MANAGED_POLICY.allowedCapabilities,
+    grantSummary: { items: [{ type: 'page', label: 'Roadmap' }], truncated: false },
+  });
+  assert.doesNotMatch(JSON.stringify(view), /signIn|notion:ws-1|accessLane/);
 });
 
 const MANAGED_POLICY: ConnectionAccountManagedPolicy = {
