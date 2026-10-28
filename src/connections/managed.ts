@@ -32,6 +32,8 @@ import {
   type ManagedProviderFailureMetadata,
 } from './managed-errors.ts';
 import { resolveManagedConnectionForInvocation } from './runtime.ts';
+import { samePageScope } from './notion-pages.ts';
+import type { EffectiveManagedPolicy } from './types.ts';
 import { markManagedAccountExpired } from './store.ts';
 import {
   ComposioManagedConnectionProvider,
@@ -44,7 +46,7 @@ let warnedInvalidComposioAuthConfigIds = false;
 let warnedUnavailableComposioConfiguration = false;
 
 export interface ManagedConnectionExecutionInput {
-  policy: ConnectionAccountManagedPolicy;
+  policy: EffectiveManagedPolicy;
   capability: string;
   arguments: Record<string, unknown>;
   signal?: AbortSignal;
@@ -461,7 +463,7 @@ export async function invokeManagedConnectionCapability(input: {
         });
       }
     }
-    const executionPolicy: ConnectionAccountManagedPolicy = structuredClone(activeConfiguration &&
+    const executionPolicy: EffectiveManagedPolicy = structuredClone(activeConfiguration &&
         !hasProviderGeneration && !hasProviderLineage
       ? {
           ...selected.policy,
@@ -489,6 +491,7 @@ export async function invokeManagedConnectionCapability(input: {
           .some((key) => policy[key as keyof typeof policy] !== admittedPolicy[key as keyof typeof policy]) ||
             !policy.allowedCapabilities.includes(input.capability) ||
             JSON.stringify(policy.resourceConstraints) !== JSON.stringify(admittedPolicy.resourceConstraints) ||
+            !samePageScope(policy.pageScope, admittedPolicy.pageScope) ||
             (policy.providerGeneration !== admittedPolicy.providerGeneration &&
               policy.providerGeneration !== executionPolicy.providerGeneration) ||
             (policy.providerLineage !== admittedPolicy.providerLineage &&

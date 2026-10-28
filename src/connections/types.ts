@@ -5,6 +5,7 @@ import type {
   ConnectionAccountPolicy,
   ManagedBindingResourceConstraints,
 } from '../config/types.ts';
+import type { NotionPageScope } from './notion-pages.ts';
 
 type ManagedConnectionAccountViewPolicy = Pick<
   ConnectionAccountManagedPolicy,
@@ -19,10 +20,17 @@ export type ConnectionAccountView = Omit<ConnectionAccount, 'secretRefId' | 'pol
   credentialConfigured: boolean;
 };
 
+/** A managed policy as one Agent may use it: its binding's ceiling, and the pages it may reach. */
+export type EffectiveManagedPolicy = ConnectionAccountManagedPolicy & { pageScope?: NotionPageScope };
+
+export type EffectiveConnectionPolicy =
+  | Exclude<ConnectionAccountPolicy, ConnectionAccountManagedPolicy>
+  | EffectiveManagedPolicy;
+
 export interface EffectiveConnectionAccount {
   account: ConnectionAccount;
   binding: AgentConnectionBinding;
-  policy: ConnectionAccountPolicy;
+  policy: EffectiveConnectionPolicy;
   scope: 'team' | 'personal';
 }
 

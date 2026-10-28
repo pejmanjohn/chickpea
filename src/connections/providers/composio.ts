@@ -31,6 +31,8 @@ import {
   ManagedProviderRequestError,
 } from '../managed-errors.ts';
 import { manifestComposioCapabilities } from './composio/manifest-capabilities.ts';
+import { NotionEdgeCache, NotionPageUnavailableError, notionScopeGate } from './composio/notion-reach.ts';
+import { isNotionCapabilityId } from '../catalog/notion.ts';
 import { composioToolkitVersion } from './composio/versions.ts';
 
 interface ComposioSessionLike {
@@ -1614,6 +1616,7 @@ function definiteManagedValidationFailure(
 export class ComposioManagedConnectionProvider implements ManagedConnectionProvider {
   readonly id = 'composio';
   private clientPromise: Promise<ComposioClientLike> | undefined;
+  private readonly notionEdges = new NotionEdgeCache();
 
   constructor(private readonly options: ComposioManagedConnectionProviderOptions) {}
 
@@ -2087,6 +2090,27 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         });
       }
       if (!toolArguments) throw new Error('Composio capability arguments are unavailable');
+      const { pageScope } = input.policy;
+      if (pageScope && !isNotionCapabilityId(input.capability)) throw new NotionPageUnavailableError();
+      const notionGate = pageScope && isNotionCapabilityId(input.capability)
+        ? notionScopeGate({
+            capability: input.capability,
+            scope: pageScope,
+            accountRef: input.policy.accountRef,
+            cache: this.notionEdges,
+            lookup: async (tool, arguments_) => {
+              // The client rechecks authority only until the capability dispatches; a read's
+              // after-check and search filter still owe each lookup that recheck.
+              if (capabilityToolDispatched) await input.revalidateAuthority?.();
+              const result = await executeComposioTool(client, input.policy, {
+                toolkit: 'notion', version: providerVersion, tool, arguments: arguments_, signal,
+              });
+              if (result.error) return undefined;
+              return isRecord(result.data.data) ? result.data.data : result.data;
+            },
+          })
+        : undefined;
+      if (notionGate) toolArguments = await notionGate.before(toolArguments);
       try {
         await capability.beforeDispatch?.(toolArguments, async (tool, arguments_) => {
           const result = await executeComposioTool(client, input.policy, {
@@ -2137,6 +2161,10 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
           { signal },
         );
       }
+      // A scoped read that fails says nothing about whether the page exists or is shared.
+      if (notionGate?.checksAfterRead && (result.successful === false || result.error)) {
+        throw new NotionPageUnavailableError();
+      }
       if (result.successful === false) {
         throw new ManagedProviderRequestError(
           'provider_unavailable',
@@ -2154,7 +2182,10 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
       }
       if (result.error) throw new Error('remote execution failed');
       recordExecution(input.policy, input.capability, result.logId);
-      let sanitizedData = capability.sanitize(result.data, executionArguments);
+      let sanitizedData = capability.sanitize(
+        notionGate ? await notionGate.after(result.data) : result.data,
+        executionArguments,
+      );
       if (capability.toolkit === 'youtube' && YOUTUBE_WRITE_CAPABILITIES.has(input.capability)) {
         const verification = await verifyYouTubeWrite({
           client,
@@ -2200,6 +2231,12 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         ...(quotaRemaining === undefined ? {} : { rateLimitRemaining: quotaRemaining }),
       };
     } catch (error) {
+      if (error instanceof NotionPageUnavailableError) {
+        throw new ManagedProviderRequestError('validation_failed', error.message, {
+          providerTool: capability.tool, providerVersion, remoteCallCount,
+          providerToolCallCount, capabilityToolDispatched, definiteFailure: true,
+        });
+      }
       if (error instanceof ManagedAuthorityDeniedError) {
         throw new ManagedProviderRequestError('validation_failed', error.message, {
           providerTool: capability.tool, providerVersion, remoteCallCount,
