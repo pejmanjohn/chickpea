@@ -84,8 +84,10 @@ import {
 } from '../src/connections/managed.ts';
 import {
   createManagedConnectorCatalog,
+  MANAGED_CONNECTOR_CATALOG,
   type ManagedConnectorDefinition,
 } from '../src/connections/catalog/index.ts';
+import { signInMixRefusal } from '../src/connections/sign-in-mix.ts';
 import {
   ManagedAuthorizationAllocatedError,
   ManagedProviderRequestError,
@@ -4223,6 +4225,82 @@ test('reconnecting a ready Notion account from Admin keeps the connection and re
     });
     assert.deepEqual(revoked, ['ca_notion_before'], 'the previous sign-in is removed');
     assert.deepEqual(await fixture.store.listAgentConnectionBindings('agent_support'), [binding]);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Admin refuses a personal Notion sign-in on the person behind a team connection and says why', async () => {
+  const cleaned: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async authorize() {
+      return {
+        authorizationUrl: new URL('https://connect.composio.dev/link/lk_notion_mix'),
+        authorizationRef: 'ca_notion_mix',
+      };
+    },
+    async pollAuthorization() {
+      return { status: 'active', accountRef: 'ca_notion_mix', toolkit: 'notion' };
+    },
+    async validate() { return { person: 'notion:ws-1:user-maya' }; },
+    async execute() { return { data: {} }; },
+    async revoke() {},
+    async cleanupRemoteAccount({ accountRef }) { cleaned.push(accountRef); },
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    await fixture.store.createAgentOwnedConnection({
+      account: {
+        id: 'connection_notion_team', workspaceId: 'T_TEST', ownerKind: 'team',
+        createdByMembershipId: 'membership_teammate', providerId: 'notion', label: 'Notion · Team',
+        policy: {
+          kind: 'managed', adapterId: 'composio', toolkit: 'notion',
+          principalRef: 'chickpea:organization:org_oss', accountRef: 'ca_notion_team',
+          allowedCapabilities: ['notion.content.search'],
+          signIn: { person: 'notion:ws-1:user-maya', accessLane: 'read' },
+        },
+        secretRefId: 'secret_notion_team', lifecycle: 'ready',
+      },
+      binding: {
+        agentId: 'agent_support', connectionAccountId: 'connection_notion_team', providerId: 'notion',
+        allowedCapabilities: ['notion.content.search'], enabled: true,
+      },
+    });
+    const before = await fixture.store.listConnectionAccounts('T_TEST');
+
+    const started = await fixture.app.request(
+      'https://chickpea.example/admin/api/agents/agent_support/connections/managed/start',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({ workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'notion', access: 'read' }),
+      },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
+    assert.ok(cookie);
+    const polled = await fixture.app.request(
+      'https://chickpea.example/admin/api/agents/agent_support/connections/managed/poll',
+      { method: 'POST', headers: { ...auth(), cookie }, body: '{}' },
+    );
+
+    assert.equal(polled.status, 409);
+    assert.deepEqual(await polled.json(), {
+      error: 'managed_sign_in_mix_refused',
+      message: signInMixRefusal(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team', true),
+    });
+    assert.match(polled.headers.get('set-cookie') ?? '', /Max-Age=0/, 'the finished attempt is forgotten');
+    assert.deepEqual(cleaned, ['ca_notion_mix'], 'the new connected account is removed');
+    assert.deepEqual(await fixture.store.listConnectionAccounts('T_TEST'), before, 'nothing is saved');
   } finally {
     fixture.store.close();
     fixture.settings.close();

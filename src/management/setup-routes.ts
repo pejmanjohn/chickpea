@@ -818,6 +818,10 @@ export function createManagementSetupRoutes(
           message: `Someone else already connected ${setup.target.targetLabel} to ${agent.name}. Your sign-in was discarded.`,
         }, 409);
       }
+      if (result.status === 'refused') {
+        await markSetupFailure(setup, c, dependencies.management, 'managed_sign_in_mix_refused', now());
+        return c.json({ error: 'managed_sign_in_mix_refused', message: result.message }, 409);
+      }
       if (result.status === 'terminal') {
         await markSetupFailure(
           setup,

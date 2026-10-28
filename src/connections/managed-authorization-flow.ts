@@ -22,6 +22,7 @@ import {
   type ManagedConnectionProviderRegistry,
 } from './managed.ts';
 import { managedAccessLane, type ManagedConnectorCatalog } from './catalog/index.ts';
+import { ManagedSignInMixError } from './sign-in-mix.ts';
 import {
   ManagedAuthorizationAllocatedError,
   ManagedProviderRequestError,
@@ -264,6 +265,8 @@ type PollManagedAuthorizationFlowResult =
   | { status: 'pending' }
   | { status: 'lost' }
   | { status: 'terminal'; reason: 'disabled' | 'expired' | 'failed' | 'inactive' | 'revoked' }
+  /** The sign-in would mix personal and team on one account; nothing was saved. */
+  | { status: 'refused'; message: string }
   | { status: 'connected'; account: ConnectionAccount };
 
 export async function pollManagedAuthorizationFlow(
@@ -520,6 +523,7 @@ export async function pollManagedAuthorizationFlow(
         error instanceof ManagedConnectionConflictError) {
       return { status: 'lost' };
     }
+    if (error instanceof ManagedSignInMixError) return { status: 'refused', message: error.message };
     if (error instanceof ManagedProviderRequestError && error.metadata.definiteFailure === true) {
       return { status: 'terminal', reason: 'failed' };
     }

@@ -17,6 +17,7 @@ import {
   createManagedConnectionProviderRegistry,
   type ManagedConnectionProvider,
 } from '../src/connections/managed.ts';
+import { signInMixRefusal } from '../src/connections/sign-in-mix.ts';
 
 test('managed authorization refuses a frozen handoff capability absent from the live read lane', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
@@ -561,5 +562,198 @@ test('reconnecting a read-only Agent on a shared Notion sign-in keeps its write 
   } finally {
     config.close();
     settings.close();
+  }
+});
+
+const MAYA = 'notion:ws-1:user-maya';
+const RAVI = 'notion:ws-1:user-ravi';
+const NOTION = MANAGED_CONNECTOR_CATALOG.connector('notion')!;
+
+/**
+ * One workspace whose live Notion connections sit on another Agent unless
+ * their id ends in `_target`, and a Composio fake whose sign-ins name
+ * `state.person`, or no one while it is undefined.
+ */
+async function notionMixHarness(existing: Array<{
+  id: string;
+  ownerKind: 'team' | 'member';
+  signer: string;
+  person?: string;
+  lifecycle?: 'ready' | 'revoked';
+}>) {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const authorized: string[] = [];
+  const cleaned: string[] = [];
+  const revoked: string[] = [];
+  const state: { person: string | undefined } = { person: undefined };
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async authorize() {
+      authorized.push(`ca_new_${authorized.length + 1}`);
+      return {
+        authorizationUrl: new URL(`https://backend.composio.dev/link/${authorized.length}`),
+        authorizationRef: authorized.at(-1)!,
+      };
+    },
+    async pollAuthorization(input) {
+      return { status: 'active', accountRef: input.authorizationRef, toolkit: 'notion' };
+    },
+    async validate() { return state.person ? { person: state.person } : undefined; },
+    async execute() { return { data: {} }; },
+    async revoke(input) { revoked.push(input.policy.accountRef); },
+    async cleanupRemoteAccount({ accountRef }) { cleaned.push(accountRef); },
+  };
+  const agent = (id: string) => config.createAgent({
+    id, name: id, creatorMembershipId: 'm_admin', editPolicy: 'all_workspace_members',
+    lifecycle: 'active', configurationGeneration: 1, instructions: 'Use Notion.', enabled: true,
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  });
+  const target = await agent('agent_notion_target');
+  const other = await agent('agent_notion_other');
+  await config.ensureWorkspaceInstallation({
+    workspaceId: 'T_MIX', transportMode: 'direct', defaultAgentId: target.id,
+  });
+  for (const connection of existing) {
+    await config.createAgentOwnedConnection({
+      account: {
+        id: connection.id, workspaceId: 'T_MIX', ownerKind: connection.ownerKind,
+        ...(connection.ownerKind === 'member' ? { ownerMembershipId: connection.signer } : {}),
+        createdByMembershipId: connection.signer, providerId: 'notion', label: connection.id,
+        secretRefId: `secret_${connection.id}`, lifecycle: connection.lifecycle ?? 'ready',
+        policy: {
+          kind: 'managed', adapterId: 'composio', toolkit: 'notion',
+          principalRef: connection.ownerKind === 'team'
+            ? 'chickpea:organization:org_mix'
+            : `chickpea:membership:${connection.signer}`,
+          accountRef: `ca_${connection.id}`,
+          allowedCapabilities: ['notion.content.search'],
+          ...(connection.person ? { signIn: { person: connection.person, accessLane: 'read' as const } } : {}),
+        },
+      },
+      binding: {
+        agentId: connection.id.endsWith('_target') ? target.id : other.id,
+        connectionAccountId: connection.id, providerId: 'notion',
+        allowedCapabilities: ['notion.content.search'], enabled: true,
+      },
+    });
+  }
+  const principal = (membershipId: string, role: 'member' | 'admin' | 'owner'): AuthPrincipal => ({
+    userId: `user_${membershipId}`, membershipId, organizationId: 'org_mix', role,
+    authenticatorKind: 'better_auth', credentialId: `credential_${membershipId}`,
+    correlationId: `correlation_${membershipId}`, machine: false,
+  });
+  const dependencies = {
+    config,
+    settings,
+    catalog: MANAGED_CONNECTOR_CATALOG,
+    providerContext: {
+      providers: createManagedConnectionProviderRegistry([provider]),
+      generation: 1,
+      lineage: 'f'.repeat(24),
+    },
+  };
+  const start = (actor: AuthPrincipal, lane: { ownerKind?: 'team' | 'member'; connectionAccountId?: string }) =>
+    startManagedAuthorizationFlow(dependencies, {
+      principal: actor, agent: target, workspaceId: 'T_MIX', toolkit: 'notion', access: 'read', ...lane,
+    });
+  return {
+    state, authorized, cleaned, revoked, principal, dependencies, start,
+    /** Every saved row's revision and connected account, so a refusal can prove it wrote nothing. */
+    async saved() {
+      const accounts = (await config.listConnectionAccounts('T_MIX')).map((account) => ({
+        id: account.id, revision: account.revision, lifecycle: account.lifecycle,
+        accountRef: account.policy.kind === 'managed' ? account.policy.accountRef : undefined,
+      }));
+      return { accounts, targetBindings: await config.listAgentConnectionBindings(target.id) };
+    },
+    async signIn(actor: AuthPrincipal, lane: Parameters<typeof start>[1]) {
+      const started = await start(actor, lane);
+      return pollManagedAuthorizationFlow(dependencies, {
+        principal: actor, agent: target, workspaceId: 'T_MIX', browserSecret: started.browserSecret,
+      });
+    },
+    close() {
+      config.close();
+      settings.close();
+    },
+  };
+}
+
+test('a personal Notion sign-in on the person behind a live team connection is refused, removed at Composio, and saves nothing', async () => {
+  const h = await notionMixHarness([{ id: 'connection_team', ownerKind: 'team', signer: 'm_admin', person: MAYA }]);
+  try {
+    const before = await h.saved();
+    h.state.person = MAYA;
+    const result = await h.signIn(h.principal('m_maya', 'member'), { ownerKind: 'member' });
+
+    assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'team', false) });
+    assert.deepEqual(h.cleaned, ['ca_new_1'], 'the new connected account is removed');
+    assert.deepEqual(h.revoked, [], 'the team connection keeps its connected account');
+    assert.deepEqual(await h.saved(), before, 'no connection or binding is written');
+  } finally {
+    h.close();
+  }
+});
+
+test('a personal Notion sign-in on a different Notion person than the team connection connects', async () => {
+  const h = await notionMixHarness([{ id: 'connection_team', ownerKind: 'team', signer: 'm_maya', person: MAYA }]);
+  try {
+    h.state.person = RAVI;
+    const result = await h.signIn(h.principal('m_ravi', 'member'), { ownerKind: 'member' });
+
+    assert.equal(result.status, 'connected');
+    assert.deepEqual(h.cleaned, []);
+    assert.deepEqual((await h.saved()).accounts.map(({ accountRef }) => accountRef).sort(),
+      ['ca_connection_team', 'ca_new_1']);
+  } finally {
+    h.close();
+  }
+});
+
+test('a revoked team connection on the same Notion person never refuses a personal sign-in', async () => {
+  const h = await notionMixHarness([{
+    id: 'connection_team', ownerKind: 'team', signer: 'm_admin', person: MAYA, lifecycle: 'revoked',
+  }]);
+  try {
+    h.state.person = MAYA;
+    assert.equal((await h.signIn(h.principal('m_maya', 'member'), { ownerKind: 'member' })).status, 'connected');
+  } finally {
+    h.close();
+  }
+});
+
+test('reconnecting a team Notion connection onto the person of a live personal connection is refused and leaves it unchanged', async () => {
+  const h = await notionMixHarness([
+    { id: 'connection_team_target', ownerKind: 'team', signer: 'm_admin', person: RAVI },
+    { id: 'connection_personal', ownerKind: 'member', signer: 'm_maya', person: MAYA },
+  ]);
+  try {
+    const before = await h.saved();
+    h.state.person = MAYA;
+    const result = await h.signIn(h.principal('m_admin', 'admin'), { connectionAccountId: 'connection_team_target' });
+
+    assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'member', false) });
+    assert.deepEqual(h.cleaned, ['ca_new_1']);
+    assert.deepEqual(h.revoked, [], 'the team connection\'s current sign-in is not rotated away');
+    assert.deepEqual(await h.saved(), before, 'the team connection keeps its revision and connected account');
+  } finally {
+    h.close();
+  }
+});
+
+test('a team reconnect whose person Notion did not name fails closed against the actor\'s own personal connection', async () => {
+  const h = await notionMixHarness([
+    { id: 'connection_team_target', ownerKind: 'team', signer: 'm_admin', person: RAVI },
+    { id: 'connection_personal', ownerKind: 'member', signer: 'm_admin', person: MAYA },
+  ]);
+  try {
+    const before = await h.saved();
+    const result = await h.signIn(h.principal('m_admin', 'admin'), { connectionAccountId: 'connection_team_target' });
+
+    assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'member', true) });
+    assert.deepEqual(await h.saved(), before);
+  } finally {
+    h.close();
   }
 });

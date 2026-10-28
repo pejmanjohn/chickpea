@@ -152,6 +152,7 @@ import {
   managedOwnerLaneAccount,
   managedPrincipalRef,
 } from '../connections/managed-authorization-flow.ts';
+import { ManagedSignInMixError } from '../connections/sign-in-mix.ts';
 import {
   completeComposioReconciliation,
   ComposioConfigurationMutationError,
@@ -5726,6 +5727,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
                 error.metadata.definiteFailure === true) {
               return { status: 'terminal' as const, reason: 'failed' as const };
             }
+            if (error instanceof ManagedSignInMixError) {
+              return { status: 'refused' as const, message: error.message };
+            }
             if (error instanceof AuthorizationError || error instanceof UnknownAgentError ||
                 error instanceof ManagedConnectionProviderUnavailableError ||
                 error instanceof ManagedAuthorizationError) {
@@ -5739,6 +5743,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       deleteCookie(c, MANAGED_AUTHORIZATION_BROWSER_COOKIE, { path: '/admin', secure: true });
       if (result.status === 'terminal') {
         return c.json({ error: 'managed_authorization_terminal', reason: result.reason }, 409);
+      }
+      if (result.status === 'refused') {
+        return c.json({ error: 'managed_sign_in_mix_refused', message: result.message }, 409);
       }
       return c.json({ status: 'connected', account: result.account });
     } catch (error) {

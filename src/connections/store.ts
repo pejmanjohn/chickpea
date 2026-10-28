@@ -76,6 +76,7 @@ import {
   type NotionPageListing,
   type NotionPageRoot,
 } from './notion-pages.ts';
+import { ManagedSignInMixError, signInMix, signInMixRefusal } from './sign-in-mix.ts';
 
 export interface ConnectionAccountServiceDependencies {
   config: ConfigStore;
@@ -905,6 +906,13 @@ export class ConnectionAccountService {
         previous.signIn,
       ),
     };
+    await this.refuseSignInMix({
+      principal: input.principal,
+      workspaceId: account.workspaceId,
+      ownerKind: account.ownerKind,
+      connector,
+      policy,
+    });
     const lifecycle = connector.resources?.some((resource) =>
       resource.required && !(policy.resourceConstraints?.[resource.key]?.length)
     ) ? 'pending' as const : 'ready' as const;
@@ -1203,6 +1211,13 @@ export class ConnectionAccountService {
           input.principal.membershipId,
         ),
       };
+      await this.refuseSignInMix({
+        principal: input.principal,
+        workspaceId: input.workspaceId,
+        ownerKind: input.ownerKind,
+        connector,
+        policy,
+      });
     }
     const id = `connection_${this.id()}`;
     const secretRefId = `secret_${this.id()}`;
@@ -1257,6 +1272,31 @@ export class ConnectionAccountService {
         );
       }
     }
+  }
+
+  /** Refuse a sign-in whose account already backs a connection of the other owner kind here; nothing is written yet. */
+  private async refuseSignInMix(input: {
+    principal: AuthPrincipal;
+    workspaceId: string;
+    ownerKind: 'team' | 'member';
+    connector: ManagedConnectorDefinition;
+    policy: ConnectionAccountManagedPolicy;
+  }): Promise<void> {
+    if (!input.connector.sharedSignIn) return;
+    const mix = signInMix({
+      connector: input.connector,
+      adapterId: input.policy.adapterId,
+      ownerKind: input.ownerKind,
+      actorMembershipId: input.principal.membershipId,
+      person: input.policy.signIn?.person,
+      accounts: await this.dependencies.config.listConnectionAccounts(input.workspaceId),
+    });
+    if (!mix) return;
+    // Changing a personal connection's pages takes its owner's own sign-in.
+    const manageable = mix.ownerKind === 'member'
+      ? mix.ownerMembershipId === input.principal.membershipId
+      : canManageOwnedResource(input.principal, mix);
+    throw new ManagedSignInMixError(signInMixRefusal(input.connector, mix.ownerKind, manageable));
   }
 
   private catalog(): ManagedConnectorCatalog {

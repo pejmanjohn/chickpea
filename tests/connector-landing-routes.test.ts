@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import {
@@ -22,6 +23,8 @@ import {
   type ManagedConnectionProvider,
 } from '../src/connections/managed.ts';
 import { managedPrincipalRef } from '../src/connections/managed-authorization-flow.ts';
+import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
+import { signInMixRefusal } from '../src/connections/sign-in-mix.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { createManagementSetupRoutes, replaceCatalogConnection } from '../src/management/setup-routes.ts';
@@ -1676,6 +1679,164 @@ test('a managed reconnect link refuses a post that names another owner or access
     }
   }
 });
+
+/**
+ * A Slack setup link for a new Notion connection on one Agent, while a team
+ * Notion connection on another Agent was created by `teamCreator` for
+ * `teamPerson`. Every sign-in names `signInPerson`.
+ */
+async function notionMixSetupHarness(suffix: string, input: {
+  teamCreator: 'owner' | 'teammate';
+  teamPerson: string;
+  signInPerson: string;
+}) {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await createSlackOwner(identity, { now: NOW, suffix });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const authorized: string[] = [];
+  const cleaned: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async authorize() {
+      authorized.push(`ca_notion_${authorized.length + 1}`);
+      return {
+        authorizationUrl: new URL(`https://backend.composio.dev/link/${authorized.length}`),
+        authorizationRef: authorized.at(-1)!,
+      };
+    },
+    async pollAuthorization(poll) {
+      return { status: 'active', accountRef: poll.authorizationRef, toolkit: 'notion' };
+    },
+    async validate() { return { person: input.signInPerson }; },
+    async execute() { return { data: {} }; },
+    async revoke() {},
+    async cleanupRemoteAccount({ accountRef }) { cleaned.push(accountRef); },
+  };
+  const principal: AuthPrincipal = {
+    userId: owner.user.id,
+    membershipId: owner.membership.id,
+    organizationId: owner.membership.organizationId,
+    role: owner.membership.role,
+    authenticatorKind: 'better_auth',
+    credentialId: 'session_owner',
+    correlationId: 'notion_mix',
+    machine: false,
+  };
+  const agent = (id: string, name: string) => config.createAgent({
+    id, name, creatorMembershipId: owner.membership.id, editPolicy: 'creator_and_admins',
+    lifecycle: 'active', configurationGeneration: 1, instructions: 'Use Notion.', enabled: true,
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  });
+  const target = await agent('agent_notes', 'Notes');
+  const other = await agent('agent_wiki', 'Wiki');
+  await config.ensureWorkspaceInstallation({
+    workspaceId: owner.user.slackTeamId, transportMode: 'direct', defaultAgentId: target.id,
+  });
+  await config.createAgentOwnedConnection({
+    account: {
+      id: 'connection_notion_team', workspaceId: owner.user.slackTeamId, ownerKind: 'team',
+      createdByMembershipId: input.teamCreator === 'owner' ? owner.membership.id : 'membership_teammate',
+      providerId: 'notion', label: 'Notion · Team', secretRefId: 'secret_notion_team', lifecycle: 'ready',
+      policy: {
+        kind: 'managed', adapterId: 'composio', toolkit: 'notion',
+        principalRef: managedPrincipalRef(principal, 'team', undefined)!, accountRef: 'ca_notion_team',
+        allowedCapabilities: ['notion.content.search'],
+        signIn: { person: input.teamPerson, accessLane: 'read' },
+      },
+    },
+    binding: {
+      agentId: other.id, connectionAccountId: 'connection_notion_team', providerId: 'notion',
+      allowedCapabilities: ['notion.content.search'], enabled: true,
+    },
+  });
+  const service = new WorkspaceManagementService({
+    identity, config, management, setupBaseUrl: 'http://localhost', now: () => NOW,
+    randomId: () => 'notion_mix', randomCapability: () => CAPABILITY,
+  });
+  const prepared = await service.prepareConnectorSetup({
+    userId: owner.user.id,
+    membershipId: owner.membership.id,
+    organizationId: owner.membership.organizationId,
+    origin: {
+      kind: 'slack', workspaceId: owner.user.slackTeamId, channelId: 'D_NOTES',
+      threadTs: '1800200000.000300', agentId: target.id,
+    },
+  }, { agentId: target.id, connector: 'Notion', ownerKind: 'member' });
+  const setupId = new URL(prepared.handoffUrl).pathname.split('/').at(-1)!;
+  const app = createManagementSetupRoutes({
+    identity, config, management, settings, now: () => NOW,
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+    authenticatePrincipal: async () => principal,
+    deliverReceipt: async () => ({ deliveryRef: 'slack:D_NOTES:receipt.1' }),
+  });
+  const cookie = (await exchange(app, setupId)).headers.get('set-cookie')!.split(';')[0]!;
+  /** Requests a page's script sends, with the browser's own cookie and origin, and what came back. */
+  const responses: Array<{ path: string; status: number; body: unknown }> = [];
+  const browserFetch = async (path: string, init: RequestInit = {}) => {
+    const response = await app.request(`http://localhost${path}`, {
+      ...init,
+      headers: { ...init.headers as Record<string, string>, origin: 'http://localhost', cookie },
+    });
+    responses.push({ path, status: response.status, body: await response.clone().json().catch(() => undefined) });
+    return response;
+  };
+  return {
+    app, config, management, owner, setupId, cookie, authorized, cleaned, responses,
+    /** Open the page the provider returns to and let its script poll until it stops. */
+    async waitingPageStatus(): Promise<string> {
+      const html = await (await app.request(`http://localhost/setup/${setupId}?poll=1`, {
+        headers: { cookie },
+      })).text();
+      const status = { textContent: '' };
+      const timers: Array<() => Promise<void>> = [];
+      runInNewContext(pageScript(html), {
+        document: { getElementById: (id: string) => id === 'poll-status' ? status : null },
+        fetch: browserFetch,
+        setTimeout: (callback: () => Promise<void>) => { timers.push(callback); },
+        location: { pathname: `/setup/${setupId}`, replace() {} },
+      });
+      for (let timer = timers.shift(); timer; timer = timers.shift()) await timer();
+      return status.textContent;
+    },
+    close() {
+      identity.close();
+      config.close();
+      management.close();
+      settings.close();
+    },
+  };
+}
+
+test('a Slack Notion link refuses a sign-in whose Notion person already backs a team connection', async () => {
+  const h = await notionMixSetupHarness('notion-mix-refused', {
+    teamCreator: 'teammate', teamPerson: 'notion:ws-1:user-maya', signInPerson: 'notion:ws-1:user-maya',
+  });
+  try {
+    const started = await authorize(h.app, h.setupId, h.cookie, { ownerKind: 'member', access: 'read' });
+    assert.equal(started.status, 200, await started.clone().text());
+
+    const refusal = signInMixRefusal(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team', true);
+    assert.equal(await h.waitingPageStatus(), refusal, 'the page the provider returns to shows the refusal');
+    assert.deepEqual(h.responses.map(({ status, body }) => ({ status, body })), [{
+      status: 409, body: { error: 'managed_sign_in_mix_refused', message: refusal },
+    }]);
+    assert.deepEqual(h.cleaned, ['ca_notion_1'], 'the new connected account is removed');
+    assert.deepEqual((await h.config.listConnectionAccounts(h.owner.user.slackTeamId)).map(({ id }) => id),
+      ['connection_notion_team'], 'nothing is saved');
+    assert.equal((await h.management.getSetup(h.setupId))?.status, 'pending', 'the link still works for another account');
+  } finally {
+    h.close();
+  }
+});
+
+function pageScript(html: string): string {
+  const script = /<script nonce="setup">([\s\S]*?)<\/script>/.exec(html)?.[1];
+  assert.ok(script, 'the page has its setup script');
+  return script;
+}
 
 /** The form controls a page renders, as attributes. */
 function formInputs(html: string) {
