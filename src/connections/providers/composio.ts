@@ -5357,7 +5357,12 @@ async function listNotionPages(read: NotionReader): Promise<NotionPageListing | 
     label: string | undefined,
     parent: NotionParent | 'unknown' | 'missing',
   ) => {
-    if (listed.has(id)) return;
+    const earlier = listed.get(id);
+    if (earlier) {
+      // A database first seen through its data source may name its own parent later.
+      if (earlier.parent === 'unknown' && parent !== 'unknown' && parent !== 'missing') earlier.parent = parent;
+      return;
+    }
     if (parent === 'missing') unparented.push(id);
     listed.set(id, {
       kind,
@@ -5406,7 +5411,8 @@ async function listNotionPages(read: NotionReader): Promise<NotionPageListing | 
     }
     cursor = next;
   }
-  for (const id of unparented.slice(0, NOTION_LISTING_LOOKUPS)) {
+  const stillUnparented = unparented.filter((id) => listed.get(id)!.parent === 'unknown');
+  for (const id of stillUnparented.slice(0, NOTION_LISTING_LOOKUPS)) {
     const item = listed.get(id)!;
     try {
       const object = item.kind === 'page'

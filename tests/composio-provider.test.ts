@@ -2932,6 +2932,29 @@ test('Notion listing looks up parents a listing leaves out, and says when it sto
   assert.equal(wideCalls.length, 20, 'listing reads at most twenty pages of results');
 });
 
+test('Notion listing takes the parent a later item names when an earlier item for the same id could not', async () => {
+  const [plans, research, source, child] = ['f1', 'f2', 'f3', 'f4'].map(notionId) as [string, string, string, string];
+  const { provider, calls } = notionListingProvider(NOTION_POLICY, () => ({
+    results: [
+      { id: source, object: 'data_source', title: [{ plain_text: 'Research' }], parent: { type: 'database_id', database_id: research } },
+      { id: child, object: 'page', title: 'Notes' },
+      { id: research, object: 'database', parent: { type: 'page_id', page_id: plans }, title: [{ plain_text: 'Research' }] },
+      { id: child, object: 'page', parent: { type: 'page_id', page_id: plans }, title: 'Notes' },
+      { id: plans, object: 'page', parent: { type: 'workspace', workspace: true }, title: 'Plans' },
+    ],
+    has_more: false,
+  }));
+  assert.deepEqual(await provider.listPages({ policy: NOTION_POLICY }), {
+    pages: [
+      { id: research, kind: 'database', label: 'Research', parent: plans },
+      { id: child, kind: 'page', label: 'Notes', parent: plans },
+      { id: plans, kind: 'page', label: 'Plans' },
+    ],
+    complete: true,
+  });
+  assert.deepEqual(calls.map(({ tool }) => tool), ['NOTION_FETCH_DATA'], 'a parent named later needs no lookup');
+});
+
 test('Notion validation names the Notion person who signed in, and nobody when Notion names no user', async () => {
   const policy: ConnectionAccountManagedPolicy = {
     ...POLICY,
