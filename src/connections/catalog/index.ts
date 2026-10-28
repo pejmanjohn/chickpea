@@ -135,6 +135,15 @@ export function semanticDescriptorForManagedTool(
   return capability ? semanticDescriptorForManagedCapability(capability.id) : undefined;
 }
 
+/** The auth-config lane a credential needs for these capabilities: write when any of them writes. */
+export function managedAccessLane(
+  connector: ManagedConnectorDefinition,
+  capabilities: readonly string[],
+): ManagedAccessLane {
+  return connector.capabilities.some(({ id, accessLane }) =>
+    accessLane === 'write' && capabilities.includes(id)) ? 'write' : 'read';
+}
+
 export function intersectManagedResourceConstraints(
   connector: ManagedConnectorDefinition,
   accountConstraints: ManagedAccountResourceConstraints | undefined,

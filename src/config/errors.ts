@@ -153,6 +153,17 @@ export class ManagedRemoteAccountAlreadyUsedError extends Error {
   }
 }
 
+/** A write would leave the accounts sharing one remote account unequal, or the group changed. */
+export class ManagedSignInGroupConflictError extends Error {
+  constructor(
+    readonly adapterId: string,
+    readonly accountRef: string,
+  ) {
+    super(`Connections sharing managed account ${accountRef} must change together`);
+    this.name = 'ManagedSignInGroupConflictError';
+  }
+}
+
 // "Nothing enabled answers in this channel" — the resolver's not-found family.
 export class NoAssignmentError extends Error {
   constructor(message: string) {

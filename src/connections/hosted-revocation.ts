@@ -5,8 +5,9 @@
  * exactly as its owner's revoke does, in that documented order:
  * dependent schedules pause and the account turns `needs_attention` (a
  * fail-closed intermediate state), a managed account's remote account is
- * deleted at its provider (Composio, never the upstream grant, which is
- * grant-wide), the local secret is tombstoned, the account turns `revoked`
+ * deleted at its provider once no other live account shares it (Composio,
+ * never the upstream grant, which is grant-wide), the local secret is
+ * tombstoned, the account turns `revoked`
  * and its dependents are marked, then an MCP or API account's OAuth
  * settings are deleted. Core revokes nothing remotely for MCP and API
  * connections.

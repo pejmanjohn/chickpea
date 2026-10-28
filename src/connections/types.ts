@@ -6,13 +6,9 @@ import type {
   ManagedBindingResourceConstraints,
 } from '../config/types.ts';
 
-type ManagedConnectionAccountViewPolicy = Omit<
+type ManagedConnectionAccountViewPolicy = Pick<
   ConnectionAccountManagedPolicy,
-  | 'principalRef'
-  | 'accountRef'
-  | 'resourceConstraints'
-  | 'providerGeneration'
-  | 'providerLineage'
+  'kind' | 'adapterId' | 'toolkit' | 'allowedCapabilities' | 'grantSummary' | 'oauthAttemptId'
 > & {
   resourceConstraints?: Record<string, Array<{ handle: string; label: string }>>;
 };

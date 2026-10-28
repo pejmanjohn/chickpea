@@ -78,6 +78,8 @@ export interface ManagedConnectionValidationResult {
     items: Array<{ type: 'page' | 'database'; label: string }>;
     truncated: boolean;
   };
+  /** Who signed in, as the provider names them; see `ManagedSignIn.person`. */
+  person?: string;
 }
 
 export interface ManagedConnectionInvocationResult extends ManagedConnectionExecutionResult {
@@ -95,6 +97,8 @@ export interface ManagedConnectionProvider {
     principalRef: string;
     toolkit: string;
     allowedCapabilities: readonly string[];
+    /** Issue the credential under at least this lane, for example a shared sign-in's. */
+    accessLane?: ManagedAccessLane;
     returnUrl?: string;
     signal?: AbortSignal;
   }): Promise<ManagedAuthorizationResult>;

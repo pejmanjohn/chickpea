@@ -8,6 +8,7 @@ import {
   ConnectionAccountAlreadyBoundError,
   ConnectionAccountRevisionConflictError,
   ManagedRemoteAccountAlreadyUsedError,
+  ManagedSignInGroupConflictError,
   ModelRoleRevisionConflictError,
   ReservedAgentIdentityError,
   UnknownAgentError,
@@ -65,6 +66,8 @@ import type {
   AgentConnectionBindingInput,
   AgentOwnedConnection,
   AgentOwnedConnectionInput,
+  SignInGroupChange,
+  SignInReferenceRelease,
   AgentScheduleReference,
   AgentScheduleReferenceInput,
   AgentSnapshot,
@@ -472,6 +475,11 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       );
     case 'managed_remote_account_already_used':
       throw new ManagedRemoteAccountAlreadyUsedError(
+        details?.adapterId ?? 'unknown',
+        details?.accountRef ?? 'unknown',
+      );
+    case 'managed_sign_in_group_conflict':
+      throw new ManagedSignInGroupConflictError(
         details?.adapterId ?? 'unknown',
         details?.accountRef ?? 'unknown',
       );
@@ -1800,6 +1808,23 @@ export class CfConfigStore implements ConfigStore {
     return rpcVia(this.stub,
       'configCreateAgentOwnedConnection',
       (stub) => stub.configCreateAgentOwnedConnection(input),
+    );
+  }
+
+  async applySignInGroup(change: SignInGroupChange): Promise<ConnectionAccount[]> {
+    return rpcVia(this.stub,
+      'configApplySignInGroup',
+      (stub) => stub.configApplySignInGroup(change),
+    );
+  }
+
+  async releaseSignInReference(input: {
+    connectionAccountId: string;
+    expectedRevision: number;
+  }): Promise<SignInReferenceRelease> {
+    return rpcVia(this.stub,
+      'configReleaseSignInReference',
+      (stub) => stub.configReleaseSignInReference(input),
     );
   }
 

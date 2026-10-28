@@ -60,6 +60,8 @@ export interface ManagedConnectorDefinition {
   securityDescription: string;
   /** What the provider's own sign-in screen lets a person choose, such as Notion pages. Signing in again changes it. */
   providerSelection?: { label: string };
+  /** Several Agents' accounts may share one connected account. Its rows then change together. */
+  sharedSignIn?: boolean;
   resources?: readonly ManagedResourceDefinition[];
   capabilities: readonly ManagedCapabilityDefinition[];
 }

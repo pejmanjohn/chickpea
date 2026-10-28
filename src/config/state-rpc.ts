@@ -26,6 +26,8 @@ import type {
   AgentConnectionBindingInput,
   AgentOwnedConnection,
   AgentOwnedConnectionInput,
+  SignInGroupChange,
+  SignInReferenceRelease,
   AgentScheduleReference,
   AgentScheduleReferenceInput,
   AgentSnapshot,
@@ -161,6 +163,7 @@ export type StateRpcErrorCode =
   | 'connection_account_already_bound'
   | 'connection_account_revision_conflict'
   | 'managed_remote_account_already_used'
+  | 'managed_sign_in_group_conflict'
   | 'identity'
   | 'management'
   | 'memory'
@@ -467,6 +470,13 @@ export interface TagStateRpc {
   configCreateAgentOwnedConnection(
     input: AgentOwnedConnectionInput,
   ): Promise<StateRpcResult<AgentOwnedConnection>>;
+  configApplySignInGroup(
+    change: SignInGroupChange,
+  ): Promise<StateRpcResult<ConnectionAccount[]>>;
+  configReleaseSignInReference(input: {
+    connectionAccountId: string;
+    expectedRevision: number;
+  }): Promise<StateRpcResult<SignInReferenceRelease>>;
   configListAgentConnectionBindings(
     agentId: string,
   ): Promise<StateRpcResult<AgentConnectionBinding[]>>;

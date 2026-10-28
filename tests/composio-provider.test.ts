@@ -2398,6 +2398,16 @@ test('managed authorization selects the write auth config and fails closed when 
     allowedCapabilities: ['calendar.events.list', 'calendar.events.create'],
   });
   assert.equal(linkedAuthConfigs[0], 'ac_calendar_write');
+  for (const accessLane of ['write', 'read'] as const) {
+    await provider.authorize({
+      principalRef: 'chickpea:membership:membership_test',
+      toolkit: 'googlecalendar',
+      allowedCapabilities: accessLane === 'write' ? ['calendar.events.list'] : ['calendar.events.create'],
+      accessLane,
+    });
+  }
+  assert.deepEqual(linkedAuthConfigs.splice(1), ['ac_calendar_write', 'ac_calendar_write'],
+    'a requested lane widens a read-only ceiling and never narrows a write one');
 
   const missingWrite = new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
@@ -2777,7 +2787,7 @@ test('productivity provider guards reject oversized and unsupported direct calls
 });
 
 test('Notion validation verifies the provider grant and returns display-safe page summaries', async () => {
-  let captured: Record<string, unknown> | undefined;
+  const calls: Array<Record<string, unknown>> = [];
   const policy: ConnectionAccountManagedPolicy = {
     ...POLICY,
     toolkit: 'notion',
@@ -2799,7 +2809,10 @@ test('Notion validation verifies the provider grant and returns display-safe pag
       },
       tools: {
         async execute(tool, input) {
-          captured = { tool, ...input };
+          calls.push({ tool, ...input });
+          if (tool === 'NOTION_GET_ABOUT_ME') {
+            return { data: {}, successful: false, error: 'about-me is unavailable' };
+          }
           return {
             data: {
               results: [
@@ -2827,7 +2840,7 @@ test('Notion validation verifies the provider grant and returns display-safe pag
 
   const validation = await provider.validate({ policy });
 
-  assert.deepEqual(captured, {
+  assert.deepEqual(calls[0], {
     tool: 'NOTION_FETCH_DATA',
     userId: policy.principalRef,
     connectedAccountId: policy.accountRef,
@@ -2843,6 +2856,69 @@ test('Notion validation verifies the provider grant and returns display-safe pag
       truncated: true,
     },
   });
+});
+
+test('Notion validation names the Notion person who signed in, and nobody when Notion names no user', async () => {
+  const policy: ConnectionAccountManagedPolicy = {
+    ...POLICY,
+    toolkit: 'notion',
+    accountRef: 'ca_notion_person',
+    allowedCapabilities: ['notion.content.search'],
+  };
+  const validateWithOwner = async (owner: unknown, envelope = false) => {
+    const calls: Array<Record<string, unknown>> = [];
+    const aboutMe = {
+      object: 'user', id: 'bot-1', type: 'bot', name: 'Composio',
+      bot: { owner, workspace_id: 'ws-9f2e', workspace_name: 'Example Workspace' },
+    };
+    const provider = new ComposioManagedConnectionProvider({
+      apiKey: 'test-key',
+      getConnectedAccount: async () => ({
+        id: policy.accountRef, status: 'ACTIVE', isDisabled: false,
+        toolkit: 'notion', userId: policy.principalRef,
+      }),
+      createClient: async () => ({
+        sessions: { async create() { throw new Error('session execution must not be used'); } },
+        tools: {
+          async execute(tool, input) {
+            calls.push({ tool, ...input });
+            return tool === 'NOTION_GET_ABOUT_ME'
+              ? { data: envelope ? { data: aboutMe } : aboutMe, successful: true, error: null }
+              : { data: { results: [], has_more: false }, successful: true, error: null };
+          },
+        },
+      }),
+    });
+    return { validation: await provider.validate({ policy }), calls };
+  };
+
+  const { validation, calls } = await validateWithOwner({
+    type: 'user',
+    user: {
+      object: 'user', id: 'user-7c1a', type: 'person', name: 'Maya Example',
+      person: { email: 'maya@example.com' },
+    },
+  });
+  assert.deepEqual(calls.map(({ tool }) => tool), ['NOTION_FETCH_DATA', 'NOTION_GET_ABOUT_ME']);
+  assert.deepEqual(calls[1], {
+    tool: 'NOTION_GET_ABOUT_ME',
+    userId: policy.principalRef,
+    connectedAccountId: policy.accountRef,
+    version: COMPOSIO_TOOLKIT_VERSIONS.notion,
+    arguments: {},
+  });
+  assert.equal(validation?.person, 'notion:ws-9f2e:user-7c1a');
+  assert.doesNotMatch(JSON.stringify(validation), /Maya|maya@example\.com|Example Workspace/);
+  assert.equal(
+    (await validateWithOwner({ type: 'user', user: { object: 'user', id: 'user-7c1a' } }, true)).validation?.person,
+    'notion:ws-9f2e:user-7c1a',
+  );
+
+  for (const owner of [{ type: 'workspace', workspace: true }, { type: 'user' }, { type: 'user', user: { id: 'has space' } }]) {
+    const fallback = await validateWithOwner(owner);
+    assert.equal(fallback.validation?.person, undefined);
+    assert.deepEqual(fallback.validation?.grantSummary, { items: [], truncated: false });
+  }
 });
 
 test('Notion validation rejects a provider response that explicitly reports unsuccessful', async () => {

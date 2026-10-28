@@ -1,4 +1,5 @@
 import type { ModelEffort } from './model-effort.ts';
+import type { SignInGroupPolicy } from './sign-in-group.ts';
 
 /**
  * An Agent-attached skill: a named playbook the Agent can load on demand.
@@ -751,6 +752,13 @@ export interface ManagedProviderGrantSummary {
   truncated: boolean;
 }
 
+/** Who signed in to the provider and under which Composio auth-config lane. Never a name or email. */
+export interface ManagedSignIn {
+  /** `notion:<workspace id>:<user id>` from Notion, else `member:<membership id>` of the signer. Notion only. */
+  person?: string;
+  accessLane: 'read' | 'write';
+}
+
 export interface ConnectionAccountManagedPolicy {
   kind: 'managed';
   /** Connector infrastructure adapter, for example `composio`. */
@@ -767,6 +775,8 @@ export interface ConnectionAccountManagedPolicy {
   resourceConstraints?: ManagedAccountResourceConstraints;
   /** Safe summary of the provider-enforced grant, such as Notion's page picker. */
   grantSummary?: ManagedProviderGrantSummary;
+  /** Recorded at sign-in and on every rotation. Absent on accounts connected before it existed. */
+  signIn?: ManagedSignIn;
   /** Common generation-token shape used by generic connection policy handling. */
   oauthAttemptId?: string;
   /** Installation provider revision that last validated this exact account. */
@@ -834,6 +844,31 @@ export interface AgentOwnedConnection {
   account: ConnectionAccount;
   binding: AgentConnectionBinding;
 }
+
+/**
+ * One atomic change to a sign-in group: the live managed accounts that share
+ * one remote account. `members` must be exactly the live accounts holding
+ * `adapterId` and `accountRef`, each at its current revision.
+ */
+export interface SignInGroupChange {
+  adapterId: string;
+  accountRef: string;
+  members: ReadonlyArray<{
+    connectionAccountId: string;
+    expectedRevision: number;
+    /** A new capability ceiling for this member only. */
+    allowedCapabilities?: string[];
+  }>;
+  /** Every shared policy field, written to all members. A field absent here is removed. */
+  shared: SignInGroupPolicy;
+  lifecycle?: 'pending' | 'ready' | 'needs_attention';
+  /** A new account and binding for another Agent, joining the group as changed. Every member must already be ready. */
+  join?: AgentOwnedConnectionInput;
+}
+
+export type SignInReferenceRelease =
+  | { kind: 'released'; account: ConnectionAccount }
+  | { kind: 'last_reference' };
 
 export type AgentScheduleState = 'active' | 'paused' | 'needs_attention' | 'archived';
 

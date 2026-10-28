@@ -8,19 +8,24 @@ import test from 'node:test';
 import { CfConfigStore } from '../src/config/cf-state-proxies.ts';
 import {
   ConnectionAccountAlreadyBoundError,
+  ConnectionAccountRevisionConflictError,
   ManagedRemoteAccountAlreadyUsedError,
+  ManagedSignInGroupConflictError,
 } from '../src/config/errors.ts';
+import { signInGroupPolicy } from '../src/config/sign-in-group.ts';
 import type { StateRpcResult, TagStateRpc } from '../src/config/state-rpc.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import type {
   AgentChannelGrant,
+  AgentOwnedConnectionInput,
   AgentScheduleReference,
   AgentThreadRoute,
   ChickpeaCutoverActivation,
   ChickpeaCutoverPreflight,
   ConnectionAccount,
+  ConnectionAccountManagedPolicy,
   SlackPublicContextEntry,
   WorkspaceModelDefault,
   WorkspaceInstallation,
@@ -530,6 +535,279 @@ test('managed remote account references are committed only once', async () => {
   }
 });
 
+function teamManagedConnection(
+  id: string,
+  agentId: string,
+  toolkit: 'notion' | 'gmail',
+  accountRef: string,
+  policy: Partial<ConnectionAccountManagedPolicy> = {},
+): AgentOwnedConnectionInput {
+  const capability = toolkit === 'notion' ? 'notion.content.search' : 'gmail.messages.search';
+  return {
+    account: {
+      id,
+      workspaceId: 'T_PLATFORM',
+      ownerKind: 'team',
+      createdByMembershipId: 'membership_owner',
+      providerId: toolkit === 'notion' ? 'notion' : 'google',
+      label: `Managed ${toolkit} for ${agentId}`,
+      policy: {
+        kind: 'managed', adapterId: 'composio', toolkit,
+        principalRef: 'chickpea:organization:T_PLATFORM', accountRef,
+        allowedCapabilities: [capability],
+        signIn: { person: 'notion:workspace-1:user-1', accessLane: 'read' },
+        grantSummary: { items: [{ type: 'page', label: 'Roadmap' }], truncated: false },
+        providerGeneration: 2,
+        providerLineage: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+        ...policy,
+      },
+      secretRefId: `secret_${id}`,
+      lifecycle: 'ready',
+    },
+    binding: {
+      agentId,
+      connectionAccountId: id,
+      providerId: toolkit === 'notion' ? 'notion' : 'google',
+      allowedCapabilities: [capability],
+      enabled: true,
+    },
+  };
+}
+
+async function platformStoreWithAgents(...ids: string[]) {
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  for (const id of ids) await store.createAgent(agent(id, id));
+  await store.ensureWorkspaceInstallation({
+    workspaceId: 'T_PLATFORM', transportMode: 'direct', defaultAgentId: ids[0]!,
+  });
+  return store;
+}
+
+function groupMembers(accounts: readonly ConnectionAccount[]) {
+  return accounts.map(({ id, revision }) => ({ connectionAccountId: id, expectedRevision: revision }));
+}
+
+function sharedPolicy(account: ConnectionAccount) {
+  if (account.policy.kind !== 'managed') throw new Error('expected managed policy');
+  return signInGroupPolicy(account.policy);
+}
+
+test('a sign-in group gains an account only through a join, and only for a connector that shares sign-ins', async () => {
+  const store = await platformStoreWithAgents('agent_support', 'agent_sales');
+  try {
+    const { account: notion } = await store.createAgentOwnedConnection(
+      teamManagedConnection('connection_notion_support', 'agent_support', 'notion', 'ca_notion'),
+    );
+    await assert.rejects(
+      store.createAgentOwnedConnection(
+        teamManagedConnection('connection_notion_sales', 'agent_sales', 'notion', 'ca_notion'),
+      ),
+      ManagedRemoteAccountAlreadyUsedError,
+    );
+    const join = (
+      policy: Partial<ConnectionAccountManagedPolicy> = {},
+      account: Partial<AgentOwnedConnectionInput['account']> = {},
+    ) => {
+      const input = teamManagedConnection('connection_notion_sales', 'agent_sales', 'notion', 'ca_notion', policy);
+      return store.applySignInGroup({
+        adapterId: 'composio',
+        accountRef: 'ca_notion',
+        members: groupMembers([notion]),
+        shared: sharedPolicy(notion),
+        join: { ...input, account: { ...input.account, ...account } },
+      });
+    };
+    for (const [policy, account] of [
+      [{ signIn: { person: 'notion:workspace-1:user-2', accessLane: 'read' } }, {}],
+      [{ principalRef: 'chickpea:membership:membership_member' }, {}],
+      [{}, { ownerKind: 'member', ownerMembershipId: 'membership_member' }],
+    ] as const) {
+      await assert.rejects(join(policy, account), ManagedSignInGroupConflictError);
+    }
+    await assert.rejects(join({}, { workspaceId: 'T_OTHER' }), /belongs to workspace T_OTHER/);
+    assert.equal(await store.getAgentConnectionBindingForAccount('connection_notion_sales'), undefined);
+    assert.deepEqual((await store.listConnectionAccounts('T_PLATFORM')).map(({ id }) => id), [notion.id]);
+
+    const group = await join();
+    assert.deepEqual(group.map(({ id, lifecycle }) => [id, lifecycle]), [
+      ['connection_notion_sales', 'ready'],
+      ['connection_notion_support', 'ready'],
+    ]);
+    assert.equal(
+      (await store.getAgentConnectionBindingForAccount('connection_notion_sales'))?.agentId,
+      'agent_sales',
+    );
+
+    const { account: gmail } = await store.createAgentOwnedConnection(
+      teamManagedConnection('connection_gmail_support', 'agent_support', 'gmail', 'ca_gmail'),
+    );
+    await assert.rejects(
+      store.applySignInGroup({
+        adapterId: 'composio',
+        accountRef: 'ca_gmail',
+        members: groupMembers([gmail]),
+        shared: sharedPolicy(gmail),
+        join: teamManagedConnection('connection_gmail_sales', 'agent_sales', 'gmail', 'ca_gmail'),
+      }),
+      ManagedRemoteAccountAlreadyUsedError,
+    );
+    assert.equal(await store.getAgentConnectionBindingForAccount('connection_gmail_sales'), undefined);
+    assert.equal(
+      (await store.listConnectionAccounts('T_PLATFORM')).some(({ id }) => id === 'connection_gmail_sales'),
+      false,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('a sign-in group accepts a new member only while every member is already ready', async () => {
+  const store = await platformStoreWithAgents('agent_support', 'agent_sales');
+  try {
+    const { account: notion } = await store.createAgentOwnedConnection(
+      teamManagedConnection('connection_notion_support', 'agent_support', 'notion', 'ca_notion'),
+    );
+    // Disconnect in flight: the row waits at needs_attention until the remote account is deleted.
+    const disconnecting = await store.putConnectionAccount(
+      { ...notion, lifecycle: 'needs_attention' }, notion.revision,
+    );
+    const join = (lifecycle?: 'ready') => store.applySignInGroup({
+      adapterId: 'composio',
+      accountRef: 'ca_notion',
+      members: groupMembers([disconnecting]),
+      shared: sharedPolicy(disconnecting),
+      ...(lifecycle ? { lifecycle } : {}),
+      join: teamManagedConnection('connection_notion_sales', 'agent_sales', 'notion', 'ca_notion'),
+    });
+    await assert.rejects(join(), ManagedSignInGroupConflictError);
+    assert.equal(await store.getAgentConnectionBindingForAccount('connection_notion_sales'), undefined);
+    assert.deepEqual(
+      (await store.listConnectionAccounts('T_PLATFORM')).map(({ id, lifecycle }) => [id, lifecycle]),
+      [[notion.id, 'needs_attention']],
+    );
+    await assert.rejects(join('ready'), ManagedSignInGroupConflictError);
+    const [recovered] = await store.applySignInGroup({
+      adapterId: 'composio',
+      accountRef: 'ca_notion',
+      members: groupMembers([disconnecting]),
+      shared: sharedPolicy(disconnecting),
+      lifecycle: 'ready',
+    });
+    const joined = await store.applySignInGroup({
+      adapterId: 'composio',
+      accountRef: 'ca_notion',
+      members: groupMembers([recovered!]),
+      shared: sharedPolicy(recovered!),
+      join: teamManagedConnection('connection_notion_sales', 'agent_sales', 'notion', 'ca_notion'),
+    });
+    assert.deepEqual(joined.map(({ lifecycle }) => lifecycle), ['ready', 'ready']);
+  } finally {
+    store.close();
+  }
+});
+
+test('one member of a sign-in group changes its own fields but never the fields its group shares', async () => {
+  const store = await platformStoreWithAgents('agent_support', 'agent_sales');
+  try {
+    const { account: support } = await store.createAgentOwnedConnection(
+      teamManagedConnection('connection_notion_support', 'agent_support', 'notion', 'ca_notion'),
+    );
+    const [sales] = (await store.applySignInGroup({
+      adapterId: 'composio', accountRef: 'ca_notion',
+      members: groupMembers([support]), shared: sharedPolicy(support),
+      join: teamManagedConnection('connection_notion_sales', 'agent_sales', 'notion', 'ca_notion'),
+    })).filter(({ id }) => id === 'connection_notion_sales');
+    if (sales?.policy.kind !== 'managed') throw new Error('expected the joined account');
+
+    for (const policy of [
+      { ...sales.policy, grantSummary: { items: [], truncated: false } },
+      { ...sales.policy, accountRef: 'ca_notion_elsewhere' },
+      { ...sales.policy, providerGeneration: 3 },
+    ]) {
+      await assert.rejects(
+        store.putConnectionAccount({ ...sales, policy }, sales.revision),
+        ManagedSignInGroupConflictError,
+      );
+    }
+    const expired = await store.putConnectionAccount({ ...sales, lifecycle: 'needs_attention' }, sales.revision);
+    const renamed = await store.putConnectionAccount({
+      ...expired,
+      label: 'Notion for sales',
+      policy: { ...sales.policy, allowedCapabilities: ['notion.content.search', 'notion.pages.get'] },
+    }, expired.revision);
+    assert.equal(renamed.lifecycle, 'needs_attention');
+    assert.equal(renamed.label, 'Notion for sales');
+    const accounts = await store.listConnectionAccounts('T_PLATFORM');
+    assert.deepEqual(accounts.map((account) => sharedPolicy(account)), [sharedPolicy(support), sharedPolicy(support)]);
+  } finally {
+    store.close();
+  }
+});
+
+test('a sign-in group change applies to every member or to none', async () => {
+  const store = await platformStoreWithAgents('agent_support', 'agent_sales');
+  try {
+    const { account: support } = await store.createAgentOwnedConnection(
+      teamManagedConnection('connection_notion_support', 'agent_support', 'notion', 'ca_notion'),
+    );
+    const group = await store.applySignInGroup({
+      adapterId: 'composio', accountRef: 'ca_notion',
+      members: groupMembers([support]), shared: sharedPolicy(support),
+      join: teamManagedConnection('connection_notion_sales', 'agent_sales', 'notion', 'ca_notion'),
+    });
+    const rotation = (members: ReturnType<typeof groupMembers>) => store.applySignInGroup({
+      adapterId: 'composio', accountRef: 'ca_notion', members,
+      shared: { ...sharedPolicy(support), accountRef: 'ca_notion_rotated' },
+      lifecycle: 'ready',
+    });
+    const before = await store.listConnectionAccounts('T_PLATFORM');
+
+    await assert.rejects(
+      rotation(groupMembers(group).map((member, index) =>
+        index === 0 ? { ...member, expectedRevision: member.expectedRevision - 1 } : member)),
+      ConnectionAccountRevisionConflictError,
+    );
+    await assert.rejects(rotation(groupMembers(group).slice(1)), ManagedSignInGroupConflictError);
+    await assert.rejects(
+      rotation([...groupMembers(group), { connectionAccountId: 'connection_unknown', expectedRevision: 1 }]),
+      ManagedSignInGroupConflictError,
+    );
+    assert.deepEqual(await store.listConnectionAccounts('T_PLATFORM'), before);
+
+    const rotated = await rotation(groupMembers(group));
+    assert.deepEqual(
+      rotated.map((account) => account.policy.kind === 'managed' && account.policy.accountRef),
+      ['ca_notion_rotated', 'ca_notion_rotated'],
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('releasing a shared sign-in revokes one member until only the last reference remains', async () => {
+  const store = await platformStoreWithAgents('agent_support', 'agent_sales');
+  try {
+    const { account: support } = await store.createAgentOwnedConnection(
+      teamManagedConnection('connection_notion_support', 'agent_support', 'notion', 'ca_notion'),
+    );
+    const group = await store.applySignInGroup({
+      adapterId: 'composio', accountRef: 'ca_notion',
+      members: groupMembers([support]), shared: sharedPolicy(support),
+      join: teamManagedConnection('connection_notion_sales', 'agent_sales', 'notion', 'ca_notion'),
+    });
+
+    const releases = await Promise.all(group.map(({ id, revision }) =>
+      store.releaseSignInReference({ connectionAccountId: id, expectedRevision: revision })));
+    assert.deepEqual(releases.map(({ kind }) => kind).sort(), ['last_reference', 'released']);
+    const released = releases.find((release) => release.kind === 'released');
+    assert.equal(released?.kind === 'released' && released.account.lifecycle, 'revoked');
+    const accounts = await store.listConnectionAccounts('T_PLATFORM');
+    assert.deepEqual(accounts.map(({ lifecycle }) => lifecycle).sort(), ['ready', 'revoked']);
+  } finally {
+    store.close();
+  }
+});
+
 test('schema startup fails closed instead of choosing among duplicate binding owners', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-connection-owner-'));
   const databasePath = join(directory, 'state.db');
@@ -749,6 +1027,15 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
         details: { adapterId: 'composio', accountRef: 'ca_remote_once' },
       },
     }),
+    configApplySignInGroup: () => Promise.resolve({
+      ok: false as const,
+      error: {
+        code: 'managed_sign_in_group_conflict' as const,
+        message: 'sign-in group conflict',
+        details: { adapterId: 'composio', accountRef: 'ca_shared' },
+      },
+    }),
+    configReleaseSignInReference: () => ok({ kind: 'last_reference' as const }),
     configGetAgentConnectionBindingForAccount: () => ok({
       agentId: 'agent_support',
       connectionAccountId: account.id,
@@ -811,6 +1098,17 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
       },
     }),
     ManagedRemoteAccountAlreadyUsedError,
+  );
+  await assert.rejects(
+    store.applySignInGroup({
+      adapterId: 'composio', accountRef: 'ca_shared', members: [],
+      shared: { adapterId: 'composio', toolkit: 'notion', principalRef: 'principal', accountRef: 'ca_shared' },
+    }),
+    (error: unknown) => error instanceof ManagedSignInGroupConflictError && error.accountRef === 'ca_shared',
+  );
+  assert.deepEqual(
+    await store.releaseSignInReference({ connectionAccountId: account.id, expectedRevision: 1 }),
+    { kind: 'last_reference' },
   );
   await assert.rejects(
     store.putAgentConnectionBinding({
