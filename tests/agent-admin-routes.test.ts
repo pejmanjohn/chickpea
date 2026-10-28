@@ -4106,6 +4106,94 @@ test('the connection catalog reports managed readiness per toolkit and lane', as
   }
 });
 
+test('reconnecting a ready Notion account from Admin keeps the connection and refreshes its pages', async () => {
+  const revoked: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async authorize() {
+      return {
+        authorizationUrl: new URL('https://connect.composio.dev/link/lk_notion_pages'),
+        authorizationRef: 'ca_notion_after',
+      };
+    },
+    async pollAuthorization() {
+      return { status: 'active', accountRef: 'ca_notion_after', toolkit: 'notion' };
+    },
+    async validate({ policy }) {
+      return {
+        grantSummary: {
+          items: policy.accountRef === 'ca_notion_after'
+            ? [{ type: 'page' as const, label: 'Launch plan' }, { type: 'page' as const, label: 'Hiring' }]
+            : [{ type: 'page' as const, label: 'Launch plan' }],
+          truncated: false,
+        },
+      };
+    },
+    async execute() { return { data: {} }; },
+    async revoke({ policy }) { revoked.push(policy.accountRef); },
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const { account, binding } = await fixture.store.createAgentOwnedConnection({
+      account: {
+        id: 'connection_notion_ready', workspaceId: 'T_TEST', ownerKind: 'team',
+        createdByMembershipId: 'membership_test_owner', providerId: 'notion', label: 'Notion · Team',
+        policy: {
+          kind: 'managed', adapterId: 'composio', toolkit: 'notion',
+          principalRef: 'chickpea:organization:org_oss', accountRef: 'ca_notion_before',
+          allowedCapabilities: ['notion.content.search'],
+          grantSummary: { items: [{ type: 'page', label: 'Launch plan' }], truncated: false },
+        },
+        secretRefId: 'secret_notion_ready', lifecycle: 'ready',
+      },
+      binding: {
+        agentId: 'agent_support', connectionAccountId: 'connection_notion_ready', providerId: 'notion',
+        allowedCapabilities: ['notion.content.search'], enabled: true,
+      },
+    });
+
+    const started = await fixture.app.request(
+      'https://chickpea.example/admin/api/agents/agent_support/connections/managed/start',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({ workspaceId: 'T_TEST', connectionAccountId: account.id }),
+      },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
+    assert.ok(cookie);
+    const polled = await fixture.app.request(
+      'https://chickpea.example/admin/api/agents/agent_support/connections/managed/poll',
+      { method: 'POST', headers: { ...auth(), cookie }, body: '{}' },
+    );
+    assert.equal(polled.status, 200, await polled.clone().text());
+    assert.equal((await polled.json() as { status: string }).status, 'connected');
+
+    const accounts = await fixture.store.listConnectionAccounts('T_TEST');
+    assert.deepEqual(accounts.map(({ id, lifecycle }) => ({ id, lifecycle })),
+      [{ id: account.id, lifecycle: 'ready' }], 'the same connection, and no new one');
+    const policy = accounts[0]!.policy;
+    assert.equal(policy.kind === 'managed' ? policy.accountRef : undefined, 'ca_notion_after');
+    assert.deepEqual(policy.kind === 'managed' ? policy.grantSummary : undefined, {
+      items: [{ type: 'page', label: 'Launch plan' }, { type: 'page', label: 'Hiring' }],
+      truncated: false,
+    });
+    assert.deepEqual(revoked, ['ca_notion_before'], 'the previous sign-in is removed');
+    assert.deepEqual(await fixture.store.listAgentConnectionBindings('agent_support'), [binding]);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('revoked Agent-owned accounts are omitted from the Agent connection list', async () => {
   const fixture = harness(new FakeTransport());
   try {
