@@ -1,6 +1,7 @@
 import { md5 } from '@noble/hashes/legacy.js';
 
 import { isRecord } from '../../security/content-validation.ts';
+import { MANAGED_SIGN_IN_PERSON } from '../../config/sign-in-group.ts';
 import type { ConnectionAccountManagedPolicy } from '../../config/types.ts';
 import {
   MANAGED_ARTIFACT_ARGUMENT,
@@ -9,6 +10,7 @@ import {
 import {
   MANAGED_CONNECTOR_CATALOG,
   composioManifest,
+  managedAccessLane,
   type ManagedAccessLane,
   type ManagedConnectorDefinition,
   type ManagedProviderAvailability,
@@ -1640,6 +1642,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
     principalRef: string;
     toolkit: string;
     allowedCapabilities: readonly string[];
+    accessLane?: ManagedAccessLane;
     returnUrl?: string;
     signal?: AbortSignal;
   }): Promise<{ authorizationUrl: URL; authorizationRef: string }> {
@@ -1653,8 +1656,10 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
           input.allowedCapabilities.some((capability) => !supportedCapabilities.has(capability))) {
         throw new Error('authorization capabilities are invalid');
       }
-      const access = connector.capabilities.some(({ id, accessLane }) =>
-        accessLane === 'write' && input.allowedCapabilities.includes(id)) ? 'write' : 'read';
+      // A requested lane may widen the capabilities' own lane, never narrow it.
+      const access = input.accessLane === 'write'
+        ? 'write'
+        : managedAccessLane(connector, input.allowedCapabilities);
       const authConfigId = this.authConfigId(connector.toolkit, access);
       if (!authConfigId) {
         throw new Error('managed auth config is unavailable');
@@ -1821,6 +1826,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
       items: Array<{ type: 'page' | 'database'; label: string }>;
       truncated: boolean;
     };
+    person?: string;
   } | void> {
     const apiKey = this.requireApiKey();
     this.validateCapabilities(input.policy);
@@ -1952,7 +1958,11 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         if (result.error) {
           throw definiteManagedValidationFailure('Notion grant verification failed', 1);
         }
-        return { grantSummary: notionGrantSummary(result.data) };
+        const person = await notionSignInPerson(client, input.policy, signal);
+        return {
+          grantSummary: notionGrantSummary(result.data),
+          ...(person ? { person } : {}),
+        };
       }
     } catch (error) {
       if (error instanceof ManagedAuthorizationExpiredError ||
@@ -5201,6 +5211,38 @@ function projectNotionSearch(data: Record<string, unknown>): Record<string, unkn
     break;
   }
   return output;
+}
+
+/**
+ * The Notion person who approved this sign-in: Notion keeps one page list per
+ * person and workspace. Absent when Notion does not name a user owner; the
+ * caller then records the Chickpea member who signed in.
+ */
+async function notionSignInPerson(
+  client: ComposioClientLike,
+  policy: ConnectionAccountManagedPolicy,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  try {
+    const result = await executeComposioTool(client, policy, {
+      toolkit: 'notion',
+      tool: 'NOTION_GET_ABOUT_ME',
+      arguments: {},
+      signal,
+    });
+    if (result.error) return undefined;
+    const source = isRecord(result.data.data) ? result.data.data : result.data;
+    const bot = isRecord(source.bot) ? source.bot : {};
+    const owner = isRecord(bot.owner) ? bot.owner : {};
+    const user = isRecord(owner.user) ? owner.user : {};
+    if (owner.type !== 'user' || typeof bot.workspace_id !== 'string' || typeof user.id !== 'string') {
+      return undefined;
+    }
+    const person = `notion:${bot.workspace_id}:${user.id}`;
+    return MANAGED_SIGN_IN_PERSON.test(person) ? person : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function notionGrantSummary(data: Record<string, unknown>): {

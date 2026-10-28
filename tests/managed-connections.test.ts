@@ -3170,3 +3170,61 @@ test('managed tool projection withholds ambiguous accounts instead of crashing t
   });
   assert.deepEqual(ambiguous, []);
 });
+
+test('a new managed account records who signed in and under which access lane', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let person: string | undefined = 'notion:ws-1:user-1';
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate() { return person ? { person } : {}; },
+    async execute() { return { data: { ok: true } }; },
+    async revoke() {},
+  };
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([provider]),
+    randomId: (() => { let id = 0; return () => `signin${++id}`; })(),
+  });
+  try {
+    for (const id of ['agent_docs', 'agent_mail']) {
+      await config.createAgent({
+        id, name: id, instructions: 'Help.', enabled: true,
+        creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      });
+    }
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_docs',
+    });
+    const signIn = async (agentId: string, toolkit: string, accountRef: string, allowedCapabilities: string[]) => {
+      const { account } = await service.createForAgent({
+        principal: principal(), agentId, workspaceId: 'T_MANAGED', ownerKind: 'team',
+        providerId: toolkit === 'gmail' ? 'google' : toolkit, label: `${toolkit} for ${agentId}`,
+        policy: {
+          kind: 'managed', adapterId: 'composio', toolkit,
+          principalRef: 'chickpea:organization:organization_test', accountRef, allowedCapabilities,
+        },
+      });
+      return account.policy.kind === 'managed' ? account.policy.signIn : undefined;
+    };
+
+    assert.deepEqual(
+      await signIn('agent_docs', 'notion', 'ca_notion_one', ['notion.content.search']),
+      { person: 'notion:ws-1:user-1', accessLane: 'read' },
+    );
+    person = undefined;
+    assert.deepEqual(
+      await signIn('agent_mail', 'notion', 'ca_notion_two', ['notion.content.search', 'notion.pages.create']),
+      { person: 'member:membership_alice', accessLane: 'write' },
+    );
+    assert.deepEqual(
+      await signIn('agent_mail', 'gmail', 'ca_gmail', ['gmail.messages.search']),
+      { accessLane: 'read' },
+    );
+  } finally {
+    config.close();
+    settings.close();
+  }
+});

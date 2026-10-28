@@ -34,6 +34,7 @@ import type {
   ManagedAccountResourceConstraints,
   ManagedBindingResourceConstraints,
   ManagedResourceSelection,
+  ManagedSignIn,
   McpConnectionIdentity,
 } from '../config/types.ts';
 import { MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY } from '../config/types.ts';
@@ -46,8 +47,11 @@ import type {
 } from './managed.ts';
 import {
   MANAGED_CONNECTOR_CATALOG,
+  type ManagedAccessLane,
   type ManagedConnectorCatalog,
+  type ManagedConnectorDefinition,
   intersectManagedResourceConstraints,
+  managedAccessLane,
   projectManagedResourceHandles,
 } from './catalog/index.ts';
 import {
@@ -913,11 +917,20 @@ export class ConnectionAccountService {
     );
     let policy = input.policy;
     if (policy.kind === 'managed') {
-      assertManagedAccountPolicy(this.catalog(), input.providerId, policy);
+      const connector = assertManagedAccountPolicy(this.catalog(), input.providerId, policy);
       await this.requireUniqueManagedAccount(policy.adapterId, policy.accountRef);
       const provider = this.dependencies.managedProviders?.get(policy.adapterId);
       if (!provider) throw new ManagedConnectionProviderUnavailableError(policy.adapterId);
-      policy = applyManagedValidation(policy, await provider.validate({ policy }));
+      const validation = await provider.validate({ policy });
+      policy = {
+        ...applyManagedValidation(policy, validation),
+        signIn: managedSignIn(
+          connector,
+          managedAccessLane(connector, policy.allowedCapabilities),
+          validation,
+          input.principal.membershipId,
+        ),
+      };
     }
     const id = `connection_${this.id()}`;
     const secretRefId = `secret_${this.id()}`;
@@ -1073,7 +1086,7 @@ function assertManagedAccountPolicy(
   catalog: ManagedConnectorCatalog,
   providerId: string,
   policy: Extract<ConnectionAccountPolicy, { kind: 'managed' }>,
-): void {
+): ManagedConnectorDefinition {
   const connector = catalog.connector(policy.toolkit);
   const catalogCapabilities = new Set(connector?.capabilities.map(({ id }) => id) ?? []);
   const resourcePolicyValid = !connector?.resources?.length ||
@@ -1088,6 +1101,7 @@ function assertManagedAccountPolicy(
       !resourcePolicyValid) {
     throw new Error('Managed connection account policy is invalid');
   }
+  return connector;
 }
 
 function applyManagedValidation(
@@ -1109,6 +1123,18 @@ function applyManagedValidation(
       truncated,
     },
   };
+}
+
+/** A connector whose sign-ins may be shared always records whose sign-in it is. */
+function managedSignIn(
+  connector: ManagedConnectorDefinition,
+  accessLane: ManagedAccessLane,
+  validation: ManagedConnectionValidationResult | void,
+  signerMembershipId: string,
+): ManagedSignIn {
+  const person = validation?.person ??
+    (connector.sharedSignIn ? `member:${signerMembershipId}` : undefined);
+  return { ...(person ? { person } : {}), accessLane };
 }
 
 async function managedResourceHandle(resourceKey: string, providerRef: string): Promise<string> {
