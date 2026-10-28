@@ -197,6 +197,31 @@ change requires a compatibility/recovery decision; do not merely regenerate
 digests to silence a failed gate. The first updater deliberately rejects any
 changed storage chain, even if a maintainer accidentally lists the origin.
 
+The `configuration` digest covers `src/config/storage-contract.json`, not the
+source of `store.ts`, so a code-only edit leaves it unchanged. **Change stored
+meaning, bump the contract.** When a change alters what the config store
+writes, how it reads stored data, or its schema, raise the affected table,
+`*_json` column, or settings namespace version. A new migration ID also changes
+the contract. `schemaVersion` and `schemaMarker` are the clean-slate gate, not
+versions to bump.
+
+`tests/config-storage-contract.test.ts` enforces the rule for what its scenario
+writes, against `tests/fixtures/config-storage/`:
+
+- After a bump, record it with `npm run fixture:config-storage -- current`.
+- After you publish a release, or change the scenario, regenerate the
+  previous-release fixture from a checkout of that release with its
+  dependencies installed:
+  `npm run fixture:config-storage -- release <checkout>`.
+
+The test cannot see a code path its scenario never reaches, such as a rewrite
+of legacy data or an edit to a migration that every fixture already applied.
+Never edit an applied migration; add one with a new ID.
+
+Releases through v0.1.37 declared the whole of `store.ts`. Their updater cannot
+verify a later release, and the first release with the contract changes
+`configuration` once.
+
 Application tags are `vX.Y.Z`. The separately published `chickpea-cli` package
 has its own version and `cli-vX.Y.Z` publication workflow; it does not establish
 the application's installed version. Keep all other tests/builds local.
