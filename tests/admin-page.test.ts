@@ -8333,6 +8333,114 @@ test('managed Notion renders only safe provider grant summaries', async () => {
   assert.doesNotMatch(harness.app.innerHTML, /ca_test_notion/);
 });
 
+function managedTeamAccount(id: string, toolkit: string, label: string, lifecycle: string, capability: string) {
+  return {
+    id, workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: toolkit, label, lifecycle,
+    credentialConfigured: lifecycle === 'ready',
+    policy: {
+      kind: 'managed', adapterId: 'composio', toolkit,
+      principalRef: 'chickpea:organization:T_DESIGN', accountRef: `ca_${id}`,
+      allowedCapabilities: [capability],
+    },
+  };
+}
+
+function providerSelectionCatalog(): Array<Record<string, unknown>> {
+  return [
+    { ...managedCatalogFixture('notion-managed', 'notion', 'Notion'), providerSelection: { label: 'pages' } },
+    managedCatalogFixture('hubspot-managed', 'hubspot', 'HubSpot'),
+  ];
+}
+
+function htmlChunkWith(html: string, separator: string, needle: string): string {
+  const chunk = html.split(separator).find((candidate) => candidate.includes(needle));
+  assert.ok(chunk, `rendered ${needle}`);
+  return chunk;
+}
+
+test('a ready managed connection can be edited again from its menu', async () => {
+  const storageKey = 'chickpea.managed-authorization.v1:agent_conn';
+  const notion = managedTeamAccount('connection_notion_ready', 'notion', 'Notion · Team', 'ready', 'notion.content.search');
+  const hubspot = managedTeamAccount('connection_hubspot_ready', 'hubspot', 'HubSpot · Team', 'ready', 'hubspot.objects.search');
+  const gmail = managedTeamAccount('connection_gmail_attention', 'gmail', 'Gmail · Team', 'needs_attention', 'gmail.profile.read');
+  const connectionAccounts = {
+    attached: [ownedConnection(notion), ownedConnection(hubspot), ownedConnection(gmail)],
+    managedConnectors: { composio: true, catalog: providerSelectionCatalog() },
+  };
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()], connectionAccounts });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  const rows = (needle: string) =>
+    htmlChunkWith(harness.app.innerHTML, 'class="connection-account-row connection-account-row-attached"', needle);
+  const notionRow = rows('data-connection-id="connection_notion_ready"');
+  assert.match(notionRow,
+    /<div class="connection-row-menu-panel"><button type="button" data-action="connection-account-managed-reconnect" data-connection-id="connection_notion_ready">Change Notion pages<\/button><button type="button" class="danger" data-action="connection-account-disconnect"/);
+  assert.doesNotMatch(notionRow, /connection-row-action" data-action="connection-account-managed-reconnect"/);
+  assert.match(rows('data-connection-id="connection_hubspot_ready"'),
+    /<button type="button" data-action="connection-account-managed-reconnect" data-connection-id="connection_hubspot_ready">Reconnect<\/button><button type="button" class="danger"/);
+  const gmailRow = rows('data-connection-id="connection_gmail_attention"');
+  assert.match(gmailRow,
+    /class="btn btn-primary btn-sm connection-row-action" data-action="connection-account-managed-reconnect" data-connection-id="connection_gmail_attention">Reconnect<\/button>/);
+  assert.equal(gmailRow.match(/data-action="connection-account-managed-reconnect"/g)?.length, 1,
+    'a connection that needs attention keeps only its Reconnect button');
+
+  click({
+    target: actionTarget({ 'data-action': 'connection-account-managed-reconnect', 'data-connection-id': notion.id }),
+  });
+  await flushAsync();
+  assert.deepEqual(harness.managedAuthorizationPosts, [{
+    agentId: 'agent_conn',
+    body: { workspaceId: 'T_DESIGN', connectionAccountId: notion.id },
+  }]);
+  assert.match(harness.app.innerHTML, /<h2 class="modal-title" id="managed-auth-title">Change Notion pages<\/h2>/);
+  assert.match(harness.app.innerHTML,
+    /Notion shows the pages Chickpea can use now\. Check pages to add them or uncheck pages to remove them, then approve\./);
+
+  const persisted = harness.sessionStorageValue(storageKey);
+  assert.ok(persisted);
+  const refreshed = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_conn',
+    initialSessionStorage: { [storageKey]: persisted },
+    managedPollResult: { status: 'connected', account: { id: notion.id } },
+    agents: [connectionsAgent()],
+    connectionAccounts,
+  });
+  await flushAsync();
+  refreshed.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  assert.match(refreshed.app.innerHTML, /Notion pages updated\./);
+});
+
+test('reconnecting a ready managed connection without a provider selection says Reconnect', async () => {
+  const hubspot = managedTeamAccount('connection_hubspot_ready', 'hubspot', 'HubSpot · Team', 'ready', 'hubspot.objects.search');
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [ownedConnection(hubspot)],
+      managedConnectors: { composio: true, catalog: providerSelectionCatalog() },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({
+    target: actionTarget({ 'data-action': 'connection-account-managed-reconnect', 'data-connection-id': hubspot.id }),
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /<h2 class="modal-title" id="managed-auth-title">Reconnect HubSpot<\/h2>/);
+  assert.match(harness.app.innerHTML, /Waiting for you to approve access in the sign-in tab\./);
+});
+
 test('managed Google accounts that need attention reconnect in place', async () => {
   const account = {
     id: 'connection_managed_gmail',
@@ -15003,6 +15111,75 @@ test('Settings Connectors configures managed integrations and manages connected 
   assert.equal(refreshed.managedPollCalls(), 1);
   assert.match(refreshed.app.innerHTML, /YouTube · Personal is connected again\./);
   assert.equal(refreshed.sessionStorageValue(storageKey), null);
+});
+
+test('Settings Connected accounts lets a ready managed account be edited again', async () => {
+  const storageKey = 'chickpea.managed-authorization.v1:agent_release';
+  const catalog = providerSelectionCatalog();
+  const composioSettings = {
+    provider: {
+      source: 'stored', configured: true, readOnly: false,
+      desiredState: 'enabled', generation: 1, reconciliationPending: false,
+      connectors: catalog.map((entry) => ({ toolkit: entry.toolkit, status: 'ready' })),
+    },
+    canConfigure: true,
+    catalog,
+  };
+  const inventory = {
+    accounts: [
+      { account: managedTeamAccount('connection_notion_ready', 'notion', 'Notion · Team', 'ready', 'notion.content.search'),
+        agents: [{ id: 'agent_release', name: 'Release Profile' }], reconnectAgentId: 'agent_release' },
+      { account: managedTeamAccount('connection_hubspot_ready', 'hubspot', 'HubSpot · Team', 'ready', 'hubspot.objects.search'),
+        agents: [{ id: 'agent_release', name: 'Release Profile' }], reconnectAgentId: 'agent_release' },
+      { account: managedTeamAccount('connection_youtube_attention', 'youtube', 'YouTube · Team', 'needs_attention', 'youtube.search'),
+        agents: [{ id: 'agent_release', name: 'Release Profile' }], reconnectAgentId: 'agent_release' },
+      { account: managedTeamAccount('connection_gong_unowned', 'gong', 'Gong · Team', 'ready', 'gong.calls.list'), agents: [] },
+    ],
+  };
+  const settingsLoadFetch = (path: string, method: string) =>
+    path === '/admin/api/connections?workspaceId=T_DESIGN' && method === 'GET'
+      ? Promise.resolve(jsonResponse(inventory))
+      : undefined;
+  const harness = runAdminPageHarness({ initialPath: '/admin/settings/connectors', composioSettings, settingsLoadFetch });
+  await flushAsync();
+
+  const rows = (needle: string) => htmlChunkWith(harness.app.innerHTML, '<article class="connection-inventory-row">', needle);
+  assert.match(rows('data-connection-id="connection_notion_ready"'),
+    /<button type="button" class="btn btn-soft btn-sm" data-action="connection-inventory-reconnect" data-connection-id="connection_notion_ready" data-agent-id="agent_release">Change Notion pages<\/button>/);
+  assert.match(rows('data-connection-id="connection_hubspot_ready"'),
+    /data-action="connection-inventory-reconnect" data-connection-id="connection_hubspot_ready" data-agent-id="agent_release">Reconnect<\/button>/);
+  const youtubeRow = rows('data-connection-id="connection_youtube_attention"');
+  assert.match(youtubeRow, /data-action="connection-inventory-reconnect"[^>]*>Reconnect<\/button>/);
+  assert.equal(youtubeRow.match(/data-action="connection-inventory-reconnect"/g)?.length, 1);
+  assert.doesNotMatch(rows('data-connection-id="connection_gong_unowned"'), /connection-inventory-reconnect|not owned by an Agent/,
+    'a ready account no Agent owns has nothing to reconnect');
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'connection-inventory-reconnect',
+      'data-connection-id': 'connection_notion_ready',
+      'data-agent-id': 'agent_release',
+    }),
+  });
+  await flushAsync();
+  assert.deepEqual(harness.managedAuthorizationPosts.at(-1), {
+    agentId: 'agent_release',
+    body: { workspaceId: 'T_DESIGN', connectionAccountId: 'connection_notion_ready' },
+  });
+  assert.match(harness.app.innerHTML, /<h2 class="modal-title" id="managed-auth-title">Change Notion pages<\/h2>/);
+
+  const persisted = harness.sessionStorageValue(storageKey);
+  assert.ok(persisted);
+  const refreshed = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    initialSessionStorage: { [storageKey]: persisted },
+    managedPollResult: { status: 'connected' },
+    composioSettings,
+    settingsLoadFetch,
+  });
+  await flushAsync();
+  assert.equal(refreshed.managedPollCalls(), 1);
+  assert.match(refreshed.app.innerHTML, /Notion pages updated\./);
 });
 
 test('ready connector setup can be refreshed without replacing the project key', async () => {

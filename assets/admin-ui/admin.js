@@ -1492,13 +1492,20 @@
     if (!current) return "";
     var failed = current.status === "failed";
     var cancelling = current.status === "cancelling";
+    var selection = current.selection;
+    var title = current.mode === "change"
+      ? "Change " + current.label + " " + selection
+      : (current.mode === "reconnect" ? "Reconnect " : "Connect ") + current.label;
+    var waitingCopy = current.mode === "change"
+      ? current.label + " shows the " + selection + " Chickpea can use now. Check " + selection + " to add them or uncheck " + selection + " to remove them, then approve."
+      : "Waiting for you to approve access in the sign-in tab.";
     var statusCopy = failed
       ? current.error
       : cancelling
         ? "Canceling this sign-in safely&hellip;"
-        : current.error || "Waiting for you to approve access in the sign-in tab.";
+        : current.error || waitingCopy;
     return '<div class="modal-backdrop"><div class="modal-card managed-setup-modal" role="dialog" aria-modal="true" aria-labelledby="managed-auth-title" tabindex="-1" data-role="managed-auth-dialog">' +
-      '<h2 class="modal-title" id="managed-auth-title">Connect ' + esc(current.label) + '</h2>' +
+      '<h2 class="modal-title" id="managed-auth-title">' + esc(title) + '</h2>' +
       '<div class="managed-waiting"><span class="managed-waiting-mark" aria-hidden="true">' + (failed ? '!' : '<span class="spinner"></span>') + '</span><div><strong>' + (failed ? 'Sign-in needs attention' : 'Finish sign-in in the new tab') + '</strong><p class="hint" role="' + (failed ? 'alert' : 'status') + '" aria-live="' + (failed ? 'assertive' : 'polite') + '">' + esc(statusCopy) + '</p></div></div>' +
       (current.popupBlocked && !failed ? '<p class="callout">Your browser did not open the hosted sign-in tab. Use Open sign-in below.</p>' : '') +
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="managed-auth-cancel"' + (cancelling ? ' disabled' : '') + '>' + (cancelling ? 'Canceling&hellip;' : 'Cancel') + '</button><span class="spacer"></span>' +
@@ -4310,7 +4317,9 @@
           expiresAt: value.expiresAt,
           startedAt: value.startedAt,
           returnToSettings: !!value.returnToSettings,
-          popupBlocked: !!value.popupBlocked
+          popupBlocked: !!value.popupBlocked,
+          mode: value.mode || "connect",
+          selection: value.selection || ""
         }));
       }
     } catch (_) { /* session storage is an optional refresh convenience */ }
@@ -4349,7 +4358,9 @@
         pollScheduled: false,
         pollAttempts: 0,
         returnToSettings: !!parsed.returnToSettings,
-        popupBlocked: !!parsed.popupBlocked
+        popupBlocked: !!parsed.popupBlocked,
+        mode: parsed.mode === "reconnect" || parsed.mode === "change" ? parsed.mode : "connect",
+        selection: String(parsed.selection || "")
       };
       pollManagedAuthorization();
     } catch (_) {
@@ -4413,7 +4424,9 @@
         pollScheduled: false,
         pollAttempts: 0,
         popupBlocked: !showManagedAuthorizationPage(signInTab, authorizationUrl.href),
-        returnToSettings: !!(context && context.returnToSettings)
+        returnToSettings: !!(context && context.returnToSettings),
+        mode: context && context.mode || "connect",
+        selection: context && context.selection || ""
       };
       persistManagedAuthorization(state.managedAuthorization);
       render();
@@ -4467,10 +4480,11 @@
         var label = current.label;
         var returnToSettings = current.returnToSettings;
         var connectedAccountId = body.account && body.account.id;
+        var changedNotice = current.mode === "change" ? label + " " + current.selection + " updated." : "";
         clearManagedAuthorization(agentId);
         if (returnToSettings) {
           return loadConnectionInventory(state.settingsLoadGeneration).then(function () {
-            state.connectionInventory.notice = label + " is connected again.";
+            state.connectionInventory.notice = changedNotice || label + " is connected again.";
             render();
           });
         }
@@ -4485,7 +4499,7 @@
             startManagedResourceSelection(connectedEntry.account.id);
             return;
           }
-          setAgentConnectionNotice(label + " is connected and ready for this Agent.", connectedAccountId);
+          setAgentConnectionNotice(changedNotice || label + " is connected and ready for this Agent.", connectedAccountId);
           render();
         });
       }
@@ -4557,9 +4571,17 @@
     var entry = (state.agentConnections.attached || []).find(function (candidate) {
       return candidate.account && candidate.account.id === accountId;
     });
+    var start = entry && entry.account
+      ? managedReconnectStart(
+          entry.account,
+          managedConnectorDescriptorByToolkit(entry.account.policy && entry.account.policy.toolkit),
+          connectionAccountDisplayName(entry.account)
+        )
+      : { label: "Managed connector", mode: "connect", selection: "" };
     startManagedAuthorization(
       { workspaceId: state.agentConnections.workspaceId, connectionAccountId: accountId },
-      entry && entry.account ? connectionAccountDisplayName(entry.account) : "Managed connector"
+      start.label,
+      { mode: start.mode, selection: start.selection }
     );
   }
 
@@ -4571,10 +4593,15 @@
     if (!entry || !entry.account || !entry.account.policy || entry.account.policy.kind !== "managed") return;
     state.connectionInventory.error = "";
     state.connectionInventory.notice = "";
+    var start = managedReconnectStart(
+      entry.account,
+      settingsManagedConnectorDescriptor(entry.account.policy.toolkit),
+      entry.account.label || entry.account.providerId || "Managed connector"
+    );
     startManagedAuthorization(
       { workspaceId: connectedTeamId(), connectionAccountId: accountId },
-      entry.account.label || entry.account.providerId || "Managed connector",
-      { agentId: agentId, returnToSettings: true }
+      start.label,
+      { agentId: agentId, returnToSettings: true, mode: start.mode, selection: start.selection }
     );
   }
 
@@ -6611,6 +6638,19 @@
     return definitions.length === 1 ? definitions[0].label : "resources";
   }
 
+  function managedReconnectLabel(descriptor) {
+    var selection = descriptor && descriptor.providerSelection;
+    return selection ? "Change " + descriptor.label + " " + selection.label : "Reconnect";
+  }
+
+  function managedReconnectStart(account, descriptor, label) {
+    if (account.lifecycle !== "ready") return { label: label, mode: "connect", selection: "" };
+    var selection = descriptor && descriptor.providerSelection;
+    return selection
+      ? { label: descriptor.label, mode: "change", selection: selection.label }
+      : { label: label, mode: "reconnect", selection: "" };
+  }
+
   function startManagedResourceSelection(accountId) {
     var entry = (state.agentConnections.attached || []).find(function (candidate) {
       return candidate.account && candidate.account.id === accountId;
@@ -6820,6 +6860,9 @@
     }
     if (managedResources.length && (!pendingResourceSelection || managedAction || oauthAction)) {
       menuItems.push('<button type="button" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">' + (pendingResourceSelection ? "Choose " : "Change ") + esc(managedResourceSelectionLabel(account)) + '</button>');
+    }
+    if (account.policy && account.policy.kind === "managed" && account.lifecycle === "ready") {
+      menuItems.push('<button type="button" data-action="connection-account-managed-reconnect" data-connection-id="' + esc(account.id) + '">' + esc(managedReconnectLabel(managedConnectorDescriptorByToolkit(account.policy.toolkit))) + '</button>');
     }
     menuItems.push('<button type="button" class="danger" data-action="connection-account-disconnect" data-connection-id="' + esc(account.id) + '">Disconnect account&hellip;</button>');
     var menu = '<details class="connection-row-menu"><summary aria-label="More actions for ' + esc(displayName) + '">&#8943;</summary>' +
@@ -10831,6 +10874,12 @@
     return shelf(summary, control);
   }
 
+  function settingsManagedConnectorDescriptor(toolkit) {
+    return (state.connectorSettings.catalog || []).find(function (descriptor) {
+      return descriptor && descriptor.toolkit === toolkit;
+    });
+  }
+
   function connectionInventoryHtml() {
     var inventory = state.connectionInventory;
     var head = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connected accounts</h2><p class="hint">Reconnect or disconnect accounts here. Connect each new account from the Agent that will own it.</p></div></div>';
@@ -10850,10 +10899,12 @@
       var agentLinks = agents.length ? agents.map(function (agent) {
         return '<button type="button" class="capability-pill" data-action="edit-profile" data-agent="' + esc(agent.id) + '">' + esc(agent.name || agent.id) + '</button>';
       }).join("") : '<span class="hint">Not used by an Agent</span>';
-      var managedNeedsAttention = account.lifecycle !== "ready" && account.policy && account.policy.kind === "managed";
+      var managed = account.policy && account.policy.kind === "managed";
+      var managedNeedsAttention = managed && account.lifecycle !== "ready";
       var providerConfigured = state.connectorSettings.provider && state.connectorSettings.provider.configured;
-      var managedReconnect = managedNeedsAttention && providerConfigured && entry.reconnectAgentId
-        ? '<button type="button" class="btn btn-soft btn-sm" data-action="connection-inventory-reconnect" data-connection-id="' + esc(account.id) + '" data-agent-id="' + esc(entry.reconnectAgentId) + '">Reconnect</button>'
+      var managedReconnect = managed && providerConfigured && entry.reconnectAgentId
+        ? '<button type="button" class="btn btn-soft btn-sm" data-action="connection-inventory-reconnect" data-connection-id="' + esc(account.id) + '" data-agent-id="' + esc(entry.reconnectAgentId) + '">' +
+          esc(managedNeedsAttention ? "Reconnect" : managedReconnectLabel(settingsManagedConnectorDescriptor(account.policy.toolkit))) + '</button>'
         : managedNeedsAttention && !providerConfigured && state.connectorSettings.canConfigure && !(state.connectorSettings.provider && state.connectorSettings.provider.readOnly)
           ? '<button type="button" class="btn btn-soft btn-sm" data-action="connection-inventory-provider-setup">Add project key</button>'
           : managedNeedsAttention && providerConfigured && !entry.reconnectAgentId
