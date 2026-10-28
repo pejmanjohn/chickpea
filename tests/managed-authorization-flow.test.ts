@@ -576,7 +576,8 @@ const NOTION = MANAGED_CONNECTOR_CATALOG.connector('notion')!;
 /**
  * One workspace whose live Notion connections sit on another Agent unless
  * their id ends in `_target`, and a Composio fake whose sign-ins name
- * `state.person`, or no one while it is undefined.
+ * `state.person`, or no one while it is undefined, unless
+ * `state.lookupFailed` says Notion could not be asked.
  */
 async function notionMixHarness(existing: Array<{
   id: string;
@@ -591,7 +592,7 @@ async function notionMixHarness(existing: Array<{
   const authorized: string[] = [];
   const cleaned: string[] = [];
   const revoked: string[] = [];
-  const state: { person: string | undefined } = { person: undefined };
+  const state: { person: string | undefined; lookupFailed?: boolean } = { person: undefined };
   const provider: ManagedConnectionProvider = {
     id: 'composio',
     async authorize() {
@@ -604,7 +605,10 @@ async function notionMixHarness(existing: Array<{
     async pollAuthorization(input) {
       return { status: 'active', accountRef: input.authorizationRef, toolkit: 'notion' };
     },
-    async validate() { return state.person ? { person: state.person } : undefined; },
+    async validate() {
+      if (state.lookupFailed) return { personLookupFailed: true as const };
+      return state.person ? { person: state.person } : undefined;
+    },
     async execute() { return { data: {} }; },
     async revoke(input) { revoked.push(input.policy.accountRef); },
     async cleanupRemoteAccount({ accountRef }) { cleaned.push(accountRef); },
@@ -764,6 +768,24 @@ test('a team reconnect whose person Notion did not name fails closed against the
 
     assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'member', { samePerson: false, manageable: true }) });
     assert.deepEqual(await h.saved(), before);
+  } finally {
+    h.close();
+  }
+});
+
+test('a team reconnect whose Notion lookup failed is not compared as the person it had before', async () => {
+  const h = await notionMixHarness([
+    { id: 'connection_team_target', ownerKind: 'team', signer: 'm_lee', person: RAVI },
+    { id: 'connection_personal', ownerKind: 'member', signer: 'm_admin', person: MAYA },
+  ]);
+  try {
+    const before = await h.saved();
+    h.state.lookupFailed = true;
+    const result = await h.signIn(h.principal('m_admin', 'admin'), { connectionAccountId: 'connection_team_target' });
+
+    assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'member', { samePerson: false, manageable: true }) });
+    assert.deepEqual(h.cleaned, ['ca_new_1']);
+    assert.deepEqual(await h.saved(), before, 'the team connection keeps its revision, connected account and person');
   } finally {
     h.close();
   }

@@ -911,7 +911,8 @@ export class ConnectionAccountService {
       workspaceId: account.workspaceId,
       ownerKind: account.ownerKind,
       connector,
-      policy,
+      adapterId: policy.adapterId,
+      person: validation?.person,
     });
     const lifecycle = connector.resources?.some((resource) =>
       resource.required && !(policy.resourceConstraints?.[resource.key]?.length)
@@ -1216,7 +1217,8 @@ export class ConnectionAccountService {
         workspaceId: input.workspaceId,
         ownerKind: input.ownerKind,
         connector,
-        policy,
+        adapterId: policy.adapterId,
+        person: validation?.person,
       });
     }
     const id = `connection_${this.id()}`;
@@ -1280,15 +1282,20 @@ export class ConnectionAccountService {
     workspaceId: string;
     ownerKind: 'team' | 'member';
     connector: ManagedConnectorDefinition;
-    policy: ConnectionAccountManagedPolicy;
+    adapterId: string;
+    /**
+     * Only the person this sign-in's provider named: one kept from before a
+     * failed lookup belongs to an earlier sign-in, so it cannot be compared.
+     */
+    person: string | undefined;
   }): Promise<void> {
     if (!input.connector.sharedSignIn) return;
     const mix = signInMix({
       connector: input.connector,
-      adapterId: input.policy.adapterId,
+      adapterId: input.adapterId,
       ownerKind: input.ownerKind,
       actorMembershipId: input.principal.membershipId,
-      person: input.policy.signIn?.person,
+      person: input.person,
       accounts: await this.dependencies.config.listConnectionAccounts(input.workspaceId),
     });
     if (!mix) return;
