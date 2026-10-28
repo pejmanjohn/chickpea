@@ -4296,7 +4296,7 @@ test('Admin refuses a personal Notion sign-in on the person behind a team connec
     assert.equal(polled.status, 409);
     assert.deepEqual(await polled.json(), {
       error: 'managed_sign_in_mix_refused',
-      message: signInMixRefusal(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team', true),
+      message: signInMixRefusal(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team', { samePerson: true, manageable: true }),
     });
     assert.match(polled.headers.get('set-cookie') ?? '', /Max-Age=0/, 'the finished attempt is forgotten');
     assert.deepEqual(cleaned, ['ca_notion_mix'], 'the new connected account is removed');

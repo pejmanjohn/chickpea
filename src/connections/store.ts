@@ -1292,11 +1292,15 @@ export class ConnectionAccountService {
       accounts: await this.dependencies.config.listConnectionAccounts(input.workspaceId),
     });
     if (!mix) return;
+    const { account } = mix;
     // Changing a personal connection's pages takes its owner's own sign-in.
-    const manageable = mix.ownerKind === 'member'
-      ? mix.ownerMembershipId === input.principal.membershipId
-      : canManageOwnedResource(input.principal, mix);
-    throw new ManagedSignInMixError(signInMixRefusal(input.connector, mix.ownerKind, manageable));
+    const manageable = account.ownerKind === 'member'
+      ? account.ownerMembershipId === input.principal.membershipId
+      : canManageOwnedResource(input.principal, account);
+    throw new ManagedSignInMixError(signInMixRefusal(input.connector, account.ownerKind, {
+      samePerson: mix.samePerson,
+      manageable,
+    }));
   }
 
   private catalog(): ManagedConnectorCatalog {

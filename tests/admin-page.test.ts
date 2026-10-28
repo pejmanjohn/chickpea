@@ -11235,7 +11235,7 @@ test('choosing the other owner clears the Notion notice', async () => {
 });
 
 test('a refused Notion sign-in shows its reason where managed sign-in errors appear', async () => {
-  const refusal = signInMixRefusal(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team', true);
+  const refusal = signInMixRefusal(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team', { samePerson: true, manageable: true });
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: managedNotionConnections(),

@@ -1875,7 +1875,7 @@ test('a Slack Notion link refuses a sign-in whose Notion person already backs a 
     const started = await authorize(h.app, h.setupId, h.cookie, { ownerKind: 'member', access: 'read' });
     assert.equal(started.status, 200, await started.clone().text());
 
-    const refusal = signInMixRefusal(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team', true);
+    const refusal = signInMixRefusal(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team', { samePerson: true, manageable: true });
     assert.equal(await h.waitingPageStatus(), refusal, 'the page the provider returns to shows the refusal');
     assert.deepEqual(h.responses.map(({ status, body }) => ({ status, body })), [{
       status: 409, body: { error: 'managed_sign_in_mix_refused', message: refusal },

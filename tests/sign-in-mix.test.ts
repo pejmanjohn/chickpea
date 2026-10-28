@@ -75,31 +75,35 @@ test('the pre-check finds a live connection of the other kind that the actor sig
 test('a completed sign-in mixes with the other kind on the same Notion person or a signer it cannot tell apart', () => {
   const maya = 'notion:ws-1:user-maya';
   const ravi = 'notion:ws-1:user-ravi';
+  /** The mixing connection and how it matched: `<id> same person` or `<id> same signer`. */
   const check = (
     ownerKind: 'team' | 'member',
     actor: string,
     person: string | undefined,
     accounts: ConnectionAccount[],
-  ) => signInMix({ ...lane(ownerKind, actor, accounts), person })?.id;
+  ) => {
+    const mix = signInMix({ ...lane(ownerKind, actor, accounts), person });
+    return mix && `${mix.account.id} same ${mix.samePerson ? 'person' : 'signer'}`;
+  };
 
   const team = account({ id: 'team', ownerKind: 'team', signer: 'm_admin', person: maya });
-  assert.equal(check('member', 'm_maya', maya, [team]), 'team',
+  assert.equal(check('member', 'm_maya', maya, [team]), 'team same person',
     'the same Notion person is refused even when someone else created the team connection');
   assert.equal(check('member', 'm_admin', ravi, [team]), undefined,
     'different Notion persons are allowed even for the team connection\'s creator');
 
   const fallbackTeam = account({ id: 'team', ownerKind: 'team', signer: 'm_maya', person: 'member:m_maya' });
-  assert.equal(check('member', 'm_maya', maya, [fallbackTeam]), 'team',
+  assert.equal(check('member', 'm_maya', maya, [fallbackTeam]), 'team same signer',
     'a member: person on the other connection fails closed for its signer');
   assert.equal(check('member', 'm_ravi', ravi, [fallbackTeam]), undefined,
     'a member: person does not refuse someone who did not sign it');
   assert.equal(check('member', 'm_maya', 'member:m_maya', [team]), undefined,
     'a member: person on the new sign-in compares signers, and Maya did not sign this team connection');
   assert.equal(check('team', 'm_maya', 'member:m_maya',
-    [account({ id: 'personal', ownerKind: 'member', signer: 'm_maya', person: ravi })]), 'personal',
+    [account({ id: 'personal', ownerKind: 'member', signer: 'm_maya', person: ravi })]), 'personal same signer',
     'a member: person on the new sign-in fails closed against a connection the actor signed');
   assert.equal(check('member', 'm_maya', maya,
-    [account({ id: 'legacy', ownerKind: 'team', signer: 'm_maya' })]), 'legacy',
+    [account({ id: 'legacy', ownerKind: 'team', signer: 'm_maya' })]), 'legacy same signer',
     'a legacy connection without a person fails closed for its signer');
 
   assert.equal(check('member', 'm_maya', maya,
@@ -118,11 +122,17 @@ test('the notice and refusal explain the rule without naming anyone', () => {
     'One Notion account can\'t be both personal and team here, so pages shared for personal use stay out of team Agents. ' +
     'To continue, sign in with a different Notion account. Switch accounts in Notion before you choose pages.');
   assert.match(signInOtherKindNotice(notion, 'member'), /^You already connected Notion for personal use in this workspace\./);
-  assert.equal(signInMixRefusal(notion, 'team', true),
+  assert.equal(signInMixRefusal(notion, 'team', { samePerson: true, manageable: true }),
     'Chickpea didn\'t connect Notion. That Notion account is already used for a team connection in this workspace, ' +
     'and one Notion account can\'t be both personal and team here. ' +
     'The pages you just chose in Notion stay shared with that connection. ' +
     'To remove them, open that connection\'s menu and choose Change Notion pages.');
-  assert.match(signInMixRefusal(notion, 'member', false),
+  assert.match(signInMixRefusal(notion, 'member', { samePerson: true, manageable: false }),
     /already used for a personal connection.*ask whoever manages that connection to choose Change Notion pages in its menu\.$/);
+  assert.equal(signInMixRefusal(notion, 'team', { samePerson: false, manageable: true }),
+    'Chickpea didn\'t connect Notion, because it can\'t tell whether that Notion account is the one behind your team connection in this workspace. ' +
+    'One Notion account can\'t be both personal and team here. ' +
+    'If it is the same account, the pages you just chose in Notion stay shared with that connection. ' +
+    'To remove them, open that connection\'s menu and choose Change Notion pages.',
+    'a signer-only match does not claim the account is shared');
 });

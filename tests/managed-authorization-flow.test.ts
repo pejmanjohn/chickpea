@@ -698,7 +698,7 @@ test('a personal Notion sign-in on the person behind a live team connection is r
     h.state.person = MAYA;
     const result = await h.signIn(h.principal('m_maya', 'member'), { ownerKind: 'member' });
 
-    assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'team', false) });
+    assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'team', { samePerson: true, manageable: false }) });
     assert.deepEqual(h.cleaned, ['ca_new_1'], 'the new connected account is removed');
     assert.deepEqual(h.revoked, [], 'the team connection keeps its connected account');
     assert.deepEqual(await h.saved(), before, 'no connection or binding is written');
@@ -744,7 +744,7 @@ test('reconnecting a team Notion connection onto the person of a live personal c
     h.state.person = MAYA;
     const result = await h.signIn(h.principal('m_admin', 'admin'), { connectionAccountId: 'connection_team_target' });
 
-    assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'member', false) });
+    assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'member', { samePerson: true, manageable: false }) });
     assert.deepEqual(h.cleaned, ['ca_new_1']);
     assert.deepEqual(h.revoked, [], 'the team connection\'s current sign-in is not rotated away');
     assert.deepEqual(await h.saved(), before, 'the team connection keeps its revision and connected account');
@@ -762,7 +762,7 @@ test('a team reconnect whose person Notion did not name fails closed against the
     const before = await h.saved();
     const result = await h.signIn(h.principal('m_admin', 'admin'), { connectionAccountId: 'connection_team_target' });
 
-    assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'member', true) });
+    assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'member', { samePerson: false, manageable: true }) });
     assert.deepEqual(await h.saved(), before);
   } finally {
     h.close();
@@ -796,7 +796,7 @@ test('continuing with a different Notion account skips only the notice', async (
       const result = await fallback.signIn(fallback.principal('m_maya', 'admin'), {
         ownerKind: 'member', differentAccount: true,
       });
-      assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'team', true) },
+      assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'team', { samePerson: false, manageable: true }) },
         'when Notion names no one, the after-sign-in check still refuses the team connection\'s creator');
       assert.deepEqual(fallback.cleaned, ['ca_new_1']);
     } finally {

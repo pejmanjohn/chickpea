@@ -31,17 +31,21 @@ export function actorSignedOtherKind(lane: SignInLane): ConnectionAccount | unde
 /**
  * A live connection of the other owner kind that a completed sign-in would mix
  * with: the same Notion person, or, when either person cannot be compared, a
- * connection the actor signed.
+ * connection the actor signed. `samePerson` tells the two apart, so the
+ * refusal does not claim the account is shared when that is unknown.
  */
 export function signInMix(
   lane: SignInLane & { person: string | undefined },
-): ConnectionAccount | undefined {
-  return otherKindAccounts(lane).find((account) => {
+): { account: ConnectionAccount; samePerson: boolean } | undefined {
+  for (const account of otherKindAccounts(lane)) {
     const theirs = account.policy.kind === 'managed' ? account.policy.signIn?.person : undefined;
-    return providerNamed(lane.person) && providerNamed(theirs)
-      ? lane.person === theirs
-      : signInSigner(account) === lane.actorMembershipId;
-  });
+    if (providerNamed(lane.person) && providerNamed(theirs)) {
+      if (lane.person === theirs) return { account, samePerson: true };
+    } else if (signInSigner(account) === lane.actorMembershipId) {
+      return { account, samePerson: false };
+    }
+  }
+  return undefined;
 }
 
 /** Chickpea refused a completed sign-in and saved nothing; the message is for the person who signed in. */
@@ -68,16 +72,25 @@ export function signInOtherKindNotice(
 export function signInMixRefusal(
   connector: ManagedConnectorDefinition,
   otherKind: ConnectionAccountOwnerKind,
-  /** Whether the person who signed in can change that connection's pages themselves. */
-  manageable: boolean,
+  mix: {
+    /** Whether the provider named the same person on both sign-ins, or the signer alone matched. */
+    samePerson: boolean;
+    /** Whether the person who signed in can change that connection's pages themselves. */
+    manageable: boolean;
+  },
 ): string {
   const { label } = connector;
   const pages = connector.providerSelection?.label ?? 'pages';
   const change = `Change ${label} ${pages}`;
-  return `Chickpea didn't connect ${label}. That ${label} account is already used for a ${ownerKindWord(otherKind)} connection in this workspace, ` +
-    `and one ${label} account can't be both personal and team here. ` +
-    `The ${pages} you just chose in ${label} stay shared with that connection. ` +
-    (manageable
+  const kind = ownerKindWord(otherKind);
+  return (mix.samePerson
+    ? `Chickpea didn't connect ${label}. That ${label} account is already used for a ${kind} connection in this workspace, ` +
+      `and one ${label} account can't be both personal and team here. ` +
+      `The ${pages} you just chose in ${label} stay shared with that connection. `
+    : `Chickpea didn't connect ${label}, because it can't tell whether that ${label} account is the one behind your ${kind} connection in this workspace. ` +
+      `One ${label} account can't be both personal and team here. ` +
+      `If it is the same account, the ${pages} you just chose in ${label} stay shared with that connection. `) +
+    (mix.manageable
       ? `To remove them, open that connection's menu and choose ${change}.`
       : `To remove them, ask whoever manages that connection to choose ${change} in its menu.`);
 }
