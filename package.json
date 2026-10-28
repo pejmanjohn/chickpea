@@ -105,6 +105,7 @@
     "test": "DO_NOT_TRACK=1 node scripts/run-tests.mjs --typecheck tests/*.test.ts tests/usage/*.test.ts && npm test --workspace packages/cli",
     "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
+    "fixture:config-storage": "node --import tsx scripts/config-storage-fixture.ts",
     "dev": "vite dev --config vite.node.config.ts",
     "start:node": "node -- scripts/start-node.mjs",
     "dev:cf": "node scripts/chickpea-local-worker.mjs",

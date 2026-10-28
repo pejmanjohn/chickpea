@@ -44,6 +44,9 @@
 - Do not squash existing repository history, create release tags, or publish a
   release without an explicit request. A request to implement a change does not
   authorize a production deployment.
+- Change stored meaning, bump the contract: a config store change to what it
+  writes or how it reads stored data raises that entry's version in
+  `src/config/storage-contract.json`.
 - Preserve unrelated changes. Keep private environment bindings, credentials,
   live transcripts, and working documents out of the public repository.
 - Follow [CONTRIBUTING.md](CONTRIBUTING.md). Run tests and builds serially in each

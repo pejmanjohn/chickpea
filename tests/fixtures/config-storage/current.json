@@ -1,0 +1,1012 @@
+{
+  "scenario": "bde99eb2481ad25c8b2d5756c834c7e2eead948dcaaba6e0ecddf2bbb04d810b",
+  "contract": {
+    "schemaVersion": 12,
+    "schemaMarker": "agent-first-v1",
+    "migrations": [
+      "2026-08-24-chickpea-routing-retry-v1",
+      "2026-09-11-model-roles-v1",
+      "2026-10-11-agent-connection-credential-binding-v1",
+      "2026-08-23-chickpea-system-agent-v1",
+      "2026-08-24-chickpea-cutover-v1"
+    ],
+    "tables": {
+      "app_settings": 1,
+      "config_agent_archive_snapshots": 1,
+      "config_agent_channel_grants": 1,
+      "config_agent_connection_bindings": 1,
+      "config_agent_deletion_receipts": 1,
+      "config_agent_model_roles": 1,
+      "config_agent_schedule_references": 1,
+      "config_agent_thread_routes": 1,
+      "config_agents": 1,
+      "config_channels": 1,
+      "config_chickpea_cutovers": 1,
+      "config_connection_accounts": 1,
+      "config_meta": 1,
+      "config_slack_public_context": 1,
+      "config_workspace_installations": 1,
+      "config_workspace_model_defaults": 1,
+      "config_workspace_model_roles": 1
+    },
+    "columns": {
+      "config_agent_archive_snapshots.channel_grants_json": 1,
+      "config_agent_archive_snapshots.paused_schedule_ids_json": 1,
+      "config_agent_connection_bindings.allowed_capabilities_json": 1,
+      "config_agent_connection_bindings.resource_constraints_json": 1,
+      "config_agent_schedule_references.connection_pause_account_ids_json": 1,
+      "config_agent_schedule_references.required_connection_account_ids_json": 1,
+      "config_agent_thread_routes.handoff_context_json": 1,
+      "config_agents.api_connections_json": 1,
+      "config_agents.mcp_servers_json": 1,
+      "config_agents.repositories_json": 1,
+      "config_agents.skills_json": 1,
+      "config_agents.slack_presence_json": 1,
+      "config_agents.website_logins_json": 1,
+      "config_connection_accounts.identity_json": 1,
+      "config_connection_accounts.policy_json": 2,
+      "config_slack_public_context.files_json": 1,
+      "config_slack_public_context.images_json": 1
+    },
+    "settings": {
+      "connector.*": 1,
+      "mcp.*": 1,
+      "slack.gateway.binding.v1": 1,
+      "slack.gateway.claim.v1": 1,
+      "slack.gateway.deploymentIdentity.v1": 1
+    }
+  },
+  "view": {
+    "tables": {
+      "config_meta": {
+        "columns": {
+          "key": "TEXT|0|null|1",
+          "value": "TEXT|1|null|0"
+        },
+        "indexes": {
+          "sqlite_autoindex_config_meta_1": "1|pk|0|key"
+        },
+        "sql": "CREATE TABLE config_meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL )",
+        "rows": {
+          "[\"\\\"config_seeded_v1\\\"\"]": {
+            "key": "\"config_seeded_v1\"",
+            "value": "\"2026-10-15T17:00:00.000Z\""
+          }
+        }
+      },
+      "config_agents": {
+        "columns": {
+          "id": "TEXT|0|null|1",
+          "agent_kind": "TEXT|1|'user'|0",
+          "revision": "INTEGER|1|null|0",
+          "credential_incarnation": "TEXT|1|''|0",
+          "name": "TEXT|1|null|0",
+          "description": "TEXT|0|null|0",
+          "instructions": "TEXT|1|null|0",
+          "enabled": "INTEGER|1|null|0",
+          "lifecycle": "TEXT|1|null|0",
+          "creator_membership_id": "TEXT|0|null|0",
+          "edit_policy": "TEXT|1|null|0",
+          "configuration_generation": "INTEGER|1|null|0",
+          "slack_presence_json": "TEXT|1|null|0",
+          "archived_at": "INTEGER|0|null|0",
+          "model": "TEXT|0|null|0",
+          "skills_json": "TEXT|1|null|0",
+          "mcp_servers_json": "TEXT|1|null|0",
+          "api_connections_json": "TEXT|1|null|0",
+          "repositories_json": "TEXT|1|null|0",
+          "model_effort": "TEXT|0|null|0",
+          "website_logins_json": "TEXT|1|'[]'|0"
+        },
+        "indexes": {
+          "sqlite_autoindex_config_agents_1": "1|pk|0|id"
+        },
+        "sql": "CREATE TABLE config_agents ( id TEXT PRIMARY KEY, agent_kind TEXT NOT NULL DEFAULT 'user' CHECK (agent_kind IN ('user', 'system')), revision INTEGER NOT NULL, credential_incarnation TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, description TEXT, instructions TEXT NOT NULL, enabled INTEGER NOT NULL, lifecycle TEXT NOT NULL, creator_membership_id TEXT, edit_policy TEXT NOT NULL, configuration_generation INTEGER NOT NULL, slack_presence_json TEXT NOT NULL, archived_at INTEGER, model TEXT, skills_json TEXT NOT NULL, mcp_servers_json TEXT NOT NULL, api_connections_json TEXT NOT NULL, repositories_json TEXT NOT NULL , model_effort TEXT, website_logins_json TEXT NOT NULL DEFAULT '[]')",
+        "rows": {
+          "[\"\\\"agent_chickpea\\\"\"]": {
+            "id": "\"agent_chickpea\"",
+            "agent_kind": "\"system\"",
+            "revision": "1",
+            "credential_incarnation": "\"agent_<generated>\"",
+            "name": "\"<product copy>\"",
+            "description": "\"<product copy>\"",
+            "instructions": "\"<product copy>\"",
+            "enabled": "1",
+            "lifecycle": "\"active\"",
+            "creator_membership_id": "null",
+            "edit_policy": "\"creator_and_admins\"",
+            "configuration_generation": "1",
+            "slack_presence_json": "null",
+            "archived_at": "null",
+            "model": "null",
+            "skills_json": "[]",
+            "mcp_servers_json": "[]",
+            "api_connections_json": "[]",
+            "repositories_json": "[]",
+            "model_effort": "null",
+            "website_logins_json": "[]"
+          },
+          "[\"\\\"agent_scenario_archivist\\\"\"]": {
+            "id": "\"agent_scenario_archivist\"",
+            "agent_kind": "\"user\"",
+            "revision": "2",
+            "credential_incarnation": "\"agent_<generated>\"",
+            "name": "\"Scenario Archivist\"",
+            "description": "null",
+            "instructions": "\"File synthetic notes.\"",
+            "enabled": "0",
+            "lifecycle": "\"archived\"",
+            "creator_membership_id": "\"membership_scenario_owner\"",
+            "edit_policy": "\"creator_and_admins\"",
+            "configuration_generation": "2",
+            "slack_presence_json": "{\"avatar\":{\"generatedSeedHistory\":[{\"seed\":\"chickpea-avatar-v1:02:agent_scenario_archivist\",\"throughRevision\":2}],\"kind\":\"generated\",\"revision\":3,\"seed\":\"chickpea-avatar-v1:07:agent_scenario_archivist\"},\"desiredState\":\"active\",\"errorCode\":\"handle_taken\",\"handleSuggestions\":[\"scenario-archivist-team\",\"scenario-archivist-2\"],\"health\":\"needs_attention\",\"kind\":\"user_group\",\"normalizedHandle\":\"scenario-archivist\",\"observedAt\":1791997200000,\"pendingCreate\":{\"description\":\"Synthetic archivist\",\"handle\":\"scenario-archivist\",\"name\":\"Scenario Archivist\",\"startedAt\":1791997200000},\"requestedHandle\":\"Scenario Archivist\",\"userGroupId\":\"S0SCENARIOARC\"}",
+            "archived_at": "1792083600000",
+            "model": "\"openai/gpt-5.5\"",
+            "skills_json": "[]",
+            "mcp_servers_json": "[]",
+            "api_connections_json": "[]",
+            "repositories_json": "[]",
+            "model_effort": "null",
+            "website_logins_json": "[]"
+          },
+          "[\"\\\"agent_scenario_concierge\\\"\"]": {
+            "id": "\"agent_scenario_concierge\"",
+            "agent_kind": "\"user\"",
+            "revision": "2",
+            "credential_incarnation": "\"agent_<generated>\"",
+            "name": "\"Scenario Concierge\"",
+            "description": "\"Front desk for synthetic visitors.\"",
+            "instructions": "\"Answer synthetic front-desk questions.\"",
+            "enabled": "1",
+            "lifecycle": "\"active\"",
+            "creator_membership_id": "\"membership_scenario_member\"",
+            "edit_policy": "\"all_workspace_members\"",
+            "configuration_generation": "2",
+            "slack_presence_json": "{\"app\":{\"app\":{\"appId\":\"A0SCENARIOCON\",\"clientId\":\"1000000000.3000000000\"},\"at\":1792080000000,\"botUserId\":\"U0SCENARIOCON\",\"icon\":\"agent_avatar\",\"installedAt\":1792080000000,\"installedBy\":\"membership_scenario_owner\",\"state\":\"active\"},\"avatar\":{\"generatedSeedHistory\":[{\"seed\":\"chickpea-avatar-v1:04:agent_scenario_concierge\",\"throughRevision\":1}],\"kind\":\"uploaded\",\"revision\":2,\"url\":\"https://assets.example.com/avatars/concierge-2.png\"},\"desiredState\":\"active\",\"health\":\"healthy\",\"kind\":\"agent_app\",\"normalizedHandle\":\"scenario-concierge\",\"observedAt\":1792080000000,\"released\":{\"desiredState\":\"active\",\"health\":\"healthy\",\"userGroupId\":\"S0SCENARIOCON\"},\"requestedHandle\":\"scenario-concierge\"}",
+            "archived_at": "null",
+            "model": "null",
+            "skills_json": "[]",
+            "mcp_servers_json": "[]",
+            "api_connections_json": "[]",
+            "repositories_json": "[]",
+            "model_effort": "null",
+            "website_logins_json": "[]"
+          },
+          "[\"\\\"agent_scenario_researcher\\\"\"]": {
+            "id": "\"agent_scenario_researcher\"",
+            "agent_kind": "\"user\"",
+            "revision": "3",
+            "credential_incarnation": "\"agent_<generated>\"",
+            "name": "\"Scenario Researcher\"",
+            "description": "\"Collects synthetic research notes.\"",
+            "instructions": "\"Summarize findings in three bullet points.\"",
+            "enabled": "1",
+            "lifecycle": "\"active\"",
+            "creator_membership_id": "\"membership_scenario_owner\"",
+            "edit_policy": "\"creator_and_admins\"",
+            "configuration_generation": "1",
+            "slack_presence_json": "{\"avatar\":{\"kind\":\"generated\",\"revision\":1,\"seed\":\"chickpea-avatar-v1:09:agent_scenario_researcher\"},\"desiredState\":\"unpublished\",\"health\":\"unpublished\",\"normalizedHandle\":\"scenario-researcher\",\"requestedHandle\":\"scenario-researcher\"}",
+            "archived_at": "null",
+            "model": "\"anthropic/claude-sonnet-4-5\"",
+            "skills_json": "[{\"description\":\"Write the weekly digest.\",\"enabled\":true,\"instructions\":\"# Weekly digest\\nList three highlights from the week.\",\"name\":\"weekly-digest\",\"suggestedSkillId\":\"suggested_weekly_digest\"},{\"description\":\"Run the imported checklist.\",\"enabled\":false,\"importSource\":{\"commit\":\"0123456789abcdef0123456789abcdef01234567\",\"contentSha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"path\":\"skills/checklist/SKILL.md\",\"repository\":\"example-org/scenario-skills\"},\"instructions\":\"# Checklist\\nConfirm each item before replying.\",\"name\":\"imported-checklist\"}]",
+            "mcp_servers_json": "[{\"allowedTools\":[\"search_issues\",\"create_issue\"],\"authMode\":\"bearer\",\"credentialRef\":\"connection_<generated>\",\"discoveredTools\":[{\"description\":\"Search synthetic tracker issues.\",\"inputSchema\":{\"accountFields\":[{\"name\":\"account_id\",\"required\":false,\"type\":\"string\"}],\"ambiguous\":false,\"fingerprint\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"propertyNames\":[\"query\",\"account_id\"]},\"name\":\"search_issues\",\"readOnlyHint\":true,\"title\":\"Search issues\"},{\"description\":\"Create a synthetic issue.\",\"name\":\"create_issue\"}],\"displayName\":\"Scenario Tracker\",\"enabled\":true,\"headerNames\":[\"X-Workspace\"],\"id\":\"mcp_scenario_tracker\",\"identity\":{\"accountName\":\"scenario-bot\",\"workspaceName\":\"Example Workspace\"},\"lastCheckedAt\":1792080000000,\"lifecycleStatus\":\"ready\",\"presetId\":\"preset_scenario_tracker\",\"statusText\":\"Connected\",\"toolAccessMode\":\"review\",\"toolPolicies\":{\"create_issue\":{\"argumentConstraints\":{\"project\":[\"SCN\"]},\"effect\":\"write\"},\"search_issues\":{\"effect\":\"read\"}},\"transport\":\"streamable-http\",\"url\":\"https://Tracker.Example.com\"},{\"allowedTools\":[\"read_page\"],\"authMode\":\"oauth\",\"credentialRef\":\"connection_<generated>\",\"discoveredTools\":[{\"name\":\"read_page\"}],\"displayName\":\"Scenario Docs\",\"enabled\":true,\"headerNames\":[],\"id\":\"mcp_scenario_docs\",\"lifecycleStatus\":\"pending\",\"oauthAttemptId\":\"6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b\",\"oauthScope\":\"docs.read\",\"statusText\":\"Reconnect required\",\"transport\":\"sse\",\"url\":\"https://docs.example.com/mcp/\"},{\"allowedTools\":[],\"authMode\":\"none\",\"credentialHeaderName\":\"X-Feed-Key\",\"credentialOptional\":true,\"credentialRef\":\"connection_<generated>\",\"credentialValuePrefix\":\"Key \",\"discoveredTools\":[],\"displayName\":\"Scenario Feed\",\"enabled\":false,\"headerNames\":[\"X-Feed-Key\"],\"id\":\"mcp_scenario_feed\",\"lifecycleStatus\":\"pending\",\"statusText\":\"Not tested\",\"toolAccessMode\":\"auto\",\"transport\":\"streamable-http\",\"url\":\"https://feed.example.com/mcp\"}]",
+            "api_connections_json": "[{\"allowedHosts\":[\"api.weather.example.com\"],\"allowedMethods\":[\"GET\"],\"authMode\":\"credential\",\"credentialRef\":\"connection_<generated>\",\"displayName\":\"Scenario Weather\",\"enabled\":true,\"headerName\":\"Authorization\",\"headerValuePrefix\":\"Bearer \",\"id\":\"api_scenario_weather\",\"lifecycleStatus\":\"ready\",\"pathPrefixes\":[\"/v1/\"],\"presetId\":\"preset_scenario_weather\",\"readyRevision\":2,\"statusText\":\"Connected\"},{\"allowedHosts\":[\"calendar.example.com\"],\"allowedMethods\":[\"GET\",\"POST\"],\"authMode\":\"oauth\",\"credentialRef\":\"connection_<generated>\",\"displayName\":\"Scenario Calendar\",\"enabled\":true,\"headerName\":\"Authorization\",\"id\":\"api_scenario_calendar\",\"identity\":{\"accountName\":\"scenario@example.com\"},\"lifecycleStatus\":\"ready\",\"oauthAppType\":\"external\",\"oauthProvider\":\"google\",\"oauthScopes\":[\"https://calendar.example.com/auth/calendar.readonly\"],\"pathPrefixes\":[\"/calendar/v3/\"],\"statusText\":\"Connected\"},{\"allowedHosts\":[\"legacy.example.com\"],\"allowedMethods\":[\"GET\"],\"credentialRef\":\"connection_<generated>\",\"displayName\":\"Scenario Legacy\",\"enabled\":false,\"headerName\":\"X-Api-Key\",\"id\":\"api_scenario_legacy\",\"pathPrefixes\":[\"/\"]}]",
+            "repositories_json": "[{\"accountLogin\":\"example-org\",\"enabled\":true,\"fullName\":\"example-org/scenario-app\",\"id\":\"repo_scenario_app\",\"installationId\":4242},{\"accountLogin\":\"example-user\",\"allRepos\":true,\"enabled\":false,\"fullName\":\"example-user/*\",\"id\":\"repo_scenario_all\",\"installationId\":null}]",
+            "model_effort": "\"high\"",
+            "website_logins_json": "[{\"enabled\":true,\"level\":\"act\",\"loginId\":\"login_scenario_portal\"},{\"enabled\":false,\"level\":\"check\",\"loginId\":\"login_scenario_reports\"}]"
+          },
+          "[\"\\\"agent_scenario_scout\\\"\"]": {
+            "id": "\"agent_scenario_scout\"",
+            "agent_kind": "\"user\"",
+            "revision": "1",
+            "credential_incarnation": "\"agent_<generated>\"",
+            "name": "\"Scenario Scout\"",
+            "description": "null",
+            "instructions": "\"Watch for synthetic listings.\"",
+            "enabled": "0",
+            "lifecycle": "\"draft\"",
+            "creator_membership_id": "\"membership_scenario_member\"",
+            "edit_policy": "\"creator_and_admins\"",
+            "configuration_generation": "1",
+            "slack_presence_json": "{\"app\":{\"app\":{\"appId\":\"A0SCENARIOSCT\",\"clientId\":\"1000000000.4000000000\"},\"at\":1792076400000,\"icon\":\"default_avatar\",\"reason\":\"slack_busy\",\"resume\":\"created\",\"startedBy\":\"membership_scenario_member\",\"state\":\"needs_attention\"},\"avatar\":{\"kind\":\"uploaded\",\"revision\":1,\"url\":\"https://assets.example.com/avatars/scout-1.png\"},\"desiredState\":\"active\",\"errorCode\":\"slack_busy\",\"errorDetail\":\"Slack asked for a retry later.\",\"health\":\"needs_attention\",\"kind\":\"agent_app\",\"normalizedHandle\":\"scenario-scout\",\"requestedHandle\":\"scenario-scout\"}",
+            "archived_at": "null",
+            "model": "null",
+            "skills_json": "[]",
+            "mcp_servers_json": "[]",
+            "api_connections_json": "[]",
+            "repositories_json": "[]",
+            "model_effort": "null",
+            "website_logins_json": "[]"
+          }
+        }
+      },
+      "config_channels": {
+        "columns": {
+          "workspace_id": "TEXT|1|null|1",
+          "channel_id": "TEXT|1|null|2",
+          "revision": "INTEGER|1|null|0",
+          "label": "TEXT|0|null|0",
+          "lifecycle": "TEXT|1|null|0"
+        },
+        "indexes": {
+          "sqlite_autoindex_config_channels_1": "1|pk|0|workspace_id,channel_id"
+        },
+        "sql": "CREATE TABLE config_channels ( workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL, revision INTEGER NOT NULL, label TEXT, lifecycle TEXT NOT NULL, PRIMARY KEY (workspace_id, channel_id) )",
+        "rows": {
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO1\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO1\"",
+            "revision": "2",
+            "label": "\"scenario-research-hub\"",
+            "lifecycle": "\"active\""
+          },
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO2\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO2\"",
+            "revision": "1",
+            "label": "\"scenario-private\"",
+            "lifecycle": "\"active\""
+          },
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO3\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO3\"",
+            "revision": "1",
+            "label": "null",
+            "lifecycle": "\"archived\""
+          }
+        }
+      },
+      "config_agent_deletion_receipts": {
+        "columns": {
+          "idempotency_key": "TEXT|0|null|1",
+          "workspace_id": "TEXT|1|null|0",
+          "agent_id": "TEXT|1|null|0",
+          "credential_incarnation": "TEXT|1|''|0",
+          "deleted_at": "INTEGER|1|null|0"
+        },
+        "indexes": {
+          "sqlite_autoindex_config_agent_deletion_receipts_1": "1|pk|0|idempotency_key"
+        },
+        "sql": "CREATE TABLE config_agent_deletion_receipts ( idempotency_key TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, agent_id TEXT NOT NULL, credential_incarnation TEXT NOT NULL DEFAULT '', deleted_at INTEGER NOT NULL )",
+        "rows": {
+          "[\"\\\"delete_scenario_temporary\\\"\"]": {
+            "idempotency_key": "\"delete_scenario_temporary\"",
+            "workspace_id": "\"*\"",
+            "agent_id": "\"agent_scenario_temporary\"",
+            "credential_incarnation": "\"agent_<generated>\"",
+            "deleted_at": "1792083600000"
+          }
+        }
+      },
+      "config_workspace_installations": {
+        "columns": {
+          "workspace_id": "TEXT|0|null|1",
+          "revision": "INTEGER|1|null|0",
+          "transport_mode": "TEXT|1|null|0",
+          "runtime_contract": "TEXT|1|'legacy'|0",
+          "default_agent_id": "TEXT|1|null|0",
+          "team_id": "TEXT|0|null|0",
+          "app_id": "TEXT|0|null|0",
+          "bot_user_id": "TEXT|0|null|0",
+          "gateway_binding_id": "TEXT|0|null|0",
+          "health": "TEXT|1|null|0",
+          "health_detail": "TEXT|0|null|0",
+          "created_at": "INTEGER|1|null|0",
+          "updated_at": "INTEGER|1|null|0"
+        },
+        "indexes": {
+          "sqlite_autoindex_config_workspace_installations_1": "1|pk|0|workspace_id"
+        },
+        "sql": "CREATE TABLE config_workspace_installations ( workspace_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, transport_mode TEXT NOT NULL, runtime_contract TEXT NOT NULL DEFAULT 'legacy' CHECK (runtime_contract IN ('legacy', 'chickpea-v1')), default_agent_id TEXT NOT NULL, team_id TEXT, app_id TEXT, bot_user_id TEXT, gateway_binding_id TEXT, health TEXT NOT NULL, health_detail TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, FOREIGN KEY (default_agent_id) REFERENCES config_agents(id) )",
+        "rows": {
+          "[\"\\\"T0SCENARIO\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "revision": "5",
+            "transport_mode": "\"gateway\"",
+            "runtime_contract": "\"chickpea-v1\"",
+            "default_agent_id": "\"agent_scenario_researcher\"",
+            "team_id": "\"T0SCENARIO\"",
+            "app_id": "\"A0SCENARIO\"",
+            "bot_user_id": "\"U0SCENARIOBOT\"",
+            "gateway_binding_id": "\"binding_scenario\"",
+            "health": "\"healthy\"",
+            "health_detail": "null",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          }
+        }
+      },
+      "config_agent_channel_grants": {
+        "columns": {
+          "workspace_id": "TEXT|1|null|1",
+          "channel_id": "TEXT|1|null|2",
+          "agent_id": "TEXT|1|null|3",
+          "revision": "INTEGER|1|null|0",
+          "status": "TEXT|1|null|0",
+          "created_by_membership_id": "TEXT|1|null|0",
+          "channel_label": "TEXT|0|null|0",
+          "channel_is_private": "INTEGER|0|null|0",
+          "created_at": "INTEGER|1|null|0",
+          "updated_at": "INTEGER|1|null|0"
+        },
+        "indexes": {
+          "config_agent_channel_grants_agent_idx": "0|c|0|agent_id",
+          "sqlite_autoindex_config_agent_channel_grants_1": "1|pk|0|workspace_id,channel_id,agent_id"
+        },
+        "sql": "CREATE TABLE config_agent_channel_grants ( workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL, agent_id TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL, created_by_membership_id TEXT NOT NULL, channel_label TEXT, channel_is_private INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel_id, agent_id), FOREIGN KEY (agent_id) REFERENCES config_agents(id) )",
+        "rows": {
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO1\\\"\",\"\\\"agent_scenario_researcher\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO1\"",
+            "agent_id": "\"agent_scenario_researcher\"",
+            "revision": "1",
+            "status": "\"active\"",
+            "created_by_membership_id": "\"membership_scenario_owner\"",
+            "channel_label": "\"scenario-research-hub\"",
+            "channel_is_private": "0",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO2\\\"\",\"\\\"agent_scenario_concierge\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO2\"",
+            "agent_id": "\"agent_scenario_concierge\"",
+            "revision": "1",
+            "status": "\"pending\"",
+            "created_by_membership_id": "\"membership_scenario_member\"",
+            "channel_label": "null",
+            "channel_is_private": "1",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          }
+        }
+      },
+      "config_agent_thread_routes": {
+        "columns": {
+          "workspace_id": "TEXT|1|null|1",
+          "channel_id": "TEXT|1|null|2",
+          "thread_ts": "TEXT|1|null|3",
+          "agent_id": "TEXT|1|null|0",
+          "agent_generation": "INTEGER|1|null|0",
+          "owner_incarnation": "INTEGER|1|1|0",
+          "transfer_message_ts": "TEXT|0|null|0",
+          "previous_agent_id": "TEXT|0|null|0",
+          "handoff_context_json": "TEXT|0|null|0",
+          "revision": "INTEGER|1|null|0",
+          "updated_at": "INTEGER|1|null|0"
+        },
+        "indexes": {
+          "config_agent_thread_routes_agent_idx": "0|c|0|agent_id",
+          "sqlite_autoindex_config_agent_thread_routes_1": "1|pk|0|workspace_id,channel_id,thread_ts"
+        },
+        "sql": "CREATE TABLE config_agent_thread_routes ( workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL, thread_ts TEXT NOT NULL, agent_id TEXT NOT NULL, agent_generation INTEGER NOT NULL, owner_incarnation INTEGER NOT NULL DEFAULT 1 CHECK (owner_incarnation > 0), transfer_message_ts TEXT, previous_agent_id TEXT, handoff_context_json TEXT, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel_id, thread_ts), FOREIGN KEY (agent_id) REFERENCES config_agents(id) )",
+        "rows": {
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO1\\\"\",\"\\\"1792080000.000100\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO1\"",
+            "thread_ts": "\"1792080000.000100\"",
+            "agent_id": "\"agent_scenario_researcher\"",
+            "agent_generation": "1",
+            "owner_incarnation": "2",
+            "transfer_message_ts": "\"1792080030.000150\"",
+            "previous_agent_id": "\"agent_scenario_concierge\"",
+            "handoff_context_json": "[{\"messageTs\":\"1792080000.000100\",\"role\":\"human\",\"text\":\"Can someone pull the synthetic quarterly report?\"},{\"agentId\":\"agent_scenario_concierge\",\"messageTs\":\"1792080030.000150\",\"role\":\"agent\",\"text\":\"Handing this to the researcher.\"},{\"messageTs\":\"1792080060.000200\",\"role\":\"app\",\"text\":\"Report job queued.\"}]",
+            "revision": "1",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO2\\\"\",\"\\\"1792076400.000100\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO2\"",
+            "thread_ts": "\"1792076400.000100\"",
+            "agent_id": "\"agent_scenario_concierge\"",
+            "agent_generation": "1",
+            "owner_incarnation": "3",
+            "transfer_message_ts": "\"1792076520.000300\"",
+            "previous_agent_id": "\"agent_scenario_researcher\"",
+            "handoff_context_json": "null",
+            "revision": "2",
+            "updated_at": "1792083600000"
+          }
+        }
+      },
+      "config_connection_accounts": {
+        "columns": {
+          "id": "TEXT|0|null|1",
+          "workspace_id": "TEXT|1|null|0",
+          "revision": "INTEGER|1|null|0",
+          "owner_kind": "TEXT|1|null|0",
+          "owner_membership_id": "TEXT|0|null|0",
+          "created_by_membership_id": "TEXT|1|null|0",
+          "provider_id": "TEXT|1|null|0",
+          "label": "TEXT|1|null|0",
+          "purpose": "TEXT|0|null|0",
+          "identity_json": "TEXT|0|null|0",
+          "policy_json": "TEXT|1|null|0",
+          "secret_ref_id": "TEXT|1|null|0",
+          "lifecycle": "TEXT|1|null|0",
+          "created_at": "INTEGER|1|null|0",
+          "updated_at": "INTEGER|1|null|0"
+        },
+        "indexes": {
+          "config_connection_accounts_workspace_idx": "0|c|0|workspace_id",
+          "sqlite_autoindex_config_connection_accounts_1": "1|pk|0|id"
+        },
+        "sql": "CREATE TABLE config_connection_accounts ( id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, revision INTEGER NOT NULL, owner_kind TEXT NOT NULL, owner_membership_id TEXT, created_by_membership_id TEXT NOT NULL, provider_id TEXT NOT NULL, label TEXT NOT NULL, purpose TEXT, identity_json TEXT, policy_json TEXT NOT NULL, secret_ref_id TEXT NOT NULL, lifecycle TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL )",
+        "rows": {
+          "[\"\\\"connection_scenario_calendar\\\"\"]": {
+            "id": "\"connection_scenario_calendar\"",
+            "workspace_id": "\"T0SCENARIO\"",
+            "revision": "1",
+            "owner_kind": "\"member\"",
+            "owner_membership_id": "\"membership_scenario_member\"",
+            "created_by_membership_id": "\"membership_scenario_member\"",
+            "provider_id": "\"scenario-calendar\"",
+            "label": "\"Calendar (personal)\"",
+            "purpose": "null",
+            "identity_json": "{\"accountName\":\"member@example.com\",\"workspaceName\":\"Example Workspace\"}",
+            "policy_json": "{\"allowedHosts\":[\"calendar.example.com\"],\"allowedMethods\":[\"GET\",\"POST\"],\"authMode\":\"oauth\",\"headerName\":\"Authorization\",\"kind\":\"api\",\"oauthAppType\":\"workspace-internal\",\"oauthAttemptId\":\"0a1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d\",\"oauthProvider\":\"google\",\"oauthScopes\":[\"https://calendar.example.com/auth/calendar.events\"],\"pathPrefixes\":[\"/calendar/v3/\"]}",
+            "secret_ref_id": "\"secret_scenario_calendar\"",
+            "lifecycle": "\"needs_attention\"",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"connection_scenario_docs\\\"\"]": {
+            "id": "\"connection_scenario_docs\"",
+            "workspace_id": "\"T0SCENARIO\"",
+            "revision": "1",
+            "owner_kind": "\"member\"",
+            "owner_membership_id": "\"membership_scenario_member\"",
+            "created_by_membership_id": "\"membership_scenario_member\"",
+            "provider_id": "\"scenario-docs\"",
+            "label": "\"Docs (personal)\"",
+            "purpose": "null",
+            "identity_json": "null",
+            "policy_json": "{\"allowedTools\":[\"read_page\"],\"authMode\":\"oauth\",\"discoveredTools\":[{\"name\":\"read_page\"}],\"headerNames\":[],\"kind\":\"mcp\",\"oauthAttemptId\":\"1b2c3d4e-5f60-4718-a9b0-c1d2e3f4a5b6\",\"oauthScope\":\"docs.read\",\"transport\":\"sse\",\"url\":\"https://docs.example.com/mcp/\"}",
+            "secret_ref_id": "\"secret_scenario_docs\"",
+            "lifecycle": "\"pending\"",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"connection_scenario_mail\\\"\"]": {
+            "id": "\"connection_scenario_mail\"",
+            "workspace_id": "\"T0SCENARIO\"",
+            "revision": "1",
+            "owner_kind": "\"team\"",
+            "owner_membership_id": "null",
+            "created_by_membership_id": "\"membership_scenario_owner\"",
+            "provider_id": "\"scenario-mail\"",
+            "label": "\"Mail (managed)\"",
+            "purpose": "null",
+            "identity_json": "null",
+            "policy_json": "{\"accountRef\":\"account_scenario_mail\",\"adapterId\":\"composio\",\"allowedCapabilities\":[\"mail.read\",\"mail.send\"],\"grantSummary\":{\"items\":[{\"label\":\"Scenario Handbook\",\"type\":\"page\"}],\"truncated\":false},\"kind\":\"managed\",\"principalRef\":\"principal_scenario\",\"providerGeneration\":3,\"providerLineage\":\"lineage_scenario\",\"resourceConstraints\":{\"adAccounts\":[{\"currencyCode\":\"USD\",\"handle\":\"ads_main\",\"label\":\"Main ads\",\"providerRef\":\"act_1001\"}],\"labels\":[{\"handle\":\"label_inbox\",\"label\":\"Inbox\",\"providerRef\":\"INBOX\"},{\"handle\":\"label_reports\",\"label\":\"Reports\",\"providerRef\":\"Label_42\"}]},\"toolkit\":\"gmail\"}",
+            "secret_ref_id": "\"secret_scenario_mail\"",
+            "lifecycle": "\"ready\"",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"connection_scenario_tracker\\\"\"]": {
+            "id": "\"connection_scenario_tracker\"",
+            "workspace_id": "\"T0SCENARIO\"",
+            "revision": "1",
+            "owner_kind": "\"team\"",
+            "owner_membership_id": "null",
+            "created_by_membership_id": "\"membership_scenario_owner\"",
+            "provider_id": "\"scenario-tracker\"",
+            "label": "\"Tracker (team)\"",
+            "purpose": "null",
+            "identity_json": "null",
+            "policy_json": "{\"allowedTools\":[\"search_issues\",\"create_issue\"],\"authMode\":\"bearer\",\"credentialHeaderName\":\"Authorization\",\"credentialValuePrefix\":\"Bearer \",\"discoveredTools\":[{\"name\":\"search_issues\",\"readOnlyHint\":true},{\"name\":\"create_issue\",\"title\":\"Create issue\"}],\"headerNames\":[\"Authorization\"],\"kind\":\"mcp\",\"presetId\":\"preset_scenario_tracker\",\"toolAccessMode\":\"review\",\"toolPolicies\":{\"create_issue\":{\"argumentConstraints\":{\"project\":[\"SCN\"]},\"effect\":\"write\"}},\"transport\":\"streamable-http\",\"url\":\"https://tracker.example.com/\"}",
+            "secret_ref_id": "\"secret_scenario_tracker\"",
+            "lifecycle": "\"ready\"",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"connection_scenario_weather\\\"\"]": {
+            "id": "\"connection_scenario_weather\"",
+            "workspace_id": "\"T0SCENARIO\"",
+            "revision": "2",
+            "owner_kind": "\"team\"",
+            "owner_membership_id": "null",
+            "created_by_membership_id": "\"membership_scenario_owner\"",
+            "provider_id": "\"scenario-weather\"",
+            "label": "\"Weather (team, renamed)\"",
+            "purpose": "\"Daily forecast lookups\"",
+            "identity_json": "{\"accountName\":\"weather-team\",\"workspaceName\":\"Example Workspace\"}",
+            "policy_json": "{\"allowedHosts\":[\"api.weather.example.com\"],\"allowedMethods\":[\"GET\"],\"authMode\":\"credential\",\"headerName\":\"Authorization\",\"headerValuePrefix\":\"Bearer \",\"kind\":\"api\",\"pathPrefixes\":[\"/v1/\"],\"presetId\":\"preset_scenario_weather\"}",
+            "secret_ref_id": "\"secret_scenario_weather\"",
+            "lifecycle": "\"ready\"",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          }
+        }
+      },
+      "config_agent_connection_bindings": {
+        "columns": {
+          "agent_id": "TEXT|1|null|1",
+          "connection_account_id": "TEXT|1|null|2",
+          "provider_id": "TEXT|1|null|0",
+          "allowed_capabilities_json": "TEXT|1|null|0",
+          "resource_constraints_json": "TEXT|1|'{}'|0",
+          "enabled": "INTEGER|1|null|0",
+          "created_at": "INTEGER|1|null|0",
+          "updated_at": "INTEGER|1|null|0"
+        },
+        "indexes": {
+          "config_agent_connection_bindings_account_uidx": "1|c|0|connection_account_id",
+          "sqlite_autoindex_config_agent_connection_bindings_1": "1|pk|0|agent_id,connection_account_id"
+        },
+        "sql": "CREATE TABLE config_agent_connection_bindings ( agent_id TEXT NOT NULL, connection_account_id TEXT NOT NULL, provider_id TEXT NOT NULL, allowed_capabilities_json TEXT NOT NULL, resource_constraints_json TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (agent_id, connection_account_id), FOREIGN KEY (agent_id) REFERENCES config_agents(id), FOREIGN KEY (connection_account_id) REFERENCES config_connection_accounts(id) )",
+        "rows": {
+          "[\"\\\"agent_scenario_concierge\\\"\",\"\\\"connection_scenario_calendar\\\"\"]": {
+            "agent_id": "\"agent_scenario_concierge\"",
+            "connection_account_id": "\"connection_scenario_calendar\"",
+            "provider_id": "\"scenario-calendar\"",
+            "allowed_capabilities_json": "[\"GET\",\"POST\"]",
+            "resource_constraints_json": "{}",
+            "enabled": "1",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"agent_scenario_concierge\\\"\",\"\\\"connection_scenario_docs\\\"\"]": {
+            "agent_id": "\"agent_scenario_concierge\"",
+            "connection_account_id": "\"connection_scenario_docs\"",
+            "provider_id": "\"scenario-docs\"",
+            "allowed_capabilities_json": "[\"read_page\"]",
+            "resource_constraints_json": "{}",
+            "enabled": "0",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"agent_scenario_researcher\\\"\",\"\\\"connection_scenario_mail\\\"\"]": {
+            "agent_id": "\"agent_scenario_researcher\"",
+            "connection_account_id": "\"connection_scenario_mail\"",
+            "provider_id": "\"scenario-mail\"",
+            "allowed_capabilities_json": "[\"mail.read\"]",
+            "resource_constraints_json": "{\"labels\":[\"label_reports\"]}",
+            "enabled": "1",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"agent_scenario_researcher\\\"\",\"\\\"connection_scenario_tracker\\\"\"]": {
+            "agent_id": "\"agent_scenario_researcher\"",
+            "connection_account_id": "\"connection_scenario_tracker\"",
+            "provider_id": "\"scenario-tracker\"",
+            "allowed_capabilities_json": "[\"search_issues\"]",
+            "resource_constraints_json": "{}",
+            "enabled": "1",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"agent_scenario_researcher\\\"\",\"\\\"connection_scenario_weather\\\"\"]": {
+            "agent_id": "\"agent_scenario_researcher\"",
+            "connection_account_id": "\"connection_scenario_weather\"",
+            "provider_id": "\"scenario-weather\"",
+            "allowed_capabilities_json": "[\"GET\",\"HEAD\"]",
+            "resource_constraints_json": "{}",
+            "enabled": "1",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          }
+        }
+      },
+      "config_agent_schedule_references": {
+        "columns": {
+          "schedule_id": "TEXT|0|null|1",
+          "agent_id": "TEXT|1|null|0",
+          "workspace_id": "TEXT|1|null|0",
+          "channel_id": "TEXT|1|null|0",
+          "destination_kind": "TEXT|1|'channel'|0",
+          "destination_binding_digest": "TEXT|0|null|0",
+          "created_by_membership_id": "TEXT|1|null|0",
+          "runs_as_membership_id": "TEXT|1|null|0",
+          "authority_receipt_id": "TEXT|1|null|0",
+          "required_connection_account_ids_json": "TEXT|1|null|0",
+          "connection_pause_account_ids_json": "TEXT|1|'[]'|0",
+          "connection_pause_preserves_state": "INTEGER|1|0|0",
+          "state": "TEXT|1|null|0",
+          "revision": "INTEGER|1|null|0",
+          "created_at": "INTEGER|1|null|0",
+          "updated_at": "INTEGER|1|null|0",
+          "bound_routine_version": "INTEGER|0|null|0"
+        },
+        "indexes": {
+          "config_agent_schedule_references_agent_idx": "0|c|0|agent_id",
+          "sqlite_autoindex_config_agent_schedule_references_1": "1|pk|0|schedule_id"
+        },
+        "sql": "CREATE TABLE config_agent_schedule_references ( schedule_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL, destination_kind TEXT NOT NULL DEFAULT 'channel', destination_binding_digest TEXT, created_by_membership_id TEXT NOT NULL, runs_as_membership_id TEXT NOT NULL, authority_receipt_id TEXT NOT NULL, required_connection_account_ids_json TEXT NOT NULL, connection_pause_account_ids_json TEXT NOT NULL DEFAULT '[]', connection_pause_preserves_state INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, bound_routine_version INTEGER, FOREIGN KEY (agent_id) REFERENCES config_agents(id) )",
+        "rows": {
+          "[\"\\\"schedule_scenario_archive_active\\\"\"]": {
+            "schedule_id": "\"schedule_scenario_archive_active\"",
+            "agent_id": "\"agent_scenario_archivist\"",
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO1\"",
+            "destination_kind": "\"channel\"",
+            "destination_binding_digest": "null",
+            "created_by_membership_id": "\"membership_scenario_owner\"",
+            "runs_as_membership_id": "\"membership_scenario_owner\"",
+            "authority_receipt_id": "\"receipt_scenario_archive_active\"",
+            "required_connection_account_ids_json": "[]",
+            "connection_pause_account_ids_json": "[]",
+            "connection_pause_preserves_state": "0",
+            "state": "\"paused\"",
+            "revision": "2",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000",
+            "bound_routine_version": "null"
+          },
+          "[\"\\\"schedule_scenario_archive_outage\\\"\"]": {
+            "schedule_id": "\"schedule_scenario_archive_outage\"",
+            "agent_id": "\"agent_scenario_archivist\"",
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO1\"",
+            "destination_kind": "\"channel\"",
+            "destination_binding_digest": "null",
+            "created_by_membership_id": "\"membership_scenario_owner\"",
+            "runs_as_membership_id": "\"membership_scenario_owner\"",
+            "authority_receipt_id": "\"receipt_scenario_archive_outage\"",
+            "required_connection_account_ids_json": "[\"connection_scenario_weather\"]",
+            "connection_pause_account_ids_json": "[\"connection_scenario_weather\"]",
+            "connection_pause_preserves_state": "0",
+            "state": "\"paused\"",
+            "revision": "2",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000",
+            "bound_routine_version": "null"
+          },
+          "[\"\\\"schedule_scenario_daily\\\"\"]": {
+            "schedule_id": "\"schedule_scenario_daily\"",
+            "agent_id": "\"agent_scenario_researcher\"",
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO1\"",
+            "destination_kind": "\"channel\"",
+            "destination_binding_digest": "null",
+            "created_by_membership_id": "\"membership_scenario_owner\"",
+            "runs_as_membership_id": "\"membership_scenario_owner\"",
+            "authority_receipt_id": "\"receipt_scenario_daily\"",
+            "required_connection_account_ids_json": "[\"connection_scenario_weather\",\"connection_scenario_mail\"]",
+            "connection_pause_account_ids_json": "[]",
+            "connection_pause_preserves_state": "0",
+            "state": "\"active\"",
+            "revision": "2",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000",
+            "bound_routine_version": "3"
+          },
+          "[\"\\\"schedule_scenario_direct\\\"\"]": {
+            "schedule_id": "\"schedule_scenario_direct\"",
+            "agent_id": "\"agent_scenario_researcher\"",
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"D0SCENARIO1\"",
+            "destination_kind": "\"direct_thread\"",
+            "destination_binding_digest": "\"5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c\"",
+            "created_by_membership_id": "\"membership_scenario_member\"",
+            "runs_as_membership_id": "\"membership_scenario_member\"",
+            "authority_receipt_id": "\"receipt_scenario_direct\"",
+            "required_connection_account_ids_json": "[\"connection_scenario_tracker\"]",
+            "connection_pause_account_ids_json": "[\"connection_scenario_tracker\"]",
+            "connection_pause_preserves_state": "1",
+            "state": "\"needs_attention\"",
+            "revision": "1",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000",
+            "bound_routine_version": "null"
+          },
+          "[\"\\\"schedule_scenario_legacy\\\"\"]": {
+            "schedule_id": "\"schedule_scenario_legacy\"",
+            "agent_id": "\"agent_scenario_concierge\"",
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO2\"",
+            "destination_kind": "\"channel\"",
+            "destination_binding_digest": "null",
+            "created_by_membership_id": "\"membership_scenario_member\"",
+            "runs_as_membership_id": "\"membership_scenario_member\"",
+            "authority_receipt_id": "\"receipt_scenario_legacy\"",
+            "required_connection_account_ids_json": "[]",
+            "connection_pause_account_ids_json": "[]",
+            "connection_pause_preserves_state": "0",
+            "state": "\"archived\"",
+            "revision": "2",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000",
+            "bound_routine_version": "null"
+          }
+        }
+      },
+      "config_agent_archive_snapshots": {
+        "columns": {
+          "agent_id": "TEXT|0|null|1",
+          "channel_grants_json": "TEXT|1|null|0",
+          "paused_schedule_ids_json": "TEXT|1|null|0",
+          "created_at": "INTEGER|1|null|0"
+        },
+        "indexes": {
+          "sqlite_autoindex_config_agent_archive_snapshots_1": "1|pk|0|agent_id"
+        },
+        "sql": "CREATE TABLE config_agent_archive_snapshots ( agent_id TEXT PRIMARY KEY, channel_grants_json TEXT NOT NULL, paused_schedule_ids_json TEXT NOT NULL, created_at INTEGER NOT NULL, FOREIGN KEY (agent_id) REFERENCES config_agents(id) ON DELETE CASCADE )",
+        "rows": {
+          "[\"\\\"agent_scenario_archivist\\\"\"]": {
+            "agent_id": "\"agent_scenario_archivist\"",
+            "channel_grants_json": "[{\"agent_id\":\"agent_scenario_archivist\",\"channel_id\":\"C0SCENARIO1\",\"channel_is_private\":0,\"channel_label\":\"scenario-research-hub\",\"created_at\":1792083600000,\"created_by_membership_id\":\"membership_scenario_owner\",\"revision\":1,\"status\":\"active\",\"updated_at\":1792083600000,\"workspace_id\":\"T0SCENARIO\"}]",
+            "paused_schedule_ids_json": "[\"schedule_scenario_archive_active\",\"schedule_scenario_archive_outage\"]",
+            "created_at": "1792083600000"
+          }
+        }
+      },
+      "config_workspace_model_roles": {
+        "columns": {
+          "workspace_id": "TEXT|1|null|1",
+          "role": "TEXT|1|null|2",
+          "model_id": "TEXT|0|null|0",
+          "revision": "INTEGER|1|null|0",
+          "last_changed_by_membership_id": "TEXT|0|null|0",
+          "created_at": "INTEGER|1|null|0",
+          "updated_at": "INTEGER|1|null|0",
+          "effort": "TEXT|0|null|0"
+        },
+        "indexes": {
+          "sqlite_autoindex_config_workspace_model_roles_1": "1|pk|0|workspace_id,role"
+        },
+        "sql": "CREATE TABLE config_workspace_model_roles ( workspace_id TEXT NOT NULL, role TEXT NOT NULL, model_id TEXT, revision INTEGER NOT NULL CHECK (revision > 0), last_changed_by_membership_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, effort TEXT, PRIMARY KEY (workspace_id, role) )",
+        "rows": {
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"coding\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "role": "\"coding\"",
+            "model_id": "\"anthropic/claude-opus-4-1\"",
+            "revision": "1",
+            "last_changed_by_membership_id": "null",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000",
+            "effort": "\"xhigh\""
+          },
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"image\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "role": "\"image\"",
+            "model_id": "\"openai/gpt-image-1\"",
+            "revision": "1",
+            "last_changed_by_membership_id": "\"membership_scenario_owner\"",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000",
+            "effort": "null"
+          }
+        }
+      },
+      "config_agent_model_roles": {
+        "columns": {
+          "agent_id": "TEXT|1|null|1",
+          "role": "TEXT|1|null|2",
+          "model_id": "TEXT|0|null|0",
+          "revision": "INTEGER|1|null|0",
+          "created_at": "INTEGER|1|null|0",
+          "updated_at": "INTEGER|1|null|0"
+        },
+        "indexes": {
+          "sqlite_autoindex_config_agent_model_roles_1": "1|pk|0|agent_id,role"
+        },
+        "sql": "CREATE TABLE config_agent_model_roles ( agent_id TEXT NOT NULL, role TEXT NOT NULL, model_id TEXT, revision INTEGER NOT NULL CHECK (revision > 0), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (agent_id, role) )",
+        "rows": {
+          "[\"\\\"agent_scenario_concierge\\\"\",\"\\\"image\\\"\"]": {
+            "agent_id": "\"agent_scenario_concierge\"",
+            "role": "\"image\"",
+            "model_id": "null",
+            "revision": "1",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"agent_scenario_researcher\\\"\",\"\\\"coding\\\"\"]": {
+            "agent_id": "\"agent_scenario_researcher\"",
+            "role": "\"coding\"",
+            "model_id": "\"openai/gpt-5.5-codex\"",
+            "revision": "1",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000"
+          }
+        }
+      },
+      "config_workspace_model_defaults": {
+        "columns": {
+          "workspace_id": "TEXT|0|null|1",
+          "model_id": "TEXT|0|null|0",
+          "revision": "INTEGER|1|null|0",
+          "provenance": "TEXT|1|null|0",
+          "last_changed_by_membership_id": "TEXT|0|null|0",
+          "created_at": "INTEGER|1|null|0",
+          "updated_at": "INTEGER|1|null|0",
+          "effort": "TEXT|0|null|0"
+        },
+        "indexes": {
+          "sqlite_autoindex_config_workspace_model_defaults_1": "1|pk|0|workspace_id"
+        },
+        "sql": "CREATE TABLE config_workspace_model_defaults ( workspace_id TEXT PRIMARY KEY, model_id TEXT, revision INTEGER NOT NULL CHECK (revision > 0), provenance TEXT NOT NULL, last_changed_by_membership_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL , effort TEXT)",
+        "rows": {
+          "[\"\\\"T0SCENARIO\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "model_id": "\"anthropic/claude-sonnet-4-5\"",
+            "revision": "3",
+            "provenance": "\"admin_selected\"",
+            "last_changed_by_membership_id": "\"membership_scenario_owner\"",
+            "created_at": "1792083600000",
+            "updated_at": "1792083600000",
+            "effort": "\"medium\""
+          }
+        }
+      },
+      "config_slack_public_context": {
+        "columns": {
+          "workspace_id": "TEXT|1|null|1",
+          "channel_id": "TEXT|1|null|2",
+          "root_ts": "TEXT|1|null|3",
+          "message_ts": "TEXT|1|null|4",
+          "role": "TEXT|1|null|0",
+          "text": "TEXT|1|null|0",
+          "agent_id": "TEXT|0|null|0",
+          "content_version_ts": "TEXT|0|null|0",
+          "author_kind": "TEXT|0|null|0",
+          "author_id": "TEXT|0|null|0",
+          "author_name": "TEXT|0|null|0",
+          "files_json": "TEXT|0|null|0",
+          "images_json": "TEXT|0|null|0",
+          "gap_before_ts": "TEXT|0|null|0",
+          "updated_at": "INTEGER|1|null|0"
+        },
+        "indexes": {
+          "config_slack_public_context_root_idx": "0|c|0|workspace_id,channel_id,root_ts,updated_at",
+          "sqlite_autoindex_config_slack_public_context_1": "1|pk|0|workspace_id,channel_id,root_ts,message_ts"
+        },
+        "sql": "CREATE TABLE config_slack_public_context ( workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL, root_ts TEXT NOT NULL, message_ts TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('human', 'agent')), text TEXT NOT NULL, agent_id TEXT, content_version_ts TEXT, author_kind TEXT, author_id TEXT, author_name TEXT, files_json TEXT, images_json TEXT, gap_before_ts TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel_id, root_ts, message_ts) )",
+        "rows": {
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO1\\\"\",\"\\\"1792080000.000100\\\"\",\"\\\"1792080000.000100\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO1\"",
+            "root_ts": "\"1792080000.000100\"",
+            "message_ts": "\"1792080000.000100\"",
+            "role": "\"human\"",
+            "text": "\"Can someone pull the synthetic quarterly report?\"",
+            "agent_id": "null",
+            "content_version_ts": "null",
+            "author_kind": "\"person\"",
+            "author_id": "\"U0SCENARIOMEM\"",
+            "author_name": "null",
+            "files_json": "[{\"name\":\"report-q3.csv\",\"sizeBytes\":2048,\"type\":\"csv\"}]",
+            "images_json": "null",
+            "gap_before_ts": "null",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO1\\\"\",\"\\\"1792080000.000100\\\"\",\"\\\"1792080060.000200\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO1\"",
+            "root_ts": "\"1792080000.000100\"",
+            "message_ts": "\"1792080060.000200\"",
+            "role": "\"human\"",
+            "text": "\"Report job queued.\"",
+            "agent_id": "null",
+            "content_version_ts": "null",
+            "author_kind": "\"app\"",
+            "author_id": "\"B0SCENARIOJOB\"",
+            "author_name": "\"Scenario Jobs\"",
+            "files_json": "null",
+            "images_json": "null",
+            "gap_before_ts": "null",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO1\\\"\",\"\\\"1792080000.000100\\\"\",\"\\\"1792080120.000300\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO1\"",
+            "root_ts": "\"1792080000.000100\"",
+            "message_ts": "\"1792080120.000300\"",
+            "role": "\"agent\"",
+            "text": "\"Here is the revised summary.\"",
+            "agent_id": "\"agent_scenario_researcher\"",
+            "content_version_ts": "\"1792080300.000400\"",
+            "author_kind": "\"agent\"",
+            "author_id": "null",
+            "author_name": "\"Scenario Researcher\"",
+            "files_json": "null",
+            "images_json": "[{\"id\":\"F0SCENARIOIMG\",\"mimeType\":\"image/png\",\"name\":\"chart.png\",\"sizeBytes\":4096}]",
+            "gap_before_ts": "null",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO2\\\"\",\"\\\"1792076400.000100\\\"\",\"\\\"1792076400.000100\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO2\"",
+            "root_ts": "\"1792076400.000100\"",
+            "message_ts": "\"1792076400.000100\"",
+            "role": "\"human\"",
+            "text": "\"Synthetic alert: queue depth above threshold.\"",
+            "agent_id": "null",
+            "content_version_ts": "null",
+            "author_kind": "\"app\"",
+            "author_id": "\"B0SCENARIOALR\"",
+            "author_name": "\"Scenario Alerts\"",
+            "files_json": "null",
+            "images_json": "null",
+            "gap_before_ts": "\"1792076460.000200\"",
+            "updated_at": "1792083600000"
+          },
+          "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO2\\\"\",\"\\\"1792076400.000100\\\"\",\"\\\"1792076460.000200\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "channel_id": "\"C0SCENARIO2\"",
+            "root_ts": "\"1792076400.000100\"",
+            "message_ts": "\"1792076460.000200\"",
+            "role": "\"human\"",
+            "text": "\"Looking into it.\"",
+            "agent_id": "null",
+            "content_version_ts": "null",
+            "author_kind": "\"person\"",
+            "author_id": "\"U0SCENARIOOWN\"",
+            "author_name": "null",
+            "files_json": "[]",
+            "images_json": "null",
+            "gap_before_ts": "null",
+            "updated_at": "1792083600000"
+          }
+        }
+      },
+      "config_chickpea_cutovers": {
+        "columns": {
+          "workspace_id": "TEXT|0|null|1",
+          "state": "TEXT|1|null|0",
+          "model_classification": "TEXT|1|null|0",
+          "starter_agent_id": "TEXT|0|null|0",
+          "starter_agent_generation": "INTEGER|0|null|0",
+          "prepared_default_revision": "INTEGER|1|null|0",
+          "prepared_at": "INTEGER|1|null|0",
+          "activated_at": "INTEGER|0|null|0",
+          "rolled_back_at": "INTEGER|0|null|0",
+          "route_backfill_count": "INTEGER|1|0|0",
+          "starter_pin_cleared": "INTEGER|1|0|0"
+        },
+        "indexes": {
+          "sqlite_autoindex_config_chickpea_cutovers_1": "1|pk|0|workspace_id"
+        },
+        "sql": "CREATE TABLE config_chickpea_cutovers ( workspace_id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('prepared', 'activated', 'rolled_back')), model_classification TEXT NOT NULL CHECK (model_classification IN ( 'untouched_cloudflare_starter', 'explicit_agent_pin', 'environment_default', 'model_missing' )), starter_agent_id TEXT, starter_agent_generation INTEGER, prepared_default_revision INTEGER NOT NULL, prepared_at INTEGER NOT NULL, activated_at INTEGER, rolled_back_at INTEGER, route_backfill_count INTEGER NOT NULL DEFAULT 0, starter_pin_cleared INTEGER NOT NULL DEFAULT 0 CHECK (starter_pin_cleared IN (0, 1)) )",
+        "rows": {
+          "[\"\\\"T0SCENARIO\\\"\"]": {
+            "workspace_id": "\"T0SCENARIO\"",
+            "state": "\"activated\"",
+            "model_classification": "\"environment_default\"",
+            "starter_agent_id": "null",
+            "starter_agent_generation": "null",
+            "prepared_default_revision": "2",
+            "prepared_at": "1792083600000",
+            "activated_at": "1792083600000",
+            "rolled_back_at": "null",
+            "route_backfill_count": "0",
+            "starter_pin_cleared": "0"
+          }
+        }
+      },
+      "app_settings": {
+        "columns": {
+          "key": "TEXT|0|null|1",
+          "value": "TEXT|1|null|0",
+          "updated_at": "INTEGER|1|null|0"
+        },
+        "indexes": {
+          "sqlite_autoindex_app_settings_1": "1|pk|0|key"
+        },
+        "sql": "CREATE TABLE app_settings ( key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL )",
+        "rows": {}
+      }
+    },
+    "settings": {
+      "connector.*": {
+        "\"connector.agent_scenario_researcher.credential.connection_<generated>.credential\"": "{\"synthetic\":\"connector.agent_scenario_researcher.credential.connection_<generated>.credential\"}",
+        "\"connector.connection_scenario_calendar.account.oauth.tokens\"": "{\"synthetic\":\"connector.connection_scenario_calendar.account.oauth.tokens\"}"
+      },
+      "mcp.*": {
+        "\"mcp.agent_scenario_researcher.credential.connection_<generated>.bearer\"": "{\"synthetic\":\"mcp.agent_scenario_researcher.credential.connection_<generated>.bearer\"}",
+        "\"mcp.agent_scenario_researcher.credential.connection_<generated>.oauth.tokens\"": "{\"synthetic\":\"mcp.agent_scenario_researcher.credential.connection_<generated>.oauth.tokens\"}",
+        "\"mcp.connection_scenario_docs.account.oauth.tokens\"": "{\"synthetic\":\"mcp.connection_scenario_docs.account.oauth.tokens\"}"
+      },
+      "slack.gateway.binding.v1": {
+        "\"slack.gateway.binding.v1\"": "{\"appId\":\"A0SCENARIO\",\"bindingId\":\"binding_scenario\",\"botUserId\":\"U0SCENARIOBOT\",\"clientId\":\"1000000000.2000000000\",\"deploymentId\":\"deployment_scenario\",\"installedAt\":1792080000000,\"installerSlackUserId\":\"U0SCENARIOOWN\",\"sessionUrl\":\"wss://gateway.example.com/sessions/binding_scenario\",\"workspaceId\":\"T0SCENARIO\"}"
+      },
+      "slack.gateway.claim.v1": {
+        "\"slack.gateway.claim.v1\"": "{\"authorizationUrl\":\"https://gateway.example.com/claims/claim_scenario_second\",\"claimId\":\"claim_scenario_second\",\"expiresAt\":1792090800000,\"setupId\":\"setup_scenario\",\"setupRevision\":2}"
+      },
+      "slack.gateway.deploymentIdentity.v1": {
+        "\"slack.gateway.deploymentIdentity.v1\"": "{\"createdAt\":1791997200000,\"deploymentId\":\"deployment_scenario\",\"privateKeyEnvelope\":{\"algorithm\":\"AES-GCM-256\",\"ciphertext\":\"c2NlbmFyaW8tY2lwaGVydGV4dA\",\"keyId\":\"scenario-key\",\"nonce\":\"c2NlbmFyaW8tbm9uY2U\",\"version\":1},\"publicKey\":{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"c2NlbmFyaW8tcHVibGljLXg\",\"y\":\"c2NlbmFyaW8tcHVibGljLXk\"},\"version\":1}"
+      }
+    }
+  }
+}
