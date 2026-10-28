@@ -11,6 +11,8 @@ import {
 } from '../src/config/presets.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
+import { signInMixRefusal, signInOtherKindNotice } from '../src/connections/sign-in-mix.ts';
+import { escapeHtml } from '../src/security/html-escape.ts';
 import {
   META_ADS_OAUTH_DEFAULT_SCOPE,
   META_ADS_OAUTH_MANAGEMENT_SCOPE,
@@ -11153,6 +11155,103 @@ test('managed Notion is the only catalog option and explains the provider page b
     },
   }]);
   assert.deepEqual(harness.connectionAccountPosts, []);
+});
+
+function managedNotionConnections() {
+  const ready = { status: 'ready', missingConfiguration: [] };
+  return {
+    attached: [],
+    managedConnectors: {
+      composio: true,
+      catalog: [{
+        id: 'notion-managed', toolkit: 'notion', providerId: 'notion', label: 'Notion',
+        description: 'Notion managed connector',
+        securityDescription: MANAGED_CONNECTOR_CATALOG.connector('notion')!.securityDescription,
+        access: { read: ready, write: ready },
+      }],
+    },
+  };
+}
+
+function openManagedNotionDialog(harness: ReturnType<typeof runAdminPageHarness>, ownerKind: 'member' | 'team') {
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  return flushAsync().then(() => {
+    click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'notion-managed' }) });
+    chooseConnectionOwner(harness, ownerKind);
+    return click;
+  });
+}
+
+test('the Notion connect dialog stops on the other-kind notice and continues with a different account', async () => {
+  const notice = signInOtherKindNotice(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team');
+  const options: Parameters<typeof runAdminPageHarness>[0] = {
+    agents: [connectionsAgent()],
+    connectionAccounts: managedNotionConnections(),
+    managedStartError: { status: 409, error: 'managed_sign_in_other_kind', message: notice },
+  };
+  const harness = runAdminPageHarness(options);
+  await flushAsync();
+  const click = await openManagedNotionDialog(harness, 'member');
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  assert.ok(harness.app.innerHTML.includes(`<div class="callout" role="status"><span>${escapeHtml(notice)}</span></div>`),
+    'the notice shows inside the dialog');
+  assert.match(harness.app.innerHTML, /data-action="connection-account-cancel"[^>]*>Cancel<\/button>/);
+  assert.match(harness.app.innerHTML,
+    /data-action="connection-account-create"[^>]*>Continue with a different Notion account<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, /class="err"/, 'the notice is not shown as a failure');
+  assert.equal(harness.openedWindows[0]?.closed, true, 'the blank sign-in tab closes');
+
+  delete options.managedStartError;
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+  assert.deepEqual(harness.managedAuthorizationPosts.map(({ body }) => body), [
+    { workspaceId: 'T_DESIGN', ownerKind: 'member', toolkit: 'notion', access: 'write' },
+    { workspaceId: 'T_DESIGN', ownerKind: 'member', toolkit: 'notion', access: 'write', differentAccount: true },
+  ]);
+  assert.match(harness.app.innerHTML, /Finish sign-in in the new tab/);
+});
+
+test('choosing the other owner clears the Notion notice', async () => {
+  const notice = signInOtherKindNotice(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team');
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: managedNotionConnections(),
+    managedStartError: { status: 409, error: 'managed_sign_in_other_kind', message: notice },
+  });
+  await flushAsync();
+  const click = await openManagedNotionDialog(harness, 'member');
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+  assert.ok(harness.app.innerHTML.includes(escapeHtml(notice)));
+
+  chooseConnectionOwner(harness, 'team');
+  assert.ok(!harness.app.innerHTML.includes(escapeHtml(notice)));
+  assert.match(harness.app.innerHTML, /data-action="connection-account-create"[^>]*>Continue to Notion<\/button>/);
+});
+
+test('a refused Notion sign-in shows its reason where managed sign-in errors appear', async () => {
+  const refusal = signInMixRefusal(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team', true);
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: managedNotionConnections(),
+    managedPollError: { status: 409, error: 'managed_sign_in_mix_refused', message: refusal },
+  });
+  await flushAsync();
+  const click = await openManagedNotionDialog(harness, 'member');
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  assert.equal(harness.managedPollCalls(), 1);
+  assert.ok(harness.app.innerHTML.includes(escapeHtml(refusal)), 'the refusal names what to do next');
+  const page = harness.app.innerHTML + harness.modalRoot.innerHTML;
+  assert.doesNotMatch(page, /managed_sign_in_mix_refused/);
+  assert.doesNotMatch(page, /data-role="managed-auth-dialog"/, 'the finished sign-in offers no retry');
+  assert.equal(harness.sessionStorageValue('chickpea.managed-authorization.v1:agent_conn'), null);
 });
 
 test('editing a saved API connection with no stored credential does not claim "stored"', async () => {

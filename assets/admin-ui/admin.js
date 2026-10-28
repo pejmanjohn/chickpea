@@ -4024,12 +4024,15 @@
         render();
         return;
       }
-      startManagedAuthorization({
+      var managedStart = {
         workspaceId: state.agentConnections.workspaceId,
         ownerKind: form.ownerKind === "member" ? "member" : "team",
         toolkit: form.managedToolkit,
         access: form.managedAccess === "write" ? "write" : "read"
-      }, form.preset && form.preset.name || "Managed connector");
+      };
+      // Continuing past the notice is the person's choice to sign in with another account.
+      if (form.signInNotice) managedStart.differentAccount = true;
+      startManagedAuthorization(managedStart, form.preset && form.preset.name || "Managed connector");
       return;
     }
     var providerId = connectionAccountProviderId(form);
@@ -4433,7 +4436,11 @@
       pollManagedAuthorization();
     }).catch(function (error) {
       closeManagedAuthorizationTab(signInTab);
-      if (form && state.connectionAccountForm === form) {
+      if (form && state.connectionAccountForm === form && error && error.status === 409 &&
+          error.message === "managed_sign_in_other_kind" && error.serverMessage) {
+        form.busy = false;
+        form.signInNotice = error.serverMessage;
+      } else if (form && state.connectionAccountForm === form) {
         form.busy = false;
         form.error = (error && (error.serverMessage || error.message)) || "Could not start managed sign-in.";
       } else if (context && context.returnToSettings) {
@@ -4512,10 +4519,15 @@
       if (error && error.status === 409 &&
           (error.message === "managed_authorization_invalid" ||
             error.message === "managed_authorization_terminal" ||
-            error.message === "managed_authorization_stale_provider")) {
+            error.message === "managed_authorization_stale_provider" ||
+            error.message === "managed_sign_in_mix_refused")) {
         clearManagedAuthorization(current.agentId);
         var staleProvider = error.message === "managed_authorization_stale_provider";
-        if (current.returnToSettings) {
+        var refusal = error.message === "managed_sign_in_mix_refused" && error.serverMessage;
+        if (refusal) {
+          if (current.returnToSettings) state.connectionInventory.error = refusal;
+          else state.agentConnections.error = refusal;
+        } else if (current.returnToSettings) {
           state.connectionInventory.error = staleProvider
             ? "The connector configuration changed. Start the reconnection again."
             : error.message === "managed_authorization_terminal"
@@ -7177,8 +7189,9 @@
         connectionAccountOwnerHtml(form) +
         connectionAccountAccessHtml(form) +
         '<p class="conn-security">' + esc(managedSecurityCopy) + '</p>' +
+        (form.signInNotice ? '<div class="callout" role="status"><span>' + esc(form.signInNotice) + '</span></div>' : '') +
         (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
-        '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !ownerSelected ? " disabled" : "") + '>' + (busy ? "Opening sign-in&hellip;" : "Continue to " + esc(managedPreset.name)) + '</button></div></div>';
+        '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !ownerSelected ? " disabled" : "") + '>' + (busy ? "Opening sign-in&hellip;" : form.signInNotice ? "Continue with a different " + esc(managedPreset.name) + " account" : "Continue to " + esc(managedPreset.name)) + '</button></div></div>';
     }
     var oauth = form.kind === "api" && form.authMode === "google_oauth";
     var mcpOauth = form.kind === "mcp" && form.authMode === "oauth";
@@ -15412,6 +15425,7 @@
       if (target.value !== "member" && target.value !== "team") return;
       state.connectionAccountForm.ownerKind = target.value;
       state.connectionAccountForm.error = "";
+      state.connectionAccountForm.signInNotice = "";
       render();
     }
     if (action === "meta-ads-app-id") state.metaAdsSettings.clientId = target.value;
