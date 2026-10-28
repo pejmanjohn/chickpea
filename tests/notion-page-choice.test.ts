@@ -15,7 +15,11 @@ import { createManagedConnectionProviderRegistry, type ManagedConnectionProvider
 import { pageRoots, parseNotionId, readAgentPageChoice, type NotionId } from '../src/connections/notion-pages.ts';
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
 import { projectEffectiveConnectionAccounts } from '../src/connections/runtime.ts';
-import { ConnectionAccountService, ManagedResourceSelectionError } from '../src/connections/store.ts';
+import {
+  ConnectionAccountService,
+  ManagedResourceSelectionError,
+  toConnectionAccountView,
+} from '../src/connections/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 
 const WORKSPACE = 'T_PAGES';
@@ -269,6 +273,32 @@ test('signing in again removes pages Notion no longer lists from every Agent\'s 
 
     notion.shared.add(TEAM_WIKI.id);
     assert.deepEqual(await notion.reached('agent_sales'), [], 'sharing the page again in Notion does not choose it again');
+  } finally {
+    notion.close();
+  }
+});
+
+test('Admin rows show only the grant titles their Agent may reach, and never page ids', async () => {
+  const notion = await notionWorkspace();
+  try {
+    await sharedTeamSignIn(notion);
+    await notion.choose('agent_sales', { mode: 'only', pages: [TEAM_WIKI.id] });
+    const ops = (await notion.accountOf('agent_ops')).account;
+    const sales = (await notion.accountOf('agent_sales')).account;
+
+    const views = await notion.service.listViews(WORKSPACE);
+    const shown = (accountId: string) => {
+      const policy = views.find(({ id: viewId }) => viewId === accountId)?.policy;
+      return policy?.kind === 'managed' ? policy.grantSummary?.items.map(({ label }) => label) : undefined;
+    };
+    assert.deepEqual(ops.policy.grantSummary?.items.map(({ label }) => label), ['Team plan', 'Team wiki'], 'the stored grant');
+    assert.deepEqual(shown(ops.id), ['Team plan', 'Team wiki']);
+    assert.deepEqual(shown(sales.id), ['Team wiki']);
+    assert.deepEqual((await notion.service.view(sales)).policy, views.find(({ id: viewId }) => viewId === sales.id)?.policy);
+    assert.doesNotMatch(JSON.stringify(views), /notionPages|[0-9a-f]{8}-0000-4000-8000/);
+
+    const unbound = toConnectionAccountView(sales).policy;
+    assert.deepEqual(unbound.kind === 'managed' && unbound.grantSummary?.items, [], 'without its binding a row names no page');
   } finally {
     notion.close();
   }

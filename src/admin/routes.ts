@@ -114,6 +114,7 @@ import {
   markConnectionAccountNeedsAttention,
   markManagedProviderAccountsUnavailable,
   reconcileManagedProviderAccounts,
+  toAgentConnectionBindingView,
   toConnectionAccountView,
 } from '../connections/store.ts';
 import {
@@ -5676,7 +5677,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               toolkit: attempt.toolkit,
             }));
           }
-          return { status: 'connected' as const, account: toConnectionAccountView(account) };
+          return { status: 'connected' as const, account: await service.view(account) };
           } catch (error) {
             if (error instanceof ManagedProviderRequestError &&
                 error.metadata.definiteFailure !== true) {
@@ -8854,7 +8855,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           if (!binding.enabled || !account || account.lifecycle === 'revoked') return [];
           if (account.ownerKind === 'member' &&
               account.ownerMembershipId !== principal.membershipId) return [];
-          return [{ account, binding,
+          return [{ account, binding: toAgentConnectionBindingView(binding),
             ...(account.policy.kind === 'mcp' && isMetaAdsMcpConnection(account.policy) ? {
               mcpToolAccess: account.policy.discoveredTools.map((tool) => {
                 const effect = metaAdsToolEffect(tool.name) ?? 'write';

@@ -63,6 +63,8 @@ import {
   projectRecoverableConnectionAccounts,
 } from './runtime.ts';
 import {
+  NOTION_PAGES_KEY,
+  agentPageScope,
   pageRoots,
   parseNotionId,
   readAgentPageChoice,
@@ -95,8 +97,15 @@ export class ConnectionCredentialEntryUnavailableError extends Error {
   readonly name = 'ConnectionCredentialEntryUnavailableError';
 }
 
-/** Browser-safe projection shared by every Admin response carrying an account. */
-export function toConnectionAccountView(account: ConnectionAccount): ConnectionAccountView {
+/**
+ * Browser-safe projection shared by every Admin response carrying an account.
+ * A page-scoped connector's grant titles are limited to the pages `binding`'s
+ * Agent may reach; without its binding, none are sent. Page ids are never sent.
+ */
+export function toConnectionAccountView(
+  account: ConnectionAccount,
+  binding?: AgentConnectionBinding,
+): ConnectionAccountView {
   const { secretRefId: _secretRefId, policy, ...safeAccount } = account;
   if (policy.kind !== 'managed') {
     return {
@@ -109,6 +118,14 @@ export function toConnectionAccountView(account: ConnectionAccount): ConnectionA
   const {
     kind, adapterId, toolkit, allowedCapabilities, grantSummary, oauthAttemptId, resourceConstraints,
   } = policy;
+  const pageScoped = MANAGED_CONNECTOR_CATALOG.connector(toolkit)?.pageScope !== undefined;
+  const scope = binding && agentPageScope(binding.resourceConstraints);
+  const shown = (raw: string | undefined): boolean => {
+    if (!pageScoped) return true;
+    if (!binding) return false;
+    const id = parseNotionId(raw);
+    return !scope || (id !== undefined && scope.allow.has(id));
+  };
   return {
     ...safeAccount,
     policy: {
@@ -119,7 +136,7 @@ export function toConnectionAccountView(account: ConnectionAccount): ConnectionA
       ...(grantSummary
         ? {
             grantSummary: {
-              items: grantSummary.items.map(({ type, label }) => ({ type, label })),
+              items: grantSummary.items.filter(({ id }) => shown(id)).map(({ type, label }) => ({ type, label })),
               truncated: grantSummary.truncated,
             },
           }
@@ -138,6 +155,12 @@ export function toConnectionAccountView(account: ConnectionAccount): ConnectionA
     },
     credentialConfigured: account.lifecycle === 'ready',
   };
+}
+
+/** A binding as the browser sees it, without the Agent's chosen Notion pages. */
+export function toAgentConnectionBindingView(binding: AgentConnectionBinding): AgentConnectionBinding {
+  if (binding.resourceConstraints?.[NOTION_PAGES_KEY] === undefined) return binding;
+  return { ...binding, resourceConstraints: writeAgentPageChoice(binding.resourceConstraints, undefined) };
 }
 
 export class ManagedConnectionProviderUnavailableError extends Error {
@@ -387,7 +410,17 @@ export class ConnectionAccountService {
 
   async listViews(workspaceId: string): Promise<ConnectionAccountView[]> {
     const accounts = await this.dependencies.config.listConnectionAccounts(workspaceId);
-    return accounts.map(toConnectionAccountView);
+    return Promise.all(accounts.map((account) => this.view(account)));
+  }
+
+  /** One account as the browser sees it, with the grant titles its Agent may reach; see toConnectionAccountView. */
+  async view(account: ConnectionAccount): Promise<ConnectionAccountView> {
+    const pageScoped = account.policy.kind === 'managed' &&
+      this.catalog().connector(account.policy.toolkit)?.pageScope !== undefined;
+    const binding = pageScoped
+      ? await this.dependencies.config.getAgentConnectionBindingForAccount(account.id)
+      : undefined;
+    return toConnectionAccountView(account, binding);
   }
 
   /** Return an account only after proving the caller owns its management lane. */
