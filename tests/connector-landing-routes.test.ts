@@ -25,6 +25,7 @@ import {
 import { managedPrincipalRef } from '../src/connections/managed-authorization-flow.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
 import { signInMixRefusal, signInOtherKindNotice } from '../src/connections/sign-in-mix.ts';
+import { escapeHtml } from '../src/security/html-escape.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { createManagementSetupRoutes, replaceCatalogConnection } from '../src/management/setup-routes.ts';
@@ -1785,6 +1786,62 @@ async function notionMixSetupHarness(suffix: string, input: {
   };
   return {
     app, config, management, owner, setupId, cookie, authorized, cleaned, responses,
+    /** Open the setup page and run its script on controls built from the page's own markup. */
+    async setupPage() {
+      const html = await (await app.request(`http://localhost/setup/${setupId}`, { headers: { cookie } })).text();
+      const inputs = formInputs(html).map((control) => ({
+        ...control,
+        listeners: [] as Array<() => void>,
+        addEventListener(_type: string, listener: () => void) { this.listeners.push(listener); },
+      }));
+      const paragraph = (id: string) => {
+        const match = new RegExp(`<p class="[^"]*" id="${id}" role="[a-z]+"( hidden)?>([^<]*)</p>`).exec(html);
+        assert.ok(match, `the page has #${id}`);
+        return { hidden: match[1] !== undefined, textContent: match[2]! };
+      };
+      const notice = paragraph('sign-in-notice');
+      const alert = paragraph('flow-alert');
+      const buttonMatch = /<button class="primary-button"[^>]*?data-label="([^"]*)" data-different-label="([^"]*)" disabled>([^<]*)<\/button>/
+        .exec(html);
+      assert.ok(buttonMatch, 'the page has its Continue button');
+      const labels: Record<string, string> = { 'data-label': buttonMatch[1]!, 'data-different-label': buttonMatch[2]! };
+      const button = { disabled: true, textContent: buttonMatch[3]!, getAttribute: (name: string) => labels[name] };
+      const radios = inputs.filter(({ type, name }) => type === 'radio' && name === 'ownerKind');
+      const submitListeners: Array<(event: { preventDefault(): void }) => Promise<void>> = [];
+      const form = {
+        action: `/setup/${setupId}/authorize`,
+        querySelectorAll: (selector: string) => selector === 'input[name="ownerKind"]' ? radios : [],
+        querySelector: (selector: string) =>
+          selector === 'input[name="ownerKind"]:checked' ? radios.find(({ checked }) => checked) ?? null
+            : selector === 'input[name="differentAccount"]' ? inputs.find(({ name }) => name === 'differentAccount') ?? null
+              : null,
+        addEventListener: (_type: string, listener: (typeof submitListeners)[number]) => { submitListeners.push(listener); },
+      };
+      const assigned: string[] = [];
+      runInNewContext(pageScript(html), {
+        document: {
+          getElementById: (id: string) => ({ 'connector-form': form, 'flow-alert': alert, 'sign-in-notice': notice })[id] ?? null,
+          querySelector: (selector: string) =>
+            selector === 'button[form="connector-form"][value="authorize"]' ? button : null,
+        },
+        fetch: browserFetch,
+        FormData: function FormData() {
+          return inputs.filter(({ name, disabled, type, checked }) => name && !disabled && (type !== 'radio' || checked))
+            .map(({ name, value }) => [name, value]);
+        },
+        URLSearchParams,
+        URL,
+        location: { assign: (href: string) => { assigned.push(href); } },
+      });
+      return {
+        inputs, notice, alert, button, assigned,
+        chooseOwner(ownerKind: 'member' | 'team') {
+          for (const radio of radios) radio.checked = radio.value === ownerKind;
+          radios.find(({ value }) => value === ownerKind)!.listeners.forEach((listener) => listener());
+        },
+        submit: () => submitListeners[0]!({ preventDefault() {} }),
+      };
+    },
     /** Open the page the provider returns to and let its script poll until it stops. */
     async waitingPageStatus(): Promise<string> {
       const html = await (await app.request(`http://localhost/setup/${setupId}?poll=1`, {
@@ -1851,6 +1908,67 @@ test('a Slack Notion link stops before Notion opens for the team connection\'s c
     });
     assert.equal(continued.status, 200, await continued.clone().text());
     assert.deepEqual(h.authorized, ['ca_notion_1']);
+  } finally {
+    h.close();
+  }
+});
+
+test('the Slack Notion setup page shows the notice with Cancel and a different-account Continue', async () => {
+  const h = await notionMixSetupHarness('notion-mix-page', {
+    teamCreator: 'owner', teamPerson: 'notion:ws-1:user-maya', signInPerson: 'notion:ws-1:user-ravi',
+  });
+  try {
+    const notice = signInOtherKindNotice(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team');
+    const page = await h.setupPage();
+    assert.equal(page.notice.hidden, true);
+    assert.equal(page.button.textContent, 'Continue to Notion');
+
+    page.chooseOwner('member');
+    await page.submit();
+    assert.equal(page.notice.hidden, false, 'the notice shows');
+    assert.equal(page.notice.textContent, notice);
+    assert.equal(page.alert.hidden, true, 'the notice is not shown as a failure');
+    assert.equal(page.button.textContent, 'Continue with a different Notion account');
+    assert.equal(page.button.disabled, false);
+    assert.deepEqual(h.authorized, []);
+
+    page.chooseOwner('team');
+    assert.equal(page.notice.hidden, true, 'choosing the other owner clears the notice');
+    assert.equal(page.button.textContent, 'Continue to Notion');
+    page.chooseOwner('member');
+    await page.submit();
+    assert.equal(page.notice.hidden, false);
+
+    await page.submit();
+    assert.deepEqual(page.assigned, ['https://backend.composio.dev/link/1'], 'Notion opens');
+    assert.deepEqual(h.responses.map(({ status }) => status), [409, 409, 200]);
+  } finally {
+    h.close();
+  }
+});
+
+test('the Slack Notion setup page renders the notice itself for a plain form post', async () => {
+  const h = await notionMixSetupHarness('notion-mix-form', {
+    teamCreator: 'owner', teamPerson: 'notion:ws-1:user-maya', signInPerson: 'notion:ws-1:user-ravi',
+  });
+  try {
+    const response = await h.app.request(`http://localhost/setup/${h.setupId}/authorize`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', cookie: h.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'ownerKind=member&access=read',
+    });
+    assert.equal(response.status, 409);
+    const html = await response.text();
+    const notice = signInOtherKindNotice(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team');
+    assert.ok(html.includes(`<p class="flow-notice" id="sign-in-notice" role="status">${escapeHtml(notice)}</p>`));
+    assert.deepEqual(formInputs(html).filter(({ name }) => name === 'ownerKind' || name === 'differentAccount'), [
+      { type: 'radio', name: 'ownerKind', value: 'member', checked: true, disabled: false },
+      { type: 'radio', name: 'ownerKind', value: 'team', checked: false, disabled: false },
+      { type: 'hidden', name: 'differentAccount', value: '1', checked: false, disabled: false },
+    ], 'the chosen owner stays chosen and continuing asks for a different account');
+    assert.match(html, />Continue with a different Notion account<\/button>/);
+    assert.match(html, /action="\/setup\/[^"]+\/cancel"><button class="text-button" type="submit">Cancel<\/button>/);
+    assert.deepEqual(h.authorized, []);
   } finally {
     h.close();
   }

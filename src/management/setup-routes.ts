@@ -715,8 +715,12 @@ export function createManagementSetupRoutes(
           return c.json({ error: 'managed_sign_in_other_kind', message: error.message }, 409);
         }
         const page = await managedConnectionPageInput(c, activeSetup, dependencies, options);
+        const signInNotice = {
+          ownerKind: fields.ownerKind === 'team' ? 'team' as const : 'member' as const,
+          message: error.message,
+        };
         return page
-          ? c.html(renderManagedConnectionSetupPage({ ...page, failureMessage: error.message }), 409)
+          ? c.html(renderManagedConnectionSetupPage({ ...page, signInNotice }), 409)
           : managedUnavailablePage(c);
       }
       await markSetupFailure(activeSetup, c, dependencies.management, safeFailureCode(error), now());
