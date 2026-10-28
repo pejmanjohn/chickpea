@@ -63,8 +63,8 @@ type NotionScopeRule =
       argument: string;
       kind: NotionRef['kind'];
       lookups: 'cached' | 'live';
-      /** The argument that carries Notion-flavored Markdown, which may name other Notion objects. */
-      content?: string;
+      /** The arguments that carry Notion-flavored Markdown, which may name other Notion objects. */
+      content?: readonly string[];
     };
 
 /** A Notion capability without a rule here does not compile. */
@@ -79,7 +79,7 @@ const NOTION_SCOPE_RULES = {
   },
   // Pages and databases are blocks too, so a parent of either kind resolves through block metadata.
   'notion.pages.create': {
-    phase: 'before', argument: 'parent_id', kind: 'block', lookups: 'live', content: 'markdown',
+    phase: 'before', argument: 'parent_id', kind: 'block', lookups: 'live', content: ['title', 'markdown'],
   },
   'notion.pages.update_properties': { phase: 'before', argument: 'row_id', kind: 'page', lookups: 'live' },
   // Block content travels as rich text, never as Markdown, so it cannot name another object.
@@ -297,7 +297,7 @@ export function notionScopeGate(input: {
       if (!id) throw new NotionPageUnavailableError();
       checked = id;
       if (rule.phase === 'before') {
-        if (rule.content !== undefined && namesNotionObject(toolArguments[rule.content])) {
+        if (rule.content?.some((argument) => namesNotionObject(toolArguments[argument]))) {
           throw new NotionPageUnavailableError();
         }
         if (!await reaches({ kind: rule.kind, id }, rule.lookups === 'live')) throw new NotionPageUnavailableError();

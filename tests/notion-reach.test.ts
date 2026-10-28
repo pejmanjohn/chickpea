@@ -278,7 +278,7 @@ test('a lookup that fails during the walk refuses, and so does a page that is no
   assert.deepEqual(calls, []);
 });
 
-test('a scoped Agent cannot create a page from Markdown that names another Notion object', async () => {
+test('a scoped Agent cannot create a page whose title or Markdown names another Notion object', async () => {
   const naming = [
     'Intro\n\n<page url="https://www.notion.so/acme/Salaries-b2000000000040008000000000000b2">Salaries</page>',
     '< Page url="https://notion.so/b2">',
@@ -308,6 +308,13 @@ test('a scoped Agent cannot create a page from Markdown that names another Notio
         policy: scope, capability: 'notion.pages.create', arguments: { parentId: GRANDCHILD, title: 'Notes', markdown },
       });
       assert.equal(calls.at(-1)?.tool, 'NOTION_CREATE_NOTION_PAGE', markdown);
+    }
+    for (const title of naming) {
+      const { provider, calls } = notionWorld();
+      await assert.rejects(provider.execute({
+        policy: scope, capability: 'notion.pages.create', arguments: { parentId: GRANDCHILD, title, markdown: harmless[0] },
+      }), isRefusal, `title ${title}`);
+      assert.deepEqual(calls, [], 'a title is checked like the Markdown');
     }
   }
   // Appended blocks travel as rich text, which Notion never reads as Markdown.
