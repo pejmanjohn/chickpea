@@ -23,12 +23,15 @@ import {
   AgentStillReferencedError,
   ConnectionAccountRevisionConflictError,
   ManagedRemoteAccountAlreadyUsedError,
+  ManagedSignInGroupConflictError,
 } from '../config/errors.ts';
+import { signInGroupKey, signInGroupPolicy } from '../config/sign-in-group.ts';
 import type {
   AgentConnectionBinding,
   AgentScheduleReference,
   ConnectionAccount,
   ConnectionAccountApiPolicy,
+  ConnectionAccountManagedPolicy,
   ConnectionAccountMcpPolicy,
   ConnectionAccountPolicy,
   ManagedAccountResourceConstraints,
@@ -640,19 +643,31 @@ export class ConnectionAccountService {
         'Dependent schedules changed before the connection could be disconnected. Try again.',
       );
     }
+    let revoked: ConnectionAccount | undefined;
     if (account.policy.kind === 'managed') {
-      const provider = this.dependencies.managedProviders?.get(account.policy.adapterId);
-      if (!provider) {
-        throw new ManagedConnectionProviderUnavailableError(account.policy.adapterId);
+      // Another Agent's account still uses this sign-in: revoke only this one
+      // and keep the remote account. Exactly one of two concurrent
+      // disconnects sees the last reference.
+      const release = await this.dependencies.config.releaseSignInReference({
+        connectionAccountId: account.id,
+        expectedRevision: needsAttention.revision,
+      });
+      if (release.kind === 'released') {
+        revoked = release.account;
+      } else {
+        const provider = this.dependencies.managedProviders?.get(account.policy.adapterId);
+        if (!provider) {
+          throw new ManagedConnectionProviderUnavailableError(account.policy.adapterId);
+        }
+        await provider.revoke({ policy: account.policy });
       }
-      await provider.revoke({ policy: account.policy });
     }
     await tombstoneConnectionAccountSecret(
       account.secretRefId,
       undefined,
       this.dependencies.settings,
     );
-    const revoked = await this.dependencies.config.putConnectionAccount(
+    revoked ??= await this.dependencies.config.putConnectionAccount(
       { ...needsAttention, lifecycle: 'revoked' },
       needsAttention.revision,
     );
@@ -735,18 +750,22 @@ export class ConnectionAccountService {
     return revoked;
   }
 
+  /** A live account holding this remote account; the one a completed attempt created, when several share it. */
   async findManagedByRemoteRef(input: {
     principal: AuthPrincipal;
     workspaceId: string;
     adapterId: string;
     accountRef: string;
+    oauthAttemptId?: string;
   }): Promise<ConnectionAccount | undefined> {
     const normalizedAdapterId = input.adapterId.trim().toLowerCase();
-    const account = (await this.dependencies.config.listConnectionAccounts(input.workspaceId))
-      .find((candidate) => candidate.lifecycle !== 'revoked' &&
+    const holders = (await this.dependencies.config.listConnectionAccounts(input.workspaceId))
+      .filter((candidate) => candidate.lifecycle !== 'revoked' &&
         candidate.policy.kind === 'managed' &&
         candidate.policy.adapterId.trim().toLowerCase() === normalizedAdapterId &&
         candidate.policy.accountRef === input.accountRef);
+    const account = holders.find(({ policy }) => input.oauthAttemptId !== undefined &&
+      policy.kind === 'managed' && policy.oauthAttemptId === input.oauthAttemptId) ?? holders[0];
     if (!account) return undefined;
     this.requireManage(input.principal, account);
     return account;
@@ -766,7 +785,11 @@ export class ConnectionAccountService {
     return false;
   }
 
-  /** Replace an expired provider authorization without changing Chickpea bindings. */
+  /**
+   * Replace an expired provider authorization without changing Chickpea
+   * bindings. Every account sharing the sign-in moves to the new remote
+   * account together; the previous one is revoked once.
+   */
   async replaceManagedAuthorization(input: {
     principal: AuthPrincipal;
     agentId: string;
@@ -784,24 +807,29 @@ export class ConnectionAccountService {
     providerLineage?: string;
   }): Promise<ConnectionAccount> {
     const { account, binding } = await this.requireAgentOwnedAccount(input);
+    const previous = account.policy;
     if (account.revision !== input.expectedRevision || account.lifecycle === 'revoked' ||
-        account.policy.kind !== 'managed' ||
-        account.policy.adapterId.trim().toLowerCase() !== input.adapterId.trim().toLowerCase() ||
-        account.policy.toolkit !== input.toolkit ||
-        account.policy.principalRef !== input.principalRef ||
+        previous.kind !== 'managed' ||
+        previous.adapterId.trim().toLowerCase() !== input.adapterId.trim().toLowerCase() ||
+        previous.toolkit !== input.toolkit ||
+        previous.principalRef !== input.principalRef ||
         !sameStringSet(
-          account.policy.allowedCapabilities,
+          previous.allowedCapabilities,
           input.expectedAllowedCapabilities ?? input.allowedCapabilities,
         )) {
       throw new ManagedConnectionConflictError('Managed connection changed during authorization');
     }
-    await this.requireUniqueManagedAccount(input.adapterId, input.accountRef, account.id);
+    const group = await this.signInGroup(account);
+    for (const member of group) this.requireManage(input.principal, member);
+    await this.requireUniqueManagedAccount(input.adapterId, input.accountRef, group.map(({ id }) => id));
     const provider = this.dependencies.managedProviders?.get(input.adapterId);
     if (!provider) {
       throw new Error(`Managed connection provider ${input.adapterId} is unavailable`);
     }
-    let policy: ConnectionAccountPolicy = {
-      ...account.policy,
+    const connector = this.catalog().connector(previous.toolkit);
+    if (!connector) throw new Error('Managed connection connector is unavailable');
+    const candidate: ConnectionAccountManagedPolicy = {
+      ...previous,
       accountRef: input.accountRef,
       allowedCapabilities: [...input.allowedCapabilities],
       ...(input.providerGeneration !== undefined
@@ -811,39 +839,74 @@ export class ConnectionAccountService {
         ? { providerLineage: input.providerLineage }
         : {}),
     };
-    if (policy.kind !== 'managed') throw new Error('Managed connection policy is unavailable');
-    policy = applyManagedValidation(policy, await provider.validate({ policy }));
-    const connector = this.catalog().connector(policy.toolkit);
-    const lifecycle = connector?.resources?.some((resource) =>
+    const validation = await provider.validate({ policy: candidate });
+    const policy: ConnectionAccountManagedPolicy = {
+      ...applyManagedValidation(candidate, validation),
+      signIn: managedSignIn(
+        connector,
+        signInGroupAccessLane(connector, group),
+        validation,
+        input.principal.membershipId,
+      ),
+    };
+    const lifecycle = connector.resources?.some((resource) =>
       resource.required && !(policy.resourceConstraints?.[resource.key]?.length)
     ) ? 'pending' as const : 'ready' as const;
-    const replaced = await this.dependencies.config.putConnectionAccount(
-      { ...account, policy, lifecycle },
-      account.revision,
-    );
+    let rotated: ConnectionAccount[];
+    try {
+      rotated = await this.dependencies.config.applySignInGroup({
+        adapterId: previous.adapterId,
+        accountRef: previous.accountRef,
+        members: group.map(({ id, revision }) => ({
+          connectionAccountId: id,
+          expectedRevision: revision,
+          ...(id === account.id ? { allowedCapabilities: [...input.allowedCapabilities] } : {}),
+        })),
+        shared: signInGroupPolicy(policy),
+        lifecycle,
+      });
+    } catch (error) {
+      if (error instanceof ManagedSignInGroupConflictError) {
+        throw new ManagedConnectionConflictError('Managed connection changed during authorization');
+      }
+      throw error;
+    }
+    const replaced = rotated.find(({ id }) => id === account.id);
+    if (!replaced) throw new ManagedConnectionConflictError('Managed connection changed during authorization');
     this.captureConnectionReady(account.lifecycle, replaced, binding);
-    if (account.policy.accountRef !== policy.accountRef) {
+    if (previous.accountRef !== policy.accountRef) {
       try {
-        await provider.revoke({ policy: account.policy });
+        await provider.revoke({ policy: previous });
       } catch {
         console.warn(JSON.stringify({
           event: 'chickpea.managed_connection.previous_authorization_cleanup_failed',
-          adapterId: account.policy.adapterId,
+          adapterId: previous.adapterId,
           connectionAccountId: account.id,
         }));
       }
     }
-    if (replaced.lifecycle === 'ready') {
-      try {
-        await resumeDependentSchedules(this.dependencies.config, replaced.id);
-      } catch {
-        console.warn(JSON.stringify({
-          event: 'chickpea.managed_connection.schedule_resume_deferred',
-          connectionAccountId: replaced.id,
-        }));
+    if (lifecycle === 'ready') {
+      for (const member of rotated) {
+        try {
+          await resumeDependentSchedules(this.dependencies.config, member.id);
+        } catch {
+          console.warn(JSON.stringify({
+            event: 'chickpea.managed_connection.schedule_resume_deferred',
+            connectionAccountId: member.id,
+          }));
+        }
       }
     }
     return replaced;
+  }
+
+  /** The auth-config lane a new sign-in for this managed account must use; see signInGroupAccessLane. */
+  async signInAccessLane(account: ConnectionAccount): Promise<ManagedAccessLane> {
+    const connector = account.policy.kind === 'managed'
+      ? this.catalog().connector(account.policy.toolkit)
+      : undefined;
+    if (!connector) throw new Error('Managed connection connector is unavailable');
+    return signInGroupAccessLane(connector, await this.signInGroup(account));
   }
 
   async markManagedAccountExpired(input: {
@@ -851,6 +914,14 @@ export class ConnectionAccountService {
     accountRef: string;
   }): Promise<number> {
     return markManagedAccountExpired(this.dependencies.config, input);
+  }
+
+  /** The live accounts sharing this account's remote account, this one included. */
+  private async signInGroup(account: ConnectionAccount): Promise<ConnectionAccount[]> {
+    const key = signInGroupKey(account);
+    if (!key) return [account];
+    return (await this.dependencies.config.listConnectionAccounts(account.workspaceId))
+      .filter((candidate) => signInGroupKey(candidate) === key);
   }
 
   private async findAccount(id: string): Promise<ConnectionAccount> {
@@ -966,14 +1037,14 @@ export class ConnectionAccountService {
   private async requireUniqueManagedAccount(
     adapterId: string,
     accountRef: string,
-    excludeConnectionAccountId?: string,
+    excludeConnectionAccountIds: readonly string[] = [],
   ): Promise<void> {
     const normalizedAdapterId = adapterId.trim().toLowerCase();
     const installations = await this.dependencies.config.listWorkspaceInstallations();
     for (const installation of installations) {
       const duplicate = (await this.dependencies.config.listConnectionAccounts(installation.workspaceId))
         .find((account) =>
-          account.id !== excludeConnectionAccountId &&
+          !excludeConnectionAccountIds.includes(account.id) &&
           account.lifecycle !== 'revoked' &&
           account.policy.kind === 'managed' &&
           account.policy.adapterId.trim().toLowerCase() === normalizedAdapterId &&
@@ -1123,6 +1194,21 @@ function applyManagedValidation(
       truncated,
     },
   };
+}
+
+/**
+ * The widest lane any account sharing one sign-in needs: its recorded lane, or
+ * for an account connected before lanes were recorded, its capabilities'.
+ * Signing in again on a narrower lane would take capabilities from the rest.
+ */
+function signInGroupAccessLane(
+  connector: ManagedConnectorDefinition,
+  members: readonly ConnectionAccount[],
+): ManagedAccessLane {
+  return members.some(({ policy }) => policy.kind === 'managed' && (
+    policy.signIn?.accessLane === 'write' ||
+    managedAccessLane(connector, policy.allowedCapabilities) === 'write'
+  )) ? 'write' : 'read';
 }
 
 /** A connector whose sign-ins may be shared always records whose sign-in it is. */
@@ -1350,23 +1436,34 @@ export async function reconcileManagedProviderAccounts(
   let retryable = 0;
   let inspectionCount = 0;
   for (const installation of installations) {
+    // Accounts sharing one sign-in hold one remote account: inspect it once
+    // and move every member together.
+    const groups = new Map<string, { policy: ConnectionAccountManagedPolicy; members: ConnectionAccount[] }>();
     for (const account of accountsByWorkspace.get(installation.workspaceId) ?? []) {
-      if (account.lifecycle === 'revoked' || account.policy.kind !== 'managed' ||
+      const key = signInGroupKey(account);
+      if (!key || account.policy.kind !== 'managed' ||
           account.policy.adapterId.trim().toLowerCase() !== normalizedAdapterId) continue;
-      if (account.policy.providerGeneration === input.generation &&
-          account.policy.providerLineage === input.lineage) {
-        try {
-          if (account.lifecycle === 'ready') {
-            await resumeDependentSchedules(config, account.id, scheduleIndex);
-          } else if (account.lifecycle === 'needs_attention') {
-            await pauseDependentSchedules(config, account.id, scheduleIndex);
+      const group = groups.get(key) ?? { policy: account.policy, members: [] };
+      group.members.push(account);
+      groups.set(key, group);
+    }
+    for (const { policy, members } of groups.values()) {
+      if (policy.providerGeneration === input.generation &&
+          policy.providerLineage === input.lineage) {
+        for (const account of members) {
+          try {
+            if (account.lifecycle === 'ready') {
+              await resumeDependentSchedules(config, account.id, scheduleIndex);
+            } else if (account.lifecycle === 'needs_attention') {
+              await pauseDependentSchedules(config, account.id, scheduleIndex);
+            }
+          } catch {
+            retryable += 1;
+            console.warn(JSON.stringify({
+              event: 'chickpea.managed_connection.schedule_reconciliation_deferred',
+              connectionAccountId: account.id,
+            }));
           }
-        } catch {
-          retryable += 1;
-          console.warn(JSON.stringify({
-            event: 'chickpea.managed_connection.schedule_reconciliation_deferred',
-            connectionAccountId: account.id,
-          }));
         }
         continue;
       }
@@ -1378,9 +1475,9 @@ export async function reconcileManagedProviderAccounts(
       let inspection: ManagedProviderAccountInspection;
       try {
         inspection = await input.inspect({
-          accountRef: account.policy.accountRef,
-          principalRef: account.policy.principalRef,
-          toolkit: account.policy.toolkit,
+          accountRef: policy.accountRef,
+          principalRef: policy.principalRef,
+          toolkit: policy.toolkit,
         });
       } catch {
         inspection = 'transient';
@@ -1389,64 +1486,51 @@ export async function reconcileManagedProviderAccounts(
         retryable += 1;
         continue;
       }
-      if (inspection !== 'match') {
-        const updated = {
-            ...account,
-            lifecycle: 'needs_attention' as const,
-            policy: {
-              ...account.policy,
-              providerGeneration: input.generation,
-              providerLineage: input.lineage,
-            },
-          };
-        if (!await putConnectionAccountIfCurrent(config, updated, account.revision)) {
-          retryable += 1;
-          continue;
-        }
-        cacheConnectionAccount(scheduleIndex, updated);
-        try {
-          await pauseDependentSchedules(config, account.id, scheduleIndex);
-        } catch {
-          retryable += 1;
-          console.warn(JSON.stringify({
-            event: 'chickpea.managed_connection.schedule_pause_deferred',
-            connectionAccountId: account.id,
-          }));
-        }
-        needsAttention += 1;
-        continue;
-      }
-      const connector = MANAGED_CONNECTOR_CATALOG.connector(account.policy.toolkit);
-      const lifecycle = connector?.resources?.some((resource) =>
-        resource.required && !(account.policy.kind === 'managed' &&
-          account.policy.resourceConstraints?.[resource.key]?.length)
-      ) ? 'pending' as const : 'ready' as const;
-      const updated = {
-          ...account,
-          lifecycle,
-          policy: {
-            ...account.policy,
+      const connector = MANAGED_CONNECTOR_CATALOG.connector(policy.toolkit);
+      const lifecycle = inspection !== 'match'
+        ? 'needs_attention' as const
+        : connector?.resources?.some((resource) =>
+            resource.required && !(policy.resourceConstraints?.[resource.key]?.length)
+          ) ? 'pending' as const : 'ready' as const;
+      let updated: ConnectionAccount[];
+      try {
+        updated = await config.applySignInGroup({
+          adapterId: policy.adapterId,
+          accountRef: policy.accountRef,
+          members: members.map(({ id, revision }) => ({ connectionAccountId: id, expectedRevision: revision })),
+          shared: {
+            ...signInGroupPolicy(policy),
             providerGeneration: input.generation,
             providerLineage: input.lineage,
           },
-        };
-      if (!await putConnectionAccountIfCurrent(config, updated, account.revision)) {
+          lifecycle,
+        });
+      } catch (error) {
+        if (!(error instanceof ConnectionAccountRevisionConflictError) &&
+            !(error instanceof ManagedSignInGroupConflictError)) throw error;
         retryable += 1;
         continue;
       }
-      cacheConnectionAccount(scheduleIndex, updated);
-      if (lifecycle === 'ready') {
+      for (const account of updated) {
+        cacheConnectionAccount(scheduleIndex, account);
         try {
-          await resumeDependentSchedules(config, account.id, scheduleIndex);
+          if (lifecycle === 'needs_attention') {
+            await pauseDependentSchedules(config, account.id, scheduleIndex);
+          } else if (lifecycle === 'ready') {
+            await resumeDependentSchedules(config, account.id, scheduleIndex);
+          }
         } catch {
           retryable += 1;
           console.warn(JSON.stringify({
-            event: 'chickpea.managed_connection.schedule_resume_deferred',
+            event: lifecycle === 'needs_attention'
+              ? 'chickpea.managed_connection.schedule_pause_deferred'
+              : 'chickpea.managed_connection.schedule_resume_deferred',
             connectionAccountId: account.id,
           }));
         }
       }
-      restored += 1;
+      if (lifecycle === 'needs_attention') needsAttention += updated.length;
+      else restored += updated.length;
     }
   }
   return { restored, needsAttention, retryable };

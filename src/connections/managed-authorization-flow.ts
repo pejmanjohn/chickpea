@@ -21,7 +21,7 @@ import {
   type ManagedConnectionProvider,
   type ManagedConnectionProviderRegistry,
 } from './managed.ts';
-import type { ManagedConnectorCatalog } from './catalog/index.ts';
+import { managedAccessLane, type ManagedConnectorCatalog } from './catalog/index.ts';
 import {
   ManagedAuthorizationAllocatedError,
   ManagedProviderRequestError,
@@ -157,8 +157,9 @@ export async function startManagedAuthorizationFlow(
         ? frozenCapabilities(input.capabilities, liveCapabilities)
         : liveCapabilities;
     const provider = providers.get('composio');
-    const accessLane = connector.capabilities.some(({ id, accessLane }) =>
-      accessLane === 'write' && capabilities.includes(id)) ? 'write' : 'read';
+    const accessLane = replacement && replacementPolicy
+      ? await service.signInAccessLane(replacement)
+      : managedAccessLane(connector, capabilities);
     if (!provider?.authorize || managedProviderAvailability(provider, {
       toolkit: connector.toolkit,
       accessLane,
@@ -226,6 +227,7 @@ export async function startManagedAuthorizationFlow(
       principalRef,
       toolkit: connector.toolkit,
       allowedCapabilities: capabilities,
+      accessLane,
       ...(input.returnUrl ? { returnUrl: input.returnUrl } : {}),
     });
     startedAuthorizationRef = authorization.authorizationRef;
@@ -377,6 +379,7 @@ export async function pollManagedAuthorizationFlow(
       workspaceId: attempt.workspaceId,
       adapterId: attempt.adapterId,
       accountRef: attempt.accountRef!,
+      oauthAttemptId: managedAuthorizationAttemptId(attempt),
     });
     let account: ConnectionAccount;
     if (attempt.connectionAccountId) {

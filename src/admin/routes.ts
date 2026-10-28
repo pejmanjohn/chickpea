@@ -176,6 +176,7 @@ import {
 } from '../connections/providers/composio.ts';
 import {
   MANAGED_CONNECTOR_CATALOG,
+  managedAccessLane,
   type ManagedConnectorCatalog,
   type ManagedConnectorDefinition,
 } from '../connections/catalog/index.ts';
@@ -5200,8 +5201,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const providerContext = await resolvedManagedProviderContext(c);
       authorizationProviders = providerContext.providers;
       const provider = providerContext.providers.get('composio');
-      const accessLane = connector.capabilities.some(({ id, accessLane }) =>
-        accessLane === 'write' && capabilities.includes(id)) ? 'write' : 'read';
+      const accessLane = replacement && replacementPolicy
+        ? await connectionAccounts(c, providerContext.providers).signInAccessLane(replacement.account)
+        : managedAccessLane(connector, capabilities);
       if (!provider?.authorize || managedProviderAvailability(provider, {
         toolkit: connector.toolkit,
         accessLane,
@@ -5371,6 +5373,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         principalRef,
         toolkit: connector.toolkit,
         allowedCapabilities: capabilities,
+        accessLane,
       });
       startedAuthorizationRef = authorization.authorizationRef;
       await recordManagedAuthorizationRequest({
@@ -5601,6 +5604,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             workspaceId: attempt.workspaceId,
             adapterId: attempt.adapterId,
             accountRef: attempt.accountRef!,
+            oauthAttemptId: managedAuthorizationAttemptId(attempt),
           });
           let account: ConnectionAccount;
           if (attempt.connectionAccountId) {

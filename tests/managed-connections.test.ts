@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { AuthorizationError } from '../src/auth/permissions.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { signInGroupPolicy } from '../src/config/sign-in-group.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
@@ -2009,8 +2010,8 @@ test('provider reconciliation treats account revision races as retryable work', 
     let putAttempts = 0;
     const racingConfig = new Proxy(config, {
       get(target, property, receiver) {
-        if (property === 'putConnectionAccount') {
-          return async (...arguments_: Parameters<typeof target.putConnectionAccount>) => {
+        if (property === 'putConnectionAccount' || property === 'applySignInGroup') {
+          return async (...arguments_: unknown[]) => {
             putAttempts += 1;
             if (revisionConflictsRemaining > 0) {
               revisionConflictsRemaining -= 1;
@@ -2020,7 +2021,7 @@ test('provider reconciliation treats account revision races as retryable work', 
                 account.revision + 1,
               );
             }
-            return target.putConnectionAccount(...arguments_);
+            return Reflect.apply(Reflect.get(target, property), target, arguments_);
           };
         }
         const value = Reflect.get(target, property, receiver);
@@ -3226,5 +3227,241 @@ test('a new managed account records who signed in and under which access lane', 
   } finally {
     config.close();
     settings.close();
+  }
+});
+
+const NOTION_SIGN_IN = {
+  kind: 'managed',
+  adapterId: 'composio',
+  toolkit: 'notion',
+  principalRef: 'chickpea:organization:organization_test',
+  accountRef: 'ca_notion_1',
+  allowedCapabilities: ['notion.content.search', 'notion.pages.create'],
+  providerGeneration: 1,
+  providerLineage: 'a'.repeat(24),
+} as const satisfies ConnectionAccountManagedPolicy;
+
+/** Agent Ops connects Notion with write access; Agent Sales joins the same sign-in read-only. */
+async function sharedNotionSignIn() {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const calls: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate(input) {
+      calls.push(`validate:${input.policy.accountRef}`);
+      return {
+        person: 'notion:ws-1:user-1',
+        grantSummary: { items: [{ type: 'page', label: `Pages via ${input.policy.accountRef}` }], truncated: false },
+      };
+    },
+    async execute() { return { data: { ok: true } }; },
+    async revoke(input) { calls.push(`revoke:${input.policy.accountRef}`); },
+  };
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([provider]),
+    randomId: (() => { let id = 0; return () => `shared${++id}`; })(),
+  });
+  for (const id of ['agent_ops', 'agent_sales']) {
+    await config.createAgent({
+      id, name: id, instructions: 'Use Notion.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+  }
+  await config.ensureWorkspaceInstallation({
+    workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_ops',
+  });
+  const { account: ops } = await service.createForAgent({
+    principal: principal(), agentId: 'agent_ops', workspaceId: 'T_MANAGED', ownerKind: 'team',
+    providerId: 'notion', label: 'Notion · Team', policy: NOTION_SIGN_IN,
+  });
+  if (ops.policy.kind !== 'managed') throw new Error('expected a managed account');
+  const salesCapabilities = ['notion.content.search'];
+  const group = await config.applySignInGroup({
+    adapterId: 'composio',
+    accountRef: NOTION_SIGN_IN.accountRef,
+    members: [{ connectionAccountId: ops.id, expectedRevision: ops.revision }],
+    shared: signInGroupPolicy(ops.policy),
+    join: {
+      account: {
+        id: 'connection_sales', workspaceId: 'T_MANAGED', ownerKind: 'team',
+        createdByMembershipId: 'membership_bob', providerId: 'notion', label: 'Notion · Team',
+        policy: {
+          ...ops.policy,
+          allowedCapabilities: salesCapabilities,
+          oauthAttemptId: '1b2c3d4e-5f60-4718-a9b0-c1d2e3f4a5b6',
+        },
+        secretRefId: 'secret_sales', lifecycle: 'ready',
+      },
+      binding: {
+        agentId: 'agent_sales', connectionAccountId: 'connection_sales', providerId: 'notion',
+        allowedCapabilities: salesCapabilities, enabled: true,
+      },
+    },
+  });
+  const sales = group.find(({ id }) => id === 'connection_sales');
+  if (!sales) throw new Error('expected the joined account');
+  calls.length = 0;
+  const accountOf = async (agentId: string) => {
+    const [binding] = await config.listAgentConnectionBindings(agentId);
+    const account = (await config.listConnectionAccounts('T_MANAGED'))
+      .find(({ id }) => id === binding?.connectionAccountId);
+    if (account?.policy.kind !== 'managed') throw new Error(`expected ${agentId}'s managed account`);
+    return { ...account, policy: account.policy };
+  };
+  return {
+    config, service, calls, ops, sales, accountOf,
+    close() {
+      config.close();
+      settings.close();
+    },
+  };
+}
+
+test('changing a shared sign-in from either Agent moves every member, revokes the old remote account once, and resumes both', async () => {
+  const { config, service, calls, ops, sales, accountOf, close } = await sharedNotionSignIn();
+  try {
+    for (const [agentId, account] of [['agent_ops', ops], ['agent_sales', sales]] as const) {
+      await config.putAgentScheduleReference({
+        scheduleId: `schedule_${agentId}`, agentId, workspaceId: 'T_MANAGED',
+        channelId: 'C_NOTION', createdByMembershipId: 'membership_alice',
+        runsAsMembershipId: 'membership_alice', authorityReceiptId: `authority_${agentId}`,
+        requiredConnectionAccountIds: [account.id], state: 'active',
+      });
+    }
+    await service.markManagedAccountExpired({ adapterId: 'composio', accountRef: 'ca_notion_1' });
+    const scheduleStates = async () => Promise.all(['agent_ops', 'agent_sales'].map(async (agentId) =>
+      (await config.listAgentScheduleReferences(agentId))[0]?.state));
+    assert.deepEqual(await scheduleStates(), ['needs_attention', 'needs_attention']);
+
+    for (const [agentId, accountRef, previousRef] of [
+      ['agent_sales', 'ca_notion_2', 'ca_notion_1'],
+      ['agent_ops', 'ca_notion_3', 'ca_notion_2'],
+    ] as const) {
+      const initiating = await accountOf(agentId);
+      const reconnected = await service.replaceManagedAuthorization({
+        principal: principal('membership_bob'), agentId,
+        connectionAccountId: initiating.id, expectedRevision: initiating.revision,
+        adapterId: 'composio', toolkit: 'notion', principalRef: NOTION_SIGN_IN.principalRef,
+        allowedCapabilities: initiating.policy.allowedCapabilities,
+        accountRef, providerGeneration: 2, providerLineage: 'b'.repeat(24),
+      });
+      assert.equal(reconnected.id, initiating.id);
+      assert.deepEqual(calls.splice(0), [`validate:${accountRef}`, `revoke:${previousRef}`]);
+      const [opsAfter, salesAfter] = await Promise.all([accountOf('agent_ops'), accountOf('agent_sales')]);
+      for (const account of [opsAfter, salesAfter]) {
+        assert.equal(account.lifecycle, 'ready');
+        assert.equal(account.policy.accountRef, accountRef);
+        assert.deepEqual(account.policy.signIn, { person: 'notion:ws-1:user-1', accessLane: 'write' });
+        assert.equal(account.policy.providerGeneration, 2);
+      }
+      assert.deepEqual(signInGroupPolicy(opsAfter.policy), signInGroupPolicy(salesAfter.policy));
+      assert.deepEqual(opsAfter.policy.allowedCapabilities, NOTION_SIGN_IN.allowedCapabilities);
+      assert.deepEqual(salesAfter.policy.allowedCapabilities, ['notion.content.search']);
+      assert.deepEqual(await scheduleStates(), ['active', 'active']);
+    }
+  } finally {
+    close();
+  }
+});
+
+test('expiry of a shared sign-in marks every Agent that uses it', async () => {
+  const { config, service, close } = await sharedNotionSignIn();
+  try {
+    assert.equal(await service.markManagedAccountExpired({
+      adapterId: 'composio', accountRef: NOTION_SIGN_IN.accountRef,
+    }), 2);
+    assert.deepEqual(
+      (await config.listConnectionAccounts('T_MANAGED')).map(({ lifecycle }) => lifecycle),
+      ['needs_attention', 'needs_attention'],
+    );
+  } finally {
+    close();
+  }
+});
+
+test('disconnecting one Agent from a shared sign-in keeps the remote account until its last Agent disconnects', async () => {
+  const { service, calls, ops, sales, accountOf, close } = await sharedNotionSignIn();
+  try {
+    const salesRevoked = await service.disconnectForAgent({
+      principal: principal(), agentId: 'agent_sales', connectionAccountId: sales.id,
+    });
+    assert.equal(salesRevoked.lifecycle, 'revoked');
+    assert.equal((await accountOf('agent_ops')).lifecycle, 'ready');
+    assert.deepEqual(calls, []);
+
+    const opsRevoked = await service.disconnectForAgent({
+      principal: principal(), agentId: 'agent_ops', connectionAccountId: ops.id,
+    });
+    assert.equal(opsRevoked.lifecycle, 'revoked');
+    assert.deepEqual(calls, ['revoke:ca_notion_1']);
+  } finally {
+    close();
+  }
+});
+
+test('two concurrent disconnects of a shared sign-in delete its remote account exactly once', async () => {
+  const { config, service, calls, ops, sales, close } = await sharedNotionSignIn();
+  try {
+    await Promise.all(([['agent_ops', ops.id], ['agent_sales', sales.id]] as const).map(
+      ([agentId, connectionAccountId]) =>
+        service.disconnectForAgent({ principal: principal(), agentId, connectionAccountId }),
+    ));
+    assert.deepEqual(calls, ['revoke:ca_notion_1']);
+    assert.deepEqual(
+      (await config.listConnectionAccounts('T_MANAGED')).map(({ lifecycle }) => lifecycle),
+      ['revoked', 'revoked'],
+    );
+  } finally {
+    close();
+  }
+});
+
+test('provider reconciliation inspects a shared sign-in once and moves every Agent together', async () => {
+  const { config, close } = await sharedNotionSignIn();
+  try {
+    const generations = async () => (await config.listConnectionAccounts('T_MANAGED')).map((account) =>
+      account.policy.kind === 'managed' && [account.lifecycle, account.policy.providerGeneration]);
+    let inspections = 0;
+    assert.deepEqual(await reconcileManagedProviderAccounts(config, {
+      adapterId: 'composio', generation: 2, lineage: 'b'.repeat(24),
+      inspect: async () => { inspections += 1; return 'missing'; },
+    }), { restored: 0, needsAttention: 2, retryable: 0 });
+    assert.deepEqual(await generations(), [['needs_attention', 2], ['needs_attention', 2]]);
+    assert.deepEqual(await reconcileManagedProviderAccounts(config, {
+      adapterId: 'composio', generation: 3, lineage: 'c'.repeat(24),
+      inspect: async () => { inspections += 1; return 'match'; },
+    }), { restored: 2, needsAttention: 0, retryable: 0 });
+    assert.deepEqual(await generations(), [['ready', 3], ['ready', 3]]);
+    assert.equal(inspections, 2);
+  } finally {
+    close();
+  }
+});
+
+test('a shared sign-in signs in again on its widest lane and resumes the attempt that created each Agent', async () => {
+  const { config, service, sales, close } = await sharedNotionSignIn();
+  try {
+    assert.equal(await service.signInAccessLane(sales), 'write');
+    const legacy = await config.putConnectionAccount({
+      id: 'connection_legacy', workspaceId: 'T_MANAGED', ownerKind: 'member',
+      ownerMembershipId: 'membership_alice', createdByMembershipId: 'membership_alice',
+      providerId: 'notion', label: 'Notion · Personal',
+      policy: { ...NOTION_SIGN_IN, accountRef: 'ca_legacy', allowedCapabilities: ['notion.content.search'] },
+      secretRefId: 'secret_legacy', lifecycle: 'ready',
+    });
+    assert.equal(await service.signInAccessLane(legacy), 'read');
+
+    const find = (oauthAttemptId?: string) => service.findManagedByRemoteRef({
+      principal: principal(), workspaceId: 'T_MANAGED', adapterId: 'composio',
+      accountRef: NOTION_SIGN_IN.accountRef, ...(oauthAttemptId ? { oauthAttemptId } : {}),
+    });
+    assert.equal((await find('1b2c3d4e-5f60-4718-a9b0-c1d2e3f4a5b6'))?.id, sales.id);
+    assert.ok(await find());
+  } finally {
+    close();
   }
 });

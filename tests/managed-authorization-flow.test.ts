@@ -6,6 +6,7 @@ import { AuthorizationError } from '../src/auth/permissions.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { signInGroupPolicy } from '../src/config/sign-in-group.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
 import {
   cancelManagedAuthorizationFlow,
@@ -452,6 +453,111 @@ test('a demoted Team creator gets cleanup-only reconnect polling and cancellatio
     assert.equal(validateCalls, 1);
     assert.equal(revokeCalls, 1);
     assert.equal(commitCalls, 1);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('reconnecting a read-only Agent on a shared Notion sign-in keeps its write lane and moves every Agent', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const authorized: Array<{ allowedCapabilities: readonly string[]; accessLane?: string }> = [];
+  const revoked: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async authorize(input) {
+      authorized.push({
+        allowedCapabilities: input.allowedCapabilities,
+        ...(input.accessLane ? { accessLane: input.accessLane } : {}),
+      });
+      return {
+        authorizationUrl: new URL('https://backend.composio.dev/link/shared-notion'),
+        authorizationRef: 'ca_notion_new',
+      };
+    },
+    async pollAuthorization() {
+      return { status: 'active', accountRef: 'ca_notion_new', toolkit: 'notion' };
+    },
+    async validate() { return { person: 'notion:ws-1:user-1' }; },
+    async execute() { return { data: {} }; },
+    async revoke(input) { revoked.push(input.policy.accountRef); },
+  };
+  const principal: AuthPrincipal = {
+    userId: 'user_shared_owner',
+    membershipId: 'membership_shared_owner',
+    organizationId: 'organization_shared',
+    role: 'owner',
+    authenticatorKind: 'better_auth',
+    credentialId: 'credential_shared_owner',
+    correlationId: 'correlation_shared_owner',
+    machine: false,
+  };
+  try {
+    const [ops, sales] = await Promise.all(['agent_shared_ops', 'agent_shared_sales'].map((id) =>
+      config.createAgent({
+        id, name: id, creatorMembershipId: 'membership_shared_owner', editPolicy: 'creator_and_admins',
+        lifecycle: 'active', configurationGeneration: 1, instructions: 'Use Notion.', enabled: true,
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      })));
+    if (!ops || !sales) throw new Error('expected both Agents');
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'workspace_shared_notion', transportMode: 'direct', defaultAgentId: ops.id,
+    });
+    const notion = (id: string, agentId: string, allowedCapabilities: string[]) => ({
+      account: {
+        id, workspaceId: 'workspace_shared_notion', ownerKind: 'team' as const,
+        createdByMembershipId: 'membership_shared_owner', providerId: 'notion', label: 'Notion · Team',
+        secretRefId: `secret_${id}`, lifecycle: 'ready' as const,
+        policy: {
+          kind: 'managed' as const, adapterId: 'composio', toolkit: 'notion',
+          principalRef: 'chickpea:organization:organization_shared', accountRef: 'ca_notion_old',
+          allowedCapabilities, signIn: { person: 'notion:ws-1:user-1', accessLane: 'write' as const },
+          providerGeneration: 3, providerLineage: 'e'.repeat(24),
+        },
+      },
+      binding: { agentId, connectionAccountId: id, providerId: 'notion', allowedCapabilities, enabled: true },
+    });
+    const { account: opsAccount } = await config.createAgentOwnedConnection(
+      notion('connection_shared_ops', ops.id, ['notion.content.search', 'notion.pages.create']),
+    );
+    if (opsAccount.policy.kind !== 'managed') throw new Error('expected a managed account');
+    await config.applySignInGroup({
+      adapterId: 'composio', accountRef: 'ca_notion_old',
+      members: [{ connectionAccountId: opsAccount.id, expectedRevision: opsAccount.revision }],
+      shared: signInGroupPolicy(opsAccount.policy),
+      join: notion('connection_shared_sales', sales.id, ['notion.content.search']),
+    });
+    const dependencies = {
+      config,
+      settings,
+      catalog: MANAGED_CONNECTOR_CATALOG,
+      providerContext: {
+        providers: createManagedConnectionProviderRegistry([provider]),
+        generation: 3,
+        lineage: 'e'.repeat(24),
+      },
+    };
+
+    const started = await startManagedAuthorizationFlow(dependencies, {
+      principal, agent: sales, workspaceId: 'workspace_shared_notion',
+      connectionAccountId: 'connection_shared_sales',
+    });
+    assert.deepEqual(authorized, [{ allowedCapabilities: ['notion.content.search'], accessLane: 'write' }]);
+
+    const connected = await pollManagedAuthorizationFlow(dependencies, {
+      principal, agent: sales, workspaceId: 'workspace_shared_notion', browserSecret: started.browserSecret,
+    });
+    assert.equal(connected.status, 'connected');
+    assert.deepEqual(revoked, ['ca_notion_old']);
+    assert.deepEqual(
+      (await config.listConnectionAccounts('workspace_shared_notion')).map((account) =>
+        account.policy.kind === 'managed' && [account.id, account.policy.accountRef, account.policy.allowedCapabilities]),
+      [
+        ['connection_shared_ops', 'ca_notion_new', ['notion.content.search', 'notion.pages.create']],
+        ['connection_shared_sales', 'ca_notion_new', ['notion.content.search']],
+      ],
+    );
   } finally {
     config.close();
     settings.close();
