@@ -68,6 +68,8 @@ function notionWorld(options: {
   /** A lookup of this id fails for some other reason. */
   errorLookup?: string;
   search?: Array<Record<string, unknown>>;
+  /** Fields that override the search response's paging. */
+  searchPaging?: Record<string, unknown>;
   /** Extra pages, by id, with their parent. */
   pages?: Record<string, Record<string, unknown>>;
 } = {}) {
@@ -103,7 +105,10 @@ function notionWorld(options: {
             case 'NOTION_FETCH_BLOCK_METADATA':
               return blocks[target] ? ok({ id: target, object: 'block', parent: blocks[target] }) : notFound;
             case 'NOTION_FETCH_DATA':
-              return ok({ results: options.search ?? [], values: [], has_more: false, next_cursor: null, total_count: 99 });
+              return ok({
+                results: options.search ?? [], values: [], has_more: false, next_cursor: null, total_count: 99,
+                ...options.searchPaging,
+              });
             default:
               return ok({ id: 'written', url: 'https://notion.so/written' });
           }
@@ -468,4 +473,27 @@ test('search keeps what it can place under a chosen page, drops the rest, and sa
   assert.deepEqual((result.data.items as Array<{ id: string }>).map((item) => item.id), [CHILD, SOURCE, TASKS, ROW]);
   assert.equal(lookups().length, 12, 'the strays spend the whole budget and no more');
   assert.doesNotMatch(JSON.stringify(result.data), /total_count|99|Hidden|Loose|parent/);
+});
+
+test('a limited Agent searches only the first page, and nothing says that pages it cannot reach matched', async () => {
+  const paging = { has_more: true, next_cursor: HIDDEN };
+  const search = (policy: EffectiveManagedPolicy) => {
+    const world = notionWorld({ search: SEARCH, searchPaging: paging });
+    const result = world.provider.execute({
+      policy, capability: 'notion.content.search', arguments: { query: 'plans', startCursor: bare(LOOSE) },
+    });
+    return { result, sent: () => world.calls.find(({ tool }) => tool === 'NOTION_FETCH_DATA')?.arguments };
+  };
+  const limited = search(ONLY_ROOT);
+  const { data } = await limited.result;
+  assert.deepEqual((data.items as Array<{ id: string }>).map((item) => item.id), [CHILD, SOURCE, TASKS, ROW]);
+  assert.equal(data.has_more, false);
+  assert.equal('next_cursor' in data, false);
+  assert.doesNotMatch(JSON.stringify(data), new RegExp(`${HIDDEN}|${bare(HIDDEN)}`));
+  assert.equal(limited.sent()?.start_cursor, undefined, 'a cursor the Agent names is not sent');
+
+  const open = search(scoped());
+  const unlimited = (await open.result).data;
+  assert.deepEqual([unlimited.has_more, unlimited.next_cursor], [true, HIDDEN], 'an unlimited search is unchanged');
+  assert.equal(open.sent()?.start_cursor, bare(LOOSE));
 });

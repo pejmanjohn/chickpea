@@ -274,18 +274,25 @@ export function notionScopeGate(input: {
       const id = isRecord(item) ? parseNotionId(item.id) : undefined;
       return id !== undefined && allowed.has(id);
     };
+    // A count, a cursor or "more" would tell the Agent that pages it cannot reach matched, and a
+    // cursor can be one of their ids. A limited Agent sees only the first page of what it may reach.
     const {
       results: _results, values: _values, items: _items, pages: _pages, databases: _databases,
-      total_count: _count, ...rest
+      total_count: _count, has_more: _more, next_cursor: _cursor, ...rest
     } = source;
-    const filtered = { ...rest, results: results.filter(keep), values: values.filter(keep) };
+    const filtered = { ...rest, results: results.filter(keep), values: values.filter(keep), has_more: false };
     return enveloped ? { ...data, data: filtered } : filtered;
   };
 
   return {
     checksAfterRead: rule.phase === 'after',
     async before(toolArguments) {
-      if (rule.phase === 'search') return toolArguments;
+      if (rule.phase === 'search') {
+        // Search never hands a limited Agent a cursor, and one it makes up could ask Notion
+        // whether a page it cannot reach exists.
+        const { start_cursor: _cursor, ...firstPage } = toolArguments;
+        return firstPage;
+      }
       const id = parseNotionId(toolArguments[rule.argument]);
       if (!id) throw new NotionPageUnavailableError();
       checked = id;
