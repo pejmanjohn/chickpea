@@ -8,7 +8,7 @@ Cloud pin or Core release, the scripted [batch smoke](smoke.md) runs. When a
 `changed` run on `main` covers a batch, pass the last batch-verified commit as
 `--base` so the plan covers the whole batch. Per PR, run only the live check its
 [risk class](../../../AGENTS.md#shipping-by-risk-class) names. That is a
-`probe`, or a `changed` run scoped to the T3 cycle or rehearsal, the T4 money
+`probe`, or a `changed` run scoped to the T3 update or rehearsal, the T4 money
 proof, or the T0x dry run.
 
 | Mode | Beneath the browser | Live journey |
@@ -16,7 +16,7 @@ proof, or the T0x dry run.
 | `probe` | None. The PR's own gates run separately | 1 to 3 named-assumption cases from the brief on the brief's lane |
 | `changed` | Focused tests and applicable offline checks selected from the diff | Changed behavior and its nearest failure, permission, or persistence case on one suitable lane |
 | `regression` | Fixed core tests, offline delivery/durability/provider checks, authoring evaluation, Admin checks | Essential journeys below using reusable fixtures on one deployed candidate lane |
-| `release` | Full repository tests, local workerd, offline checks, lockfile and committed-source export | In-place update from the prior release plus core journeys; fresh installation only for installer or setup changes; rollback only for storage-contract changes |
+| `release` | Full repository tests, local workerd, offline checks, lockfile and committed-source export | In-place update from the prior release plus core journeys; fresh installation only for installer or setup changes |
 
 `smoke` remains a compatibility request for the original four journeys: create
 and welcome, full instruction approval, fresh Personal OAuth/read, and actual
@@ -257,8 +257,7 @@ candidate; it never tags, publishes, merges, or deploys production.
 Update a QA lane in place from the prior release to the candidate, then run the
 [batch smoke](smoke.md) on it. Exercise installation from
 the public-source artifact on a designated disposable target only when installer
-or setup code changed. Run a rollback cycle only when `release.json`'s storage
-generation or a migration digest changed. Report each missing actor, fixture, or
+or setup code changed. Report each missing actor, fixture, or
 unsupported contract as untested/blocked.
 
 Fresh OAuth consent and exact test teardown are already authorized by invocation.

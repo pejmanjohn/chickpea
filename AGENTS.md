@@ -47,6 +47,11 @@
 - Change stored meaning, bump the contract: a config store change to what it
   writes or how it reads stored data raises that entry's version in
   `src/config/storage-contract.json`.
+- Always roll forward; nothing rehearses or gates on a rollback. Migrations
+  only add: a table, an index, or a nullable or constant-default column. Ship a
+  drop, rename, type change, data rewrite, or new NOT NULL as expand, then
+  contract in a later release. New code reads old data. `verify:hygiene`
+  checks the migrations; see [Roll forward](docs/runbooks/releasing.md#roll-forward).
 - Preserve unrelated changes. Keep private environment bindings, credentials,
   live transcripts, and working documents out of the public repository.
 - Follow [CONTRIBUTING.md](CONTRIBUTING.md). Run tests and builds serially in each
@@ -88,7 +93,7 @@
   Chickpea Cloud pin or Core release, run the scripted
   [batch smoke](qa/live/operator/smoke.md), `npm run verify:smoke`.
   Per PR, run only the live check the [risk class](#shipping-by-risk-class)
-  names: the T2 probe (the skill's `probe` mode), the T3 cycle or rehearsal,
+  names: the T2 probe (the skill's `probe` mode), the T3 update or rehearsal,
   the T4 money proof, or the T0x dry run. Run it from the implementation commit
   in parallel with review, and redeploy only when a fix round touches runtime
   code. A comment-only or docs-only commit never repeats a lane check.
@@ -138,8 +143,8 @@ which here means Chickpea Cloud running a pinned Core commit.
   parameter, or an OAuth flow. It is 1 to 3 cases and takes 15 minutes or less
   including deploy. Skip it when the author and reviewer agree the change rests
   on no such fact.
-- The T3 live check depends on the change. Storage changes get a live
-  upgrade-and-rollback cycle on a lane. Installer or deploy changes get a
+- The T3 live check depends on the change. Storage changes get an in-place
+  update of a lane that holds existing data. Installer or deploy changes get a
   rehearsal with the real artifact. Provider or dependency upgrades get a diff
   of captured request bodies.
 - Review means a fresh, independent first pass (on Claude, a Fable subagent;

@@ -8,7 +8,7 @@
 
 ## Operational impact
 
-<!-- Note migrations, new configuration, permissions, compatibility, and rollback limits. Write "None" if not applicable. -->
+<!-- Note migrations (they only add), new configuration, permissions, and compatibility. Write "None" if not applicable. -->
 
 - [ ] Regression coverage was added or updated, or a reason is given above.
 - [ ] No credentials, private setup links, databases, or live customer data are included.
