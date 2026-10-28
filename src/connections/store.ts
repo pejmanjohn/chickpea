@@ -1219,6 +1219,16 @@ function managedSignIn(
 ): ManagedSignIn {
   const person = validation?.person ??
     (connector.sharedSignIn ? `member:${signerMembershipId}` : undefined);
+  if (connector.sharedSignIn) {
+    // Which source named the person decides whether shared-page separation
+    // can tell two Chickpea members apart; the person itself is never logged.
+    console.info(JSON.stringify({
+      event: 'chickpea.managed_connection.sign_in_recorded',
+      toolkit: connector.toolkit,
+      accessLane,
+      personSource: validation?.person ? 'provider' : 'member',
+    }));
+  }
   return { ...(person ? { person } : {}), accessLane };
 }
 

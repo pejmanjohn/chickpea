@@ -3178,7 +3178,9 @@ test('managed tool projection withholds ambiguous accounts instead of crashing t
   assert.deepEqual(ambiguous, []);
 });
 
-test('a new managed account records who signed in and under which access lane', async () => {
+test('a new managed account records who signed in and under which access lane', async (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, 'info', (message: string) => { logged.push(message); });
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let person: string | undefined = 'notion:ws-1:user-1';
@@ -3230,6 +3232,12 @@ test('a new managed account records who signed in and under which access lane', 
       await signIn('agent_mail', 'gmail', 'ca_gmail', ['gmail.messages.search']),
       { accessLane: 'read' },
     );
+    const recorded = logged.filter((message) => message.includes('sign_in_recorded'));
+    assert.deepEqual(recorded.map((message) => JSON.parse(message)), [
+      { event: 'chickpea.managed_connection.sign_in_recorded', toolkit: 'notion', accessLane: 'read', personSource: 'provider' },
+      { event: 'chickpea.managed_connection.sign_in_recorded', toolkit: 'notion', accessLane: 'write', personSource: 'member' },
+    ]);
+    assert.doesNotMatch(recorded.join('\n'), /ws-1|user-1|membership_alice|ca_notion/);
   } finally {
     config.close();
     settings.close();
