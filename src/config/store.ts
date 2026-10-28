@@ -4499,7 +4499,10 @@ function rowToAgentConnectionBinding(row: AgentConnectionBindingRow): AgentConne
   } catch {
     allowedCapabilities = [];
   }
-  const resourceConstraints = parseBindingResourceConstraints(row.resource_constraints_json);
+  const resourceConstraints = parseBindingResourceConstraints(
+    row.resource_constraints_json,
+    row.connection_account_id,
+  );
   return {
     agentId: row.agent_id,
     connectionAccountId: row.connection_account_id,
@@ -4534,13 +4537,22 @@ function normalizeBindingResourceConstraints(
   return normalized;
 }
 
+/**
+ * A map that cannot be read must not read as no limit. No connector has a
+ * resource key named `unreadable`, so the binding keeps no managed capability.
+ */
 function parseBindingResourceConstraints(
   raw: string | null | undefined,
+  connectionAccountId: string,
 ): NonNullable<AgentConnectionBinding['resourceConstraints']> {
   try {
     return normalizeBindingResourceConstraints(JSON.parse(raw ?? '{}') as never);
   } catch {
-    return {};
+    console.warn(JSON.stringify({
+      event: 'chickpea.managed_connection.binding_constraints_unreadable',
+      connectionAccountId,
+    }));
+    return { unreadable: [] };
   }
 }
 
