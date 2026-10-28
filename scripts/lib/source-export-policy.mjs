@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { extname, join, posix } from 'node:path';
 import { NODE_BASELINE, NODE_ENGINE } from './node-version.mjs';
 import { validateReleaseManifest } from './release-manifest.mjs';
+import { additiveMigrationFindings, isMigrationSource } from './additive-migrations.mjs';
 import { lockfileIntegrityReport } from './lockfile-integrity.mjs';
 import { QA_LANES } from './qa-lanes.mjs';
 
@@ -540,6 +541,33 @@ export function readTrackedManifest(root, revision = 'HEAD') {
   return { entries, sourceCommit };
 }
 
+/**
+ * The commit whose migrations a candidate may only add to: where it leaves
+ * `origin/main`, or the first parent of a commit `main` already holds. The
+ * working tree adds to the same point, or to HEAD without `origin/main`.
+ * Undefined for a root commit.
+ */
+function migrationBase(root, revision, workingTree) {
+  const attempt = (args) => { try { return git(root, args).toString('utf8').trim() || undefined; } catch { return undefined; } };
+  const commit = attempt(['rev-parse', '--verify', `${revision}^{commit}`]);
+  if (!commit) return undefined;
+  const shipped = attempt(['merge-base', commit, 'origin/main']);
+  if (workingTree) return shipped ?? commit;
+  return shipped && shipped !== commit ? shipped : attempt(['rev-parse', '--verify', '--quiet', `${commit}^`]);
+}
+
+function additiveMigrationCheck(root, { revision, workingTree, contents }) {
+  const base = migrationBase(root, revision, workingTree);
+  if (!base) return [];
+  const entries = readTrackedManifest(root, base).entries.filter(({ type, path }) => type === 'blob' && isMigrationSource(path));
+  const blobs = readBlobs(root, entries);
+  const text = (pairs) => new Map(pairs.map(([path, bytes]) => [path, bytes.toString('utf8')]));
+  return additiveMigrationFindings(
+    text(entries.map(({ path, object }) => [path, blobs.get(object)])),
+    text([...contents].filter(([path]) => isMigrationSource(path))),
+  );
+}
+
 /** Every path the index tracks, for scanning uncommitted work in place. */
 export function readIndexManifest(root) {
   const entries = decodeRecords(git(root, ['ls-files', '-z', '--stage']), 'Index manifest').map((record) => {
@@ -1064,6 +1092,7 @@ export function inspectSource({ root, revision = 'HEAD', workingTree = false, ke
     check('docs references', () => docsReferenceFindings(state.entries, state.contents));
     check('repository MCP config', () => repositoryMcpConfigFindings(state.entries, state.contents));
     check('release manifest', () => { validateReleaseManifest(state.treeRoot); });
+    check('additive migrations', () => additiveMigrationCheck(root, { revision: workingTree ? 'HEAD' : state.sourceCommit, workingTree, contents: state.contents }));
     check('lockfile integrity', () => lockfileIntegrityReport(join(state.treeRoot, 'package-lock.json')).unverified
       .map((name) => `${name}: package-lock entry has no integrity hash`));
     check('package metadata', () => packageMetadataFindings(state.treeRoot));

@@ -259,3 +259,27 @@ test('the hygiene run holds the inspected tree to the sandbox base image rule', 
     'package.json: the Dockerfile base image tag needs an exact @cloudflare/sandbox version to match (found none)',
   ]);
 });
+
+test('the hygiene run holds migrations to additive changes against the commit they build on', (context) => {
+  const root = fixtureRepository();
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const additive = (options: Record<string, unknown>) => (inspectSource({ root, ...options }) as { checks: { name: string; findings: string[] }[] })
+    .checks.find(({ name }) => name === 'additive migrations')?.findings.map((finding) => finding.replace(/ Migrations only add: .*$/, ''));
+  mkdirSync(join(root, 'migrations', 'better-auth'), { recursive: true });
+  writeFileSync(join(root, 'migrations', 'better-auth', '0001_base.sql'), 'CREATE TABLE "user" ("id" text PRIMARY KEY, "email" text);\n');
+  git(root, 'add', 'migrations');
+  git(root, 'commit', '-q', '-m', 'base');
+  assert.deepEqual(additive({}), []);
+
+  writeFileSync(join(root, 'migrations', 'better-auth', '0002_next.sql'), 'ALTER TABLE "user" DROP COLUMN "email";\n');
+  git(root, 'add', 'migrations');
+  assert.deepEqual(additive({ workingTree: true }), ['migrations/better-auth/0002_next.sql:1: alter table "user" drop column "email" drops.']);
+  git(root, 'commit', '-q', '-m', 'drop');
+  assert.deepEqual(additive({}), ['migrations/better-auth/0002_next.sql:1: alter table "user" drop column "email" drops.'],
+    'without origin/main, a commit adds to its first parent');
+  git(root, 'update-ref', 'refs/remotes/origin/main', 'HEAD~1');
+  writeFileSync(join(root, 'src', 'clean.ts'), 'export const value = 2;\n');
+  git(root, 'commit', '-q', '-am', 'later');
+  assert.deepEqual(additive({}), ['migrations/better-auth/0002_next.sql:1: alter table "user" drop column "email" drops.'],
+    'a branch adds to where it leaves origin/main');
+});
