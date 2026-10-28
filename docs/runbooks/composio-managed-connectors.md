@@ -145,6 +145,19 @@ Search and reads return bounded, normalized data. Page-property writes accept on
 
 New Notion connections use the managed path. Existing Native Notion records remain readable and editable but do not appear as a new-connection catalog option. If one Agent owns both a legacy and managed Notion account, an unnamed Notion request withholds both account paths and asks the member to choose a label; naming one account selects only that path.
 
+### Personal and team Notion connections
+
+Notion keeps one page list per person for Composio's Notion app. If one Notion account backed both a personal and a team connection, team Agents could reach the pages that person shared for personal use. So in a workspace, one Notion account backs connections of one owner kind only. Per-Agent page limits are not affected.
+
+A connection's signer is its owner for a personal connection and its creator for a team connection. Chickpea identifies the Notion person who signed in with `NOTION_GET_ABOUT_ME`. When that call names no one, the sign-in records the signer's membership instead, and that person cannot be compared with anyone.
+
+- **Before Notion opens.** This check applies to new connections, from Admin and from Slack setup links. If the person starting the sign-in signed a live Notion connection of the other kind in the workspace, Chickpea does not open Notion. It explains the rule and offers Cancel or **Continue with a different Notion account**. Continuing sends `differentAccount`, which skips only this check.
+- **After sign-in.** This check applies to new connections and to every reconnect, including **Change Notion pages**, from both doors. Chickpea refuses the sign-in when a live Notion connection of the other kind has the same Notion person. It also refuses when either person cannot be compared and the person signing in signed that connection. A refusal deletes the new Composio connected account and saves nothing. A refused reconnect leaves the existing connection unchanged. Admin and the Slack setup link answer `409 managed_sign_in_mix_refused`.
+- **Residual.** The pages someone checks in Notion's picker during a refused sign-in stay shared with Composio's Notion app for that Notion account. The existing connection backed by that account can reach them. The refusal message tells the person to remove them in that connection's menu with **Change Notion pages**.
+- **Shared Notion logins.** Two teammates who share one Notion login pass the first check, because neither signed the other's connection. The after-sign-in check catches them by Notion person, with the same residual.
+
+Connections that mixed owner kinds before this check are left as they are.
+
 ## Curated HubSpot surface
 
 HubSpot is bound to one exact Composio connected account. During validation, Chickpea calls `HUBSPOT_GET_ACCOUNT_INFO` through that account and requires a valid portal ID. Portal/account selectors never appear in Agent input. Every later call pins the same Chickpea principal, connected-account reference, and toolkit version server-side.
