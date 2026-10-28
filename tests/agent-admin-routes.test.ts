@@ -4473,7 +4473,7 @@ test('an owner reconciles malformed managed authorization state before retrying'
     assert.equal(response.status, 409, await response.clone().text());
     assert.deepEqual(await response.json(), {
       error: 'managed_authorization_recovery_required',
-      message: 'This Google sign-in needs administrator cleanup before another connection can start. Contact your Chickpea workspace owner.',
+      message: 'An earlier sign-in needs administrator cleanup before another connection can start. Contact your Chickpea workspace owner.',
     });
     assert.equal(await fixture.settings.getSetting(key), malformed);
     assert.equal(authorizationCalls, 0);

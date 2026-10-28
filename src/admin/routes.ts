@@ -5140,7 +5140,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           (error.code === 'in_progress' || error.code === 'recovery_required')) {
         return c.json({
           error: 'managed_authorization_recovery_required',
-          message: 'The stored Google sign-in cannot be recovered automatically. Contact Chickpea support before retrying.',
+          message: 'The stored sign-in cannot be recovered automatically. Contact Chickpea support before retrying.',
         }, 409);
       }
       return internalError(c, error);
@@ -5459,13 +5459,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (error instanceof ManagedAuthorizationError && error.code === 'recovery_required') {
         return c.json({
           error: 'managed_authorization_recovery_required',
-          message: 'This Google sign-in needs administrator cleanup before another connection can start. Contact your Chickpea workspace owner.',
+          message: 'An earlier sign-in needs administrator cleanup before another connection can start. Contact your Chickpea workspace owner.',
         }, 409);
       }
       if (error instanceof ManagedAuthorizationError && error.code === 'in_progress') {
         return c.json({
           error: 'managed_authorization_in_progress',
-          message: 'A Google sign-in is already in progress in another browser. Finish that sign-in before starting another.',
+          message: 'A sign-in is already in progress in another browser. Finish that sign-in before starting another.',
         }, 409);
       }
       return internalError(c, error);
