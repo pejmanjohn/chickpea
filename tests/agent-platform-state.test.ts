@@ -661,7 +661,7 @@ test('a sign-in group gains an account only through a join, and only for a conne
   }
 });
 
-test('a sign-in group that is not ready accepts a new member only when the same change makes it ready', async () => {
+test('a sign-in group accepts a new member only while every member is already ready', async () => {
   const store = await platformStoreWithAgents('agent_support', 'agent_sales');
   try {
     const { account: notion } = await store.createAgentOwnedConnection(
@@ -685,7 +685,22 @@ test('a sign-in group that is not ready accepts a new member only when the same 
       (await store.listConnectionAccounts('T_PLATFORM')).map(({ id, lifecycle }) => [id, lifecycle]),
       [[notion.id, 'needs_attention']],
     );
-    assert.deepEqual((await join('ready')).map(({ lifecycle }) => lifecycle), ['ready', 'ready']);
+    await assert.rejects(join('ready'), ManagedSignInGroupConflictError);
+    const [recovered] = await store.applySignInGroup({
+      adapterId: 'composio',
+      accountRef: 'ca_notion',
+      members: groupMembers([disconnecting]),
+      shared: sharedPolicy(disconnecting),
+      lifecycle: 'ready',
+    });
+    const joined = await store.applySignInGroup({
+      adapterId: 'composio',
+      accountRef: 'ca_notion',
+      members: groupMembers([recovered!]),
+      shared: sharedPolicy(recovered!),
+      join: teamManagedConnection('connection_notion_sales', 'agent_sales', 'notion', 'ca_notion'),
+    });
+    assert.deepEqual(joined.map(({ lifecycle }) => lifecycle), ['ready', 'ready']);
   } finally {
     store.close();
   }

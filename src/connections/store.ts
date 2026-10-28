@@ -343,6 +343,7 @@ export class ConnectionAccountService {
         },
       });
       this.captureConnectionReady(undefined, created.account, created.binding);
+      logSignInRecorded(created.account);
       return created;
     } catch (error) {
       const setupError = error instanceof ManagedRemoteAccountAlreadyUsedError
@@ -875,6 +876,7 @@ export class ConnectionAccountService {
     const replaced = rotated.find(({ id }) => id === account.id);
     if (!replaced) throw new ManagedConnectionConflictError('Managed connection changed during authorization');
     this.captureConnectionReady(account.lifecycle, replaced, binding);
+    logSignInRecorded(replaced);
     if (previous.accountRef !== policy.accountRef) {
       try {
         await provider.revoke({ policy: previous });
@@ -1219,17 +1221,24 @@ function managedSignIn(
 ): ManagedSignIn {
   const person = validation?.person ??
     (connector.sharedSignIn ? `member:${signerMembershipId}` : undefined);
-  if (connector.sharedSignIn) {
-    // Which source named the person decides whether shared-page separation
-    // can tell two Chickpea members apart; the person itself is never logged.
-    console.info(JSON.stringify({
-      event: 'chickpea.managed_connection.sign_in_recorded',
-      toolkit: connector.toolkit,
-      accessLane,
-      personSource: validation?.person ? 'provider' : 'member',
-    }));
-  }
   return { ...(person ? { person } : {}), accessLane };
+}
+
+/**
+ * Which source named the person behind a saved shared sign-in decides whether
+ * shared-page separation can tell two Chickpea members apart; the person
+ * itself is never logged.
+ */
+function logSignInRecorded(account: ConnectionAccount): void {
+  const policy = account.policy;
+  if (policy.kind !== 'managed' || !policy.signIn ||
+      !MANAGED_CONNECTOR_CATALOG.connector(policy.toolkit)?.sharedSignIn) return;
+  console.info(JSON.stringify({
+    event: 'chickpea.managed_connection.sign_in_recorded',
+    toolkit: policy.toolkit,
+    accessLane: policy.signIn.accessLane,
+    personSource: policy.signIn.person?.startsWith('member:') ? 'member' : 'provider',
+  }));
 }
 
 async function managedResourceHandle(resourceKey: string, providerRef: string): Promise<string> {

@@ -2137,7 +2137,7 @@ export class ConfigStoreLogic {
         }
         // A disconnect holds its row at needs_attention until the remote account
         // is deleted; a join in that window would adopt a sign-in that is going away.
-        if (members.some((member) => (change.lifecycle ?? member.lifecycle) !== 'ready')) throw conflict();
+        if (members.some((member) => member.lifecycle !== 'ready')) throw conflict();
         this.writeConnectionAccount(account, 0);
         this.putAgentConnectionBindingRow(change.join.binding);
       }

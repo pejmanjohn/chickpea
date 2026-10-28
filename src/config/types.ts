@@ -862,7 +862,7 @@ export interface SignInGroupChange {
   /** Every shared policy field, written to all members. A field absent here is removed. */
   shared: SignInGroupPolicy;
   lifecycle?: 'pending' | 'ready' | 'needs_attention';
-  /** A new account and binding for another Agent, joining the group as changed. The group must then be ready. */
+  /** A new account and binding for another Agent, joining the group as changed. Every member must already be ready. */
   join?: AgentOwnedConnectionInput;
 }
 
