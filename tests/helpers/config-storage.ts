@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { SqlParam, StateDb } from '../../src/state/state-db.ts';
@@ -48,7 +48,6 @@ export interface StorageView {
 export interface ReleaseFixture extends StorageSnapshot {
   release: string;
   scenario: string;
-  contract: StorageContract;
   readback: unknown;
 }
 
@@ -98,9 +97,8 @@ export async function storesOf(root: string): Promise<{ kit: ConfigStorageKit; o
   };
 }
 
-export function readContract(root: string): StorageContract | undefined {
-  const file = join(root, CONTRACT_FILE);
-  return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : undefined;
+export function readContract(root: string): StorageContract {
+  return JSON.parse(readFileSync(join(root, CONTRACT_FILE), 'utf8'));
 }
 
 /** Stores stamp rows with `Date.now()` and `new Date()`; both read the scenario's instant here. */

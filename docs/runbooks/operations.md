@@ -288,7 +288,7 @@ its data.
 
 The first release establishes the versioned baseline. During 0.x, releases may
 change APIs, configuration, or schemas. Release notes must state supported
-starting versions, required operator actions, migrations, and rollback limits.
+starting versions, required operator actions, and migrations.
 There is no implied upgrade path from an unlisted experimental schema.
 
 A saved custom API connection that names `uploads.github.com` no longer reaches

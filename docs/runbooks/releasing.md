@@ -12,6 +12,28 @@ release PR, run the source gates, update a QA lane in place and run the batch
 smoke there, then publish. The release PR's review runs in parallel with the
 source gates.
 
+## Roll forward
+
+Chickpea always rolls forward. Nothing rehearses, tests, or gates on a
+rollback. A bad release is fixed by the next one, through the normal path.
+
+- **Migrations only add.** A migration may create a table or an index, or add
+  a column that is nullable or has a constant default. A drop, rename, type
+  change, data rewrite, or NOT NULL on an existing column ships as expand, then
+  contract: add the new shape, move the code to it, and remove the old shape
+  in a later release once no code uses it. Mark that removal with a
+  `-- contract: <reason>` comment: in a `.sql` file on the line before the
+  statement, in TypeScript inside the statement's SQL string.
+- **New code reads old data.** `tests/config-storage-contract.test.ts` reads a
+  database the previous release wrote. Nothing tests old code against new data.
+
+`npm run verify:hygiene` holds the Durable Object migrations
+(`src/identity/migrations.ts`, `src/work/migrations.ts`, and the DDL in
+`src/config/store.ts`) and the D1 chain in `migrations/better-auth/` to this,
+against the commit where the candidate leaves `origin/main`. It also refuses an
+edit to an applied D1 migration file. It reads SQL only, so a TypeScript
+migration that rewrites rows through code is left to review.
+
 ## Before the first release
 
 - Land release preparation through a GitHub PR or a maintainer-authorized local
@@ -39,8 +61,9 @@ public-source policy (forbidden roots, private `docs/` shapes, the exact
 live-verifier inventory), that every tracked `docs/` file is deliberately
 un-ignored in `.gitignore`, the private-name leak scan, that a `git archive`
 of the commit reproduces every tracked byte, the release manifest and version
-agreement, lockfile integrity hashes, package metadata, the authentication
-export contract, and the npm pack manifest.
+agreement, additive-only migrations (see [Roll forward](#roll-forward)),
+lockfile integrity hashes, package metadata, the authentication export
+contract, and the npm pack manifest.
 
 Start from a clean checkout of the exact candidate commit, with no private
 environment files. Use the lockfile and run checks serially per checkout:
@@ -162,9 +185,6 @@ Keep identities, bindings, secrets, and evidence outside the public repository.
   from a fresh public source checkout with no local private files. Complete
   Slack installation, first-Owner sign-in, provider/model selection, and a real
   DM or mention that receives a reply.
-- Only when `release.json`'s storage generation or a migration digest changed,
-  also roll back to the prior release, confirm sign-in and Slack delivery still
-  work, and update forward again.
 - Remove only the fixtures/resources created for this acceptance run. Record
   the source commit, target/version, observed outcomes, limitations, and cleanup.
 
@@ -176,7 +196,7 @@ not replace this real Slack/Admin acceptance.
 The release PR carries matching package/lockfile versions and release notes.
 Publish only after the source gates and attended acceptance pass on it. Notes
 must cover prerequisites, installation links, changes, known limitations,
-supported upgrade origins, migrations, and recovery limits. For a 0.x release,
+supported upgrade origins, and migrations. For a 0.x release,
 state its experimental status and whether GitHub's prerelease flag is
 appropriate.
 
@@ -192,10 +212,10 @@ Do not move a published tag; issue a new version for corrections.
 `package.json`, both root version entries in `package-lock.json`, and
 `release.json` must agree. Run `npm run verify:release` after updating them.
 `release.json` records the storage generation, reviewed incoming versions,
-reviewed recovery policy, and exact migration-content digests. A digest
-change requires a compatibility/recovery decision; do not merely regenerate
-digests to silence a failed gate. The first updater deliberately rejects any
-changed storage chain, even if a maintainer accidentally lists the origin.
+and exact migration-content digests. A digest change requires a compatibility
+decision; do not merely regenerate digests to silence a failed gate. The first
+updater deliberately rejects any changed storage chain, even if a maintainer
+accidentally lists the origin.
 
 The `configuration` digest covers `src/config/storage-contract.json`, not the
 source of `store.ts`, so a code-only edit leaves it unchanged. **Change stored

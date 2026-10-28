@@ -133,10 +133,7 @@ export function normalizeStoredInstallation(installation) {
 export function assertCompatibleRelease(before, after) {
   let result;
   try { result = evaluateUpgradeCompatibility(before, after); }
-  catch (error) {
-    if (error?.code === 'recovery-policy-unsupported') {
-      throw new Error('Code recovery is not declared for this transition.');
-    }
+  catch {
     throw new Error('Invalid release upgrade contract.');
   }
   if (result.status === 'supported') return;

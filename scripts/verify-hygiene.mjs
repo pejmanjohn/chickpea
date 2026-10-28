@@ -14,7 +14,8 @@
  * live-verification docs references (every backticked or linked `.md` in the
  * skill entrypoints and qa/live/operator names a tracked file), the tracked
  * .mcp.json allowlist (only the lane browser servers through
- * scripts/lane-browser.mjs), release manifest and version agreement, lockfile
+ * scripts/lane-browser.mjs), release manifest and version agreement, additive-only
+ * migrations against the commit the candidate builds on, lockfile
  * integrity hashes, package metadata, the coding-sandbox base image pinned by
  * digest at the SDK's version, the authentication export contract, and the npm
  * pack manifest.

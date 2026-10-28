@@ -19,7 +19,6 @@ const manifest = (version: string, configuration?: string) => ({
   version,
   storageGeneration: 1,
   supportedOrigins: [] as string[],
-  recovery: 'gateway-transport-then-previous-code' as const,
   migrations: migrations(configuration),
 });
 
@@ -97,7 +96,6 @@ test('manifest validation rejects incomplete, malformed, and unknown contracts',
     { ...valid, version: 'v0.1.18' },
     { ...valid, supportedOrigins: ['0.1.18'] },
     { ...valid, supportedOrigins: ['0.1.17', '0.1.17'] },
-    { ...valid, recovery: 'snapshot' },
     { ...valid, migrations: { ...valid.migrations, work: 'short' } },
     { ...valid, migrations: { ...valid.migrations, extra: digest('f') } },
   ]) assert.throws(() => validateUpgradeManifest(invalid), /Invalid release upgrade contract/);

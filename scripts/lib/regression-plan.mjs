@@ -7,7 +7,7 @@ export const SOURCE_EXPORT_CHECKS = [
   'npm:verify:durability', 'npm:verify:providers',
 ];
 export const REGRESSION_AREAS = Object.freeze({
-  releases: ['release-manifest', 'config-storage-contract', 'build-identity', 'release-update-check', 'support-report', 'installation-routes', 'upgrade-source', 'upgrade-installation', 'upgrade-receipt', 'upgrade', 'upgrade-baseline'],
+  releases: ['release-manifest', 'additive-migrations', 'config-storage-contract', 'build-identity', 'release-update-check', 'support-report', 'installation-routes', 'upgrade-source', 'upgrade-installation', 'upgrade-receipt', 'upgrade', 'upgrade-baseline'],
   delivery: ['slack-admission', 'slack-thread-context', 'gateway-inbox', 'gateway-session-runner', 'flue-v2-runtime-regressions', 'file-delivery-completion', 'file-delivery-completion-runtime', 'file-delivery-streaming-runtime', 'slack-presentation-eval', 'slack-approval-intent-eval', 'slack-typed-approval', 'hosted-admission', 'hosted-object-inventory', 'hosted-object-export-erase', 'hosted-object-storage-workerd', 'hosted-pending-work'],
   agents: ['slack-approval-from-person', 'slack-typed-approval', 'management-policy', 'management-security-regression', 'management-agent-creation-welcome', 'management-agent-parity', 'slack-proposal-approval-readback', 'agent-authoring-guide', 'hosted-admission'],
   routines: ['routine-schedule', 'routine-scheduler', 'environment-routine-due', 'routine-delivery', 'routine-workflow', 'routine-channel-destination', 'schedule-contract-evaluation', 'hosted-object-inventory', 'hosted-pending-work'],
@@ -29,7 +29,7 @@ export const REGRESSION_AREAS = Object.freeze({
 
 const rules = [
   [/^scripts\/(?:upgrade\.mjs|lib\/(?:upgrade-[a-z-]+|inspect-deployment|auth-schema)\.mjs)/, ['releases']],
-  [/^(?:release(?:-source)?\.json|src\/release\/|scripts\/(?:verify-release|lib\/(?:build-identity|release-manifest))\.mjs)/, ['releases']],
+  [/^(?:release(?:-source)?\.json|src\/release\/|scripts\/(?:verify-release|lib\/(?:build-identity|release-manifest|additive-migrations))\.mjs)/, ['releases']],
   [/^(?:evals\/schedule-contract\/|scripts\/(?:evaluate-schedule-contract|lib\/schedule-contract-evaluation)\.mjs)/, ['routines', 'verification']],
   [/^(?:evals\/slack-presentation\/|scripts\/(?:evaluate-slack-presentation|lib\/slack-presentation-evaluation)\.mjs)/, ['delivery']],
   [/^(?:evals\/slack-approval-intent\/|scripts\/evaluate-slack-approval-intent\.mjs)/, ['delivery']],
