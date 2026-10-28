@@ -223,7 +223,7 @@ export async function runUpgrade(args = process.argv.slice(2)) {
     const destination = verifyReleaseSource(destinationRoot, receipt.destination);
     assertCompatibleRelease(previous.manifest, destination.manifest);
     // Releases before v0.1.8 declared `recovery: previous-code-only`. Every later
-    // one installs transport recovery, and since v0.1.38 none declares it.
+    // one installs transport recovery, whether or not it declares it.
     if (destination.manifest.recovery !== 'previous-code-only') {
       if (!receipt.recovery) {
         if (readEvent(directory)?.knownVersions?.length) throw new Error('Deployed upgrade is missing its recovery authority. Preserve the receipt.');

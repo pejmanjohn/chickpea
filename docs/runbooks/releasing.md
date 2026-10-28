@@ -22,7 +22,8 @@ rollback. A bad release is fixed by the next one, through the normal path.
   change, data rewrite, or NOT NULL on an existing column ships as expand, then
   contract: add the new shape, move the code to it, and remove the old shape
   in a later release once no code uses it. Mark that removal with a
-  `-- contract: <reason>` comment in its SQL.
+  `-- contract: <reason>` comment: in a `.sql` file on the line before the
+  statement, in TypeScript inside the statement's SQL string.
 - **New code reads old data.** `tests/config-storage-contract.test.ts` reads a
   database the previous release wrote. Nothing tests old code against new data.
 

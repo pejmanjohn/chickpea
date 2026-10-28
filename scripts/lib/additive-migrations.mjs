@@ -24,7 +24,7 @@ const DURABLE_OBJECT_SOURCES = new Map([
 const D1_CHAIN = /^migrations\/better-auth\/[^/]+\.sql$/;
 
 const DDL = /^(?:create (?:unique |temp |temporary )?(?:table|index|view|trigger)|alter table|drop (?:table|index|view|trigger))\b/;
-const DML = /^(?:update \S+ set|delete from|insert (?:or \w+ )?into|replace into)\b/;
+const DML = /^(?:with\b|update (?:or \w+ )?\S+ set|delete from|insert (?:or \w+ )?into|replace into)\b/;
 const CONTRACT = /--\s*contract:\s*\S/i;
 const NOT_NULL = /\bnot null\b/;
 /** A literal SQLite accepts as `ALTER TABLE ... ADD COLUMN`'s default; an expression or CURRENT_* is not one. */
@@ -37,7 +37,7 @@ const STATEMENT_RULES = [
     NOT_NULL.test(definition) && !CONSTANT_DEFAULT.test(definition) ? `adds NOT NULL column ${unquote(column)} without a constant default` : undefined],
   [/^alter table \S+ rename\b/, () => 'renames'],
   [/^(?:drop|alter table \S+ drop)\b/, () => 'drops'],
-  [/^(?:update|delete|replace|insert or replace)\b|^insert\b.*\bselect\b/, () => 'rewrites data'],
+  [/^(?:with|update|delete|replace|insert or replace)\b|^insert\b.*\bselect\b/, () => 'rewrites data'],
   [/^insert\b/, () => undefined],
 ];
 
@@ -78,13 +78,25 @@ function stringLiterals(source) {
   return literals;
 }
 
-/** The migration statements in one source file. */
+/** The `;`-separated statements of a .sql file; a `;` inside a comment or quotes does not separate. */
+function sqlStatements(text) {
+  const chunks = [];
+  let start = 0, quote;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (quote) { if (char === quote) quote = undefined; continue; }
+    if (char === "'" || char === '"') quote = char;
+    else if (char === '-' && text[index + 1] === '-') { index = text.indexOf('\n', index); if (index < 0) break; }
+    else if (char === ';') { chunks.push({ text: text.slice(start, index), offset: start }); start = index + 1; }
+  }
+  chunks.push({ text: text.slice(start), offset: start });
+  return chunks;
+}
+
+/** The migration statements in one source file. A .sql file is all migration, so every statement counts. */
 function statementsOf(path, text) {
-  let offset = 0;
-  const chunks = path.endsWith('.sql')
-    ? text.split(';').map((chunk) => ({ text: chunk, offset: (offset += chunk.length + 1) - chunk.length - 1 }))
-    : stringLiterals(text);
-  const kinds = DURABLE_OBJECT_SOURCES.get(path) === 'ddl' ? [DDL] : [DDL, DML];
+  const chunks = path.endsWith('.sql') ? sqlStatements(text) : stringLiterals(text);
+  const kinds = path.endsWith('.sql') ? [/./] : DURABLE_OBJECT_SOURCES.get(path) === 'ddl' ? [DDL] : [DDL, DML];
   return chunks.map(({ text: raw, offset }) => ({ raw, offset, sql: normalize(raw) }))
     .filter(({ sql }) => kinds.some((kind) => kind.test(sql)))
     .map(({ raw, offset, sql }) => ({
@@ -128,8 +140,19 @@ function typeOf(definition) {
 }
 
 /** A column definition without its default or NOT NULL: changing either alone loosens or keeps what a row may hold. */
-const constraintsOf = (definition) => definition.replace(NOT_NULL, '')
-  .replace(/\bdefault ?(?:'(?:[^']|'')*'|\((?:[^()]|\([^()]*\))*\)|[^\s,]+)/, '').replace(/ +/g, ' ').trim();
+function constraintsOf(definition) {
+  const rest = definition.replace(NOT_NULL, '');
+  const keyword = /\bdefault ?/.exec(rest);
+  if (!keyword) return rest.replace(/ +/g, ' ').trim();
+  const value = rest.slice(keyword.index + keyword[0].length);
+  let length = /^(?:'(?:[^']|'')*'|[^\s,(]*)/.exec(value)[0].length;
+  for (let depth = 0; value[0] === '(' && length < value.length;) {
+    depth += value[length] === '(' ? 1 : value[length] === ')' ? -1 : 0;
+    length++;
+    if (depth === 0) break;
+  }
+  return `${rest.slice(0, keyword.index)} ${value.slice(length)}`.replace(/ +/g, ' ').trim();
+}
 
 /** What one database's migration sources declare: tables and indexes by name, and every other statement. */
 function schemaOf(sources, database) {

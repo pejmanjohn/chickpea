@@ -69,10 +69,11 @@ test('allowed: a column added to an existing table where it is created, nullable
 
 test('allowed: a default changed or NOT NULL dropped on an existing column', () => {
   assert.deepEqual(findings(work('attempts INTEGER NOT NULL DEFAULT 0', 'attempts INTEGER DEFAULT 1')), []);
+  assert.deepEqual(findings(work('attempts INTEGER NOT NULL DEFAULT 0', 'attempts INTEGER NOT NULL DEFAULT (coalesce(nullif(1, 2), 3))')), []);
 });
 
 test('allowed: a contraction marked "-- contract:" with its reason', () => {
-  assert.deepEqual(findings({ [NEXT]: `-- contract: no code has read email since v0.1.30
+  assert.deepEqual(findings({ [NEXT]: `-- contract: no code has read email since v0.1.30; see the release notes
 DROP INDEX "user_email_idx";
 -- contract: no code has read email since v0.1.30
 ALTER TABLE "user" DROP COLUMN "email";` }), []);
@@ -124,6 +125,18 @@ INSERT OR REPLACE INTO "user" ("id", "name") VALUES ('a', 'b');` }), [
     `${NEXT}:3: insert into "user"("id","name")select "id","name" from "user" rewrites data.`,
     `${NEXT}:4: insert or replace into "user"("id","name")values('a','b') rewrites data.`,
   ]);
+  assert.deepEqual(findings({ [NEXT]: `-- cleanup; see issue
+UPDATE "user" SET "name" = 'x';
+WITH x AS (SELECT 1) UPDATE "user" SET "name" = 'y;z';
+UPDATE OR REPLACE "user" SET "name" = 'z';` }), [
+    `${NEXT}:1: update "user" set "name" = 'x' rewrites data.`,
+    `${NEXT}:3: with x as(select 1)update "user" set "name" = 'y;z' rewrites data.`,
+    `${NEXT}:4: update or replace "user" set "name" = 'z' rewrites data.`,
+  ], 'a ";" in a comment or a quoted value does not end a statement');
+  assert.deepEqual(findings(work("'INSERT", "'UPDATE OR REPLACE runs SET note = NULL',\n  'WITH done AS (SELECT 1) DELETE FROM runs',\n  'INSERT")), [
+    'src/work/migrations.ts:9: update or replace runs set note = null rewrites data.',
+    'src/work/migrations.ts:10: with done as(select 1)delete from runs rewrites data.',
+  ]);
 });
 
 test('the config store\'s own queries are not migrations', () => {
@@ -145,7 +158,10 @@ test('refused: an edited or removed applied D1 migration, and a statement the ch
   assert.deepEqual(findings({ [D1]: `${BASE[D1]}\nCREATE INDEX "user_name_idx" ON "user" ("name");` }),
     [`${D1}: edits an applied D1 migration. Add a new migration file instead.`]);
   assert.deepEqual(findings({ [D1]: undefined }).slice(0, 1), [`${D1}: removes an applied D1 migration. Add a new migration file instead.`]);
-  assert.deepEqual(findings({ [NEXT]: 'CREATE TRIGGER "user_touch" AFTER UPDATE ON "user" BEGIN SELECT 1; END;' }).length, 1);
+  for (const sql of ['CREATE TRIGGER "user_touch" AFTER UPDATE ON "user" BEGIN SELECT 1; END;', 'CREATE VIRTUAL TABLE "search" USING fts5(body);']) {
+    const refused = findings({ [NEXT]: sql });
+    assert.ok(refused.length > 0 && refused.every((finding) => finding.endsWith('is not a statement this check recognizes as additive (scripts/lib/additive-migrations.mjs).')), sql);
+  }
 });
 
 test('every refusal names the remedy: expand, then contract in a later release', () => {
