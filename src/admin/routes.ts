@@ -176,6 +176,7 @@ import {
 import {
   MANAGED_CONNECTOR_CATALOG,
   type ManagedConnectorCatalog,
+  type ManagedConnectorDefinition,
 } from '../connections/catalog/index.ts';
 import { verifyComposioWebhook } from '../connections/composio-webhook.ts';
 import {
@@ -1719,13 +1720,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     Promise<ResolvedManagedProviderContext>
   >();
   const managedCatalog = options.managedConnectorCatalog ?? MANAGED_CONNECTOR_CATALOG;
-  const managedCatalogDescriptors = () => managedCatalog.list().map((connector) => ({
+  const managedCatalogDescriptor = (connector: ManagedConnectorDefinition) => ({
     id: connector.id,
     toolkit: connector.toolkit,
     providerId: connector.providerId,
     label: connector.label,
     description: connector.description,
-  }));
+    ...(connector.providerSelection ? { providerSelection: connector.providerSelection } : {}),
+  });
+  const managedCatalogDescriptors = () => managedCatalog.list().map(managedCatalogDescriptor);
   const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
   const snapshots = (c: Context) =>
     options.snapshots ?? getAgentSnapshotStore(c.env as PlatformEnv | undefined);
@@ -8820,11 +8823,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const byId = new Map(views.map((account) => [account.id, account]));
       const provider = providerContext.providers.get('composio');
       const managedConnectorCatalog = managedCatalog.list().map((connector) => ({
-        id: connector.id,
-        toolkit: connector.toolkit,
-        providerId: connector.providerId,
-        label: connector.label,
-        description: connector.description,
+        ...managedCatalogDescriptor(connector),
         securityDescription: connector.securityDescription,
         capabilities: connector.capabilities.map((capability) => ({
           id: capability.id,

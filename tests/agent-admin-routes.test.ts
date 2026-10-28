@@ -4106,6 +4106,41 @@ test('the connection catalog reports managed readiness per toolkit and lane', as
   }
 });
 
+test('both connector catalogs name what a provider\'s own sign-in lets a person choose', async () => {
+  const fixture = harness(new FakeTransport());
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const agentCatalog = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections?workspaceId=T_TEST',
+      { headers: auth() },
+    );
+    assert.equal(agentCatalog.status, 200, await agentCatalog.clone().text());
+    const settingsCatalog = await fixture.app.request(
+      'http://localhost/admin/api/settings/connectors/composio',
+      { headers: auth() },
+    );
+    assert.equal(settingsCatalog.status, 200, await settingsCatalog.clone().text());
+    type Descriptor = { toolkit: string; providerSelection?: { label: string } };
+    for (const catalog of [
+      ((await agentCatalog.json()) as { managedConnectors: { catalog: Descriptor[] } }).managedConnectors.catalog,
+      ((await settingsCatalog.json()) as { catalog: Descriptor[] }).catalog,
+    ]) {
+      assert.deepEqual(
+        catalog.filter(({ providerSelection }) => providerSelection)
+          .map(({ toolkit, providerSelection }) => ({ toolkit, providerSelection })),
+        [{ toolkit: 'notion', providerSelection: { label: 'pages' } }],
+      );
+    }
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('reconnecting a ready Notion account from Admin keeps the connection and refreshes its pages', async () => {
   const revoked: string[] = [];
   const provider: ManagedConnectionProvider = {
