@@ -87,7 +87,7 @@ import {
   MANAGED_CONNECTOR_CATALOG,
   type ManagedConnectorDefinition,
 } from '../src/connections/catalog/index.ts';
-import { signInMixRefusal } from '../src/connections/sign-in-mix.ts';
+import { signInMixRefusal, signInOtherKindNotice } from '../src/connections/sign-in-mix.ts';
 import {
   ManagedAuthorizationAllocatedError,
   ManagedProviderRequestError,
@@ -4301,6 +4301,73 @@ test('Admin refuses a personal Notion sign-in on the person behind a team connec
     assert.match(polled.headers.get('set-cookie') ?? '', /Max-Age=0/, 'the finished attempt is forgotten');
     assert.deepEqual(cleaned, ['ca_notion_mix'], 'the new connected account is removed');
     assert.deepEqual(await fixture.store.listConnectionAccounts('T_TEST'), before, 'nothing is saved');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Admin stops a personal Notion sign-in by the team connection\'s creator until they choose a different account', async () => {
+  let authorizeCalls = 0;
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async authorize() {
+      authorizeCalls += 1;
+      return {
+        authorizationUrl: new URL('https://connect.composio.dev/link/lk_notion_other'),
+        authorizationRef: 'ca_notion_other',
+      };
+    },
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke() {},
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    await fixture.store.createAgentOwnedConnection({
+      account: {
+        id: 'connection_notion_team', workspaceId: 'T_TEST', ownerKind: 'team',
+        createdByMembershipId: 'membership_test_owner', providerId: 'notion', label: 'Notion · Team',
+        policy: {
+          kind: 'managed', adapterId: 'composio', toolkit: 'notion',
+          principalRef: 'chickpea:organization:org_oss', accountRef: 'ca_notion_team',
+          allowedCapabilities: ['notion.content.search'],
+        },
+        secretRefId: 'secret_notion_team', lifecycle: 'ready',
+      },
+      binding: {
+        agentId: 'agent_support', connectionAccountId: 'connection_notion_team', providerId: 'notion',
+        allowedCapabilities: ['notion.content.search'], enabled: true,
+      },
+    });
+    const start = (body: Record<string, unknown>) => fixture.app.request(
+      'https://chickpea.example/admin/api/agents/agent_support/connections/managed/start',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({ workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'notion', access: 'read', ...body }),
+      },
+    );
+
+    const stopped = await start({});
+    assert.equal(stopped.status, 409);
+    assert.deepEqual(await stopped.json(), {
+      error: 'managed_sign_in_other_kind',
+      message: signInOtherKindNotice(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team'),
+    });
+    assert.equal(stopped.headers.get('set-cookie'), null, 'no sign-in attempt is held');
+    assert.equal(authorizeCalls, 0, 'Composio is never asked for a sign-in link');
+
+    const continued = await start({ differentAccount: true });
+    assert.equal(continued.status, 200, await continued.clone().text());
+    assert.equal(authorizeCalls, 1);
   } finally {
     fixture.store.close();
     fixture.settings.close();

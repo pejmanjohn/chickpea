@@ -152,7 +152,11 @@ import {
   managedOwnerLaneAccount,
   managedPrincipalRef,
 } from '../connections/managed-authorization-flow.ts';
-import { ManagedSignInMixError } from '../connections/sign-in-mix.ts';
+import {
+  actorSignedOtherKind,
+  ManagedSignInMixError,
+  signInOtherKindNotice,
+} from '../connections/sign-in-mix.ts';
 import {
   completeComposioReconciliation,
   ComposioConfigurationMutationError,
@@ -1565,6 +1569,7 @@ const managedAuthorizationStartSchema = v.union([
     ownerKind: v.picklist(['team', 'member']),
     toolkit: v.pipe(v.string(), v.trim(), v.regex(/^[a-z0-9][a-z0-9_-]{0,127}$/)),
     access: v.picklist(['read', 'write']),
+    differentAccount: v.optional(v.literal(true)),
   }),
   v.strictObject({
     workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9_]{2,32}$/)),
@@ -5240,6 +5245,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           return c.json({
             error: 'managed_connection_lane_exists',
             message: `This Agent already has a ${ownerKind === 'team' ? 'team' : 'personal'} ${connector.label} connection. Use that connection's menu to sign in again or change what it shares, or disconnect it first.`,
+          }, 409);
+        }
+        const signed = 'differentAccount' in parsed.output && parsed.output.differentAccount
+          ? undefined
+          : actorSignedOtherKind({
+              connector,
+              adapterId: 'composio',
+              ownerKind,
+              actorMembershipId: principal.membershipId,
+              accounts,
+            });
+        if (signed) {
+          return c.json({
+            error: 'managed_sign_in_other_kind',
+            message: signInOtherKindNotice(connector, signed.ownerKind),
           }, 409);
         }
       }

@@ -17,7 +17,11 @@ import {
   createManagedConnectionProviderRegistry,
   type ManagedConnectionProvider,
 } from '../src/connections/managed.ts';
-import { signInMixRefusal } from '../src/connections/sign-in-mix.ts';
+import {
+  ManagedSignInOtherKindError,
+  signInMixRefusal,
+  signInOtherKindNotice,
+} from '../src/connections/sign-in-mix.ts';
 
 test('managed authorization refuses a frozen handoff capability absent from the live read lane', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
@@ -580,6 +584,7 @@ async function notionMixHarness(existing: Array<{
   signer: string;
   person?: string;
   lifecycle?: 'ready' | 'revoked';
+  toolkit?: string;
 }>) {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -615,26 +620,27 @@ async function notionMixHarness(existing: Array<{
     workspaceId: 'T_MIX', transportMode: 'direct', defaultAgentId: target.id,
   });
   for (const connection of existing) {
+    const toolkit = connection.toolkit ?? 'notion';
+    const allowedCapabilities = [MANAGED_CONNECTOR_CATALOG.capabilities(toolkit, 'read')[0]!.id];
     await config.createAgentOwnedConnection({
       account: {
         id: connection.id, workspaceId: 'T_MIX', ownerKind: connection.ownerKind,
         ...(connection.ownerKind === 'member' ? { ownerMembershipId: connection.signer } : {}),
-        createdByMembershipId: connection.signer, providerId: 'notion', label: connection.id,
+        createdByMembershipId: connection.signer, providerId: toolkit, label: connection.id,
         secretRefId: `secret_${connection.id}`, lifecycle: connection.lifecycle ?? 'ready',
         policy: {
-          kind: 'managed', adapterId: 'composio', toolkit: 'notion',
+          kind: 'managed', adapterId: 'composio', toolkit,
           principalRef: connection.ownerKind === 'team'
             ? 'chickpea:organization:org_mix'
             : `chickpea:membership:${connection.signer}`,
           accountRef: `ca_${connection.id}`,
-          allowedCapabilities: ['notion.content.search'],
+          allowedCapabilities,
           ...(connection.person ? { signIn: { person: connection.person, accessLane: 'read' as const } } : {}),
         },
       },
       binding: {
         agentId: connection.id.endsWith('_target') ? target.id : other.id,
-        connectionAccountId: connection.id, providerId: 'notion',
-        allowedCapabilities: ['notion.content.search'], enabled: true,
+        connectionAccountId: connection.id, providerId: toolkit, allowedCapabilities, enabled: true,
       },
     });
   }
@@ -653,7 +659,12 @@ async function notionMixHarness(existing: Array<{
       lineage: 'f'.repeat(24),
     },
   };
-  const start = (actor: AuthPrincipal, lane: { ownerKind?: 'team' | 'member'; connectionAccountId?: string }) =>
+  const start = (actor: AuthPrincipal, lane: {
+    ownerKind?: 'team' | 'member';
+    connectionAccountId?: string;
+    differentAccount?: boolean;
+    toolkit?: string;
+  }) =>
     startManagedAuthorizationFlow(dependencies, {
       principal: actor, agent: target, workspaceId: 'T_MIX', toolkit: 'notion', access: 'read', ...lane,
     });
@@ -753,6 +764,62 @@ test('a team reconnect whose person Notion did not name fails closed against the
 
     assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'member', true) });
     assert.deepEqual(await h.saved(), before);
+  } finally {
+    h.close();
+  }
+});
+
+test('a member who signed a team Notion connection gets a notice before Notion opens for a personal one', async () => {
+  const h = await notionMixHarness([{ id: 'connection_team', ownerKind: 'team', signer: 'm_maya', person: MAYA }]);
+  try {
+    await assert.rejects(
+      h.start(h.principal('m_maya', 'admin'), { ownerKind: 'member' }),
+      (error) => error instanceof ManagedSignInOtherKindError &&
+        error.message === signInOtherKindNotice(NOTION, 'team'),
+    );
+    assert.deepEqual(h.authorized, [], 'Composio is never asked for a sign-in link');
+  } finally {
+    h.close();
+  }
+});
+
+test('continuing with a different Notion account skips only the notice', async () => {
+  const h = await notionMixHarness([{ id: 'connection_team', ownerKind: 'team', signer: 'm_maya', person: MAYA }]);
+  try {
+    const maya = h.principal('m_maya', 'admin');
+    h.state.person = RAVI;
+    assert.equal((await h.signIn(maya, { ownerKind: 'member', differentAccount: true })).status, 'connected',
+      'a different Notion person connects');
+
+    const fallback = await notionMixHarness([{ id: 'connection_team', ownerKind: 'team', signer: 'm_maya', person: MAYA }]);
+    try {
+      const result = await fallback.signIn(fallback.principal('m_maya', 'admin'), {
+        ownerKind: 'member', differentAccount: true,
+      });
+      assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'team', true) },
+        'when Notion names no one, the after-sign-in check still refuses the team connection\'s creator');
+      assert.deepEqual(fallback.cleaned, ['ca_new_1']);
+    } finally {
+      fallback.close();
+    }
+  } finally {
+    h.close();
+  }
+});
+
+test('the Notion notice does not stop people who did not sign the other kind, or other connectors', async () => {
+  const h = await notionMixHarness([
+    { id: 'connection_team', ownerKind: 'team', signer: 'm_maya', person: MAYA },
+    { id: 'connection_personal', ownerKind: 'member', signer: 'm_ravi', person: RAVI },
+    { id: 'connection_hubspot_team', ownerKind: 'team', signer: 'm_lee', toolkit: 'hubspot' },
+  ]);
+  try {
+    await h.start(h.principal('m_kim', 'member'), { ownerKind: 'member' });
+    assert.equal(h.authorized.length, 1, 'a member with no team Notion connection proceeds');
+    await h.start(h.principal('m_admin', 'admin'), { ownerKind: 'team' });
+    assert.equal(h.authorized.length, 2, 'an Admin who did not sign the personal connection proceeds');
+    await h.start(h.principal('m_lee', 'member'), { ownerKind: 'member', toolkit: 'hubspot' });
+    assert.equal(h.authorized.length, 3, 'HubSpot has no shared sign-ins, so its team creator proceeds');
   } finally {
     h.close();
   }

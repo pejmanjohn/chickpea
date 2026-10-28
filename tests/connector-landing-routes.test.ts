@@ -24,7 +24,7 @@ import {
 } from '../src/connections/managed.ts';
 import { managedPrincipalRef } from '../src/connections/managed-authorization-flow.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
-import { signInMixRefusal } from '../src/connections/sign-in-mix.ts';
+import { signInMixRefusal, signInOtherKindNotice } from '../src/connections/sign-in-mix.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { createManagementSetupRoutes, replaceCatalogConnection } from '../src/management/setup-routes.ts';
@@ -1827,6 +1827,30 @@ test('a Slack Notion link refuses a sign-in whose Notion person already backs a 
     assert.deepEqual((await h.config.listConnectionAccounts(h.owner.user.slackTeamId)).map(({ id }) => id),
       ['connection_notion_team'], 'nothing is saved');
     assert.equal((await h.management.getSetup(h.setupId))?.status, 'pending', 'the link still works for another account');
+  } finally {
+    h.close();
+  }
+});
+
+test('a Slack Notion link stops before Notion opens for the team connection\'s creator until they choose a different account', async () => {
+  const h = await notionMixSetupHarness('notion-mix-notice', {
+    teamCreator: 'owner', teamPerson: 'notion:ws-1:user-maya', signInPerson: 'notion:ws-1:user-ravi',
+  });
+  try {
+    const stopped = await authorize(h.app, h.setupId, h.cookie, { ownerKind: 'member', access: 'read' });
+    assert.equal(stopped.status, 409);
+    assert.deepEqual(await stopped.json(), {
+      error: 'managed_sign_in_other_kind',
+      message: signInOtherKindNotice(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team'),
+    });
+    assert.deepEqual(h.authorized, [], 'Composio is never asked for a sign-in link');
+    assert.equal((await h.management.getSetup(h.setupId))?.status, 'pending');
+
+    const continued = await authorize(h.app, h.setupId, h.cookie, {
+      ownerKind: 'member', access: 'read', differentAccount: '1',
+    });
+    assert.equal(continued.status, 200, await continued.clone().text());
+    assert.deepEqual(h.authorized, ['ca_notion_1']);
   } finally {
     h.close();
   }

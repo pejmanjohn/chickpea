@@ -128,6 +128,7 @@ import {
   type ManagedAuthorizationFlowDependencies,
 } from '../connections/managed-authorization-flow.ts';
 import { ManagedAuthorizationError } from '../connections/managed-authorization.ts';
+import { ManagedSignInOtherKindError } from '../connections/sign-in-mix.ts';
 import { mcpOAuthLifecycleDependencies } from '../connections/mcp-oauth-lifecycle.ts';
 import { ManagedProviderRequestError } from '../connections/managed-errors.ts';
 import {
@@ -580,6 +581,7 @@ export function createManagementSetupRoutes(
             ...(setup.target.replacement && setup.target.connectionId
               ? { connectionAccountId: setup.target.connectionId }
               : {}),
+            ...(fields.differentAccount === '1' ? { differentAccount: true } : {}),
             attemptScopeId: setupId,
             returnUrl: `${requestOrigin(c)}/setup/${encodeURIComponent(setupId)}?poll=1`,
             randomSecret: () => browserSecret,
@@ -708,6 +710,15 @@ export function createManagementSetupRoutes(
       throw new Error('wrong_action');
     } catch (error) {
       if (error instanceof AuthorizationError) return genericDenied(c);
+      if (error instanceof ManagedSignInOtherKindError) {
+        if (authorizationJsonRequest(c)) {
+          return c.json({ error: 'managed_sign_in_other_kind', message: error.message }, 409);
+        }
+        const page = await managedConnectionPageInput(c, activeSetup, dependencies, options);
+        return page
+          ? c.html(renderManagedConnectionSetupPage({ ...page, failureMessage: error.message }), 409)
+          : managedUnavailablePage(c);
+      }
       await markSetupFailure(activeSetup, c, dependencies.management, safeFailureCode(error), now());
       if (activeSetup.action === 'managed_connection') {
         const message = managedStartFailureMessage(error);

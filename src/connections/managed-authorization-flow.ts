@@ -22,7 +22,12 @@ import {
   type ManagedConnectionProviderRegistry,
 } from './managed.ts';
 import { managedAccessLane, type ManagedConnectorCatalog } from './catalog/index.ts';
-import { ManagedSignInMixError } from './sign-in-mix.ts';
+import {
+  actorSignedOtherKind,
+  ManagedSignInMixError,
+  ManagedSignInOtherKindError,
+  signInOtherKindNotice,
+} from './sign-in-mix.ts';
 import {
   ManagedAuthorizationAllocatedError,
   ManagedProviderRequestError,
@@ -103,6 +108,8 @@ interface StartManagedAuthorizationFlowInput {
   /** Exact non-secret capability ceiling frozen by the initiating handoff. */
   capabilities?: readonly string[];
   connectionAccountId?: string;
+  /** The person chose to sign in with a different account after the other-kind notice; skips only that notice. */
+  differentAccount?: boolean;
   existingBrowserSecret?: string;
   /** Setup id used to isolate this browser flow from unrelated authorizations. */
   attemptScopeId?: string;
@@ -192,6 +199,16 @@ export async function startManagedAuthorizationFlow(
         toolkit: connector.toolkit,
       })) {
         throw new ManagedConnectionLaneExistsError(ownerKind, connector.label);
+      }
+      const signed = input.differentAccount ? undefined : actorSignedOtherKind({
+        connector,
+        adapterId: 'composio',
+        ownerKind,
+        actorMembershipId: input.principal.membershipId,
+        accounts,
+      });
+      if (signed) {
+        throw new ManagedSignInOtherKindError(signInOtherKindNotice(connector, signed.ownerKind));
       }
     }
     await cleanupExistingAttempt(
