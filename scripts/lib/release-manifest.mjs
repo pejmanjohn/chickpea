@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const TRANSPORT_RECOVERY = 'gateway-transport-then-previous-code';
@@ -7,6 +7,21 @@ export const RECOVERY_POLICIES = new Set(['previous-code-only', TRANSPORT_RECOVE
 
 export const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const hash = (value) => createHash('sha256').update(value).digest('hex');
+const CONFIG_STORAGE_CONTRACT = 'src/config/storage-contract.json';
+
+const canonical = (value) => (Array.isArray(value) ? value.map(canonical)
+  : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value);
+
+/**
+ * The config store's explicit storage contract, as data: whitespace, key order
+ * and every code-only edit to `store.ts` leave it unchanged. A source tree from
+ * before the contract existed declared the whole of `store.ts` instead.
+ */
+function configurationDigest(root) {
+  const contract = join(root, CONFIG_STORAGE_CONTRACT);
+  if (!existsSync(contract)) return hash(readFileSync(join(root, 'src/config/store.ts')));
+  return hash(JSON.stringify(canonical(JSON.parse(readFileSync(contract, 'utf8')))));
+}
 
 export function migrationDigests(root) {
   const fileHash = (name) => hash(readFileSync(join(root, name)));
@@ -19,7 +34,7 @@ export function migrationDigests(root) {
     // when a non-migration configuration edit changes the digest.
     workerConfiguration: fileHash('wrangler.jsonc'),
     identity: fileHash('src/identity/migrations.ts'),
-    configuration: fileHash('src/config/store.ts'),
+    configuration: configurationDigest(root),
     work: fileHash('src/work/migrations.ts'),
   };
 }

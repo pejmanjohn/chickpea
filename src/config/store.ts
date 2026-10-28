@@ -101,6 +101,7 @@ import {
   validAgentCredentialIncarnation,
   validConnectionCredentialRef,
 } from './connection-credential-binding.ts';
+import CONFIG_STORAGE_CONTRACT from './storage-contract.json' with { type: 'json' };
 
 export interface ConfigSeed {
   agents: readonly AgentCreateInput[];
@@ -122,8 +123,8 @@ const SCHEMA_MARKER_KEY = 'schema_marker';
  * Keep both an exact version and an unambiguous marker so a legacy numeric
  * version can never be mistaken for this clean-slate schema.
  */
-export const CONFIG_SCHEMA_VERSION = 12;
-export const CONFIG_SCHEMA_MARKER = 'agent-first-v1';
+export const CONFIG_SCHEMA_VERSION = CONFIG_STORAGE_CONTRACT.schemaVersion;
+export const CONFIG_SCHEMA_MARKER = CONFIG_STORAGE_CONTRACT.schemaMarker;
 export const CONFIG_CHICKPEA_EXTENSION_MIGRATION = '2026-08-23-chickpea-system-agent-v1';
 export const CONFIG_CHICKPEA_ROUTING_MIGRATION = '2026-08-24-chickpea-routing-retry-v1';
 export const CONFIG_CHICKPEA_CUTOVER_MIGRATION = '2026-08-24-chickpea-cutover-v1';
