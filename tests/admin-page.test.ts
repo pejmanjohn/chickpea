@@ -11234,7 +11234,7 @@ test('choosing the other owner clears the Notion notice', async () => {
   assert.match(harness.app.innerHTML, /data-action="connection-account-create"[^>]*>Continue to Notion<\/button>/);
 });
 
-test('a refused Notion sign-in shows its reason where managed sign-in errors appear', async () => {
+test('a refused Notion sign-in shows its reason above the Agent\'s connections, which stay in reach', async () => {
   const refusal = signInMixRefusal(MANAGED_CONNECTOR_CATALOG.connector('notion')!, 'team', { samePerson: true, manageable: true });
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
@@ -11247,10 +11247,14 @@ test('a refused Notion sign-in shows its reason where managed sign-in errors app
   await flushAsync();
 
   assert.equal(harness.managedPollCalls(), 1);
-  assert.ok(harness.app.innerHTML.includes(escapeHtml(refusal)), 'the refusal names what to do next');
+  assert.ok(harness.app.innerHTML.includes(`<div class="oauth-return error" role="alert">${escapeHtml(refusal)}</div>`),
+    'the refusal names what to do next');
   const page = harness.app.innerHTML + harness.modalRoot.innerHTML;
   assert.doesNotMatch(page, /managed_sign_in_mix_refused/);
   assert.doesNotMatch(page, /data-role="managed-auth-dialog"/, 'the finished sign-in offers no retry');
+  assert.doesNotMatch(page, /data-action="connection-account-retry"/, 'nothing to retry: the list is still shown');
+  assert.match(page, /No connections in this Agent yet\.|class="connection-account-list"/,
+    'the connections the refusal refers to stay on the page');
   assert.equal(harness.sessionStorageValue('chickpea.managed-authorization.v1:agent_conn'), null);
 });
 

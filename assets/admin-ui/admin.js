@@ -270,7 +270,7 @@
     installation: { details: null, updates: null, busy: false, error: "", dialog: "", report: "", notice: "" },
     settingsLoaded: false,
     settingsLoadGeneration: 0,
-    connectionInventory: { accounts: [], loading: false, error: "", notice: "" },
+    connectionInventory: { accounts: [], loading: false, error: "", notice: "", actionError: "" },
     metaAdsSettings: { loading: true, configured: false, canConfigure: false, clientId: "", callbackUrl: "", busy: false, error: "", notice: "" },
     // Settings → Coding agents. The payload is public, origin-derived client
     // setup copy; the picked client is a view preference and is never stored.
@@ -4401,6 +4401,7 @@
     var signInTab = openManagedAuthorizationTab();
     if (form) { form.busy = true; form.error = ""; }
     state.agentConnections.error = "";
+    state.agentConnections.actionError = "";
     render();
     postJson(
       "/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/managed/start",
@@ -4525,8 +4526,9 @@
         var staleProvider = error.message === "managed_authorization_stale_provider";
         var refusal = error.message === "managed_sign_in_mix_refused" && error.serverMessage;
         if (refusal) {
-          if (current.returnToSettings) state.connectionInventory.error = refusal;
-          else state.agentConnections.error = refusal;
+          // The refusal points at a connection's menu, so it sits above the list instead of replacing it.
+          if (current.returnToSettings) state.connectionInventory.actionError = refusal;
+          else state.agentConnections.actionError = refusal;
         } else if (current.returnToSettings) {
           state.connectionInventory.error = staleProvider
             ? "The connector configuration changed. Start the reconnection again."
@@ -4605,6 +4607,7 @@
     if (!entry || !entry.account || !entry.account.policy || entry.account.policy.kind !== "managed") return;
     state.connectionInventory.error = "";
     state.connectionInventory.notice = "";
+    state.connectionInventory.actionError = "";
     var start = managedReconnectStart(
       entry.account,
       settingsManagedConnectorDescriptor(entry.account.policy.toolkit),
@@ -10931,7 +10934,7 @@
           : '<p class="hint">' + esc(account.providerId || "Custom") + '</p>';
       return '<article class="connection-inventory-row"><div class="connection-account-copy"><div><strong>' + esc(accountLabel) + '</strong> <span class="badge-src">' + esc(owner) + '</span> <span class="badge ' + (account.lifecycle === "ready" ? "badge-on" : "badge-off") + '">' + esc(status) + '</span></div>' + detail + '<div class="where-list" aria-label="Agents using ' + esc(accountLabel) + '">' + agentLinks + '</div></div>' + actions + '</article>';
     }).join("");
-    return head + (inventory.notice ? '<p class="oauth-return ok" role="status">' + esc(inventory.notice) + '</p>' : '') + '<div class="connection-account-list connection-inventory-list">' + rows + '</div></section>';
+    return head + (inventory.actionError ? '<p class="oauth-return error" role="alert">' + esc(inventory.actionError) + '</p>' : '') + (inventory.notice ? '<p class="oauth-return ok" role="status">' + esc(inventory.notice) + '</p>' : '') + '<div class="connection-account-list connection-inventory-list">' + rows + '</div></section>';
   }
 
   function modelCatalogStatusHtml() {
