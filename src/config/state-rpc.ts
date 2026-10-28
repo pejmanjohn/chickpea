@@ -486,6 +486,10 @@ export interface TagStateRpc {
   configPutAgentConnectionBinding(
     input: AgentConnectionBindingInput,
   ): Promise<StateRpcResult<AgentConnectionBinding>>;
+  configPutAgentConnectionBindingIfUnchanged(
+    expected: AgentConnectionBinding,
+    next: AgentConnectionBindingInput,
+  ): Promise<StateRpcResult<AgentConnectionBinding | null>>;
   configListAgentScheduleReferences(
     agentId: string,
   ): Promise<StateRpcResult<AgentScheduleReference[]>>;

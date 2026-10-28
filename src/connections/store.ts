@@ -1071,16 +1071,22 @@ export class ConnectionAccountService {
     const listed = new Set(listing.pages.map(({ id }) => id));
     for (const member of members) {
       try {
-        const binding = await this.dependencies.config.getAgentConnectionBindingForAccount(member.id);
-        const choice = readAgentPageChoice(binding?.resourceConstraints);
-        if (!binding || choice === undefined || choice.every((id) => listed.has(id))) continue;
-        await this.dependencies.config.putAgentConnectionBinding({
-          ...binding,
-          resourceConstraints: writeAgentPageChoice(
-            binding.resourceConstraints,
-            choice.filter((id) => listed.has(id)),
-          ),
-        });
+        // A write lands only on the binding it read, so a choice narrowed in between is read
+        // again rather than written back.
+        for (let attempt = 1; ; attempt += 1) {
+          const binding = await this.dependencies.config.getAgentConnectionBindingForAccount(member.id);
+          const choice = readAgentPageChoice(binding?.resourceConstraints);
+          if (!binding || choice === undefined || choice.every((id) => listed.has(id))) break;
+          const pruned = await this.dependencies.config.putAgentConnectionBindingIfUnchanged(binding, {
+            ...binding,
+            resourceConstraints: writeAgentPageChoice(
+              binding.resourceConstraints,
+              choice.filter((id) => listed.has(id)),
+            ),
+          });
+          if (pruned) break;
+          if (attempt === 3) throw new Error('Agent connection binding kept changing');
+        }
       } catch {
         console.warn(JSON.stringify({
           event: 'chickpea.managed_connection.page_choice_update_deferred',

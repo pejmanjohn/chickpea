@@ -24,7 +24,7 @@ import {
 import { managedPrincipalRef } from '../src/connections/managed-authorization-flow.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
-import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
+import { createManagementSetupRoutes, replaceCatalogConnection } from '../src/management/setup-routes.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -882,6 +882,70 @@ test('catalog replacement requires management authority and rolls back failed wr
     identity.close();
     config.close();
     management.close();
+    settings.close();
+  }
+});
+
+test('a failed catalog replacement restores only the binding it wrote, so a later change stays', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.createAgent({
+      id: 'agent_billing', name: 'Billing Guide', creatorMembershipId: 'membership_owner',
+      editPolicy: 'all_workspace_members', lifecycle: 'active', configurationGeneration: 1,
+      instructions: 'Help the team manage billing.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_REPLACE', transportMode: 'direct', defaultAgentId: 'agent_billing',
+    });
+    const policy = {
+      kind: 'mcp' as const, url: 'https://mcp.stripe.com/', transport: 'streamable-http' as const,
+      authMode: 'bearer' as const, headerNames: [], discoveredTools: [{ name: 'original_tool' }],
+      allowedTools: ['original_tool'], presetId: 'stripe',
+    };
+    const { account, binding } = await config.createAgentOwnedConnection({
+      account: {
+        id: 'connection_stripe', workspaceId: 'T_REPLACE', ownerKind: 'team',
+        createdByMembershipId: 'membership_owner', providerId: 'stripe', label: 'Stripe', policy,
+        secretRefId: 'secret_stripe', lifecycle: 'ready',
+      },
+      binding: {
+        agentId: 'agent_billing', connectionAccountId: 'connection_stripe', providerId: 'stripe',
+        allowedCapabilities: ['original_tool'], enabled: true,
+      },
+    });
+    let failed = false;
+    const failingSettings = new Proxy(settings, {
+      get(target, property, receiver) {
+        if (property === 'setSetting' && !failed) {
+          return async () => {
+            failed = true;
+            // Someone turns the connection off for the Agent after the replacement wrote its binding.
+            const written = (await config.getAgentConnectionBindingForAccount(account.id))!;
+            await config.putAgentConnectionBinding({ ...written, enabled: false });
+            throw new Error('injected_secret_write_failure');
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    await assert.rejects(replaceCatalogConnection({
+      config, settings: failingSettings, account, binding,
+      prepared: {
+        policy: { ...policy, discoveredTools: [{ name: 'replacement_tool' }], allowedTools: ['replacement_tool'] },
+        credential: 'replacement-token',
+        allowedCapabilities: ['replacement_tool'],
+      },
+    }), (error: unknown) => error instanceof AggregateError &&
+      (error.errors[0] as Error).message === 'injected_secret_write_failure');
+    const restored = (await config.listConnectionAccounts('T_REPLACE'))[0];
+    assert.deepEqual(restored?.policy.kind === 'mcp' && restored.policy.allowedTools, ['original_tool']);
+    assert.equal((await config.getAgentConnectionBindingForAccount(account.id))?.enabled, false,
+      'the change made after the replacement wrote is not undone');
+  } finally {
+    config.close();
     settings.close();
   }
 });

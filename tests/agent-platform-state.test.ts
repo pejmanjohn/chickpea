@@ -364,6 +364,15 @@ test('connection accounts bind once and schedule references retain creator autho
       /already belongs to Agent agent_support/,
       'a disabled binding must continue to reserve its connection account',
     );
+    const disabled = (await store.getAgentConnectionBindingForAccount(account.id))!;
+    assert.equal(
+      await store.putAgentConnectionBindingIfUnchanged(binding, { ...binding, allowedCapabilities: ['GET'] }),
+      undefined,
+      'a binding changed since it was read is not written over',
+    );
+    assert.deepEqual(await store.getAgentConnectionBindingForAccount(account.id), disabled);
+    const rewritten = await store.putAgentConnectionBindingIfUnchanged(disabled, { ...disabled, allowedCapabilities: ['GET'] });
+    assert.deepEqual([rewritten?.allowedCapabilities, rewritten?.enabled], [['GET'], false]);
     assert.equal(schedule.runsAsMembershipId, 'membership_owner');
     assert.deepEqual(schedule.requiredConnectionAccountIds, [account.id]);
     assert.equal(schedule.destinationKind, 'channel');
@@ -1053,6 +1062,7 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
         details: { accountId: account.id, agentId: 'agent_support' },
       },
     }),
+    configPutAgentConnectionBindingIfUnchanged: () => ok(null),
     configListAgentScheduleReferences: () => ok([schedule]),
     configArchiveAgent: () => ok({
       ...agent('agent_support', 'Support'),
@@ -1117,6 +1127,11 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     }),
     ConnectionAccountAlreadyBoundError,
   );
+  const changed = {
+    agentId: 'agent_support', connectionAccountId: account.id, providerId: account.providerId,
+    allowedCapabilities: [], enabled: true, createdAt: 1, updatedAt: 1,
+  };
+  assert.equal(await store.putAgentConnectionBindingIfUnchanged(changed, changed), undefined);
   assert.deepEqual((await store.listUserAgents()).map(({ id }) => id), ['agent_support']);
   assert.equal((await store.materializeChickpeaAgent()).kind, 'system');
   assert.deepEqual(await store.getWorkspaceModelDefault('T_PLATFORM'), modelDefault);

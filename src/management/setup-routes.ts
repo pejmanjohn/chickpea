@@ -1883,6 +1883,7 @@ export async function replaceCatalogConnection(input: {
     ? await input.settings.getSetting(credentialKey)
     : undefined;
   let updatedAccount: ConnectionAccount | undefined;
+  let updatedBinding: AgentConnectionBinding | undefined;
   try {
     const preserveReviewedAccess = account.policy.kind === 'mcp' &&
       prepared.policy.kind === 'mcp' && isMcpToolReviewRequired(prepared.policy);
@@ -1916,7 +1917,7 @@ export async function replaceCatalogConnection(input: {
         ? 'ready'
         : account.lifecycle,
     }, account.revision);
-    await input.config.putAgentConnectionBinding({
+    updatedBinding = await input.config.putAgentConnectionBinding({
       ...binding,
       allowedCapabilities: preserveReviewedAccess
         ? binding.allowedCapabilities
@@ -1938,8 +1939,13 @@ export async function replaceCatalogConnection(input: {
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
+    }
+    if (updatedBinding) {
       try {
-        await input.config.putAgentConnectionBinding(previousBinding);
+        // Only the binding this replacement wrote is restored; a change made since then stays.
+        if (!await input.config.putAgentConnectionBindingIfUnchanged(updatedBinding, previousBinding)) {
+          throw new Error('Connection binding changed before it could be restored');
+        }
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }

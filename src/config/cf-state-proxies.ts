@@ -1853,6 +1853,16 @@ export class CfConfigStore implements ConfigStore {
     );
   }
 
+  async putAgentConnectionBindingIfUnchanged(
+    expected: AgentConnectionBinding,
+    next: AgentConnectionBindingInput,
+  ): Promise<AgentConnectionBinding | undefined> {
+    return orUndefined(await rpcVia(this.stub,
+      'configPutAgentConnectionBindingIfUnchanged',
+      (stub) => stub.configPutAgentConnectionBindingIfUnchanged(expected, next),
+    ));
+  }
+
   async listAgentScheduleReferences(agentId: string): Promise<AgentScheduleReference[]> {
     return (await rpcVia(this.stub,
       'configListAgentScheduleReferences',

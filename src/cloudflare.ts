@@ -1545,6 +1545,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.call((stores) => stores.config.putAgentConnectionBinding(input));
   }
 
+  async configPutAgentConnectionBindingIfUnchanged(
+    expected: AgentConnectionBinding,
+    next: AgentConnectionBindingInput,
+  ): Promise<StateRpcResult<AgentConnectionBinding | null>> {
+    return this.call((stores) => stores.config.putAgentConnectionBindingIfUnchanged(expected, next) ?? null);
+  }
+
   async configListAgentScheduleReferences(
     agentId: string,
   ): Promise<StateRpcResult<AgentScheduleReference[]>> {

@@ -584,6 +584,11 @@ export interface ConfigStore {
     connectionAccountId: string,
   ): Promise<AgentConnectionBinding | undefined>;
   putAgentConnectionBinding(input: AgentConnectionBindingInput): Promise<AgentConnectionBinding>;
+  /** Writes `next` only while the stored binding reads as `expected`; undefined when another write came first. */
+  putAgentConnectionBindingIfUnchanged(
+    expected: AgentConnectionBinding,
+    next: AgentConnectionBindingInput,
+  ): Promise<AgentConnectionBinding | undefined>;
   listAgentScheduleReferences(agentId: string): Promise<AgentScheduleReference[]>;
   summarizeAdoptionInventory(): Promise<AdoptionInventorySummary>;
   getAgentScheduleReference(scheduleId: string): Promise<AgentScheduleReference | undefined>;
@@ -2198,6 +2203,21 @@ export class ConfigStoreLogic {
 
   putAgentConnectionBinding(input: AgentConnectionBindingInput): AgentConnectionBinding {
     return this.db.transaction(() => this.putAgentConnectionBindingRow(input));
+  }
+
+  putAgentConnectionBindingIfUnchanged(
+    expected: AgentConnectionBinding,
+    next: AgentConnectionBindingInput,
+  ): AgentConnectionBinding | undefined {
+    if (next.connectionAccountId !== expected.connectionAccountId) {
+      throw new Error('A binding is compared and written for one connection account');
+    }
+    return this.db.transaction(() => {
+      const current = this.getAgentConnectionBindingForAccount(expected.connectionAccountId);
+      return current && sameAgentConnectionBinding(current, expected)
+        ? this.putAgentConnectionBindingRow(next)
+        : undefined;
+    });
   }
 
   private putAgentConnectionBindingRow(input: AgentConnectionBindingInput): AgentConnectionBinding {
@@ -4513,6 +4533,14 @@ function rowToAgentConnectionBinding(row: AgentConnectionBindingRow): AgentConne
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+/** Whether two reads saw the same binding. Timestamps do not count, since two writes in one millisecond share them. */
+function sameAgentConnectionBinding(left: AgentConnectionBinding, right: AgentConnectionBinding): boolean {
+  return left.agentId === right.agentId && left.providerId === right.providerId &&
+    left.enabled === right.enabled &&
+    JSON.stringify(left.allowedCapabilities) === JSON.stringify(right.allowedCapabilities) &&
+    JSON.stringify(left.resourceConstraints ?? {}) === JSON.stringify(right.resourceConstraints ?? {});
 }
 
 function normalizeBindingResourceConstraints(

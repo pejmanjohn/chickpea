@@ -96,7 +96,24 @@ async function notionWorkspace() {
     async revoke() {},
   };
   const providers = createManagedConnectionProviderRegistry([signIns]);
-  const service = new ConnectionAccountService({ config, settings, managedProviders: providers });
+  // Another writer that lands just before Chickpea's next binding write, after that write's read.
+  let beforeNextBindingWrite: (() => Promise<unknown>) | undefined;
+  const writes = new Proxy(config, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (typeof value !== 'function') return value;
+      if (property !== 'putAgentConnectionBinding' && property !== 'putAgentConnectionBindingIfUnchanged') {
+        return value.bind(target);
+      }
+      return async (...args: unknown[]) => {
+        const interleaved = beforeNextBindingWrite;
+        beforeNextBindingWrite = undefined;
+        await interleaved?.();
+        return (value as (...forwarded: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  });
+  const service = new ConnectionAccountService({ config: writes, settings, managedProviders: providers });
   const ok = (data: Record<string, unknown>) => ({ data, successful: true, error: null });
   const notion = new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
@@ -125,7 +142,7 @@ async function notionWorkspace() {
   }
   await config.ensureWorkspaceInstallation({ workspaceId: WORKSPACE, transportMode: 'direct', defaultAgentId: 'agent_ops' });
   const dependencies = {
-    config, settings, catalog: MANAGED_CONNECTOR_CATALOG,
+    config: writes, settings, catalog: MANAGED_CONNECTOR_CATALOG,
     providerContext: { providers, generation: 1, lineage: 'f'.repeat(24) },
   };
 
@@ -181,6 +198,7 @@ async function notionWorkspace() {
   };
   return {
     config, service, shared, connect, accountOf, choose, reached, listings: () => listings,
+    beforeNextBindingWrite(write: () => Promise<unknown>) { beforeNextBindingWrite = write; },
     close() { config.close(); settings.close(); },
   };
 }
@@ -305,6 +323,22 @@ test('signing in again removes pages Notion no longer lists from every Agent\'s 
 
     notion.shared.add(TEAM_WIKI.id);
     assert.deepEqual(await notion.reached('agent_sales'), [], 'sharing the page again in Notion does not choose it again');
+  } finally {
+    notion.close();
+  }
+});
+
+test('a choice narrowed while a sign-in prunes it stays narrowed', async () => {
+  const notion = await notionWorkspace();
+  try {
+    await notion.connect('ca_team');
+    await notion.choose('agent_ops', { mode: 'only', pages: [TEAM_PLAN.id, TEAM_WIKI.id] });
+    notion.shared.delete(TEAM_WIKI.id);
+    notion.beforeNextBindingWrite(() => notion.choose('agent_ops', { mode: 'only', pages: [] }));
+    const { account } = await notion.accountOf('agent_ops');
+    await notion.connect('ca_team_2', account.id);
+    assert.deepEqual(readAgentPageChoice((await notion.accountOf('agent_ops')).binding.resourceConstraints), []);
+    assert.deepEqual(await notion.reached('agent_ops'), [], 'the page removed meanwhile does not come back');
   } finally {
     notion.close();
   }
