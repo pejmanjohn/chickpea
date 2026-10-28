@@ -214,7 +214,8 @@ export function notionScopeGate(input: {
         if (database?.kind === 'database') parent = database;
       }
     }
-    if (parent) remember(ref.id, parent);
+    // A row's edge is kept only once its database is known, so a failed lookup is tried again.
+    if (parent && parent.kind !== 'data_source') remember(ref.id, parent);
     return parent;
   };
 

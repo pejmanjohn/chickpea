@@ -515,6 +515,13 @@ test('reads follow cached parent edges; writes look every edge up again', async 
   assert.equal(afterRead, 2, 'authority is rechecked before the read and again before its lookup');
 });
 
+test('a row whose database could not be found is looked up again on the next read', async () => {
+  const { provider } = notionWorld({ throwOn: { tool: 'NOTION_FETCH_BLOCK_METADATA', error: () => new Error('timeout') } });
+  const read = () => provider.execute({ policy: ONLY_ROOT, capability: 'notion.pages.markdown', arguments: { pageId: ROW } });
+  await assert.rejects(read(), isRefusal);
+  await read();
+});
+
 test('the edge cache expires edges after five minutes and keeps at most 4,096', () => {
   let now = 0;
   const cache = new NotionEdgeCache(() => now);
