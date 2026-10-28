@@ -148,6 +148,7 @@ import {
 import {
   assertManagedAttemptPrincipal,
   discardManagedAuthorizationAfterAuthorityLoss,
+  managedOwnerLaneAccount,
   managedPrincipalRef,
 } from '../connections/managed-authorization-flow.ts';
 import {
@@ -5227,15 +5228,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           bindings.filter((binding) => binding.enabled)
             .map((binding) => binding.connectionAccountId),
         );
-        const existingOwnerLane = accounts.find((account) =>
-          enabledAccountIds.has(account.id) &&
-          account.lifecycle !== 'revoked' &&
-          account.ownerKind === ownerKind &&
-          (ownerKind === 'team' || account.ownerMembershipId === principal.membershipId) &&
-          account.policy.kind === 'managed' &&
-          account.policy.adapterId.trim().toLowerCase() === 'composio' &&
-          account.policy.toolkit === connector.toolkit);
-        if (existingOwnerLane) {
+        if (managedOwnerLaneAccount(accounts, enabledAccountIds, {
+          ownerKind,
+          membershipId: principal.membershipId,
+          toolkit: connector.toolkit,
+        })) {
           return c.json({
             error: 'managed_connection_lane_exists',
             message: `This Agent already has a ${ownerKind === 'team' ? 'team' : 'personal'} ${connector.label} connection. Use that connection's menu to sign in again or change what it shares, or disconnect it first.`,
