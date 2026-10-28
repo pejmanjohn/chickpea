@@ -42,7 +42,7 @@
     "config_agents.slack_presence_json": 1,
     "config_agents.website_logins_json": 1,
     "config_connection_accounts.identity_json": 1,
-    "config_connection_accounts.policy_json": 2,
+    "config_connection_accounts.policy_json": 3,
     "config_slack_public_context.files_json": 1,
     "config_slack_public_context.images_json": 1
   },

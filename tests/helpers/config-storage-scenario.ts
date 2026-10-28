@@ -1,5 +1,6 @@
 import type { ConfigStoreLogic } from '../../src/config/store.ts';
 import type { SettingsStoreLogic } from '../../src/config/settings-store.ts';
+import type { SignInGroupPolicy } from '../../src/config/sign-in-group.ts';
 import type {
   AgentCreateInput,
   AgentOwnedConnectionInput,
@@ -58,6 +59,8 @@ const ACCOUNT_CALENDAR = 'connection_scenario_calendar';
 const ACCOUNT_TRACKER = 'connection_scenario_tracker';
 const ACCOUNT_DOCS = 'connection_scenario_docs';
 const ACCOUNT_MAIL = 'connection_scenario_mail';
+const ACCOUNT_NOTES = 'connection_scenario_notes';
+const ACCOUNT_NOTES_SHARED = 'connection_scenario_notes_shared';
 
 const MODEL_ROLES: readonly NonChatModelRole[] = ['image', 'coding'];
 
@@ -510,6 +513,46 @@ const CONNECTIONS: readonly AgentOwnedConnectionInput[] = [
   },
 ];
 
+/** One Notion sign-in that two Agents share: the researcher connected it, the concierge joined it. */
+const NOTES_SIGN_IN: SignInGroupPolicy = {
+  adapterId: 'composio',
+  toolkit: 'notion',
+  principalRef: 'principal_scenario',
+  accountRef: 'account_scenario_notes',
+  signIn: { person: 'notion:workspace-scenario:user-scenario', accessLane: 'write' },
+  grantSummary: { items: [{ type: 'database', label: 'Scenario Notes' }], truncated: true },
+  providerGeneration: 3,
+  providerLineage: 'lineage_scenario',
+};
+
+function notesConnection(
+  id: string,
+  agentId: string,
+  createdByMembershipId: string,
+  allowedCapabilities: string[],
+  oauthAttemptId?: string,
+): AgentOwnedConnectionInput {
+  return {
+    account: {
+      id,
+      workspaceId: WORKSPACE,
+      ownerKind: 'team',
+      createdByMembershipId,
+      providerId: 'notion',
+      label: 'Notes (managed)',
+      policy: {
+        kind: 'managed',
+        ...NOTES_SIGN_IN,
+        allowedCapabilities,
+        ...(oauthAttemptId ? { oauthAttemptId } : {}),
+      },
+      secretRefId: `secret_${id}`,
+      lifecycle: 'ready',
+    },
+    binding: { agentId, connectionAccountId: id, providerId: 'notion', allowedCapabilities, enabled: true },
+  };
+}
+
 const SCHEDULES: readonly AgentScheduleReferenceInput[] = [
   {
     scheduleId: 'schedule_scenario_daily',
@@ -810,6 +853,21 @@ function writeThreads(config: ConfigStoreLogic): void {
 
 function writeConnections(config: ConfigStoreLogic): void {
   for (const connection of CONNECTIONS) config.createAgentOwnedConnection(connection);
+  const notes = config.createAgentOwnedConnection(
+    notesConnection(ACCOUNT_NOTES, RESEARCHER, OWNER, ['notion.content.search', 'notion.pages.create']),
+  ).account;
+  // v0.1.37 has no sign-in groups: its fixture records the database without the concierge's account.
+  if ('applySignInGroup' in config) {
+    config.applySignInGroup({
+      adapterId: NOTES_SIGN_IN.adapterId,
+      accountRef: NOTES_SIGN_IN.accountRef,
+      members: [{ connectionAccountId: notes.id, expectedRevision: notes.revision }],
+      shared: NOTES_SIGN_IN,
+      join: notesConnection(
+        ACCOUNT_NOTES_SHARED, CONCIERGE, MEMBER, ['notion.content.search'], '2c3d4e5f-6071-4829-b0c1-d2e3f4a5b6c7',
+      ),
+    });
+  }
   const weather = CONNECTIONS[0]!;
   config.putConnectionAccount({
     ...weather.account,
