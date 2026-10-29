@@ -32,6 +32,7 @@ import {
   discoverSlackChannelsValibotSchema,
   testConnectionValibotSchema,
   saveConnectionKeyValibotSchema,
+  readPublicDocValibotSchema,
   inspectMemoryValibotSchema,
   inspectRoutinesValibotSchema,
   exportRecipeValibotSchema,
@@ -79,6 +80,7 @@ import {
   slackUpdateAgentMemoryInputSchema,
 } from './slack-memory-actions.ts';
 import { parseAdmittedSlackListIds } from '../slack/lists/admission.ts';
+import { PUBLIC_DOC_READS_PER_TURN, type ReadPublicDocResult } from './public-doc.ts';
 
 const SIGNAL_ATTRIBUTE_KEYS = [
   'workspaceId',
@@ -164,6 +166,7 @@ export interface SlackManagementSignal {
 export type PlatformEnvResolver = () => Promise<PlatformEnv | undefined>;
 
 const SLACK_MANAGEMENT_TURN_GUARD_STATE = 'slack-management-turn-guard';
+const SLACK_PUBLIC_DOC_TURN_STATE = 'slack-public-doc-turn';
 const SLACK_AGENT_CREATION_TURN_STATE = 'slack-agent-creation-turn';
 
 const MUTATING_TOOLS = new Set<WorkspaceManagementToolName>([
@@ -537,6 +540,71 @@ export function useSlackManagementTurnGuard(turnJobId: string): SlackManagementT
   return createSlackManagementTurnGuard(turnJobId, persisted, persist);
 }
 
+/** This turn's read_public_doc calls: how many went out, and the same-host links their pages returned. */
+export interface PublicDocTurnState {
+  turnJobId: string;
+  reads: number;
+  links: string[];
+}
+
+export interface PublicDocTurn {
+  /** Takes one of the turn's reads and returns the links earlier pages gave, or undefined when none are left. */
+  begin(): readonly string[] | undefined;
+  /** A refused read gives its read back; a page adds its links. */
+  finish(result: ReadPublicDocResult | undefined): void;
+}
+
+export function createPublicDocTurn(
+  turnJobId: string,
+  persisted: PublicDocTurnState,
+  persist: (state: PublicDocTurnState) => void = () => undefined,
+): PublicDocTurn {
+  let current: PublicDocTurnState = persisted.turnJobId === turnJobId
+    ? persisted
+    : { turnJobId, reads: 0, links: [] };
+  const update = (next: PublicDocTurnState) => {
+    current = next;
+    persist(next);
+  };
+  return {
+    begin() {
+      if (current.reads >= PUBLIC_DOC_READS_PER_TURN) return undefined;
+      const { links } = current;
+      update({ ...current, reads: current.reads + 1 });
+      return links;
+    },
+    finish(result) {
+      if (!result) update({ ...current, reads: current.reads - 1 });
+      else if (result.outcome === 'read') update({ ...current, links: [...new Set([...current.links, ...result.links])] });
+    },
+  };
+}
+
+const PUBLIC_DOC_TURN_SPENT: WorkspaceManagementToolResult = {
+  ok: false,
+  error: {
+    code: 'invalid_request',
+    message: `Nothing was read: this turn already read ${PUBLIC_DOC_READS_PER_TURN} pages, the most read_public_doc reads in one turn. Work from the pages already read, or ask the requester to send the page you still need in a new message.`,
+  },
+};
+
+/** One read_public_doc call: within the turn's reads, and able to follow the links its earlier pages returned. */
+export async function readPublicDocInTurn(
+  turn: PublicDocTurn,
+  url: string,
+  invoke: (args: WorkspaceManagementToolArguments['read_public_doc']) => Promise<WorkspaceManagementToolResult>,
+): Promise<WorkspaceManagementToolResult> {
+  const turnLinks = turn.begin();
+  if (!turnLinks) return PUBLIC_DOC_TURN_SPENT;
+  let result: WorkspaceManagementToolResult | undefined;
+  try {
+    result = await invoke({ url, turnLinks });
+    return result;
+  } finally {
+    turn.finish(result?.ok ? result.result as ReadPublicDocResult : undefined);
+  }
+}
+
 /** Shared with the bounded synthetic contract evaluation; the live tool uses the same values. */
 export const scheduleActionDescription = 'Create, edit, pause, resume, disable, or run scheduled work in the current Slack Channel or one-to-one DM. Use for any clear future or recurring request, including phrasing such as “check again in 5 minutes,” without asking for approval. Channel delivery defaults to a new channel message, even when requested in a thread. Set delivery to thread only when the requester explicitly asks for future results in this thread, not merely for the creation acknowledgement here. Existing schedules retain their saved destination. Do not use this tool to delete scheduled work; deleting a routine uses the existing proposal and explicit-confirmation flow. The host derives the destination and addressed Agent from trusted Slack context.';
 
@@ -587,6 +655,11 @@ export function useWorkspaceManagementSlackTools(
     persistCreationState,
     writeAgentCreationTerminal,
   );
+  const [publicDocState, persistPublicDocState] = usePersistentState<PublicDocTurnState>(
+    SLACK_PUBLIC_DOC_TURN_STATE,
+    { turnJobId: signal.turnJobId, reads: 0, links: [] },
+  );
+  const publicDocTurn = createPublicDocTurn(signal.turnJobId, publicDocState, persistPublicDocState);
 
   // System Chickpea's routing reads the same in every workspace, so it opens the shared system block instead.
   if (plan.agentId !== CHICKPEA_AGENT_ID) useInstruction(slackManagementRoutingInstruction(plan.agentId));
@@ -655,6 +728,15 @@ export function useWorkspaceManagementSlackTools(
       return slackToolOutput(await invokeLiveSlackTool(
         signal, resolvePlatformEnv, 'save_connection_key', data, turnGuard,
       ));
+    },
+  });
+  useTool({
+    name: 'read_public_doc',
+    description: workspaceManagementToolDescription('read_public_doc'),
+    input: readPublicDocValibotSchema,
+    async run({ data }) {
+      return slackToolOutput(await readPublicDocInTurn(publicDocTurn, data.url, (args) =>
+        invokeLiveSlackTool(signal, resolvePlatformEnv, 'read_public_doc', args, turnGuard)));
     },
   });
   useTool({
