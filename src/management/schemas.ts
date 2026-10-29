@@ -19,6 +19,8 @@ import {
 const zText = (max: number) => z.string().min(1).max(max);
 /** One path on a host: a single leading slash, no spaces. */
 const CONNECTION_CHECK_PATH_PATTERN = /^\/(?!\/)\S*$/;
+/** The longest key the setup page accepts. */
+const CONNECTION_KEY_MAX_LENGTH = 16_384;
 const zOptionalText = (max: number) => z.string().max(max);
 const zId = zText(128);
 const zAgentId = z.string().regex(AGENT_ID_PATTERN);
@@ -394,6 +396,12 @@ export const testConnectionZodSchema = z.strictObject({
   connectionId: zId,
   path: z.string().max(2048).regex(CONNECTION_CHECK_PATH_PATTERN).optional(),
 });
+export const saveConnectionKeyZodSchema = z.strictObject({
+  agentId: zAgentId.optional(),
+  connectionId: zId,
+  key: z.string().min(1).max(CONNECTION_KEY_MAX_LENGTH).describe('The key the person gave you, unchanged.'),
+  path: z.string().max(2048).regex(CONNECTION_CHECK_PATH_PATTERN),
+});
 export const inspectMemoryZodSchema = z.strictObject({ agentId: zAgentId });
 export const inspectRoutinesZodSchema = z.strictObject({
   workspaceId: zId,
@@ -768,6 +776,17 @@ export const testConnectionValibotSchema = v.strictObject({
   agentId: vAgentId,
   connectionId: vid,
   path: v.optional(v.pipe(v.string(), v.maxLength(2048), v.regex(CONNECTION_CHECK_PATH_PATTERN))),
+});
+export const saveConnectionKeyValibotSchema = v.strictObject({
+  agentId: v.optional(vAgentId),
+  connectionId: vid,
+  key: v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(CONNECTION_KEY_MAX_LENGTH),
+    v.description('The key exactly as the requester typed it in their own current message.'),
+  ),
+  path: v.pipe(v.string(), v.maxLength(2048), v.regex(CONNECTION_CHECK_PATH_PATTERN)),
 });
 export const inspectMemoryValibotSchema = v.strictObject({ agentId: vAgentId });
 export const inspectRoutinesValibotSchema = v.strictObject({

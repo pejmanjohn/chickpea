@@ -186,8 +186,18 @@ import {
   type WorkspaceRecipe,
   type WorkspaceRecipePreview,
 } from './recipes.ts';
-import type { ConnectionCheckOutcome } from '../connections/connection-check.ts';
-import type { ConnectionTestActor, McpConnectionTestResult, OpenMcpServer } from './discovery.ts';
+import { matchesEgressPrefix } from '../config/egress.ts';
+import {
+  connectionUrlPrefixes,
+  type ApiConnectionScope,
+  type ConnectionCheckOutcome,
+} from '../connections/connection-check.ts';
+import {
+  ConnectionKeyRefusedError,
+  type ConnectionTestActor,
+  type McpConnectionTestResult,
+  type OpenMcpServer,
+} from './discovery.ts';
 import type { ManagementStore } from './store.ts';
 import { changeSetAccessFits } from './change-set-presentation.ts';
 import {
@@ -259,6 +269,9 @@ import {
   type ManagementMcpClientRevocation,
   type ManagementWorkspaceSnapshot,
   type PrepareConnectorSetupInput,
+  type SaveConnectionKeyInput,
+  type SaveConnectionKeyResult,
+  type SavedConnectionKeyCheck,
   type PrepareConnectorSetupResult,
   type PrepareProviderSetupInput,
   type PrepareProviderSetupResult,
@@ -423,6 +436,22 @@ export interface WorkspaceManagementServiceInput {
     actor: ConnectionTestActor;
     path?: string;
   }) => Promise<ConnectionCheckOutcome>;
+  /**
+   * Checks a key against one API connection with one GET to `path` and, only
+   * when it answers 2xx, saves it the way the setup page does; any other
+   * answer throws ConnectionKeyRefusedError. Never returns the key.
+   */
+  saveConnectionKey?: (input: {
+    agentId: string;
+    /** The connection account id. */
+    connectionId: string;
+    actor: ConnectionTestActor;
+    key: string;
+    path: string;
+    /** The account revision whose hosts and paths the door checked the key may reach. */
+    expectedRevision: number;
+    surface: ManagementOrigin['kind'];
+  }) => Promise<SavedConnectionKeyCheck>;
   /** Lists an open MCP server's tools before a write saves it, as Admin's Test connection does. */
   discoverMcpServer?: (server: OpenMcpServer) => Promise<McpConnectionTestResult>;
   /** The website-login realm Admin reads and deletes from. */
@@ -1922,6 +1951,121 @@ export class WorkspaceManagementService {
       actor: { workspaceId, actorMembershipId: actor.membershipId },
       ...(input.path === undefined ? {} : { path: input.path }),
     });
+  }
+
+  /**
+   * Checks a key against one of an Agent's API connections and saves it, as
+   * the setup page does. It is a tool, not an operation, so the key never
+   * enters an operation record. From Slack the requester must have typed
+   * the key and every URL it goes to in their own current message, and a
+   * saved key is never replaced.
+   */
+  async saveConnectionKey(
+    context: ApplyWorkspaceChangesInput['context'],
+    input: SaveConnectionKeyInput,
+  ): Promise<SaveConnectionKeyResult> {
+    const actor = await this.requireLiveActor(context);
+    this.assertActingAgentScope(actor, {
+      scope: 'agent',
+      agentId: input.agentId,
+      requestedAction: 'save_connection_key',
+      target: { kind: 'agent', id: input.agentId },
+    });
+    const agent = await this.requireEditableAgent(actor, input.agentId);
+    if (agent.kind === 'system') {
+      throw new ManagementError(
+        'invalid_request',
+        `The ${agent.name} system Agent cannot hold connections. Save the key to the user Agent that has the connection.`,
+      );
+    }
+    const { connections } = await this.agentWithConnections(actor, agent);
+    const connectionId = resolveAgentConnectionId(connections, 'api', input.connectionId);
+    const entry = connectionId === undefined ? undefined : connections.api.get(connectionId);
+    if (!entry) {
+      throw new ManagementError(
+        'invalid_request',
+        resolveAgentConnectionId(connections, 'mcp', input.connectionId) === undefined
+          ? 'The API connection was not found.'
+          : 'save_connection_key saves keys for API connections only. For an MCP server, send a setup link with request_setup.',
+      );
+    }
+    const { account } = entry;
+    const { policy } = account;
+    if (policy.kind !== 'api' || policy.authMode !== 'credential') {
+      throw new ManagementError('invalid_request', 'This connection signs in with Google, so it has no key to save.');
+    }
+    if (!canManageOwnedResource(managementActorPrincipal(actor), account)) {
+      throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
+    }
+    const key = input.key.trim();
+    if (!key) throw new ManagementError('invalid_request', 'The key is empty.');
+    if (actor.origin.kind === 'slack') assertSlackConnectionKey(actor, policy, account.lifecycle, key);
+    if (!this.stores.saveConnectionKey) {
+      throw new ManagementError('invalid_request', 'Saving a connection key is unavailable.');
+    }
+    const [workspaceId] = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
+    if (!workspaceId) throw new ManagementError('invalid_request', 'The API connection was not found.');
+    let check: SavedConnectionKeyCheck;
+    try {
+      check = await this.stores.saveConnectionKey({
+        agentId: agent.id,
+        connectionId: account.id,
+        actor: { workspaceId, actorMembershipId: actor.membershipId },
+        key,
+        path: input.path,
+        expectedRevision: account.revision,
+        surface: actor.origin.kind,
+      });
+    } catch (error) {
+      if (!(error instanceof ConnectionKeyRefusedError)) throw error;
+      const url = await this.setupLinkAfterRefusedKey(actor, agent.id, account.id);
+      throw url
+        ? new ConnectionKeyRefusedError(error.check, { url, pastedInChat: actor.origin.kind === 'slack' })
+        : error;
+    }
+    return {
+      agent: { id: agent.id, name: agent.name },
+      connection: {
+        id: account.id,
+        name: account.label,
+        sendsKeyTo: connectionUrlPrefixes(policy),
+        allowedMethods: [...policy.allowedMethods],
+      },
+      check,
+      instruction: actor.origin.kind === 'slack'
+        ? `${SAVED_KEY_INSTRUCTION} Because the person pasted the key in Slack, suggest they rotate it at the service and use the setup link next time.`
+        : SAVED_KEY_INSTRUCTION,
+    };
+  }
+
+  /**
+   * The setup link request_setup would issue the requester for this
+   * connection, so a refused key still leaves the person a way to finish.
+   * Undefined when that request would not issue one now, or issuing fails;
+   * the refusal then stands without it.
+   */
+  private async setupLinkAfterRefusedKey(
+    actor: LiveManagementActor,
+    agentId: string,
+    connectionId: string,
+  ): Promise<string | undefined> {
+    const operation: Extract<ManagementOperation, { kind: 'request_setup' }> = {
+      itemId: 'save_connection_key',
+      kind: 'request_setup',
+      target: { kind: 'api_connection', agentId, connectionId },
+    };
+    try {
+      const policy = classifyManagementOperation(await this.policyFacts(actor, operation, { operationCount: 1 }));
+      if (!policy.allowed || policy.posture !== 'immediate') return undefined;
+      return (await this.issueSetup(actor, operation)).url;
+    } catch (error) {
+      if (!isExpectedMutationError(error)) {
+        console.warn('[chickpea:management] no setup link for a refused connection key', JSON.stringify({
+          errorName: error instanceof Error ? error.name : typeof error,
+        }));
+      }
+      return undefined;
+    }
   }
 
   async inspectMemory(
@@ -5073,6 +5217,7 @@ export class WorkspaceManagementService {
         ...(agentReferences ? { agentReferences } : {}),
         capabilityScopeExpanded: capabilityScopeExpanded(currentAgent, patch),
         connectionRemoved: connectionRemoved(currentAgent, patch),
+        requesterTypedNewKeyedConnections: newKeyedConnectionsTypedByRequester(actor, currentAgent, patch),
         agentEditable: true,
         ...(options.approvalBasis || requesterAuthorized
           ? { approvalBasis: 'explicit_requester_command' as const }
@@ -8100,6 +8245,8 @@ function memoryMutation(memory: AgentMemory, inverse?: ManagementOperation): Imm
 
 const SETUP_LINK_ON_APPROVAL = 'The person gets this setup link with the receipt when they approve the change set. Tell them it follows their approval, and do not prepare it yourself.';
 const CHANGE_AFTER_APPROVAL = 'This change conflicts with the pending change set. Make it in a new request after the person approves that one.';
+const SAVED_KEY_INSTRUCTION = 'The key is saved and the connection is ready. Tell the person the connection name, where its requests go (sendsKeyTo), what it may do (allowedMethods), and that a test request with the key worked. Never repeat the key.';
+
 const SLACK_SETUP_APPROVAL_UNAVAILABLE = 'Replacing saved credentials needs an approval Slack cannot collect for a setup link. Ask the person to replace them from Admin.';
 
 /**
@@ -8536,6 +8683,120 @@ function requesterTextContainsExactSource(requestText: string, source: string): 
     if (beforeBoundary && afterBoundary) return true;
   }
   return false;
+}
+
+/**
+ * The http(s) URLs in the requester's text. Slack sends a typed URL as
+ * `<url>` or `<url|label>`; only the target counts, since a label can show
+ * another URL.
+ */
+function requesterTypedUrls(requestText: string): URL[] {
+  const text = requestText
+    .replace(/<(https?:\/\/[^>|\s]+)(?:\|[^>]*)?>/gi, ' $1 ')
+    .replace(/&amp;/gi, '&');
+  return [...text.matchAll(/https?:\/\/[^\s<>"'`|]+/gi)].flatMap(([match]) => {
+    try {
+      const url = new URL(match.replace(/[.,;:!?)\]}]+$/, ''));
+      // `https://api.example.com@evil.example/` names evil.example; never count it as typed.
+      if (url.username || url.password) return [];
+      // Slack links a bare `api.example.com/v1` as http://; a connection only ever sends over https.
+      if (url.protocol === 'http:' && url.port === '') url.protocol = 'https:';
+      return [url];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** Characters a key can continue with, so a key found among them is only part of a longer token. */
+const KEY_CHARACTER = /[A-Za-z0-9_\-+/=]/;
+
+/** Whether `key` appears whole in the requester's text, exactly as typed. */
+function requesterTextContainsExactKey(requestText: string, key: string): boolean {
+  const text = requestText.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  for (let at = text.indexOf(key); at >= 0; at = text.indexOf(key, at + 1)) {
+    if (!KEY_CHARACTER.test(text[at - 1] ?? '') && !KEY_CHARACTER.test(text[at + key.length] ?? '')) return true;
+  }
+  return false;
+}
+
+/**
+ * From Slack a key is saved only when the requester typed it, and every URL
+ * it is sent to, in their own current message to this Agent, and only into
+ * a connection without a saved key: replacing one needs Admin.
+ */
+function assertSlackConnectionKey(
+  actor: LiveManagementActor,
+  policy: ApiConnectionScope,
+  lifecycle: ConnectionAccount['lifecycle'],
+  key: string,
+): void {
+  const requestText = requestAddressedHere(actor);
+  if (!requestText || !requesterTextContainsExactKey(requestText, key)) {
+    throw new ManagementError(
+      'invalid_request',
+      'Nothing was saved: save_connection_key takes only a key the requester typed in their own current message to this Agent. Send a setup link with request_setup instead, and never ask anyone to paste a key in chat.',
+    );
+  }
+  const typed = requesterTypedUrls(requestText);
+  const untyped = connectionUrlPrefixes(policy).filter((url) => !typedUrlsCover(typed, url));
+  if (untyped.length > 0) {
+    throw new ManagementError(
+      'invalid_request',
+      `Nothing was saved: this connection sends its key to ${untyped.join(', ')}, which the requester did not type in the same message as the key. Send a setup link with request_setup instead; its page shows where the key goes.`,
+    );
+  }
+  if (lifecycle === 'ready') {
+    throw new ManagementError(
+      'invalid_request',
+      'Nothing was saved: this connection already has a saved key, and only Admin can replace it from Slack. Ask the person to replace the key on the Agent\'s page in Admin.',
+    );
+  }
+}
+
+/** A typed URL covers `url` when it has the same origin and `url`'s path sits inside the typed path. */
+function typedUrlsCover(typed: readonly URL[], url: string): boolean {
+  return typed.some((entry) => matchesEgressPrefix(url, entry.href));
+}
+
+/**
+ * Slack: whether every API connection and MCP server the patch adds or
+ * changes is new to the Agent, needs a key (an API key, or an MCP bearer
+ * token), and sends only to URLs the requester typed in this message to
+ * this Agent. Such a connection starts pending with no key, so it reaches
+ * nothing until one is saved.
+ */
+function newKeyedConnectionsTypedByRequester(
+  actor: LiveManagementActor,
+  agent: CustomAgentConfig,
+  patch: ManagementAgentPatch,
+): boolean {
+  const requestText = requestAddressedHere(actor);
+  if (!requestText) return false;
+  const apis = changedConnections(agent.apiConnections, patch.apiConnections, managementApiConnection);
+  const servers = changedConnections(agent.mcpServers, patch.mcpServers, managementMcpConnection);
+  const isNew = (stored: readonly { id: string }[]) => ({ id }: { id: string }) =>
+    !stored.some((connection) => connection.id === id);
+  if (apis.length + servers.length === 0 ||
+      !apis.every(isNew(agent.apiConnections)) || !servers.every(isNew(agent.mcpServers)) ||
+      apis.some(({ authMode }) => authMode === 'oauth') || servers.some(({ authMode }) => authMode !== 'bearer')) {
+    return false;
+  }
+  const typed = requesterTypedUrls(requestText);
+  return [...apis.map(connectionUrlPrefixes), ...servers.map(({ url }) => [url])]
+    .every((urls) => urls.length > 0 && urls.every((url) => typedUrlsCover(typed, url)));
+}
+
+/** The written connections that are new or differ from the stored connection with their id. */
+function changedConnections<T extends { id: string }>(
+  stored: readonly T[],
+  written: readonly T[] | undefined,
+  project: (connection: T) => T,
+): T[] {
+  return (written ?? []).filter((connection) => {
+    const prior = stored.find(({ id }) => id === connection.id);
+    return !prior || canonicalJson(project(prior)) !== canonicalJson(project(connection));
+  });
 }
 
 function wordMatch(text: string, value: string): RegExpExecArray | undefined {

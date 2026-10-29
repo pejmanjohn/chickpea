@@ -16,7 +16,7 @@ export type ConnectionCheckFailure =
 /** What one GET with an API connection's key found. `url` and `detail` never carry the key. */
 export type ApiConnectionCheck =
   | { kind: 'ok'; url: string; status: number }
-  | { kind: ConnectionCheckFailure; url: string; status?: number; detail: string };
+  | { [K in ConnectionCheckFailure]: { kind: K; url: string; status?: number; detail: string } }[ConnectionCheckFailure];
 
 export type McpConnectionCheck =
   | { kind: 'ok'; tools: McpConnectionToolInfo[] }
@@ -63,8 +63,8 @@ const STATUS_FAILURES: Partial<Record<number, ConnectionCheckFailure>> = {
 
 const FAILURE_DETAIL: Record<ConnectionCheckFailure, string> = {
   key_rejected: 'The service rejected the key.',
-  not_permitted: 'The service accepted the key but did not permit this request.',
-  path_not_found: 'The service accepted the key but did not find this path.',
+  not_permitted: 'The service refused this request, which usually means the key works but lacks a scope.',
+  path_not_found: 'The service did not find this path, so the key could not be checked.',
   unreachable: 'The service could not be reached or had an error.',
   inconclusive: 'The answer does not show whether the key works.',
 };

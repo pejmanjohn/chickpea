@@ -61,17 +61,22 @@ test('each status maps to its outcome, with a redacted excerpt of the answer', a
   }
 });
 
-test('an answer with no readable body gets a fixed detail', async () => {
-  await withConnectionNetwork(() => new Response('<html>denied</html>', {
-    status: 403, headers: { 'content-type': 'text/html' },
-  }), async () => {
-    assert.deepEqual(await check(), {
-      kind: 'not_permitted',
-      url: 'https://api.hubapi.com/cms/knowledge-base/2027-03-beta',
-      status: 403,
-      detail: 'The service accepted the key but did not permit this request.',
+test('an answer with no readable body gets a fixed detail that never calls the key accepted', async () => {
+  for (const [status, kind, detail] of [
+    [403, 'not_permitted', 'The service refused this request, which usually means the key works but lacks a scope.'],
+    [404, 'path_not_found', 'The service did not find this path, so the key could not be checked.'],
+  ] as const) {
+    await withConnectionNetwork(() => new Response('<html>no</html>', {
+      status, headers: { 'content-type': 'text/html' },
+    }), async () => {
+      assert.deepEqual(await check(), {
+        kind,
+        url: 'https://api.hubapi.com/cms/knowledge-base/2027-03-beta',
+        status,
+        detail,
+      });
     });
-  });
+  }
 });
 
 test('a key cut by the excerpt window is still redacted', async () => {

@@ -3,14 +3,15 @@ import { readFileSync } from 'node:fs';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
-const AGENT_AUTHORING_GUIDE_VERSION = '1.0.43';
-const MANAGEMENT_MCP_SERVER_VERSION = '4.0.0';
+const AGENT_AUTHORING_GUIDE_VERSION = '1.0.44';
+const MANAGEMENT_MCP_SERVER_VERSION = '4.1.0';
 const MANAGEMENT_MCP_TOOL_NAMES = [
   'inspect_workspace',
   'prepare_connector_setup',
   'prepare_provider_setup',
   'discover_slack_channels',
   'test_connection',
+  'save_connection_key',
   'inspect_memory',
   'inspect_routines',
   'export_workspace_recipe',

@@ -61,6 +61,7 @@ import { createManagementModelSources } from './model-sources.ts';
 import { ManagementError } from './types.ts';
 import {
   discoverOpenMcpServer,
+  saveManagedConnectionKey,
   testManagedConnection,
 } from './discovery.ts';
 
@@ -218,6 +219,13 @@ export function createLiveWorkspaceManagementService(
       config: config as ConfigStore,
       identity,
       settings,
+    }),
+    saveConnectionKey: (input) => saveManagedConnectionKey({
+      ...input,
+      ...(env ? { env } : {}),
+      config: config as ConfigStore,
+      settings,
+      productTelemetry,
     }),
     managedConnectorAvailable: async ({ toolkit, accessLane }) => {
       const context = await resolveManagedAuthorizationProviderContext({

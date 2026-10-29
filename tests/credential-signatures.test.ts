@@ -17,6 +17,7 @@ const SYNTHETIC_SLACK_APP_TOKEN = ['x', 'app'].join('') + '-' +
   ['1', 'A0123456789', 'abcdefghijklmnopqrstuvwx'].join('-');
 const SYNTHETIC_GITHUB_INSTALLATION_TOKEN = ['gh', 's_'].join('') +
   'abcdefghijklmnopqrstuvwxyz012';
+const SYNTHETIC_HUBSPOT_KEY = ['pat', 'eu1', '00000000-0000-4000-8000-00000000abcd'].join('-');
 
 // One sample per credential signature, in table order.
 const SAMPLES: readonly { input: string; redacted: string }[] = [
@@ -43,6 +44,7 @@ const SAMPLES: readonly { input: string; redacted: string }[] = [
   },
   { input: `id ${awsExampleAccessKeyId('AKIA')} here`, redacted: 'id [credential redacted] here' },
   { input: 'key bb_live_abcdefghijkl1234 here', redacted: 'key [credential redacted] here' },
+  { input: `key ${SYNTHETIC_HUBSPOT_KEY} here`, redacted: 'key [credential redacted] here' },
   {
     input: 'CHICKPEA_AUTH_SECRET=supersecretvalue',
     redacted: '[credential redacted]',
@@ -82,6 +84,7 @@ test('credential markers stay the exact projection the streaming path relies on'
     'ASIA',
     'bb_live_',
     'bb_test_',
+    'pat-',
     'CHICKPEA_AUTH_SECRET',
     'CHICKPEA_RECOVERY_TOKEN',
     'CHICKPEA_CREDENTIAL_KEY_',
@@ -357,6 +360,17 @@ test('the AWS access-key-id signature stays case-sensitive', () => {
     'id akiaiosfodnn7example here',
   );
   assert.equal(hasCredentialLikeContent(`id ${awsExampleAccessKeyId('ASIA')} here`), true);
+});
+
+test('a HubSpot key is a pat- region and a UUID, in any case; a word or a short id is not', () => {
+  const upper = SYNTHETIC_HUBSPOT_KEY.toUpperCase();
+  assert.equal(redactCredentialLikeContent(`${upper}.`), '[credential redacted].');
+  assert.equal(redactCredentialLikeContent(`(${SYNTHETIC_HUBSPOT_KEY}ff)`), '([credential redacted]ff)',
+    'trailing characters keep the key redacted');
+  for (const text of ['a pat-down at the door', 'ticket pat-na1-1234', 'spat-na1-00000000-0000-4000-8000-00000000abcd']) {
+    assert.equal(hasCredentialLikeContent(text), false, text);
+  }
+  assert.equal(streamableSlackMarkdownPrefix(`saved ${SYNTHETIC_HUBSPOT_KEY.slice(0, 12)}`), 'saved');
 });
 
 test('streaming withholds a partial credential marker tail until it resolves', () => {

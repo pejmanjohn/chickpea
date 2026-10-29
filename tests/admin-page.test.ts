@@ -10040,8 +10040,8 @@ test('the custom REST API form says the token is checked, and a rejected token k
 });
 
 for (const [kind, notice] of [
-  ['not_permitted', 'Reports API is saved. The API accepted its token but did not permit the request Chickpea tried.'],
-  ['path_not_found', 'Reports API is saved. The API accepted its token but did not find the path Chickpea tried.'],
+  ['not_permitted', 'Reports API is saved. The API refused the request Chickpea tried, which usually means its token works but lacks a permission.'],
+  ['path_not_found', 'Reports API is saved, but Chickpea could not check its token because the API did not find the path Chickpea tried.'],
   ['unreachable', 'Reports API is saved, but Chickpea could not reach the API to check its token.'],
   ['inconclusive', 'Reports API is saved, but Chickpea could not confirm that its token works.'],
 ] as const) {
@@ -10055,6 +10055,31 @@ for (const [kind, notice] of [
     assert.ok(harness.app.innerHTML.includes(notice), harness.app.innerHTML);
   });
 }
+
+test('a token preset whose bare API path answers 404 says its token could not be confirmed, never that it is connected', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [] },
+    connectionAccountCheck: { kind: 'path_not_found', status: 404 },
+  });
+  await flushAsync();
+  const { click, input } = harness.listeners;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'zendesk' }) });
+  chooseConnectionOwner(harness);
+  input({ target: inputTarget({ 'data-action': 'connection-account-credential' }, 'zendesk-token') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-subdomain' }, 'acme-support') });
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.ok(html.includes('Zendesk is saved, but Chickpea could not confirm that its token works.'), html);
+  assert.doesNotMatch(html, /Zendesk is connected|accepted its token/);
+});
 
 test('self-hosted Agent-owned Google connectors fall back to native OAuth setup without Composio', async () => {
   const harness = runAdminPageHarness({

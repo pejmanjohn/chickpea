@@ -181,6 +181,34 @@ test('MCP and Admin confirm only what the Admin UI asks "Are you sure?" about', 
   }
 });
 
+test('new keyed connections the requester typed apply at once only for a user Agent and a connections-only patch', () => {
+  const agent: CustomAgentConfig = {
+    id: 'agent_policy', kind: 'user', name: 'Policy', instructions: 'Answer.', enabled: true, revision: 1,
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  };
+  const connection = {
+    id: 'reports', displayName: 'Reports', allowedHosts: ['reports.example.com'], pathPrefixes: ['/v1'],
+    headerName: 'Authorization', allowedMethods: ['GET'], enabled: true,
+  };
+  const decide = (patch: Extract<ManagementOperation, { kind: 'update_agent' }>['patch'], facts: object = {}) =>
+    classifyManagementOperation({
+      actor,
+      operation: { itemId: 'u', kind: 'update_agent', agentId: agent.id, expectedRevision: 1, patch },
+      currentAgent: agent,
+      agentEditable: true,
+      capabilityScopeExpanded: true,
+      requesterTypedNewKeyedConnections: true,
+      ...facts,
+    });
+  assert.deepEqual(decide({ apiConnections: [connection] }),
+    { allowed: true, posture: 'immediate', reason: 'typed_new_keyed_connection' });
+  assert.equal(posture(decide({ apiConnections: [connection] }, { currentAgent: { ...agent, kind: 'system' } })), 'confirmation');
+  assert.equal(posture(decide({ apiConnections: [connection] }, { currentAgent: undefined })), 'confirmation');
+  assert.equal(posture(decide({ apiConnections: [connection], description: 'Reports.' })), 'confirmation');
+  assert.equal(posture(decide({ apiConnections: [] }, { connectionRemoved: true })), 'confirmation');
+  assert.equal(posture(decide({ apiConnections: [connection] }, { requesterTypedNewKeyedConnections: false })), 'confirmation');
+});
+
 test('direct apply over MCP creates Agents immediately, including workspace-wide edit authority', async () => {
   const f = await createManagementAdapterFixture('create-edit-authority-policy');
   const context = {
