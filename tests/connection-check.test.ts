@@ -40,6 +40,20 @@ test('a 2xx is ok: one GET to the first host and prefix, carrying the key', asyn
   });
 });
 
+test('basic_username sends the key as an HTTP Basic username, and the answer never echoes it either way', async () => {
+  const basic = { ...KB, headerValuePrefix: 'Basic ' };
+  const encoded = Buffer.from(`${KEY}:`).toString('base64');
+  await withConnectionNetwork(
+    () => Response.json({ message: `neither ${KEY} nor Basic ${encoded} works` }, { status: 401 }),
+    async (requests) => {
+      const outcome = await check({ connection: basic, authShape: 'basic_username' });
+      assert.equal(requests[0]!.headers.get('authorization'), `Basic ${encoded}`);
+      assert.equal(outcome.kind, 'key_rejected');
+      assert.doesNotMatch(JSON.stringify(outcome), new RegExp(`${KEY}|${encoded.replace(/[+/=]/g, '\\$&')}`));
+    },
+  );
+});
+
 test('each status maps to its outcome, with a redacted excerpt of the answer', async () => {
   const cases = [
     [401, 'key_rejected'],
