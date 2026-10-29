@@ -22,6 +22,7 @@ import {
   thinkingSemanticActivity,
   unknownSemanticDescriptor,
   webPageSemanticDescriptor,
+  connectionTrySemanticDescriptor,
   webSearchSemanticDescriptor,
   type ActivityStatus,
   type SemanticActivityDescriptor,
@@ -335,10 +336,27 @@ function namedDescriptor(
   if (toolName === READ_WEB_PAGE_TOOL_NAME && registered.target === 'web') {
     return webPageSemanticDescriptor(objectString(args, 'url'));
   }
+  if (toolName === 'try_connection' && registered.target === 'connection_setup') {
+    return connectionTrySemanticDescriptor(tryConnectionHost(args, context.apiConnections));
+  }
   if (toolName === WEB_SEARCH_TOOL_NAME && registered.target === 'web') {
     return webSearchSemanticDescriptor(objectString(args, 'query'));
   }
   return registered;
+}
+
+/** The first host a try_connection call sends to: its draft's, or else its named connection's. */
+function tryConnectionHost(
+  args: unknown,
+  apiConnections: RegisteredActivityContext['apiConnections'],
+): string | undefined {
+  if (typeof args !== 'object' || args === null) return undefined;
+  const { draft, connectionId } = args as { draft?: unknown; connectionId?: unknown };
+  const hosts = typeof draft === 'object' && draft !== null ? (draft as { allowedHosts?: unknown }).allowedHosts : undefined;
+  if (Array.isArray(hosts)) return typeof hosts[0] === 'string' ? hosts[0] : undefined;
+  return typeof connectionId === 'string'
+    ? apiConnections.find(({ id }) => id === connectionId)?.allowedHosts[0]
+    : undefined;
 }
 
 /** Flue names MCP tools `mcp__<server>__<tool>` with a sanitized server id. */

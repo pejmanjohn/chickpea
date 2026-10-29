@@ -396,10 +396,25 @@ export const testConnectionZodSchema = z.strictObject({
   connectionId: zId,
   path: z.string().max(2048).regex(CONNECTION_CHECK_PATH_PATTERN).optional(),
 });
+const zAuthShape = z.enum(['header', 'basic_username']);
 export const saveConnectionKeyZodSchema = z.strictObject({
   agentId: zAgentId.optional(),
   connectionId: zId,
   key: z.string().min(1).max(CONNECTION_KEY_MAX_LENGTH).describe('The key the person gave you, unchanged.'),
+  path: z.string().max(2048).regex(CONNECTION_CHECK_PATH_PATTERN),
+  authShape: zAuthShape.optional(),
+});
+export const tryConnectionZodSchema = z.strictObject({
+  agentId: zAgentId.optional(),
+  draft: z.strictObject({
+    allowedHosts: z.array(zText(253)).min(1).max(10),
+    pathPrefixes: z.array(zText(512)).max(10),
+    headerName: zText(128),
+    headerValuePrefix: zOptionalText(120).optional(),
+    authShape: zAuthShape.optional(),
+  }).optional(),
+  connectionId: zId.optional(),
+  key: z.string().min(1).max(CONNECTION_KEY_MAX_LENGTH).optional().describe('The key the person gave you, unchanged. Omit it to try a connection\'s saved key.'),
   path: z.string().max(2048).regex(CONNECTION_CHECK_PATH_PATTERN),
 });
 export const inspectMemoryZodSchema = z.strictObject({ agentId: zAgentId });
@@ -786,6 +801,25 @@ export const saveConnectionKeyValibotSchema = v.strictObject({
     v.maxLength(CONNECTION_KEY_MAX_LENGTH),
     v.description('The key exactly as the requester typed it in their own current message.'),
   ),
+  path: v.pipe(v.string(), v.maxLength(2048), v.regex(CONNECTION_CHECK_PATH_PATTERN)),
+  authShape: v.optional(v.picklist(['header', 'basic_username'])),
+});
+export const tryConnectionValibotSchema = v.strictObject({
+  agentId: v.optional(vAgentId),
+  draft: v.optional(v.strictObject({
+    allowedHosts: v.pipe(v.array(vt(253)), v.minLength(1), v.maxLength(10)),
+    pathPrefixes: va(vt(512), 10),
+    headerName: vt(128),
+    headerValuePrefix: v.optional(vot(120)),
+    authShape: v.optional(v.picklist(['header', 'basic_username'])),
+  })),
+  connectionId: v.optional(vid),
+  key: v.optional(v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(CONNECTION_KEY_MAX_LENGTH),
+    v.description('The key exactly as the requester typed it. Omit it to try a connection\'s saved key.'),
+  )),
   path: v.pipe(v.string(), v.maxLength(2048), v.regex(CONNECTION_CHECK_PATH_PATTERN)),
 });
 export const inspectMemoryValibotSchema = v.strictObject({ agentId: vAgentId });

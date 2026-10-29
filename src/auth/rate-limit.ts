@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 
 import type { IdentityStore } from '../identity/types.ts';
 
-const WINDOW_MS = 15 * 60_000;
+const DEFAULT_WINDOW_MS = 15 * 60_000;
 const GLOBAL_SCOPE = 'global';
 const SPECIFIC_SCOPE = 'specific';
 
@@ -11,6 +11,7 @@ interface AuthRateLimiterOptions {
   now?: () => number;
   perKeyLimit?: number;
   globalLimit?: number;
+  windowMs?: number;
 }
 
 export class AuthRateLimitError extends Error {
@@ -22,6 +23,7 @@ export class AuthRateLimiter {
   private readonly now: () => number;
   private readonly perKeyLimit: number;
   private readonly globalLimit: number;
+  private readonly windowMs: number;
   private readonly pepper: string;
 
   constructor(
@@ -33,23 +35,41 @@ export class AuthRateLimiter {
     this.now = options.now ?? Date.now;
     this.perKeyLimit = options.perKeyLimit ?? 10;
     this.globalLimit = options.globalLimit ?? 500;
+    this.windowMs = options.windowMs ?? DEFAULT_WINDOW_MS;
   }
 
   async assertAllowed(bucket: string, rawKey: string): Promise<void> {
     const now = this.now();
-    const windowStart = currentWindow(now);
+    const windowStart = this.currentWindow(now);
     const [specific, global] = await Promise.all([
       this.identity.getAuthRateLimit(bucket, this.keyHash(bucket, SPECIFIC_SCOPE, rawKey)),
       this.identity.getAuthRateLimit(bucket, this.keyHash(bucket, GLOBAL_SCOPE)),
     ]);
     if ((specific?.windowStart === windowStart && specific.failures >= this.perKeyLimit) ||
         (global?.windowStart === windowStart && global.failures >= this.globalLimit)) {
-      throw new AuthRateLimitError(windowStart + WINDOW_MS);
+      throw new AuthRateLimitError(windowStart + this.windowMs);
     }
   }
 
+  /**
+   * Counts one use against the key's and the bucket's limits before the work
+   * it pays for, and returns how many the key has left in this window. Over
+   * either limit it throws, and the use still counts.
+   */
+  async take(bucket: string, rawKey: string): Promise<number> {
+    const windowStart = this.currentWindow(this.now());
+    const [specific, global] = await Promise.all([
+      this.identity.recordAuthRateFailure(bucket, this.keyHash(bucket, SPECIFIC_SCOPE, rawKey), windowStart),
+      this.identity.recordAuthRateFailure(bucket, this.keyHash(bucket, GLOBAL_SCOPE), windowStart),
+    ]);
+    if (specific.failures > this.perKeyLimit || global.failures > this.globalLimit) {
+      throw new AuthRateLimitError(windowStart + this.windowMs);
+    }
+    return this.perKeyLimit - specific.failures;
+  }
+
   async recordFailure(bucket: string, rawKey: string): Promise<void> {
-    const windowStart = currentWindow(this.now());
+    const windowStart = this.currentWindow(this.now());
     await Promise.all([
       this.identity.recordAuthRateFailure(
         bucket,
@@ -68,6 +88,10 @@ export class AuthRateLimiter {
     await this.identity.clearAuthRateLimit(bucket, this.keyHash(bucket, SPECIFIC_SCOPE, rawKey));
   }
 
+  private currentWindow(now: number): number {
+    return Math.floor(now / this.windowMs) * this.windowMs;
+  }
+
   private keyHash(bucket: string, scope: string, raw = ''): string {
     return createHmac('sha256', this.pepper)
       .update(bucket)
@@ -77,8 +101,4 @@ export class AuthRateLimiter {
       .update(raw)
       .digest('hex');
   }
-}
-
-function currentWindow(now: number): number {
-  return Math.floor(now / WINDOW_MS) * WINDOW_MS;
 }

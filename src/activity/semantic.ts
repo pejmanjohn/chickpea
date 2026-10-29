@@ -143,8 +143,9 @@ type SemanticTrustTier = 'managed_catalog' | 'built_in' | 'customer_configuratio
 type SemanticEffectClass = ManagedEffectClass | 'none';
 
 /**
- * The labels a web tool's own input may supply, each with the only check that
- * admits it. Every other label is catalog copy or an admin-given name.
+ * The labels a web or connection-setup tool's own input may supply, each with
+ * the only check that admits it. Every other label is catalog copy or an
+ * admin-given name.
  */
 const WEB_LABELS = {
   web_host: isSafeWebHostLabel,
@@ -372,7 +373,7 @@ export function configuredSemanticDescriptor(
   return { ...generic, label: { kind: family, id, label } };
 }
 
-/** Room for a host in `Reading <host>…`. */
+/** Room for a host in `Reading <host>…` and `Testing <host>…`. */
 const WEB_HOST_LABEL_LIMIT = ACTIVITY_STATUS_TEXT_LIMIT - 'Reading …'.length;
 
 /**
@@ -383,7 +384,18 @@ const WEB_HOST_LABEL_LIMIT = ACTIVITY_STATUS_TEXT_LIMIT - 'Reading …'.length;
  * rightmost labels that fit. Anything else keeps the generic web read.
  */
 export function webPageSemanticDescriptor(url: unknown): SemanticActivityDescriptor {
-  const generic = genericSemanticDescriptor('web');
+  return withWebHostLabel(genericSemanticDescriptor('web'), url);
+}
+
+/** Name the host a try_connection call sends its one GET to, held to the web read's host check. */
+export function connectionTrySemanticDescriptor(host: unknown): SemanticActivityDescriptor {
+  return withWebHostLabel(
+    genericSemanticDescriptor('connection_setup'),
+    typeof host === 'string' && !/[/:?#@\\]/.test(host) ? `https://${host}/` : undefined,
+  );
+}
+
+function withWebHostLabel(generic: SemanticActivityDescriptor, url: unknown): SemanticActivityDescriptor {
   const parsed = typeof url === 'string' ? URL.parse(url.trim()) : null;
   if (!parsed) return generic;
   if (parsed.protocol === 'http:' && parsed.port === '') parsed.protocol = 'https:';
@@ -591,7 +603,7 @@ export function isSemanticActivityDescriptor(value: unknown): value is SemanticA
     return value.trust === 'customer_configuration' && kind === value.target &&
       isSafeLabelId(id) && isSafeConfiguredLabel(label);
   }
-  if (value.target === 'web') {
+  if (value.target === 'web' || value.target === 'connection_setup') {
     return value.trust === 'built_in' && typeof kind === 'string' && Object.hasOwn(WEB_LABELS, kind) &&
       id === label && WEB_LABELS[kind as WebLabelKind](label);
   }
@@ -772,10 +784,13 @@ function familyActivity(
       return settled
         ? activityStatus('reading', 'Reviewing', 'workspace settings')
         : activityStatus('checking', 'Inspecting', 'workspace settings');
-    case 'connection_setup':
-      return settled
-        ? activityStatus('checking', 'Checking', 'the connection')
+    case 'connection_setup': {
+      if (settled) return activityStatus('checking', 'Checking', 'the connection');
+      const host = descriptorValue.label?.kind === 'web_host' ? descriptorValue.label.label : undefined;
+      return host
+        ? activityStatus('checking', 'Testing', host)
         : activityStatus('updating', 'Setting up', 'a connection');
+    }
     case 'agent_authoring':
       if (settled) return activityStatus('reading', 'Reviewing', 'Agent changes');
       if (descriptorValue.operation === 'draft') {

@@ -280,9 +280,20 @@ test('Slack and the guide route a catalog gap to a custom connection and default
     assert.match(text, /narrowest host and path prefix/);
     assert.match(text, /DELETE only when asked/);
     assert.match(text, /request_setup/);
-    assert.match(text, /pasted the key in their own current message, call `?save_connection_key`?/);
+    assert.match(text, /pasted the key in their own current message, troubleshoot with/);
     assert.match(text, /rotate the key and use the setup link next time/);
-    assert.match(text, /Give that call a `?path`? set to a read endpoint inside the connection that the key can read, such as a list endpoint, never the bare prefix/);
+    assert.match(text, /`?try_connection`?, which sends one GET and saves nothing/);
+    assert.match(text, /HTTP Basic with the key as the username/);
+    assert.match(text, /On a 401,? try the other auth shapes the docs allow, then (?:say|tell the person) where to get a working key/);
+    assert.match(text, /on a 403,? (?:name|find) the scope `?detail`?/i);
+    assert.match(text, /on a 404,? find the real endpoint(?:,|;) never (?:retry )?the bare prefix/i);
+    assert.match(text, /on a network error or (?:a )?5xx,? say the service could not be reached/i);
+    assert.match(text, /Save only a combination that returned 2xx/);
+    assert.match(text, /`?connection_request`?/);
+    assert.match(text, /what you tried, never the key, the one next step/);
+    assert.match(text, /Never write to the service/);
+    assert.match(text, /add the connection anyway/);
+    assert.match(text, /`?test_connection`?, then `?try_connection`? with its `?connectionId`? and no key/);
     assert.match(text, /its refusal carries a setup link for the connection; give the (?:requester|person) that link/);
     assert.match(text, /never repeat a key/i);
   }

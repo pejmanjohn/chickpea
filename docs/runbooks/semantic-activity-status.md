@@ -133,8 +133,8 @@ When adding a first-party capability:
    (`Checking a connected service…`, `Using a skill…`). Keep Agent,
    repository, account, and resource names generic. Never promote paths,
    arguments, or result fields into the descriptor.
-5. Only the web tools take a name from tool input, and each name has its
-   own check in `WEB_LABELS`:
+5. Only the web tools and `try_connection` take a name from tool input,
+   and each name has its own check in `WEB_LABELS`:
    - The host a `read_web_page` call reads
      (`Reading docs.statusboard.example…`), checked in
      `webPageSemanticDescriptor`. It must be a public https host on the
@@ -153,6 +153,10 @@ When adding a first-party capability:
      credential-like is not shown. A query too long for the 50-character
      status is shortened with "…". Anything else reads
      `Searching the web…`, and the review reads `Reviewing the results…`.
+   - The host a `try_connection` call tests
+     (`Testing api.statusboard.example…`), from its draft's first host or
+     the first host of the named connection, held to the same host check
+     as `read_web_page`. Anything else reads `Setting up a connection…`.
 
    A new label that tool input may supply gets its own check in
    `WEB_LABELS`.

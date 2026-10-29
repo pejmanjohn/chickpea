@@ -4,6 +4,7 @@ import { McpOAuthError } from '../config/mcp-oauth.ts';
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { ConnectionAccountApiPolicy, McpConnectionToolInfo } from '../config/types.ts';
+import { bytesToBase64 } from '../security/base64url.ts';
 import { connectionFetchFailureReason, redactConnectionText } from './response.ts';
 
 export type ConnectionCheckFailure =
@@ -24,6 +25,13 @@ export type McpConnectionCheck =
 
 export type ConnectionCheckOutcome = ApiConnectionCheck | McpConnectionCheck;
 
+/**
+ * How a key reaches an API: `header` sends the header value prefix and the
+ * key; `basic_username` sends it as HTTP Basic credentials, the key as the
+ * username with an empty password, base64-encoded host-side.
+ */
+export type ConnectionAuthShape = 'header' | 'basic_username';
+
 export type ApiConnectionScope = Pick<
   ConnectionAccountApiPolicy,
   'allowedHosts' | 'pathPrefixes' | 'headerName' | 'headerValuePrefix' | 'allowedMethods'
@@ -33,6 +41,8 @@ export interface ApiCheckTarget {
   kind: 'api';
   connection: ApiConnectionScope;
   credential: string;
+  /** `basic_username` sends `credential` as an HTTP Basic username with an empty password. */
+  authShape?: ConnectionAuthShape;
   /** A path on the connection's first host. Defaults to its first path prefix. */
   path?: string;
   /** Live fence run before the request leaves, as a turn's connection scope runs it. */
@@ -98,23 +108,32 @@ export function checkConnection(
 }
 
 /** Every `https://<host><prefix>` the connection sends its key to. */
-export function connectionUrlPrefixes(connection: ApiConnectionScope): string[] {
+export function connectionUrlPrefixes(connection: Pick<ApiConnectionScope, 'allowedHosts' | 'pathPrefixes'>): string[] {
   const prefixes = connection.pathPrefixes.length > 0 ? connection.pathPrefixes : [''];
   return connection.allowedHosts.flatMap((host) =>
     prefixes.map((prefix) => 'https://' + host + prefix.replace(/\/+$/, '')));
 }
 
 /** The URL a check GETs: `path` on the first host, or the first host and path prefix. */
-export function connectionCheckUrl(connection: ApiConnectionScope, path?: string): string | undefined {
+export function connectionCheckUrl(
+  connection: Pick<ApiConnectionScope, 'allowedHosts' | 'pathPrefixes'>,
+  path?: string,
+): string | undefined {
   const host = connection.allowedHosts[0];
   if (host === undefined) return undefined;
   return path === undefined ? connectionUrlPrefixes(connection)[0] : 'https://' + host + path;
 }
 
+/** The credential part of the header value: the key, or for `basic_username` base64 of `key:`. */
+export function connectionHeaderCredential(key: string, authShape: ConnectionAuthShape = 'header'): string {
+  return authShape === 'basic_username' ? bytesToBase64(new TextEncoder().encode(`${key}:`)) : key;
+}
+
 async function checkApi(target: ApiCheckTarget, options: ConnectionCheckOptions): Promise<ApiConnectionCheck> {
   const { connection } = target;
-  const headerValue = (connection.headerValuePrefix ?? '') + target.credential;
-  const secrets = [headerValue, target.credential];
+  const credential = connectionHeaderCredential(target.credential, target.authShape);
+  const headerValue = (connection.headerValuePrefix ?? '') + credential;
+  const secrets = [...new Set([headerValue, credential, target.credential])];
   const requested = connectionCheckUrl(connection, target.path);
   if (requested === undefined) {
     return { kind: 'inconclusive', url: '', detail: 'This connection has no host, so nothing was sent.' };

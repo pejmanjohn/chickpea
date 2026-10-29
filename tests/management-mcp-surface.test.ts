@@ -85,6 +85,7 @@ test('the coding-agent guide keeps the canonical version and rules and drops Sla
     'ends with `View Agent`',
     'pasted the key',
     'typed its URLs',
+    'Approve click',
   ]) assert.ok(!body.includes(slackOnly), `coding-agent guide still says ${slackOnly}`);
   for (const kept of [
     '## Start with posture',
@@ -94,7 +95,8 @@ test('the coding-agent guide keeps the canonical version and rules and drops Sla
     '## Acting scope',
     '## Final check',
     'Never request credentials, OAuth codes, tokens, private keys, or secret-bearing URLs',
-    'If the person gave you the key, call `save_connection_key` with it instead and report what its check found.',
+    'If the person gave you the key, troubleshoot with it until a setup works, then save it with `save_connection_key`.',
+    'When the docs put the API on another host than the person named, tell them which host the key will go to before you add the connection.',
     'call `apply_workspace_changes` in that same turn with exactly one standalone base `create_agent` operation',
     'An external MCP client acts with the signed-in person\'s Admin authority',
     'presentation.markdown',

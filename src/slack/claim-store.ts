@@ -13,8 +13,10 @@ import {
   type PendingTurnJob,
   type RunnerTurnJobView,
   type SlackLatestAgentTurnQuery,
+  type SlackMessageQuery,
   type SlackProposalApprovalQuery,
   type SlackProposalApprovalTurn,
+  type SlackTypedMessage,
 } from './turn-jobs.ts';
 import type {
   TurnDirectThreadQuery,
@@ -327,6 +329,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   getRunPresentation?(runId: string): Promise<SlackRunPresentation | undefined>;
   listProposalApprovalTurns?(input: SlackProposalApprovalQuery): Promise<SlackProposalApprovalTurn[]>;
   latestAgentTurnMessageTs?(input: SlackLatestAgentTurnQuery): Promise<string | undefined>;
+  typedSlackMessage?(input: SlackMessageQuery): Promise<SlackTypedMessage | undefined>;
   getLatestThreadSessionGeneration?(
     root: Pick<SlackPresentationRoot, 'workspaceId' | 'channelId' | 'threadTs'>,
   ): Promise<number | undefined>;

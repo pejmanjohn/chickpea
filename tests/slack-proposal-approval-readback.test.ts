@@ -82,3 +82,40 @@ test('the latest Agent turn is read per Channel thread, or across a whole DM, an
     db.close();
   }
 });
+
+test('a message is read back only as its person typed it, from the host\'s own turn row', async () => {
+  const db = openStateDb(':memory:');
+  const turns = new TurnJobStoreLogic(db, () => 100);
+  const insert = (id: string, messageTs: string, turn: Record<string, unknown>) => {
+    db.run(`INSERT INTO turn_jobs (id, evt_key, msg_key, turn_json, assignment_json, delivered, status, enqueued_at, message_ts)
+      VALUES (?, ?, ?, ?, ?, 1, 'done', 1, ?)`, id, id, id, JSON.stringify({
+      workspaceId: 'T1', channelId: 'D1', userId: 'U_PERSON', messageTs, source: 'dm_message', ...turn,
+    }), JSON.stringify({ agent: { id: 'agent_desk' } }), messageTs);
+  };
+  const query = (messageTs: string, fields: Partial<{ workspaceId: string; channelId: string }> = {}) =>
+    turns.typedSlackMessage({ workspaceId: 'T1', channelId: 'D1', messageTs, ...fields });
+  try {
+    insert('typed', '100.1', { text: 'connect Statusboard, key sb_live_typed' });
+    insert('click', '100.2', { text: 'Approved.', uiResponse: { surfaceId: 's', namespace: 'host', kind: 'approval', choice: 0 } });
+    insert('reaction', '100.3', { text: 'Reacted :sb_live_emoji: to the Slack message at 100.1.', source: 'reaction_added' });
+    insert('ask', '100.4', { text: 'Desk, use sb_live_asked', agentAsk: { fromAgentId: 'agent_other', fromAgentName: 'Other', originMessageTs: '100.1' } });
+    insert('first_agent', '100.5', { text: 'hi both, key sb_live_both' });
+    insert('second_agent', '100.5', { text: 'hi both, key sb_live_both' });
+    assert.deepEqual(query('100.1'), { userId: 'U_PERSON', text: 'connect Statusboard, key sb_live_typed' });
+    for (const ts of ['100.2', '100.3', '100.4']) assert.equal(query(ts), undefined, `${ts}: the host or another Agent wrote this text`);
+    assert.deepEqual(query('100.5'), { userId: 'U_PERSON', text: 'hi both, key sb_live_both' }, 'one message to two Agents reads once');
+    assert.equal(query('100.1', { channelId: 'D2' }), undefined, 'another conversation');
+    assert.equal(query('100.1', { workspaceId: 'T2' }), undefined, 'another workspace');
+    assert.equal(query('100.9'), undefined, 'a message no turn row holds');
+    assert.throws(() => query('not-a-ts'));
+
+    const local = localSlackStateStore({ turnJobs: turns, slack: new SlackStateLogic(db),
+      work: new WorkStoreLogic(db), presentations: new SlackRunPresentationStoreLogic(db) });
+    const proxy = new CfSlackStateStore({ slackTypedMessage: async (input) => ({ ok: true,
+      value: (await local.typedSlackMessage!(input)) ?? null }) } as TagStateRpc);
+    assert.deepEqual(await proxy.typedSlackMessage({ workspaceId: 'T1', channelId: 'D1', messageTs: '100.1' }), query('100.1'));
+    assert.equal(await proxy.typedSlackMessage({ workspaceId: 'T1', channelId: 'D1', messageTs: '100.2' }), undefined);
+  } finally {
+    db.close();
+  }
+});

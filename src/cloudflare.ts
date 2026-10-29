@@ -1827,6 +1827,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.call((stores) => stores.turnJobs.latestAgentTurnMessageTs(input) ?? null);
   }
 
+  async slackTypedMessage(input: Parameters<TagStateRpc['slackTypedMessage']>[0]) {
+    return this.call((stores) => stores.turnJobs.typedSlackMessage(input) ?? null);
+  }
+
   async slackPresentationLatestThreadGeneration(
     root: Parameters<TagStateRpc['slackPresentationLatestThreadGeneration']>[0],
   ) {
@@ -3449,6 +3453,7 @@ function localManagementRuntime(
         memory: local.memory,
         routines: local.routines,
         work: local.work,
+        typedSlackMessage: async (query) => stores.turnJobs.typedSlackMessage(query),
         setupBaseUrl: () => resolveSlackPublicUrl(platformEnv, settings),
       },
     }),
