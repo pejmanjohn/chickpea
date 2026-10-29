@@ -15,7 +15,7 @@ import {
   MAX_WEBSITE_LOGINS,
   normalizeWebsiteLoginHost,
   readWebsiteLoginSecrets,
-  setWebsiteLoginContext,
+  recordWebsiteLoginContext,
   setWebsiteLoginHandoff,
   touchWebsiteLoginUsed,
   WEBSITE_LOGINS_SETTING,
@@ -231,7 +231,8 @@ test('touch and context updates write the per-login state row, not the catalog, 
     const login = await createWebsiteLogin(deps, credentialsInput);
     const catalog = await settings.getSetting(WEBSITE_LOGINS_SETTING);
     assert.equal(await touchWebsiteLoginUsed(settings, login.id, 1234), true);
-    assert.equal(await setWebsiteLoginContext(settings, login.id, 'ctx_abc-123'), true);
+    assert.equal(await recordWebsiteLoginContext(settings, login.id, 'ctx_abc-123'), 'ctx_abc-123');
+    assert.equal(await recordWebsiteLoginContext(settings, login.id, 'ctx_later'), 'ctx_abc-123', 'the first context stays');
     assert.equal(await setWebsiteLoginHandoff(settings, login.id, 'sess-1'), true);
     assert.equal(await settings.getSetting(WEBSITE_LOGINS_SETTING), catalog);
     assert.deepEqual(JSON.parse((await settings.getSetting(`website_login_state.${login.id}`))!), {
@@ -411,14 +412,16 @@ test('runtime fields still in an older catalog entry keep reading, and the state
   });
 });
 
-test('deleting a login removes its state row', async () => {
+test('deleting a login removes its state row and queues its context in the same write', async () => {
   await withLogins(async ({ deps, settings }) => {
     const login = await createWebsiteLogin(deps, credentialsInput);
-    await setWebsiteLoginContext(settings, login.id, 'ctx_1');
+    await recordWebsiteLoginContext(settings, login.id, 'ctx_1');
     assert.ok(await settings.getSetting(`website_login_state.${login.id}`));
     assert.equal(await deleteWebsiteLogin(deps, login.id), true);
     assert.equal(await settings.getSetting(`website_login_state.${login.id}`), undefined);
-    assert.equal(await setWebsiteLoginContext(settings, login.id, 'ctx_2'), false);
+    assert.deepEqual(JSON.parse((await settings.getSetting('browser.pendingContextDeletions'))!)
+      .map(({ contextId }: { contextId: string }) => contextId), ['ctx_1'], 'no provider: left for work maintenance');
+    assert.equal(await recordWebsiteLoginContext(settings, login.id, 'ctx_2'), undefined);
     assert.equal(await settings.getSetting(`website_login_state.${login.id}`), undefined);
   });
 });

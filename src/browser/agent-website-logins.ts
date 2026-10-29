@@ -111,7 +111,7 @@ export async function removeAgentWebsiteLogin(input: {
   loginId: string;
   config: AgentWebsiteLoginStore & Pick<ConfigStore, 'listAgents'>;
   logins: Parameters<typeof listWebsiteLogins>[0];
-  deletion: () => Pick<WebsiteLoginDependencies, 'store'> | undefined;
+  deletion: () => Pick<WebsiteLoginDependencies, 'store' | 'browserProvider'> | undefined;
 }): Promise<{ loginDeleted: boolean }> {
   const login = await removableAgentWebsiteLogin({
     principal: input.principal,

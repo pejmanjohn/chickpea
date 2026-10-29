@@ -6,10 +6,11 @@
  * a login, before `browser_sign_in` reads secrets, and when an approved step
  * is claimed. Reading or looking at an open page never reads the store.
  */
+import { queueContextDeletions } from './context-deletions.ts';
 import {
   getWebsiteLogin,
   intersectFrozenWebsiteLogins,
-  setWebsiteLoginContext,
+  recordWebsiteLoginContext,
   touchWebsiteLoginUsed,
   setWebsiteLoginHandoff,
   type FrozenWebsiteLoginEntry,
@@ -181,14 +182,28 @@ export class BrowserLoginBinder {
     const stored = await getWebsiteLogin(deps.store, current.id);
     if (!stored || stored.host !== current.host) throw new Error(BROWSER_LOGIN_REVOKED_MESSAGE);
     await this.finishHandoff(deps, stored);
-    let contextId = stored.contextId;
-    if (!contextId) {
-      contextId = (await this.session.provider.createContext(stored.label)).id;
-      await setWebsiteLoginContext(deps.store, stored.id, contextId);
-    }
+    const contextId = stored.contextId ?? await this.createContext(deps, stored);
     // Opening the site on its saved session is a use of the login, signed in or not.
     await touchWebsiteLoginUsed(deps.store, stored.id, this.now()).catch(() => undefined);
     return { loginId: stored.id, host: stored.host, contextId, level: current.level };
+  }
+
+  /**
+   * A new browser context for the login, recorded only if it has none. When
+   * another bind recorded one first, that one is used. A context this bind
+   * cannot record is queued for deletion, so none is left at the provider
+   * that nothing records.
+   */
+  private async createContext(deps: WebsiteLoginDependencies, stored: WebsiteLogin): Promise<string> {
+    const created = (await this.session.provider.createContext(stored.label)).id;
+    let recorded: string | undefined;
+    try {
+      recorded = await recordWebsiteLoginContext(deps.store, stored.id, created);
+    } finally {
+      if (recorded !== created) await queueContextDeletions(deps.store, [{ contextId: created, queuedAt: this.now() }]);
+    }
+    if (!recorded) throw new Error(BROWSER_LOGIN_REVOKED_MESSAGE);
+    return recorded;
   }
 
   /**

@@ -40,6 +40,9 @@ test('Node scheduled duties retry due Slack actions and run routine and retentio
     purgeImages: async (_settings, at) => {
       calls.push(`images:${at}`);
     },
+    deleteBrowserContexts: async () => {
+      calls.push('browser-contexts');
+    },
     keepAliveSchedule: {},
     keepCredentialsAlive: async () => {
       calls.push('keepalive');
@@ -48,6 +51,7 @@ test('Node scheduled duties retry due Slack actions and run routine and retentio
   }), /routine failed/);
 
   assert.deepEqual(calls.sort(), [
+    'browser-contexts',
     'images:1000',
     'keepalive',
     'retry',
@@ -78,6 +82,7 @@ test('Node scheduled duties reconcile receipts while no Slack action is due', as
     reconcileReceipts: async ({ at }) => { reconciledAt = at; return 0; },
     runHeartbeat: async () => {},
     purgeImages: async () => {},
+    deleteBrowserContexts: async () => {},
     keepAliveSchedule: {},
     keepCredentialsAlive: async () => ({} as any),
   });
@@ -101,6 +106,7 @@ test('Node scheduled duties keep OAuth credentials alive every ten elapsed minut
       reconcileReceipts: async () => 0,
       runHeartbeat: async () => {},
       purgeImages: async () => {},
+      deleteBrowserContexts: async () => {},
       keepAliveSchedule,
       keepCredentialsAlive: async () => {
         sweeps.push(offset);

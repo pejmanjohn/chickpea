@@ -13,7 +13,14 @@ import {
   type SlackSecretEnvelopeContext,
   workspaceCredentialContext,
 } from '../slack/secret-envelope.ts';
-import { updateJsonSetting } from '../config/setting-string-set.ts';
+import {
+  PENDING_CONTEXT_DELETIONS_SETTING,
+  settleContextDeletions,
+  withPendingContextDeletions,
+  type PendingContextDeletion,
+} from './context-deletions.ts';
+import type { BrowserProvider } from './provider.ts';
+import { resolveBrowserProvider } from './settings.ts';
 
 /**
  * Website logins: a person's sign-in to a website, which Agents granted it can
@@ -89,6 +96,11 @@ export interface WebsiteLoginDependencies {
    * Standalone has none and keeps its original binding.
    */
   installationId?: string;
+  /**
+   * Deletes a removed login's browser context and hand-off session at once.
+   * Without one, or when it fails, work maintenance deletes them.
+   */
+  browserProvider?: () => Promise<BrowserProvider | undefined>;
 }
 
 export interface CreateWebsiteLoginInput {
@@ -152,6 +164,7 @@ export function websiteLoginDependencies(env?: PlatformEnv): WebsiteLoginDepende
       return keyring;
     },
     ...(installationId ? { installationId } : {}),
+    browserProvider: () => resolveBrowserProvider(store, env),
   };
 }
 
@@ -390,22 +403,18 @@ export async function rewrapWebsiteLoginSecrets(input: {
 }
 
 /**
- * Delete a login: metadata and runtime state first (so no reader can reach
- * the secret), then its secret. A missing secret is fine. Returns whether
- * metadata existed.
+ * Delete a login. One compare-and-set removes its metadata and runtime state
+ * (so no reader can reach the secret) and queues its browser context and any
+ * open hand-off session for deletion, so a crash past it strands neither at
+ * the provider. Then its secret goes (a missing one is fine), and then, with
+ * a provider, the queued objects. Returns whether metadata existed.
  */
 export async function deleteWebsiteLogin(
-  deps: Pick<WebsiteLoginDependencies, 'store'>,
+  deps: Pick<WebsiteLoginDependencies, 'store' | 'browserProvider'>,
   id: string,
 ): Promise<boolean> {
   if (!LOGIN_ID_PATTERN.test(id)) return false;
-  let existed = false;
-  const outcome = await updateLogins(deps.store, (logins) => {
-    const next = logins.filter((login) => login.id !== id);
-    existed = next.length !== logins.length;
-    return existed ? { next, delete: [stateKey(id)] } : {};
-  });
-  if (outcome instanceof Error) throw outcome;
+  const removed = await removeLogin(deps.store, id);
   const active = await deps.store.getEncryptedCredentialRevision(secretKey(id));
   if (active && !await deps.store.deleteEncryptedCredentialRevision(secretKey(id), active.revision)) {
     // A keyring rewrap replaced it meanwhile. It is the only other writer of this key, so retry once.
@@ -414,7 +423,54 @@ export async function deleteWebsiteLogin(
       throw new WebsiteLoginStateError();
     }
   }
-  return existed;
+  if (removed?.queued && deps.browserProvider) {
+    try {
+      const provider = await deps.browserProvider();
+      if (provider) await settleContextDeletions(deps.store, provider, [removed.queued]);
+    } catch {
+      console.warn('[chickpea] A deleted website login\'s browser context is left for work maintenance');
+    }
+  }
+  return removed !== undefined;
+}
+
+/**
+ * Remove a login's catalog entry and state row, queuing what the state
+ * names at the provider, in one write fenced on all three rows. Undefined
+ * when the login is already gone.
+ */
+async function removeLogin(
+  store: SettingsStore,
+  id: string,
+): Promise<{ queued?: PendingContextDeletion } | undefined> {
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const [catalog, state, pending] = await store.getSettings([
+      WEBSITE_LOGINS_SETTING, stateKey(id), PENDING_CONTEXT_DELETIONS_SETTING,
+    ]);
+    const logins = parseLogins(catalog);
+    const login = logins.find((entry) => entry.id === id);
+    if (!login) return undefined;
+    const { contextId, handoffSessionId } = withState(login, state);
+    const queued: PendingContextDeletion | undefined = contextId || handoffSessionId
+      ? { ...(contextId ? { contextId } : {}), ...(handoffSessionId ? { handoffSessionId } : {}), queuedAt: Date.now() }
+      : undefined;
+    const applied = await store.applySettingsPatch({
+      expected: { key: WEBSITE_LOGINS_SETTING, value: catalog ?? null },
+      expectedAll: [
+        { key: stateKey(id), value: state ?? null },
+        ...(queued ? [{ key: PENDING_CONTEXT_DELETIONS_SETTING, value: pending ?? null }] : []),
+      ],
+      set: [
+        { key: WEBSITE_LOGINS_SETTING, value: JSON.stringify(logins.filter((entry) => entry.id !== id)) },
+        ...(queued
+          ? [{ key: PENDING_CONTEXT_DELETIONS_SETTING, value: withPendingContextDeletions(pending, [queued]) }]
+          : []),
+      ],
+      delete: [stateKey(id)],
+    });
+    if (applied) return queued ? { queued } : {};
+  }
+  throw new WebsiteLoginStateError();
 }
 
 /** Record when the login was last used (bound to a session or signed in). Returns false when the login is gone. */
@@ -426,16 +482,26 @@ export async function touchWebsiteLoginUsed(
   return patchLoginState(store, id, (state) => ({ ...state, lastUsedAt: at }));
 }
 
-/** Remember the hosted-browser context holding this login's session. */
-export async function setWebsiteLoginContext(
+/**
+ * Record the hosted-browser context holding this login's session, unless one
+ * is recorded already. Returns the recorded context: the earlier one when
+ * another writer won. Undefined when the login is gone.
+ */
+export async function recordWebsiteLoginContext(
   store: SettingsStore,
   id: string,
   contextId: string,
-): Promise<boolean> {
+): Promise<string | undefined> {
   if (!BROWSER_CONTEXT_ID_PATTERN.test(contextId)) {
     throw new WebsiteLoginInputError('invalid_context');
   }
-  return patchLoginState(store, id, (state) => ({ ...state, contextId }));
+  let recorded = contextId;
+  const found = await patchLoginState(store, id, (state) => {
+    if (!state.contextId) return { ...state, contextId };
+    recorded = state.contextId;
+    return undefined;
+  });
+  return found ? recorded : undefined;
 }
 
 /** Remember (or, with undefined, forget) a hand-off session still open for this login. */
@@ -525,26 +591,32 @@ function randomHex(): string {
 }
 
 /**
- * Compare-and-set one login's runtime state row. Returns false when the login
- * is gone. A login whose state still sits in its catalog entry (written before
- * the state row existed) starts from that entry.
+ * Compare-and-set one login's runtime state row; `change` returns undefined
+ * to leave it. Returns false when the login is gone. A login whose state
+ * still sits in its catalog entry (written before the state row existed)
+ * starts from that entry. The write is fenced on the catalog too, so it can
+ * never land after a deletion removed the row and queued what it named.
  */
 async function patchLoginState(
   store: SettingsStore,
   id: string,
-  change: (state: WebsiteLoginState) => WebsiteLoginState,
+  change: (state: WebsiteLoginState) => WebsiteLoginState | undefined,
 ): Promise<boolean> {
   if (!LOGIN_ID_PATTERN.test(id)) return false;
-  const login = parseLogins(await store.getSetting(WEBSITE_LOGINS_SETTING)).find((entry) => entry.id === id);
-  if (!login) return false;
-  const written = await updateJsonSetting<WebsiteLoginState>(
-    store,
-    stateKey(id),
-    (current) => change(current ?? stateOf(login)),
-    parseState,
-  );
-  if (!written) throw new WebsiteLoginStateError();
-  return true;
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const [catalog, raw] = await store.getSettings([WEBSITE_LOGINS_SETTING, stateKey(id)]);
+    const login = parseLogins(catalog).find((entry) => entry.id === id);
+    if (!login) return false;
+    const next = change((raw === undefined ? undefined : parseState(raw)) ?? stateOf(login));
+    if (!next) return true;
+    const written = await store.applySettingsPatch({
+      expected: { key: stateKey(id), value: raw ?? null },
+      expectedAll: [{ key: WEBSITE_LOGINS_SETTING, value: catalog ?? null }],
+      set: [{ key: stateKey(id), value: JSON.stringify(next) }],
+    });
+    if (written) return true;
+  }
+  throw new WebsiteLoginStateError();
 }
 
 /**
