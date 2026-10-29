@@ -37,6 +37,8 @@ export interface McpGuardedFetchOptions {
   allowedOrigin?: string;
   /** Defaults to five same-origin redirects. */
   maxRedirects?: number;
+  /** Return each redirect to the caller, which checks the next hop itself, instead of following it. */
+  followRedirects?: boolean;
   /** Re-authorize immediately before every outbound request. */
   authorizeRequest?: () => Promise<void>;
 }
@@ -164,7 +166,7 @@ export function createMcpGuardedFetch(options: McpGuardedFetchOptions = {}): typ
       const response = cloudflare
         ? await delegate(outbound)
         : await pinnedFetch(outbound, destination.addresses);
-      if (!REDIRECT_STATUSES.has(response.status)) {
+      if (!REDIRECT_STATUSES.has(response.status) || options.followRedirects === false) {
         return response;
       }
 

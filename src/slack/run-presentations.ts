@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto';
 
 import { checkSlackBlocks } from './ui/block-kit-limits.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
-import type {
-  ActivityKind,
-  SemanticActivityPhase,
-  SemanticTargetFamily,
-} from '../activity/status.ts';
+import {
+  isSemanticTargetFamily,
+  type ActivityKind,
+  type SemanticActivityPhase,
+  type SemanticTargetFamily,
+} from '../activity/semantic.ts';
 import type { ProgressiveStreamingMode } from '../memory/tool-policy.ts';
 import { hasCredentialLikeContent } from '../security/content-validation.ts';
 import { SlackArtifactReceiptSchema } from './artifact-receipts.ts';
@@ -3506,7 +3507,7 @@ function validateActivity(
   validateUserFacingFact(activity.action, 'Activity action', 80);
   validateUserFacingFact(activity.object, 'Activity object', 160);
   if ((activity.family === undefined) !== (activity.phase === undefined) ||
-      activity.family !== undefined && !isActivityFamily(activity.family) ||
+      activity.family !== undefined && !isSemanticTargetFamily(activity.family) ||
       activity.phase !== undefined && !isActivityPhase(activity.phase)) {
     throw stateError('invalid_input', 'Activity semantic telemetry is invalid.');
   }
@@ -3538,13 +3539,6 @@ function isActivityKind(value: unknown): value is SlackPresentationActivityKind 
   return value === 'preparing' || value === 'checking' || value === 'reading' ||
     value === 'writing' || value === 'updating' || value === 'running' ||
     value === 'waiting' || value === 'finishing';
-}
-
-function isActivityFamily(value: unknown): value is SemanticTargetFamily {
-  return value === 'managed_connector' || value === 'custom_connection' || value === 'skill' ||
-    value === 'repository' || value === 'memory' || value === 'scheduled_work' ||
-    value === 'workspace' || value === 'connection_setup' || value === 'agent_authoring' ||
-    value === 'artifact' || value === 'response' || value === 'unknown' || value === 'internal';
 }
 
 function isActivityPhase(value: unknown): value is SemanticActivityPhase {

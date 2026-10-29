@@ -294,10 +294,11 @@ test('setting up Chickpea itself never makes a reply a task', () => {
   }
 });
 
-test('connector, browser and coding workspace tools make a reply a task', () => {
+test('connector, browser, web reading and coding workspace tools make a reply a task', () => {
   const work = [
     ...CATALOG_TOOL_NAMES,
     'connection_request',
+    'read_public_doc',
     'attach_file_to_connection',
     ...BROWSER_TOOL_NAMES,
     ...WORKSPACE_TOOL_NAMES,
@@ -367,6 +368,7 @@ test('an unlisted tool makes a reply a task only through a connector family', ()
     connection_setup: false,
     agent_authoring: false,
     artifact: false,
+    web: false,
     response: false,
     unknown: false,
     internal: false,

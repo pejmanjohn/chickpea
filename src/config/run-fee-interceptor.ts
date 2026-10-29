@@ -42,16 +42,25 @@ function refusedBeforeStart(error: unknown): boolean {
 }
 
 /**
- * read_slack_channel returns a refusal, and only a refusal, as a not_read
- * result for the model to explain, rather than throwing. Any other shape
- * charges, and the check never throws, which would lose the tool's result.
+ * Tools that return a refusal made before any work for the model to explain,
+ * rather than throwing. read_slack_channel says not_read. read_public_doc says
+ * ok: false when it fetched nothing: a URL it may not read, or a turn whose
+ * reads are spent; a page it fetched but could not read is work, and charges.
  */
+const REFUSALS_BEFORE_WORK = new Map<string, (output: { status?: unknown; ok?: unknown }) => boolean>([
+  ['read_slack_channel', (output) => output.status === 'not_read'],
+  ['read_public_doc', (output) => output.ok === false],
+]);
+
+/** Any other shape charges, and the check never throws, which would lose the tool's result. */
 function refusedBeforeWork(toolName: string, result: unknown): boolean {
-  if (toolName !== 'read_slack_channel') return false;
+  const refusal = REFUSALS_BEFORE_WORK.get(toolName);
+  if (!refusal) return false;
   const output = (result as { details?: { output?: unknown } } | null | undefined)?.details?.output;
   if (typeof output !== 'string') return false;
   try {
-    return (JSON.parse(output) as { status?: unknown } | null)?.status === 'not_read';
+    const parsed = JSON.parse(output) as unknown;
+    return typeof parsed === 'object' && parsed !== null && refusal(parsed);
   } catch {
     return false;
   }
