@@ -273,6 +273,22 @@ test('Slack connector setup skips broad workspace inspection for a named service
   );
 });
 
+test('Slack and the guide route a catalog gap to a custom connection and default its key to a setup link', () => {
+  const slack = slackManagementInstruction('agent_synthetic');
+  for (const text of [slack, AGENT_AUTHORING_GUIDE]) {
+    assert.match(text, /HubSpot.s sign-in covers its CRM, not its Knowledge Base/);
+    assert.match(text, /narrowest host and path prefix/);
+    assert.match(text, /DELETE only when asked/);
+    assert.match(text, /request_setup/);
+    assert.match(text, /pasted the key in their own current message, call `?save_connection_key`?/);
+    assert.match(text, /rotate the key and use the setup link next time/);
+    assert.match(text, /never repeat a key/i);
+  }
+  assert.match(slack, /Never ask anyone to paste a key in chat/);
+  assert.match(slack, /such as “connect HubSpot”, call prepare_connector_setup directly/);
+  assert.doesNotMatch(slack, /never ask for credentials in Slack/);
+});
+
 test('one global Slack action-link policy owns future tool link presentation', async () => {
   const [formatSource, managementSource, authorizationSource] = await Promise.all([
     readFile(new URL('../src/slack/message-format.ts', import.meta.url), 'utf8'),

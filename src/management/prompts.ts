@@ -167,13 +167,13 @@ function connectPrompt(args: { service: string; handle?: string | undefined }, b
     `You are connecting the service ${quoted(args.service)} to a Chickpea Agent for this person.`,
     ARGUMENT_NOTE,
     '',
-    '1. Call inspect_workspace. Its connectors field is the setup catalog; match the service to one catalog entry by id or display name, and if nothing matches, list the closest entries and ask.',
+    '1. Call inspect_workspace. Its connectors field is the setup catalog; match the service to one catalog entry by id or display name when that entry covers what the person needs.',
     handle
       ? `2. The target Agent is @${handle}. Confirm it exists and the person can edit it; if not, say so and stop.`
       : '2. Ask which Agent should get the connection, listing the editable Agents by handle. One question.',
-    '3. Ask whether this is a personal connection (ownerKind "member") or a team-owned one (ownerKind "team"), unless they already said.',
-    '4. Call prepare_connector_setup with the agentId, connector, and ownerKind. Give the person the returned handoffUrl to open in their signed-in Admin browser. Describe any expiry only if the server returns one.',
-    '5. Never ask for, accept, or relay an API key, token, password, or OAuth code. The browser page collects it; you never see it.',
+    '3. For a catalog match, ask whether this is a personal connection (ownerKind "member") or a team-owned one (ownerKind "team"), unless they already said. Call prepare_connector_setup with the agentId, connector, and ownerKind. Give the person the returned handoffUrl to open in their signed-in Admin browser. Describe any expiry only if the server returns one.',
+    '4. When no catalog entry matches, or the match does not reach what they need, add a custom connection with one update_agent: apiConnections with the narrowest host and path prefix, GET and HEAD to read plus the POST, PATCH or PUT the API needs to write (DELETE only when asked), the service\'s auth header and value prefix (usually Authorization with "Bearer "), and a guide with the endpoints you know; or mcpServers for an MCP server URL. Ask for the API\'s base URL only if you cannot work it out.',
+    '5. For its key, add request_setup for the connection to the same apply_workspace_changes call, with dependsOn naming the update, and give the person the setup link. If they already gave you the key, call save_connection_key instead and report what its check found. Never ask them to paste a key here.',
     '6. When they say the setup finished, call inspect_workspace again and confirm the connection is ready. If it is not, say what is still missing.',
     `7. End with the Agent's Admin page and one line on how to try it: mention @handle in Slack and ask for something that uses the new service. Admin: ${adminLink(baseUrl)}`,
   ].join('\n');

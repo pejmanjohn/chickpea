@@ -124,20 +124,20 @@ test('edit-agent applies the agreed draft and confirms only a destructive change
   assert.equal(render('edit-agent', { handle: '@editor' }), render('edit-agent', { handle: 'editor' }));
 });
 
-test('connect hands off in the browser and never touches a credential', () => {
+test('connect hands a catalog service off in the browser and keys a custom connection without asking for one', () => {
   const text = render('connect', FILLED_INVOCATIONS.connect);
   for (const required of [
     'prepare_connector_setup',
     'handoffUrl',
     'ownerKind',
     'signed-in Admin browser',
+    'custom connection with one update_agent',
+    'request_setup',
+    'save_connection_key',
   ]) assert.ok(text.includes(required), `connect must mention ${required}`);
   assert.ok(!text.includes('24 hours'), 'MCP Admin links are not expiring Slack setup capabilities');
-  assert.match(
-    text,
-    /Never ask for, accept, or relay an API key, token, password, or OAuth code\./,
-    'connect must forbid relaying a key or token',
-  );
+  assert.match(text, /If they already gave you the key, call save_connection_key/);
+  assert.match(text, /Never ask them to paste a key here\./, 'connect never asks for a key');
   assert.ok(text.includes('@notes'), 'a supplied handle names the target Agent');
 
   const withoutHandle = render('connect', { service: 'gmail' });

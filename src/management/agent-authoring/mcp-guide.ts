@@ -35,6 +35,14 @@ const DESTRUCTIVE_CHANGES = 'deleting an Agent or routine, suspending or removin
  */
 export const AGENT_AUTHORING_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonly [from: string, to: string]> = [
   [
+    'A new connection that needs a key applies at once when the requester typed its URLs in their current message; otherwise the person approves it.',
+    'It applies at once.',
+  ],
+  [
+    'If the requester pasted the key in their own current message, call `save_connection_key` with it instead, report what its check found, and suggest they rotate the key and use the setup link next time.',
+    'If the person gave you the key, call `save_connection_key` with it instead and report what its check found.',
+  ],
+  [
     'Do not call `apply_workspace_changes` or `propose_workspace_changes`: creation proposals are not supported. Only a later authenticated requester message that approves the draft can put creation in `commit` posture.',
     'Do not call `apply_workspace_changes`. Only a later message from the person that approves the draft can put creation in `commit` posture.',
   ],

@@ -83,6 +83,8 @@ test('the coding-agent guide keeps the canonical version and rules and drops Sla
     '!routines',
     'owns the single welcome',
     'ends with `View Agent`',
+    'pasted the key',
+    'typed its URLs',
   ]) assert.ok(!body.includes(slackOnly), `coding-agent guide still says ${slackOnly}`);
   for (const kept of [
     '## Start with posture',
@@ -92,6 +94,7 @@ test('the coding-agent guide keeps the canonical version and rules and drops Sla
     '## Acting scope',
     '## Final check',
     'Never request credentials, OAuth codes, tokens, private keys, or secret-bearing URLs',
+    'If the person gave you the key, call `save_connection_key` with it instead and report what its check found.',
     'call `apply_workspace_changes` in that same turn with exactly one standalone base `create_agent` operation',
     'An external MCP client acts with the signed-in person\'s Admin authority',
     'presentation.markdown',
