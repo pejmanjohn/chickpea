@@ -111,6 +111,7 @@ import {
   ManagedConnectionConflictError,
   ManagedConnectionProviderUnavailableError,
   ManagedResourceSelectionError,
+  type PageSummary,
   markCancelledMcpOAuthAccount,
   markConnectionAccountNeedsAttention,
   markManagedProviderAccountsUnavailable,
@@ -149,10 +150,11 @@ import {
 } from '../connections/managed-authorization.ts';
 import {
   assertManagedAttemptPrincipal,
+  attemptAccessLane,
   discardManagedAuthorizationAfterAuthorityLoss,
   managedOwnerLaneAccount,
-  managedPrincipalRef,
 } from '../connections/managed-authorization-flow.ts';
+import { managedPrincipalRef } from '../connections/managed-principal.ts';
 import {
   actorSignedOtherKind,
   ManagedSignInMixError,
@@ -301,6 +303,7 @@ import {
   AgentStillReferencedError,
   ModelResolutionError,
   ModelRoleRevisionConflictError,
+  ManagedSignInGroupConflictError,
   NoAssignmentError,
   UnknownAgentError,
   WorkspaceModelDefaultRevisionConflictError,
@@ -1584,6 +1587,28 @@ const managedAuthorizationStartSchema = v.union([
   }),
 ]);
 
+const agentPageChoiceSchema = v.union([
+  v.strictObject({ mode: v.literal('all') }),
+  v.strictObject({
+    mode: v.literal('only'),
+    pages: v.pipe(v.array(v.pipe(v.string(), v.regex(/^page_[0-9a-f]{32}$/))), v.maxLength(256)),
+  }),
+]);
+
+const managedReuseSchema = v.strictObject({
+  workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9_]{2,32}$/)),
+  sourceConnectionId: v.pipe(v.string(), v.regex(/^connection_[A-Za-z0-9_-]{1,180}$/)),
+  ownerKind: v.picklist(['team', 'member']),
+  access: v.picklist(['read', 'write']),
+  choice: agentPageChoiceSchema,
+});
+
+const agentPagesUpdateSchema = v.strictObject({
+  workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9_]{2,32}$/)),
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  choice: agentPageChoiceSchema,
+});
+
 const managedResourceSelectionSchema = v.strictObject({
   workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9_]{2,32}$/)),
   expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
@@ -1739,6 +1764,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     label: connector.label,
     description: connector.description,
     ...(connector.providerSelection ? { providerSelection: connector.providerSelection } : {}),
+    ...(connector.sharedSignIn ? { sharedSignIn: true } : {}),
   });
   const managedCatalogDescriptors = () => managedCatalog.list().map(managedCatalogDescriptor);
   const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
@@ -1853,6 +1879,38 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const providerContext = await resolvedManagedProviderContext(c);
     return connectionAccounts(c, providerContext.providers);
   };
+  const memberDisplayName = (c: Context) => async (membershipId: string): Promise<string | undefined> => {
+    const membership = await identity(c).getMembership(membershipId);
+    const user = membership && await identity(c).getUser(membership.userId);
+    return user?.displayName || undefined;
+  };
+  /** Other Agents' names, which only Owners and Admins are shown. */
+  const otherAgentNames = async (
+    c: Context,
+    principal: AuthPrincipal,
+    agentIds: readonly string[],
+  ): Promise<string[] | undefined> => {
+    if (principal.role !== 'owner' && principal.role !== 'admin') return undefined;
+    const agents = await Promise.all(agentIds.map((id) => store(c).getAgent(id).catch(() => undefined)));
+    return agents.flatMap((agent) => agent && agent.lifecycle !== 'archived' ? [agent.name] : []);
+  };
+  const pageSummaryView = async (c: Context, principal: AuthPrincipal, summary: PageSummary) => {
+    const alsoUsedBy = await otherAgentNames(c, principal, summary.otherAgentIds);
+    const signerName = summary.signerMembershipId && await memberDisplayName(c)(summary.signerMembershipId);
+    return {
+      pageMode: summary.pageMode,
+      ...(summary.pageCount !== undefined ? { pageCount: summary.pageCount } : {}),
+      ...(summary.sharedPageCount !== undefined ? { sharedPageCount: summary.sharedPageCount } : {}),
+      sharedWithOtherAgents: summary.otherAgentIds.length > 0,
+      ...(alsoUsedBy?.length ? { alsoUsedBy } : {}),
+      signerName: signerName || '',
+      signedByYou: summary.signerMembershipId === principal.membershipId,
+    };
+  };
+  const connectionChanged = (c: Context, message?: string) => c.json({
+    error: 'managed_connection_changed',
+    message: message ?? 'This connection changed while you were editing it. Reload it and try again.',
+  }, 409);
   const slackCredentialDependencies = (
     c: Context,
   ): SlackCredentialDependencies | undefined => {
@@ -2746,6 +2804,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       managedCatalog,
       ...(telemetry ? { productTelemetry: telemetry } : {}),
       telemetrySurface: 'admin',
+      ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
     });
   };
   const resumeComposioReconciliation = async (
@@ -5390,6 +5449,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ...(replacement
             ? { connectionAccountId: replacement.account.id }
             : { bindingCapabilities: [...capabilities] }),
+          accessLane,
           providerGeneration: providerContext.generation,
           providerLineage: providerContext.lineage,
         },
@@ -5646,6 +5706,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               expectedAllowedCapabilities: attempt.allowedCapabilities,
               allowedCapabilities: attempt.allowedCapabilities,
               accountRef: attempt.accountRef!,
+              issuedAccessLane: attemptAccessLane(attempt, managedCatalog),
               providerGeneration: providerContext.generation,
               providerLineage: providerContext.lineage,
             });
@@ -5682,6 +5743,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
                 providerLineage: providerContext.lineage,
               },
               allowedCapabilities: [...attempt.bindingCapabilities],
+              issuedAccessLane: attemptAccessLane(attempt, managedCatalog),
             });
             account = created.account;
           }
@@ -5963,6 +6025,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       } catch (error) {
         if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
         if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+        if (error instanceof ManagedSignInGroupConflictError) return connectionChanged(c);
         if (error instanceof ManagedResourceSelectionError) {
           const status = error.code === 'stale' ? 409 : error.code === 'unavailable' ? 503 : 400;
           return c.json({
@@ -5978,6 +6041,172 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
     },
   );
+
+  app.get('/admin/api/agents/:id/connections/managed/reusable', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const workspaceId = c.req.query('workspaceId')?.trim() ?? '';
+    const toolkit = c.req.query('toolkit')?.trim() ?? '';
+    const ownerKind = c.req.query('ownerKind');
+    const access = c.req.query('access');
+    if (!/^[A-Z0-9_]{2,32}$/.test(workspaceId) || !/^[a-z0-9_-]{1,128}$/.test(toolkit) ||
+        (ownerKind !== 'team' && ownerKind !== 'member') ||
+        (access !== 'read' && access !== 'write')) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const agent = await store(c).getAgent(c.req.param('id'));
+      requireAgentEdit(principal, agent);
+      const organization = await identity(c).getOrganization();
+      if (organization?.slackTeamId !== workspaceId) throw new AuthorizationError();
+      const signIns = await (await resolvedConnectionAccounts(c)).listReusableSignIns({
+        principal, agentId: agent.id, workspaceId, toolkit, ownerKind, access,
+        signerName: memberDisplayName(c),
+      });
+      return c.json({
+        signIns: await Promise.all(signIns.map(async (signIn) => {
+          const alsoUsedBy = await otherAgentNames(c, principal, signIn.agentIds);
+          return {
+            sourceConnectionId: signIn.sourceConnectionId,
+            label: signIn.signerName ?? '',
+            signedByYou: signIn.signedByYou,
+            pageCount: signIn.pages.length,
+            pages: signIn.pages,
+            complete: signIn.complete,
+            ...(alsoUsedBy?.length ? { alsoUsedBy } : {}),
+          };
+        })),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof ManagedResourceSelectionError) {
+        return c.json({ error: 'managed_resources_unavailable', message: error.message }, 503);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/connections/managed/reuse', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const parsed = v.safeParse(managedReuseSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const agent = await store(c).getAgent(c.req.param('id'));
+      requireAgentEdit(principal, agent);
+      const organization = await identity(c).getOrganization();
+      if (organization?.slackTeamId !== parsed.output.workspaceId) throw new AuthorizationError();
+      const service = await resolvedConnectionAccounts(c);
+      const { account, binding } = await service.reuseSignIn({
+        principal,
+        agentId: agent.id,
+        workspaceId: parsed.output.workspaceId,
+        sourceConnectionId: parsed.output.sourceConnectionId,
+        ownerKind: parsed.output.ownerKind,
+        access: parsed.output.access,
+        choice: parsed.output.choice,
+      });
+      return c.json({
+        account: await service.view(account),
+        binding: toAgentConnectionBindingView(binding),
+      }, 201);
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof ManagedSignInGroupConflictError) return connectionChanged(c);
+      if (error instanceof ManagedConnectionConflictError) return connectionChanged(c, `${error.message}.`);
+      if (error instanceof ManagedResourceSelectionError) {
+        return c.json({
+          error: error.code === 'unavailable' ? 'managed_resources_unavailable' : 'invalid_managed_resource',
+          message: error.message,
+        }, error.code === 'unavailable' ? 503 : 400);
+      }
+      if (error instanceof ManagedConnectionProviderUnavailableError || error instanceof ManagedProviderRequestError) {
+        return c.json({
+          error: 'managed_provider_unavailable',
+          message: 'Chickpea could not check that sign-in with Notion. Try again.',
+        }, 503);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.get('/admin/api/agents/:agentId/connections/:connectionAccountId/pages', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const workspaceId = c.req.query('workspaceId')?.trim() ?? '';
+    if (!/^[A-Z0-9_]{2,32}$/.test(workspaceId)) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const organization = await identity(c).getOrganization();
+      if (organization?.slackTeamId !== workspaceId) throw new AuthorizationError();
+      const service = await resolvedConnectionAccounts(c);
+      const account = await service.getForManagement(principal, c.req.param('connectionAccountId'));
+      if (account.workspaceId !== workspaceId) throw new AuthorizationError();
+      const pages = await service.agentPages({
+        principal, agentId: c.req.param('agentId'), connectionAccountId: account.id,
+      });
+      const binding = await store(c).getAgentConnectionBindingForAccount(account.id);
+      const summary = binding && (await service.pageSummaries(workspaceId, [binding])).get(account.id);
+      return c.json({
+        ...pages,
+        ...(summary ? await pageSummaryView(c, principal, summary) : {}),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof ManagedResourceSelectionError) {
+        return c.json({
+          error: error.code === 'unavailable' ? 'managed_resources_unavailable' : 'invalid_managed_resource',
+          message: error.message,
+        }, error.code === 'unavailable' ? 503 : 400);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.put('/admin/api/agents/:agentId/connections/:connectionAccountId/pages', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const parsed = v.safeParse(agentPagesUpdateSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const organization = await identity(c).getOrganization();
+      if (organization?.slackTeamId !== parsed.output.workspaceId) throw new AuthorizationError();
+      const service = await resolvedConnectionAccounts(c);
+      const account = await service.getForManagement(principal, c.req.param('connectionAccountId'));
+      if (account.workspaceId !== parsed.output.workspaceId) throw new AuthorizationError();
+      const updated = await service.setAgentPages({
+        principal,
+        agentId: c.req.param('agentId'),
+        connectionAccountId: account.id,
+        expectedRevision: parsed.output.expectedRevision,
+        choice: parsed.output.choice,
+      });
+      return c.json({
+        account: await service.view(updated.account),
+        binding: toAgentConnectionBindingView(updated.binding),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof ManagedSignInGroupConflictError) return connectionChanged(c);
+      if (error instanceof ManagedResourceSelectionError) {
+        const status = error.code === 'stale' ? 409 : error.code === 'unavailable' ? 503 : 400;
+        return c.json({
+          error: error.code === 'stale'
+            ? 'managed_resource_selection_stale'
+            : error.code === 'unavailable' ? 'managed_resources_unavailable' : 'invalid_managed_resource',
+          message: error.code === 'stale'
+            ? 'This connection changed while you were editing it. Reload it and try again.'
+            : error.message,
+        }, status);
+      }
+      return internalError(c, error);
+    }
+  });
 
   app.post('/admin/api/agents/:agentId/mcp/oauth/:connectionId/start', async (c) => {
     c.header('Cache-Control', 'no-store');
@@ -8853,6 +9082,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         resolvedManagedProviderContext(c),
       ]);
       const byId = new Map(views.map((account) => [account.id, account]));
+      const summaries = await connectionAccounts(c).pageSummaries(
+        workspaceId,
+        bindings.filter((binding) => binding.enabled),
+      );
+      const pageViews = new Map(await Promise.all([...summaries].map(async ([accountId, summary]) =>
+        [accountId, await pageSummaryView(c, principal, summary)] as const)));
       const provider = providerContext.providers.get('composio');
       const managedConnectorCatalog = managedCatalog.list().map((connector) => ({
         ...managedCatalogDescriptor(connector),
@@ -8886,6 +9121,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           if (account.ownerKind === 'member' &&
               account.ownerMembershipId !== principal.membershipId) return [];
           return [{ account, binding: toAgentConnectionBindingView(binding),
+            ...pageViews.get(account.id),
             ...(account.policy.kind === 'mcp' && isMetaAdsMcpConnection(account.policy) ? {
               mcpToolAccess: account.policy.discoveredTools.map((tool) => {
                 const effect = metaAdsToolEffect(tool.name) ?? 'write';

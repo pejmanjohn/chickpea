@@ -18,9 +18,14 @@ interface SignInLane {
   accounts: readonly ConnectionAccount[];
 }
 
-/** The member a connection's sign-in belongs to: a personal owner, or whoever created a team connection. */
-function signInSigner(account: ConnectionAccount): string | undefined {
-  return account.ownerKind === 'member' ? account.ownerMembershipId : account.createdByMembershipId;
+/**
+ * The member a connection's sign-in belongs to: whoever completed it. Another
+ * member can add a row to that sign-in, so a row's owner or creator stands in
+ * only for a sign-in recorded before signers were.
+ */
+export function signInSigner(account: ConnectionAccount): string | undefined {
+  const signedBy = account.policy.kind === 'managed' ? account.policy.signIn?.signedBy : undefined;
+  return signedBy ?? (account.ownerKind === 'member' ? account.ownerMembershipId : account.createdByMembershipId);
 }
 
 /** A live connection of the other owner kind that the actor signed, checked before the provider opens. */
@@ -39,7 +44,7 @@ export function signInMix(
 ): { account: ConnectionAccount; samePerson: boolean } | undefined {
   for (const account of otherKindAccounts(lane)) {
     const theirs = account.policy.kind === 'managed' ? account.policy.signIn?.person : undefined;
-    if (providerNamed(lane.person) && providerNamed(theirs)) {
+    if (providerNamedPerson(lane.person) && providerNamedPerson(theirs)) {
       if (lane.person === theirs) return { account, samePerson: true };
     } else if (signInSigner(account) === lane.actorMembershipId) {
       return { account, samePerson: false };
@@ -107,7 +112,7 @@ function otherKindAccounts(lane: SignInLane): ConnectionAccount[] {
 }
 
 /** Only a person the provider named can be compared; a `member:` fallback cannot. */
-function providerNamed(person: string | undefined): person is string {
+export function providerNamedPerson(person: string | undefined): person is string {
   return person?.startsWith('notion:') === true;
 }
 

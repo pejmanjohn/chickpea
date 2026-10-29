@@ -1,5 +1,5 @@
 {
-  "scenario": "b6b6e0fb439d916a4f6006ceef1ec62f5a8145ad20551b197cd1b0b22a3ca0e4",
+  "scenario": "291541e18c5964a95f3c62d4193dd1f74d167d9e56982c9c584d90a189a47b11",
   "contract": {
     "schemaVersion": 12,
     "schemaMarker": "agent-first-v1",
@@ -44,7 +44,7 @@
       "config_agents.slack_presence_json": 1,
       "config_agents.website_logins_json": 1,
       "config_connection_accounts.identity_json": 1,
-      "config_connection_accounts.policy_json": 4,
+      "config_connection_accounts.policy_json": 5,
       "config_slack_public_context.files_json": 1,
       "config_slack_public_context.images_json": 1
     },
@@ -495,7 +495,7 @@
             "label": "\"Notes (managed)\"",
             "purpose": "null",
             "identity_json": "null",
-            "policy_json": "{\"accountRef\":\"account_scenario_notes\",\"adapterId\":\"composio\",\"allowedCapabilities\":[\"notion.content.search\",\"notion.pages.create\"],\"grantSummary\":{\"items\":[{\"id\":\"5c3e1a2b-7d4f-4e6a-9b8c-0d1e2f3a4b5c\",\"label\":\"Scenario Notes\",\"type\":\"database\"},{\"id\":\"6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d\",\"label\":\"Scenario Handbook\",\"type\":\"page\"}],\"truncated\":true},\"kind\":\"managed\",\"principalRef\":\"principal_scenario\",\"providerGeneration\":3,\"providerLineage\":\"lineage_scenario\",\"signIn\":{\"accessLane\":\"write\",\"person\":\"notion:workspace-scenario:user-scenario\"},\"toolkit\":\"notion\"}",
+            "policy_json": "{\"accountRef\":\"account_scenario_notes\",\"adapterId\":\"composio\",\"allowedCapabilities\":[\"notion.content.search\",\"notion.pages.create\"],\"grantSummary\":{\"items\":[{\"id\":\"5c3e1a2b-7d4f-4e6a-9b8c-0d1e2f3a4b5c\",\"label\":\"Scenario Notes\",\"type\":\"database\"},{\"id\":\"6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d\",\"label\":\"Scenario Handbook\",\"type\":\"page\"}],\"truncated\":true},\"kind\":\"managed\",\"principalRef\":\"principal_scenario\",\"providerGeneration\":3,\"providerLineage\":\"lineage_scenario\",\"signIn\":{\"accessLane\":\"write\",\"person\":\"notion:workspace-scenario:user-scenario\",\"signedBy\":\"membership_scenario_owner\"},\"toolkit\":\"notion\"}",
             "secret_ref_id": "\"secret_connection_scenario_notes\"",
             "lifecycle": "\"ready\"",
             "created_at": "1792083600000",
@@ -512,7 +512,7 @@
             "label": "\"Notes (managed)\"",
             "purpose": "null",
             "identity_json": "null",
-            "policy_json": "{\"accountRef\":\"account_scenario_notes\",\"adapterId\":\"composio\",\"allowedCapabilities\":[\"notion.content.search\"],\"grantSummary\":{\"items\":[{\"id\":\"5c3e1a2b-7d4f-4e6a-9b8c-0d1e2f3a4b5c\",\"label\":\"Scenario Notes\",\"type\":\"database\"},{\"id\":\"6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d\",\"label\":\"Scenario Handbook\",\"type\":\"page\"}],\"truncated\":true},\"kind\":\"managed\",\"oauthAttemptId\":\"2c3d4e5f-6071-4829-b0c1-d2e3f4a5b6c7\",\"principalRef\":\"principal_scenario\",\"providerGeneration\":3,\"providerLineage\":\"lineage_scenario\",\"signIn\":{\"accessLane\":\"write\",\"person\":\"notion:workspace-scenario:user-scenario\"},\"toolkit\":\"notion\"}",
+            "policy_json": "{\"accountRef\":\"account_scenario_notes\",\"adapterId\":\"composio\",\"allowedCapabilities\":[\"notion.content.search\"],\"grantSummary\":{\"items\":[{\"id\":\"5c3e1a2b-7d4f-4e6a-9b8c-0d1e2f3a4b5c\",\"label\":\"Scenario Notes\",\"type\":\"database\"},{\"id\":\"6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d\",\"label\":\"Scenario Handbook\",\"type\":\"page\"}],\"truncated\":true},\"kind\":\"managed\",\"oauthAttemptId\":\"2c3d4e5f-6071-4829-b0c1-d2e3f4a5b6c7\",\"principalRef\":\"principal_scenario\",\"providerGeneration\":3,\"providerLineage\":\"lineage_scenario\",\"signIn\":{\"accessLane\":\"write\",\"person\":\"notion:workspace-scenario:user-scenario\",\"signedBy\":\"membership_scenario_owner\"},\"toolkit\":\"notion\"}",
             "secret_ref_id": "\"secret_connection_scenario_notes_shared\"",
             "lifecycle": "\"ready\"",
             "created_at": "1792083600000",

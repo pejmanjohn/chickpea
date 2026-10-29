@@ -760,6 +760,8 @@ export interface ManagedSignIn {
   /** `notion:<workspace id>:<user id>` from Notion, else `member:<membership id>` of the signer. Notion only. */
   person?: string;
   accessLane: 'read' | 'write';
+  /** The membership id of the member who completed this sign-in. Absent on sign-ins recorded before it existed. */
+  signedBy?: string;
 }
 
 export interface ConnectionAccountManagedPolicy {

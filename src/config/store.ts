@@ -79,6 +79,7 @@ import {
 } from './types.ts';
 import {
   MANAGED_SIGN_IN_PERSON,
+  MANAGED_SIGN_IN_SIGNER,
   sameSignInGroup,
   withSignInGroupPolicy,
 } from './sign-in-group.ts';
@@ -4466,10 +4467,12 @@ function validateConnectionAccountInput(input: ConnectionAccountInput): void {
     const signIn = input.policy.signIn;
     if (signIn !== undefined && (
       !signIn || typeof signIn !== 'object' ||
-      Object.keys(signIn).some((key) => key !== 'person' && key !== 'accessLane') ||
+      Object.keys(signIn).some((key) => key !== 'person' && key !== 'accessLane' && key !== 'signedBy') ||
       (signIn.accessLane !== 'read' && signIn.accessLane !== 'write') ||
       (signIn.person !== undefined &&
-        (typeof signIn.person !== 'string' || !MANAGED_SIGN_IN_PERSON.test(signIn.person)))
+        (typeof signIn.person !== 'string' || !MANAGED_SIGN_IN_PERSON.test(signIn.person))) ||
+      (signIn.signedBy !== undefined &&
+        (typeof signIn.signedBy !== 'string' || !MANAGED_SIGN_IN_SIGNER.test(signIn.signedBy)))
     )) {
       throw new Error('Managed connection sign-in is invalid');
     }

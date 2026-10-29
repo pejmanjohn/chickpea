@@ -56,6 +56,9 @@ export type SignInGroupPolicy = Pick<ConnectionAccountManagedPolicy, SharedField
 export const MANAGED_SIGN_IN_PERSON =
   /^(?:notion:[A-Za-z0-9-]{1,64}:[A-Za-z0-9-]{1,64}|member:[A-Za-z0-9_.:@-]{1,200})$/;
 
+/** `ManagedSignIn.signedBy`: a Chickpea membership id. */
+export const MANAGED_SIGN_IN_SIGNER = /^[A-Za-z0-9_.:@-]{1,200}$/;
+
 /** Whether two managed accounts hold every shared field equal. */
 export function sameSignInGroup(a: ConnectionAccountInput, b: ConnectionAccountInput): boolean {
   const left = a.policy;
