@@ -27,6 +27,10 @@ export interface ConnectorLandingPageInput {
   changingSelection?: string;
   /** Sign-in stopped before the provider opened; continuing asks for a different account. */
   signInNotice?: { ownerKind: 'member' | 'team'; message: string };
+  /** A reconnect link for a sign-in other Agents use too. */
+  sharedSignIn?: boolean;
+  /** Sign-ins the person may use for this Agent without signing in again, per owner kind. */
+  reusable?: Record<'member' | 'team', ReusableSetupSignIn[]>;
   accessReview?: {
     tools: Array<{
       name: string;
@@ -39,6 +43,15 @@ export interface ConnectorLandingPageInput {
     }>;
     approvedAccountIds: string[];
   };
+}
+
+export interface ReusableSetupSignIn {
+  sourceConnectionId: string;
+  /** Who signed in, by display name; empty when unknown. */
+  label: string;
+  signedByYou: boolean;
+  pages: Array<{ handle: string; kind: 'page' | 'database'; label: string }>;
+  complete: boolean;
 }
 
 export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInput): string {
@@ -60,9 +73,10 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
   const heading = selection
     ? `Change which ${connector} ${selection} ${agent.name} can use`
     : `Connect ${connector} to ${agent.name}`;
-  const lead = selection
+  const lead = (selection
     ? `${connector} shows the ${selection} ${agent.name} can use now. Check ${selection} to add them or uncheck ${selection} to remove them.`
-    : `${agent.name} can use ${connector} when you ask.`;
+    : `${agent.name} can use ${connector} when you ask.`) +
+    (input.sharedSignIn ? ' Changes there apply to every Agent using this sign-in.' : '');
   return pageShell({
     title: heading,
     surface: 'connector-setup',
@@ -80,13 +94,14 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
             </div>
             <form id="connector-form" method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/authorize">
               ${ownerChoiceBlock(agent.name, input.locked, notice?.ownerKind)}
-              <section class="choice-block" aria-labelledby="access-title">
+              ${input.reusable ? reuseChoiceBlocks(connector, agent.name, input.reusable) : ''}
+              <section class="choice-block" aria-labelledby="access-title" data-sign-in-only>
                 <h2 id="access-title">Permissions</h2>
                 <input type="hidden" name="access" value="${accessLane}">
                 <p>Review the permissions requested on the provider&#39;s sign-in screen. They may include permission to change data.</p>
                 <p id="access-help">Agent tools: ${escapeHtml(accessSummary)}${accessLane === 'read' ? ' This does not limit permissions granted during sign-in.' : ''}</p>
               </section>
-              <p class="security-copy">Sign-in opens in a secure ${escapeHtml(connector)} tab. Chickpea keeps a reference to the connected account and this Agent&rsquo;s access level &mdash; never your password or refresh tokens.</p>
+              <p class="security-copy" data-sign-in-only>Sign-in opens in a secure ${escapeHtml(connector)} tab. Chickpea keeps a reference to the connected account and this Agent&rsquo;s access level &mdash; never your password or refresh tokens.</p>
               <p class="flow-notice" id="sign-in-notice" role="status"${notice ? '' : ' hidden'}>${escapeHtml(notice?.message ?? '')}</p>
               <input type="hidden" name="differentAccount" value="1"${notice ? '' : ' disabled'}>
               <p class="flow-alert" id="flow-alert" role="alert"${failureMessage ? '' : ' hidden'}>${escapeHtml(failureMessage)}</p>
@@ -98,8 +113,76 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
           </section>
         </section>
       </main>
-      <script nonce="setup">${setupScript()}</script>`,
+      <script nonce="setup">${setupScript()}</script>${input.reusable ? `
+      <script nonce="setup">${reuseScript(connector)}</script>` : ''}`,
   });
+}
+
+/**
+ * For each owner kind with a sign-in to reuse: which account, and for an
+ * existing one which pages the Agent can use. The page's script shows the
+ * owner kind chosen; hidden choices are disabled so they are never sent.
+ */
+function reuseChoiceBlocks(
+  connector: string,
+  agentName: string,
+  reusable: Record<'member' | 'team', ReusableSetupSignIn[]>,
+): string {
+  return (['member', 'team'] as const).map((ownerKind) => {
+    const signIns = reusable[ownerKind];
+    if (!signIns.length) return '';
+    const [only] = signIns.length === 1 ? signIns : [];
+    const intro = only?.signedByYou ? `You already connected ${connector} in this workspace.`
+      : only?.label ? `${only.label} already connected ${connector} in this workspace.`
+      : `${connector} is already connected in this workspace.`;
+    const team = ownerKind === 'team';
+    const option = (value: string, title: string, detail: string, checked: boolean, useLabel?: string) =>
+      `<label class="owner-option">
+        <input type="radio" name="reuseSignInId" value="${escapeHtml(value)}"${useLabel ? ` data-use-label="${escapeHtml(useLabel)}"` : ''}${checked ? ' checked' : ''} disabled>
+        <span class="owner-radio" aria-hidden="true"></span>
+        <span class="owner-option-icon owner-option-icon-${team && value ? 'team' : 'personal'}" aria-hidden="true">${ownerChoiceIcon(team && value ? 'team' : 'member')}</span>
+        <span class="owner-option-copy"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(detail)}</span></span>
+      </label>`;
+    const options = signIns.map((signIn, index) => {
+      const owner = signIn.signedByYou ? 'your' : signIn.label ? `${signIn.label.split(/\s+/)[0]}’s` : 'the team’s';
+      const shared = `${signIn.pages.length}${signIn.complete ? '' : '+'} ${signIn.pages.length === 1 && signIn.complete ? 'page' : 'pages'} shared`;
+      return option(
+        signIn.sourceConnectionId,
+        `Use ${owner} ${connector} (${shared})`,
+        `${team ? 'Team account' : 'Your personal account'}. No new ${connector} sign-in.`,
+        index === 0,
+        `Use ${owner} ${connector}`,
+      );
+    }).join('') + option(
+      '',
+      `Sign in to ${connector} with another account`,
+      team
+        ? `Opens ${connector} so someone else can sign in and choose pages.`
+        : `Opens ${connector} so you can sign in with a different account and choose pages.`,
+      false,
+    );
+    const pages = signIns.map((signIn) => `<section class="choice-block" data-reuse-source="${escapeHtml(signIn.sourceConnectionId)}" hidden>
+        <h2>Pages ${escapeHtml(agentName)} can use</h2>
+        <p>${escapeHtml(connector)} decides which pages Chickpea can reach. Choose which of them ${escapeHtml(agentName)} uses.</p>
+        <div class="owner-options reuse-modes">
+          <label class="owner-option owner-option-plain"><input type="radio" name="pageMode" value="all" checked disabled><span class="owner-radio" aria-hidden="true"></span><span class="owner-option-copy"><strong>All pages shared in ${escapeHtml(connector)} (recommended)</strong><span>Includes pages shared in ${escapeHtml(connector)} later.</span></span></label>
+          <label class="owner-option owner-option-plain"><input type="radio" name="pageMode" value="only" disabled><span class="owner-radio" aria-hidden="true"></span><span class="owner-option-copy"><strong>Only these pages</strong><span>Pages shared in ${escapeHtml(connector)} later are not added.</span></span></label>
+        </div>
+        <div class="tool-options page-options">${signIn.pages.map((page) => `<label class="tool-option">
+          <input type="checkbox" name="page:${escapeHtml(page.handle)}" checked disabled>
+          <span class="tool-option-copy"><strong>${escapeHtml(page.label || 'Untitled')}</strong><span>${page.kind === 'database' ? 'Database' : 'Page'}</span></span>
+        </label>`).join('')}</div>
+        ${signIn.complete ? '' : '<p>Chickpea lists the first 256 pages.</p>'}
+      </section>`).join('');
+    return `<div data-reuse-owner="${ownerKind}" hidden>
+      <section class="choice-block" aria-labelledby="reuse-${ownerKind}-title">
+        <h2 id="reuse-${ownerKind}-title">Which ${escapeHtml(connector)} account?</h2>
+        <p>${escapeHtml(intro)}</p>
+        <div class="owner-options">${options}</div>
+      </section>
+      ${pages}
+    </div>`;
+  }).join('');
 }
 
 export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInput): string {
@@ -445,7 +528,16 @@ function ownerChoiceIcon(ownerKind: 'member' | 'team'): string {
 }
 
 function setupScript(): string {
-  return `(function(){var form=document.getElementById("connector-form"),owners=form&&form.querySelectorAll('input[name="ownerKind"]'),alert=document.getElementById("flow-alert"),notice=document.getElementById("sign-in-notice"),different=form&&form.querySelector('input[name="differentAccount"]'),button=document.querySelector('button[form="connector-form"][value="authorize"]');if(!form||!owners||!alert||!notice||!different||!button)return;function selectedOwner(){return form.querySelector('input[name="ownerKind"]:checked')}function update(){button.disabled=!selectedOwner()}function clearNotice(){if(notice.hidden)return;notice.hidden=true;different.disabled=true;button.textContent=button.getAttribute("data-label")}owners.forEach(function(control){control.addEventListener("change",function(){clearNotice();update()})});form.addEventListener("submit",async function(event){event.preventDefault();if(!selectedOwner()){alert.textContent="Choose Personal or Team to continue.";alert.hidden=false;update();return}var label=button.textContent;button.disabled=true;button.textContent="Opening secure sign-in…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(response.status===409&&body.error==="managed_sign_in_other_kind"){notice.textContent=String(body.message||"");notice.hidden=false;different.disabled=false;button.textContent=button.getAttribute("data-different-label");update();return}if(!response.ok)throw new Error(String(body.message||"Chickpea could not start the secure sign-in. Try again."));var target=new URL(String(body.authorizationUrl||""));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not start the secure sign-in. Try again.";alert.hidden=false;button.textContent=label;update()}});update()})();`;
+  return `(function(){var form=document.getElementById("connector-form"),owners=form&&form.querySelectorAll('input[name="ownerKind"]'),alert=document.getElementById("flow-alert"),notice=document.getElementById("sign-in-notice"),different=form&&form.querySelector('input[name="differentAccount"]'),button=document.querySelector('button[form="connector-form"][value="authorize"]');if(!form||!owners||!alert||!notice||!different||!button)return;function selectedOwner(){return form.querySelector('input[name="ownerKind"]:checked')}function update(){button.disabled=!selectedOwner()}function clearNotice(){if(notice.hidden)return;notice.hidden=true;different.disabled=true;button.textContent=button.getAttribute("data-label")}owners.forEach(function(control){control.addEventListener("change",function(){clearNotice();update()})});form.addEventListener("submit",async function(event){event.preventDefault();if(!selectedOwner()){alert.textContent="Choose Personal or Team to continue.";alert.hidden=false;update();return}var label=button.textContent;button.disabled=true;button.textContent=button.getAttribute("data-busy-label")||"Opening secure sign-in…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(response.status===409&&body.error==="managed_sign_in_other_kind"){notice.textContent=String(body.message||"");notice.hidden=false;different.disabled=false;button.textContent=button.getAttribute("data-different-label");update();return}if(!response.ok)throw new Error(String(body.message||"Chickpea could not start the secure sign-in. Try again."));if(body.completed){location.replace(location.pathname);return}var target=new URL(String(body.authorizationUrl||""));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not start the secure sign-in. Try again.";alert.hidden=false;button.textContent=label;update()}});update()})();`;
+}
+
+/**
+ * Shows the reuse choice for the chosen owner, and limits the Agent to the
+ * rest when a page is unchecked under "All pages". Radios of one name form one
+ * group across the form, so a block takes its defaults again when shown.
+ */
+function reuseScript(connector: string): string {
+  return `(function(){var form=document.getElementById("connector-form"),button=document.querySelector('button[form="connector-form"][value="authorize"]'),notice=document.getElementById("sign-in-notice"),connector=${jsonForScript(connector)};if(!form||!button)return;var defaultLabel=button.getAttribute("data-label");function owner(){var checked=form.querySelector('input[name="ownerKind"]:checked');return checked?checked.value:""}function show(element,on){element.hidden=!on;element.querySelectorAll("input").forEach(function(input){input.disabled=!on})}function update(){var kind=owner(),chosen=null;form.querySelectorAll("[data-reuse-owner]").forEach(function(block){var on=block.getAttribute("data-reuse-owner")===kind,radios=block.querySelectorAll('input[name="reuseSignInId"]');if(on&&block.hidden&&radios.length&&!block.querySelector('input[name="reuseSignInId"]:checked'))radios[0].checked=true;block.hidden=!on;radios.forEach(function(input){input.disabled=!on;if(on&&input.checked&&input.value)chosen=input})});form.querySelectorAll("[data-reuse-source]").forEach(function(pages){var on=!!chosen&&pages.getAttribute("data-reuse-source")===chosen.value&&pages.parentNode.getAttribute("data-reuse-owner")===kind;if(on&&pages.hidden){pages.querySelectorAll('input[name="pageMode"]').forEach(function(input){input.checked=input.value==="all"});pages.querySelectorAll('input[type="checkbox"]').forEach(function(box){box.checked=true})}show(pages,on)});form.querySelectorAll("[data-sign-in-only]").forEach(function(element){element.hidden=!!chosen});button.setAttribute("data-label",chosen?chosen.getAttribute("data-use-label"):defaultLabel);if(chosen){button.setAttribute("data-busy-label","Adding "+connector+"…");button.textContent=chosen.getAttribute("data-use-label");if(notice)notice.hidden=true}else{button.removeAttribute("data-busy-label");if(!notice||notice.hidden)button.textContent=defaultLabel}}form.querySelectorAll('input[name="ownerKind"],input[name="reuseSignInId"]').forEach(function(input){input.addEventListener("change",update)});form.querySelectorAll("[data-reuse-source]").forEach(function(pages){var modes=pages.querySelectorAll('input[name="pageMode"]'),boxes=pages.querySelectorAll('input[type="checkbox"]');function mode(){var checked=pages.querySelector('input[name="pageMode"]:checked');return checked?checked.value:"all"}modes.forEach(function(input){input.addEventListener("change",function(){boxes.forEach(function(box){box.checked=true})})});boxes.forEach(function(box){box.addEventListener("change",function(){if(mode()!=="all")return;modes.forEach(function(input){input.checked=input.value==="only"});boxes.forEach(function(other){other.checked=other!==box})})})});update()})();`;
 }
 
 function catalogSetupScript(input: { connector: string }): string {
@@ -737,6 +829,10 @@ body {
 .tool-option-copy span { color: var(--muted); font-size: .88rem; line-height: 1.4; }
 .tool-option-copy .tool-effect { color: var(--green-deep); font-weight: 800; }
 .tool-option-unavailable { cursor: not-allowed; opacity: .66; }
+.reuse-modes { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }
+.page-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.page-options .tool-option-copy { align-items: baseline; display: flex; justify-content: space-between; }
+.page-options .tool-option-copy span { font-size: .78rem; font-weight: 700; }
 .review-note { color: var(--danger) !important; font-weight: 700; }
 .text-input,
 .setup-panel input:not([type="hidden"]) {
@@ -926,6 +1022,8 @@ textarea.text-input { max-width: none; resize: vertical; }
   .security-copy { padding-inline: 18px; }
   .flow-notice { margin-inline: 18px; }
   .owner-option { align-items: start; grid-template-columns: 18px 32px minmax(0, 1fr); }
+  .reuse-modes,
+  .page-options { grid-template-columns: minmax(0, 1fr); }
   .flow-actions { align-items: stretch; flex-direction: column-reverse; }
   .flow-actions form,
   .flow-actions button { width: 100%; }

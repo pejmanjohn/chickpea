@@ -24,6 +24,7 @@ import {
 } from '../src/connections/managed.ts';
 import { managedPrincipalRef } from '../src/connections/managed-principal.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
+import { notionPageHandle, readAgentPageChoice, type NotionId } from '../src/connections/notion-pages.ts';
 import { signInMixRefusal, signInOtherKindNotice } from '../src/connections/sign-in-mix.ts';
 import { escapeHtml } from '../src/security/html-escape.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
@@ -1969,6 +1970,129 @@ test('the Slack Notion setup page renders the notice itself for a plain form pos
     assert.match(html, />Continue with a different Notion account<\/button>/);
     assert.match(html, /action="\/setup\/[^"]+\/cancel"><button class="text-button" type="submit">Cancel<\/button>/);
     assert.deepEqual(h.authorized, []);
+  } finally {
+    h.close();
+  }
+});
+
+const REUSE_PAGES = [
+  { id: 'd1000000-0000-4000-8000-0000000000d1' as NotionId, kind: 'page' as const, label: 'Q4 Roadmap' },
+  { id: 'd2000000-0000-4000-8000-0000000000d2' as NotionId, kind: 'page' as const, label: 'Engineering Wiki' },
+];
+
+/** A Notion link for Notes, opened by `role`, whose personal Notion sign-in is on Penny; the team's is on Atlas. */
+async function notionReuseSetupHarness(suffix: string, role: AuthPrincipal['role']) {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await createSlackOwner(identity, { now: NOW, suffix });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const authorized: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async authorize() {
+      authorized.push('ca_notion_new');
+      return { authorizationUrl: new URL('https://backend.composio.dev/link/1'), authorizationRef: 'ca_notion_new' };
+    },
+    async validate() { return { person: 'notion:ws-1:user-me' }; },
+    async listPages() { return { pages: REUSE_PAGES.map((page) => ({ ...page })), complete: true }; },
+    async execute() { return { data: {} }; },
+    async revoke() {},
+  };
+  const principal: AuthPrincipal = {
+    userId: owner.user.id, membershipId: owner.membership.id, organizationId: owner.membership.organizationId,
+    role, authenticatorKind: 'better_auth', credentialId: 'session_reuse', correlationId: 'notion_reuse', machine: false,
+  };
+  for (const [id, name] of [['agent_notes', 'Notes'], ['agent_wiki', 'Atlas'], ['agent_docs', 'Penny']]) {
+    await config.createAgent({
+      id: id!, name: name!, creatorMembershipId: owner.membership.id, editPolicy: 'creator_and_admins',
+      lifecycle: 'active', configurationGeneration: 1, instructions: 'Use Notion.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+  }
+  const workspaceId = owner.user.slackTeamId;
+  await config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', defaultAgentId: 'agent_notes' });
+  const connect = (accountId: string, agentId: string, ownerKind: 'team' | 'member', person: string) =>
+    config.createAgentOwnedConnection({
+      account: {
+        id: accountId, workspaceId, ownerKind,
+        ...(ownerKind === 'member' ? { ownerMembershipId: owner.membership.id } : {}),
+        createdByMembershipId: ownerKind === 'member' ? owner.membership.id : 'membership_teammate',
+        providerId: 'notion', label: 'Notion', secretRefId: `secret_${accountId}`, lifecycle: 'ready',
+        policy: {
+          kind: 'managed', adapterId: 'composio', toolkit: 'notion',
+          principalRef: managedPrincipalRef(principal, ownerKind, undefined)!, accountRef: `ca_${accountId}`,
+          allowedCapabilities: ['notion.content.search'],
+          signIn: { person, accessLane: 'write' },
+        },
+      },
+      binding: { agentId, connectionAccountId: accountId, providerId: 'notion', allowedCapabilities: ['notion.content.search'], enabled: true },
+    });
+  await connect('connection_notion_team', 'agent_wiki', 'team', 'notion:ws-1:user-team');
+  await connect('connection_notion_mine', 'agent_docs', 'member', 'notion:ws-1:user-me');
+  const service = new WorkspaceManagementService({
+    identity, config, management, setupBaseUrl: 'http://localhost', now: () => NOW,
+    randomId: () => 'notion_reuse', randomCapability: () => CAPABILITY,
+  });
+  const prepared = await service.prepareConnectorSetup({
+    userId: owner.user.id, membershipId: owner.membership.id, organizationId: owner.membership.organizationId,
+    origin: { kind: 'slack', workspaceId, channelId: 'D_NOTES', threadTs: '1800200000.000400', agentId: 'agent_notes' },
+  }, { agentId: 'agent_notes', connector: 'Notion', ownerKind: 'member' });
+  const setupId = new URL(prepared.handoffUrl).pathname.split('/').at(-1)!;
+  const app = createManagementSetupRoutes({
+    identity, config, management, settings, now: () => NOW,
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+    authenticatePrincipal: async () => principal,
+    deliverReceipt: async () => ({ deliveryRef: 'slack:D_NOTES:receipt.1' }),
+  });
+  const cookie = (await exchange(app, setupId)).headers.get('set-cookie')!.split(';')[0]!;
+  return {
+    app, config, management, setupId, cookie, authorized, workspaceId,
+    page: async () => (await app.request(`http://localhost/setup/${setupId}`, { headers: { cookie } })).text(),
+    close() { identity.close(); config.close(); management.close(); settings.close(); },
+  };
+}
+
+test('a Slack Notion link offers its owner their personal sign-in, and adds the Agent to it with chosen pages without opening Notion', async () => {
+  const h = await notionReuseSetupHarness('notion-reuse-personal', 'member');
+  try {
+    const html = await h.page();
+    assert.match(html, /<div data-reuse-owner="member" hidden>/);
+    assert.match(html, /name="reuseSignInId" value="connection_notion_mine" data-use-label="Use your Notion" checked disabled>/);
+    assert.doesNotMatch(html, /data-reuse-owner="team"|connection_notion_team/, 'a Member is never offered the team sign-in');
+    assert.doesNotMatch(html, /Atlas|Penny/, 'no other Agent is named');
+
+    const handle = await notionPageHandle(REUSE_PAGES[1]!.id);
+    const team = await authorize(h.app, h.setupId, h.cookie, {
+      ownerKind: 'team', access: 'read', reuseSignInId: 'connection_notion_team', pageMode: 'all',
+    });
+    assert.notEqual(team.status, 200, 'naming the team sign-in does not get a Member into it');
+    const reused = await authorize(h.app, h.setupId, h.cookie, {
+      ownerKind: 'member', access: 'read', reuseSignInId: 'connection_notion_mine', pageMode: 'only', [`page:${handle}`]: 'on',
+    });
+    assert.equal(reused.status, 200, await reused.clone().text());
+    assert.deepEqual(await reused.json(), { completed: true });
+    assert.deepEqual(h.authorized, [], 'Notion is not opened');
+    assert.equal((await h.management.getSetup(h.setupId))?.status, 'completed');
+    const [binding] = await h.config.listAgentConnectionBindings('agent_notes');
+    const account = (await h.config.listConnectionAccounts(h.workspaceId)).find(({ id }) => id === binding?.connectionAccountId);
+    assert.ok(account?.policy.kind === 'managed');
+    assert.equal(account.policy.accountRef, 'ca_connection_notion_mine');
+    assert.equal(account.ownerKind, 'member');
+    assert.deepEqual(readAgentPageChoice(binding!.resourceConstraints), [REUSE_PAGES[1]!.id]);
+  } finally {
+    h.close();
+  }
+});
+
+test('a Slack Notion link offers an Owner the team sign-in too', async () => {
+  const h = await notionReuseSetupHarness('notion-reuse-owner', 'owner');
+  try {
+    const html = await h.page();
+    assert.match(html, /<div data-reuse-owner="member" hidden>/);
+    assert.match(html, /<div data-reuse-owner="team" hidden>/);
+    assert.match(html, /name="reuseSignInId" value="connection_notion_team"/);
   } finally {
     h.close();
   }

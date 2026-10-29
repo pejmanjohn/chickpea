@@ -364,6 +364,47 @@ test('API-preset connectors ask for their fields in styled inputs inside the set
   assert.doesNotMatch(rendered, /<select|owner-select|select-control/);
 });
 
+const notionSetup: ManagementSetupRecord = {
+  ...setup,
+  target: { ...setup.target, provider: 'notion', targetLabel: 'Notion', presetId: 'notion-managed' },
+};
+const MY_NOTION = {
+  sourceConnectionId: 'connection_notion_mine', label: 'Zed Park', signedByYou: true, complete: true,
+  pages: [
+    { handle: 'page_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1', kind: 'page' as const, label: 'Q4 Roadmap' },
+    { handle: 'page_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2', kind: 'database' as const, label: 'Customer Interviews' },
+  ],
+};
+
+test('a Slack setup page offers a sign-in to reuse with its pages, hidden and unsent until its owner kind is chosen', () => {
+  const html = renderManagedConnectionSetupPage({
+    setup: notionSetup, agent: sprout,
+    reusable: { member: [MY_NOTION], team: [{ ...MY_NOTION, sourceConnectionId: 'connection_notion_team', label: 'Maya Chen', signedByYou: false }] },
+  });
+  assert.match(html, /<div data-reuse-owner="member" hidden>/);
+  assert.match(html, /<div data-reuse-owner="team" hidden>/);
+  assert.match(html, /You already connected Notion in this workspace\./);
+  assert.match(html, /<strong>Use your Notion \(2 pages shared\)<\/strong><span>Your personal account\. No new Notion sign-in\.<\/span>/);
+  assert.match(html, /Maya Chen already connected Notion in this workspace\./);
+  assert.match(html, /<strong>Use Maya’s Notion \(2 pages shared\)<\/strong><span>Team account\. No new Notion sign-in\.<\/span>/);
+  assert.match(html, /<strong>Sign in to Notion with another account<\/strong><span>Opens Notion so you can sign in with a different account and choose pages\.<\/span>/);
+  assert.match(html, /<h2>Pages Sprout can use<\/h2>/);
+  assert.match(html, /<strong>All pages shared in Notion \(recommended\)<\/strong>/);
+  assert.match(html, /name="page:page_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1" checked disabled>/);
+  const reuseInputs = [...html.matchAll(/<input type="(?:radio|checkbox)" name="(?:reuseSignInId|pageMode|page:[^"]+)"[^>]*>/g)].map(([input]) => input);
+  assert.ok(reuseInputs.length > 0 && reuseInputs.every((input) => input.endsWith(' disabled>')), 'nothing is sent until the script shows it');
+  assert.match(html, /<section class="choice-block" aria-labelledby="access-title" data-sign-in-only>/);
+  assert.doesNotMatch(html, /Also used by|already used by/, 'the setup page names no other Agent');
+});
+
+test('a Slack link to change a shared sign-in\'s pages says the change reaches every Agent using it', () => {
+  const html = renderManagedConnectionSetupPage({
+    setup: notionSetup, agent: sprout, changingSelection: 'pages', sharedSignIn: true,
+    locked: { ownerKind: 'team', access: 'read' },
+  });
+  assert.match(html, /Check pages to add them or uncheck pages to remove them\. Changes there apply to every Agent using this sign-in\./);
+});
+
 test('every connector and setup page styles each class it uses, and every styled class is used', () => {
   const pages: Array<[string, string]> = CONNECTION_CATALOG_PRESETS.map((preset) => [
     `catalog setup for ${preset.id}`,
@@ -385,6 +426,9 @@ test('every connector and setup page styles each class it uses, and every styled
       accessReview: { approvedAccountIds: [], tools: [] },
     })],
     ['managed setup, read', renderManagedConnectionSetupPage({ setup, agent: sprout })],
+    ['managed setup with a sign-in to reuse', renderManagedConnectionSetupPage({
+      setup: notionSetup, agent: sprout, reusable: { member: [MY_NOTION], team: [] },
+    })],
     ['managed setup, write', renderManagedConnectionSetupPage({ setup, agent: sprout, writeAvailable: true, failureMessage: 'Try again.' })],
     ['managed waiting', renderManagedConnectionWaitingPage({ setup, agent: sprout })],
     ['managed departure', renderManagedConnectionDeparturePage({ setup, agent: sprout }, 'https://hubspot.example/authorize')],
