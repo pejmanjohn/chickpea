@@ -27,21 +27,23 @@ import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import { withConnectionNetwork, type StubbedRequest } from './helpers/connection-network.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
-const KB_URL = 'https://api.hubapi.com/cms/knowledge-base/2027-03-beta';
+const KB_PATH = '/cms/knowledge-base/2027-03-beta';
+const KB_URL = `https://api.hubapi.com${KB_PATH}`;
 const KEY = ['pat', 'na1', '00000000-0000-4000-8000-0000000000aa'].join('-');
 const OTHER_KEY = ['pat', 'na1', '00000000-0000-4000-8000-0000000000bb'].join('-');
 const KB_CONNECTION: ManagementApiConnection = {
   id: 'hubspot_kb',
   displayName: 'HubSpot Knowledge Base',
   allowedHosts: ['api.hubapi.com'],
-  pathPrefixes: ['/cms/knowledge-base/2027-03-beta'],
+  pathPrefixes: [KB_PATH],
   headerName: 'Authorization',
   headerValuePrefix: 'Bearer ',
   allowedMethods: ['GET', 'HEAD', 'POST', 'PATCH'],
   enabled: true,
   authMode: 'credential',
 };
-const SAVE: WorkspaceManagementToolArguments['save_connection_key'] = { connectionId: 'hubspot_kb', key: KEY };
+const SAVE_WITHOUT_PATH: WorkspaceManagementToolArguments['save_connection_key'] = { connectionId: 'hubspot_kb', key: KEY };
+const SAVE = { ...SAVE_WITHOUT_PATH, path: `${KB_PATH}/knowledge-bases` };
 const PASTED = `here's our HubSpot service key ${KEY} for the Knowledge Base API at <${KB_URL}>, set it up so you can read and write articles`;
 
 /** Every value a store method was called with, serialized, so a test can look for the key in it. */
@@ -178,15 +180,20 @@ function refusal(response: WorkspaceManagementToolResult): { code: string; messa
   return (response as { error: { code: string; message: string } }).error;
 }
 
-/** A HubSpot stand-in: 401 without this key, 403 off the knowledge base, 200 on it. */
+/**
+ * HubSpot's Knowledge Base API as it answers: 404 at the bare prefix with any
+ * key or none, 401 below it without this key, and 200 on its list endpoints.
+ */
 function hubspot(key: string) {
   return (request: StubbedRequest) => {
+    const { pathname } = new URL(request.url);
+    if (pathname.replace(/\/+$/, '') === KB_PATH) return new Response(null, { status: 404 });
     if (request.headers.get('authorization') !== `Bearer ${key}`) {
       return Response.json({ status: 'error', category: 'INVALID_AUTHENTICATION' }, { status: 401 });
     }
-    return new URL(request.url).pathname.startsWith('/cms/knowledge-base/')
+    return [`${KB_PATH}/articles`, `${KB_PATH}/knowledge-bases`].includes(pathname)
       ? Response.json({ results: [] })
-      : Response.json({ status: 'error', category: 'MISSING_SCOPES' }, { status: 403 });
+      : new Response(null, { status: 404 });
   };
 }
 
@@ -383,6 +390,34 @@ test('a 401 saves nothing and says the key did not work, without the key', async
   } finally { f.close(); }
 });
 
+test('a bogus key checked at a prefix that answers 404 saves nothing; a read path that needs the key rejects it', async () => {
+  const f = await fixture();
+  try {
+    await addKeyedConnection(f);
+    const unchecked = await withConnectionNetwork(hubspot(OTHER_KEY), async (requests) => {
+      const response = await f.slack('save_connection_key', SAVE_WITHOUT_PATH, PASTED);
+      assert.deepEqual(requests.map(({ url }) => url), [KB_URL], 'the check GETs the bare prefix');
+      return response;
+    });
+    const error = refusal(unchecked);
+    assert.equal(error.code, 'key_unconfirmed');
+    assert.match(error.message, /^Nothing was saved/);
+    assert.match(error.message, /call save_connection_key again with path set to a read endpoint of this API that requires the key/);
+    assert.match(error.message, /request_setup/);
+    assert.match(error.message, /Never repeat the key\./);
+    assert.doesNotMatch(error.message, /accepted/);
+    assert.doesNotMatch(JSON.stringify(unchecked), new RegExp(KEY));
+    assert.equal(await f.savedKey(), undefined);
+    assert.equal((await f.account()).lifecycle, 'pending');
+    assert.deepEqual(f.telemetry, [], 'the connection never went ready');
+
+    const rejected = await withConnectionNetwork(hubspot(OTHER_KEY), async () =>
+      f.slack('save_connection_key', { ...SAVE_WITHOUT_PATH, path: `${KB_PATH}/articles` }, PASTED));
+    assert.equal(refusal(rejected).code, 'key_rejected');
+    assert.equal(await f.savedKey(), undefined);
+  } finally { f.close(); }
+});
+
 test('a key typed with its URLs is checked, saved and makes the connection ready; Slack never replaces it', async () => {
   const f = await fixture();
   try {
@@ -500,7 +535,7 @@ test('one pasted key fills one connection, even when the message names a second 
     };
     assert.equal((await f.connectFromSlack(message, { apiConnections: [KB_CONNECTION, docsConnection] })).disposition, 'applied');
     await withConnectionNetwork(hubspot(KEY), async (requests) => {
-      assert.match(refusal(await f.slack('save_connection_key', { ...SAVE, connectionId: 'docs_api' }, message)).message,
+      assert.match(refusal(await f.slack('save_connection_key', { ...SAVE_WITHOUT_PATH, connectionId: 'docs_api' }, message)).message,
         /already saved on another of this Agent's connections/);
       assert.equal(requests.length, 0, 'the key never reaches the second URL');
     });
