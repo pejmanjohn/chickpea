@@ -406,6 +406,29 @@ test('a page that does not answer in time is reported, not waited on', async () 
   }
 });
 
+test('a page whose body stalls after its headers is cancelled at the timeout', async () => {
+  let cancelled = false;
+  const stalled = (async () => new Response(new ReadableStream<Uint8Array>({
+    cancel() {
+      cancelled = true;
+    },
+  }), { headers: { 'content-type': 'text/html' } })) as typeof globalThis.fetch;
+  let giveUp: ReturnType<typeof setTimeout> | undefined;
+  const stillWaiting = new Promise<never>((_, reject) => {
+    giveUp = setTimeout(() => reject(new Error('the read was still waiting on the body')), 2_000);
+  });
+  try {
+    const result = await Promise.race([
+      readPublicDoc(new URL(DOCS), { cloudflare: true, fetch: stalled, timeoutMs: 50 }),
+      stillWaiting,
+    ]);
+    assert.equal(result.outcome === 'unreadable' ? result.reason : result.outcome, 'timeout');
+    assert.equal(cancelled, true, 'the body stream was cancelled');
+  } finally {
+    clearTimeout(giveUp);
+  }
+});
+
 test('read_public_doc is not on the MCP door, and the service refuses it there', async () => {
   assert.ok(!(WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES as readonly string[]).includes('read_public_doc'));
   const reads: URL[] = [];

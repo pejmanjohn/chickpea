@@ -184,6 +184,9 @@ async function* boundedBodyChunks(
       const next = aborted
         ? await Promise.race([reader.read(), aborted])
         : await reader.read();
+      // The abort cancels the reader, which ends its pending read as done, and
+      // that can win the race: a cut body must never read as a whole one.
+      if (signal?.aborted) throw abortError();
       if (next.done) {
         consumed = true;
         break;
