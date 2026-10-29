@@ -193,16 +193,22 @@ export class BrowserLoginBinder {
    * A new browser context for the login, recorded only if it has none. When
    * another bind recorded one first, that one is used. A context this bind
    * cannot record is queued for deletion, so none is left at the provider
-   * that nothing records.
+   * that nothing records. A record whose answer was lost may still have
+   * landed, so the login is read again first: a context it names is kept.
    */
   private async createContext(deps: WebsiteLoginDependencies, stored: WebsiteLogin): Promise<string> {
     const created = (await this.session.provider.createContext(stored.label)).id;
+    const discard = () => queueContextDeletions(deps.store, [{ contextId: created, queuedAt: this.now() }]);
     let recorded: string | undefined;
     try {
       recorded = await recordWebsiteLoginContext(deps.store, stored.id, created);
-    } finally {
-      if (recorded !== created) await queueContextDeletions(deps.store, [{ contextId: created, queuedAt: this.now() }]);
+    } catch (error) {
+      // Unread, it stays: a new context holds no sign-in yet, and one the login names must not go.
+      const current = await getWebsiteLogin(deps.store, stored.id).then((login) => ({ login }), () => undefined);
+      if (current && current.login?.contextId !== created) await discard();
+      throw error;
     }
+    if (recorded !== created) await discard();
     if (!recorded) throw new Error(BROWSER_LOGIN_REVOKED_MESSAGE);
     return recorded;
   }

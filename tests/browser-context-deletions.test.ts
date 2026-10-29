@@ -236,6 +236,31 @@ test('two binds racing on one login record exactly one context and queue the oth
     ['ctx_race_1', 'ctx_race_2'].filter((id) => id !== recorded));
 });
 
+test('a context record whose answer is lost after it landed keeps the context; one that never landed queues it', async (t) => {
+  const { store, deps, queue } = setup(t);
+  const login = await createWebsiteLogin(deps, LOGIN);
+  const apply = store.applySettingsPatch.bind(store);
+  let landed = true;
+  store.applySettingsPatch = async (patch) => {
+    if (!patch.set?.some(({ key, value }) => key === `website_login_state.${login.id}` && value.includes('ctx_'))) {
+      return apply(patch);
+    }
+    if (landed) await apply(patch);
+    throw new Error('state response lost');
+  };
+  const { provider } = fakeBrowserProvider({ async createContext() { return { id: landed ? 'ctx_landed' : 'ctx_lost' }; } });
+
+  await assert.rejects(bindIn(deps, login, provider), /state response lost/);
+  assert.equal((await getWebsiteLogin(store, login.id))?.contextId, 'ctx_landed');
+  assert.deepEqual(await queue(), [], 'the recorded context is not queued for deletion');
+
+  await store.deleteSetting(`website_login_state.${login.id}`);
+  landed = false;
+  await assert.rejects(bindIn(deps, login, provider), /state response lost/);
+  assert.equal((await getWebsiteLogin(store, login.id))?.contextId, undefined);
+  assert.deepEqual((await queue()).map(({ contextId }) => contextId), ['ctx_lost']);
+});
+
 test('a bind whose login was deleted meanwhile queues the context it created and fails', async (t) => {
   const { store, deps, queue } = setup(t);
   const login = await createWebsiteLogin(deps, LOGIN);
