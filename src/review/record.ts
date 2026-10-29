@@ -121,7 +121,8 @@ export function runReviewPseudonymizer(key: Uint8Array): (slackUserId: string) =
 
 /**
  * The record a port stores. Every string loses each key the run saved with
- * save_connection_key and recognizable credentials, then every Slack user
+ * save_connection_key or tried with try_connection and recognizable
+ * credentials, then every Slack user
  * ID, then is cut to its cap; file notes keep only a
  * name and size; and a Slack List tool's output and error, and a Slack read's
  * result from another conversation, are omitted. The builder adds no Slack
@@ -193,16 +194,17 @@ function slackListTool(toolName: string): boolean {
   return (SLACK_LIST_TOOL_NAMES as readonly string[]).includes(toolName);
 }
 
-const SAVE_CONNECTION_KEY = 'save_connection_key';
+/** The tools whose input carries a key the person pasted. */
+const CONNECTION_KEY_TOOLS: ReadonlySet<string> = new Set(['save_connection_key', 'try_connection']);
 const KEY_INPUT_OMITTED = '[input omitted]';
 
 /**
- * Each key the run saved, as typed and as JSON escapes it, so a copy drops it
- * from the person's message and the answer as well as from the call.
+ * Each key the run saved or tried, as typed and as JSON escapes it, so a copy
+ * drops it from the person's message and the answer as well as from the call.
  */
 function savedConnectionKeys(steps: readonly RunReviewStep[]): string[] {
   return steps.flatMap((step) => {
-    if (step.kind !== 'tool' || step.name !== SAVE_CONNECTION_KEY) return [];
+    if (step.kind !== 'tool' || !CONNECTION_KEY_TOOLS.has(step.name)) return [];
     const key = parsedKey(step.input);
     return key ? [key, JSON.stringify(key).slice(1, -1)] : [];
   }).sort((left, right) => right.length - left.length);
@@ -217,9 +219,23 @@ function parsedKey(input: string): string | undefined {
   }
 }
 
-/** A save_connection_key call whose key cannot be read back, as when the collector cut it, is dropped whole. */
+/**
+ * A key tool's call whose key cannot be read back, as when the collector cut
+ * it, is dropped whole. A try_connection call with no key tried a saved one.
+ */
 function keptInput(toolName: string, input: string): string {
-  return toolName === SAVE_CONNECTION_KEY && parsedKey(input) === undefined ? KEY_INPUT_OMITTED : input;
+  if (!CONNECTION_KEY_TOOLS.has(toolName) || parsedKey(input) !== undefined) return input;
+  return toolName === 'try_connection' && withoutKey(input) ? input : KEY_INPUT_OMITTED;
+}
+
+/** Whether a call's input parses whole and names no key. */
+function withoutKey(input: string): boolean {
+  try {
+    const parsed = JSON.parse(input) as { key?: unknown } | null;
+    return typeof parsed === 'object' && parsed !== null && parsed.key === undefined;
+  } catch {
+    return false;
+  }
 }
 
 /** None of a Slack List tool's; a Slack read's only when it says it read the current conversation, or read nothing. */

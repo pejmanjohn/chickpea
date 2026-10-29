@@ -406,6 +406,28 @@ test('a key the run saved with save_connection_key leaves every field of the cop
   assert.equal(record.answer, 'Connected with [credential redacted]');
 });
 
+test('a key the run only tried with try_connection leaves every field of the copy too', () => {
+  const key = ['sb', 'live', 'synthetic"Tried\\value42'].join('_');
+  const draft = { allowedHosts: ['api.statusboard.example'], pathPrefixes: ['/v2'], headerName: 'X-Api-Key' };
+  const record = buildRunReviewRecord(input({
+    trigger: { author: 'U12345678', text: `try ${key} at https://api.statusboard.example/v2`, files: [] },
+    steps: [
+      { kind: 'tool', name: 'try_connection', input: JSON.stringify({ draft, key, path: '/v2/incidents' }), output: '{"check":{"kind":"key_rejected"}}' },
+      { kind: 'tool', name: 'try_connection', input: JSON.stringify({ connectionId: 'statusboard', path: '/v2/incidents' }) },
+      { kind: 'tool', name: 'try_connection', input: '{"draft":{},"key":"sb_live_cut' },
+    ],
+    answer: `I tried ${key}.`,
+  }), runReviewPseudonymizer(KEY));
+  const serialized = JSON.stringify(record);
+  assert.equal(serialized.includes('synthetic'), false, serialized);
+  assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].input,
+    JSON.stringify({ draft, key: '[credential redacted]', path: '/v2/incidents' }));
+  assert.equal(record.steps[1]?.kind === 'tool' && record.steps[1].input,
+    '{"connectionId":"statusboard","path":"/v2/incidents"}', 'a saved-key try carries no key, so it stays');
+  assert.equal(record.steps[2]?.kind === 'tool' && record.steps[2].input, '[input omitted]', 'a cut call is dropped whole');
+  assert.equal(record.answer, 'I tried [credential redacted].');
+});
+
 test('a field is cut to 16 KiB and the record to 256 KiB, oldest steps first', () => {
   const pseudonymOf = runReviewPseudonymizer(KEY);
   const single = buildRunReviewRecord(input({
