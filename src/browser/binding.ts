@@ -25,7 +25,7 @@ import {
   BROWSER_UNKNOWN_LOGIN_MESSAGE,
 } from './messages.ts';
 import type { BrowserPage } from './page.ts';
-import { BrowserContextGoneError, BrowserProviderError } from './provider.ts';
+import { BrowserContextGoneError, BrowserProviderError, deleteSessionDownloads } from './provider.ts';
 import type { BrowserSessionBinding, BrowserTurnSession } from './turn-session.ts';
 
 /** A granted website login as the tools see it: metadata only, never a secret. */
@@ -252,9 +252,10 @@ export class BrowserLoginBinder {
 
   /**
    * End a hand-off session a person may have left open, so the provider
-   * saves its sign-in to the context before a new session loads it. Its
-   * record goes only once the provider reports it ended: one still open
-   * stays recorded, for the next bind or the login's deletion to end.
+   * saves its sign-in to the context before a new session loads it, then
+   * delete the files they downloaded in it. Its record goes only once the
+   * provider reports it ended: one still open stays recorded, for the next
+   * bind or the login's deletion to end.
    */
   private async finishHandoff(deps: WebsiteLoginDependencies, stored: WebsiteLogin): Promise<void> {
     const sessionId = stored.handoffSessionId;
@@ -267,6 +268,12 @@ export class BrowserLoginBinder {
       if (!['RUNNING', 'PENDING', 'UNKNOWN'].includes(status)) break;
       if (poll >= HANDOFF_END_POLLS) return;
       await this.sleep(HANDOFF_END_POLL_MS);
+    }
+    // Files the person downloaded in the live view; ones that remain are queued, so the record can go.
+    if (!(await deleteSessionDownloads(provider, sessionId)).complete) {
+      const queued = await queueContextDeletions(deps.store, [{ handoffSessionId: sessionId, queuedAt: this.now() }])
+        .then(() => true, () => false);
+      if (!queued) return;
     }
     await setWebsiteLoginHandoff(deps.store, stored.id, undefined).catch(() => undefined);
   }

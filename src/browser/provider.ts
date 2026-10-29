@@ -31,6 +31,12 @@ export interface BrowserLiveView {
   pages: Array<{ id: string; url: string; title: string; fullscreenUrl: string }>;
 }
 
+/** A file a person downloaded in a session, which the provider keeps until it is deleted. */
+export interface BrowserDownload {
+  id: string;
+  sessionId: string;
+}
+
 /** The website login a new context is made for. */
 export interface BrowserContextOwner {
   loginId: string;
@@ -68,6 +74,10 @@ export interface BrowserProvider {
   checkContext(contextId: string): Promise<void>;
   /** Deletes a context and the signed-in state it holds; one already gone counts as deleted. */
   deleteContext(contextId: string): Promise<void>;
+  /** Every file the provider keeps from the session, all pages of them. */
+  listDownloads(sessionId: string): Promise<BrowserDownload[]>;
+  /** Deletes one listed file; one already gone counts as deleted. */
+  deleteDownload(downloadId: string): Promise<void>;
 }
 
 /** The shape of a context or session id this code stores or queues. */
@@ -140,6 +150,38 @@ export class HostedBrowserFailure extends BrowserProviderError {
     super(status === 429 ? HOSTED_BROWSER_BUSY_MESSAGE : HOSTED_BROWSER_UNAVAILABLE_MESSAGE, status, retryAfterMs);
     this.name = 'HostedBrowserFailure';
   }
+}
+
+/** Rounds of list-then-delete one call makes before it leaves the rest for a retry. */
+const DOWNLOAD_ROUNDS = 3;
+
+/**
+ * Delete every file the provider kept from a session: those a person
+ * downloaded in a hand-off's live view, after the Agent detached and its
+ * download refusal no longer held. Run it once the session has ended. It
+ * lists again after deleting, so `complete` means the provider lists none.
+ * Idempotent, and never throws for the provider: a failure, or a session
+ * whose files cannot be checked, comes back incomplete for the caller to
+ * retry. A session the provider no longer has has none.
+ */
+export async function deleteSessionDownloads(
+  provider: BrowserProvider,
+  sessionId: string,
+): Promise<{ deleted: number; complete: boolean }> {
+  const deleted = new Set<string>();
+  try {
+    for (let round = 0; round < DOWNLOAD_ROUNDS; round += 1) {
+      const downloads = await provider.listDownloads(sessionId);
+      if (!downloads.length) return { deleted: deleted.size, complete: true };
+      for (const { id } of downloads) {
+        await provider.deleteDownload(id);
+        deleted.add(id);
+      }
+    }
+  } catch (error) {
+    if (error instanceof BrowserProviderError && error.status === 404 && !deleted.size) return { deleted: 0, complete: true };
+  }
+  return { deleted: deleted.size, complete: false };
 }
 
 export interface AwaitRecordingDownloadOptions {

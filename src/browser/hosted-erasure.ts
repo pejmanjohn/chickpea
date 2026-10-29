@@ -6,10 +6,10 @@
  * (state/installation-objects.ts).
  */
 import type { SettingsStore } from '../config/settings-store.ts';
-import { dropPendingContextDeletions, pendingContextDeletions } from './context-deletions.ts';
+import { pendingContextDeletions, pendingRemainder, updatePendingContextDeletions } from './context-deletions.ts';
 import type { HostedBrowserProvider } from './hosted-provider.ts';
 import { forgetWebsiteLoginContext, listWebsiteLogins } from './logins.ts';
-import { BrowserProviderError, HostedBrowserRefusal } from './provider.ts';
+import { BrowserProviderError, deleteSessionDownloads, HostedBrowserRefusal } from './provider.ts';
 import { closeBrowserSessionLease, dropBrowserSessionLease, readBrowserSessionUsage } from './session-lease.ts';
 
 /** Counts only: no id, name or host leaves the store. */
@@ -38,6 +38,8 @@ export interface BrowserErasePass {
   readonly foreign: number;
   /** Ids a failure or a still-running session kept; still in the store for the next pass. */
   readonly remaining: number;
+  /** Files people downloaded in the installation's sessions, deleted by this pass. */
+  readonly downloadsDeleted: number;
   /**
    * Sessions the provider lists for the installation, finished or not. Best
    * effort: the list documents no pagination. Their recordings age out at
@@ -68,14 +70,18 @@ export async function censusBrowser(store: SettingsStore, now: number): Promise<
  * One pass of erasure. First every running session ends: those the lease
  * row holds, the hand-off sessions queued with a deleted login, and those
  * the provider lists running or pending under the installation's metadata.
- * A queued hand-off leaves the queue only once its session has ended. Then
- * every context is deleted: the ones website logins record (legacy catalog
- * fields included), the queued ones, and every one the provider lists on
- * the installation's sessions, finished ones included, which catches a
- * context nothing recorded. Each goes through the wrapper's ownership check
- * and is cleared from the store as it is settled. A context whose session
- * still runs waits for the next pass. A second pass after a clean one finds
- * nothing to count but the sessions listed.
+ * A queued hand-off leaves the queue only once its session has ended and
+ * its files are gone. Next, the files people downloaded in every session
+ * that has ended, whether the store or the provider's unfiltered listing
+ * names it, are deleted; a session whose files are not all gone counts as
+ * remaining. Then every context is deleted, whatever became of those files:
+ * the ones website logins record (legacy catalog fields included), the
+ * queued ones, and every one the provider lists on the installation's
+ * sessions, finished ones included, which catches a context nothing
+ * recorded. Each goes through the wrapper's ownership check and is cleared
+ * from the store as it is settled. A context whose session still runs waits
+ * for the next pass. A second pass after a clean one finds nothing to count
+ * but the sessions listed.
  */
 export async function eraseBrowserPass(input: {
   store: SettingsStore;
@@ -91,6 +97,7 @@ export async function eraseBrowserPass(input: {
   let alreadyGone = 0;
   let foreign = 0;
   let remaining = 0;
+  let downloadsDeleted = 0;
 
   // Each running session, and the context it would save into when it ends.
   const running = new Map<string, string | undefined>();
@@ -103,6 +110,7 @@ export async function eraseBrowserPass(input: {
   const runningLists = [await provider.installationSessions('RUNNING'), await provider.installationSessions('PENDING')];
   for (const { id, contextId } of runningLists.flatMap(({ sessions }) => sessions)) running.set(id, contextId ?? running.get(id));
   const stillRunning = new Set<string>();
+  const foreignSessions = new Set<string>();
   const ending: string[] = [];
   for (const sessionId of running.keys()) {
     try {
@@ -114,6 +122,7 @@ export async function eraseBrowserPass(input: {
       if (isForeign(error)) {
         // It never ran on this installation's time, so its lease goes unmetered.
         foreign += 1;
+        foreignSessions.add(sessionId);
         await dropBrowserSessionLease({ store, sessionId, now: now() });
         continue;
       }
@@ -142,6 +151,18 @@ export async function eraseBrowserPass(input: {
   const { sessions: listed, unverified } = await provider.installationSessions();
   const listingUnverified = unverified || runningLists.some((list) => list.unverified);
   if (listingUnverified) console.warn(JSON.stringify({ component: 'hosted_browser', event: 'session_listing_unverified' }));
+  const finished = new Set([
+    ...[...running.keys()].filter((id) => !stillRunning.has(id) && !foreignSessions.has(id)),
+    ...listed.filter(({ id, status }) => !running.has(id) && !RUNNING.has(status)).map(({ id }) => id),
+  ]);
+  const downloadsLeft = new Set<string>();
+  for (const sessionId of finished) {
+    const downloads = await deleteSessionDownloads(provider, sessionId);
+    downloadsDeleted += downloads.deleted;
+    if (downloads.complete) continue;
+    downloadsLeft.add(sessionId);
+    remaining += 1;
+  }
   const busy = new Set([...stillRunning].flatMap((sessionId) => {
     const contextId = running.get(sessionId) ?? listed.find(({ id }) => id === sessionId)?.contextId;
     return contextId ? [contextId] : [];
@@ -172,10 +193,12 @@ export async function eraseBrowserPass(input: {
     settled.add(contextId);
     for (const loginId of recorded.get(contextId) ?? []) await forgetWebsiteLoginContext(store, loginId, contextId);
   }
-  await dropPendingContextDeletions(store, ({ contextId, handoffSessionId }) =>
-    (contextId === undefined || settled.has(contextId)) &&
-    (handoffSessionId === undefined || !stillRunning.has(handoffSessionId)));
-  return { ended, deleted, alreadyGone, foreign, remaining, sessionsListed: listed.length, listingUnverified };
+  await updatePendingContextDeletions(store, (entry) => pendingRemainder(entry, {
+    context: entry.contextId !== undefined && !settled.has(entry.contextId),
+    handoff: entry.handoffSessionId !== undefined &&
+      (stillRunning.has(entry.handoffSessionId) || downloadsLeft.has(entry.handoffSessionId)),
+  }));
+  return { ended, deleted, alreadyGone, foreign, remaining, downloadsDeleted, sessionsListed: listed.length, listingUnverified };
 }
 
 function isForeign(error: unknown): boolean {

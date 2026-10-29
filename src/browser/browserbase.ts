@@ -1,6 +1,7 @@
 import {
   BrowserProviderError,
   type BrowserContextOwner,
+  type BrowserDownload,
   type BrowserLiveView,
   type BrowserProvider,
   type BrowserRecordingDownload,
@@ -67,6 +68,10 @@ export class BrowserbaseIncompleteSessionError extends BrowserProviderError {
 }
 
 const DEFAULT_BASE_URL = 'https://api.browserbase.com';
+/** The most the download list returns a page. */
+const DOWNLOAD_PAGE = 100;
+/** A bound on one listing; a later one finds what lies past it. */
+const DOWNLOAD_PAGES = 20;
 const ERROR_BODY_LIMIT = 300;
 /**
  * Every call is bounded: a stalled Browserbase must not hold an Admin
@@ -285,6 +290,37 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
     async deleteContext(contextId: string): Promise<void> {
       try {
         await request('DELETE', `/v1/contexts/${encodeURIComponent(contextId)}`);
+      } catch (error) {
+        if (!(error instanceof BrowserProviderError) || error.status !== 404) throw error;
+      }
+    },
+
+    // Only the session's own files: an entry naming another session is left
+    // out, and one naming none fails the listing, so nothing unchecked is deleted.
+    async listDownloads(sessionId: string): Promise<BrowserDownload[]> {
+      const downloads = new Map<string, BrowserDownload>();
+      for (let page = 0, offset = 0; page < DOWNLOAD_PAGES; page += 1) {
+        const query = new URLSearchParams({ sessionId, limit: String(DOWNLOAD_PAGE), offset: String(offset) });
+        const { data } = await request('GET', `/v1/downloads?${query}`);
+        const wrapper = asObject(data);
+        const list: unknown[] | undefined = Array.isArray(data) ? data : Array.isArray(wrapper.downloads) ? wrapper.downloads : undefined;
+        if (!list) throw new BrowserProviderError('Browserbase download list response is not a list');
+        for (const entry of list) {
+          const obj = asObject(entry);
+          const id = str(obj.id);
+          const owner = str(obj.sessionId);
+          if (!id || !owner) throw new BrowserProviderError('Browserbase download response is missing id or sessionId');
+          if (owner === sessionId) downloads.set(id, { id, sessionId: owner });
+        }
+        offset += list.length;
+        if (list.length < DOWNLOAD_PAGE || (typeof wrapper.total === 'number' && offset >= wrapper.total)) break;
+      }
+      return [...downloads.values()];
+    },
+
+    async deleteDownload(downloadId: string): Promise<void> {
+      try {
+        await request('DELETE', `/v1/downloads/${encodeURIComponent(downloadId)}`);
       } catch (error) {
         if (!(error instanceof BrowserProviderError) || error.status !== 404) throw error;
       }

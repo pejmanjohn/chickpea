@@ -107,13 +107,15 @@ test('erasure ends the installation\'s sessions and deletes its contexts, never 
   const browserbase = seededBrowserbase(t);
 
   assert.deepEqual(await eraseInstallationBrowser(a.env, A), {
-    ended: 2, deleted: 4, alreadyGone: 1, foreign: 1, remaining: 0, sessionsListed: 3, listingUnverified: false,
+    ended: 2, deleted: 4, alreadyGone: 1, foreign: 1, remaining: 0, downloadsDeleted: 0, sessionsListed: 3, listingUnverified: false,
   });
   assert.deepEqual([...browserbase.contexts.keys()].sort(), ['ctx_b', 'ctx_foreign'], 'the foreign context is never deleted');
   assert.equal(browserbase.sessions.get('sess_b')!.status, 'RUNNING');
   assert.equal(browserbase.sessions.get('sess_other_project')!.status, 'RUNNING');
   assert.ok(!browserbase.requests().some((request) => /ctx_b|sess_b|sess_other_project/.test(request) && !request.startsWith('GET')),
     'nothing but a read touched what is not the installation\'s');
+  assert.ok(!browserbase.requests().some((request) => request.includes('/v1/downloads') && /sess_b|sess_other_project/.test(request)),
+    'another installation\'s files are never listed');
   assert.deepEqual((await listWebsiteLogins(store)).flatMap(({ contextId }) => contextId ? [contextId] : []), [], 'every id is cleared');
   assert.equal(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), undefined);
   // The leased session ran 90 seconds: two minutes.
@@ -122,7 +124,7 @@ test('erasure ends the installation\'s sessions and deletes its contexts, never 
   });
 
   assert.deepEqual(await eraseInstallationBrowser(a.env, A), {
-    ended: 0, deleted: 0, alreadyGone: 0, foreign: 0, remaining: 0, sessionsListed: 3, listingUnverified: false,
+    ended: 0, deleted: 0, alreadyGone: 0, foreign: 0, remaining: 0, downloadsDeleted: 0, sessionsListed: 3, listingUnverified: false,
   });
 });
 
@@ -240,6 +242,40 @@ test('a lease holding another installation\'s session is dropped unmetered, and 
   assert.equal(pass.foreign, 1);
   assert.equal(browserbase.sessions.get('sess_b')!.status, 'RUNNING');
   assert.deepEqual(await censusBrowser(store, NOW), { contexts: 0, queued: 0, leases: 0, month: MONTH, meteredSeconds: 600 });
+});
+
+test('erasure deletes the files people downloaded in the installation\'s sessions, and a second pass finds none', async (t) => {
+  const { store } = installation(t);
+  let failing = true;
+  const browserbase = fakeBrowserbase({
+    fail: ({ method, url }) => failing && method === 'DELETE' && url.endsWith('/v1/downloads/dl_handoff_2') ? new Response('no', { status: 503 }) : undefined,
+  });
+  browserbase.contexts.set('ctx_handoff', own('handoff'));
+  browserbase.sessions.set('sess_handoff', { projectId: 'proj-platform', status: 'COMPLETED', contextId: 'ctx_handoff', userMetadata: { installation: A } });
+  browserbase.sessions.set('sess_old', { projectId: 'proj-platform', status: 'COMPLETED', userMetadata: { installation: A } });
+  browserbase.sessions.set('sess_b', { projectId: 'proj-platform', status: 'COMPLETED', userMetadata: { installation: B } });
+  for (const [id, sessionId] of [['dl_handoff_1', 'sess_handoff'], ['dl_handoff_2', 'sess_handoff'], ['dl_old', 'sess_old'], ['dl_b', 'sess_b']]) {
+    browserbase.files.set(id!, { sessionId: sessionId! });
+  }
+  await store.setSetting(PENDING_CONTEXT_DELETIONS_SETTING, JSON.stringify([
+    { contextId: 'ctx_handoff', handoffSessionId: 'sess_handoff', queuedAt: 1 },
+  ]));
+  const pass = () => eraseBrowserPass({ store, provider: hostedProvider(store, browserbase), sleep: async () => undefined });
+
+  const first = await pass();
+  assert.deepEqual([first.downloadsDeleted, first.remaining, first.deleted], [2, 1, 1], 'one file failed; the context went anyway');
+  assert.deepEqual([...browserbase.files.keys()].sort(), ['dl_b', 'dl_handoff_2']);
+  assert.deepEqual(JSON.parse((await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!),
+    [{ handoffSessionId: 'sess_handoff', queuedAt: 1 }], 'only the hand-off\'s files are still owed');
+
+  failing = false;
+  const second = await pass();
+  assert.deepEqual([second.downloadsDeleted, second.remaining], [1, 0]);
+  assert.deepEqual([...browserbase.files.keys()], ['dl_b'], 'another installation\'s file stays');
+  assert.equal(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), undefined);
+  const third = await pass();
+  assert.deepEqual([third.downloadsDeleted, third.remaining, third.deleted], [0, 0, 0]);
+  assert.ok(!browserbase.requests().some((request) => request.includes('/v1/downloads') && request.includes('sess_b')));
 });
 
 function hostedProvider(store: SettingsStore, browserbase: ReturnType<typeof fakeBrowserbase>) {

@@ -162,6 +162,7 @@ test('a 404 from Browserbase dequeues; any other failure keeps the entry', async
   await sweep(store, async () => provider);
   assert.deepEqual(calls.map(({ method, url }) => `${method} ${new URL(url).pathname}`), [
     'POST /v1/sessions/sess_gone',
+    'GET /v1/downloads',
     'DELETE /v1/contexts/ctx_gone',
     'DELETE /v1/contexts/ctx_flaky',
   ]);

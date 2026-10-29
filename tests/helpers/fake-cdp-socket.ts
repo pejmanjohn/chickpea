@@ -117,6 +117,10 @@ export function fakeBrowserProvider(overrides: Partial<BrowserProvider> = {}) {
     },
     async checkContext() {},
     async deleteContext() {},
+    async listDownloads() {
+      return [];
+    },
+    async deleteDownload() {},
     ...overrides,
   };
   return { provider, created, ended };

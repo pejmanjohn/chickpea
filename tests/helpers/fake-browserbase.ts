@@ -25,6 +25,8 @@ export function fakeBrowserbase(options: { projectId?: string; fail?: (call: Fak
   const contexts = new Map<string, FakeContext>();
   const sessions = new Map<string, FakeSession>();
   const downloads = new Map<string, Array<{ pageId: string; status: string; downloadUrl?: string }>>();
+  /** Files people downloaded in a session, by download id. */
+  const files = new Map<string, { sessionId: string }>();
   let counter = 0;
   const notFound = () => Response.json({ statusCode: 404, error: 'Not Found' }, { status: 404 });
   const { calls, fetchImpl } = fakeFetch((call) => {
@@ -33,6 +35,20 @@ export function fakeBrowserbase(options: { projectId?: string; fail?: (call: Fak
     const url = new URL(call.url);
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     const body = (call.body ?? {}) as Record<string, any>;
+    if (parts[1] === 'downloads') {
+      const id = parts[2];
+      if (call.method === 'DELETE' && id) {
+        if (!files.delete(id)) return notFound();
+        return new Response(null, { status: 204 });
+      }
+      if (call.method === 'GET' && !id) {
+        const sessionId = url.searchParams.get('sessionId');
+        const limit = Number(url.searchParams.get('limit') ?? 10);
+        const offset = Number(url.searchParams.get('offset') ?? 0);
+        const all = [...files].filter(([, file]) => file.sessionId === sessionId).map(([fileId, file]) => ({ id: fileId, ...file }));
+        return Response.json({ downloads: all.slice(offset, offset + limit), total: all.length, limit, offset });
+      }
+    }
     if (parts[1] === 'contexts') {
       const id = parts[2];
       if (call.method === 'POST' && !id) {
@@ -92,5 +108,5 @@ export function fakeBrowserbase(options: { projectId?: string; fail?: (call: Fak
     const parsed = new URL(url);
     return `${method} ${parsed.pathname}${parsed.search ? decodeURIComponent(parsed.search) : ''}`;
   });
-  return { projectId, contexts, sessions, downloads, calls, requests, fetchImpl };
+  return { projectId, contexts, sessions, downloads, files, calls, requests, fetchImpl };
 }

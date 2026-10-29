@@ -47,6 +47,7 @@ import {
   HostedBrowserFailure,
   HostedBrowserRefusal,
   type BrowserContextOwner,
+  type BrowserDownload,
   type BrowserLiveView,
   type BrowserProvider,
   type BrowserRecordingDownload,
@@ -89,6 +90,8 @@ export class HostedBrowserProvider implements BrowserProvider {
   /** Sessions this instance created or found the installation's; a refused id is asked again. */
   readonly #ownSessions = new Set<string>();
   readonly #ownContexts = new Set<string>();
+  /** Files this instance listed from a session it found the installation's: the only ones it deletes. */
+  readonly #ownDownloads = new Set<string>();
   readonly #store: HostedBrowserProviderOptions['store'];
   readonly #now: () => number;
 
@@ -208,6 +211,19 @@ export class HostedBrowserProvider implements BrowserProvider {
   async listRecordingDownloads(sessionId: string): Promise<BrowserRecordingDownload[]> {
     await this.#requireSession(sessionId);
     return this.#call('list_recording', () => this.#client.listRecordingDownloads(sessionId));
+  }
+
+  async listDownloads(sessionId: string): Promise<BrowserDownload[]> {
+    await this.#requireSession(sessionId);
+    const downloads = await this.#call('list_downloads', () => this.#client.listDownloads(sessionId));
+    for (const { id } of downloads) this.#ownDownloads.add(id);
+    return downloads;
+  }
+
+  async deleteDownload(downloadId: string): Promise<void> {
+    if (!this.#ownDownloads.has(downloadId)) throw refused('foreign', 'download');
+    await this.#call('delete_download', () => this.#client.deleteDownload(downloadId));
+    this.#ownDownloads.delete(downloadId);
   }
 
   async createContext(login: BrowserContextOwner): Promise<{ id: string }> {
@@ -335,7 +351,7 @@ function failure(operation: string, error: unknown): Error {
  * Another installation's id is refused for good. One whose record could not
  * be judged fails like the provider did, so every caller tries it again.
  */
-function refused(ownership: Exclude<Ownership, 'own'>, kind: 'context' | 'session'): Error {
+function refused(ownership: Exclude<Ownership, 'own'>, kind: 'context' | 'session' | 'download'): Error {
   if (ownership === 'unverified') {
     log('ownership_unverified', { kind });
     return new HostedBrowserFailure();
