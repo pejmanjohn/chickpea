@@ -1092,6 +1092,7 @@ test('a search query that fails validation shows the generic search status', () 
     [{ query: '   ' }, 'only whitespace'],
     [{ query: '*_~`' }, 'only mrkdwn'],
     [{ query: `why does ${token} fail` }, 'a credential'],
+    [{ query: `why does the Statusboard api say ${token} fails` }, 'a credential the shortened status would cut'],
     [{ query: 'mail ops@example.com' }, 'an @ that is not a mention the neutralizer marks'],
   ];
   for (const [index, [args, why]] of rejected.entries()) {
