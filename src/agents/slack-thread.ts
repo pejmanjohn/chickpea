@@ -193,6 +193,7 @@ import { inspectImageOutput, type ImageInspectionInput } from '../images/inspect
 import { answerScreenshotQuestion } from '../browser/look.ts';
 import { createLazyBrowserProvider, useBrowserSession } from '../browser/runtime.ts';
 import { recordBrowserSessionUsage, resolveBrowserProvider } from '../browser/settings.ts';
+import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
 import { browserSkillForPlan } from '../browser/skill.ts';
 import { listWebsiteLogins, websiteLoginDependencies } from '../browser/logins.ts';
 import { createSlackRequesterNotifier, type SlackRequester } from '../browser/requester.ts';
@@ -2197,7 +2198,9 @@ function runtimePlanBrowserLogins(
 /**
  * A lazily connected browser session for one hook-mounted turn. The key is
  * read from current settings on first use, never from the plan, and each
- * ended session is tallied into the install's monthly browser usage.
+ * ended session is tallied into the install's monthly browser usage. A
+ * deployment serving many installations meters its sessions in the hosted
+ * wrapper instead.
  */
 export function createRuntimePlanBrowserSession(): BrowserTurnSession {
   return new BrowserTurnSession({
@@ -2206,6 +2209,7 @@ export function createRuntimePlanBrowserSession(): BrowserTurnSession {
     onClosed: async ({ sessionId, seconds }) => {
       try {
         const env = await resolveAgentPlatformEnv();
+        if (deploymentServesManyInstallations(env)) return;
         await recordBrowserSessionUsage({ store: getSettingsStore(env), sessionId, seconds });
       } catch {
         console.warn('[chickpea] Browser usage could not be recorded for a finished session');
@@ -2215,8 +2219,9 @@ export function createRuntimePlanBrowserSession(): BrowserTurnSession {
 }
 
 /**
- * The install's browser provider, keyed from current settings on first use.
- * The Browserbase client and CDP transport load only when a turn browses (or
+ * The install's browser provider, keyed from current settings on first use,
+ * or the hosted wrapper on a deployment serving many installations. The
+ * Browserbase client and CDP transport load only when a turn browses (or
  * re-reads a recording), which keeps them out of the Worker's startup graph.
  */
 function createRuntimePlanBrowserProvider(): BrowserTurnSession['provider'] {

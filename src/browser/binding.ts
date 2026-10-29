@@ -8,6 +8,7 @@
  */
 import { queueContextDeletions } from './context-deletions.ts';
 import {
+  forgetWebsiteLoginContext,
   getWebsiteLogin,
   intersectFrozenWebsiteLogins,
   recordWebsiteLoginContext,
@@ -24,7 +25,7 @@ import {
   BROWSER_UNKNOWN_LOGIN_MESSAGE,
 } from './messages.ts';
 import type { BrowserPage } from './page.ts';
-import { BrowserProviderError } from './provider.ts';
+import { BrowserContextGoneError, BrowserProviderError, deleteSessionDownloads } from './provider.ts';
 import type { BrowserSessionBinding, BrowserTurnSession } from './turn-session.ts';
 
 /** A granted website login as the tools see it: metadata only, never a secret. */
@@ -183,10 +184,28 @@ export class BrowserLoginBinder {
     const stored = await getWebsiteLogin(deps.store, current.id);
     if (!stored || stored.host !== current.host) throw new Error(BROWSER_LOGIN_REVOKED_MESSAGE);
     await this.finishHandoff(deps, stored);
-    const contextId = stored.contextId ?? await this.createContext(deps, stored);
+    const contextId = await this.usableContext(deps, stored);
     // Opening the site on its saved session is a use of the login, signed in or not.
     await touchWebsiteLoginUsed(deps.store, stored.id, this.now()).catch(() => undefined);
     return { loginId: stored.id, host: stored.host, contextId, level: current.level };
+  }
+
+  /**
+   * The login's recorded context, or a new one when it has none or the
+   * provider no longer has the recorded one (deleted outside Chickpea, or an
+   * old id a restore brought back), which is forgotten first.
+   */
+  private async usableContext(deps: WebsiteLoginDependencies, stored: WebsiteLogin): Promise<string> {
+    if (stored.contextId) {
+      try {
+        await this.session.provider.checkContext(stored.contextId);
+        return stored.contextId;
+      } catch (error) {
+        if (!(error instanceof BrowserContextGoneError)) throw error;
+        await forgetWebsiteLoginContext(deps.store, stored.id, stored.contextId);
+      }
+    }
+    return this.createContext(deps, stored);
   }
 
   /**
@@ -197,7 +216,7 @@ export class BrowserLoginBinder {
    * landed, so the login is read again first: a context it names is kept.
    */
   private async createContext(deps: WebsiteLoginDependencies, stored: WebsiteLogin): Promise<string> {
-    const created = (await this.session.provider.createContext(stored.label)).id;
+    const created = (await this.session.provider.createContext({ loginId: stored.id, label: stored.label })).id;
     const discard = () => queueContextDeletions(deps.store, [{ contextId: created, queuedAt: this.now() }]);
     let recorded: string | undefined;
     try {
@@ -233,9 +252,10 @@ export class BrowserLoginBinder {
 
   /**
    * End a hand-off session a person may have left open, so the provider
-   * saves its sign-in to the context before a new session loads it. Its
-   * record goes only once the provider reports it ended: one still open
-   * stays recorded, for the next bind or the login's deletion to end.
+   * saves its sign-in to the context before a new session loads it, then
+   * delete the files they downloaded in it. Its record goes only once the
+   * provider reports it ended: one still open stays recorded, for the next
+   * bind or the login's deletion to end.
    */
   private async finishHandoff(deps: WebsiteLoginDependencies, stored: WebsiteLogin): Promise<void> {
     const sessionId = stored.handoffSessionId;
@@ -248,6 +268,12 @@ export class BrowserLoginBinder {
       if (!['RUNNING', 'PENDING', 'UNKNOWN'].includes(status)) break;
       if (poll >= HANDOFF_END_POLLS) return;
       await this.sleep(HANDOFF_END_POLL_MS);
+    }
+    // Files the person downloaded in the live view; ones that remain are queued, so the record can go.
+    if (!(await deleteSessionDownloads(provider, sessionId)).complete) {
+      const queued = await queueContextDeletions(deps.store, [{ handoffSessionId: sessionId, queuedAt: this.now() }])
+        .then(() => true, () => false);
+      if (!queued) return;
     }
     await setWebsiteLoginHandoff(deps.store, stored.id, undefined).catch(() => undefined);
   }

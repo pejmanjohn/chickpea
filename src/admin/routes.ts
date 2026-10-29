@@ -329,6 +329,7 @@ import {
   normalizePrivateKeyPem,
   saveGithubSetupState,
 } from '../config/github-app.ts';
+import { hostedBrowserConfigured, hostedBrowserPolicy } from '../config/hosted-browser.ts';
 import {
   disconnectHostedGithubBinding,
   hostedGithubApp,
@@ -1999,12 +2000,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return task();
   };
   // A host serving many installations owns first-run setup, recovery, Slack
-  // install and sign-in, the gateway, deployment activation and installing the
-  // coding sandbox, and does not offer the browser; under installation tenancy
-  // those surfaces are not found, before any store read.
+  // install and sign-in, the gateway, deployment activation, installing the
+  // coding sandbox and the browser's key; under installation tenancy those
+  // surfaces are not found, before any store read. So are the website-login
+  // routes the host's browser does not serve now (hostedWebsiteLoginRoute).
   app.use('*', async (c, next) => {
     if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation' &&
-        standaloneOnlyRoute(c.req.method, c.req.path)) return c.notFound();
+        (standaloneOnlyRoute(c.req.method, c.req.path) ||
+          (websiteLoginRoute(c.req.path) && !hostedWebsiteLoginRoute(c.req.method)))) return c.notFound();
     return next();
   });
   // Wall-clock breakdown of the request, reported to authenticated Admin
@@ -6623,7 +6626,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.html(renderAdminPage({
       usageAdminUi: usageAdminUi(c),
       installationOwner: isOwnerSession(principal),
-      browserOffered: standalone,
+      browserSetupOffered: standalone,
+      websiteLoginsOffered: standalone || hostedWebsiteLoginsOffered(),
+      websiteLoginsRemoveOnly: !standalone && hostedBrowserConfigured() && !hostedWebsiteLoginsOffered(),
       selfHosted: standalone,
       billingOffered: !standalone && platformBilling() !== undefined,
       helpImprovePrivacyUrl: standalone ? undefined : runReview()?.privacyUrl,
@@ -12686,7 +12691,7 @@ function isAdminPageGet(c: Context): boolean {
 // Standalone-only surfaces: first-run and manual setup, recovery, the Slack
 // app's install and sign-in, the gateway, deployment activation, the QA lane
 // environment bridge, the legacy configuration cutover, the ChatGPT plan
-// handoff, the browser (its Browserbase key and website logins), the request
+// handoff, the browser's Browserbase key, the request
 // to install or remove the coding sandbox, which only whoever deploys can
 // complete, and creating, storing or removing the deployment's own GitHub App
 // (the host owns the platform App). The host's policy owns the sandbox's
@@ -12708,23 +12713,42 @@ const STANDALONE_ONLY_PREFIXES = [
   '/oauth/github/setup',
 ] as const;
 
-// Standalone-only surfaces inside paths that are otherwise served: an
-// Agent's website logins belong to the browser.
-const STANDALONE_ONLY_PATTERNS = [
-  /^\/admin\/api\/agents\/[^/]+\/website-logins(?:\/|$)/,
-] as const;
+/** Whether a request names one of an Agent's website-login routes, however its path repeats or ends in slashes. */
+function websiteLoginRoute(path: string): boolean {
+  return /^\/admin\/api\/agents\/[^/]+\/website-logins(?:\/|$)/.test(canonicalRoutePath(path));
+}
+
+/** A deployment serving many installations offers website logins while its host's browser is on. */
+function hostedWebsiteLoginsOffered(): boolean {
+  return hostedBrowserConfigured() && hostedBrowserPolicy().enabled;
+}
+
+/**
+ * Whether a deployment serving many installations serves a website-login
+ * route. While its host's browser is off, saved logins can still be listed
+ * and removed, so a person can delete a stored password; adding one or
+ * changing a level waits until the browser is on. Without the host's port,
+ * none is served.
+ */
+function hostedWebsiteLoginRoute(method: string): boolean {
+  if (!hostedBrowserConfigured()) return false;
+  return hostedBrowserPolicy().enabled || method === 'GET' || method === 'DELETE';
+}
+
+function canonicalRoutePath(path: string): string {
+  return path.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
+}
 
 /** Whether a request names a standalone-only surface, however its path repeats or ends in slashes. */
 function standaloneOnlyRoute(method: string, path: string): boolean {
-  const canonical = path.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
+  const canonical = canonicalRoutePath(path);
   // Removing the stored Slack credentials is the host's installation lifecycle.
   if (method === 'DELETE' && canonical === '/admin/api/slack-connection') return true;
   // The host's policy owns a hosted coding sandbox; its status stays readable.
   if ((method === 'PUT' || method === 'PATCH') && canonical === '/admin/api/sandbox/status') return true;
   // The host's platform GitHub App is the only one: no installation removes it whole (it disconnects one account).
   if (method === 'DELETE' && canonical === '/admin/api/github') return true;
-  return STANDALONE_ONLY_PREFIXES.some((prefix) => canonical === prefix || canonical.startsWith(`${prefix}/`)) ||
-    STANDALONE_ONLY_PATTERNS.some((pattern) => pattern.test(canonical));
+  return STANDALONE_ONLY_PREFIXES.some((prefix) => canonical === prefix || canonical.startsWith(`${prefix}/`));
 }
 
 /**

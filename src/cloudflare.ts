@@ -165,6 +165,7 @@ import {
 import type { SandboxContainerLimits } from './config/sandbox-settings.ts';
 import { isCheckpointSweepMinute, sweepInstallationCheckpoints } from './sandbox/checkpoint-sweep.ts';
 import { maintainWebsiteLogins } from './browser/logins.ts';
+import { maintainBrowserSessionLeases } from './browser/session-lease.ts';
 import { isOAuthKeepAliveMinute, runOAuthKeepAliveSweep } from './connections/oauth-keepalive.ts';
 import {
   SandboxWorkspaceState,
@@ -1111,6 +1112,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
 
   async chickpeaHostSandboxCensus(request: ObjectHostRequest & { now?: number }) {
     return this.host().chickpeaHostSandboxCensus(request);
+  }
+
+  async chickpeaHostBrowserCensus(request: ObjectHostRequest & { now?: number }) {
+    return this.host().chickpeaHostBrowserCensus(request);
+  }
+
+  async chickpeaHostBrowserErase(request: ObjectHostRequest) {
+    return this.host().chickpeaHostBrowserErase(request);
   }
 
   async chickpeaHostExportPage(request: ObjectExportRequest) {
@@ -3567,6 +3576,8 @@ async function runWorkMaintenance(
       catch { console.warn('[chickpea] Coding workspace container lease cleanup did not complete'); }
       try { await maintainWebsiteLogins(platformEnv); }
       catch { console.warn('[chickpea] Website login cleanup did not complete'); }
+      try { await maintainBrowserSessionLeases(platformEnv, scheduledTime); }
+      catch { console.warn('[chickpea] Browser session lease cleanup did not complete'); }
     }
     if (isCheckpointSweepMinute(scheduledTime)) {
       try { await sweepInstallationCheckpoints(platformEnv, scheduledTime); }

@@ -273,6 +273,21 @@ test('no export carries the browser\'s queued context deletions or recording han
   }
 });
 
+test('no export carries the hosted browser\'s session leases or metered browser time', async () => {
+  const deployment = hostedDeployment(['inst_export_browser_leases']);
+  const a = deployment.installation('inst_export_browser_leases');
+  populate(deployment, a, 'T_A');
+  a.stores.settings.setSetting('browser.sessionLeases', JSON.stringify({
+    leases: { r1: { startedAt: 1, leaseUntil: 2, sessionId: 'sess_leased', contextId: 'ctx_leased' } }, recentCreations: [1],
+  }));
+  a.stores.settings.setSetting('browser.monthlyBrowserSeconds.2026-10', JSON.stringify({ seconds: 4242 }));
+  for (const mode of ['portable', 'full'] as const) {
+    const text = (await exportAll(a.env, installationStateStoreObject(a.env), mode)).text;
+    assert.ok(text.includes('slack.teamName'), `${mode}: the installation's settings are kept`);
+    for (const content of ['sess_leased', 'ctx_leased', 'monthlyBrowserSeconds']) assert.equal(text.includes(content), false, `${mode} ${content}`);
+  }
+});
+
 test('no export carries a retired setting, such as the Outbound access policy', async () => {
   const deployment = hostedDeployment(['inst_export_retired']);
   const a = deployment.installation('inst_export_retired');

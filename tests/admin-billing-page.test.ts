@@ -236,7 +236,7 @@ async function harness(options: {
     usageAdminUi: true,
     workspaceAdminUi: role !== 'member',
     installationOwner: owner,
-    browserOffered: !options.billingOffered,
+    browserSetupOffered: !options.billingOffered, websiteLoginsOffered: !options.billingOffered,
     selfHosted: options.selfHosted ?? !options.billingOffered,
     billingOffered: options.billingOffered,
     onboarding: start.pathname === '/admin/onboarding' ? {

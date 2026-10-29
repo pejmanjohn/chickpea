@@ -16,12 +16,13 @@ import {
   listWebsiteLogins,
   maintainWebsiteLogins,
   recordWebsiteLoginContext,
+  releaseEndedHandoffs,
   setWebsiteLoginHandoff,
   WEBSITE_LOGINS_SETTING,
   type WebsiteLogin,
 } from '../src/browser/logins.ts';
 import { BROWSER_LOGIN_REVOKED_MESSAGE } from '../src/browser/messages.ts';
-import { BrowserProviderError, type BrowserProvider } from '../src/browser/provider.ts';
+import { BrowserProviderError, HostedBrowserRefusal, type BrowserProvider } from '../src/browser/provider.ts';
 import { BrowserTurnSession } from '../src/browser/turn-session.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -76,6 +77,45 @@ test('a crash after the deletion\'s write leaves the context and hand-off queued
   assert.equal(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), undefined);
   await drainContextDeletions({ store, provider: async () => provider });
   assert.deepEqual([ended, deleted], [['sess_handoff'], ['ctx_saved']], 'a second sweep has nothing to do');
+});
+
+test('an ended hand-off with no sign-in after it is queued for its files and forgotten; a running or foreign one is not queued', async (t) => {
+  const { store, deps, queue } = setup(t);
+  const [ended, running, foreign, unreadable] = await Promise.all(['ended', 'running', 'foreign', 'unreadable']
+    .map((host) => createWebsiteLogin(deps, { ...LOGIN, host: `${host}.example.com` })));
+  await setWebsiteLoginHandoff(store, ended!.id, 'sess_ended');
+  await setWebsiteLoginHandoff(store, running!.id, 'sess_running');
+  await setWebsiteLoginHandoff(store, foreign!.id, 'sess_foreign');
+  await setWebsiteLoginHandoff(store, unreadable!.id, 'sess_unreadable');
+  const files = new Map([['sess_ended', ['dl_1', 'dl_2']]]);
+  const deletedFiles: string[] = [];
+  const { provider } = fakeBrowserProvider({
+    async sessionStatus(id) {
+      if (id === 'sess_foreign') throw new HostedBrowserRefusal('ownership');
+      if (id === 'sess_unreadable') throw new BrowserProviderError('Browserbase GET returned 503', 503);
+      return id === 'sess_running' ? 'RUNNING' : 'TIMED_OUT';
+    },
+    async listDownloads(id) { return (files.get(id) ?? []).map((downloadId) => ({ id: downloadId, sessionId: id })); },
+    async deleteDownload(id) {
+      deletedFiles.push(id);
+      for (const [session, ids] of files) files.set(session, ids.filter((downloadId) => downloadId !== id));
+    },
+  });
+
+  assert.equal(await releaseEndedHandoffs(store, async () => provider), 2);
+  assert.deepEqual((await queue()).map(({ handoffSessionId }) => handoffSessionId), ['sess_ended'], 'only an ended, own session is queued');
+  const handoffs = async () => Object.fromEntries((await listWebsiteLogins(store)).map((login) => [login.host, login.handoffSessionId]));
+  assert.deepEqual(await handoffs(), {
+    'ended.example.com': undefined,
+    'running.example.com': 'sess_running',
+    'foreign.example.com': undefined,
+    'unreadable.example.com': 'sess_unreadable',
+  });
+
+  await drainContextDeletions({ store, provider: async () => provider });
+  assert.deepEqual(deletedFiles.sort(), ['dl_1', 'dl_2']);
+  assert.equal(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), undefined);
+  assert.equal(await releaseEndedHandoffs(store, async () => provider), 0, 'nothing to release a second time');
 });
 
 test('with a provider, deleting a login deletes its context at once and leaves nothing queued', async (t) => {
@@ -162,17 +202,21 @@ test('a 404 from Browserbase dequeues; any other failure keeps the entry', async
   await sweep(store, async () => provider);
   assert.deepEqual(calls.map(({ method, url }) => `${method} ${new URL(url).pathname}`), [
     'POST /v1/sessions/sess_gone',
+    'GET /v1/downloads',
     'DELETE /v1/contexts/ctx_gone',
     'DELETE /v1/contexts/ctx_flaky',
   ]);
   assert.deepEqual(await queue(), [{ contextId: 'ctx_flaky', queuedAt: NOW - 1, attempts: 1 }]);
 });
 
-test('standalone with no browser key keeps the queue for a reconnect; a deployment serving many leaves it for its host', async (t) => {
+test('standalone with no browser key keeps the queue for a reconnect; a deployment serving many with no hosted browser keeps it too', async (t) => {
   const { store, queue, provider, deleted } = setup(t);
   const entries = [{ contextId: 'ctx_waiting', queuedAt: Date.now() }];
   await queueContextDeletions(store, entries);
-  await maintainWebsiteLogins(scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' }), store);
+  await assert.rejects(
+    maintainWebsiteLogins(scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' }), store),
+    HostedBrowserRefusal,
+  );
   assert.deepEqual(await queue(), entries);
   await withEnv({ BROWSERBASE_API_KEY: undefined, CHICKPEA_TENANCY: undefined }, () => maintainWebsiteLogins({}, store));
   await withEnv({ BROWSERBASE_API_KEY: undefined, CHICKPEA_TENANCY: undefined }, () => maintainWebsiteLogins({}, store));

@@ -1,7 +1,8 @@
 /**
  * Browser objects at the provider that no website login records any more:
  * the saved context and open hand-off session of a deleted login, or a
- * context a bind created but could not record. Each is queued in the same
+ * context a bind created but could not record. A hand-off session is ended,
+ * then the files a person downloaded in it are deleted. Each is queued in the same
  * write that drops its last record, so a crash never strands one, and leaves
  * the queue only once the provider confirms it gone, or once it is older
  * than the provider could still be asked about. Work maintenance retries
@@ -9,7 +10,13 @@
  * the rest, so a few that always fail never hold up the others.
  */
 import type { SettingsStore } from '../config/settings-store.ts';
-import { BROWSER_PROVIDER_ID_PATTERN, BrowserProviderError, type BrowserProvider } from './provider.ts';
+import {
+  BROWSER_PROVIDER_ID_PATTERN,
+  BrowserProviderError,
+  deleteSessionDownloads,
+  HostedBrowserRefusal,
+  type BrowserProvider,
+} from './provider.ts';
 
 export const PENDING_CONTEXT_DELETIONS_SETTING = 'browser.pendingContextDeletions';
 
@@ -93,6 +100,36 @@ export async function drainContextDeletions(input: {
   if (provider) await settleContextDeletions(input.store, provider, batch);
 }
 
+/** Everything queued, for a census or an erasure. */
+export async function pendingContextDeletions(
+  store: Pick<SettingsStore, 'getSetting'>,
+): Promise<PendingContextDeletion[]> {
+  return parsePendingContextDeletions(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING));
+}
+
+/** Replace each queued entry with what `settle` leaves of it. Entries queued meanwhile are judged too. */
+export async function updatePendingContextDeletions(
+  store: Pick<SettingsStore, 'getSetting' | 'applySettingsPatch'>,
+  settle: (entry: PendingContextDeletion) => PendingContextDeletion | undefined,
+): Promise<void> {
+  await updateQueue(store, (raw) => {
+    const next = parsePendingContextDeletions(raw).flatMap((entry) => settle(entry) ?? []);
+    return next.length ? JSON.stringify(next) : null;
+  });
+}
+
+/** The part of an entry still owed: its context, its hand-off session, both, or nothing (undefined). */
+export function pendingRemainder(
+  entry: PendingContextDeletion,
+  left: { context: boolean; handoff: boolean },
+): PendingContextDeletion | undefined {
+  const { contextId, handoffSessionId, ...rest } = entry;
+  const context = left.context ? contextId : undefined;
+  const handoff = left.handoff ? handoffSessionId : undefined;
+  if (!context && !handoff) return undefined;
+  return { ...(context ? { contextId: context } : {}), ...(handoff ? { handoffSessionId: handoff } : {}), ...rest };
+}
+
 function parsePendingContextDeletions(raw: string | undefined): PendingContextDeletion[] {
   if (raw === undefined) return [];
   let value: unknown;
@@ -118,30 +155,54 @@ function parsePendingContextDeletions(raw: string | undefined): PendingContextDe
   });
 }
 
-/** What is left of an entry once the provider has been asked: undefined when nothing is. */
+/**
+ * What is left of an entry once the provider has been asked: undefined when
+ * nothing is. A hand-off's files that could not all be deleted keep its
+ * session queued, but never hold back its context, which goes once the
+ * session has ended.
+ */
 async function settle(provider: BrowserProvider, entry: PendingContextDeletion): Promise<PendingContextDeletion | undefined> {
-  const { handoffSessionId, ...rest } = entry;
-  // A context is deleted only once the session that would save into it has ended.
-  if (handoffSessionId && !await ended(provider, handoffSessionId)) return entry;
-  if (!rest.contextId) return undefined;
+  const { contextId, handoffSessionId } = entry;
+  let handoff = false;
+  if (handoffSessionId) {
+    const session = await ended(provider, handoffSessionId);
+    // A context is deleted only once the session that would save into it has ended.
+    if (session === 'running') return entry;
+    handoff = session === 'ended' && !(await deleteSessionDownloads(provider, handoffSessionId)).complete;
+  }
+  const context = contextId !== undefined && !(await deletedContext(provider, contextId));
+  return pendingRemainder(entry, { context, handoff });
+}
+
+async function deletedContext(provider: BrowserProvider, contextId: string): Promise<boolean> {
   try {
-    await provider.deleteContext(rest.contextId);
-    return undefined;
-  } catch {
-    return rest;
+    await provider.deleteContext(contextId);
+    return true;
+  } catch (error) {
+    return refusedAsForeign(error);
   }
 }
 
-async function ended(provider: BrowserProvider, sessionId: string): Promise<boolean> {
+async function ended(provider: BrowserProvider, sessionId: string): Promise<'ended' | 'foreign' | 'running'> {
   try {
     await provider.endSession(sessionId);
-    return true;
+    return 'ended';
   } catch (error) {
-    if (error instanceof BrowserProviderError && error.status === 404) return true;
+    if (error instanceof BrowserProviderError && error.status === 404) return 'ended';
+    if (refusedAsForeign(error)) return 'foreign';
     // A session that already ended may refuse a release.
     const status = await provider.sessionStatus(sessionId).catch(() => 'RUNNING');
-    return status !== 'RUNNING' && status !== 'PENDING';
+    return status === 'RUNNING' || status === 'PENDING' ? 'running' : 'ended';
   }
+}
+
+/**
+ * The hosted wrapper found the id another installation's. It is never this
+ * queue's to end or delete, and asking again cannot change that, so its
+ * entry goes.
+ */
+function refusedAsForeign(error: unknown): boolean {
+  return error instanceof HostedBrowserRefusal && error.reason === 'ownership';
 }
 
 /**

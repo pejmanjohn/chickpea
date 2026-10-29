@@ -253,16 +253,22 @@ const MCP_CLIENTS_FIXTURE = {
   ],
 };
 
+interface BrowserOffers {
+  browserSetupOffered?: boolean;
+  websiteLoginsOffered?: boolean;
+  websiteLoginsRemoveOnly?: boolean;
+}
+
 function inlineScript(
   usageAdminUi = false,
   workspaceAdminUi = true,
   installationOwner = false,
-  browserOffered = true,
+  browser: BrowserOffers = {},
   selfHosted = true,
   onboarding?: AdminOnboardingPage,
   firstRun?: AdminFirstRun,
 ): string {
-  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted, onboarding, firstRun })
+  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi, installationOwner, ...browser, selfHosted, onboarding, firstRun })
     .match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script, 'admin page should include one inline script');
   return script;
@@ -554,8 +560,12 @@ function runAdminPageHarness(
     appBotLeftOut?: boolean;
     cloudflare?: boolean;
     installationOwner?: boolean;
-    /** False renders a deployment serving many installations, which offers no browser. */
-    browserOffered?: boolean;
+    /** False renders a deployment serving many installations, whose host runs the browser. */
+    browserSetupOffered?: boolean;
+    /** False renders a deployment serving many installations whose host's browser is off. */
+    websiteLoginsOffered?: boolean;
+    /** With websiteLoginsOffered false: saved logins stay removable while the host's browser is off. */
+    websiteLoginsRemoveOnly?: boolean;
     /** False renders a deployment serving many installations, whose host runs it. */
     selfHosted?: boolean;
     installationUpdates?: () => unknown;
@@ -3170,7 +3180,11 @@ function runAdminPageHarness(
       options.usageAdminUi ?? false,
       options.workspaceAdminUi ?? true,
       options.installationOwner ?? false,
-      options.browserOffered ?? true,
+      {
+        ...(options.browserSetupOffered === undefined ? {} : { browserSetupOffered: options.browserSetupOffered }),
+        ...(options.websiteLoginsOffered === undefined ? {} : { websiteLoginsOffered: options.websiteLoginsOffered }),
+        ...(options.websiteLoginsRemoveOnly === undefined ? {} : { websiteLoginsRemoveOnly: options.websiteLoginsRemoveOnly }),
+      },
       options.selfHosted ?? true,
       (options.initialPath ?? '/admin/channels') === '/admin/onboarding' ? {
         initial: options.onboardingUnread === true || options.workspaceAdminUi === false ? null : options.onboarding ?? null,
@@ -3454,19 +3468,19 @@ function inlineScriptFor(
   usageAdminUi = false,
   workspaceAdminUi = true,
   installationOwner = false,
-  browserOffered = true,
+  browser: BrowserOffers = {},
   selfHosted = true,
   onboarding?: AdminOnboardingPage,
   firstRun?: AdminFirstRun,
 ): string {
-  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted, onboarding, firstRun);
+  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browser, selfHosted, onboarding, firstRun);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     value: { userAgent: 'Cloudflare-Workers' },
     configurable: true,
   });
   try {
-    return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted, onboarding, firstRun);
+    return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browser, selfHosted, onboarding, firstRun);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else delete (globalThis as { navigator?: unknown }).navigator;
@@ -15213,7 +15227,7 @@ async function agentModelTab(options: {
     ...(options.modelReadiness ? { modelReadiness: options.modelReadiness } : {}),
     providers: ['anthropic', 'openai', 'openrouter'].map((id) => ({ id, status: 'missing', modelCount: null })),
     selfHosted: !options.hosted,
-    browserOffered: !options.hosted,
+    browserSetupOffered: !options.hosted, websiteLoginsOffered: !options.hosted,
   });
   await flushAsync();
   return harness;
@@ -15385,7 +15399,7 @@ test('on Chickpea\'s models the Agent model picker lists the models Chickpea off
     openrouterFavorites: [],
     providers: HOSTED_PROVIDERS_WITHOUT_KEYS.map((provider) => ({ ...provider, platformFunded: true })),
     selfHosted: false,
-    browserOffered: false,
+    browserSetupOffered: false, websiteLoginsOffered: false,
   });
   await flushAsync();
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-model' }) });
@@ -15409,7 +15423,7 @@ test('on Chickpea\'s models the Workspace default offers the same models as the 
     openrouterFavorites: [],
     providers: HOSTED_PROVIDERS_WITHOUT_KEYS.map((provider) => ({ ...provider, platformFunded: true })),
     selfHosted: false,
-    browserOffered: false,
+    browserSetupOffered: false, websiteLoginsOffered: false,
     workspaceDefault: {
       workspaceId: 'T_CREDITS',
       modelId: OFFERED_MODEL,
@@ -15435,7 +15449,7 @@ test('on Chickpea\'s models each provider card says they are in use and an own k
     initialPath: '/admin/settings/providers',
     providers: HOSTED_PROVIDERS_WITHOUT_KEYS.map((provider) => ({ ...provider, platformFunded: true })),
     selfHosted: false,
-    browserOffered: false,
+    browserSetupOffered: false, websiteLoginsOffered: false,
   });
   await flushAsync();
 
@@ -15453,7 +15467,7 @@ test('an own-key workspace with no key keeps its Key needed provider cards', asy
     initialPath: '/admin/settings/providers',
     providers: HOSTED_PROVIDERS_WITHOUT_KEYS,
     selfHosted: false,
-    browserOffered: false,
+    browserSetupOffered: false, websiteLoginsOffered: false,
   });
   await flushAsync();
 
@@ -16117,7 +16131,7 @@ const SLACK_UPDATE_NEEDED = { status: 'update_needed', canUpdate: true, updatePa
 const OWNER_SLACK_BAR = '<div class="callout slack-permissions-bar" role="status"><span>Chickpea needs a few new Slack permissions. Updating keeps your Agents and settings as they are.</span><form method="post" action="/start/reinstall"><button type="submit" class="btn btn-primary btn-sm">Update in Slack</button></form></div>';
 const ADMIN_SLACK_BAR = '<div class="callout slack-permissions-bar" role="status"><span>Chickpea needs a few new Slack permissions. Ask a Chickpea Owner to update them.</span></div>';
 const SLACK_UPDATED_NOTICE = '<div class="callout slack-permissions-bar" role="status"><span>Slack permissions updated.</span></div>';
-const HOSTED_ADMIN = { selfHosted: false, browserOffered: false } as const;
+const HOSTED_ADMIN = { selfHosted: false, browserSetupOffered: false, websiteLoginsOffered: false } as const;
 
 function slackBarCount(html: string): number {
   return html.split('slack-permissions-bar').length - 1;
@@ -19777,7 +19791,7 @@ function websiteLoginsHarness(
 }
 
 test('without the browser (a deployment serving many installations) neither Browser settings nor the Websites tab appear', async () => {
-  const settings = runAdminPageHarness({ initialPath: '/admin/settings/browser', browserOffered: false });
+  const settings = runAdminPageHarness({ initialPath: '/admin/settings/browser', browserSetupOffered: false, websiteLoginsOffered: false });
   await flushAsync();
   await flushAsync();
   assert.doesNotMatch(settings.app.innerHTML, /data-section="browser"/);
@@ -19785,7 +19799,7 @@ test('without the browser (a deployment serving many installations) neither Brow
   assert.match(settings.app.innerHTML, /data-section="providers"[^>]*aria-current="page"/, 'the default section instead');
   assert.ok(!settings.fetchCalls.some((call) => call.path === '/admin/api/browser/status'));
 
-  const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures(), { browserOffered: false });
+  const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures(), { browserSetupOffered: false, websiteLoginsOffered: false });
   await flushAsync();
   assert.doesNotMatch(harness.app.innerHTML, /ptab-websites/);
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'websites' }) });
@@ -19794,10 +19808,56 @@ test('without the browser (a deployment serving many installations) neither Brow
   assert.equal(calls.gets, 0, 'website logins are never requested');
 });
 
+test('with the host\'s browser on, hosted Admin offers the Websites tab with hosted copy, and still no Browser settings', async () => {
+  const hosted = { selfHosted: false, browserSetupOffered: false, websiteLoginsOffered: true };
+  const settings = runAdminPageHarness({ ...hosted, initialPath: '/admin/settings/browser' });
+  await flushAsync();
+  await flushAsync();
+  assert.doesNotMatch(settings.app.innerHTML, /data-section="browser"/);
+  assert.ok(!settings.fetchCalls.some((call) => call.path === '/admin/api/browser/status'));
+
+  const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures(), { ...hosted, initialSearch: '?tab=websites' });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /id="ptab-websites"/);
+  assert.equal(calls.gets, 1, 'the Agent\'s website logins load');
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-add' }) });
+  const html = harness.app.innerHTML;
+  assert.match(html, /Stored encrypted in your Chickpea install\. Chickpea keeps the signed-in session for each website so Agents stay signed in\./);
+  assert.doesNotMatch(html, /Browserbase/);
+});
+
+test('with the host\'s browser off, an Agent with website logins keeps a Websites tab that can only remove them', async () => {
+  const hosted = { selfHosted: false, browserSetupOffered: false, websiteLoginsOffered: false, websiteLoginsRemoveOnly: true };
+  const granted = { ...releaseAgent, websiteLogins: [{ loginId: WEBSITE_LOGIN_TEAM_ID, level: 'check', enabled: true }] };
+  const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures(), { ...hosted, agents: [granted, opsAgent], initialSearch: '?tab=websites' });
+  await flushAsync();
+  let html = harness.app.innerHTML;
+  assert.match(html, /id="ptab-websites" class="ptab on"/);
+  assert.equal(calls.gets, 1, 'the Agent\'s website logins load');
+  assert.match(html, /The browser is off right now, so website logins can't be added or changed\. You can still remove them\./);
+  assert.doesNotMatch(html, /data-action="website-login-add"/, 'nothing can be added');
+  assert.doesNotMatch(html, /data-action="website-login-level"/, 'no level can be changed');
+  assert.match(html, /admin\.acme\.com/);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-add' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /Add a website login/, 'the add dialog never opens');
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-remove', 'data-login-id': WEBSITE_LOGIN_TEAM_ID }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-remove-confirm', 'data-login-id': WEBSITE_LOGIN_TEAM_ID }) });
+  await flushAsync();
+  assert.deepEqual(calls.deletes, [WEBSITE_LOGIN_TEAM_ID]);
+  html = harness.app.innerHTML;
+  assert.doesNotMatch(html, /qa-team@acme\.com/);
+
+  const ungranted = websiteLoginsHarness(websiteLoginFixtures(), { ...hosted, initialSearch: '?tab=websites' });
+  await flushAsync();
+  assert.doesNotMatch(ungranted.harness.app.innerHTML, /ptab-websites/, 'an Agent with none gets no tab');
+  assert.equal(ungranted.calls.gets, 0);
+});
+
 test('hosted Admin leaves out guidance only a self-hoster can follow; standalone keeps every sentence', async () => {
   for (const selfHosted of [true, false]) {
     const mode = selfHosted ? 'standalone' : 'hosted';
-    const hosting = { selfHosted, browserOffered: selfHosted };
+    const hosting = { selfHosted, browserSetupOffered: selfHosted, websiteLoginsOffered: selfHosted };
     // Standalone shows the sentence; hosted leaves it out.
     const selfHostedOnly = (html: string, pattern: RegExp, what: string) => selfHosted
       ? assert.match(html, pattern, `${mode}: ${what}`)
@@ -19896,8 +19956,8 @@ test('hosted Admin leaves out guidance only a self-hoster can follow; standalone
 // self-managed setup surface in both modes. Standalone keeps every control
 // and sentence; hosted leaves them out without replacement copy.
 const HOSTING_MODES = [
-  { mode: 'standalone', selfHosted: true, browserOffered: true },
-  { mode: 'hosted', selfHosted: false, browserOffered: false },
+  { mode: 'standalone', selfHosted: true, browserSetupOffered: true, websiteLoginsOffered: true },
+  { mode: 'hosted', selfHosted: false, browserSetupOffered: false, websiteLoginsOffered: false },
 ] as const;
 
 test('hosted Admin offers no About & updates page; a standalone Owner keeps it', async () => {
@@ -20232,7 +20292,7 @@ test('a signed-in person can sign out from the rail and the mobile menu, standal
   for (const [label, options] of [
     ['owner', {}],
     ['member', { workspaceAdminUi: false }],
-    ['hosted owner', { browserOffered: false, selfHosted: false }],
+    ['hosted owner', { browserSetupOffered: false, websiteLoginsOffered: false, selfHosted: false }],
   ] as const) {
     const harness = runAdminPageHarness(options);
     await flushAsync();
@@ -20913,7 +20973,7 @@ test('the onboarding page paints its real step first, and a provider step waits 
 test('hosted pages carry no deployment environment label; standalone keeps it on onboarding', async () => {
   const config = (script: string) => script.match(/window\.__chickpeaAdminConfig = (.*);\n/)![1]!;
   for (const cloudflare of [false, true]) {
-    const hostedConfig = config(inlineScriptFor(cloudflare, false, true, true, false, false));
+    const hostedConfig = config(inlineScriptFor(cloudflare, false, true, true, { browserSetupOffered: false, websiteLoginsOffered: false }, false));
     assert.doesNotMatch(hostedConfig, /cloudflare · workers|local · node|targetChip/, `hosted ${cloudflare ? 'Cloudflare' : 'Node'} config`);
   }
   assert.match(config(inlineScriptFor(false)), /"targetChip":"local · node"/);

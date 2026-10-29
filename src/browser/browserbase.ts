@@ -1,5 +1,7 @@
 import {
   BrowserProviderError,
+  type BrowserContextOwner,
+  type BrowserDownload,
   type BrowserLiveView,
   type BrowserProvider,
   type BrowserRecordingDownload,
@@ -14,9 +16,62 @@ export interface BrowserbaseProviderOptions {
   fetch?: typeof fetch;
   baseUrl?: string;
   timeoutMs?: number;
+  /** The name a website login's new context gets; its label by default. */
+  contextName?: (login: BrowserContextOwner) => string;
+}
+
+/** A context's owner record, as the provider keeps it. */
+export interface BrowserbaseContextRecord {
+  id: string;
+  projectId: string;
+  name: string;
+}
+
+/** A session's owner record and state, as the provider keeps it. */
+export interface BrowserbaseSessionRecord {
+  id: string;
+  projectId: string;
+  status: string;
+  contextId?: string;
+  /** Absent when the response carries none, which is not the same as an empty one. */
+  userMetadata?: Record<string, unknown>;
+  /** When the session ended, once it has. */
+  endedAt?: number;
+}
+
+/** A session list, and whether the answer or an entry in it was not the shape documented. */
+export interface BrowserbaseSessionList {
+  sessions: BrowserbaseSessionRecord[];
+  malformed: boolean;
+}
+
+/** The provider, plus the owner reads a deployment serving many installations checks against. */
+export interface BrowserbaseClient extends BrowserProvider {
+  getContext(contextId: string): Promise<BrowserbaseContextRecord>;
+  getSession(sessionId: string): Promise<BrowserbaseSessionRecord>;
+  /**
+   * Sessions whose user metadata holds `metadata.key` equal to
+   * `metadata.value`, optionally in one status. The provider documents no
+   * pagination for this list, so it may be incomplete.
+   */
+  listSessions(filter: { metadata: { key: string; value: string }; status?: string }): Promise<BrowserbaseSessionList>;
+}
+
+/**
+ * A create Browserbase answered without a session to connect to. When the
+ * answer named one anyway, that session may be running and billed.
+ */
+export class BrowserbaseIncompleteSessionError extends BrowserProviderError {
+  constructor(readonly sessionId: string | undefined) {
+    super('Browserbase session response is missing id or connectUrl');
+  }
 }
 
 const DEFAULT_BASE_URL = 'https://api.browserbase.com';
+/** The most the download list returns a page. */
+const DOWNLOAD_PAGE = 100;
+/** A bound on one listing; a later one finds what lies past it. */
+const DOWNLOAD_PAGES = 20;
 const ERROR_BODY_LIMIT = 300;
 /**
  * Every call is bounded: a stalled Browserbase must not hold an Admin
@@ -35,7 +90,29 @@ function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): BrowserProvider {
+function retryAfterMs(response: Response): number | undefined {
+  const seconds = Number(response.headers.get('retry-after') ?? Number.NaN);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1_000 : undefined;
+}
+
+function sessionRecord(value: unknown): BrowserbaseSessionRecord {
+  const obj = asObject(value);
+  const id = str(obj.id);
+  const status = str(obj.status);
+  if (!id || !status) throw new BrowserProviderError('Browserbase session response is missing id or status');
+  const contextId = str(obj.contextId);
+  const endedAt = Date.parse(str(obj.endedAt));
+  return {
+    id,
+    projectId: str(obj.projectId),
+    status,
+    ...(contextId ? { contextId } : {}),
+    ...(isRecord(obj.userMetadata) ? { userMetadata: obj.userMetadata } : {}),
+    ...(Number.isFinite(endedAt) ? { endedAt } : {}),
+  };
+}
+
+export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): BrowserbaseClient {
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   const apiKey = options.apiKey;
@@ -69,6 +146,7 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
       throw new BrowserProviderError(
         `Browserbase ${method} ${path} returned ${response.status}${snippet ? `: ${snippet}` : ''}`,
         response.status,
+        response.status === 429 ? retryAfterMs(response) : undefined,
       );
     }
     let data: unknown = null;
@@ -95,13 +173,14 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
       if (opts.allowedDomains && opts.allowedDomains.length > 0) browserSettings.allowedDomains = [...opts.allowedDomains];
       const body: Json = { browserSettings };
       if (options.projectId) body.projectId = options.projectId;
+      if (opts.userMetadata) body.userMetadata = { ...opts.userMetadata };
       if (opts.keepAlive !== undefined) body.keepAlive = opts.keepAlive;
       if (opts.timeoutSeconds !== undefined) body.timeout = opts.timeoutSeconds;
       const { data } = await request('POST', '/v1/sessions', body);
       const obj = asObject(data);
       const id = str(obj.id);
       const connectUrl = str(obj.connectUrl);
-      if (!id || !connectUrl) throw new BrowserProviderError('Browserbase session response is missing id or connectUrl');
+      if (!id || !connectUrl) throw new BrowserbaseIncompleteSessionError(id || undefined);
       const handle: BrowserSessionHandle = { id, connectUrl };
       const contextId = str(obj.contextId) || opts.contextId;
       if (contextId) handle.contextId = contextId;
@@ -117,6 +196,35 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
       const status = str(asObject(data).status);
       if (!status) throw new BrowserProviderError('Browserbase session response is missing status');
       return status;
+    },
+
+    async getSession(sessionId: string): Promise<BrowserbaseSessionRecord> {
+      return sessionRecord((await request('GET', sessionPath(sessionId))).data);
+    },
+
+    async listSessions(filter): Promise<BrowserbaseSessionList> {
+      const { key, value } = filter.metadata;
+      if (/['\\]/.test(key) || /['\\]/.test(value)) throw new BrowserProviderError('A session metadata filter cannot hold a quote');
+      const query = new URLSearchParams({
+        ...(filter.status ? { status: filter.status } : {}),
+        q: `user_metadata['${key}']:'${value}'`,
+      });
+      const { data } = await request('GET', `/v1/sessions?${query}`);
+      const wrapper = asObject(data);
+      const list: unknown[] | undefined = Array.isArray(data)
+        ? data
+        : Array.isArray(wrapper.sessions) ? wrapper.sessions : Array.isArray(wrapper.data) ? wrapper.data : undefined;
+      if (!list) return { sessions: [], malformed: true };
+      const sessions: BrowserbaseSessionRecord[] = [];
+      let malformed = false;
+      for (const entry of list) {
+        try {
+          sessions.push(sessionRecord(entry));
+        } catch {
+          malformed = true;
+        }
+      }
+      return { sessions, malformed };
     },
 
     async liveView(sessionId: string): Promise<BrowserLiveView> {
@@ -158,9 +266,10 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
       });
     },
 
-    async createContext(name?: string): Promise<{ id: string }> {
+    async createContext(login: BrowserContextOwner): Promise<{ id: string }> {
       const body: Json = {};
       if (options.projectId) body.projectId = options.projectId;
+      const name = options.contextName ? options.contextName(login) : login.label;
       if (name) body.name = name;
       const { data } = await request('POST', '/v1/contexts', body);
       const id = str(asObject(data).id);
@@ -168,9 +277,50 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
       return { id };
     },
 
+    // This project's own contexts are trusted; a gone one fails the session that loads it.
+    async checkContext(): Promise<void> {},
+
+    async getContext(contextId: string): Promise<BrowserbaseContextRecord> {
+      const obj = asObject((await request('GET', `/v1/contexts/${encodeURIComponent(contextId)}`)).data);
+      const id = str(obj.id);
+      if (!id) throw new BrowserProviderError('Browserbase context response is missing id');
+      return { id, projectId: str(obj.projectId), name: str(obj.name) };
+    },
+
     async deleteContext(contextId: string): Promise<void> {
       try {
         await request('DELETE', `/v1/contexts/${encodeURIComponent(contextId)}`);
+      } catch (error) {
+        if (!(error instanceof BrowserProviderError) || error.status !== 404) throw error;
+      }
+    },
+
+    // Only the session's own files: an entry naming another session is left
+    // out, and one naming none fails the listing, so nothing unchecked is deleted.
+    async listDownloads(sessionId: string): Promise<BrowserDownload[]> {
+      const downloads = new Map<string, BrowserDownload>();
+      for (let page = 0, offset = 0; page < DOWNLOAD_PAGES; page += 1) {
+        const query = new URLSearchParams({ sessionId, limit: String(DOWNLOAD_PAGE), offset: String(offset) });
+        const { data } = await request('GET', `/v1/downloads?${query}`);
+        const wrapper = asObject(data);
+        const list: unknown[] | undefined = Array.isArray(data) ? data : Array.isArray(wrapper.downloads) ? wrapper.downloads : undefined;
+        if (!list) throw new BrowserProviderError('Browserbase download list response is not a list');
+        for (const entry of list) {
+          const obj = asObject(entry);
+          const id = str(obj.id);
+          const owner = str(obj.sessionId);
+          if (!id || !owner) throw new BrowserProviderError('Browserbase download response is missing id or sessionId');
+          if (owner === sessionId) downloads.set(id, { id, sessionId: owner });
+        }
+        offset += list.length;
+        if (list.length < DOWNLOAD_PAGE || (typeof wrapper.total === 'number' && offset >= wrapper.total)) break;
+      }
+      return [...downloads.values()];
+    },
+
+    async deleteDownload(downloadId: string): Promise<void> {
+      try {
+        await request('DELETE', `/v1/downloads/${encodeURIComponent(downloadId)}`);
       } catch (error) {
         if (!(error instanceof BrowserProviderError) || error.status !== 404) throw error;
       }

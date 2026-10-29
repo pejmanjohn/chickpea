@@ -988,7 +988,7 @@ test('an Agent imported into another deployment carries no installation ID: each
 
 test('Core declares the GitHub platform gate in hosted-capabilities.json, and ships it', () => {
   const root = new URL('../', import.meta.url);
-  assert.deepEqual(JSON.parse(readFileSync(new URL('hosted-capabilities.json', root), 'utf8')), { githubPlatformApp: 1 });
+  assert.equal(JSON.parse(readFileSync(new URL('hosted-capabilities.json', root), 'utf8')).githubPlatformApp, 1);
   const packageJson = JSON.parse(readFileSync(new URL('package.json', root), 'utf8')) as { files: string[] };
   assert.ok(packageJson.files.includes('hosted-capabilities.json'), 'npm ships it');
   assert.ok((REQUIRED_PACKAGED_FILES as string[]).includes('hosted-capabilities.json'), 'the release pack check requires it');

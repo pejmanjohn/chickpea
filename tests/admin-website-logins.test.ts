@@ -13,6 +13,8 @@ import {
 } from '../src/browser/logins.ts';
 import { PENDING_CONTEXT_DELETIONS_SETTING } from '../src/browser/context-deletions.ts';
 import { agentCredentialConfigurationBinding } from '../src/config/connection-credential-binding.ts';
+import { configureHostedBrowser, resetHostedBrowserForTests } from '../src/config/hosted-browser.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { AgentRevisionConflictError } from '../src/config/errors.ts';
 import { mcpSecretCleanupMarkerKey } from '../src/config/mcp-secrets.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
@@ -65,12 +67,12 @@ function fixture() {
     }));
     return [who, app];
   })) as Record<Who, Hono>;
-  const call = (who: Who, path: string, init: { method?: string; body?: unknown } = {}) =>
+  const call = (who: Who, path: string, init: { method?: string; body?: unknown; env?: Record<string, unknown> } = {}) =>
     apps[who].request(`http://localhost${path}`, {
       method: init.method ?? 'GET',
       headers: testAdminHeaders(`token-${who}`, { 'content-type': 'application/json' }),
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-    });
+    }, init.env);
   return {
     store,
     settings,
@@ -737,4 +739,34 @@ test('the website-login list uses the same visibility gate as the Agent Connecti
   } finally {
     f.close();
   }
+});
+
+test('with the host\'s browser off, a hosted installation lists and removes a saved login, and cannot add one or change its level', async (t) => {
+  const f = fixture();
+  t.after(() => f.close());
+  await createAgent(f, 'agent_one');
+  const loginId = await loginIdOf(await addLogin(f, 'admin', 'agent_one', teamLogin));
+  resetHostedBrowserForTests();
+  t.after(resetHostedBrowserForTests);
+  configureHostedBrowser({
+    policy: () => ({ enabled: false, monthlyBrowserHours: 10, maxRunningBrowsers: 2, sessionsPerMinute: 6 }),
+    access: () => ({ apiKey: 'bb_live_platform', projectId: 'proj' }),
+  });
+  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_logins_off' });
+  const path = '/admin/api/agents/agent_one/website-logins';
+
+  const added = await f.call('admin', path, { method: 'POST', body: { ...teamLogin, host: 'other.example.com' }, env });
+  assert.equal(added.status, 404);
+  const raised = await f.call('admin', `${path}/${loginId}`, { method: 'PATCH', body: { level: 'act' }, env });
+  assert.equal(raised.status, 404);
+  const listed = await f.call('admin', path, { env });
+  assert.equal(listed.status, 200);
+  assert.deepEqual(((await listed.json()) as { logins: Array<{ loginId: string; level: string }> }).logins
+    .map(({ loginId: id, level }) => [id, level]), [[loginId, 'check']]);
+
+  const removed = await f.call('admin', `${path}/${loginId}`, { method: 'DELETE', env });
+  assert.equal(removed.status, 200);
+  assert.deepEqual(await removed.json(), { removed: true, loginDeleted: true });
+  assert.deepEqual(await listWebsiteLogins(f.settings), []);
+  assert.equal(await f.settings.getEncryptedCredentialRevision(`website_login.${loginId}`), undefined, 'the password is gone');
 });

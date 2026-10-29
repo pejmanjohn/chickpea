@@ -53,8 +53,23 @@ export function adminUiConfig(input: {
   usageAdminUi: boolean;
   workspaceAdminUi: boolean;
   installationOwner?: boolean;
-  /** False on a deployment serving many installations, which offers no browser. */
-  browserOffered?: boolean;
+  /**
+   * Settings › Browser, where the operator connects their own Browserbase
+   * project. False on a deployment serving many installations: its host
+   * runs the browser.
+   */
+  browserSetupOffered?: boolean;
+  /**
+   * An Agent's Websites tab. On a deployment serving many installations,
+   * only while its host's browser is on.
+   */
+  websiteLoginsOffered?: boolean;
+  /**
+   * The host's browser is off, but an Agent's saved website logins can
+   * still be removed: its Websites tab shows for an Agent that has some,
+   * with removing as the only action.
+   */
+  websiteLoginsRemoveOnly?: boolean;
   /**
    * False on a deployment serving many installations: its host runs the
    * deployment, so Admin leaves out guidance about environment variables and
@@ -74,7 +89,9 @@ export function adminUiConfig(input: {
     usageAdminUi: input.usageAdminUi,
     workspaceAdminUi: input.workspaceAdminUi,
     installationOwner: input.installationOwner === true,
-    browserOffered: input.browserOffered !== false,
+    browserSetupOffered: input.browserSetupOffered !== false,
+    websiteLoginsOffered: input.websiteLoginsOffered !== false,
+    websiteLoginsRemoveOnly: input.websiteLoginsOffered === false && input.websiteLoginsRemoveOnly === true,
     selfHosted: input.selfHosted !== false,
     billingOffered: input.billingOffered === true,
     helpImproveOffered: input.helpImprovePrivacyUrl !== undefined,
@@ -135,7 +152,9 @@ export function renderAdminPage(
     usageAdminUi?: boolean;
     workspaceAdminUi?: boolean;
     installationOwner?: boolean;
-    browserOffered?: boolean;
+    browserSetupOffered?: boolean;
+    websiteLoginsOffered?: boolean;
+    websiteLoginsRemoveOnly?: boolean;
     selfHosted?: boolean;
     billingOffered?: boolean;
     helpImprovePrivacyUrl?: string | undefined;
@@ -212,7 +231,9 @@ ${onboarding ? `<div id="app" class="frame onboarding-frame" aria-busy="true"><m
 <p id="admin-status" class="sr-only" role="status" aria-live="polite"></p>
 <script id="chickpea-admin-config" type="application/json">${adminUiConfigJson({
     isCloudflare, usageAdminUi, workspaceAdminUi, installationOwner: options.installationOwner === true,
-    browserOffered: options.browserOffered !== false, selfHosted,
+    browserSetupOffered: options.browserSetupOffered !== false,
+    websiteLoginsOffered: options.websiteLoginsOffered !== false,
+    websiteLoginsRemoveOnly: options.websiteLoginsRemoveOnly === true, selfHosted,
     billingOffered: options.billingOffered === true, helpImprovePrivacyUrl: options.helpImprovePrivacyUrl,
     targetChip, onboarding, firstRun: options.firstRun,
   })}</script>

@@ -3,7 +3,7 @@ import {
   type EncryptedCredentialStore,
   type SettingsStore,
 } from '../config/settings-store.ts';
-import { deploymentServesManyInstallations, requireInstallationScope } from '../config/installation-scope.ts';
+import { requireInstallationScope } from '../config/installation-scope.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
 import {
@@ -16,11 +16,17 @@ import {
 import {
   drainContextDeletions,
   PENDING_CONTEXT_DELETIONS_SETTING,
+  queueContextDeletions,
   settleContextDeletions,
   withPendingContextDeletions,
   type PendingContextDeletion,
 } from './context-deletions.ts';
-import { BROWSER_PROVIDER_ID_PATTERN, type BrowserProvider } from './provider.ts';
+import {
+  BROWSER_PROVIDER_ID_PATTERN,
+  BrowserProviderError,
+  HostedBrowserRefusal,
+  type BrowserProvider,
+} from './provider.ts';
 import { resolveBrowserProvider } from './settings.ts';
 
 /**
@@ -500,16 +506,64 @@ export async function deleteOrphanWebsiteLoginSecrets(store: SettingsStore, now 
 }
 
 /**
- * Work maintenance for one install's website logins: the context deletion
- * queue, then secrets no login names. A deployment serving many
- * installations leaves both alone: its browser key belongs to the host,
- * never to a deployment variable or the installation's settings.
+ * Work maintenance for one install's website logins: hand-offs that ended
+ * with no sign-in after them, the context deletion queue, then secrets no
+ * login names. On a deployment serving many installations the provider is
+ * the hosted wrapper on the host's access; without that access the sweep
+ * fails and the queue waits for the next.
  */
 export async function maintainWebsiteLogins(env: PlatformEnv | undefined, store?: SettingsStore): Promise<void> {
-  if (deploymentServesManyInstallations(env)) return;
   const settings = store ?? getSettingsStore(env);
-  await drainContextDeletions({ store: settings, provider: () => resolveBrowserProvider(settings, env) });
+  let resolved: Promise<BrowserProvider | undefined> | undefined;
+  const provider = () => resolved ??= resolveBrowserProvider(settings, env);
+  await releaseEndedHandoffs(settings, provider);
+  await drainContextDeletions({ store: settings, provider });
   await deleteOrphanWebsiteLoginSecrets(settings);
+}
+
+/**
+ * A hand-off is otherwise settled only by the login's next sign-in. One that
+ * ended with none after it still holds the files the person downloaded in
+ * its live view, so an ended session is queued, where its files are deleted,
+ * and the login forgets it. Queued before it is forgotten, so a crash between
+ * the two only queues it again.
+ */
+export async function releaseEndedHandoffs(
+  store: SettingsStore,
+  provider: () => Promise<BrowserProvider | undefined>,
+): Promise<number> {
+  const open = (await listWebsiteLogins(store)).filter((login) => login.handoffSessionId);
+  if (!open.length) return 0;
+  const browser = await provider();
+  if (!browser) return 0;
+  let released = 0;
+  for (const { id, handoffSessionId } of open) {
+    const status = await handoffStatus(browser, handoffSessionId!);
+    if (status === 'running' || status === 'unknown') continue;
+    if (status === 'ended') await queueContextDeletions(store, [{ handoffSessionId: handoffSessionId!, queuedAt: Date.now() }]);
+    await patchLoginState(store, id, (state) => {
+      if (state.handoffSessionId !== handoffSessionId) return undefined;
+      const { handoffSessionId: _ended, ...rest } = state;
+      return rest;
+    });
+    released += 1;
+  }
+  return released;
+}
+
+/** `foreign` when the hosted wrapper refuses the id as another installation's: forgotten, never queued. */
+async function handoffStatus(
+  provider: BrowserProvider,
+  sessionId: string,
+): Promise<'running' | 'ended' | 'foreign' | 'unknown'> {
+  try {
+    const status = await provider.sessionStatus(sessionId);
+    return status === 'RUNNING' || status === 'PENDING' ? 'running' : 'ended';
+  } catch (error) {
+    if (error instanceof BrowserProviderError && error.status === 404) return 'ended';
+    if (error instanceof HostedBrowserRefusal && error.reason === 'ownership') return 'foreign';
+    return 'unknown';
+  }
 }
 
 /** Record when the login was last used (bound to a session or signed in). Returns false when the login is gone. */
@@ -541,6 +595,19 @@ export async function recordWebsiteLoginContext(
     return undefined;
   });
   return found ? recorded : undefined;
+}
+
+/** Forget a recorded context the provider no longer has, unless another was recorded meanwhile. */
+export async function forgetWebsiteLoginContext(
+  store: SettingsStore,
+  id: string,
+  contextId: string,
+): Promise<void> {
+  await patchLoginState(store, id, (state) => {
+    if (state.contextId !== contextId) return undefined;
+    const { contextId: _gone, ...rest } = state;
+    return rest;
+  });
 }
 
 /** Remember (or, with undefined, forget) a hand-off session still open for this login. */

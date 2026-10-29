@@ -11,9 +11,14 @@
   var USAGE_ADMIN_UI = CONFIG.usageAdminUi === true;
   var WORKSPACE_ADMIN_UI = CONFIG.workspaceAdminUi !== false;
   var INSTALLATION_OWNER = CONFIG.installationOwner === true;
-  // A deployment serving many installations offers no browser: no Browser
-  // settings and no Websites tab, rather than sections that cannot load.
-  var BROWSER_OFFERED = CONFIG.browserOffered !== false;
+  // Settings › Browser connects the operator's own Browserbase project, so a
+  // deployment serving many installations, whose host runs the browser, has
+  // none. Its Agents' Websites tab is offered while that browser is on. While
+  // it is off, an Agent that has website logins keeps the tab so a person can
+  // still remove them; nothing can be added or changed there.
+  var BROWSER_SETUP_OFFERED = CONFIG.browserSetupOffered !== false;
+  var WEBSITE_LOGINS_OFFERED = CONFIG.websiteLoginsOffered !== false;
+  var WEBSITE_LOGINS_REMOVE_ONLY = !WEBSITE_LOGINS_OFFERED && CONFIG.websiteLoginsRemoveOnly === true;
   // Standalone: whoever runs Admin also runs this deployment, so Admin may
   // mention its environment variables and secret bindings, and offers its
   // update, install and preparation steps. A deployment serving many
@@ -852,12 +857,20 @@
 
   function profileTabOrder() {
     var order = ["instructions", "skills", "connections", "repositories", "websites", "memory", "schedules", "model"];
-    return BROWSER_OFFERED ? order : order.filter(function (tab) { return tab !== "websites"; });
+    return websitesTabShown(state.profileDraft) ? order : order.filter(function (tab) { return tab !== "websites"; });
   }
 
+  function websitesTabShown(draft) {
+    if (WEBSITE_LOGINS_OFFERED) return true;
+    var agent = WEBSITE_LOGINS_REMOVE_ONLY && draft && draft.id ? agentById(draft.id) : null;
+    return !!(agent && Array.isArray(agent.websiteLogins) && agent.websiteLogins.length);
+  }
+
+  // openProfileEditor checks the tab once the Agent's draft is set: whether
+  // its Websites tab shows can depend on that Agent.
   function requestedProfileTab(search) {
     if (!search || typeof URLSearchParams === "undefined") return "instructions";
-    return normalizedProfileTab(new URLSearchParams(search).get("tab") || "instructions");
+    return new URLSearchParams(search).get("tab") || "instructions";
   }
 
   function waitForAgentConnectionsWorkspace(agentId) {
@@ -1906,7 +1919,7 @@
       codingAgents
     ].filter(function (section) {
       // The host runs a hosted installation's coding sandbox.
-      return (BROWSER_OFFERED || section.id !== "browser") && (SELF_HOSTED || !HOST_MANAGED_SETTINGS_SECTIONS.includes(section.id));
+      return (BROWSER_SETUP_OFFERED || section.id !== "browser") && (SELF_HOSTED || !HOST_MANAGED_SETTINGS_SECTIONS.includes(section.id));
     }) : [codingAgents];
     if (WORKSPACE_ADMIN_UI && HELP_IMPROVE_OFFERED) sections.splice(sections.length - 1, 0, { id: "help-improve", name: HELP_IMPROVE_COPY.label });
     if (WORKSPACE_ADMIN_UI && INSTALLATION_OWNER && SELF_HOSTED) sections.push({ id: "updates", name: "About &amp; updates", meta: "Version and support" });
@@ -5743,7 +5756,8 @@
       { id: "schedules", label: "Schedules", count: state.agentSchedules.agentId === draft.id ? state.agentSchedules.schedules.length : 0, icon: "clock", tone: "schedule", description: "Recurring and one-time work owned by this Agent." },
       { id: "model", label: "Model", count: 0, icon: "robot", tone: "model", description: "The intelligence this Agent uses for every response. Changes apply to new threads." }
     ];
-    var bar = tabs.filter(function (tab) { return BROWSER_OFFERED || tab.id !== "websites"; }).map(function (tab) {
+    var websitesShown = websitesTabShown(draft);
+    var bar = tabs.filter(function (tab) { return websitesShown || tab.id !== "websites"; }).map(function (tab) {
       var on = tab.id === active;
       return '<button type="button" id="ptab-' + tab.id + '" class="ptab' + (on ? " on" : "") + '" role="tab" aria-selected="' + (on ? "true" : "false") + '" tabindex="' + (on ? "0" : "-1") + '" aria-controls="ptab-panel-' + tab.id + '" data-action="profile-tab" data-tab="' + tab.id + '">' + tab.label +
         (tab.count ? '<span class="ptab-count">' + tab.count + '</span>' : "") +
@@ -5773,7 +5787,7 @@
       panel(tabs[1], skillsPanelHtml(draft)) +
       panel(tabs[2], connectionsPanelHtml(draft)) +
       panel(tabs[3], repositoriesPanelHtml(draft)) +
-      (BROWSER_OFFERED ? panel(tabs[4], websitesPanelHtml(draft, readOnly)) : "") +
+      (websitesShown ? panel(tabs[4], websitesPanelHtml(draft, readOnly)) : "") +
       panel(tabs[5], ownerMemoryPanelHtml("agent", draft.id, draft.name)) +
       panel(tabs[6], agentSchedulesPanelHtml(draft)) +
       panel(tabs[7], '<div class="agent-model-row agent-model-tab-row">' + modelFieldHtml(draft) + effortFieldHtml(draft) + imageModelFieldHtml(draft) + '</div>') +
@@ -8039,7 +8053,7 @@
   function ensureProfileWebsiteLogins() {
     var draft = state.profileDraft;
     if (
-      !BROWSER_OFFERED || state.view !== "profiles" || state.profileScreen !== "edit" ||
+      !websitesTabShown(draft) || state.view !== "profiles" || state.profileScreen !== "edit" ||
       state.profileTab !== "websites" || !draft || !draft.id
     ) return Promise.resolve();
     return loadWebsiteLogins(draft.id, false);
@@ -8062,7 +8076,7 @@
     var removing = logins.removing === login.loginId;
     var acts = login.level === "act";
     var levelError = logins.levelError && logins.levelError.loginId === login.loginId ? logins.levelError.message : "";
-    var actions = '<div class="agent-schedule-actions">' + websiteLoginLevelHtml(login, readOnly) +
+    var actions = '<div class="agent-schedule-actions">' + websiteLoginLevelHtml(login, readOnly || WEBSITE_LOGINS_REMOVE_ONLY) +
       (readOnly || confirming ? "" : '<button type="button" class="btn btn-ghost btn-sm agent-schedule-delete" data-action="website-login-remove" data-login-id="' + esc(login.loginId) + '" aria-label="Remove ' + esc(login.host) + '">Remove</button>') +
       '</div>';
     var confirm = confirming
@@ -8136,12 +8150,14 @@
   }
 
   function websitesPanelHtml(draft, readOnly) {
-    var hint = '<p class="hint ptab-hint">This Agent can open any public website when a task calls for it. A sign-in below lets it go where a visitor cannot, and each signed-in session stays on that site.</p>';
+    var hint = '<p class="hint ptab-hint">' + (WEBSITE_LOGINS_REMOVE_ONLY
+      ? WEBSITE_LOGINS_OFF_HINT
+      : "This Agent can open any public website when a task calls for it. A sign-in below lets it go where a visitor cannot, and each signed-in session stays on that site.") + '</p>';
     var note = '<p class="agent-instructions-guidance">' + icon("lock-closed") + '<span>Passwords are stored encrypted and typed by Chickpea itself. Agents never see them.</span></p>';
     if (!draft || !draft.id) {
       return hint + '<div class="empty"><p class="field-label">Save this Agent to add website logins</p></div>' + note;
     }
-    var addButton = readOnly ? "" : '<button type="button" class="btn btn-primary btn-sm" data-action="website-login-add">Add a website login</button>';
+    var addButton = readOnly || WEBSITE_LOGINS_REMOVE_ONLY ? "" : '<button type="button" class="btn btn-primary btn-sm" data-action="website-login-add">Add a website login</button>';
     var head = '<div class="repo-panel-head"><span class="section-eyebrow">Signed-in websites</span>' + addButton + '</div>';
     var current = state.websiteLogins;
     var logins = websiteLoginsFor(draft);
@@ -8155,7 +8171,9 @@
     } else if (!logins) {
       body = '<div class="empty"><p class="hint">Loading website logins&hellip;</p></div>';
     } else if (!logins.length) {
-      body = '<div class="empty"><p class="hint">No website logins yet. Add one to let this Agent sign in somewhere.</p>' + addButton + '</div>';
+      body = WEBSITE_LOGINS_REMOVE_ONLY
+        ? '<div class="empty"><p class="hint">This Agent has no website logins.</p></div>'
+        : '<div class="empty"><p class="hint">No website logins yet. Add one to let this Agent sign in somewhere.</p>' + addButton + '</div>';
     } else {
       var agentName = String(draft.name || "this Agent").trim() || "this Agent";
       body = '<div class="agent-schedule-list">' + logins.map(function (login) {
@@ -8165,9 +8183,11 @@
     return hint + head + body + note;
   }
 
+  var WEBSITE_LOGINS_OFF_HINT = "The browser is off right now, so website logins can't be added or changed. You can still remove them.";
+
   function openWebsiteLoginDialog() {
     var draft = state.profileDraft;
-    if (!draft || !draft.id || draft.canEdit === false) return;
+    if (WEBSITE_LOGINS_REMOVE_ONLY || !draft || !draft.id || draft.canEdit === false) return;
     state.websiteLogins.removeConfirm = "";
     state.websiteLoginDialog = {
       agentId: draft.id,
@@ -8240,7 +8260,9 @@
           websiteLoginRadioHtml("website-login-level", "act", dialog.level === "act", dialog.busy, "pencil", "connection-account-owner-icon-personal", "Check and take actions", "Fill forms and click through flows. Asks in Slack before anything that changes data.") +
         '</div></div>' +
       (dialog.error ? '<p class="field-error" id="website-login-error" role="alert">' + esc(dialog.error) + '</p>' : "") +
-      '<p class="hint">Stored encrypted in your Chickpea install. Sign-in sessions live in your Browserbase project.</p>' +
+      '<p class="hint">Stored encrypted in your Chickpea install. ' + (BROWSER_SETUP_OFFERED
+        ? "Sign-in sessions live in your Browserbase project."
+        : "Chickpea keeps the signed-in session for each website so Agents stay signed in.") + '</p>' +
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="website-login-cancel"' + dis + '>Cancel</button><span class="spacer"></span>' +
       '<button type="button" class="btn btn-primary" data-action="website-login-save"' + dis + '>' + (dialog.busy ? "Saving&hellip;" : "Save login") + '</button></div>' +
       '</div></div>';
@@ -11756,7 +11778,7 @@
     // A member's only Settings page is Coding agents.
     if (!WORKSPACE_ADMIN_UI) return "agents-clients";
     if (section === "updates" && INSTALLATION_OWNER && SELF_HOSTED) return section;
-    if (section === "browser" && !BROWSER_OFFERED) return "providers";
+    if (section === "browser" && !BROWSER_SETUP_OFFERED) return "providers";
     if (!SELF_HOSTED && HOST_MANAGED_SETTINGS_SECTIONS.includes(section)) return "providers";
     if (section === "help-improve" && HELP_IMPROVE_OFFERED) return section;
     return ["slack", "connectors", "providers", "github", "sandbox", "browser", "agents-clients"].includes(section) ? section : "providers";
