@@ -270,7 +270,7 @@
     installation: { details: null, updates: null, busy: false, error: "", dialog: "", report: "", notice: "" },
     settingsLoaded: false,
     settingsLoadGeneration: 0,
-    connectionInventory: { accounts: [], loading: false, error: "", notice: "" },
+    connectionInventory: { accounts: [], loading: false, error: "", notice: "", actionError: "" },
     metaAdsSettings: { loading: true, configured: false, canConfigure: false, clientId: "", callbackUrl: "", busy: false, error: "", notice: "" },
     // Settings → Coding agents. The payload is public, origin-derived client
     // setup copy; the picked client is a view preference and is never stored.
@@ -4024,12 +4024,15 @@
         render();
         return;
       }
-      startManagedAuthorization({
+      var managedStart = {
         workspaceId: state.agentConnections.workspaceId,
         ownerKind: form.ownerKind === "member" ? "member" : "team",
         toolkit: form.managedToolkit,
         access: form.managedAccess === "write" ? "write" : "read"
-      }, form.preset && form.preset.name || "Managed connector");
+      };
+      // Continuing past the notice is the person's choice to sign in with another account.
+      if (form.signInNotice) managedStart.differentAccount = true;
+      startManagedAuthorization(managedStart, form.preset && form.preset.name || "Managed connector");
       return;
     }
     var providerId = connectionAccountProviderId(form);
@@ -4398,6 +4401,7 @@
     var signInTab = openManagedAuthorizationTab();
     if (form) { form.busy = true; form.error = ""; }
     state.agentConnections.error = "";
+    state.agentConnections.actionError = "";
     render();
     postJson(
       "/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/managed/start",
@@ -4433,7 +4437,11 @@
       pollManagedAuthorization();
     }).catch(function (error) {
       closeManagedAuthorizationTab(signInTab);
-      if (form && state.connectionAccountForm === form) {
+      if (form && state.connectionAccountForm === form && error && error.status === 409 &&
+          error.message === "managed_sign_in_other_kind" && error.serverMessage) {
+        form.busy = false;
+        form.signInNotice = error.serverMessage;
+      } else if (form && state.connectionAccountForm === form) {
         form.busy = false;
         form.error = (error && (error.serverMessage || error.message)) || "Could not start managed sign-in.";
       } else if (context && context.returnToSettings) {
@@ -4512,10 +4520,16 @@
       if (error && error.status === 409 &&
           (error.message === "managed_authorization_invalid" ||
             error.message === "managed_authorization_terminal" ||
-            error.message === "managed_authorization_stale_provider")) {
+            error.message === "managed_authorization_stale_provider" ||
+            error.message === "managed_sign_in_mix_refused")) {
         clearManagedAuthorization(current.agentId);
         var staleProvider = error.message === "managed_authorization_stale_provider";
-        if (current.returnToSettings) {
+        var refusal = error.message === "managed_sign_in_mix_refused" && error.serverMessage;
+        if (refusal) {
+          // The refusal points at a connection's menu, so it sits above the list instead of replacing it.
+          if (current.returnToSettings) state.connectionInventory.actionError = refusal;
+          else state.agentConnections.actionError = refusal;
+        } else if (current.returnToSettings) {
           state.connectionInventory.error = staleProvider
             ? "The connector configuration changed. Start the reconnection again."
             : error.message === "managed_authorization_terminal"
@@ -4593,6 +4607,7 @@
     if (!entry || !entry.account || !entry.account.policy || entry.account.policy.kind !== "managed") return;
     state.connectionInventory.error = "";
     state.connectionInventory.notice = "";
+    state.connectionInventory.actionError = "";
     var start = managedReconnectStart(
       entry.account,
       settingsManagedConnectorDescriptor(entry.account.policy.toolkit),
@@ -7177,8 +7192,9 @@
         connectionAccountOwnerHtml(form) +
         connectionAccountAccessHtml(form) +
         '<p class="conn-security">' + esc(managedSecurityCopy) + '</p>' +
+        (form.signInNotice ? '<div class="callout" role="status"><span>' + esc(form.signInNotice) + '</span></div>' : '') +
         (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
-        '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !ownerSelected ? " disabled" : "") + '>' + (busy ? "Opening sign-in&hellip;" : "Continue to " + esc(managedPreset.name)) + '</button></div></div>';
+        '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !ownerSelected ? " disabled" : "") + '>' + (busy ? "Opening sign-in&hellip;" : form.signInNotice ? "Continue with a different " + esc(managedPreset.name) + " account" : "Continue to " + esc(managedPreset.name)) + '</button></div></div>';
     }
     var oauth = form.kind === "api" && form.authMode === "google_oauth";
     var mcpOauth = form.kind === "mcp" && form.authMode === "oauth";
@@ -10918,7 +10934,7 @@
           : '<p class="hint">' + esc(account.providerId || "Custom") + '</p>';
       return '<article class="connection-inventory-row"><div class="connection-account-copy"><div><strong>' + esc(accountLabel) + '</strong> <span class="badge-src">' + esc(owner) + '</span> <span class="badge ' + (account.lifecycle === "ready" ? "badge-on" : "badge-off") + '">' + esc(status) + '</span></div>' + detail + '<div class="where-list" aria-label="Agents using ' + esc(accountLabel) + '">' + agentLinks + '</div></div>' + actions + '</article>';
     }).join("");
-    return head + (inventory.notice ? '<p class="oauth-return ok" role="status">' + esc(inventory.notice) + '</p>' : '') + '<div class="connection-account-list connection-inventory-list">' + rows + '</div></section>';
+    return head + (inventory.actionError ? '<p class="oauth-return error" role="alert">' + esc(inventory.actionError) + '</p>' : '') + (inventory.notice ? '<p class="oauth-return ok" role="status">' + esc(inventory.notice) + '</p>' : '') + '<div class="connection-account-list connection-inventory-list">' + rows + '</div></section>';
   }
 
   function modelCatalogStatusHtml() {
@@ -15412,6 +15428,7 @@
       if (target.value !== "member" && target.value !== "team") return;
       state.connectionAccountForm.ownerKind = target.value;
       state.connectionAccountForm.error = "";
+      state.connectionAccountForm.signInNotice = "";
       render();
     }
     if (action === "meta-ads-app-id") state.metaAdsSettings.clientId = target.value;

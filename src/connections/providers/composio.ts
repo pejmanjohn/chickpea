@@ -1957,6 +1957,9 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         const client = await this.client(apiKey);
         // About-me goes first so that the listing's calls cannot spend Notion's rate limit before it.
         const person = await notionSignInPerson(client, input.policy, signal);
+        if (person.status === 'failed') {
+          throw definiteManagedValidationFailure('Notion sign-in could not be checked', 1);
+        }
         const pages = await listNotionPages(notionReader(client, input.policy, signal));
         if (!pages) {
           throw definiteManagedValidationFailure('Notion grant verification failed', 1);
@@ -1968,7 +1971,6 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
             truncated: roots.length > 20 || !complete,
           },
           ...(person.status === 'named' ? { person: person.person } : {}),
-          ...(person.status === 'failed' ? { personLookupFailed: true as const } : {}),
           pages,
         };
       }
@@ -5284,25 +5286,23 @@ function projectNotionSearch(data: Record<string, unknown>): Record<string, unkn
 /**
  * The Notion person who approved this sign-in: Notion keeps one page list per
  * person and workspace. `unnamed` when Notion answers without a user owner,
- * so the caller records the Chickpea member who signed in; `failed` when the
- * call itself fails, so a reconnect keeps the person it already knows.
+ * so the caller records the Chickpea member who signed in; `failed` when
+ * Notion answers with an error, which fails the sign-in: a person kept from
+ * an earlier sign-in could be another Notion account, and the personal and
+ * team check would trust it. A call that throws is retried by the sign-in's
+ * next poll, as a thrown listing call is.
  */
 async function notionSignInPerson(
   client: ComposioClientLike,
   policy: ConnectionAccountManagedPolicy,
   signal: AbortSignal,
 ): Promise<{ status: 'named'; person: string } | { status: 'unnamed' } | { status: 'failed' }> {
-  let result: Awaited<ReturnType<typeof executeComposioTool>>;
-  try {
-    result = await executeComposioTool(client, policy, {
-      toolkit: 'notion',
-      tool: 'NOTION_GET_ABOUT_ME',
-      arguments: {},
-      signal,
-    });
-  } catch {
-    return { status: 'failed' };
-  }
+  const result = await executeComposioTool(client, policy, {
+    toolkit: 'notion',
+    tool: 'NOTION_GET_ABOUT_ME',
+    arguments: {},
+    signal,
+  });
   if (result.error) return { status: 'failed' };
   const source = isRecord(result.data.data) ? result.data.data : result.data;
   const bot = isRecord(source.bot) ? source.bot : {};

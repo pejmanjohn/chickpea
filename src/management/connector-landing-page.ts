@@ -25,6 +25,8 @@ export interface ConnectorLandingPageInput {
     access?: 'read' | 'write' | 'reporting' | 'editing';
   };
   changingSelection?: string;
+  /** Sign-in stopped before the provider opened; continuing asks for a different account. */
+  signInNotice?: { ownerKind: 'member' | 'team'; message: string };
   accessReview?: {
     tools: Array<{
       name: string;
@@ -51,6 +53,9 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
     ? managedConnectorWriteSummary(setup.target.provider, connector)
     : connectorCopy.accessSummary;
   const failureMessage = input.failureMessage ?? '';
+  const notice = input.signInNotice;
+  const continueLabel = `Continue to ${connector}`;
+  const differentAccountLabel = `Continue with a different ${connector} account`;
   const selection = input.changingSelection;
   const heading = selection
     ? `Change which ${connector} ${selection} ${agent.name} can use`
@@ -74,7 +79,7 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
               <strong>${escapeHtml(connector)}</strong>
             </div>
             <form id="connector-form" method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/authorize">
-              ${ownerChoiceBlock(agent.name, input.locked)}
+              ${ownerChoiceBlock(agent.name, input.locked, notice?.ownerKind)}
               <section class="choice-block" aria-labelledby="access-title">
                 <h2 id="access-title">Permissions</h2>
                 <input type="hidden" name="access" value="${accessLane}">
@@ -82,11 +87,13 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
                 <p id="access-help">Agent tools: ${escapeHtml(accessSummary)}${accessLane === 'read' ? ' This does not limit permissions granted during sign-in.' : ''}</p>
               </section>
               <p class="security-copy">Sign-in opens in a secure ${escapeHtml(connector)} tab. Chickpea keeps a reference to the connected account and this Agent&rsquo;s access level &mdash; never your password or refresh tokens.</p>
+              <p class="flow-notice" id="sign-in-notice" role="status"${notice ? '' : ' hidden'}>${escapeHtml(notice?.message ?? '')}</p>
+              <input type="hidden" name="differentAccount" value="1"${notice ? '' : ' disabled'}>
               <p class="flow-alert" id="flow-alert" role="alert"${failureMessage ? '' : ' hidden'}>${escapeHtml(failureMessage)}</p>
             </form>
             <div class="flow-actions">
               <form method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/cancel"><button class="text-button" type="submit">Cancel</button></form>
-              <button class="primary-button" type="submit" form="connector-form" name="intent" value="authorize" disabled>Continue to ${escapeHtml(connector)}</button>
+              <button class="primary-button" type="submit" form="connector-form" name="intent" value="authorize" data-label="${escapeHtml(continueLabel)}" data-different-label="${escapeHtml(differentAccountLabel)}" disabled>${escapeHtml(notice ? differentAccountLabel : continueLabel)}</button>
             </div>
           </section>
         </section>
@@ -399,10 +406,16 @@ function connectorLogo(setup: ManagementSetupRecord, extraClass = ''): string {
   return `<span class="${className}"${style} aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor">${logo.svg}</svg></span>`;
 }
 
-function ownerChoiceBlock(agentName: string, locked?: ConnectorLandingPageInput['locked']): string {
+function ownerChoiceBlock(
+  agentName: string,
+  locked?: ConnectorLandingPageInput['locked'],
+  selected?: 'member' | 'team',
+): string {
   // A disabled control is not submitted, so a locked choice also travels as a hidden field.
   const lock = (ownerKind: 'member' | 'team') =>
-    locked ? `${locked.ownerKind === ownerKind ? ' checked' : ''} disabled` : '';
+    locked
+      ? `${locked.ownerKind === ownerKind ? ' checked' : ''} disabled`
+      : selected === ownerKind ? ' checked' : '';
   return `<section class="choice-block owner-choice-block" aria-labelledby="owner-title">
     <h2 id="owner-title">Who uses this connection?</h2>
     ${locked ? '' : '<p class="choice-instruction">Pick one to continue.</p>'}
@@ -432,7 +445,7 @@ function ownerChoiceIcon(ownerKind: 'member' | 'team'): string {
 }
 
 function setupScript(): string {
-  return `(function(){var form=document.getElementById("connector-form"),owners=form&&form.querySelectorAll('input[name="ownerKind"]'),alert=document.getElementById("flow-alert"),button=document.querySelector('button[form="connector-form"][value="authorize"]');if(!form||!owners||!alert||!button)return;function selectedOwner(){return form.querySelector('input[name="ownerKind"]:checked')}function update(){button.disabled=!selectedOwner()}owners.forEach(function(control){control.addEventListener("change",update)});form.addEventListener("submit",async function(event){event.preventDefault();if(!selectedOwner()){alert.textContent="Choose Personal or Team to continue.";alert.hidden=false;update();return}var label=button.textContent;button.disabled=true;button.textContent="Opening secure sign-in…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(String(body.message||"Chickpea could not start the secure sign-in. Try again."));var target=new URL(String(body.authorizationUrl||""));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not start the secure sign-in. Try again.";alert.hidden=false;button.textContent=label;update()}});update()})();`;
+  return `(function(){var form=document.getElementById("connector-form"),owners=form&&form.querySelectorAll('input[name="ownerKind"]'),alert=document.getElementById("flow-alert"),notice=document.getElementById("sign-in-notice"),different=form&&form.querySelector('input[name="differentAccount"]'),button=document.querySelector('button[form="connector-form"][value="authorize"]');if(!form||!owners||!alert||!notice||!different||!button)return;function selectedOwner(){return form.querySelector('input[name="ownerKind"]:checked')}function update(){button.disabled=!selectedOwner()}function clearNotice(){if(notice.hidden)return;notice.hidden=true;different.disabled=true;button.textContent=button.getAttribute("data-label")}owners.forEach(function(control){control.addEventListener("change",function(){clearNotice();update()})});form.addEventListener("submit",async function(event){event.preventDefault();if(!selectedOwner()){alert.textContent="Choose Personal or Team to continue.";alert.hidden=false;update();return}var label=button.textContent;button.disabled=true;button.textContent="Opening secure sign-in…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(response.status===409&&body.error==="managed_sign_in_other_kind"){notice.textContent=String(body.message||"");notice.hidden=false;different.disabled=false;button.textContent=button.getAttribute("data-different-label");update();return}if(!response.ok)throw new Error(String(body.message||"Chickpea could not start the secure sign-in. Try again."));var target=new URL(String(body.authorizationUrl||""));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not start the secure sign-in. Try again.";alert.hidden=false;button.textContent=label;update()}});update()})();`;
 }
 
 function catalogSetupScript(input: { connector: string }): string {
@@ -753,6 +766,16 @@ textarea.text-input { max-width: none; resize: vertical; }
   line-height: 1.45;
   padding: 12px 14px;
 }
+.flow-notice {
+  background: #fff4df;
+  border: 1px solid rgba(178, 126, 31, .26);
+  border-radius: 12px;
+  color: var(--ink);
+  font-weight: 700;
+  line-height: 1.45;
+  margin: 18px 24px 0;
+  padding: 12px 14px;
+}
 .flow-actions { align-items: center; display: flex; gap: 16px; justify-content: flex-end; padding: 24px; }
 .flow-actions form { margin: 0; }
 .flow-actions button { font: inherit; font-weight: 850; }
@@ -901,6 +924,7 @@ textarea.text-input { max-width: none; resize: vertical; }
   .connector-row { min-height: 88px; padding-inline: 18px; }
   .choice-block,
   .security-copy { padding-inline: 18px; }
+  .flow-notice { margin-inline: 18px; }
   .owner-option { align-items: start; grid-template-columns: 18px 32px minmax(0, 1fr); }
   .flow-actions { align-items: stretch; flex-direction: column-reverse; }
   .flow-actions form,

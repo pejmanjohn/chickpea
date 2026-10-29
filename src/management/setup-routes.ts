@@ -128,6 +128,7 @@ import {
   type ManagedAuthorizationFlowDependencies,
 } from '../connections/managed-authorization-flow.ts';
 import { ManagedAuthorizationError } from '../connections/managed-authorization.ts';
+import { ManagedSignInOtherKindError } from '../connections/sign-in-mix.ts';
 import { mcpOAuthLifecycleDependencies } from '../connections/mcp-oauth-lifecycle.ts';
 import { ManagedProviderRequestError } from '../connections/managed-errors.ts';
 import {
@@ -580,6 +581,7 @@ export function createManagementSetupRoutes(
             ...(setup.target.replacement && setup.target.connectionId
               ? { connectionAccountId: setup.target.connectionId }
               : {}),
+            ...(fields.differentAccount === '1' ? { differentAccount: true } : {}),
             attemptScopeId: setupId,
             returnUrl: `${requestOrigin(c)}/setup/${encodeURIComponent(setupId)}?poll=1`,
             randomSecret: () => browserSecret,
@@ -708,6 +710,19 @@ export function createManagementSetupRoutes(
       throw new Error('wrong_action');
     } catch (error) {
       if (error instanceof AuthorizationError) return genericDenied(c);
+      if (error instanceof ManagedSignInOtherKindError) {
+        if (authorizationJsonRequest(c)) {
+          return c.json({ error: 'managed_sign_in_other_kind', message: error.message }, 409);
+        }
+        const page = await managedConnectionPageInput(c, activeSetup, dependencies, options);
+        const signInNotice = {
+          ownerKind: fields.ownerKind === 'team' ? 'team' as const : 'member' as const,
+          message: error.message,
+        };
+        return page
+          ? c.html(renderManagedConnectionSetupPage({ ...page, signInNotice }), 409)
+          : managedUnavailablePage(c);
+      }
       await markSetupFailure(activeSetup, c, dependencies.management, safeFailureCode(error), now());
       if (activeSetup.action === 'managed_connection') {
         const message = managedStartFailureMessage(error);
@@ -817,6 +832,10 @@ export function createManagementSetupRoutes(
           error: 'managed_authorization_superseded',
           message: `Someone else already connected ${setup.target.targetLabel} to ${agent.name}. Your sign-in was discarded.`,
         }, 409);
+      }
+      if (result.status === 'refused') {
+        await markSetupFailure(setup, c, dependencies.management, 'managed_sign_in_mix_refused', now());
+        return c.json({ error: 'managed_sign_in_mix_refused', message: result.message }, 409);
       }
       if (result.status === 'terminal') {
         await markSetupFailure(

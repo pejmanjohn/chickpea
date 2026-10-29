@@ -23,6 +23,12 @@ import {
 } from './managed.ts';
 import { managedAccessLane, type ManagedConnectorCatalog } from './catalog/index.ts';
 import {
+  actorSignedOtherKind,
+  ManagedSignInMixError,
+  ManagedSignInOtherKindError,
+  signInOtherKindNotice,
+} from './sign-in-mix.ts';
+import {
   ManagedAuthorizationAllocatedError,
   ManagedProviderRequestError,
 } from './managed-errors.ts';
@@ -102,6 +108,8 @@ interface StartManagedAuthorizationFlowInput {
   /** Exact non-secret capability ceiling frozen by the initiating handoff. */
   capabilities?: readonly string[];
   connectionAccountId?: string;
+  /** The person chose to sign in with a different account after the other-kind notice; skips only that notice. */
+  differentAccount?: boolean;
   existingBrowserSecret?: string;
   /** Setup id used to isolate this browser flow from unrelated authorizations. */
   attemptScopeId?: string;
@@ -192,6 +200,16 @@ export async function startManagedAuthorizationFlow(
       })) {
         throw new ManagedConnectionLaneExistsError(ownerKind, connector.label);
       }
+      const signed = input.differentAccount ? undefined : actorSignedOtherKind({
+        connector,
+        adapterId: 'composio',
+        ownerKind,
+        actorMembershipId: input.principal.membershipId,
+        accounts,
+      });
+      if (signed) {
+        throw new ManagedSignInOtherKindError(signInOtherKindNotice(connector, signed.ownerKind));
+      }
     }
     await cleanupExistingAttempt(
       dependencies,
@@ -264,6 +282,8 @@ type PollManagedAuthorizationFlowResult =
   | { status: 'pending' }
   | { status: 'lost' }
   | { status: 'terminal'; reason: 'disabled' | 'expired' | 'failed' | 'inactive' | 'revoked' }
+  /** The sign-in would mix personal and team on one account; nothing was saved. */
+  | { status: 'refused'; message: string }
   | { status: 'connected'; account: ConnectionAccount };
 
 export async function pollManagedAuthorizationFlow(
@@ -520,6 +540,7 @@ export async function pollManagedAuthorizationFlow(
         error instanceof ManagedConnectionConflictError) {
       return { status: 'lost' };
     }
+    if (error instanceof ManagedSignInMixError) return { status: 'refused', message: error.message };
     if (error instanceof ManagedProviderRequestError && error.metadata.definiteFailure === true) {
       return { status: 'terminal', reason: 'failed' };
     }
