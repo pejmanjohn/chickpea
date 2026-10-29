@@ -726,7 +726,7 @@ function newConnectionLines(
     }
     if (field.show === 'text') {
       const value = stringValue(record[key]);
-      return value === undefined ? [] : [`${field.label}: ${formatTextExcerpt(value, dialect)}`];
+      return value === undefined ? [] : [`${field.label}: ${formatTextExcerpt(value, field.noun, dialect)}`];
     }
     return [];
   });
@@ -774,7 +774,7 @@ function changedConnectionLines(
       lines.push({
         text: now === undefined
           ? `Removes the ${field.noun}.`
-          : `${field.label} changes to ${formatTextExcerpt(now, dialect)}`,
+          : `${field.label} changes to ${formatTextExcerpt(now, field.noun, dialect)}`,
         pinned: false,
       });
     } else if (field.show === 'named') {
@@ -832,15 +832,15 @@ function formatConnectionValue(
   return formatCode(value, dialect);
 }
 
-const TEXT_EXCERPT_LIMIT = 300;
+const TEXT_EXCERPT_LIMIT = 1_600;
 
 /** Stored prose as one quoted line, cut at the limit with the count left out. */
-function formatTextExcerpt(value: string, dialect: ChangeSetPresentationDialect): string {
+function formatTextExcerpt(value: string, noun: string, dialect: ChangeSetPresentationDialect): string {
   const characters = [...value.replace(/\s+/g, ' ').trim()];
   if (characters.length <= TEXT_EXCERPT_LIMIT) return `“${plainText(characters.join(''), dialect)}”`;
   const shown = characters.slice(0, TEXT_EXCERPT_LIMIT).join('').trimEnd();
   const hidden = (characters.length - [...shown].length).toLocaleString('en-US');
-  return `“${plainText(shown, dialect)}…” (${hidden} more characters)`;
+  return `“${plainText(shown, dialect)}…” (${hidden} more characters; approval applies the full ${noun})`;
 }
 
 function formatValueList(

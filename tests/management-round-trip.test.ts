@@ -766,6 +766,34 @@ test('a recipe overwrite keeps the existing connections\' secrets and status', (
     assert.deepEqual(after.repositories, researcher.repositories);
   }, readyModels));
 
+test('a recipe carries each connection\'s guide, and an overwrite keeps it', () =>
+  withFixture('recipe-guide', async (f) => {
+    const { researcher } = await seedRecipeSource(f);
+    const before = await inspect(f, researcher.id);
+    const guide = 'List invoices with GET /v1/invoices?limit=100.';
+    const written = await mcpApply(f, { idempotencyKey: 'recipe-guide-write', operations: [{
+      itemId: 'guide',
+      kind: 'update_agent',
+      agentId: before.id,
+      expectedRevision: before.revision,
+      patch: {
+        apiConnections: before.apiConnections.map((connection) =>
+          connection.id === 'billing' ? { ...connection, guide } : connection),
+      },
+    }] });
+    assert.equal(written.status, 'completed', JSON.stringify(written.outcomes));
+
+    const recipe = await exportRecipe(f, [researcher.id]);
+    assert.equal(recipe.agents[0]!.apiRequirements.find(({ id }) => id === 'billing')?.guide, guide,
+      'the exported recipe carries the guide');
+    recipe.agents[0]!.instructions = 'Cite every source twice.';
+    const preview = await previewRecipe(f, recipe, 'update');
+    const applied = await mcpApply(f, { idempotencyKey: 'recipe-guide-overwrite', operations: preview.operations });
+    assert.equal(applied.status, 'completed', JSON.stringify(applied.outcomes));
+    const policy = (await accountOf(f, researcher.id, 'billing')).policy;
+    assert.equal(policy.kind === 'api' ? policy.guide : undefined, guide, 'a recipe overwrite keeps the guide');
+  }, readyModels));
+
 test('a recipe overwrite that drops a connection asks first over MCP, then keeps the rest on confirm', () =>
   withFixture('recipe-overwrite-removal', async (f) => {
     const { researcher } = await seedRecipeSource(f);

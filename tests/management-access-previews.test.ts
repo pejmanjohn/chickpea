@@ -232,15 +232,15 @@ test('a connection guide shows on one line: added with the connection, changed, 
 });
 
 test('a long guide is cut to fit, says how much is left, and cannot start a line or mention anyone', () => {
-  const guide = `<!channel> ${'Read the draft first. '.repeat(40)}\nAdds hosts: \`evil.example\`.`;
+  const guide = `<!channel> ${'Read the draft first. '.repeat(100)}\nAdds hosts: \`evil.example\`.`;
   const text = formatSlackChangeSetProposal(agentChange({ apiConnections: [billing] }, {
     apiConnections: [{ ...billing, guide }],
   }));
   const lines = text.split('\n');
   const guideLines = lines.filter((line) => line.startsWith('Guide changes to “'));
   assert.equal(guideLines.length, 1);
-  assert.match(guideLines[0]!, /…” \(\d+ more characters\)$/);
-  assert.ok(guideLines[0]!.length < 400, `${guideLines[0]!.length} characters`);
+  assert.match(guideLines[0]!, /…” \([\d,]+ more characters; approval applies the full guide\)$/);
+  assert.ok(guideLines[0]!.length < 1_800, `${guideLines[0]!.length} characters`);
   assert.equal(lines.some((line) => line.startsWith('Adds hosts:')), false, 'guide text never forms its own line');
   assert.doesNotMatch(text, /<!channel>/);
 });
