@@ -16,6 +16,8 @@ import {
 } from './agent-authoring/index.ts';
 
 const zText = (max: number) => z.string().min(1).max(max);
+/** One path on a host: a single leading slash, no spaces. */
+const CONNECTION_CHECK_PATH_PATTERN = /^\/(?!\/)\S*$/;
 const zOptionalText = (max: number) => z.string().max(max);
 const zId = zText(128);
 const zAgentId = z.string().regex(AGENT_ID_PATTERN);
@@ -383,9 +385,10 @@ export const prepareProviderSetupZodSchema = z.strictObject({
   replaceExisting: z.boolean().optional(),
 });
 export const discoverSlackChannelsZodSchema = z.strictObject({});
-export const testMcpConnectionZodSchema = z.strictObject({
+export const testConnectionZodSchema = z.strictObject({
   agentId: zAgentId,
   connectionId: zId,
+  path: z.string().max(2048).regex(CONNECTION_CHECK_PATH_PATTERN).optional(),
 });
 export const inspectMemoryZodSchema = z.strictObject({ agentId: zAgentId });
 export const inspectRoutinesZodSchema = z.strictObject({
@@ -755,9 +758,10 @@ export const prepareConnectorSetupValibotSchema = v.strictObject({
   ownerKind: v.picklist(['team', 'member']),
 });
 export const discoverSlackChannelsValibotSchema = v.strictObject({});
-export const testMcpConnectionValibotSchema = v.strictObject({
+export const testConnectionValibotSchema = v.strictObject({
   agentId: vAgentId,
   connectionId: vid,
+  path: v.optional(v.pipe(v.string(), v.maxLength(2048), v.regex(CONNECTION_CHECK_PATH_PATTERN))),
 });
 export const inspectMemoryValibotSchema = v.strictObject({ agentId: vAgentId });
 export const inspectRoutinesValibotSchema = v.strictObject({

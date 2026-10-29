@@ -70,7 +70,7 @@ const MCP_TOOL_ANNOTATIONS = {
   prepare_connector_setup: READ,
   prepare_provider_setup: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   discover_slack_channels: READ,
-  test_mcp_connection: READ,
+  test_connection: READ,
   inspect_memory: READ,
   inspect_routines: READ,
   export_workspace_recipe: READ,

@@ -15,6 +15,7 @@ Docs: `/agents/connect-a-service/`, `/agents/connections/`, `/agents/managed-con
 - Custom MCP servers must be https on a public host; local and private targets are refused at save and on every use. Two enabled connections on one Agent may not cover overlapping URLs.
 - A keep-alive sweep renews idle OAuth credentials. An MCP OAuth account that cannot renew, or that draws a 401 it cannot refresh, moves to Needs attention and the Agent tells the user to reconnect.
 - Team reconnect notice: for a team connection in Needs attention or pending, the Agent names it and says an admin must reconnect it in Admin. A personal account for the same service stays the user's to authorize.
+- A key for an API connection is checked before it is saved, on the setup page and in Admin: one GET inside the connection's hosts and paths. A 401 saves nothing and names the host. Any other answer saves the key and says what the check found. The setup page also shows each URL the key is sent to and the allowed requests.
 - API presets are called Worker-side through `connection_request`, scoped to one connection's hosts, paths and methods. `attach_file_to_connection` sends a thread image, generated image, screenshot or recording to a connected service.
 - A connector write runs only when the current Slack request names a matching action. Memory, history and retrieved content cannot authorize it.
 
@@ -22,7 +23,7 @@ Docs: `/agents/connect-a-service/`, `/agents/connections/`, `/agents/managed-con
 
 - Slack: ask the Agent to connect a service, or make a request that needs a personal account. The link page asks My connection or Team connection.
 - Admin: Agents → the Agent → Connections (In this Agent, Connect a new account, Custom connection). Settings → Connectors holds the managed project key and the Meta Ads app ID.
-- MCP: `prepare_connector_setup` returns an Admin handoff locked to one Agent, connector and owner kind. `test_mcp_connection` calls one saved MCP connection.
+- MCP: `prepare_connector_setup` returns an Admin handoff locked to one Agent, connector and owner kind. `test_connection` checks one saved API or MCP connection with its saved credential.
 
 ## How to drive it on a lane
 

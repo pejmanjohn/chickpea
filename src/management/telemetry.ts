@@ -104,7 +104,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
   surface: new Set(['admin', 'mcp', 'service', 'setup', 'slack', 'unknown']),
   tool: new Set([
     'inspect_workspace', 'prepare_connector_setup', 'prepare_provider_setup',
-    'discover_slack_channels', 'test_mcp_connection',
+    'discover_slack_channels', 'test_connection',
     'inspect_memory', 'inspect_routines',
     'export_workspace_recipe', 'preview_workspace_recipe',
     'import_skill', 'manage_agent_skill', 'propose_skill_import',

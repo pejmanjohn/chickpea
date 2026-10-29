@@ -10,7 +10,7 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'prepare_connector_setup',
   'prepare_provider_setup',
   'discover_slack_channels',
-  'test_mcp_connection',
+  'test_connection',
   'inspect_memory',
   'inspect_routines',
   'export_workspace_recipe',

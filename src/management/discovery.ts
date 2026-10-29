@@ -1,4 +1,5 @@
 import { connectionAccountOAuthRef } from '../config/api-oauth.ts';
+import { matchesEgressPrefix } from '../config/egress.ts';
 import {
   classifyMcpError,
   McpBlockedUrlError,
@@ -13,6 +14,14 @@ import { resolveConnectionAccountMcpSecrets } from '../config/profile-mcp.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
+import {
+  checkConnection,
+  connectionCheckUrl,
+  connectionUrlPrefixes,
+  mcpCheckFailure,
+  type ConnectionCheckOptions,
+  type ConnectionCheckOutcome,
+} from '../connections/connection-check.ts';
 import { mcpOAuthLifecycleDependencies } from '../connections/mcp-oauth-lifecycle.ts';
 import {
   isActiveConnectionActor,
@@ -25,15 +34,17 @@ import type { IdentityStore } from '../identity/types.ts';
 import { ManagementError } from './types.ts';
 
 /** The member testing a connection, in the workspace that owns its accounts. */
-export interface McpConnectionTestActor {
+export interface ConnectionTestActor {
   workspaceId: string;
   actorMembershipId: string;
 }
 
-interface TestManagedMcpConnectionInput {
+interface TestManagedConnectionInput {
   agentId: string;
   connectionId: string;
-  actor: McpConnectionTestActor;
+  actor: ConnectionTestActor;
+  /** For an API connection: the path to GET on its first host, inside its scope. */
+  path?: string;
   env?: PlatformEnv;
   config: ConfigStore;
   identity: Pick<
@@ -43,6 +54,8 @@ interface TestManagedMcpConnectionInput {
   settings: SettingsStore;
   /** Test seam; production uses the SSRF-guarded fetch implementation. */
   createGuardedFetch?: typeof createMcpGuardedFetch;
+  /** Test seam; production checks an API connection on the running target. */
+  connectionCheck?: ConnectionCheckOptions;
 }
 
 export type McpConnectionTestResult =
@@ -56,34 +69,53 @@ export interface OpenMcpServer {
   transport: 'streamable-http' | 'sse';
 }
 
-const NOT_FOUND = 'The MCP connection was not found.';
+const NOT_FOUND = 'The connection was not found.';
 
-/** Tests team accounts and the actor's own personal accounts as the actor's turn would; never another member's. */
-export async function testManagedMcpConnection(
-  input: TestManagedMcpConnectionInput,
-): Promise<McpConnectionTestResult> {
+/**
+ * Checks one API or MCP connection with its saved credential, as the actor's
+ * turn would use it: team accounts and the actor's own personal accounts,
+ * never another member's.
+ */
+export async function testManagedConnection(
+  input: TestManagedConnectionInput,
+): Promise<ConnectionCheckOutcome> {
   const { actor } = input;
   const [accounts, bindings] = await Promise.all([
     input.config.listConnectionAccounts(actor.workspaceId),
     input.config.listAgentConnectionBindings(input.agentId),
   ]);
   const account = accounts.find(({ id }) => id === input.connectionId);
-  if (!account || account.policy.kind !== 'mcp' || account.lifecycle === 'revoked' ||
+  if (!account || (account.policy.kind !== 'mcp' && account.policy.kind !== 'api') ||
+      account.lifecycle === 'revoked' ||
       (account.ownerKind !== 'team' && account.ownerMembershipId !== actor.actorMembershipId) ||
       !bindings.some((binding) =>
         binding.connectionAccountId === account.id && binding.providerId === account.providerId)) {
     throw new ManagementError('invalid_request', NOT_FOUND);
   }
+  if (account.policy.kind === 'api' && account.policy.authMode !== 'credential') {
+    throw new ManagementError('invalid_request', 'Only API connections with a key and MCP connections can be tested. This one signs in with Google.');
+  }
+  if (input.path !== undefined && account.policy.kind !== 'api') {
+    throw new ManagementError('invalid_request', 'path applies only to API connections.');
+  }
   const selected = projectEffectiveConnectionAccounts(accounts, bindings, actor.actorMembershipId)
     .find((effective) => effective.account.id === account.id);
   if (!selected) {
     return {
-      ok: false,
-      code: 'unauthorized',
-      message: 'This connection is not ready for this Agent. Finish its setup in Admin, then test it again.',
+      kind: 'inconclusive',
+      detail: 'This connection is not ready for this Agent. Finish its setup, then test it again.',
     };
   }
-  const server = projectEffectiveMcpConnections([selected])[0]!;
+  const { policy } = selected;
+  if (policy.kind === 'api' && input.path !== undefined) {
+    const url = connectionCheckUrl(policy, input.path);
+    if (url === undefined || !connectionUrlPrefixes(policy).some((prefix) => matchesEgressPrefix(url, prefix))) {
+      throw new ManagementError(
+        'invalid_request',
+        `path must be inside the connection on its first host: ${connectionUrlPrefixes(policy).join(', ')}.`,
+      );
+    }
+  }
   const effective = async () => {
     if (!(await isActiveConnectionActor({ identity: input.identity, ...actor }))) {
       throw new Error('connection_changed');
@@ -94,17 +126,45 @@ export async function testManagedMcpConnection(
   const authorizeRequest = async () => {
     if ((await effective())?.account.revision !== account.revision) throw new Error('connection_changed');
   };
+  const savedSecret = (connectionAccountId: string) => resolveConnectionSecretForInvocation({
+    ...actor,
+    config: input.config,
+    settings: input.settings,
+    identity: input.identity,
+    ...(input.env ? { env: input.env } : {}),
+    agentId: input.agentId,
+    connectionAccountId,
+  });
+  if (policy.kind === 'api') {
+    let credential: string;
+    try {
+      credential = await savedSecret(account.id);
+    } catch {
+      return {
+        kind: 'inconclusive',
+        url: connectionCheckUrl(policy, input.path) ?? '',
+        detail: 'The saved key could not be read for this check.',
+      };
+    }
+    return checkConnection({
+      kind: 'api',
+      connection: policy,
+      credential,
+      ...(input.path === undefined ? {} : { path: input.path }),
+      authorize: async () => {
+        try {
+          await authorizeRequest();
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    }, input.connectionCheck);
+  }
+  const server = projectEffectiveMcpConnections([selected])[0]!;
+  let headers: Record<string, string>;
   try {
-    const secrets = await resolveConnectionAccountMcpSecrets(server, (connectionAccountId) =>
-      resolveConnectionSecretForInvocation({
-        ...actor,
-        config: input.config,
-        settings: input.settings,
-        identity: input.identity,
-        ...(input.env ? { env: input.env } : {}),
-        agentId: input.agentId,
-        connectionAccountId,
-      }));
+    const secrets = await resolveConnectionAccountMcpSecrets(server, savedSecret);
     if (server.authMode === 'oauth') {
       secrets.bearer = await resolveMcpOAuthAccessToken(
         { ref: connectionAccountOAuthRef(server.id), serverUrl: server.url },
@@ -113,25 +173,22 @@ export async function testManagedMcpConnection(
           refreshTelemetry: { trigger: 'admin' },
           ...mcpOAuthLifecycleDependencies(input.config, input.settings, actor.workspaceId),
           validateConnection: async (_ref, serverUrl, _revision, attemptId) => {
-            const policy = (await effective())?.policy;
-            return policy?.kind === 'mcp' && policy.authMode === 'oauth' && sameMcpServerUrl(policy.url, serverUrl) &&
-              (attemptId === undefined || policy.oauthAttemptId === attemptId);
+            const current = (await effective())?.policy;
+            return current?.kind === 'mcp' && current.authMode === 'oauth' && sameMcpServerUrl(current.url, serverUrl) &&
+              (attemptId === undefined || current.oauthAttemptId === attemptId);
           },
         },
       );
     }
     await authorizeRequest();
-    const result = await discoverMcpTools({
-      id: server.id,
-      url: server.url,
-      transport: server.transport,
-      headers: buildMcpRequestHeaders(server.authMode, secrets),
-      authorizeRequest,
-    }, undefined, input.createGuardedFetch);
-    return { ok: true, tools: result.tools };
+    headers = buildMcpRequestHeaders(server.authMode, secrets);
   } catch (error) {
-    return testFailure(error);
+    return mcpCheckFailure(error);
   }
+  return checkConnection({
+    kind: 'mcp',
+    server: { id: server.id, url: server.url, transport: server.transport, headers, authorizeRequest },
+  }, { discoverMcp: (target) => discoverMcpTools(target, undefined, input.createGuardedFetch) });
 }
 
 /** Lists an open server's tools exactly as Admin's Test connection does before it saves one. */

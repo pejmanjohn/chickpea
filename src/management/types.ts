@@ -338,7 +338,7 @@ export interface ChickpeaManagementHandoff {
   actingAgentId: string;
   requestedAction: ManagementOperation['kind'] | 'prepare_connector_setup' |
     'prepare_provider_setup' |
-    'discover_slack_channels' | 'test_mcp_connection' | 'inspect_routines' |
+    'discover_slack_channels' | 'test_connection' | 'inspect_routines' |
     'inspect_memory' | 'export_workspace_recipe' | 'preview_workspace_recipe' |
     'revoke_setup_link';
   target: {

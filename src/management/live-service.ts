@@ -61,7 +61,7 @@ import { createManagementModelSources } from './model-sources.ts';
 import { ManagementError } from './types.ts';
 import {
   discoverOpenMcpServer,
-  testManagedMcpConnection,
+  testManagedConnection,
 } from './discovery.ts';
 
 interface LiveWorkspaceManagementServiceOptions {
@@ -212,10 +212,8 @@ export function createLiveWorkspaceManagementService(
       }
     },
     discoverMcpServer: (server) => discoverOpenMcpServer({ server }),
-    testMcpConnection: (agentId, connectionId, actor) => testManagedMcpConnection({
-      agentId,
-      connectionId,
-      actor,
+    testConnection: (input) => testManagedConnection({
+      ...input,
       ...(env ? { env } : {}),
       config: config as ConfigStore,
       identity,
