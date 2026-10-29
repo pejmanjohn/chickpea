@@ -31,6 +31,12 @@ export interface BrowserLiveView {
   pages: Array<{ id: string; url: string; title: string; fullscreenUrl: string }>;
 }
 
+/** The website login a new context is made for. */
+export interface BrowserContextOwner {
+  loginId: string;
+  label: string;
+}
+
 export interface CreateBrowserSessionOptions {
   contextId?: string;
   persistContext?: boolean;
@@ -41,6 +47,8 @@ export interface CreateBrowserSessionOptions {
   viewport?: { width: number; height: number };
   keepAlive?: boolean;
   timeoutSeconds?: number;
+  /** Tags the session at the provider, for finding it again by owner. */
+  userMetadata?: Record<string, string>;
 }
 
 export interface BrowserProvider {
@@ -52,7 +60,12 @@ export interface BrowserProvider {
   /** Asks the provider to prepare recording downloads. 200/201/202 are success. */
   requestRecordingDownloads(sessionId: string): Promise<void>;
   listRecordingDownloads(sessionId: string): Promise<BrowserRecordingDownload[]>;
-  createContext(name?: string): Promise<{ id: string }>;
+  createContext(login: BrowserContextOwner): Promise<{ id: string }>;
+  /**
+   * Confirms a recorded context may load into a new session. Throws
+   * BrowserContextGoneError when the provider no longer has it.
+   */
+  checkContext(contextId: string): Promise<void>;
   /** Deletes a context and the signed-in state it holds; one already gone counts as deleted. */
   deleteContext(contextId: string): Promise<void>;
 }
@@ -69,6 +82,17 @@ export class BrowserProviderError extends Error {
   ) {
     super(message);
     this.name = 'BrowserProviderError';
+  }
+}
+
+/**
+ * The provider no longer has a context a login recorded: deleted outside
+ * Chickpea, or an old id brought back by a restore.
+ */
+export class BrowserContextGoneError extends Error {
+  constructor() {
+    super('The saved browser context is gone.');
+    this.name = 'BrowserContextGoneError';
   }
 }
 
@@ -120,6 +144,12 @@ export class HostedBrowserFailure extends BrowserProviderError {
 export interface AwaitRecordingDownloadOptions {
   timeoutMs: number;
   pollMs: number;
+  /**
+   * Use a download the provider already finished instead of requesting
+   * another: requests share a small per-project limit, and sending a
+   * recording again needs no new one.
+   */
+  reuseReady?: boolean;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 }
@@ -129,9 +159,16 @@ const FAILED_DOWNLOAD_STATUSES = new Set(['FAILED', 'ERROR', 'ERRORED']);
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+function readyDownload(downloads: BrowserRecordingDownload[]): (BrowserRecordingDownload & { downloadUrl: string }) | undefined {
+  const ready = downloads.find((entry) => typeof entry.downloadUrl === 'string' && entry.downloadUrl.length > 0);
+  return ready?.downloadUrl ? { ...ready, downloadUrl: ready.downloadUrl } : undefined;
+}
+
 /**
  * Waits for a session to finish, requests its recording downloads, and polls
  * until at least one download carries a URL. Returns the first ready download.
+ * A request the provider rate-limits waits as long as it asks, within the
+ * same deadline.
  */
 export async function awaitRecordingDownload(
   provider: BrowserProvider,
@@ -157,13 +194,25 @@ export async function awaitRecordingDownload(
     await sleep(options.pollMs);
   }
 
+  if (options.reuseReady) {
+    const ready = readyDownload(await provider.listRecordingDownloads(sessionId));
+    if (ready) return ready;
+  }
+
   // 2. Request downloads; 409 means the provider still considers it running.
   for (;;) {
     try {
       await provider.requestRecordingDownloads(sessionId);
       break;
     } catch (error) {
-      if (!(error instanceof BrowserProviderError) || error.status !== 409) throw error;
+      if (!(error instanceof BrowserProviderError)) throw error;
+      if (error.status === 429) {
+        const wait = error.retryAfterMs ?? options.pollMs;
+        if (now() + wait > deadline) throw error;
+        await sleep(wait);
+        continue;
+      }
+      if (error.status !== 409) throw error;
       if (now() >= deadline) throw timedOut('recording not yet available');
       await sleep(options.pollMs);
     }
@@ -172,8 +221,8 @@ export async function awaitRecordingDownload(
   // 3. Poll until a download URL appears.
   for (;;) {
     const downloads = await provider.listRecordingDownloads(sessionId);
-    const ready = downloads.find((entry) => typeof entry.downloadUrl === 'string' && entry.downloadUrl.length > 0);
-    if (ready?.downloadUrl) return { ...ready, downloadUrl: ready.downloadUrl };
+    const ready = readyDownload(downloads);
+    if (ready) return ready;
     if (downloads.length > 0 && downloads.every((entry) => FAILED_DOWNLOAD_STATUSES.has(entry.status.toUpperCase()))) {
       throw new BrowserProviderError(`Browser recording download failed (${downloads.map((d) => d.status).join(', ')})`);
     }

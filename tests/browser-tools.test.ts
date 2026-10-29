@@ -14,10 +14,15 @@ import {
 import { BrowserTurnSession } from '../src/browser/turn-session.ts';
 import { PENDING_CONTEXT_DELETIONS_SETTING } from '../src/browser/context-deletions.ts';
 import { createWebsiteLogin, deleteWebsiteLogin, getWebsiteLogin, type WebsiteLogin } from '../src/browser/logins.ts';
-import { BrowserProviderError, type BrowserProvider } from '../src/browser/provider.ts';
+import {
+  BrowserProviderError,
+  HostedBrowserFailure,
+  HostedBrowserRefusal,
+  type BrowserProvider,
+} from '../src/browser/provider.ts';
 import { browserHandoffMessage, createSlackRequesterNotifier } from '../src/browser/requester.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
-import { BROWSER_APPROVAL_INSTRUCTION } from '../src/browser/messages.ts';
+import { BROWSER_APPROVAL_INSTRUCTION, HOSTED_BROWSER_UNAVAILABLE_MESSAGE } from '../src/browser/messages.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import type { SlackArtifactStageInput, SlackArtifactStageOutcome } from '../src/sandbox/artifact-tool.ts';
 import { FakeCdpSocket, fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
@@ -761,6 +766,21 @@ test('browser_handoff continues from the page reached on that site', async () =>
   await run('browser_handoff', { loginId: portal.id, reason: 'sign in' });
   const navigated = browsers[1]!.sent.find((m) => m.method === 'Page.navigate')?.params.url;
   assert.equal(navigated, 'https://portal.example.com/reports?q=1');
+});
+
+test('a hosted refusal or failure on a hand-off is never read as the paid-plan refusal', async () => {
+  for (const error of [new HostedBrowserRefusal('ownership'), new HostedBrowserFailure(402), new HostedBrowserFailure(403)]) {
+    const hosted = await loginSetup({
+      provider: {
+        async createSession(options) {
+          if (options.keepAlive) throw error;
+          return { id: 'sess-x', connectUrl: 'wss://connect.example/' };
+        },
+      },
+    });
+    const refused = await hosted.run('browser_handoff', { loginId: hosted.portal.id, reason: 'sign in' });
+    assert.equal(refused.error, HOSTED_BROWSER_UNAVAILABLE_MESSAGE, error.name);
+  }
 });
 
 test('browser_handoff refuses without keep-alive support or a requester, and cleans up a failed send', async () => {

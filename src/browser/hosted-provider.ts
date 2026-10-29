@@ -1,16 +1,42 @@
 /**
  * The browser provider of one installation on a deployment serving many.
  *
- * Every Browserbase call made for such an installation goes through this
- * wrapper, keyed by the host's access (config/hosted-browser.ts). Nothing
- * here reads an installation's `browser.browserbase.*` settings or a
- * `BROWSERBASE_*` variable.
+ * Every installation in the deployment shares the host's Browserbase
+ * project, so the tenant boundary is this wrapper. Every Browserbase call
+ * made for an installation goes through it, keyed by the host's access
+ * (config/hosted-browser.ts); nothing here reads an installation's
+ * `browser.browserbase.*` settings or a `BROWSERBASE_*` variable.
+ *
+ * - A context is named `chickpea.<installationId>.<loginId>.<8 hex>`, never
+ *   the login's label. Before a session loads a context, and before a
+ *   context is deleted, its record must name the project and the
+ *   installation's prefix.
+ * - A session carries `{ chickpea: '1', installation }` as its user metadata
+ *   and keeps the provider's session logs off. A session this instance did
+ *   not create is used only once its record names the project and the
+ *   installation: a stored hand-off session, a recording handle, erasure.
+ * - The policy is read again on every create, so the host's off switch
+ *   holds mid-turn.
+ * - Refusals and the provider's failures reach the model only as fixed
+ *   texts; the provider's own response goes nowhere, and the log names
+ *   the operation and status alone.
  */
-import { hostedBrowserAccess, type HostedBrowserAccess } from '../config/hosted-browser.ts';
+import { hostedBrowserAccess, hostedBrowserPolicy, type HostedBrowserAccess } from '../config/hosted-browser.ts';
 import { requireInstallationScope } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import { createBrowserbaseProvider } from './browserbase.ts';
-import { HostedBrowserRefusal, type BrowserProvider } from './provider.ts';
+import { createBrowserbaseProvider, type BrowserbaseClient, type BrowserbaseSessionRecord } from './browserbase.ts';
+import {
+  BrowserContextGoneError,
+  BrowserProviderError,
+  HostedBrowserFailure,
+  HostedBrowserRefusal,
+  type BrowserContextOwner,
+  type BrowserLiveView,
+  type BrowserProvider,
+  type BrowserRecordingDownload,
+  type BrowserSessionHandle,
+  type CreateBrowserSessionOptions,
+} from './provider.ts';
 
 export interface HostedBrowserProviderOptions {
   access: HostedBrowserAccess;
@@ -19,12 +45,145 @@ export interface HostedBrowserProviderOptions {
   fetch?: typeof fetch;
 }
 
-export function createHostedBrowserProvider(options: HostedBrowserProviderOptions): BrowserProvider {
-  return createBrowserbaseProvider({
-    apiKey: options.access.apiKey,
-    projectId: options.access.projectId,
-    ...(options.fetch ? { fetch: options.fetch } : {}),
-  });
+/** The session list's metadata key naming the installation. */
+const INSTALLATION_METADATA_KEY = 'installation';
+
+export class HostedBrowserProvider implements BrowserProvider {
+  readonly id = 'browserbase' as const;
+  readonly #client: BrowserbaseClient;
+  readonly #projectId: string;
+  readonly #installationId: string;
+  /** The dot ends the id, so one installation's id never prefixes another's names. */
+  readonly #contextPrefix: string;
+  /** Sessions this instance created or found the installation's; a refused id is asked again. */
+  readonly #ownSessions = new Set<string>();
+  readonly #ownContexts = new Set<string>();
+
+  constructor(options: HostedBrowserProviderOptions) {
+    this.#projectId = options.access.projectId;
+    this.#installationId = options.installationId;
+    this.#contextPrefix = `chickpea.${options.installationId}.`;
+    this.#client = createBrowserbaseProvider({
+      apiKey: options.access.apiKey,
+      projectId: options.access.projectId,
+      contextName: ({ loginId }) => `${this.#contextPrefix}${loginId}.${randomHex(4)}`,
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+    });
+  }
+
+  async createSession(options: CreateBrowserSessionOptions): Promise<BrowserSessionHandle> {
+    if (!hostedBrowserPolicy().enabled) throw new HostedBrowserRefusal('off');
+    if (options.contextId) await this.checkContext(options.contextId);
+    const handle = await this.#call('create_session', () => this.#client.createSession({
+      ...options,
+      logSession: false,
+      userMetadata: { chickpea: '1', [INSTALLATION_METADATA_KEY]: this.#installationId },
+    }));
+    this.#ownSessions.add(handle.id);
+    return handle;
+  }
+
+  async endSession(sessionId: string): Promise<void> {
+    await this.#requireSession(sessionId);
+    await this.#call('end_session', () => this.#client.endSession(sessionId));
+  }
+
+  async sessionStatus(sessionId: string): Promise<string> {
+    // Checking a session another instance made reads its record, status included.
+    const record = await this.#requireSession(sessionId);
+    return record?.status ?? await this.#call('session_status', () => this.#client.sessionStatus(sessionId));
+  }
+
+  async liveView(sessionId: string): Promise<BrowserLiveView> {
+    await this.#requireSession(sessionId);
+    return this.#call('live_view', () => this.#client.liveView(sessionId));
+  }
+
+  async requestRecordingDownloads(sessionId: string): Promise<void> {
+    await this.#requireSession(sessionId);
+    await this.#call('request_recording', () => this.#client.requestRecordingDownloads(sessionId));
+  }
+
+  async listRecordingDownloads(sessionId: string): Promise<BrowserRecordingDownload[]> {
+    await this.#requireSession(sessionId);
+    return this.#call('list_recording', () => this.#client.listRecordingDownloads(sessionId));
+  }
+
+  async createContext(login: BrowserContextOwner): Promise<{ id: string }> {
+    if (!hostedBrowserPolicy().enabled) throw new HostedBrowserRefusal('off');
+    const context = await this.#call('create_context', () => this.#client.createContext(login));
+    this.#ownContexts.add(context.id);
+    return context;
+  }
+
+  async checkContext(contextId: string): Promise<void> {
+    if (this.#ownContexts.has(contextId)) return;
+    let record;
+    try {
+      record = await this.#client.getContext(contextId);
+    } catch (error) {
+      if (error instanceof BrowserProviderError && error.status === 404) throw new BrowserContextGoneError();
+      throw failure('get_context', error);
+    }
+    if (record.projectId !== this.#projectId || !record.name.startsWith(this.#contextPrefix)) {
+      throw refusedForeign('context');
+    }
+    this.#ownContexts.add(contextId);
+  }
+
+  async deleteContext(contextId: string): Promise<void> {
+    await this.removeContext(contextId);
+  }
+
+  /** Deletes the installation's own context: whether it was there. Refuses any other. */
+  async removeContext(contextId: string): Promise<'deleted' | 'gone'> {
+    try {
+      await this.checkContext(contextId);
+    } catch (error) {
+      if (error instanceof BrowserContextGoneError) return 'gone';
+      throw error;
+    }
+    await this.#call('delete_context', () => this.#client.deleteContext(contextId));
+    this.#ownContexts.delete(contextId);
+    return 'deleted';
+  }
+
+  /**
+   * The installation's sessions the provider lists by their metadata,
+   * optionally in one status, each checked here too: a listed session whose
+   * record names another project or installation is left out.
+   */
+  async installationSessions(status?: 'RUNNING'): Promise<BrowserbaseSessionRecord[]> {
+    const listed = await this.#call('list_sessions', () => this.#client.listSessions({
+      metadata: { key: INSTALLATION_METADATA_KEY, value: this.#installationId },
+      ...(status ? { status } : {}),
+    }));
+    const own = listed.filter((record) => this.#ownsSession(record));
+    for (const record of own) this.#ownSessions.add(record.id);
+    return own;
+  }
+
+  /** The session's record when this call read it to check ownership; undefined when already known. */
+  async #requireSession(sessionId: string): Promise<BrowserbaseSessionRecord | undefined> {
+    if (this.#ownSessions.has(sessionId)) return undefined;
+    const record = await this.#call('get_session', () => this.#client.getSession(sessionId));
+    if (!this.#ownsSession(record)) throw refusedForeign('session');
+    this.#ownSessions.add(sessionId);
+    return record;
+  }
+
+  #ownsSession(record: BrowserbaseSessionRecord): boolean {
+    return record.projectId === this.#projectId &&
+      record.userMetadata[INSTALLATION_METADATA_KEY] === this.#installationId;
+  }
+
+  async #call<T>(operation: string, run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      throw failure(operation, error);
+    }
+  }
 }
 
 /**
@@ -35,9 +194,31 @@ export function createHostedBrowserProvider(options: HostedBrowserProviderOption
 export function hostedBrowserProvider(
   store: HostedBrowserProviderOptions['store'],
   env: Record<string, unknown> | undefined,
-): BrowserProvider {
+): HostedBrowserProvider {
   const installationId = requireInstallationScope(env)?.installationId;
   const access = hostedBrowserAccess();
   if (!installationId || !access) throw new HostedBrowserRefusal('unavailable');
-  return createHostedBrowserProvider({ access, installationId, store });
+  return new HostedBrowserProvider({ access, installationId, store });
+}
+
+/** The provider's error as the fixed failure, logged by operation and status only. */
+function failure(operation: string, error: unknown): Error {
+  if (error instanceof HostedBrowserRefusal || error instanceof HostedBrowserFailure) return error;
+  const status = error instanceof BrowserProviderError ? error.status : undefined;
+  log('provider_failed', { operation, ...(status === undefined ? {} : { status }) });
+  return new HostedBrowserFailure(status, error instanceof BrowserProviderError ? error.retryAfterMs : undefined);
+}
+
+function refusedForeign(kind: 'context' | 'session'): HostedBrowserRefusal {
+  log('ownership_refused', { kind });
+  return new HostedBrowserRefusal('ownership');
+}
+
+/** Content-free: names no installation, session, context, or anything the provider returned. */
+function log(event: string, fields: Record<string, string | number>): void {
+  console.warn(JSON.stringify({ component: 'hosted_browser', event, ...fields }));
+}
+
+function randomHex(bytes: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }

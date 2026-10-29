@@ -9,7 +9,7 @@
  * the rest, so a few that always fail never hold up the others.
  */
 import type { SettingsStore } from '../config/settings-store.ts';
-import { BROWSER_PROVIDER_ID_PATTERN, BrowserProviderError, type BrowserProvider } from './provider.ts';
+import { BROWSER_PROVIDER_ID_PATTERN, BrowserProviderError, HostedBrowserRefusal, type BrowserProvider } from './provider.ts';
 
 export const PENDING_CONTEXT_DELETIONS_SETTING = 'browser.pendingContextDeletions';
 
@@ -127,8 +127,8 @@ async function settle(provider: BrowserProvider, entry: PendingContextDeletion):
   try {
     await provider.deleteContext(rest.contextId);
     return undefined;
-  } catch {
-    return rest;
+  } catch (error) {
+    return refusedAsForeign(error) ? undefined : rest;
   }
 }
 
@@ -138,10 +138,20 @@ async function ended(provider: BrowserProvider, sessionId: string): Promise<bool
     return true;
   } catch (error) {
     if (error instanceof BrowserProviderError && error.status === 404) return true;
+    if (refusedAsForeign(error)) return true;
     // A session that already ended may refuse a release.
     const status = await provider.sessionStatus(sessionId).catch(() => 'RUNNING');
     return status !== 'RUNNING' && status !== 'PENDING';
   }
+}
+
+/**
+ * The hosted wrapper found the id another installation's. It is never this
+ * queue's to end or delete, and asking again cannot change that, so its
+ * entry goes.
+ */
+function refusedAsForeign(error: unknown): boolean {
+  return error instanceof HostedBrowserRefusal && error.reason === 'ownership';
 }
 
 /**

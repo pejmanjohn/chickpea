@@ -52,7 +52,7 @@ import {
   browserCheckOnlyRefusal,
 } from './messages.ts';
 import type { PageInfo } from './page.ts';
-import { awaitRecordingDownload, BrowserProviderError } from './provider.ts';
+import { awaitRecordingDownload, BrowserProviderError, HostedBrowserFailure } from './provider.ts';
 import { browserHandoffMessage, type NotifyRequester } from './requester.ts';
 import { totpCode } from './totp.ts';
 import type { BrowserTurnSession } from './turn-session.ts';
@@ -179,9 +179,13 @@ export function browserErrorMessage(error: unknown, redact: (text: string) => st
     .slice(0, 500);
 }
 
-/** The provider refused a kept-alive session, as Browserbase does on its free plan. */
+/**
+ * The provider refused a kept-alive session, as Browserbase does on its free
+ * plan. Never on a deployment serving many installations: its plan is the
+ * host's, not one a person here could upgrade.
+ */
 function isKeepAliveRefusal(error: unknown): boolean {
-  if (!(error instanceof BrowserProviderError)) return false;
+  if (!(error instanceof BrowserProviderError) || error instanceof HostedBrowserFailure) return false;
   if (error.status === 402) return true;
   return (error.status === 400 || error.status === 403) && /keep.?alive|plan|upgrade/i.test(error.message);
 }
@@ -242,6 +246,7 @@ export async function openRecordingDownload(
   const download = await awaitRecordingDownload(provider, sessionId, {
     timeoutMs: RECORDING_TIMEOUT_MS,
     pollMs: options.pollMs ?? RECORDING_POLL_MS,
+    reuseReady: true,
     ...(options.sleep ? { sleep: options.sleep } : {}),
   });
   const response = await (options.fetch ?? globalThis.fetch)(download.downloadUrl);

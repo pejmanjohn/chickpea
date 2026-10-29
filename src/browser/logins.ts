@@ -543,6 +543,19 @@ export async function recordWebsiteLoginContext(
   return found ? recorded : undefined;
 }
 
+/** Forget a recorded context the provider no longer has, unless another was recorded meanwhile. */
+export async function forgetWebsiteLoginContext(
+  store: SettingsStore,
+  id: string,
+  contextId: string,
+): Promise<void> {
+  await patchLoginState(store, id, (state) => {
+    if (state.contextId !== contextId) return undefined;
+    const { contextId: _gone, ...rest } = state;
+    return rest;
+  });
+}
+
 /** Remember (or, with undefined, forget) a hand-off session still open for this login. */
 export async function setWebsiteLoginHandoff(
   store: SettingsStore,

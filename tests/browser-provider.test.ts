@@ -149,10 +149,10 @@ test('recording downloads: the live { downloads: [...] } shape maps entries', as
   ]);
 });
 
-test('createContext posts project and name', async () => {
+test('createContext posts project and the login\'s label as its name', async () => {
   const { calls, fetchImpl } = fakeFetch(() => ({ status: 200, body: { id: 'ctx-1' } }));
   const provider = createBrowserbaseProvider({ apiKey: API_KEY, projectId: 'proj-1', fetch: fetchImpl });
-  assert.deepEqual(await provider.createContext('agent-a'), { id: 'ctx-1' });
+  assert.deepEqual(await provider.createContext({ loginId: 'wl_1', label: 'agent-a' }), { id: 'ctx-1' });
   assert.equal(calls[0]!.url, 'https://api.browserbase.com/v1/contexts');
   assert.deepEqual(calls[0]!.body, { projectId: 'proj-1', name: 'agent-a' });
 });
@@ -194,7 +194,7 @@ test('network failures are wrapped without leaking the key', async () => {
     throw new Error(`connect failed for ${API_KEY}`);
   }) as unknown as typeof fetch;
   const provider = createBrowserbaseProvider({ apiKey: API_KEY, fetch: fetchImpl });
-  await assert.rejects(provider.createContext(), (error: unknown) => {
+  await assert.rejects(provider.createContext({ loginId: 'wl_1', label: 'Billing' }), (error: unknown) => {
     assert.ok(error instanceof BrowserProviderError);
     assert.ok(!error.message.includes(API_KEY));
     return true;
@@ -233,7 +233,7 @@ test('the default bound is 15 seconds', async (t) => {
     return new AbortController().signal;
   });
   const { fetchImpl } = fakeFetch(() => ({ status: 200, body: { id: 'ctx_new' } }));
-  assert.deepEqual(await createBrowserbaseProvider({ apiKey: API_KEY, fetch: fetchImpl }).createContext(), { id: 'ctx_new' });
+  assert.deepEqual(await createBrowserbaseProvider({ apiKey: API_KEY, fetch: fetchImpl }).createContext({ loginId: 'wl_1', label: 'Billing' }), { id: 'ctx_new' });
 });
 
 function fakeProvider(script: {
