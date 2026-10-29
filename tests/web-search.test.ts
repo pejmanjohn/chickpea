@@ -46,9 +46,9 @@ test('without a key the deployment freezes no search, and web_search does not mo
 
   const turn = freshTurn();
   const request = webRequest('what changed in the Statusboard API this week?');
-  assert.deepEqual(createWebTools({ turn, request, connectionHosts: [] }).map(({ name }) => name), ['read_web_page']);
+  assert.deepEqual(createWebTools({ turn, request, connectionSpaces: [] }).map(({ name }) => name), ['read_web_page']);
   assert.deepEqual(
-    createWebTools({ turn, request, connectionHosts: [], searchProvider: stubProvider().provider }).map(({ name }) => name),
+    createWebTools({ turn, request, connectionSpaces: [], searchProvider: stubProvider().provider }).map(({ name }) => name),
     ['read_web_page', 'web_search'],
   );
 });
@@ -185,7 +185,7 @@ test('a result URL may be read as given in the same turn; searching sets the pag
   const reader = {
     turn,
     request: webRequest('how do I authenticate to Statusboard?'),
-    connectionHosts: [],
+    connectionSpaces: [],
     readPage: async (url: URL) => {
       read.push(url.href);
       return { outcome: 'unreadable' as const, url: url.href, reason: 'unreachable' as const, message: '' };

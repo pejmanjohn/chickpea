@@ -1,4 +1,5 @@
 import { isAllowedConnectorHost } from '../config/agent-write-rules.ts';
+import { matchesEgressPrefix } from '../config/egress.ts';
 import { McpBlockedUrlError } from '../config/mcp-errors.ts';
 import { createMcpGuardedFetch, type McpGuardedFetchOptions } from '../config/mcp-url.ts';
 import { readTruncatedText } from '../http/bounded-body.ts';
@@ -52,11 +53,21 @@ export interface WebPageUnreadable {
 }
 
 /**
+ * A host a URL the model writes may name, and the paths on it that URL may
+ * take: a path inside one of `pathPrefixes`, segment by segment, as
+ * `matchesEgressPrefix` reads it. A prefix of `/` takes any path.
+ */
+export interface WebPathSpace {
+  host: string;
+  pathPrefixes: readonly string[];
+}
+
+/**
  * What decides whether a URL may be read this turn. A URL from either of the
  * first two sources is read as it is. Any other URL is one the model wrote:
- * it may name only a host from `hosts`, so text an injected page asks for
- * has no host of its choosing to go to, and its path may carry nothing from
- * the request.
+ * it must fall in one of `spaces`, so text an injected page asks for has no
+ * host or path of its choosing to go to, not even another tenant's path on
+ * a host many share, and its path may carry nothing from the request.
  */
 export interface WebUrlSources {
   /** URLs the requester typed in this turn's message. */
@@ -64,11 +75,12 @@ export interface WebUrlSources {
   /** URLs this turn's search results and pages returned, as `sourcedWebUrl` writes them. */
   sourced: readonly string[];
   /**
-   * Hosts a URL the model writes may name: those the requester typed in this
-   * turn's message, and those of the Agent's own API and MCP connections in
-   * the trusted runtime plan. Never from model input.
+   * Where a URL the model writes may go: any path on a host the requester
+   * typed in this turn's message, and the hosts and paths of the Agent's own
+   * API and MCP connections in the trusted runtime plan. Never from model
+   * input.
    */
-  hosts: readonly string[];
+  spaces: readonly WebPathSpace[];
   /**
    * Lowercased words of 8 or more letters and digits from this turn's request
    * text (`requestTokens`). A key admitted this turn was typed in that text,
@@ -77,7 +89,7 @@ export interface WebUrlSources {
   requestTokens: readonly string[];
 }
 
-export type WebUrlRefusal = 'invalid' | 'not_public' | 'query' | 'long_path' | 'host' | 'request_text';
+export type WebUrlRefusal = 'invalid' | 'not_public' | 'query' | 'long_path' | 'host' | 'path' | 'request_text';
 
 export type WebUrlAdmission =
   | { admitted: true; url: URL }
@@ -89,14 +101,15 @@ export const WEB_URL_REFUSALS: Record<WebUrlRefusal, string> = {
   query: 'Nothing was read: a URL you write yourself may not have a query string. Pass a URL from this turn\'s search results or page links exactly as given, or one the requester typed.',
   long_path: `Nothing was read: a URL you write yourself may have a path of at most ${MAX_COMPOSED_PATH_CHARS} characters.`,
   host: 'Nothing was read: a URL you write yourself must be on a host the requester typed or one of this Agent\'s connections. To read another site, search for the page and pass a result\'s URL as given, or ask the requester for the link.',
+  path: 'Nothing was read: on a connection\'s host, a URL you write yourself must stay within that connection\'s path scope. To read another page there, search for it and pass a result\'s URL as given, or ask the requester for the link.',
   request_text: 'Nothing was read: a URL you write yourself may not contain words from the requester\'s message in its path. Use a URL from this turn\'s search results or page links, or ask the requester to send the link.',
 };
 
 /**
  * Whether `raw` may be read now. A URL the requester typed, or one this
  * turn's search results or pages returned, is read with its query string.
- * Any other URL is one the model wrote: it is read only on a host from
- * `sources.hosts`, without a query string, with a path of at most 200
+ * Any other URL is one the model wrote: it is read only inside one of
+ * `sources.spaces`, without a query string, with a path of at most 200
  * characters and none of the request's long words. Every URL must be a
  * public https URL on the standard port.
  */
@@ -109,7 +122,11 @@ export function admitWebUrl(raw: string, sources: WebUrlSources): WebUrlAdmissio
   }
   if (url.search) return { admitted: false, reason: 'query' };
   if (url.pathname.length > MAX_COMPOSED_PATH_CHARS) return { admitted: false, reason: 'long_path' };
-  if (!sources.hosts.some((host) => host.toLowerCase() === url.hostname)) return { admitted: false, reason: 'host' };
+  const onHost = sources.spaces.filter(({ host }) => host.toLowerCase() === url.hostname);
+  if (onHost.length === 0) return { admitted: false, reason: 'host' };
+  if (!onHost.some(({ pathPrefixes }) => pathPrefixes.some((prefix) => matchesEgressPrefix(url.href, url.origin + prefix)))) {
+    return { admitted: false, reason: 'path' };
+  }
   if (carriesRequestText(url.pathname, sources.requestTokens)) return { admitted: false, reason: 'request_text' };
   return { admitted: true, url };
 }

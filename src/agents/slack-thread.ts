@@ -309,6 +309,7 @@ import {
 } from '../management/agent-authoring/index.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import {
+  connectionPathSpaces,
   createWebTools,
   recordingPageRead,
   WEB_TOOL_DESCRIPTORS,
@@ -822,14 +823,6 @@ async function resolveRuntimePlanApiConnections(plan: RuntimePlanV2, env?: Platf
     return [{ ...live, headerName: declaration.headerName, headerValuePrefix: declaration.headerValuePrefix ?? '' }];
   });
   return resolveApiConnectionsForTurn(plan.agentId, connections, env, { accountContext });
-}
-
-/** The hosts of the Agent's own API and MCP connections in its frozen plan. */
-function runtimePlanConnectionHosts(plan: RuntimePlanV2): string[] {
-  return [
-    ...plan.apiConnections.flatMap(({ allowedHosts }) => allowedHosts),
-    ...plan.mcpConnections.flatMap(({ url }) => URL.parse(url)?.hostname ?? []),
-  ];
 }
 
 /** The deployment's search provider, keyed from its environment on each call. */
@@ -1348,7 +1341,7 @@ export function useRuntimePlanAgent(
     ? createWebTools({
         turn: options.web.turn,
         request: options.web.request,
-        connectionHosts: runtimePlanConnectionHosts(plan),
+        connectionSpaces: connectionPathSpaces(plan),
         ...(plan.webSearch ? { searchProvider: resolveWebSearchProvider } : {}),
       })
     : [];

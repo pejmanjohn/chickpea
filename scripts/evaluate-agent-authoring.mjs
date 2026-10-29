@@ -376,7 +376,7 @@ function useEvaluationTools() {
   for (const tool of createWebTools({
     turn: currentWebTurn,
     request: webRequest(currentRequesterMessage),
-    connectionHosts: [],
+    connectionSpaces: [],
     readPage: async (url) => EVAL_PAGES.get(url.href) ?? {
       outcome: 'unreadable', url: url.href, reason: 'error_status', status: 404,
       message: 'The site answered HTTP 404 instead of the page, so nothing was read.',
