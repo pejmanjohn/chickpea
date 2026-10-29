@@ -215,8 +215,9 @@ export interface DeletedAgentWebsiteLogins {
  * principal who staged it, or the one finishing it, could not Remove itself.
  * A recorded login whose catalog entry is already gone loses only a leftover
  * secret. The marker goes last, so a store failure keeps the inventory for
- * the retry; a provider failure is the deletion queue's to finish. True when
- * a marker was found.
+ * the retry; a provider failure is the deletion queue's to finish. A login
+ * kept back only because the one finishing could not Remove it stays in the
+ * marker for a retry by someone who can. True when a marker was found.
  */
 export async function finishDeletedAgentWebsiteLogins(
   agentId: string,
@@ -228,6 +229,7 @@ export async function finishDeletedAgentWebsiteLogins(
   const raw = await settings.getSetting(markerKey);
   if (raw === undefined) return false;
   const staged = parseStagedLogins(raw);
+  const deferred: string[] = [];
   if (staged?.loginIds.length) {
     const deps = logins.deletion();
     if (!deps) throw new WebsiteLoginsUnavailableError();
@@ -235,12 +237,16 @@ export async function finishDeletedAgentWebsiteLogins(
     const catalog = new Map((await listWebsiteLogins(deps.store)).map((login) => [login.id, login]));
     for (const loginId of staged.loginIds) {
       const login = catalog.get(loginId);
-      if (login && (held.has(loginId) || !canManageOwnedResource(staged.by, login) ||
-          !canManageOwnedResource(logins.principal, login))) continue;
+      if (login && (held.has(loginId) || !canManageOwnedResource(staged.by, login))) continue;
+      if (login && !canManageOwnedResource(logins.principal, login)) {
+        deferred.push(loginId);
+        continue;
+      }
       await deleteWebsiteLogin(deps, loginId);
     }
   }
-  await settings.deleteSetting(markerKey);
+  if (staged && deferred.length) await settings.setSetting(markerKey, JSON.stringify({ ...staged, loginIds: deferred }));
+  else await settings.deleteSetting(markerKey);
   return true;
 }
 

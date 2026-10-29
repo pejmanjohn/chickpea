@@ -551,13 +551,19 @@ test('a stale login cleanup deletes only what both its stager and whoever finish
     assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id }) => id).sort(), [bos, team].sort());
     assert.equal((await readWebsiteLoginSecrets(f.deps, bos))?.password, PASSWORD);
     assert.equal((await readWebsiteLoginSecrets(f.deps, team))?.password, PASSWORD);
+    // Ana's retry must not use up the cleanup: the team login waits for someone who can remove it.
+    const kept = await f.settings.getSetting(loginCleanupMarker('agent_gone', scope));
+    assert.deepEqual((JSON.parse(kept!) as { loginIds: string[] }).loginIds, [team]);
+    assert.equal((await f.call('admin', '/admin/api/agents/agent_gone', { method: 'DELETE', body })).status, 204);
+    assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id }) => id), [bos]);
+    assert.equal(await f.settings.getSetting(loginCleanupMarker('agent_gone', scope)), undefined);
 
     // Both could: the Admin who staged it, and Bo, who owns it.
     await f.settings.setSetting(loginCleanupMarker('agent_gone', scope), JSON.stringify({
       by: { role: 'admin', membershipId: 'membership_admin' }, loginIds: [bos],
     }));
     assert.equal((await f.call('bo', '/admin/api/agents/agent_gone', { method: 'DELETE', body })).status, 204);
-    assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id }) => id), [team]);
+    assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id }) => id), []);
   } finally {
     f.close();
   }
