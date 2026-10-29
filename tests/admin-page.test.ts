@@ -4,7 +4,7 @@ import { test } from 'node:test';
 
 import { adminUiStylesheet, renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
 import type { AdminFirstRun, AdminOnboardingPage } from '../src/admin/page.ts';
-import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
+import { connectorSkillsForConnections, type ConnectorSkillScope } from '../src/config/connector-skills.ts';
 import {
   CONNECTION_CATALOG_PRESETS,
   getConnectorPreset,
@@ -11885,9 +11885,7 @@ test('the Asana API editor keeps its credential and seeded policy in Advanced be
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
 
-  const apiConnections = harness.agentPatchBodies[0]?.body.apiConnections as Parameters<
-    typeof connectorSkillsForConnections
-  >[0];
+  const apiConnections = harness.agentPatchBodies[0]?.body.apiConnections as ConnectorSkillScope[];
   assert.deepEqual(apiConnections, [
     {
       id: 'asana',
@@ -11902,7 +11900,7 @@ test('the Asana API editor keeps its credential and seeded policy in Advanced be
     },
   ]);
   assert.deepEqual(
-    connectorSkillsForConnections(apiConnections).map((skill) => skill.name),
+    connectorSkillsForConnections({ apiConnections }).map((skill) => skill.name),
     ['asana-api'],
   );
 });

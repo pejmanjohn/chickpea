@@ -5,17 +5,17 @@ import { suppressProfileNamedConnectorSkills } from '../src/agents/slack-thread.
 import {
   connectorSkillsForConnections,
   repositoriesSkillForGrants,
+  type ConnectorSkillScope,
 } from '../src/config/connector-skills.ts';
 import { resolveProfileSkills } from '../src/config/profile-skills.ts';
 import type { SkillConfig } from '../src/config/types.ts';
-
-type ConnectorSkillScope = Parameters<typeof connectorSkillsForConnections>[0][number];
 
 function scope(
   allowedHosts: string[],
   overrides: Partial<ConnectorSkillScope> = {},
 ): ConnectorSkillScope {
   return {
+    id: 'connection_test',
     allowedHosts,
     pathPrefixes: [],
     allowedMethods: ['GET'],
@@ -40,7 +40,7 @@ test('matches supported API hosts case-insensitively and rejects lookalikes', ()
 
   for (const { host, expectedNames } of cases) {
     assert.deepEqual(
-      connectorSkillsForConnections([scope([host])]).map((skill) => skill.name),
+      connectorSkillsForConnections({ apiConnections: [scope([host])] }).map((skill) => skill.name),
       expectedNames,
       host,
     );
@@ -48,7 +48,7 @@ test('matches supported API hosts case-insensitively and rejects lookalikes', ()
 });
 
 test('Google Workspace policy attaches one scope-aware Gmail, Calendar, and Drive skill', () => {
-  const [skill] = connectorSkillsForConnections([
+  const [skill] = connectorSkillsForConnections({ apiConnections: [
     scope(['gmail.googleapis.com', 'www.googleapis.com'], {
       presetId: 'google-workspace',
       pathPrefixes: ['/gmail/v1/users/me', '/calendar/v3', '/drive/v3'],
@@ -59,7 +59,7 @@ test('Google Workspace policy attaches one scope-aware Gmail, Calendar, and Driv
         'https://www.googleapis.com/auth/drive.readonly',
       ],
     }),
-  ]);
+  ] });
 
   assert.equal(skill?.name, 'google-workspace');
   const instructions = skill?.instructions ?? '';
@@ -75,7 +75,7 @@ test('Google Workspace policy attaches one scope-aware Gmail, Calendar, and Driv
 });
 
 test('mixed Google access describes methods per service rather than as a writable union', () => {
-  const [skill] = connectorSkillsForConnections([
+  const [skill] = connectorSkillsForConnections({ apiConnections: [
     scope(['gmail.googleapis.com', 'www.googleapis.com'], {
       presetId: 'google-workspace',
       pathPrefixes: ['/gmail/v1/users/me', '/calendar/v3'],
@@ -85,7 +85,7 @@ test('mixed Google access describes methods per service rather than as a writabl
         'https://www.googleapis.com/auth/calendar.events',
       ],
     }),
-  ]);
+  ] });
 
   const instructions = skill?.instructions ?? '';
   assert.match(instructions, /Gmail: read-only/);
@@ -97,9 +97,9 @@ test('mixed Google access describes methods per service rather than as a writabl
 });
 
 test('matches every supported kind represented in one connection', () => {
-  const skills = connectorSkillsForConnections([
+  const skills = connectorSkillsForConnections({ apiConnections: [
     scope(['api.github.com', 'app.asana.com', 'acme.zendesk.com']),
-  ]);
+  ] });
 
   assert.deepEqual(
     skills.map((skill) => skill.name),
@@ -108,9 +108,9 @@ test('matches every supported kind represented in one connection', () => {
 });
 
 test("each skill's connection context lists only hosts for that vendor", () => {
-  const skills = connectorSkillsForConnections([
+  const skills = connectorSkillsForConnections({ apiConnections: [
     scope(['api.github.com', 'acme.zendesk.com']),
-  ]);
+  ] });
   const githubContext =
     skills.find((skill) => skill.name === 'github-api')?.instructions.split('## Your connection')[1] ?? '';
   const zendeskContext =
@@ -123,10 +123,10 @@ test("each skill's connection context lists only hosts for that vendor", () => {
 });
 
 test('emits one skill per kind and keeps the first matching connection context', () => {
-  const skills = connectorSkillsForConnections([
+  const skills = connectorSkillsForConnections({ apiConnections: [
     scope(['api.github.com'], { pathPrefixes: ['/repos/first'] }),
     scope(['API.GITHUB.COM'], { pathPrefixes: ['/repos/second'] }),
-  ]);
+  ] });
 
   assert.equal(skills.length, 1);
   assert.equal(skills[0]?.name, 'github-api');
@@ -135,17 +135,17 @@ test('emits one skill per kind and keeps the first matching connection context',
 });
 
 test('ignores connections with no matching host without throwing', () => {
-  assert.doesNotThrow(() => connectorSkillsForConnections([scope([]), scope(['example.com'])]));
-  assert.deepEqual(connectorSkillsForConnections([scope([]), scope(['example.com'])]), []);
+  assert.doesNotThrow(() => connectorSkillsForConnections({ apiConnections: [scope([]), scope(['example.com'])] }));
+  assert.deepEqual(connectorSkillsForConnections({ apiConnections: [scope([]), scope(['example.com'])] }), []);
 });
 
 test('appends the connection hosts, path prefixes, and methods to each skill', () => {
-  const [scopedSkill] = connectorSkillsForConnections([
+  const [scopedSkill] = connectorSkillsForConnections({ apiConnections: [
     scope(['api.github.com', 'uploads.github.com'], {
       pathPrefixes: ['/repos/acme/widgets', '/search'],
       allowedMethods: ['GET', 'POST'],
     }),
-  ]);
+  ] });
   assert.match(scopedSkill?.instructions ?? '', /## Your connection/);
   assert.match(scopedSkill?.instructions ?? '', /api\.github\.com/);
   assert.doesNotMatch(scopedSkill?.instructions ?? '', /uploads\.github\.com/);
@@ -153,24 +153,26 @@ test('appends the connection hosts, path prefixes, and methods to each skill', (
   assert.match(scopedSkill?.instructions ?? '', /\/search/);
   assert.match(scopedSkill?.instructions ?? '', /GET, POST/);
 
-  const [wholeHostSkill] = connectorSkillsForConnections([scope(['app.asana.com'])]);
+  const [wholeHostSkill] = connectorSkillsForConnections({ apiConnections: [scope(['app.asana.com'])] });
   assert.match(wholeHostSkill?.instructions ?? '', /whole host/i);
 });
 
 test('the scope type excludes credentials and nearby credential data never reaches skill text', () => {
   const sentinel = 'SENTINEL-CREDENTIAL-MUST-NEVER-APPEAR';
   const resolvedConnection = {
+    id: 'connection_github',
     allowedHosts: ['api.github.com'],
     pathPrefixes: ['/repos'],
     allowedMethods: ['GET'],
     headerValue: sentinel,
   };
-  const { allowedHosts, pathPrefixes, allowedMethods } = resolvedConnection;
-  const skills = connectorSkillsForConnections([{ allowedHosts, pathPrefixes, allowedMethods }]);
+  const { id, allowedHosts, pathPrefixes, allowedMethods } = resolvedConnection;
+  const skills = connectorSkillsForConnections({ apiConnections: [{ id, allowedHosts, pathPrefixes, allowedMethods }] });
 
   assert.doesNotMatch(skills.map((skill) => skill.instructions).join('\n'), new RegExp(sentinel));
 
   const credentialBearingScope: ConnectorSkillScope = {
+    id: 'connection_github',
     allowedHosts: ['api.github.com'],
     pathPrefixes: [],
     allowedMethods: ['GET'],
@@ -181,11 +183,11 @@ test('the scope type excludes credentials and nearby credential data never reach
 });
 
 test('connector names pass defineSkill and a profile-authored skill overrides a connector skill', () => {
-  const connectorSkills = connectorSkillsForConnections([
+  const connectorSkills = connectorSkillsForConnections({ apiConnections: [
     scope(['api.github.com']),
     scope(['app.asana.com']),
     scope(['acme.zendesk.com']),
-  ]);
+  ] });
   const refs = resolveProfileSkills(connectorSkills);
 
   assert.deepEqual(
@@ -207,10 +209,10 @@ test('connector names pass defineSkill and a profile-authored skill overrides a 
 });
 
 test('a disabled profile-authored skill suppresses the same-named connector skill', () => {
-  const connectorSkills = connectorSkillsForConnections([
+  const connectorSkills = connectorSkillsForConnections({ apiConnections: [
     scope(['api.github.com']),
     scope(['app.asana.com']),
-  ]);
+  ] });
   const profileSuppression: SkillConfig = {
     name: 'github-api',
     description: 'Disable the auto-attached GitHub skill.',
@@ -269,7 +271,7 @@ test('repository grants attach the repositories skill and suppress generic githu
   ];
 
   const skills = connectorSkillsForConnections(
-    [scope(['api.github.com'], { allowedMethods: ['GET', 'POST', 'PATCH', 'PUT'] })],
+    { apiConnections: [scope(['api.github.com'], { allowedMethods: ['GET', 'POST', 'PATCH', 'PUT'] })] },
     grantsWithNearbySecret,
   );
 
@@ -312,11 +314,11 @@ test('repository grants attach the repositories skill and suppress generic githu
 });
 
 test('each skill body is bounded, teaches automatic auth, and includes the required API guidance', () => {
-  const skills = connectorSkillsForConnections([
+  const skills = connectorSkillsForConnections({ apiConnections: [
     scope(['api.github.com'], { allowedMethods: ['GET', 'POST'] }),
     scope(['app.asana.com'], { allowedMethods: ['GET', 'POST', 'PUT'] }),
     scope(['acme.zendesk.com'], { allowedMethods: ['GET', 'POST', 'PUT'] }),
-  ]);
+  ] });
   const expectations = new Map([
     [
       'github-api',
@@ -388,7 +390,7 @@ test('each skill body is bounded, teaches automatic auth, and includes the requi
 });
 
 test('Asana skill says advanced task search is unpaginated', () => {
-  const [asanaSkill] = connectorSkillsForConnections([scope(['app.asana.com'])]);
+  const [asanaSkill] = connectorSkillsForConnections({ apiConnections: [scope(['app.asana.com'])] });
 
   assert.match(asanaSkill?.instructions ?? '', /task search endpoint is unpaginated/i);
 });

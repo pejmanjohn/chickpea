@@ -390,6 +390,7 @@ export function projectEffectiveApiConnections(
     statusText: account.purpose ?? `${account.label} is connected.`,
     ...(account.identity ? { identity: account.identity } : {}),
     ...(policy.presetId ? { presetId: policy.presetId } : {}),
+    ...(policy.guide ? { guide: policy.guide } : {}),
   }] : []);
 }
 
@@ -421,6 +422,7 @@ export function projectEffectiveMcpConnections(
     ...(policy.oauthAttemptId ? { oauthAttemptId: policy.oauthAttemptId } : {}),
     ...(account.identity ? { identity: account.identity } : {}),
     ...(policy.presetId ? { presetId: policy.presetId } : {}),
+    ...(policy.guide ? { guide: policy.guide } : {}),
   }] : []);
 }
 

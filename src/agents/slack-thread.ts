@@ -1193,7 +1193,7 @@ function runtimePlanRepositoryOwner(repository: RuntimePlanRepositoryV2): string
  * sandbox-derived workspace skill last so no stored Agent skill can hide it.
  */
 export function runtimePlanSkills(
-  plan: Pick<RuntimePlanV2, 'apiConnections' | 'repositories' | 'skills' | 'codingWorkspace' | 'browserCapability' | 'websiteLogins'>,
+  plan: Pick<RuntimePlanV2, 'apiConnections' | 'mcpConnections' | 'repositories' | 'skills' | 'codingWorkspace' | 'browserCapability' | 'websiteLogins'>,
   options: { browser?: boolean } = {},
 ): ReturnType<typeof resolveProfileSkills> {
   const agentSkills = plan.skills.map((entry) => ({ ...entry, enabled: true }));
@@ -1206,7 +1206,7 @@ export function runtimePlanSkills(
   return resolveProfileSkills(
     [
       ...suppressProfileNamedConnectorSkills(
-        connectorSkillsForConnections(plan.apiConnections, runtimePlanRepositoryGrants(plan)),
+        connectorSkillsForConnections(plan, runtimePlanRepositoryGrants(plan)),
         agentSkills,
       ),
       ...agentSkills,
