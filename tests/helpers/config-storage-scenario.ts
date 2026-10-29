@@ -725,6 +725,41 @@ const CURRENT_SECRET_KEYS = [
   `connector.${ACCOUNT_CALENDAR}.account.oauth.tokens`,
 ];
 
+const BILLING_LOGIN = `wl_${'5ce4a210'.repeat(4)}`;
+const DESK_LOGIN = `wl_${'d35c0b17'.repeat(4)}`;
+
+/**
+ * The browser's settings rows, shaped as src/browser writes them: the
+ * website-login catalog, one login's runtime state, the provider objects
+ * queued for deletion, and a month's usage. Login secrets live in the
+ * encrypted realm, outside the contract.
+ */
+function writeBrowser({ settings }: ConfigStorageStores): void {
+  settings.setSetting('browser.logins.v1', JSON.stringify([
+    {
+      id: BILLING_LOGIN, host: 'billing.example.com', label: 'Billing portal', ownerKind: 'team',
+      createdByMembershipId: OWNER, method: 'credentials', username: 'ops@example.com', createdAt: SCENARIO_NOW - DAY,
+    },
+    {
+      id: DESK_LOGIN, host: 'desk.example.com:8443', label: 'Desk', ownerKind: 'member', ownerMembershipId: MEMBER,
+      createdByMembershipId: MEMBER, method: 'handoff', createdAt: SCENARIO_NOW - HOUR,
+    },
+  ]));
+  settings.setSetting(`website_login_state.${BILLING_LOGIN}`, JSON.stringify({
+    contextId: 'ctx_scenario_billing', lastUsedAt: SCENARIO_NOW - HOUR,
+  }));
+  settings.setSetting(`website_login_state.${DESK_LOGIN}`, JSON.stringify({
+    contextId: 'ctx_scenario_desk', handoffSessionId: 'sess_scenario_handoff', lastUsedAt: SCENARIO_NOW - HOUR,
+  }));
+  settings.setSetting('browser.pendingContextDeletions', JSON.stringify([
+    { contextId: 'ctx_scenario_removed', handoffSessionId: 'sess_scenario_removed', queuedAt: SCENARIO_NOW - HOUR },
+    { contextId: 'ctx_scenario_unrecorded', queuedAt: SCENARIO_NOW - HOUR },
+  ]));
+  settings.setSetting('browser.monthlyUsage.2026-10', JSON.stringify({
+    sessions: 2, seconds: 540, sessionIds: ['sess_scenario_first', 'sess_scenario_second'],
+  }));
+}
+
 function must(done: boolean, step: string): void {
   if (!done) throw new Error(`Config storage scenario step did not apply: ${step}`);
 }
@@ -963,6 +998,7 @@ export function writeConfigStorageScenario(kit: ConfigStorageKit, db: StateDb): 
   for (const key of [...LEGACY_SECRET_KEYS, ...CURRENT_SECRET_KEYS]) {
     settings.setSetting(key, JSON.stringify({ synthetic: key }));
   }
+  writeBrowser(stores);
   // A restart runs the start-time cleanup, which deletes the legacy-format keys.
   kit(db);
 }

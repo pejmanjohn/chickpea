@@ -1,6 +1,6 @@
 {
   "release": "0.1.37",
-  "scenario": "0eae37add418c13126020f261a86af204414744d937c166fda2c79927f4eb32b",
+  "scenario": "c2b9ffa5f7d8af3348b05e4c268f8aff2ec313a50fe5b884b4b802dff91121af",
   "ddl": [
     "CREATE TABLE app_settings (\n        key TEXT PRIMARY KEY,\n        value TEXT NOT NULL,\n        updated_at INTEGER NOT NULL\n      )",
     "CREATE TABLE config_meta (\n          key TEXT PRIMARY KEY,\n          value TEXT NOT NULL\n        )",
@@ -711,6 +711,21 @@
     ],
     "app_settings": [
       {
+        "key": "browser.logins.v1",
+        "value": "[{\"id\":\"wl_5ce4a2105ce4a2105ce4a2105ce4a210\",\"host\":\"billing.example.com\",\"label\":\"Billing portal\",\"ownerKind\":\"team\",\"createdByMembershipId\":\"membership_scenario_owner\",\"method\":\"credentials\",\"username\":\"ops@example.com\",\"createdAt\":1791997200000},{\"id\":\"wl_d35c0b17d35c0b17d35c0b17d35c0b17\",\"host\":\"desk.example.com:8443\",\"label\":\"Desk\",\"ownerKind\":\"member\",\"ownerMembershipId\":\"membership_scenario_member\",\"createdByMembershipId\":\"membership_scenario_member\",\"method\":\"handoff\",\"createdAt\":1792080000000}]",
+        "updated_at": 1792083600000
+      },
+      {
+        "key": "browser.monthlyUsage.2026-10",
+        "value": "{\"sessions\":2,\"seconds\":540,\"sessionIds\":[\"sess_scenario_first\",\"sess_scenario_second\"]}",
+        "updated_at": 1792083600000
+      },
+      {
+        "key": "browser.pendingContextDeletions",
+        "value": "[{\"contextId\":\"ctx_scenario_removed\",\"handoffSessionId\":\"sess_scenario_removed\",\"queuedAt\":1792080000000},{\"contextId\":\"ctx_scenario_unrecorded\",\"queuedAt\":1792080000000}]",
+        "updated_at": 1792083600000
+      },
+      {
         "key": "connector.agent_scenario_researcher.credential.connection_00000000000000000000000000000003.credential",
         "value": "{\"synthetic\":\"connector.agent_scenario_researcher.credential.connection_00000000000000000000000000000003.credential\"}",
         "updated_at": 1792083600000
@@ -748,6 +763,16 @@
       {
         "key": "slack.gateway.deploymentIdentity.v1",
         "value": "{\"version\":1,\"deploymentId\":\"deployment_scenario\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"c2NlbmFyaW8tcHVibGljLXg\",\"y\":\"c2NlbmFyaW8tcHVibGljLXk\"},\"privateKeyEnvelope\":{\"version\":1,\"algorithm\":\"AES-GCM-256\",\"keyId\":\"scenario-key\",\"nonce\":\"c2NlbmFyaW8tbm9uY2U\",\"ciphertext\":\"c2NlbmFyaW8tY2lwaGVydGV4dA\"},\"createdAt\":1791997200000}",
+        "updated_at": 1792083600000
+      },
+      {
+        "key": "website_login_state.wl_5ce4a2105ce4a2105ce4a2105ce4a210",
+        "value": "{\"contextId\":\"ctx_scenario_billing\",\"lastUsedAt\":1792080000000}",
+        "updated_at": 1792083600000
+      },
+      {
+        "key": "website_login_state.wl_d35c0b17d35c0b17d35c0b17d35c0b17",
+        "value": "{\"contextId\":\"ctx_scenario_desk\",\"handoffSessionId\":\"sess_scenario_handoff\",\"lastUsedAt\":1792080000000}",
         "updated_at": 1792083600000
       }
     ]

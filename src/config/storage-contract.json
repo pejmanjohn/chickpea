@@ -47,10 +47,12 @@
     "config_slack_public_context.images_json": 1
   },
   "settings": {
+    "browser.*": 1,
     "connector.*": 1,
     "mcp.*": 1,
     "slack.gateway.binding.v1": 1,
     "slack.gateway.claim.v1": 1,
-    "slack.gateway.deploymentIdentity.v1": 1
+    "slack.gateway.deploymentIdentity.v1": 1,
+    "website_login_state.*": 1
   }
 }
