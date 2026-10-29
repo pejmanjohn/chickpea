@@ -132,8 +132,8 @@ test('an Owner is offered the team sign-in, adds another Agent with a page limit
     assert.equal(added.status, 201);
     const [row] = await notion.owner.attached('agent_sales');
     assert.deepEqual(
-      [row!.pageMode, row!.pageCount, row!.sharedPageCount, row!.sharedWithOtherAgents, row!.alsoUsedBy],
-      ['only', 1, 3, true, ['Atlas']],
+      [row!.pageMode, row!.pageCount, row!.sharedPageCount, row!.sharedWithOtherAgents, row!.alsoUsedBy, row!.signerName],
+      ['only', 1, 3, true, ['Atlas'], 'Maya Chen'],
     );
     assert.deepEqual((await notion.owner.attached('agent_ops'))[0]!.alsoUsedBy, ['Scout']);
 
@@ -179,6 +179,7 @@ test('a Member is offered only their own sign-in and never sees another Agent\'s
       assert.equal('alsoUsedBy' in row!, false, `${agentId} names no other Agent to a Member`);
     }
     const [row] = await notion.member.attached('agent_notes');
+    assert.deepEqual([row!.signerName, row!.signedByYou], ['Zed Park', true]);
     const pages = await notion.member.call('GET', `agent_notes/connections/${encodeURIComponent(row!.account.id)}/pages?workspaceId=T_TEST`);
     assert.equal(pages.status, 200);
     assert.equal('alsoUsedBy' in pages.body, false);

@@ -1764,6 +1764,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     label: connector.label,
     description: connector.description,
     ...(connector.providerSelection ? { providerSelection: connector.providerSelection } : {}),
+    ...(connector.sharedSignIn ? { sharedSignIn: true } : {}),
   });
   const managedCatalogDescriptors = () => managedCatalog.list().map(managedCatalogDescriptor);
   const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
@@ -1893,13 +1894,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const agents = await Promise.all(agentIds.map((id) => store(c).getAgent(id).catch(() => undefined)));
     return agents.flatMap((agent) => agent && agent.lifecycle !== 'archived' ? [agent.name] : []);
   };
-  const pageSummaryView = (summary: PageSummary, alsoUsedBy: string[] | undefined) => ({
-    pageMode: summary.pageMode,
-    ...(summary.pageCount !== undefined ? { pageCount: summary.pageCount } : {}),
-    ...(summary.sharedPageCount !== undefined ? { sharedPageCount: summary.sharedPageCount } : {}),
-    sharedWithOtherAgents: summary.otherAgentIds.length > 0,
-    ...(alsoUsedBy?.length ? { alsoUsedBy } : {}),
-  });
+  const pageSummaryView = async (c: Context, principal: AuthPrincipal, summary: PageSummary) => {
+    const alsoUsedBy = await otherAgentNames(c, principal, summary.otherAgentIds);
+    const signerName = summary.signerMembershipId && await memberDisplayName(c)(summary.signerMembershipId);
+    return {
+      pageMode: summary.pageMode,
+      ...(summary.pageCount !== undefined ? { pageCount: summary.pageCount } : {}),
+      ...(summary.sharedPageCount !== undefined ? { sharedPageCount: summary.sharedPageCount } : {}),
+      sharedWithOtherAgents: summary.otherAgentIds.length > 0,
+      ...(alsoUsedBy?.length ? { alsoUsedBy } : {}),
+      signerName: signerName || '',
+      signedByYou: summary.signerMembershipId === principal.membershipId,
+    };
+  };
   const connectionChanged = (c: Context, message?: string) => c.json({
     error: 'managed_connection_changed',
     message: message ?? 'This connection changed while you were editing it. Reload it and try again.',
@@ -6144,7 +6151,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const summary = binding && (await service.pageSummaries(workspaceId, [binding])).get(account.id);
       return c.json({
         ...pages,
-        ...(summary ? pageSummaryView(summary, await otherAgentNames(c, principal, summary.otherAgentIds)) : {}),
+        ...(summary ? await pageSummaryView(c, principal, summary) : {}),
       });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
@@ -9079,10 +9086,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         workspaceId,
         bindings.filter((binding) => binding.enabled),
       );
-      const pageViews = new Map(await Promise.all([...summaries].map(async ([accountId, summary]) => [
-        accountId,
-        pageSummaryView(summary, await otherAgentNames(c, principal, summary.otherAgentIds)),
-      ] as const)));
+      const pageViews = new Map(await Promise.all([...summaries].map(async ([accountId, summary]) =>
+        [accountId, await pageSummaryView(c, principal, summary)] as const)));
       const provider = providerContext.providers.get('composio');
       const managedConnectorCatalog = managedCatalog.list().map((connector) => ({
         ...managedCatalogDescriptor(connector),

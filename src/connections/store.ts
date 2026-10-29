@@ -130,6 +130,8 @@ export interface PageSummary {
   /** The pages its sign-in shares, when the last sign-in listed them all. */
   sharedPageCount?: number;
   otherAgentIds: string[];
+  /** The member whose sign-in it is; see signInSigner. */
+  signerMembershipId?: string;
 }
 
 export class ManagedConnectionConflictError extends Error {
@@ -508,7 +510,9 @@ export class ConnectionAccountService {
       const sharedPageCount = grant && !grant.truncated ? grant.items.length : undefined;
       const choice = readAgentPageChoice(binding.resourceConstraints);
       const pageCount = choice ? choice.length : sharedPageCount;
+      const signer = signInSigner(account);
       summaries.set(account.id, {
+        ...(signer ? { signerMembershipId: signer } : {}),
         pageMode: choice ? 'only' : 'all',
         ...(pageCount !== undefined ? { pageCount } : {}),
         ...(sharedPageCount !== undefined ? { sharedPageCount } : {}),
