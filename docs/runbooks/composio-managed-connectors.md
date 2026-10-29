@@ -371,6 +371,7 @@ A Notion sign-in group grows in two ways, and neither asks Composio for a new co
   - The person may edit the target Agent and create connections of the source's owner kind.
   - The new account's owner kind, owner member and Composio principal come from the person and equal the group's. Only the owner reuses a personal sign-in. Owners and Admins reuse a team sign-in; Members cannot.
   - Every account in the group is ready and in the same workspace, and the access asked for fits the lane the credential was issued on (`signIn.accessLane`).
+  - The sign-in records who signed it (`signIn.signedBy`). A sign-in saved before Chickpea recorded that is not offered; reconnecting it records the signer.
   - The target Agent has no Notion connection of that owner kind yet.
   - The sign-in's Notion account does not also back a connection of the other owner kind (the personal and team rule).
   - A live validation of the source succeeds.
