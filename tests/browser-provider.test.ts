@@ -296,6 +296,26 @@ test('awaitRecordingDownload times out when no URL appears', async () => {
   );
 });
 
+test('a rate-limited recording request asking for no wait still waits a poll, and gives up at the deadline', async () => {
+  const { calls, fetchImpl } = sharedFakeFetch(({ method, url }) => {
+    if (method === 'GET' && url.endsWith('/v1/sessions/s')) return Response.json({ id: 's', status: 'COMPLETED' });
+    return new Response('slow down', { status: 429, headers: { 'retry-after': '0' } });
+  });
+  const provider = createBrowserbaseProvider({ apiKey: API_KEY, fetch: fetchImpl });
+  const slept: number[] = [];
+  let now = 0;
+  await assert.rejects(
+    awaitRecordingDownload(provider, 's', {
+      timeoutMs: 90_000, pollMs: 2_000, now: () => now, sleep: async (ms) => { slept.push(ms); now += ms; },
+    }),
+    (error: unknown) => error instanceof BrowserProviderError && error.status === 429 && error.retryAfterMs === 0,
+  );
+  assert.ok(slept.length > 0 && slept.every((ms) => ms === 2_000), 'each retry waits the poll interval');
+  assert.ok(slept.reduce((total, ms) => total + ms, 0) <= 90_000, 'the waits stay inside the recording timeout');
+  assert.equal(calls.filter(({ method }) => method === 'POST').length, slept.length + 1, 'one request per wait, and the last');
+  assert.equal(slept.length, 45);
+});
+
 test('awaitRecordingDownload fails fast on a non-409 request error and on failed downloads', async () => {
   const disabled = fakeProvider({ statuses: ['COMPLETED'], requestResults: [422], lists: [[]] });
   await assert.rejects(

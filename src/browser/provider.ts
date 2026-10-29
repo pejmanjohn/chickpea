@@ -168,8 +168,8 @@ function readyDownload(downloads: BrowserRecordingDownload[]): (BrowserRecording
 /**
  * Waits for a session to finish, requests its recording downloads, and polls
  * until at least one download carries a URL. Returns the first ready download.
- * A request the provider rate-limits waits as long as it asks, within the
- * same deadline.
+ * A request the provider rate-limits waits as long as it asks, and at least
+ * one poll interval, within the same deadline.
  */
 export async function awaitRecordingDownload(
   provider: BrowserProvider,
@@ -208,7 +208,8 @@ export async function awaitRecordingDownload(
     } catch (error) {
       if (!(error instanceof BrowserProviderError)) throw error;
       if (error.status === 429) {
-        const wait = error.retryAfterMs ?? options.pollMs;
+        // Never sooner than a poll: every installation on a project shares its limit.
+        const wait = Math.max(error.retryAfterMs ?? 0, options.pollMs);
         if (now() + wait > deadline) throw error;
         await sleep(wait);
         continue;
