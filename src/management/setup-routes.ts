@@ -296,9 +296,11 @@ export function createManagementSetupRoutes(
         return c.html(renderSetupClaimPage({ setupId, reusable: true }));
       }
       if (setup.status !== 'pending') return managedUnavailablePage(c);
-      const page = await managedConnectionPageInput(c, setup, dependencies, options, principal);
+      // The waiting page offers nothing to reuse, so it skips the page listings.
+      const polling = c.req.query('poll') === '1';
+      const page = await managedConnectionPageInput(c, setup, dependencies, options, polling ? undefined : principal);
       if (!page) return managedUnavailablePage(c);
-      return c.html(c.req.query('poll') === '1'
+      return c.html(polling
         ? renderManagedConnectionWaitingPage(page)
         : renderManagedConnectionSetupPage(page));
     }
