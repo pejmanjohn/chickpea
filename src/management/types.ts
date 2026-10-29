@@ -1392,6 +1392,8 @@ export type ManagementChangeStatement =
 
 export interface ManagementChangeSetPreview {
   summary: string;
+  /** Proposed after a read_public_doc call in the conversation answered: every guide shows whole. */
+  publicDocRead?: true;
   changes: Array<{
     itemId: string;
     operationKind: ManagementOperation['kind'];

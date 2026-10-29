@@ -530,6 +530,8 @@ test('after a page is read, a new connection to an address the requester typed w
     const result = await asked.connect();
     assert.equal(result.outcomes[0]?.disposition, 'confirmation_required', 'the page may have written the guide');
     assert.deepEqual(await connections(), [], 'nothing applied');
+    const card = result.presentation?.slack ?? '';
+    assert.ok(card.includes(`Guide: “${GUIDE}”`), `the approval card shows the whole guide:\n${card}`);
 
     const later = turn(`yes, the API is ${API}`, saved.at(-1));
     assert.equal((await later.connect()).outcomes[0]?.disposition, 'confirmation_required',

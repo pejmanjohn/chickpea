@@ -2872,6 +2872,7 @@ export class WorkspaceManagementService {
     await this.assertRevisionMap(targetRevisions);
     const preview = boundedChangeSetPreview({
       summary: `${operations.length} reviewed workspace change${operations.length === 1 ? '' : 's'}`,
+      ...(actor.origin.kind === 'slack' && actor.origin.publicDocRead ? { publicDocRead: true } : {}),
       changes,
       missingSetup,
     }, meta.skillSourceUrl);
@@ -8227,6 +8228,7 @@ function publicChangeSetPreview(
 ): ManagementChangeSetPreview {
   return {
     summary: preview.summary,
+    ...(preview.publicDocRead ? { publicDocRead: true } : {}),
     changes: preview.changes.map((change) => ({
       itemId: change.itemId,
       operationKind: change.operationKind,

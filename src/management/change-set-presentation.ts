@@ -206,6 +206,7 @@ function proposalParts(
   skillSourceUrl: string | undefined,
 ): PreviewPart[] {
   const creation = creationPreview(preview);
+  const connectionTables = preview.publicDocRead ? CONNECTION_FIELDS_AFTER_PAGE_READ : CONNECTION_FIELDS;
   const source = skillSourceUrl === undefined
     ? []
     : [{ text: [dialect.bold('Source'), quoteValue(skillSourceUrl, dialect)].join('\n'), pinned: true }];
@@ -219,7 +220,7 @@ function proposalParts(
           .map((text) => fieldPart('skills', after?.skills, text)),
       ];
     }
-    return formatChangeSections(change, dialect);
+    return formatChangeSections(change, dialect, connectionTables);
   })];
 }
 
@@ -252,11 +253,12 @@ function headerPart(operationKind: OperationKind, text: string): PreviewPart {
 function formatChangeSections(
   change: PreviewChange,
   dialect: ChangeSetPresentationDialect,
+  connectionTables: ConnectionTables,
 ): PreviewPart[] {
   const before = presentationRecord(change.operationKind, change.before);
   const after = presentationRecord(change.operationKind, change.after);
   const sections = (fields: readonly PresentationField[], targetName: string) =>
-    formatRecordSections(change, before, after, fields, targetName, dialect);
+    formatRecordSections(change, before, after, fields, targetName, dialect, connectionTables);
   const statement = change.statement;
   if (statement?.kind === 'update_agent_memory') {
     return sections(PRESENTATION_FIELDS.memory, statement.agent.name);
@@ -339,6 +341,7 @@ function formatRecordSections(
   fields: readonly PresentationField[],
   targetName: string,
   dialect: ChangeSetPresentationDialect,
+  connectionTables: ConnectionTables,
 ): PreviewPart[] {
   const compare = change.before !== undefined;
   const changed = fields.filter((field) => !presentationValuesEqual(before?.[field], after?.[field]));
@@ -347,7 +350,7 @@ function formatRecordSections(
       return formatSkillChangeSections(targetName, before?.[field], after?.[field], compare, dialect)
         .map((text) => fieldPart(field, after?.[field], text));
     }
-    const connectionFields = CONNECTION_FIELDS[field];
+    const connectionFields = connectionTables[field];
     if (connectionFields) {
       return formatConnectionChangeSections(
         connectionFields,
@@ -522,8 +525,11 @@ type ConnectionField =
       /** Said when the list empties: an empty list allows everything. */
       emptyAllows?: string;
     }
-  /** Prose the owning Agent reads, on one line and cut to fit; it grants nothing. */
-  | { show: 'text'; label: string; noun: string }
+  /**
+   * Prose the owning Agent reads, on one line; it grants nothing. Cut to fit,
+   * unless `whole`, which shows all of it and keeps it from any cut.
+   */
+  | { show: 'text'; label: string; noun: string; whole?: true }
   /** Named among the other changes, without its value. */
   | { show: 'named'; label: string; widens: boolean }
   /** Part of the entry's name: a change removes the old entry and adds the new one. */
@@ -646,11 +652,21 @@ const REPOSITORY_FIELDS: ConnectionFields<RepositoryGrant> = {
   id: BOOKKEEPING,
 };
 
+type ConnectionTables = Partial<Record<PresentationField, Readonly<Record<string, ConnectionField>>>>;
+
 /** Agent connection lists, rendered entry by entry under the name people see in Admin. */
-const CONNECTION_FIELDS: Partial<Record<PresentationField, Readonly<Record<string, ConnectionField>>>> = {
+const CONNECTION_FIELDS: ConnectionTables = {
   mcpServers: MCP_FIELDS,
   apiConnections: API_FIELDS,
   repositories: REPOSITORY_FIELDS,
+};
+
+/** After a public page was read, a guide may be the page's words, so the person reads all of it. */
+const WHOLE_CONNECTION_GUIDE: ConnectionField = { ...CONNECTION_GUIDE, whole: true };
+const CONNECTION_FIELDS_AFTER_PAGE_READ: ConnectionTables = {
+  ...CONNECTION_FIELDS,
+  mcpServers: { ...MCP_FIELDS, guide: WHOLE_CONNECTION_GUIDE },
+  apiConnections: { ...API_FIELDS, guide: WHOLE_CONNECTION_GUIDE },
 };
 
 /**
@@ -726,7 +742,7 @@ function newConnectionLines(
     }
     if (field.show === 'text') {
       const value = stringValue(record[key]);
-      return value === undefined ? [] : [`${field.label}: ${formatTextExcerpt(value, field.noun, dialect)}`];
+      return value === undefined ? [] : [`${field.label}: ${formatProseLine(value, field, dialect)}`];
     }
     return [];
   });
@@ -774,8 +790,8 @@ function changedConnectionLines(
       lines.push({
         text: now === undefined
           ? `Removes the ${field.noun}.`
-          : `${field.label} changes to ${formatTextExcerpt(now, field.noun, dialect)}`,
-        pinned: false,
+          : `${field.label} changes to ${formatProseLine(now, field, dialect)}`,
+        pinned: now !== undefined && field.whole === true,
       });
     } else if (field.show === 'named') {
       named.set(field.label, named.get(field.label) === true || field.widens);
@@ -834,13 +850,17 @@ function formatConnectionValue(
 
 const TEXT_EXCERPT_LIMIT = 1_600;
 
-/** Stored prose as one quoted line, cut at the limit with the count left out. */
-function formatTextExcerpt(value: string, noun: string, dialect: ChangeSetPresentationDialect): string {
+/** Stored prose as one quoted line, whole or cut at the limit with the count left out. */
+function formatProseLine(
+  value: string,
+  field: Extract<ConnectionField, { show: 'text' }>,
+  dialect: ChangeSetPresentationDialect,
+): string {
   const characters = [...value.replace(/\s+/g, ' ').trim()];
-  if (characters.length <= TEXT_EXCERPT_LIMIT) return `“${plainText(characters.join(''), dialect)}”`;
+  if (field.whole || characters.length <= TEXT_EXCERPT_LIMIT) return `“${plainText(characters.join(''), dialect)}”`;
   const shown = characters.slice(0, TEXT_EXCERPT_LIMIT).join('').trimEnd();
   const hidden = (characters.length - [...shown].length).toLocaleString('en-US');
-  return `“${plainText(shown, dialect)}…” (${hidden} more characters; approval applies the full ${noun})`;
+  return `“${plainText(shown, dialect)}…” (${hidden} more characters; approval applies the full ${field.noun})`;
 }
 
 function formatValueList(
