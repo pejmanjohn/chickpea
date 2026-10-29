@@ -5,17 +5,19 @@ import { BrowserLoginBinder, type BrowserWebsiteLogin } from '../src/browser/bin
 import { createBrowserbaseProvider } from '../src/browser/browserbase.ts';
 import {
   drainContextDeletions,
-  maintainContextDeletions,
   PENDING_CONTEXT_DELETIONS_SETTING,
   queueContextDeletions,
 } from '../src/browser/context-deletions.ts';
 import {
   createWebsiteLogin,
+  deleteOrphanWebsiteLoginSecrets,
   deleteWebsiteLogin,
   getWebsiteLogin,
   listWebsiteLogins,
+  maintainWebsiteLogins,
   recordWebsiteLoginContext,
   setWebsiteLoginHandoff,
+  WEBSITE_LOGINS_SETTING,
   type WebsiteLogin,
 } from '../src/browser/logins.ts';
 import { BROWSER_LOGIN_REVOKED_MESSAGE } from '../src/browser/messages.ts';
@@ -137,10 +139,10 @@ test('standalone with no browser key keeps the queue for a reconnect; a deployme
   const { store, queue, provider, deleted } = setup(t);
   const entries = [{ contextId: 'ctx_waiting', queuedAt: Date.now() }];
   await queueContextDeletions(store, entries);
-  await maintainContextDeletions(scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' }), store);
+  await maintainWebsiteLogins(scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' }), store);
   assert.deepEqual(await queue(), entries);
-  await withEnv({ BROWSERBASE_API_KEY: undefined, CHICKPEA_TENANCY: undefined }, () => maintainContextDeletions({}, store));
-  await withEnv({ BROWSERBASE_API_KEY: undefined, CHICKPEA_TENANCY: undefined }, () => maintainContextDeletions({}, store));
+  await withEnv({ BROWSERBASE_API_KEY: undefined, CHICKPEA_TENANCY: undefined }, () => maintainWebsiteLogins({}, store));
+  await withEnv({ BROWSERBASE_API_KEY: undefined, CHICKPEA_TENANCY: undefined }, () => maintainWebsiteLogins({}, store));
   assert.deepEqual(await queue(), entries, 'nothing is dropped or counted while there is no key');
 
   // The same project connected again: the waiting context goes.
@@ -273,4 +275,54 @@ test('a bind whose login was deleted meanwhile queues the context it created and
   await assert.rejects(bindIn(deps, login, provider), (error: Error) => error.message === BROWSER_LOGIN_REVOKED_MESSAGE);
   assert.deepEqual((await queue()).map(({ contextId }) => contextId), ['ctx_orphan']);
   assert.equal(await store.getSetting(`website_login_state.${login.id}`), undefined, 'no state row outlives the login');
+});
+
+test('maintenance deletes a secret no login names once it is ten minutes old, and only that', async (t) => {
+  const start = Date.now() - 60 * 60 * 1000;
+  let clock = start;
+  const store = new SqliteSettingsStore(':memory:', () => clock);
+  t.after(() => store.close());
+  const deps = { store, keyring: generateCredentialKeyring('orphan_sweep_test') };
+  const kept = await createWebsiteLogin(deps, LOGIN);
+  const orphaned = await createWebsiteLogin(deps, { ...LOGIN, host: 'orphan.example.com' });
+  // Its deletion removed the catalog entry and then failed before the secret.
+  const failing = Object.create(store) as SqliteSettingsStore;
+  failing.getEncryptedCredentialRevision = async () => { throw new Error('realm unavailable'); };
+  await assert.rejects(deleteWebsiteLogin({ store: failing }, orphaned.id), /realm unavailable/);
+  clock = start + 9 * 60 * 1000;
+  const fresh = await createWebsiteLogin(deps, { ...LOGIN, host: 'fresh.example.com' });
+  await store.setSetting(WEBSITE_LOGINS_SETTING, JSON.stringify(
+    JSON.parse((await store.getSetting(WEBSITE_LOGINS_SETTING))!).filter(({ id }: { id: string }) => id !== fresh.id),
+  ));
+  const secret = (id: string) => store.getEncryptedCredentialRevision(`website_login.${id}`);
+
+  assert.equal(await deleteOrphanWebsiteLoginSecrets(store, start + 9 * 60 * 1000), 0, 'nothing is ten minutes old yet');
+  assert.equal(await deleteOrphanWebsiteLoginSecrets(store, start + 11 * 60 * 1000), 1);
+  assert.equal(await secret(orphaned.id), undefined);
+  assert.ok(await secret(kept.id), 'a login\'s own secret stays');
+  assert.ok(await secret(fresh.id), 'a create that may still be writing its catalog entry is left alone');
+
+  await withEnv({ BROWSERBASE_API_KEY: undefined, CHICKPEA_TENANCY: undefined }, () => maintainWebsiteLogins({}, store));
+  assert.equal(await secret(fresh.id), undefined, 'the maintenance sweep runs it, an hour on');
+  assert.ok(await secret(kept.id));
+});
+
+test('the orphan sweep deletes nothing when the catalog row does not parse, or a rewrap replaced the secret', async (t) => {
+  const { store, deps } = setup(t);
+  const login = await createWebsiteLogin(deps, LOGIN);
+  const later = Date.now() + 60 * 60 * 1000;
+  const catalog = (await store.getSetting(WEBSITE_LOGINS_SETTING))!;
+  await store.setSetting(WEBSITE_LOGINS_SETTING, '{not json');
+  assert.equal(await deleteOrphanWebsiteLoginSecrets(store, later), 0);
+  await store.setSetting(WEBSITE_LOGINS_SETTING, JSON.stringify([{ id: login.id, host: 42 }]));
+  assert.equal(await deleteOrphanWebsiteLoginSecrets(store, later), 0, 'a malformed entry still names its secret');
+
+  await store.setSetting(WEBSITE_LOGINS_SETTING, '[]');
+  const list = store.listEncryptedCredentialRevisions.bind(store);
+  const stale = Object.create(store) as SqliteSettingsStore;
+  stale.listEncryptedCredentialRevisions = async (prefix) =>
+    (await list(prefix)).map((row) => ({ ...row, revision: 'wl_rev_replaced_meanwhile' }));
+  assert.equal(await deleteOrphanWebsiteLoginSecrets(stale, later), 0);
+  assert.ok(await store.getEncryptedCredentialRevision(`website_login.${login.id}`));
+  await store.setSetting(WEBSITE_LOGINS_SETTING, catalog);
 });

@@ -8,11 +8,8 @@
  * whatever remains, oldest first, and an entry that fails again goes behind
  * the rest, so a few that always fail never hold up the others.
  */
-import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import { BrowserProviderError, type BrowserProvider } from './provider.ts';
-import { resolveBrowserProvider } from './settings.ts';
 
 export const PENDING_CONTEXT_DELETIONS_SETTING = 'browser.pendingContextDeletions';
 
@@ -95,17 +92,6 @@ export async function drainContextDeletions(input: {
   if (!batch.length) return;
   const provider = await input.provider();
   if (provider) await settleContextDeletions(input.store, provider, batch);
-}
-
-/**
- * Work maintenance for one install. A deployment serving many installations
- * leaves its queue alone: its browser key belongs to the host, never to a
- * deployment variable or the installation's settings.
- */
-export async function maintainContextDeletions(env: PlatformEnv | undefined, store?: SettingsStore): Promise<void> {
-  if (deploymentServesManyInstallations(env)) return;
-  const settings = store ?? getSettingsStore(env);
-  await drainContextDeletions({ store: settings, provider: () => resolveBrowserProvider(settings, env) });
 }
 
 function parsePendingContextDeletions(raw: string | undefined): PendingContextDeletion[] {

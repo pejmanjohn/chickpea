@@ -3,7 +3,7 @@ import {
   type EncryptedCredentialStore,
   type SettingsStore,
 } from '../config/settings-store.ts';
-import { requireInstallationScope } from '../config/installation-scope.ts';
+import { deploymentServesManyInstallations, requireInstallationScope } from '../config/installation-scope.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
 import {
@@ -14,6 +14,7 @@ import {
   workspaceCredentialContext,
 } from '../slack/secret-envelope.ts';
 import {
+  drainContextDeletions,
   PENDING_CONTEXT_DELETIONS_SETTING,
   settleContextDeletions,
   withPendingContextDeletions,
@@ -43,6 +44,8 @@ const CREDENTIAL_APP_ID = 'BROWSER';
 const LOGIN_ID_PATTERN = /^wl_[a-f0-9]{32}$/;
 const MEMBERSHIP_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
 const BROWSER_CONTEXT_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
+/** Longer than any create takes between writing its secret and its catalog entry. */
+const ORPHAN_SECRET_GRACE_MS = 10 * 60 * 1000;
 const MAX_HOST_LENGTH = 260;
 const MAX_LABEL_LENGTH = 80;
 const MAX_USERNAME_LENGTH = 320;
@@ -296,7 +299,8 @@ export async function createWebsiteLogin(
       await deps.store.deleteEncryptedCredentialRevision(secretKey(login.id), secretRevision);
     } catch {
       // The metadata row never names this login, so the orphan is unreadable
-      // through readWebsiteLoginSecrets; the original error is the useful one.
+      // through readWebsiteLoginSecrets, and work maintenance deletes it; the
+      // original error is the useful one.
     }
   };
 
@@ -473,6 +477,42 @@ async function removeLogin(
   throw new WebsiteLoginStateError();
 }
 
+/**
+ * Delete each website-login secret that no catalog entry names: one a
+ * crash, or a failed step after the catalog write, left behind when its
+ * login was deleted. A secret written in the last ten minutes may belong to
+ * a create that has not written its catalog entry yet, so it waits. Each
+ * delete is fenced on the revision listed, as a create's rollback is, so one
+ * a rewrap replaced meanwhile waits for the next sweep. A catalog row that
+ * does not parse stops the sweep rather than make every secret an orphan.
+ */
+export async function deleteOrphanWebsiteLoginSecrets(store: SettingsStore, now = Date.now()): Promise<number> {
+  if (!isEncryptedCredentialListingStore(store)) return 0;
+  const rows = await store.listEncryptedCredentialRevisions(SECRET_KEY_PREFIX);
+  if (!rows.length) return 0;
+  const named = catalogLoginIds(await store.getSetting(WEBSITE_LOGINS_SETTING));
+  if (!named) return 0;
+  let deleted = 0;
+  for (const row of rows) {
+    if (named.has(row.key.slice(SECRET_KEY_PREFIX.length)) || now - row.updatedAt < ORPHAN_SECRET_GRACE_MS) continue;
+    if (await store.deleteEncryptedCredentialRevision(row.key, row.revision)) deleted += 1;
+  }
+  return deleted;
+}
+
+/**
+ * Work maintenance for one install's website logins: the context deletion
+ * queue, then secrets no login names. A deployment serving many
+ * installations leaves both alone: its browser key belongs to the host,
+ * never to a deployment variable or the installation's settings.
+ */
+export async function maintainWebsiteLogins(env: PlatformEnv | undefined, store?: SettingsStore): Promise<void> {
+  if (deploymentServesManyInstallations(env)) return;
+  const settings = store ?? getSettingsStore(env);
+  await drainContextDeletions({ store: settings, provider: () => resolveBrowserProvider(settings, env) });
+  await deleteOrphanWebsiteLoginSecrets(settings);
+}
+
 /** Record when the login was last used (bound to a session or signed in). Returns false when the login is gone. */
 export async function touchWebsiteLoginUsed(
   store: SettingsStore,
@@ -640,6 +680,25 @@ async function updateLogins(
     if (applied) return undefined;
   }
   throw new WebsiteLoginStateError();
+}
+
+/**
+ * Every id the catalog row names, including entries `parseLogins` skips as
+ * malformed; undefined when the row itself does not parse.
+ */
+function catalogLoginIds(raw: string | undefined): Set<string> | undefined {
+  if (raw === undefined) return new Set();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  return new Set(parsed.flatMap((entry) =>
+    entry && typeof entry === 'object' && typeof (entry as { id?: unknown }).id === 'string'
+      ? [(entry as { id: string }).id]
+      : []));
 }
 
 function parseLogins(raw: string | undefined): WebsiteLogin[] {

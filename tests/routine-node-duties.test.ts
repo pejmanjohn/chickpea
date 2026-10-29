@@ -40,7 +40,7 @@ test('Node scheduled duties retry due Slack actions and run routine and retentio
     purgeImages: async (_settings, at) => {
       calls.push(`images:${at}`);
     },
-    deleteBrowserContexts: async () => {
+    maintainWebsiteLogins: async () => {
       calls.push('browser-contexts');
     },
     keepAliveSchedule: {},
@@ -82,7 +82,7 @@ test('Node scheduled duties reconcile receipts while no Slack action is due', as
     reconcileReceipts: async ({ at }) => { reconciledAt = at; return 0; },
     runHeartbeat: async () => {},
     purgeImages: async () => {},
-    deleteBrowserContexts: async () => {},
+    maintainWebsiteLogins: async () => {},
     keepAliveSchedule: {},
     keepCredentialsAlive: async () => ({} as any),
   });
@@ -106,7 +106,7 @@ test('Node scheduled duties keep OAuth credentials alive every ten elapsed minut
       reconcileReceipts: async () => 0,
       runHeartbeat: async () => {},
       purgeImages: async () => {},
-      deleteBrowserContexts: async () => {},
+      maintainWebsiteLogins: async () => {},
       keepAliveSchedule,
       keepCredentialsAlive: async () => {
         sweeps.push(offset);

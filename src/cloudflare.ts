@@ -164,7 +164,7 @@ import {
 } from './sandbox/hosted-limits.ts';
 import type { SandboxContainerLimits } from './config/sandbox-settings.ts';
 import { isCheckpointSweepMinute, sweepInstallationCheckpoints } from './sandbox/checkpoint-sweep.ts';
-import { maintainContextDeletions } from './browser/context-deletions.ts';
+import { maintainWebsiteLogins } from './browser/logins.ts';
 import { isOAuthKeepAliveMinute, runOAuthKeepAliveSweep } from './connections/oauth-keepalive.ts';
 import {
   SandboxWorkspaceState,
@@ -3565,8 +3565,8 @@ async function runWorkMaintenance(
     if (isContainerLeaseSweepMinute(scheduledTime)) {
       try { await maintainWorkspaceContainerLeases(platformEnv, scheduledTime); }
       catch { console.warn('[chickpea] Coding workspace container lease cleanup did not complete'); }
-      try { await maintainContextDeletions(platformEnv); }
-      catch { console.warn('[chickpea] Browser context cleanup did not complete'); }
+      try { await maintainWebsiteLogins(platformEnv); }
+      catch { console.warn('[chickpea] Website login cleanup did not complete'); }
     }
     if (isCheckpointSweepMinute(scheduledTime)) {
       try { await sweepInstallationCheckpoints(platformEnv, scheduledTime); }

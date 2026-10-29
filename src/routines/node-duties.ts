@@ -6,7 +6,7 @@ import {
   getWorkStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import { maintainContextDeletions } from '../browser/context-deletions.ts';
+import { maintainWebsiteLogins } from '../browser/logins.ts';
 import { OAUTH_KEEPALIVE_INTERVAL_MS, runOAuthKeepAliveSweep } from '../connections/oauth-keepalive.ts';
 import { purgeExpiredImageOutputs } from '../images/output-store.ts';
 import { createLiveWorkspaceManagementService } from '../management/live-service.ts';
@@ -25,7 +25,7 @@ interface NodeScheduledDutyDependencies {
   retryScheduleActions?: typeof retryDueSlackScheduleActions;
   reconcileReceipts?: typeof reconcileScheduleActionReceipts;
   purgeImages?: typeof purgeExpiredImageOutputs;
-  deleteBrowserContexts?: typeof maintainContextDeletions;
+  maintainWebsiteLogins?: typeof maintainWebsiteLogins;
   keepCredentialsAlive?: typeof runOAuthKeepAliveSweep;
   /** When this process last started a credential keep-alive sweep. */
   keepAliveSchedule?: { lastStartedAt?: number };
@@ -71,7 +71,7 @@ export async function runNodeScheduledDuties(
     }),
     () => work.purgeContent(input.scheduledTime, 100),
     () => (dependencies.purgeImages ?? purgeExpiredImageOutputs)(settings, input.scheduledTime),
-    () => (dependencies.deleteBrowserContexts ?? maintainContextDeletions)(env, settings),
+    () => (dependencies.maintainWebsiteLogins ?? maintainWebsiteLogins)(env, settings),
     async () => {
       // Elapsed time, not the wall-clock minute: a slow tick delays Node's
       // next scheduled run to an arbitrary minute, which would skip a sweep.
