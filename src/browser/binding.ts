@@ -24,6 +24,7 @@ import {
   BROWSER_UNKNOWN_LOGIN_MESSAGE,
 } from './messages.ts';
 import type { BrowserPage } from './page.ts';
+import { BrowserProviderError } from './provider.ts';
 import type { BrowserSessionBinding, BrowserTurnSession } from './turn-session.ts';
 
 /** A granted website login as the tools see it: metadata only, never a secret. */
@@ -45,7 +46,7 @@ export interface BrowserLoginOptions {
 export type LiveLogins = () => Promise<readonly BrowserWebsiteLogin[]>;
 
 const HANDOFF_END_POLL_MS = 1_000;
-const HANDOFF_END_WAIT_MS = 10_000;
+const HANDOFF_END_POLLS = 10;
 
 /**
  * Whether `url` is on a login's host: the same host or a subdomain of it, on
@@ -225,17 +226,20 @@ export class BrowserLoginBinder {
 
   /**
    * End a hand-off session a person may have left open, so the provider
-   * saves its sign-in to the context before a new session loads it.
+   * saves its sign-in to the context before a new session loads it. Its
+   * record goes only once the provider reports it ended: one still open
+   * stays recorded, for the next bind or the login's deletion to end.
    */
   private async finishHandoff(deps: WebsiteLoginDependencies, stored: WebsiteLogin): Promise<void> {
     const sessionId = stored.handoffSessionId;
     if (!sessionId) return;
-    await this.session.provider.endSession(sessionId).catch(() => undefined);
-    const deadline = Date.now() + HANDOFF_END_WAIT_MS;
-    for (;;) {
-      const status = await this.session.provider.sessionStatus(sessionId).catch(() => 'UNKNOWN');
-      if (status !== 'RUNNING' && status !== 'PENDING') break;
-      if (Date.now() >= deadline) break;
+    const { provider } = this.session;
+    await provider.endSession(sessionId).catch(() => undefined);
+    for (let poll = 0; ; poll += 1) {
+      const status = await provider.sessionStatus(sessionId).catch((error: unknown) =>
+        error instanceof BrowserProviderError && error.status === 404 ? 'GONE' : 'UNKNOWN');
+      if (!['RUNNING', 'PENDING', 'UNKNOWN'].includes(status)) break;
+      if (poll >= HANDOFF_END_POLLS) return;
       await this.sleep(HANDOFF_END_POLL_MS);
     }
     await setWebsiteLoginHandoff(deps.store, stored.id, undefined).catch(() => undefined);

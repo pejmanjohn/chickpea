@@ -12,7 +12,8 @@ import {
   type BrowserToolsOptions,
 } from '../src/browser/tools.ts';
 import { BrowserTurnSession } from '../src/browser/turn-session.ts';
-import { createWebsiteLogin, getWebsiteLogin, type WebsiteLogin } from '../src/browser/logins.ts';
+import { PENDING_CONTEXT_DELETIONS_SETTING } from '../src/browser/context-deletions.ts';
+import { createWebsiteLogin, deleteWebsiteLogin, getWebsiteLogin, type WebsiteLogin } from '../src/browser/logins.ts';
 import { BrowserProviderError, type BrowserProvider } from '../src/browser/provider.ts';
 import { browserHandoffMessage, createSlackRequesterNotifier } from '../src/browser/requester.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -800,6 +801,64 @@ test('browser_handoff refuses without keep-alive support or a requester, and cle
   // The kept-alive session was ended rather than left open.
   assert.deepEqual(broken.ended, ['sess-1']);
   assert.equal(broken.session.active, false);
+});
+
+test('a hand-off whose login is deleted before its session is recorded sends no link, and ends and queues the session', async () => {
+  const setup = await loginSetup();
+  const createSession = setup.provider.createSession.bind(setup.provider);
+  setup.provider.createSession = async (options) => {
+    if (options.keepAlive) await deleteWebsiteLogin({ store: setup.settings }, setup.portal.id);
+    return createSession(options);
+  };
+  const result = await setup.run('browser_handoff', { loginId: setup.portal.id, reason: 'sign in' });
+  assert.match(result.error, /access to that website login was removed/);
+  assert.equal(setup.notices.length, 0);
+  assert.deepEqual(setup.ended, ['sess-1']);
+  assert.equal(setup.session.active, false);
+  const queued = JSON.parse((await setup.settings.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!) as Array<Record<string, string>>;
+  assert.deepEqual(queued.map(({ contextId, handoffSessionId }) => [contextId, handoffSessionId]), [
+    ['ctx-1', undefined],
+    [undefined, 'sess-1'],
+  ]);
+});
+
+test('a hand-off whose session cannot be recorded sends no link, and ends and queues the session', async () => {
+  const setup = await loginSetup();
+  const apply = setup.settings.applySettingsPatch.bind(setup.settings);
+  setup.settings.applySettingsPatch = async (patch) => {
+    if (patch.set?.some(({ key, value }) => key.startsWith('website_login_state.') && value.includes('handoffSessionId'))) {
+      throw new Error('state unavailable');
+    }
+    return apply(patch);
+  };
+  const result = await setup.run('browser_handoff', { loginId: setup.portal.id, reason: 'sign in' });
+  assert.match(result.error, /could not be prepared/);
+  assert.equal(setup.notices.length, 0);
+  assert.deepEqual(setup.ended, ['sess-1']);
+  const queued = JSON.parse((await setup.settings.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!) as Array<Record<string, string>>;
+  assert.deepEqual(queued.map(({ handoffSessionId }) => handoffSessionId), ['sess-1']);
+});
+
+test('a hand-off session still open when the next bind gives up stays recorded; one the provider no longer has is cleared', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const first = await loginSetup({ settings });
+  await first.run('browser_handoff', { loginId: first.portal.id, reason: 'sign in' });
+  assert.equal((await getWebsiteLogin(settings, first.portal.id))?.handoffSessionId, 'sess-1');
+
+  let polls = 0;
+  const running = await loginSetup({ settings, provider: { async sessionStatus() { polls += 1; return 'RUNNING'; } } });
+  await running.run('browser_open', { url: 'https://portal.example.com/' });
+  assert.equal(polls, 11);
+  assert.equal((await getWebsiteLogin(settings, first.portal.id))?.handoffSessionId, 'sess-1');
+  await running.session.close();
+
+  const gone = await loginSetup({
+    settings,
+    provider: { async sessionStatus() { throw new BrowserProviderError('Browserbase GET returned 404', 404); } },
+  });
+  await gone.run('browser_open', { url: 'https://portal.example.com/' });
+  assert.equal((await getWebsiteLogin(settings, first.portal.id))?.handoffSessionId, undefined);
+  await gone.session.close();
 });
 
 test('the requester notifier posts ephemerally in channels and group DMs, and directly only in a 1:1 DM', async () => {
