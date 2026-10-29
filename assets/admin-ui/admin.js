@@ -4257,7 +4257,8 @@
       return loadAgentConnections(agentId);
     }).then(function (result) {
       if (result && result.oauthStarted) return;
-      setAgentConnectionNotice(label + (Object.prototype.hasOwnProperty.call(CONNECTION_CHECK_NOTICES, createdCheck) ? CONNECTION_CHECK_NOTICES[createdCheck] : " is connected to this Agent."), createdAccountId);
+      var noticeCheck = form.preset && createdCheck === "path_not_found" ? "" : createdCheck;
+      setAgentConnectionNotice(label + (Object.prototype.hasOwnProperty.call(CONNECTION_CHECK_NOTICES, noticeCheck) ? CONNECTION_CHECK_NOTICES[noticeCheck] : " is connected to this Agent."), createdAccountId);
       render();
     }).catch(function (error) {
       if (accountCreated) {
