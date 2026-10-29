@@ -10,6 +10,7 @@ import { ActivityLifecycleReducer } from './lifecycle.ts';
 import { BROWSER_TOOL_ACTIVITY, type BrowserToolName } from '../browser/tools.ts';
 import { ATTACH_FILE_TO_CONNECTION_TOOL_NAME } from '../connections/file-upload-tool.ts';
 import { CONNECTION_REQUEST_TOOL_NAME } from '../connections/request-tool.ts';
+import { READ_WEB_PAGE_TOOL_NAME, WEB_SEARCH_TOOL_NAME } from '../web/names.ts';
 import {
   activityStatus,
   configuredSemanticDescriptor,
@@ -22,6 +23,7 @@ import {
   unknownSemanticDescriptor,
   webPageSemanticDescriptor,
   connectionTrySemanticDescriptor,
+  webSearchSemanticDescriptor,
   type ActivityStatus,
   type SemanticActivityDescriptor,
   type SemanticInvocationFact,
@@ -331,11 +333,14 @@ function namedDescriptor(
       ? configuredSemanticDescriptor('custom_connection', connection.id, connection.displayName)
       : registered;
   }
-  if (toolName === 'read_public_doc' && registered.target === 'web') {
+  if (toolName === READ_WEB_PAGE_TOOL_NAME && registered.target === 'web') {
     return webPageSemanticDescriptor(objectString(args, 'url'));
   }
   if (toolName === 'try_connection' && registered.target === 'connection_setup') {
     return connectionTrySemanticDescriptor(tryConnectionHost(args, context.apiConnections));
+  }
+  if (toolName === WEB_SEARCH_TOOL_NAME && registered.target === 'web') {
+    return webSearchSemanticDescriptor(objectString(args, 'query'));
   }
   return registered;
 }

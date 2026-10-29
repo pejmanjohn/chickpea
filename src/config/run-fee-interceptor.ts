@@ -2,6 +2,7 @@ import type { FlueExecutionInterceptor } from '@flue/runtime';
 
 import { registeredToolDescriptor } from '../activity/status.ts';
 import { qualifiesAsTask } from '../usage/run-fees.ts';
+import { WEB_TOOL_NAMES } from '../web/names.ts';
 import { currentRunFees } from './model-access.ts';
 
 /**
@@ -43,13 +44,14 @@ function refusedBeforeStart(error: unknown): boolean {
 
 /**
  * Tools that return a refusal made before any work for the model to explain,
- * rather than throwing. read_slack_channel says not_read. read_public_doc says
- * ok: false when it fetched nothing: a URL it may not read, or a turn whose
- * reads are spent; a page it fetched but could not read is work, and charges.
+ * rather than throwing. read_slack_channel says not_read. The web tools say
+ * outcome refused when nothing went out: a URL or query they may not send, or
+ * a turn whose budget is spent. A page or search that went out and failed is
+ * work, and charges.
  */
-const REFUSALS_BEFORE_WORK = new Map<string, (output: { status?: unknown; ok?: unknown }) => boolean>([
+const REFUSALS_BEFORE_WORK = new Map<string, (output: { status?: unknown; outcome?: unknown }) => boolean>([
   ['read_slack_channel', (output) => output.status === 'not_read'],
-  ['read_public_doc', (output) => output.ok === false],
+  ...WEB_TOOL_NAMES.map((name) => [name, (output: { outcome?: unknown }) => output.outcome === 'refused'] as const),
 ]);
 
 /** Any other shape charges, and the check never throws, which would lose the tool's result. */

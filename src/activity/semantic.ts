@@ -1,5 +1,10 @@
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import { hasCredentialLikeContent, isRecord } from '../security/content-validation.ts';
+import {
+  neutralizeSlackBroadcastMentions,
+  neutralizeSlackMrkdwnHandles,
+  SLACK_MENTION_BREAK,
+} from '../slack/message-format.ts';
 import type {
   ManagedCapabilityDefinition,
   ManagedConnectorDefinition,
@@ -144,6 +149,7 @@ type SemanticEffectClass = ManagedEffectClass | 'none';
  */
 const WEB_LABELS = {
   web_host: isSafeWebHostLabel,
+  web_query: isSafeWebQueryLabel,
 } as const satisfies Record<string, (label: string) => boolean>;
 
 type WebLabelKind = keyof typeof WEB_LABELS;
@@ -402,6 +408,34 @@ function withWebHostLabel(generic: SemanticActivityDescriptor, url: unknown): Se
     .find((suffix) => suffix.includes('.') && suffix.length <= WEB_HOST_LABEL_LIMIT);
   return host && isSafeWebHostLabel(host)
     ? { ...generic, label: { kind: 'web_host', id: host, label: host } }
+    : generic;
+}
+
+/** Room for a query in `Searching: “<query>”…`. */
+const WEB_QUERY_LABEL_LIMIT = ACTIVITY_STATUS_TEXT_LIMIT - 'Searching: “”…'.length;
+
+/**
+ * Quote the query a web search's input gives, as plain status text: no
+ * control character or mrkdwn, every mention and broadcast inert, nothing
+ * credential-shaped, and shortened with "…" to fit the 50-character
+ * status. Anything else keeps the generic search.
+ */
+export function webSearchSemanticDescriptor(query?: unknown): SemanticActivityDescriptor {
+  const generic = descriptor('search', 'web', 'results', 'read', 'built_in');
+  if (typeof query !== 'string' || hasCredentialLikeContent(query)) return generic;
+  const plain = neutralizeSlackMrkdwnHandles(
+    neutralizeSlackBroadcastMentions(query)
+      .replace(/[\u0000-\u001f\u007f-\u009f|]/g, ' ')
+      .replace(/[<>&*_~`“”]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
+  // The cut is in UTF-16 units; a high surrogate it leaves behind is not text.
+  const label = plain.length <= WEB_QUERY_LABEL_LIMIT
+    ? plain
+    : `${plain.slice(0, WEB_QUERY_LABEL_LIMIT - 1).replace(/[\uD800-\uDBFF]$/, '').trimEnd()}…`;
+  return isSafeWebQueryLabel(label)
+    ? { ...generic, label: { kind: 'web_query', id: label, label } }
     : generic;
 }
 
@@ -771,6 +805,13 @@ function familyActivity(
         ? activityStatus('reading', 'Reviewing', 'the artifact')
         : activityStatus('writing', 'Creating', 'an artifact');
     case 'web': {
+      if (descriptorValue.operation === 'search') {
+        if (settled) return activityStatus('reading', 'Reviewing', 'the results');
+        const query = descriptorValue.label?.kind === 'web_query' ? descriptorValue.label.label : undefined;
+        return query
+          ? activityStatus('reading', 'Searching:', `“${query}”`)
+          : activityStatus('reading', 'Searching', 'the web');
+      }
       if (settled) return activityStatus('reading', 'Reviewing', 'the page');
       const host = descriptorValue.label?.kind === 'web_host' ? descriptorValue.label.label : undefined;
       return activityStatus('reading', 'Reading', host ?? 'a web page');
@@ -838,6 +879,20 @@ export function isSafeConfiguredLabel(value: string): boolean {
 function isSafeWebHostLabel(value: string): boolean {
   return value.length <= WEB_HOST_LABEL_LIMIT &&
     /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(value) &&
+    !hasCredentialLikeContent(value);
+}
+
+/**
+ * Status text a search query became: short enough for
+ * `Searching: “<query>”…`, single-spaced, with no control character, mrkdwn
+ * or quote mark, every `@` followed by the mention break, and never
+ * credential-shaped.
+ */
+function isSafeWebQueryLabel(value: string): boolean {
+  return value.length > 0 && value.length <= WEB_QUERY_LABEL_LIMIT && value.trim() === value &&
+    !/\s{2}/.test(value) && !/[\u0000-\u001f\u007f-\u009f<>&*_~`|“”]/.test(value) &&
+    !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value) &&
+    [...value.matchAll(/@/g)].every(({ index }) => value[index + 1] === SLACK_MENTION_BREAK) &&
     !hasCredentialLikeContent(value);
 }
 

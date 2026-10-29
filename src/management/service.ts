@@ -209,12 +209,7 @@ import {
   type OpenMcpServer,
 } from './discovery.ts';
 import type { ManagementStore } from './store.ts';
-import {
-  admitPublicDocUrl,
-  PUBLIC_DOC_REFUSALS,
-  type ReadPublicDocInput,
-  type ReadPublicDocResult,
-} from './public-doc.ts';
+import { requesterTypedUrls } from '../slack/typed-urls.ts';
 import { changeSetAccessFits } from './change-set-presentation.ts';
 import {
   formatMarkdownChangeSetProposal,
@@ -483,8 +478,6 @@ export interface WorkspaceManagementServiceInput {
   takeConnectionTry?: (membershipId: string) => Promise<number | undefined>;
   /** What a person typed in one Slack message, from the host's own turn record. */
   typedSlackMessage?: (query: SlackMessageQuery) => Promise<SlackTypedMessage | undefined>;
-  /** Reads one admitted public page with no cookies or credentials. */
-  readPublicDoc?: (url: URL) => Promise<ReadPublicDocResult>;
   /** Lists an open MCP server's tools before a write saves it, as Admin's Test connection does. */
   discoverMcpServer?: (server: OpenMcpServer) => Promise<McpConnectionTestResult>;
   /** The website-login realm Admin reads and deletes from. */
@@ -2304,32 +2297,6 @@ export class WorkspaceManagementService {
       }
       return undefined;
     }
-  }
-
-  /**
-   * Reads one public page for the requester in Slack: a URL they typed in
-   * their own current message to this Agent, or a link a page read earlier
-   * in this turn returned. The page is untrusted content.
-   */
-  async readPublicDoc(
-    context: ApplyWorkspaceChangesInput['context'],
-    input: ReadPublicDocInput,
-  ): Promise<ReadPublicDocResult> {
-    const actor = await this.requireLiveActor(context);
-    if (actor.origin.kind !== 'slack') {
-      throw new ManagementError('invalid_request', 'read_public_doc is available only in Slack.');
-    }
-    const requestText = requestAddressedHere(actor);
-    const admission = admitPublicDocUrl(
-      input.url,
-      requestText ? requesterTypedUrls(requestText) : [],
-      input.turnLinks,
-    );
-    if (!admission.admitted) throw new ManagementError('invalid_request', PUBLIC_DOC_REFUSALS[admission.reason]);
-    if (!this.stores.readPublicDoc) {
-      throw new ManagementError('invalid_request', 'Reading public pages is unavailable.');
-    }
-    return this.stores.readPublicDoc(admission.url);
   }
 
   async inspectMemory(
@@ -8955,29 +8922,6 @@ function requesterTextContainsExactSource(requestText: string, source: string): 
     if (beforeBoundary && afterBoundary) return true;
   }
   return false;
-}
-
-/**
- * The http(s) URLs in the requester's text. Slack sends a typed URL as
- * `<url>` or `<url|label>`; only the target counts, since a label can show
- * another URL.
- */
-function requesterTypedUrls(requestText: string): URL[] {
-  const text = requestText
-    .replace(/<(https?:\/\/[^>|\s]+)(?:\|[^>]*)?>/gi, ' $1 ')
-    .replace(/&amp;/gi, '&');
-  return [...text.matchAll(/https?:\/\/[^\s<>"'`|]+/gi)].flatMap(([match]) => {
-    try {
-      const url = new URL(match.replace(/[.,;:!?)\]}]+$/, ''));
-      // `https://api.example.com@evil.example/` names evil.example; never count it as typed.
-      if (url.username || url.password) return [];
-      // Slack links a bare `api.example.com/v1` as http://; a connection only ever sends over https.
-      if (url.protocol === 'http:' && url.port === '') url.protocol = 'https:';
-      return [url];
-    } catch {
-      return [];
-    }
-  });
 }
 
 /** Characters a key can continue with, so a key found among them is only part of a longer token. */

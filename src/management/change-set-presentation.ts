@@ -661,7 +661,7 @@ const CONNECTION_FIELDS: ConnectionTables = {
   repositories: REPOSITORY_FIELDS,
 };
 
-/** After a public page was read, a guide may be the page's words, so the person reads all of it. */
+/** After web content entered the conversation, a guide may be its words, so the person reads all of it. */
 const WHOLE_CONNECTION_GUIDE: ConnectionField = { ...CONNECTION_GUIDE, whole: true };
 const CONNECTION_FIELDS_AFTER_PAGE_READ: ConnectionTables = {
   ...CONNECTION_FIELDS,

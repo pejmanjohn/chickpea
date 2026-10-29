@@ -74,7 +74,6 @@ import {
   testManagedConnection,
   tryManagedConnection,
 } from './discovery.ts';
-import { readPublicDoc } from './public-doc.ts';
 
 interface LiveWorkspaceManagementServiceOptions {
   identity?: IdentityStore;
@@ -263,7 +262,6 @@ export function createLiveWorkspaceManagementService(
       }
     },
     typedSlackMessage: async (query) => getSlackStateStore(env).typedSlackMessage?.(query),
-    readPublicDoc: (url) => readPublicDoc(url),
     managedConnectorAvailable: async ({ toolkit, accessLane }) => {
       const context = await resolveManagedAuthorizationProviderContext({
         settings,
