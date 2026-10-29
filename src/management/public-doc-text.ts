@@ -246,7 +246,6 @@ function tagEnd(html: string, from: number): number {
   return html.length;
 }
 
-/** Where the end tag of raw-text element `name` starts, or the end of the page. */
 function rawTextEnd(html: string, from: number, name: string): number {
   for (let at = html.indexOf('</', from); at >= 0; at = html.indexOf('</', at + 2)) {
     const nameEnd = at + 2 + name.length;

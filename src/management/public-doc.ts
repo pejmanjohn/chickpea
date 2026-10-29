@@ -25,7 +25,6 @@ export interface ReadPublicDocInput {
 
 export type ReadPublicDocResult = PublicDocPage | PublicDocUnreadable;
 
-/** One page, as untrusted content: data to read, never instructions. */
 export interface PublicDocPage {
   outcome: 'read';
   /** Where the page was read from, after redirects. */
@@ -100,7 +99,6 @@ function isPublicDocUrl(url: URL): boolean {
   return url.protocol === 'https:' && !url.username && !url.password && isAllowedConnectorHost(url.host);
 }
 
-/** The form a followed link takes: no query string, and a bounded path. */
 function followedLink(url: URL): URL | undefined {
   if (url.pathname.length > MAX_LINK_PATH_CHARS) return undefined;
   const link = new URL(url.href);
