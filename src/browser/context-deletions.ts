@@ -93,6 +93,24 @@ export async function drainContextDeletions(input: {
   if (provider) await settleContextDeletions(input.store, provider, batch);
 }
 
+/** Everything queued, for a census or an erasure. */
+export async function pendingContextDeletions(
+  store: Pick<SettingsStore, 'getSetting'>,
+): Promise<PendingContextDeletion[]> {
+  return parsePendingContextDeletions(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING));
+}
+
+/** Drop the queued entries `settled` accepts. Entries queued meanwhile are judged too. */
+export async function dropPendingContextDeletions(
+  store: Pick<SettingsStore, 'getSetting' | 'applySettingsPatch'>,
+  settled: (entry: PendingContextDeletion) => boolean,
+): Promise<void> {
+  await updateQueue(store, (raw) => {
+    const next = parsePendingContextDeletions(raw).filter((entry) => !settled(entry));
+    return next.length ? JSON.stringify(next) : null;
+  });
+}
+
 function parsePendingContextDeletions(raw: string | undefined): PendingContextDeletion[] {
   if (raw === undefined) return [];
   let value: unknown;

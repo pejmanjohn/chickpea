@@ -1,3 +1,4 @@
+import { censusBrowser, type BrowserCensus } from '../browser/hosted-erasure.ts';
 import { InstallationContextError } from '../config/installation-scope.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { RoutinePersistenceTelemetrySink } from '../routines/telemetry.ts';
@@ -53,6 +54,7 @@ export interface StateStoreHostRpc extends Omit<InstallationObjectHostRpc, 'chic
   ): Promise<InstallationObjectInventoryPage>;
   chickpeaHostInventoryBackfill(request: ObjectHostRequest): Promise<InstallationObjectBackfill>;
   chickpeaHostSandboxCensus(request: ObjectHostRequest & { now?: number }): Promise<StateSandboxCensus>;
+  chickpeaHostBrowserCensus(request: ObjectHostRequest & { now?: number }): Promise<BrowserCensus>;
   chickpeaHostExportPage(request: ObjectExportRequest): Promise<ObjectExportPage>;
   chickpeaHostErase(request: ObjectHostRequest): Promise<ObjectEraseResult>;
   chickpeaHostCancelPendingWork(request: ObjectHostRequest): Promise<StatePendingWorkCancellation>;
@@ -122,6 +124,12 @@ export function stateStoreHostFunctions(store: {
         containerSeconds: usage.meteredSeconds,
         sessions: sessions.count,
       };
+    },
+    async chickpeaHostBrowserCensus(request) {
+      const local = stores(request);
+      const now = request.now ?? Date.now();
+      if (!Number.isSafeInteger(now) || now < 0) throw new Error('A census time must be a timestamp.');
+      return censusBrowser(promisify(local.settings, { close: () => undefined }), now);
     },
     async chickpeaHostExportPage(request) {
       assertObjectHostCall(store.env, request);

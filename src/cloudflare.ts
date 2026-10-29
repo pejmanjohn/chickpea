@@ -1114,6 +1114,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.host().chickpeaHostSandboxCensus(request);
   }
 
+  async chickpeaHostBrowserCensus(request: ObjectHostRequest & { now?: number }) {
+    return this.host().chickpeaHostBrowserCensus(request);
+  }
+
   async chickpeaHostExportPage(request: ObjectExportRequest) {
     return this.host().chickpeaHostExportPage(request);
   }

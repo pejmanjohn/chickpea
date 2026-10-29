@@ -9,7 +9,9 @@
  * The installation's objects are its state store (implicit, named after the
  * installation) and those its inventory records (state/object-inventory.ts).
  * Erasure order is the host's: every inventoried object first, then the
- * installation's coding workspace checkpoints (`eraseInstallationCheckpoints`),
+ * installation's coding workspace checkpoints (`eraseInstallationCheckpoints`)
+ * and its browser's sessions and contexts at the host's Browserbase project
+ * (`eraseInstallationBrowser`, which reads their ids from the state store),
  * the state store last, after copying its inventory.
  *
  * A coding workspace's Sandbox answers like any object, from its own host
@@ -31,6 +33,7 @@
  * `deleted` state.
  */
 import { CHICKPEA_CODING_WORKER_AGENT_NAME, CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME } from '../agents/names.ts';
+import type { BrowserCensus, BrowserErasePass } from '../browser/hosted-erasure.ts';
 import {
   deploymentTenancy,
   InstallationContextError,
@@ -38,6 +41,8 @@ import {
   splitInstallationObjectName,
   type InstallationScope,
 } from '../config/installation-scope.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
+import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import { tagStateInstanceName, tagStateStub } from '../config/state-rpc.ts';
 import { installationCheckpointBucket } from '../sandbox/checkpoint-bucket.ts';
 import { sandboxNamespace } from '../sandbox/sandbox-object.ts';
@@ -352,6 +357,58 @@ export async function censusInstallationSandbox(
     cursor = listing.cursor;
   }
   return { ...state, checkpoints: { objects, bytes, complete: false } };
+}
+
+/**
+ * A census of what the installation's browser holds at the host's
+ * Browserbase project, from its state store, in counts: the contexts its
+ * website logins record and those queued for deletion, the session leases
+ * held, and this month's metered browser time. Reads only. Refused unless
+ * `installationId` repeats the installation.
+ */
+export async function censusInstallationBrowser(
+  env: Record<string, unknown>,
+  installationId: string,
+  options: { now?: number } = {},
+): Promise<BrowserCensus> {
+  const scope = confirmedScope(env, installationId, 'A census must be confirmed with the installation it counts.');
+  return stateStore(env).chickpeaHostBrowserCensus({
+    installationId: scope.installationId,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+}
+
+/**
+ * Erasure: one pass over what the installation's browser left at the host's
+ * Browserbase project (browser/hosted-erasure.ts). It ends the running
+ * sessions, then deletes every context its store records or queues and
+ * every one its sessions name, each through the hosted wrapper's ownership
+ * check, clearing each id from the store as it goes. Another
+ * installation's id is counted, cleared and never touched. Run it after
+ * the gate settles and before the state store is erased, until a pass
+ * leaves nothing; a pass after a clean one counts only the sessions the
+ * provider still lists, whose recordings age out there. Refused unless
+ * `installationId` repeats the installation, and without the host's
+ * browser port.
+ */
+export async function eraseInstallationBrowser(
+  env: Record<string, unknown>,
+  installationId: string,
+  options: { store?: SettingsStore } = {},
+): Promise<BrowserErasePass> {
+  confirmedScope(env, installationId, 'Erasure must be confirmed with the installation it erases.');
+  const store = options.store ?? getSettingsStore(env as PlatformEnv);
+  const [{ hostedBrowserProvider }, { eraseBrowserPass }] = await Promise.all([
+    import('../browser/hosted-provider.ts'),
+    import('../browser/hosted-erasure.ts'),
+  ]);
+  return eraseBrowserPass({ store, provider: hostedBrowserProvider(store, env) });
+}
+
+function confirmedScope(env: Record<string, unknown>, installationId: string, message: string): InstallationScope {
+  const scope = hostScope(env);
+  if (installationId !== scope.installationId) throw new InstallationContextError('installation_context_mismatch', message);
+  return scope;
 }
 
 /** The slice of the installation's checkpoint bucket a host function reads. */
