@@ -37,10 +37,15 @@ const NAMES: Record<string, string> = { user_membership_maya: 'Maya Chen', user_
 async function workspace() {
   const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
+  /** Runs once, the next time Notion is asked to check a sign-in. */
+  let duringValidate: (() => Promise<void>) | undefined;
   const provider: ManagedConnectionProvider = {
     id: 'composio',
     availability: () => ({ status: 'ready', missingConfiguration: [] }),
     async validate(input) {
+      const pending = duringValidate;
+      duringValidate = undefined;
+      await pending?.();
       return {
         person: input.policy.accountRef === 'ca_zed' ? 'notion:ws-1:user-zed' : 'notion:ws-1:user-maya',
         grantSummary: { items: PAGES.map(({ id, kind, label }) => ({ id, type: kind, label })), truncated: false },
@@ -108,7 +113,11 @@ async function workspace() {
         (await call('GET', `${agentId}/connections?workspaceId=T_TEST`)).body.attached as Array<Record<string, any>>,
     };
   };
-  return { store, owner: appFor(OWNER), member: appFor(MEMBER), close() { store.close(); settings.close(); } };
+  return {
+    store, owner: appFor(OWNER), member: appFor(MEMBER),
+    whileValidating(run: () => Promise<void>) { duringValidate = run; },
+    close() { store.close(); settings.close(); },
+  };
 }
 
 test('an Owner is offered the team sign-in, adds another Agent with a page limit, and changes it, with no Notion id, credential or person sent', async () => {
@@ -250,6 +259,25 @@ test('a reuse refused by the personal and team rule says why in one sentence', a
       error: 'managed_connection_changed',
       message: 'That Notion account is also used for a personal connection in this workspace, so another Agent can\'t use it.',
     }]);
+  } finally {
+    notion.close();
+  }
+});
+
+test('a reuse that loses a race with another change to the sign-in is a conflict, and adds nothing', async () => {
+  const notion = await workspace();
+  try {
+    const team = (await notion.store.listConnectionAccounts('T_TEST')).find(({ ownerKind }) => ownerKind === 'team');
+    notion.whileValidating(async () => {
+      await notion.store.putConnectionAccount({ ...team!, label: 'Notion · Team, renamed' }, team!.revision);
+    });
+    const raced = await notion.owner.call('POST', 'agent_sales/connections/managed/reuse', {
+      workspaceId: 'T_TEST', sourceConnectionId: team!.id, ownerKind: 'team', access: 'read', choice: { mode: 'all' },
+    });
+    assert.deepEqual([raced.status, raced.body], [409, {
+      error: 'managed_connection_changed', message: 'That sign-in changed while this Agent was being added.',
+    }]);
+    assert.deepEqual(await notion.owner.attached('agent_sales'), []);
   } finally {
     notion.close();
   }
