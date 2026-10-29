@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { MAX_MANAGEMENT_REQUEST_BYTES, validateManagementOperations } from '../src/management/contracts.ts';
 import type { ManagementOperation } from '../src/management/types.ts';
 
-function skillsUpdate(totalChars: number, count = 6): ManagementOperation {
+function skillsUpdate(totalChars: number, count = 8): ManagementOperation {
   const body = 'a'.repeat(Math.floor(totalChars / count));
   return {
     itemId: 'op_skills',
