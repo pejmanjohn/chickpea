@@ -403,6 +403,11 @@ test('a Slack link to change a shared sign-in\'s pages says the change reaches e
     locked: { ownerKind: 'team', access: 'read' },
   });
   assert.match(html, /Check pages to add them or uncheck pages to remove them\. Changes there apply to every Agent using this sign-in\./);
+  const expired = renderManagedConnectionSetupPage({
+    setup: notionSetup, agent: sprout, sharedSignIn: true, locked: { ownerKind: 'team', access: 'read' },
+  });
+  assert.match(expired, /Sprout can use Notion when you ask\. Signing in again applies to every Agent using this sign-in\./);
+  assert.doesNotMatch(expired, /Changes there/, 'an expired sign-in shows no page list to change');
 });
 
 test('every connector and setup page styles each class it uses, and every styled class is used', () => {
