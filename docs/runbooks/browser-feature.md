@@ -63,8 +63,11 @@ state, deploy path, and first checks when a browser tool fails.
   recorded and without Browserbase session logs. The private live-view link
   goes only to the requester; it never enters model context.
 - Downloads: each session Chickpea opens asks the browser to refuse them.
-  Whether that refusal still holds once Chickpea detaches from a hand-off
-  session is not yet verified live.
+  The refusal ends when Chickpea detaches from a hand-off session, so files
+  the person downloads in its live view are kept by Browserbase. Once the
+  hand-off session ends, Chickpea deletes them: when the next bind finishes
+  the hand-off, through the deletion queue when that fails or the login is
+  deleted, and in a hosted installation's erasure.
 
 ## Actions and approval
 
