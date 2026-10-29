@@ -179,6 +179,7 @@ import {
   managementIdempotencyScope,
   managementStorageIdempotencyKey,
   validateManagementOperations,
+  MAX_MANAGEMENT_REQUEST_BYTES,
 } from './contracts.ts';
 import { classifyManagementOperation, removesMemberAccess } from './policy.ts';
 import {
@@ -8335,7 +8336,7 @@ function boundedChangeSetPreview(
   preview: ManagementChangeSetRecordPreview,
   skillSourceUrl: string | undefined,
 ): ManagementChangeSetRecordPreview {
-  if (Buffer.byteLength(JSON.stringify(preview), 'utf8') > 128 * 1024) {
+  if (Buffer.byteLength(JSON.stringify(preview), 'utf8') > MAX_MANAGEMENT_REQUEST_BYTES) {
     throw new ManagementError(
       'invalid_request',
       'The reviewed change diff is too large. Split it into smaller proposals.',
