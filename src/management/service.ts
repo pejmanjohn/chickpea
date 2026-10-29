@@ -8330,6 +8330,7 @@ export function slackManagementOrigin(
     ...(signal.requesterText === undefined ? {} : { requestText: signal.requesterText }),
     ...(signal.requesterTextSource ? { requestTextSource: signal.requesterTextSource } : {}),
     ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
+    ...(signal.publicDocRead ? { publicDocRead: true } : {}),
     agentId: signal.agentId,
   };
 }

@@ -161,6 +161,12 @@ export interface SlackManagementSignal {
   requesterTextSource?: 'click';
   /** Verified Slack profile timezone, supplied by the host. */
   requesterTimezone?: string;
+  /**
+   * A read_public_doc call in this conversation answered. Set only from the
+   * Slack tools' own read state (`signalAfterPublicDocReads`), never from a
+   * delivery or a tool's input.
+   */
+  publicDocRead?: true;
 }
 
 export type PlatformEnvResolver = () => Promise<PlatformEnv | undefined>;
@@ -545,6 +551,11 @@ export interface PublicDocTurnState {
   turnJobId: string;
   reads: number;
   links: string[];
+  /**
+   * A read in this conversation went out and answered. What it brought back
+   * stays in the model's context after the turn, so this outlives the turn.
+   */
+  fetched?: true;
 }
 
 export interface PublicDocTurn {
@@ -552,6 +563,8 @@ export interface PublicDocTurn {
   begin(): readonly string[] | undefined;
   /** A refused read gives its read back; a page adds its links. */
   finish(result: ReadPublicDocResult | undefined): void;
+  /** Whether a read in this conversation went out and answered. */
+  fetched(): boolean;
 }
 
 export function createPublicDocTurn(
@@ -561,7 +574,7 @@ export function createPublicDocTurn(
 ): PublicDocTurn {
   let current: PublicDocTurnState = persisted.turnJobId === turnJobId
     ? persisted
-    : { turnJobId, reads: 0, links: [] };
+    : { turnJobId, reads: 0, links: [], ...(persisted.fetched ? { fetched: true } : {}) };
   const update = (next: PublicDocTurnState) => {
     current = next;
     persist(next);
@@ -575,9 +588,25 @@ export function createPublicDocTurn(
     },
     finish(result) {
       if (!result) update({ ...current, reads: current.reads - 1 });
-      else if (result.outcome === 'read') update({ ...current, links: [...new Set([...current.links, ...result.links])] });
+      else {
+        update({
+          ...current,
+          fetched: true,
+          ...(result.outcome === 'read' ? { links: [...new Set([...current.links, ...result.links])] } : {}),
+        });
+      }
     },
+    fetched: () => current.fetched === true,
   };
+}
+
+/**
+ * The signal a call that writes Agent configuration carries. Once a read has
+ * answered, text the model writes may be the page's, so the service sends
+ * the change to the person's approval card instead of applying it at once.
+ */
+export function signalAfterPublicDocReads(signal: SlackManagementSignal, turn: PublicDocTurn): SlackManagementSignal {
+  return turn.fetched() ? { ...signal, publicDocRead: true } : signal;
 }
 
 const PUBLIC_DOC_TURN_SPENT: WorkspaceManagementToolResult = {
@@ -757,7 +786,9 @@ export function useWorkspaceManagementSlackTools(
       const { result, receipt } = await executeSlackMemoryUpdate({
         signal, data, memoryEpoch: plan.memoryEpoch,
         inspect: () => invokeLiveSlackTool(signal, resolvePlatformEnv, 'inspect_memory', { agentId: signal.agentId }, turnGuard),
-        apply: (args) => invokeLiveSlackTool(signal, resolvePlatformEnv, 'apply_workspace_changes', args, turnGuard),
+        apply: (args) => invokeLiveSlackTool(
+          signalAfterPublicDocReads(signal, publicDocTurn), resolvePlatformEnv, 'apply_workspace_changes', args, turnGuard,
+        ),
       });
       if (receipt) writeMemoryUpdate?.(receipt);
       creationCoordinator.recordFollowOn(result);
@@ -868,7 +899,7 @@ export function useWorkspaceManagementSlackTools(
     input: proposeWorkspaceChangesValibotSchema,
     async run({ data }) {
       const result = await invokeLiveSlackTool(
-        signal,
+        signalAfterPublicDocReads(signal, publicDocTurn),
         resolvePlatformEnv,
         'propose_workspace_changes',
         { ...data, operations: data.operations as ManagementOperation[] },
@@ -889,7 +920,7 @@ export function useWorkspaceManagementSlackTools(
         ...(data.connectorMentions ? { connectorMentions: data.connectorMentions } : {}),
       });
       const result = await invokeLiveSlackTool(
-        signal,
+        signalAfterPublicDocReads(signal, publicDocTurn),
         resolvePlatformEnv,
         'apply_workspace_changes',
         { idempotencyKey: prepared.idempotencyKey, operations: prepared.operations },
