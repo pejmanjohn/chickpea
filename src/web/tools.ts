@@ -1,7 +1,11 @@
 import { defineTool, type useTool } from '@flue/runtime';
 import * as v from 'valibot';
 
-import { genericSemanticDescriptor, type SemanticActivityDescriptor } from '../activity/semantic.ts';
+import {
+  genericSemanticDescriptor,
+  webSearchSemanticDescriptor,
+  type SemanticActivityDescriptor,
+} from '../activity/semantic.ts';
 import { BROWSER_TOOL_NAMES } from '../browser/tools.ts';
 import { requesterTypedUrls } from '../slack/typed-urls.ts';
 import {
@@ -125,7 +129,7 @@ export function createWebTools(input: WebToolsInput): WebTool[] {
 /** The activity each web tool narrates before its input names a host or query. */
 export const WEB_TOOL_DESCRIPTORS: Readonly<Record<WebToolName, SemanticActivityDescriptor>> = {
   read_web_page: genericSemanticDescriptor('web'),
-  web_search: genericSemanticDescriptor('web'),
+  web_search: webSearchSemanticDescriptor(),
 };
 
 /** A browser call brings a web page into the conversation, as a page read does. */

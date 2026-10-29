@@ -133,16 +133,29 @@ When adding a first-party capability:
    (`Checking a connected service…`, `Using a skill…`). Keep Agent,
    repository, account, and resource names generic. Never promote paths,
    arguments, or result fields into the descriptor.
-5. The one name taken from tool input is the host a `read_public_doc` call
-   reads (`Reading docs.statusboard.example…`), checked in
-   `webPageSemanticDescriptor`. It must be a public https host on the
-   standard port. The URL parser lowercases it and spells an international
-   name in punycode. It must be two or more letter, digit and hyphen labels,
-   so it carries no mention, broadcast, mrkdwn or control character, and it
-   must not look like a credential. A host too long for the 50-character
-   status keeps its rightmost labels that fit. Anything else reads
-   `Reading a web page…`, and the review reads `Reviewing the page…`. A new
-   label that tool input may supply gets its own check in `WEB_LABELS`.
+5. Only the web tools take a name from tool input, and each name has its
+   own check in `WEB_LABELS`:
+   - The host a `read_web_page` call reads
+     (`Reading docs.statusboard.example…`), checked in
+     `webPageSemanticDescriptor`. It must be a public https host on the
+     standard port. The URL parser lowercases it and spells an
+     international name in punycode. It must be two or more letter, digit
+     and hyphen labels, so it carries no mention, broadcast, mrkdwn or
+     control character, and it must not look like a credential. A host too
+     long for the 50-character status keeps its rightmost labels that fit.
+     Anything else reads `Reading a web page…`, and the review reads
+     `Reviewing the page…`.
+   - The query a `web_search` call sends
+     (`Searching: “statusboard api auth”…`), checked in
+     `webSearchSemanticDescriptor`. Whitespace collapses, control
+     characters and mrkdwn are stripped, the broadcast-mention neutralizer
+     makes every mention and broadcast inert, and a query with anything
+     credential-like is not shown. A query too long for the 50-character
+     status is shortened with "…". Anything else reads
+     `Searching the web…`, and the review reads `Reviewing the results…`.
+
+   A new label that tool input may supply gets its own check in
+   `WEB_LABELS`.
 6. Add tests for start, successful review, failure or ambiguity, and the
    unregistered-tool fallback. A new built-in or managed action must be covered
    at its definition site; Slack must not grow a parallel tool-name mapping.
