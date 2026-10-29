@@ -141,8 +141,12 @@ When adding a first-party capability:
    so it carries no mention, broadcast, mrkdwn or control character, and it
    must not look like a credential. A host too long for the 50-character
    status keeps its rightmost labels that fit. Anything else reads
-   `Reading a web page…`, and the review reads `Reviewing the page…`. A new
-   label that tool input may supply gets its own check in `WEB_LABELS`.
+   `Reading a web page…`, and the review reads `Reviewing the page…`. A
+   `try_connection` call names the host it tests the same way
+   (`Testing api.statusboard.example…`), from its draft's first host or the
+   first host of the named connection, and otherwise reads
+   `Setting up a connection…`. A new label that tool input may supply gets
+   its own check in `WEB_LABELS`.
 6. Add tests for start, successful review, failure or ambiguity, and the
    unregistered-tool fallback. A new built-in or managed action must be covered
    at its definition site; Slack must not grow a parallel tool-name mapping.
