@@ -2393,6 +2393,7 @@ async function completeFormAction(
       ...(options.discoverMcp ? { discoverMcp: options.discoverMcp } : {}),
     });
     await authorizeRequest();
+    if (check.kind === 'key_rejected') throw new SetupKeyRejectedError(new URL(validated.url).host);
     if (check.kind !== 'ok') throw new Error('mcp_check_failed');
     const identity = await (options.identifyMcp ?? discoverMcpConnectionIdentity)({
       ...discoveryInput,

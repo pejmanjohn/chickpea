@@ -2003,6 +2003,57 @@ test('an MCP header setup stores one credential and records the tools the server
   }
 });
 
+test('an MCP header setup the server rejects names the host and saves nothing', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-header-rejected' });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_tracker', name: 'Tracker', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', instructions: 'Search the tracker.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const tracker = await seedConnection({ config, settings }, owner, agent.id, {
+      providerId: 'tracker',
+      label: 'Tracker',
+      policy: {
+        kind: 'mcp', url: 'https://mcp.tracker.example/mcp', transport: 'streamable-http', authMode: 'none',
+        headerNames: ['X-Api-Key'], credentialHeaderName: 'X-Api-Key', credentialValuePrefix: 'Token ',
+        discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+      },
+    });
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'mcp_header_rejected', randomCapability: () => CAPABILITY,
+    });
+    const setupId = await requestConnectionSetup(service, owner, {
+      kind: 'mcp_connection', agentId: agent.id, connectionId: 'tracker',
+    });
+    const app = createManagementSetupRoutes({
+      management, config, settings, identity,
+      now: () => START,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+      deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+      discoverMcp: async () => { throw Object.assign(new Error('Unauthorized'), { code: 401 }); },
+    });
+    const cookie = await claimSetup(app, setupId);
+    const rejected = await postSetupForm(app, setupId, 'complete', cookie, { 'header:X-Api-Key': 'wrong-key-123' });
+    assert.equal(rejected.status, 422);
+    const html = await rejected.text();
+    assert.match(html, /mcp\.tracker\.example rejected this key/);
+    assert.doesNotMatch(html, /wrong-key-123/);
+    assert.equal(await storedSecret(settings, tracker), undefined);
+    assert.equal((await currentAccount(config, tracker)).lifecycle, 'pending');
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
 test('an MCP OAuth setup signs in to its connection account and marks it ready', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-oauth-setup' });
