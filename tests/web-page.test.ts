@@ -86,7 +86,7 @@ function freshTurn(turnKey = 'turn_1', saved?: WebTurnState[]): WebTurn {
 /** read_web_page in one turn answering `requesterText`, over the synthetic web. */
 function turnReader(site: ReturnType<typeof web>, requesterText: string | undefined, turn = freshTurn(), source?: 'click') {
   const request = webRequest(requesterText, source);
-  return { turn, read: (url: string) => readWebPageInTurn({ turn, request, readPage: (target) => readWebPage(target, site.options) }, url) };
+  return { turn, read: (url: string) => readWebPageInTurn({ turn, request, connectionHosts: [], readPage: (target) => readWebPage(target, site.options) }, url) };
 }
 
 function page(result: WebPageResult | WebRefusal): WebPage {
@@ -158,6 +158,7 @@ test('a turn reads at most six pages; a refused read takes none of them', async 
   const input = {
     turn,
     request: webRequest('read the vendor docs'),
+    connectionHosts: ['docs.vendor.example'],
     readPage: async (url: URL): Promise<WebPageResult> => {
       sent.push(url.href);
       return { outcome: 'read', url: url.href, status: 200, untrusted: true, instruction: '', truncated: false, links: [], text: '' };
@@ -459,7 +460,7 @@ async function connectionFixture(site: ReturnType<typeof web>) {
     const request = webRequest(requesterText);
     return {
       web,
-      read: (url: string) => readWebPageInTurn({ turn: web, request, readPage: (target) => readWebPage(target, site.options) }, url),
+      read: (url: string) => readWebPageInTurn({ turn: web, request, connectionHosts: [], readPage: (target) => readWebPage(target, site.options) }, url),
       connect: async (): Promise<ManagementApplyResult> => {
         const result = await invokeSlackWorkspaceManagementTool({
           signal: signalAfterPageRead(asked, web.pageRead()),

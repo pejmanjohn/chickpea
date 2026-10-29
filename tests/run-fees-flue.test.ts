@@ -256,6 +256,7 @@ function WebProbe() {
   for (const tool of createWebTools({
     turn,
     request: webRequest(DOCS_ASKED),
+    connectionHosts: [],
     readPage: (url) => readWebPage(url, { cloudflare: true, fetch: docsWeb }),
   })) useTool(tool);
   return 'Read the docs.';

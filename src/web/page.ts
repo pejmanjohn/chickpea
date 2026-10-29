@@ -46,15 +46,23 @@ export interface WebPageUnreadable {
 }
 
 /**
- * What decides whether a URL may be read this turn. A URL from any of the
- * first two sources is read as it is; any other URL is one the model wrote,
- * and is read only when it can carry nothing from the request.
+ * What decides whether a URL may be read this turn. A URL from either of the
+ * first two sources is read as it is. Any other URL is one the model wrote:
+ * it may name only a host from `hosts`, so text an injected page asks for
+ * has no host of its choosing to go to, and its path may carry nothing from
+ * the request.
  */
 export interface WebUrlSources {
   /** URLs the requester typed in this turn's message. */
   typed: readonly URL[];
   /** URLs this turn's search results and pages returned, as `sourcedWebUrl` writes them. */
   sourced: readonly string[];
+  /**
+   * Hosts a URL the model writes may name: those the requester typed in this
+   * turn's message, and those of the Agent's own API and MCP connections in
+   * the trusted runtime plan. Never from model input.
+   */
+  hosts: readonly string[];
   /**
    * Lowercased words of 8 or more letters and digits from this turn's request
    * text (`requestTokens`). A key admitted this turn was typed in that text,
@@ -63,7 +71,7 @@ export interface WebUrlSources {
   requestTokens: readonly string[];
 }
 
-export type WebUrlRefusal = 'invalid' | 'not_public' | 'query' | 'long_path' | 'request_text';
+export type WebUrlRefusal = 'invalid' | 'not_public' | 'query' | 'long_path' | 'host' | 'request_text';
 
 export type WebUrlAdmission =
   | { admitted: true; url: URL }
@@ -74,16 +82,17 @@ export const WEB_URL_REFUSALS: Record<WebUrlRefusal, string> = {
   not_public: 'Nothing was read: read_web_page reads only public https pages on the standard port, never a local, private or internal address.',
   query: 'Nothing was read: a URL you write yourself may not have a query string. Pass a URL from this turn\'s search results or page links exactly as given, or one the requester typed.',
   long_path: `Nothing was read: a URL you write yourself may have a path of at most ${MAX_COMPOSED_PATH_CHARS} characters.`,
-  request_text: 'Nothing was read: a URL you write yourself may not contain words from the requester\'s message. Use a URL from this turn\'s search results or page links, or ask the requester to send the link.',
+  host: 'Nothing was read: a URL you write yourself must be on a host the requester typed or one of this Agent\'s connections. To read another site, search for the page and pass a result\'s URL as given, or ask the requester for the link.',
+  request_text: 'Nothing was read: a URL you write yourself may not contain words from the requester\'s message in its path. Use a URL from this turn\'s search results or page links, or ask the requester to send the link.',
 };
 
 /**
  * Whether `raw` may be read now. A URL the requester typed, or one this
  * turn's search results or pages returned, is read with its query string.
- * Any other URL is one the model wrote: it is read only over https, without
- * a query string, with a path of at most 200 characters, and with none of
- * the request's long words in its host or path. Every URL must be a public
- * https URL on the standard port.
+ * Any other URL is one the model wrote: it is read only on a host from
+ * `sources.hosts`, without a query string, with a path of at most 200
+ * characters and none of the request's long words. Every URL must be a
+ * public https URL on the standard port.
  */
 export function admitWebUrl(raw: string, sources: WebUrlSources): WebUrlAdmission {
   const url = webUrl(raw);
@@ -94,7 +103,8 @@ export function admitWebUrl(raw: string, sources: WebUrlSources): WebUrlAdmissio
   }
   if (url.search) return { admitted: false, reason: 'query' };
   if (url.pathname.length > MAX_COMPOSED_PATH_CHARS) return { admitted: false, reason: 'long_path' };
-  if (carriesRequestText(url, sources.requestTokens)) return { admitted: false, reason: 'request_text' };
+  if (!sources.hosts.some((host) => host.toLowerCase() === url.hostname)) return { admitted: false, reason: 'host' };
+  if (carriesRequestText(url.pathname, sources.requestTokens)) return { admitted: false, reason: 'request_text' };
   return { admitted: true, url };
 }
 
@@ -113,11 +123,13 @@ export function requestTokens(text: string | undefined): string[] {
 
 /**
  * Compared on letters and digits alone, after undoing percent-encoding, so
- * punctuation, case or encoding inside the URL hides no word.
+ * punctuation, case or encoding inside the path hides no word. The host is
+ * one the requester typed or a connection's, so only the path is the
+ * model's own text, and the requester's typed host is itself among the words.
  */
-function carriesRequestText(url: URL, tokens: readonly string[]): boolean {
+function carriesRequestText(pathname: string, tokens: readonly string[]): boolean {
   if (tokens.length === 0) return false;
-  const written = lettersAndDigits(`${url.hostname}${decodedPath(url.pathname)}`.toLowerCase());
+  const written = lettersAndDigits(decodedPath(pathname).toLowerCase());
   return tokens.some((token) => written.includes(token));
 }
 

@@ -821,6 +821,14 @@ async function resolveRuntimePlanApiConnections(plan: RuntimePlanV2, env?: Platf
   return resolveApiConnectionsForTurn(plan.agentId, connections, env, { accountContext });
 }
 
+/** The hosts of the Agent's own API and MCP connections in its frozen plan. */
+function runtimePlanConnectionHosts(plan: RuntimePlanV2): string[] {
+  return [
+    ...plan.apiConnections.flatMap(({ allowedHosts }) => allowedHosts),
+    ...plan.mcpConnections.flatMap(({ url }) => URL.parse(url)?.hostname ?? []),
+  ];
+}
+
 /** Flue 2 hook-authored Slack agent. Every declaration comes from validated,
  * secret-free creation data; live credentials stay behind lazy resolvers. */
 export function ChickpeaSlack({ id }: AgentProps) {
@@ -1329,7 +1337,11 @@ export function useRuntimePlanAgent(
   // Not artifact tools: an old routine occurrence without a file destination
   // still reads the web. A file-delivery repair may not.
   const webTools = options.web?.request && !fileCompletion.repairing
-    ? createWebTools({ turn: options.web.turn, request: options.web.request })
+    ? createWebTools({
+        turn: options.web.turn,
+        request: options.web.request,
+        connectionHosts: runtimePlanConnectionHosts(plan),
+      })
     : [];
   const activityToolDescriptors = [
     ...options.additionalActivityToolDescriptors ?? [],
