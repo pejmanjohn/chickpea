@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
+import { CONNECTION_GUIDE_MAX_LENGTH } from '../config/agent-write-rules.ts';
 import { GITHUB_OWNER_PATTERN } from '../config/github-app.ts';
 import { MODEL_EFFORTS } from '../config/model-effort.ts';
 import { PLATFORM_NOT_OFFERED_TEXT, type ModelReadiness } from '../config/model-readiness.ts';
@@ -45,6 +46,7 @@ const recipeMcpRequirementSchema = z.strictObject({
   allowedTools: z.array(recipeText(120)).max(500),
   oauthScope: recipeOptionalText(2_000).exactOptional(),
   presetId: recipeId.exactOptional(),
+  guide: recipeOptionalText(CONNECTION_GUIDE_MAX_LENGTH).exactOptional(),
 });
 const recipeApiRequirementSchema = z.strictObject({
   id: recipeId,
@@ -60,6 +62,7 @@ const recipeApiRequirementSchema = z.strictObject({
   oauthScopes: z.array(recipeText(500)).max(100).exactOptional(),
   oauthAppType: z.enum(['workspace-internal', 'external']).exactOptional(),
   presetId: recipeId.exactOptional(),
+  guide: recipeOptionalText(CONNECTION_GUIDE_MAX_LENGTH).exactOptional(),
 });
 const recipeRepositoryRequirementSchema = z.union([
   z.strictObject({
@@ -452,6 +455,7 @@ function exportAgent(agent: CustomAgentConfig, symbol: string): WorkspaceRecipeA
       allowedTools: [...connection.allowedTools],
       ...(connection.oauthScope ? { oauthScope: connection.oauthScope } : {}),
       ...(connection.presetId ? { presetId: connection.presetId } : {}),
+      ...(connection.guide ? { guide: connection.guide } : {}),
     })),
     apiRequirements: agent.apiConnections.map((connection) => ({
       id: connection.id,
@@ -469,6 +473,7 @@ function exportAgent(agent: CustomAgentConfig, symbol: string): WorkspaceRecipeA
       ...(connection.oauthScopes ? { oauthScopes: [...connection.oauthScopes] } : {}),
       ...(connection.oauthAppType ? { oauthAppType: connection.oauthAppType } : {}),
       ...(connection.presetId ? { presetId: connection.presetId } : {}),
+      ...(connection.guide ? { guide: connection.guide } : {}),
     })),
     repositoryRequirements: agent.repositories.map((repository) => repository.allRepos
       ? { id: repository.id, owner: repository.accountLogin, allRepos: true as const, enabled: repository.enabled }
