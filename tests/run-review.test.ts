@@ -156,13 +156,13 @@ test('a session starts only with a port, an installation, a capturing host and a
   assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: false, settings }), undefined, 'so does a synchronous throw');
 });
 
-test('a run whose plan grants a website login is never captured, and says why without content', async (t) => {
+test('a run that grants a website login is never captured, never asks the host, and says why without content', async (t) => {
   const { capturingCalls } = fakePort(t);
   const warnings: string[] = [];
   t.mock.method(console, 'warn', (line: string) => { warnings.push(line); });
   assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: true, settings: () => memorySettings() }),
     undefined);
-  assert.deepEqual(capturingCalls, [INSTALLATION]);
+  assert.deepEqual(capturingCalls, []);
   assert.deepEqual(warnings, [JSON.stringify({ component: 'run_review', event: 'website_logins_granted' })]);
 });
 

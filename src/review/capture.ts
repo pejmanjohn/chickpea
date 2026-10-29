@@ -30,9 +30,10 @@ export interface RunReviewStart {
   /** Shared beyond the workspace, as through Slack Connect: never captured. */
   sharedChannel?: boolean;
   /**
-   * The run's frozen plan grants a website login: never captured. Such a run
-   * may browse signed in, and no step-by-step rule can keep what a signed-in
-   * page showed out of its trace, its truncation, or the Agent's own words.
+   * The run grants a website login (`runGrantsWebsiteLogins`): never
+   * captured. Such a run may browse signed in, and no step-by-step rule can
+   * keep what a signed-in page showed out of its trace, its truncation, or
+   * the Agent's own words.
    */
   grantsWebsiteLogins: boolean;
   /** Where the installation's review key is kept; reached only once a copy is built. */
@@ -79,13 +80,13 @@ export async function startRunReview(
   if (!port || start.sharedChannel) return undefined;
   const installationId = installationScopeOf(env)?.installationId;
   if (!installationId) return undefined;
-  const capturing = await within(() => port.capturing(installationId), CAPTURING_BOUND_MS).catch(() => TIMED_OUT);
-  if (capturing === TIMED_OUT) warn('capturing_unavailable');
-  if (capturing !== true) return undefined;
   if (start.grantsWebsiteLogins) {
     warn('website_logins_granted');
     return undefined;
   }
+  const capturing = await within(() => port.capturing(installationId), CAPTURING_BOUND_MS).catch(() => TIMED_OUT);
+  if (capturing === TIMED_OUT) warn('capturing_unavailable');
+  if (capturing !== true) return undefined;
   return new Session(port, installationId, start);
 }
 

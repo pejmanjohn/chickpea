@@ -284,6 +284,21 @@ test('a turn whose plan grants a website login keeps no copy, and its reply is u
   assert.equal(warnings.some((line) => /ops@example|billing|wl_b/i.test(line)), false, 'the reason carries no content');
 });
 
+test('a turn whose Agent is granted a login keeps no copy even when the login read froze none', async (t) => {
+  await turnState(t);
+  const port = reviewPort();
+  t.mock.method(console, 'warn', () => undefined);
+  const granted = (enabled: boolean): ResolvedAssignment => ({
+    ...ASSIGNMENT,
+    agent: { ...ASSIGNMENT.agent, websiteLogins: [{ loginId: `wl_${'b'.repeat(32)}`, level: 'check', enabled }] },
+  });
+  // The plan has the browser but no logins, as when reading them failed.
+  await reviewedTurn(HOSTED_ENV, { ...streamedReply('read_failed'), assignment: granted(true), browser: BROWSER });
+  assert.equal(port.records.length, 0);
+  await reviewedTurn(HOSTED_ENV, { ...streamedReply('grant_disabled'), assignment: granted(false), browser: BROWSER });
+  assert.equal(port.records.length, 1, 'a disabled grant grants nothing');
+});
+
 test('a turn with the browser but no website login is still copied', async (t) => {
   await turnState(t);
   const port = reviewPort();
