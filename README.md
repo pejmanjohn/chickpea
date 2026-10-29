@@ -659,6 +659,7 @@ Chickpea is offline-safe by default. Left unset, most variables take a local pat
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` | optional | Enable the matching provider. Can be stored in Settings instead. |
 | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | optional | Enable REST Workers AI. Cloudflare deploys can use the keyless binding provider instead. |
 | `COMPOSIO_API_KEY` | optional | Deployment-managed alternative to adding the project key in **Settings → Connectors**. Never enters a runtime plan or model context. |
+| `EXA_API_KEY` | optional | Gives Agents web search through Exa. Without it, Agents still read web pages but cannot search. Never enters a runtime plan or model context. |
 | `DO_NOT_TRACK` / `CHICKPEA_DISABLE_TELEMETRY` | optional | Set either to `1`, `true`, or `yes` to disable anonymous [product telemetry](TELEMETRY.md) completely. |
 | `CHICKPEA_TELEMETRY_ENVIRONMENT` | optional | Label telemetry as `production`, `development`, or `test`; defaults to production on Cloudflare and development on Node. |
 | `TAG_DB_PATH` / `SLACK_STATE_DB_PATH` | optional, Node | SQLite paths for durable transcripts and app-owned state. |
