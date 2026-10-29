@@ -122,6 +122,16 @@ export interface ReusableSignIn {
   agentIds: string[];
 }
 
+/** How one Agent's page-scoped connection is limited, and whether other Agents share its sign-in. */
+export interface PageSummary {
+  pageMode: 'all' | 'only';
+  /** The pages this Agent can use, when Chickpea can count them. */
+  pageCount?: number;
+  /** The pages its sign-in shares, when the last sign-in listed them all. */
+  sharedPageCount?: number;
+  otherAgentIds: string[];
+}
+
 export class ManagedConnectionConflictError extends Error {
   readonly name = 'ManagedConnectionConflictError';
 }
@@ -476,6 +486,37 @@ export class ConnectionAccountService {
       ? await this.dependencies.config.getAgentConnectionBindingForAccount(account.id)
       : undefined;
     return toConnectionAccountView(account, binding);
+  }
+
+  /** A summary for each of these bindings whose connection is page-scoped, by account id. Asks no provider. */
+  async pageSummaries(
+    workspaceId: string,
+    bindings: readonly AgentConnectionBinding[],
+  ): Promise<Map<string, PageSummary>> {
+    const accounts = await this.dependencies.config.listConnectionAccounts(workspaceId);
+    const byId = new Map(accounts.map((account) => [account.id, account]));
+    const summaries = new Map<string, PageSummary>();
+    for (const binding of bindings) {
+      const account = byId.get(binding.connectionAccountId);
+      if (account?.policy.kind !== 'managed' || account.lifecycle === 'revoked' ||
+          !this.catalog().connector(account.policy.toolkit)?.pageScope) continue;
+      const key = signInGroupKey(account);
+      const siblings = accounts.filter((candidate) => candidate.id !== account.id && signInGroupKey(candidate) === key);
+      const siblingBindings = await Promise.all(siblings.map(({ id }) =>
+        this.dependencies.config.getAgentConnectionBindingForAccount(id)));
+      const grant = account.policy.grantSummary;
+      const sharedPageCount = grant && !grant.truncated ? grant.items.length : undefined;
+      const choice = readAgentPageChoice(binding.resourceConstraints);
+      const pageCount = choice ? choice.length : sharedPageCount;
+      summaries.set(account.id, {
+        pageMode: choice ? 'only' : 'all',
+        ...(pageCount !== undefined ? { pageCount } : {}),
+        ...(sharedPageCount !== undefined ? { sharedPageCount } : {}),
+        otherAgentIds: [...new Set(siblingBindings.flatMap((sibling) =>
+          sibling?.enabled && sibling.agentId !== binding.agentId ? [sibling.agentId] : []))],
+      });
+    }
+    return summaries;
   }
 
   /** Return an account only after proving the caller owns its management lane. */
