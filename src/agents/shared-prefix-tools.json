@@ -1027,6 +1027,11 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 128
+               },
+               "guide": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "Plain-text notes the Agent that owns this connection reads as a skill: endpoints, request quirks, draft versus live writes, and the scope each action needs. Never a key or token. Omit to remove."
                }
               },
               "required": [
@@ -1127,6 +1132,11 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 128
+               },
+               "guide": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "Plain-text notes the Agent that owns this connection reads as a skill: endpoints, request quirks, draft versus live writes, and the scope each action needs. Never a key or token. Omit to remove."
                }
               },
               "required": [
@@ -1478,6 +1488,11 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 128
+               },
+               "guide": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "Plain-text notes the Agent that owns this connection reads as a skill: endpoints, request quirks, draft versus live writes, and the scope each action needs. Never a key or token. Omit to remove."
                }
               },
               "required": [
@@ -1578,6 +1593,11 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 128
+               },
+               "guide": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "Plain-text notes the Agent that owns this connection reads as a skill: endpoints, request quirks, draft versus live writes, and the scope each action needs. Never a key or token. Omit to remove."
                }
               },
               "required": [
@@ -3073,6 +3093,11 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 128
+               },
+               "guide": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "Plain-text notes the Agent that owns this connection reads as a skill: endpoints, request quirks, draft versus live writes, and the scope each action needs. Never a key or token. Omit to remove."
                }
               },
               "required": [
@@ -3173,6 +3198,11 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 128
+               },
+               "guide": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "Plain-text notes the Agent that owns this connection reads as a skill: endpoints, request quirks, draft versus live writes, and the scope each action needs. Never a key or token. Omit to remove."
                }
               },
               "required": [
@@ -3524,6 +3554,11 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 128
+               },
+               "guide": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "Plain-text notes the Agent that owns this connection reads as a skill: endpoints, request quirks, draft versus live writes, and the scope each action needs. Never a key or token. Omit to remove."
                }
               },
               "required": [
@@ -3624,6 +3659,11 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 128
+               },
+               "guide": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "Plain-text notes the Agent that owns this connection reads as a skill: endpoints, request quirks, draft versus live writes, and the scope each action needs. Never a key or token. Omit to remove."
                }
               },
               "required": [

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { skillImportSourceSchema } from '../config/skill-provenance.ts';
 
 import { AGENT_ID_PATTERN } from '../config/agent-id.ts';
+import { CONNECTION_GUIDE_MAX_LENGTH } from '../config/agent-write-rules.ts';
 import { MAX_MCP_OAUTH_SCOPE_LENGTH, MAX_MCP_TOOLS } from '../config/mcp-limits.ts';
 import { MODEL_EFFORTS } from '../config/model-effort.ts';
 import { MODEL_ROLES } from '../config/types.ts';
@@ -36,6 +37,7 @@ const workspaceModelDescription = 'A model from inspect_workspace modelCatalog: 
 const workspaceModelEffortDescription = 'Chat and coding only, one of the model\'s efforts in modelCatalog. Omit to run the model\'s standard effort.';
 const workspaceModelRevisionDescription = 'The role\'s revision from inspect_workspace workspaceModels; 0 when it was never set.';
 const agentImageModelDescription = 'An image model from inspect_workspace modelCatalog.image. null follows the Workspace image model.';
+const connectionGuideDescription = 'Plain-text notes the Agent that owns this connection reads as a skill: endpoints, request quirks, draft versus live writes, and the scope each action needs. Never a key or token. Omit to remove.';
 
 export const zSkillName = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64);
 export const zSkillImportSource = z.strictObject({
@@ -69,6 +71,7 @@ export const zMcpConnection = z.strictObject({
   allowedTools: z.array(zText(120)).max(MAX_MCP_TOOLS),
   oauthScope: zOptionalText(MAX_MCP_OAUTH_SCOPE_LENGTH).optional(),
   presetId: zId.optional(),
+  guide: zOptionalText(CONNECTION_GUIDE_MAX_LENGTH).optional().describe(connectionGuideDescription),
 });
 /** Writable API connection policy; the service owns status and credential binding. */
 export const zApiConnection = z.strictObject({
@@ -85,6 +88,7 @@ export const zApiConnection = z.strictObject({
   oauthScopes: z.array(zText(500)).max(100).optional(),
   oauthAppType: z.enum(['workspace-internal', 'external']).optional(),
   presetId: zId.optional(),
+  guide: zOptionalText(CONNECTION_GUIDE_MAX_LENGTH).optional().describe(connectionGuideDescription),
 });
 const zRepository = z.strictObject({
   id: zId,
@@ -443,6 +447,7 @@ export const vMcpConnection = v.strictObject({
   allowedTools: va(vt(120), MAX_MCP_TOOLS),
   oauthScope: v.optional(vot(MAX_MCP_OAUTH_SCOPE_LENGTH)),
   presetId: v.optional(vid),
+  guide: v.pipe(v.optional(vot(CONNECTION_GUIDE_MAX_LENGTH)), v.description(connectionGuideDescription)),
 });
 export const vApiConnection = v.strictObject({
   id: vid,
@@ -458,6 +463,7 @@ export const vApiConnection = v.strictObject({
   oauthScopes: v.optional(va(vt(500), 100)),
   oauthAppType: v.optional(v.picklist(['workspace-internal', 'external'])),
   presetId: v.optional(vid),
+  guide: v.pipe(v.optional(vot(CONNECTION_GUIDE_MAX_LENGTH)), v.description(connectionGuideDescription)),
 });
 const vRepository = v.pipe(
   v.strictObject({
