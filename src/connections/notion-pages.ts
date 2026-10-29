@@ -1,4 +1,5 @@
 import type { ManagedBindingResourceConstraints } from '../config/types.ts';
+import { sha256Hex } from '../security/digest.ts';
 
 declare const notionIdBrand: unique symbol;
 
@@ -61,6 +62,11 @@ function notionIdFromUrl(value: string): NotionId | undefined {
 
 function dashed(hex: string): NotionId {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}` as NotionId;
+}
+
+/** How the browser names a listed page: the same for one page every time, and never its Notion id. */
+export async function notionPageHandle(id: NotionId): Promise<string> {
+  return `page_${(await sha256Hex(`${NOTION_PAGES_KEY}\u0000${id}`)).slice(0, 32)}`;
 }
 
 /** An Agent's scope from its binding; none leaves Notion's own grant as the boundary. */

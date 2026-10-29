@@ -71,10 +71,10 @@ import {
   parseNotionId,
   readAgentPageChoice,
   writeAgentPageChoice,
+  notionPageHandle,
   type NotionId,
   type NotionListedPage,
   type NotionPageListing,
-  type NotionPageRoot,
 } from './notion-pages.ts';
 import { ManagedSignInMixError, signInMix, signInMixRefusal } from './sign-in-mix.ts';
 
@@ -86,6 +86,13 @@ export interface ConnectionAccountServiceDependencies {
   randomId?: () => string;
   productTelemetry?: ProductTelemetryCapture;
   telemetrySurface?: 'admin' | 'slack' | 'mcp' | 'other';
+}
+
+/** A page an Agent may choose, as the browser sees it. */
+export interface ChoosablePage {
+  handle: string;
+  kind: 'page' | 'database';
+  label: string;
 }
 
 export class ManagedConnectionConflictError extends Error {
@@ -982,23 +989,23 @@ export class ConnectionAccountService {
     signal?: AbortSignal;
   }): Promise<{
     mode: 'all' | 'only';
-    pages: Array<NotionPageRoot & { chosen: boolean }>;
+    pages: Array<ChoosablePage & { chosen: boolean }>;
     complete: boolean;
   }> {
     const { account, binding } = await this.requireAgentOwnedAccount(input);
-    const { roots, complete } = pageRoots(await this.listPages(this.pageScopedPolicy(account), input.signal));
+    const { pages, complete } = await this.choosablePages(this.pageScopedPolicy(account), input.signal);
     const choice = readAgentPageChoice(binding.resourceConstraints);
     const chosen = choice && new Set(choice);
     return {
       mode: choice ? 'only' : 'all',
-      pages: roots.map(({ id, kind, label }) => ({ id, kind, label, chosen: !chosen || chosen.has(id) })),
+      pages: pages.map(({ id, ...page }) => ({ ...page, chosen: !chosen || chosen.has(id) })),
       complete,
     };
   }
 
   /**
-   * Limit one Agent to chosen pages, or give it all of them again. Every
-   * chosen page must be one agentPages lists for this Agent now.
+   * Limit one Agent to chosen pages, named by their handles, or give it all of
+   * them again. Every chosen page must be one agentPages lists for this Agent now.
    */
   async setAgentPages(input: {
     principal: AuthPrincipal;
@@ -1014,16 +1021,7 @@ export class ConnectionAccountService {
       throw new ManagedResourceSelectionError('stale', 'Managed connection changed');
     }
     const policy = this.pageScopedPolicy(account);
-    let chosen: NotionId[] | undefined;
-    if (requested) {
-      const { roots } = pageRoots(await this.listPages(policy, input.signal));
-      const choosable = new Set(roots.map(({ id }) => id));
-      chosen = [...new Set(requested.map((raw) => {
-        const id = parseNotionId(raw);
-        if (!id || !choosable.has(id)) throw new ManagedResourceSelectionError('invalid', 'Notion page is not available');
-        return id;
-      }))];
-    }
+    const chosen = requested && await this.chosenPages(policy, requested, input.signal);
     // The listing took a while. As selectManagedResources does, let the store refuse a
     // revision another edit has moved, then change only the choice on the binding as it is now.
     let updatedAccount: ConnectionAccount;
@@ -1047,6 +1045,33 @@ export class ConnectionAccountService {
     });
     if (!updatedBinding) throw new ManagedResourceSelectionError('stale', 'Managed connection changed');
     return { account: updatedAccount, binding: updatedBinding };
+  }
+
+  /** The pages a sign-in lists that an Agent may choose, each with the handle the browser names it by. */
+  private async choosablePages(
+    policy: ConnectionAccountManagedPolicy,
+    signal?: AbortSignal,
+  ): Promise<{ pages: Array<ChoosablePage & { id: NotionId }>; complete: boolean }> {
+    const { roots, complete } = pageRoots(await this.listPages(policy, signal));
+    return {
+      pages: await Promise.all(roots.map(async ({ id, kind, label }) =>
+        ({ id, handle: await notionPageHandle(id), kind, label }))),
+      complete,
+    };
+  }
+
+  private async chosenPages(
+    policy: ConnectionAccountManagedPolicy,
+    handles: readonly unknown[],
+    signal?: AbortSignal,
+  ): Promise<NotionId[]> {
+    const { pages } = await this.choosablePages(policy, signal);
+    const byHandle = new Map(pages.map(({ handle, id }) => [handle, id]));
+    return [...new Set(handles.map((handle) => {
+      const id = typeof handle === 'string' ? byHandle.get(handle) : undefined;
+      if (!id) throw new ManagedResourceSelectionError('invalid', 'Notion page is not available');
+      return id;
+    }))];
   }
 
   private pageScopedPolicy(account: ConnectionAccount): ConnectionAccountManagedPolicy {
