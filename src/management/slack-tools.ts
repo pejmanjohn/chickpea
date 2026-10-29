@@ -30,7 +30,7 @@ import {
   inspectWorkspaceValibotSchema,
   prepareConnectorSetupValibotSchema,
   discoverSlackChannelsValibotSchema,
-  testMcpConnectionValibotSchema,
+  testConnectionValibotSchema,
   inspectMemoryValibotSchema,
   inspectRoutinesValibotSchema,
   exportRecipeValibotSchema,
@@ -168,7 +168,7 @@ const SLACK_AGENT_CREATION_TURN_STATE = 'slack-agent-creation-turn';
 const MUTATING_TOOLS = new Set<WorkspaceManagementToolName>([
   'prepare_connector_setup',
   'discover_slack_channels',
-  'test_mcp_connection',
+  'test_connection',
   'revoke_setup_link',
   'import_skill',
   'manage_agent_skill',
@@ -635,12 +635,12 @@ export function useWorkspaceManagementSlackTools(
     },
   });
   useTool({
-    name: 'test_mcp_connection',
-    description: workspaceManagementToolDescription('test_mcp_connection'),
-    input: testMcpConnectionValibotSchema,
+    name: 'test_connection',
+    description: workspaceManagementToolDescription('test_connection'),
+    input: testConnectionValibotSchema,
     async run({ data }) {
       return slackToolOutput(await invokeLiveSlackTool(
-        signal, resolvePlatformEnv, 'test_mcp_connection', data, turnGuard,
+        signal, resolvePlatformEnv, 'test_connection', data, turnGuard,
       ));
     },
   });

@@ -458,8 +458,8 @@
    }
   },
   {
-   "name": "test_mcp_connection",
-   "description": "Test one saved Agent MCP connection with its write-only credentials and return a sanitized result plus discovered tools.",
+   "name": "test_connection",
+   "description": "Check that one of an editable Agent's saved connections works, with its saved credential. An API connection gets one GET to `path` on its first host, or to its first path prefix when `path` is omitted; `path` must be inside the connection, for example /v1/me. An MCP connection lists its tools. Returns kind: ok, key_rejected (401), not_permitted (403), path_not_found (404), unreachable (network error, timeout or 5xx) or inconclusive, with the HTTP status and a short redacted detail; an MCP ok also lists its tools. Nothing is written and the credential is never returned.",
    "eager_input_streaming": true,
    "input_schema": {
     "type": "object",
@@ -472,6 +472,11 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 128
+     },
+     "path": {
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^\\/(?!\\/)\\S*$"
      }
     },
     "required": [

@@ -70,7 +70,7 @@ const MCP_TOOL_ANNOTATIONS = {
   prepare_connector_setup: READ,
   prepare_provider_setup: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   discover_slack_channels: READ,
-  test_mcp_connection: READ,
+  test_connection: READ,
   inspect_memory: READ,
   inspect_routines: READ,
   export_workspace_recipe: READ,
@@ -420,10 +420,10 @@ test('server instructions stay under the client cap and link the deployment Admi
   assert.ok(withoutOrigin.includes('/admin'));
 });
 
-test('workspace management MCP publishes the version 3 server contract', () => {
+test('workspace management MCP publishes the version 4 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '3.1.0',
+    version: '4.0.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });
