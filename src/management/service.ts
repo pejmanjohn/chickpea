@@ -8501,7 +8501,7 @@ function memoryMutation(memory: AgentMemory, inverse?: ManagementOperation): Imm
 
 const SETUP_LINK_ON_APPROVAL = 'The person gets this setup link with the receipt when they approve the change set. Tell them it follows their approval, and do not prepare it yourself.';
 const CHANGE_AFTER_APPROVAL = 'This change conflicts with the pending change set. Make it in a new request after the person approves that one.';
-const SAVED_KEY_INSTRUCTION = 'The key is saved and the connection is ready. Tell the person the connection name, where its requests go (sendsKeyTo), what it may do (allowedMethods), and that a test request with the key worked. Never repeat the key.';
+const SAVED_KEY_INSTRUCTION = 'The key is saved and the connection is ready. Tell the person the connection name, where its requests go (sendsKeyTo), what it may do (allowedMethods), and that a test request with the key worked. Then make one real read with connection_request, such as a short list, and show a brief sample; when connection_request is not available in this turn, say they can ask for one in their next message. Never repeat the key.';
 
 const SLACK_SETUP_APPROVAL_UNAVAILABLE = 'Replacing saved credentials needs an approval Slack cannot collect for a setup link. Ask the person to replace them from Admin.';
 

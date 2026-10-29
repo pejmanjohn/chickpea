@@ -136,7 +136,7 @@ test('connect hands a catalog service off in the browser and keys a custom conne
     'save_connection_key',
   ]) assert.ok(text.includes(required), `connect must mention ${required}`);
   assert.ok(!text.includes('24 hours'), 'MCP Admin links are not expiring Slack setup capabilities');
-  assert.match(text, /If they already gave you the key, call save_connection_key/);
+  assert.match(text, /If they already gave you the key, find a setup that works with try_connection, then save it with save_connection_key/);
   assert.match(text, /Never ask them to paste a key here\./, 'connect never asks for a key');
   assert.ok(text.includes('@notes'), 'a supplied handle names the target Agent');
 
