@@ -186,7 +186,8 @@ import {
   type WorkspaceRecipe,
   type WorkspaceRecipePreview,
 } from './recipes.ts';
-import type { ConnectionCheckOutcome } from '../connections/connection-check.ts';
+import { matchesEgressPrefix } from '../config/egress.ts';
+import { connectionUrlPrefixes, type ConnectionCheckOutcome } from '../connections/connection-check.ts';
 import type { ConnectionTestActor, McpConnectionTestResult, OpenMcpServer } from './discovery.ts';
 import type { ManagementStore } from './store.ts';
 import { changeSetAccessFits } from './change-set-presentation.ts';
@@ -5073,6 +5074,7 @@ export class WorkspaceManagementService {
         ...(agentReferences ? { agentReferences } : {}),
         capabilityScopeExpanded: capabilityScopeExpanded(currentAgent, patch),
         connectionRemoved: connectionRemoved(currentAgent, patch),
+        requesterTypedNewKeyedConnections: newKeyedConnectionsTypedByRequester(actor, currentAgent, patch),
         agentEditable: true,
         ...(options.approvalBasis || requesterAuthorized
           ? { approvalBasis: 'explicit_requester_command' as const }
@@ -8536,6 +8538,69 @@ function requesterTextContainsExactSource(requestText: string, source: string): 
     if (beforeBoundary && afterBoundary) return true;
   }
   return false;
+}
+
+/**
+ * The http(s) URLs in the requester's text. Slack sends a typed URL as
+ * `<url>` or `<url|label>`; only the target counts, since a label can show
+ * another URL.
+ */
+function requesterTypedUrls(requestText: string): URL[] {
+  const text = requestText
+    .replace(/<(https?:\/\/[^>|\s]+)(?:\|[^>]*)?>/gi, ' $1 ')
+    .replace(/&amp;/gi, '&');
+  return [...text.matchAll(/https?:\/\/[^\s<>"'`|]+/gi)].flatMap(([match]) => {
+    try {
+      return [new URL(match.replace(/[.,;:!?)\]}]+$/, ''))];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** A typed URL covers `url` when it has the same origin and `url`'s path sits inside the typed path. */
+function typedUrlsCover(typed: readonly URL[], url: string): boolean {
+  return typed.some((entry) => matchesEgressPrefix(url, entry.href));
+}
+
+/**
+ * Slack: whether every API connection and MCP server the patch adds or
+ * changes is new to the Agent, needs a key (an API key, or an MCP bearer
+ * token), and sends only to URLs the requester typed in this message to
+ * this Agent. Such a connection starts pending with no key, so it reaches
+ * nothing until one is saved.
+ */
+function newKeyedConnectionsTypedByRequester(
+  actor: LiveManagementActor,
+  agent: CustomAgentConfig,
+  patch: ManagementAgentPatch,
+): boolean {
+  const requestText = requestAddressedHere(actor);
+  if (!requestText) return false;
+  const apis = changedConnections(agent.apiConnections, patch.apiConnections, managementApiConnection);
+  const servers = changedConnections(agent.mcpServers, patch.mcpServers, managementMcpConnection);
+  const isNew = (stored: readonly { id: string }[]) => ({ id }: { id: string }) =>
+    !stored.some((connection) => connection.id === id);
+  if (apis.length + servers.length === 0 ||
+      !apis.every(isNew(agent.apiConnections)) || !servers.every(isNew(agent.mcpServers)) ||
+      apis.some(({ authMode }) => authMode === 'oauth') || servers.some(({ authMode }) => authMode !== 'bearer')) {
+    return false;
+  }
+  const typed = requesterTypedUrls(requestText);
+  return [...apis.map(connectionUrlPrefixes), ...servers.map(({ url }) => [url])]
+    .every((urls) => urls.length > 0 && urls.every((url) => typedUrlsCover(typed, url)));
+}
+
+/** The written connections that are new or differ from the stored connection with their id. */
+function changedConnections<T extends { id: string }>(
+  stored: readonly T[],
+  written: readonly T[] | undefined,
+  project: (connection: T) => T,
+): T[] {
+  return (written ?? []).filter((connection) => {
+    const prior = stored.find(({ id }) => id === connection.id);
+    return !prior || canonicalJson(project(prior)) !== canonicalJson(project(connection));
+  });
 }
 
 function wordMatch(text: string, value: string): RegExpExecArray | undefined {

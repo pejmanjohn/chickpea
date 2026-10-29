@@ -27,6 +27,12 @@ interface ManagementPolicyFacts {
   reversibleLocalChange?: boolean;
   /** The service derived this grant from the Slack Channel where it created the Agent. */
   trustedSlackOriginGrant?: boolean;
+  /**
+   * Every API connection and MCP server the patch adds or changes is new to
+   * the Agent, needs a key it cannot have yet, and sends only to URLs the
+   * requester typed in this Slack message.
+   */
+  requesterTypedNewKeyedConnections?: boolean;
 }
 
 type ManagementPosture = 'immediate' | 'confirmation';
@@ -70,6 +76,7 @@ const POSTURE = {
   safe_reversible_schedule_change: IMMEDIATE,
   explicit_reversible_change: IMMEDIATE,
   source_channel_for_created_agent: IMMEDIATE,
+  typed_new_keyed_connection: IMMEDIATE,
   safe_reversible_change: IMMEDIATE,
 } satisfies Record<string, Readonly<Record<ManagementDoor, ManagementPosture>>>;
 
@@ -169,10 +176,17 @@ function managementPolicyReason(
     if (operation.confirmationReason === 'recipe_overwrite') {
       return { allowed: true, reason: 'recipe_overwrite' };
     }
+    const fields = Object.keys(operation.patch);
+    // A new connection that needs a key does nothing until a key arrives, and
+    // a pasted key must be the requester's own (save_connection_key), so the
+    // hosts they typed are all the approval card would have shown.
+    if (facts.requesterTypedNewKeyedConnections && facts.currentAgent?.kind === 'user' &&
+        fields.every((field) => field === 'apiConnections' || field === 'mcpServers')) {
+      return { allowed: true, reason: 'typed_new_keyed_connection' };
+    }
     if (facts.capabilityScopeExpanded) {
       return { allowed: true, reason: 'capability_scope_expansion' };
     }
-    const fields = Object.keys(operation.patch);
     if (fields.some((field) => [
       'apiConnections', 'mcpServers', 'repositories', 'editPolicy', 'slackPresence',
     ].includes(field))) {
