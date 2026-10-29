@@ -1899,7 +1899,7 @@ test('the setup page refuses a key the API rejects, saves nothing, and names the
   }
 });
 
-test('the setup page shows where the key goes, and saves a key the API accepts but does not permit', async () => {
+test('the setup page shows where the key goes, and saves a key the API answers 403 for', async () => {
   const f = await claimedTasksSetup('setup-key-not-permitted');
   try {
     const summary = await (await f.app.request(`http://localhost/setup/${f.setupId}`, {
@@ -1919,7 +1919,27 @@ test('the setup page shows where the key goes, and saves a key the API accepts b
     assert.equal((await currentAccount(f.config, f.tasks)).lifecycle, 'ready');
     const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`)).text();
     assert.match(done, /<h1>Key saved<\/h1>/);
-    assert.match(done, /accepted your key but did not permit the request Chickpea tried/);
+    assert.match(done, /The API refused the request Chickpea tried, which usually means your key works but lacks a permission\./);
+    assert.doesNotMatch(done, /accepted/);
+  } finally {
+    f.close();
+  }
+});
+
+test('a key the setup page saves where the API answers 404 is never called accepted', async () => {
+  const f = await claimedTasksSetup('setup-key-path-not-found');
+  try {
+    const saved = await withConnectionNetwork(
+      () => new Response(null, { status: 404 }),
+      async () => postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-unchecked' }),
+    );
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.equal(saved.headers.get('location'), `/setup/${f.setupId}?check=path_not_found`);
+    assert.equal(await storedSecret(f.settings, f.tasks), 'sk-unchecked', 'the person typed this key on purpose');
+    const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`)).text();
+    assert.match(done, /<h1>Key saved<\/h1>/);
+    assert.match(done, /The API did not find the path Chickpea tried, so Chickpea could not check your key\./);
+    assert.doesNotMatch(done, /accepted/);
   } finally {
     f.close();
   }

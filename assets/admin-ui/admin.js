@@ -54,8 +54,8 @@
   // What a saved API connection's key check found (ConnectionCheckOutcome in connection-check.ts).
   var CONNECTION_CHECK_NOTICES = {
     ok: " is connected, and its token works.",
-    not_permitted: " is saved. The API accepted its token but did not permit the request Chickpea tried.",
-    path_not_found: " is saved. The API accepted its token but did not find the path Chickpea tried.",
+    not_permitted: " is saved. The API refused the request Chickpea tried, which usually means its token works but lacks a permission.",
+    path_not_found: " is saved, but Chickpea could not check its token because the API did not find the path Chickpea tried.",
     unreachable: " is saved, but Chickpea could not reach the API to check its token.",
     inconclusive: " is saved, but Chickpea could not confirm that its token works."
   };
@@ -4257,7 +4257,8 @@
       return loadAgentConnections(agentId);
     }).then(function (result) {
       if (result && result.oauthStarted) return;
-      var noticeCheck = form.preset && createdCheck === "path_not_found" ? "" : createdCheck;
+      // A preset's bare API path can answer 404 for any token, and the person did not choose that path.
+      var noticeCheck = form.preset && createdCheck === "path_not_found" ? "inconclusive" : createdCheck;
       setAgentConnectionNotice(label + (Object.prototype.hasOwnProperty.call(CONNECTION_CHECK_NOTICES, noticeCheck) ? CONNECTION_CHECK_NOTICES[noticeCheck] : " is connected to this Agent."), createdAccountId);
       render();
     }).catch(function (error) {
