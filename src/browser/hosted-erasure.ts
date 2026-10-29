@@ -44,6 +44,13 @@ export interface BrowserErasePass {
    * the provider; none can be deleted.
    */
   readonly sessionsListed: number;
+  /**
+   * A session list, or a session in one, did not show whose it was, so
+   * this pass may have missed running sessions and the contexts they name.
+   * Counted as no session; run another pass once the provider's list reads
+   * as documented.
+   */
+  readonly listingUnverified: boolean;
 }
 
 const RUNNING = new Set(['RUNNING', 'PENDING']);
@@ -60,7 +67,7 @@ export async function censusBrowser(store: SettingsStore, now: number): Promise<
 /**
  * One pass of erasure. First every running session ends: those the lease
  * row holds, the hand-off sessions queued with a deleted login, and those
- * the provider lists running under the installation's metadata. A queued
+ * the provider lists running or pending under the installation's metadata. A queued
  * hand-off leaves the queue only once its session has ended. Then every
  * context is deleted: the ones website logins record
  * (legacy catalog fields included), the queued ones, and every one the
@@ -93,7 +100,8 @@ export async function eraseBrowserPass(input: {
   for (const { handoffSessionId, contextId } of await pendingContextDeletions(store)) {
     if (handoffSessionId) running.set(handoffSessionId, running.get(handoffSessionId) ?? contextId);
   }
-  for (const { id, contextId } of await provider.installationSessions('RUNNING')) running.set(id, contextId ?? running.get(id));
+  const runningLists = [await provider.installationSessions('RUNNING'), await provider.installationSessions('PENDING')];
+  for (const { id, contextId } of runningLists.flatMap(({ sessions }) => sessions)) running.set(id, contextId ?? running.get(id));
   const stillRunning = new Set<string>();
   const ending: string[] = [];
   for (const sessionId of running.keys()) {
@@ -127,7 +135,9 @@ export async function eraseBrowserPass(input: {
     await sleep(END_POLL_MS);
   }
 
-  const listed = await provider.installationSessions();
+  const { sessions: listed, unverified } = await provider.installationSessions();
+  const listingUnverified = unverified || runningLists.some((list) => list.unverified);
+  if (listingUnverified) console.warn(JSON.stringify({ component: 'hosted_browser', event: 'session_listing_unverified' }));
   const busy = new Set([...stillRunning].flatMap((sessionId) => {
     const contextId = running.get(sessionId) ?? listed.find(({ id }) => id === sessionId)?.contextId;
     return contextId ? [contextId] : [];
@@ -161,7 +171,7 @@ export async function eraseBrowserPass(input: {
   await dropPendingContextDeletions(store, ({ contextId, handoffSessionId }) =>
     (contextId === undefined || settled.has(contextId)) &&
     (handoffSessionId === undefined || !stillRunning.has(handoffSessionId)));
-  return { ended, deleted, alreadyGone, foreign, remaining, sessionsListed: listed.length };
+  return { ended, deleted, alreadyGone, foreign, remaining, sessionsListed: listed.length, listingUnverified };
 }
 
 function isForeign(error: unknown): boolean {

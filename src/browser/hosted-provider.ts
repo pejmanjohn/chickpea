@@ -229,16 +229,29 @@ export class HostedBrowserProvider implements BrowserProvider {
   /**
    * The installation's sessions the provider lists by their metadata,
    * optionally in one status, each checked here too: a listed session whose
-   * record names another project or installation is left out.
+   * record names another project or installation is left out. So is one
+   * whose record does not show whose it is, and the list is then
+   * `unverified`, as it is when the answer itself is not a list: what it
+   * holds is not every session there is.
    */
-  async installationSessions(status?: 'RUNNING'): Promise<BrowserbaseSessionRecord[]> {
+  async installationSessions(status?: 'RUNNING' | 'PENDING'): Promise<{
+    sessions: BrowserbaseSessionRecord[];
+    unverified: boolean;
+  }> {
     const listed = await this.#call('list_sessions', () => this.#client.listSessions({
       metadata: { key: INSTALLATION_METADATA_KEY, value: this.#installationId },
       ...(status ? { status } : {}),
     }));
-    const own = listed.filter((record) => this.#sessionOwnership(record) === 'own');
-    for (const record of own) this.#ownSessions.add(record.id);
-    return own;
+    const sessions: BrowserbaseSessionRecord[] = [];
+    let unverified = listed.malformed;
+    for (const record of listed.sessions) {
+      const ownership = this.#sessionOwnership(record);
+      if (ownership === 'unverified') unverified = true;
+      if (ownership !== 'own') continue;
+      this.#ownSessions.add(record.id);
+      sessions.push(record);
+    }
+    return { sessions, unverified };
   }
 
   /** The session's record when this call read it to check ownership; undefined when already known. */

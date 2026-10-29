@@ -102,7 +102,7 @@ test('erasure ends the installation\'s sessions and deletes its contexts, never 
   const browserbase = seededBrowserbase(t);
 
   assert.deepEqual(await eraseInstallationBrowser(a.env, A, { store }), {
-    ended: 2, deleted: 4, alreadyGone: 1, foreign: 1, remaining: 0, sessionsListed: 3,
+    ended: 2, deleted: 4, alreadyGone: 1, foreign: 1, remaining: 0, sessionsListed: 3, listingUnverified: false,
   });
   assert.deepEqual([...browserbase.contexts.keys()].sort(), ['ctx_b', 'ctx_foreign'], 'the foreign context is never deleted');
   assert.equal(browserbase.sessions.get('sess_b')!.status, 'RUNNING');
@@ -117,7 +117,7 @@ test('erasure ends the installation\'s sessions and deletes its contexts, never 
   });
 
   assert.deepEqual(await eraseInstallationBrowser(a.env, A, { store }), {
-    ended: 0, deleted: 0, alreadyGone: 0, foreign: 0, remaining: 0, sessionsListed: 3,
+    ended: 0, deleted: 0, alreadyGone: 0, foreign: 0, remaining: 0, sessionsListed: 3, listingUnverified: false,
   });
 });
 
@@ -220,6 +220,50 @@ test('erasure ends a queued hand-off session the provider does not list, and kee
   const second = await pass();
   assert.deepEqual([second.deleted, second.remaining], [1, 0]);
   assert.equal(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), undefined);
+});
+
+function hostedProvider(store: SettingsStore, browserbase: ReturnType<typeof fakeBrowserbase>) {
+  return new HostedBrowserProvider({ access: { apiKey: 'bb_live_platform', projectId: 'proj-platform' }, installationId: A, store, fetch: browserbase.fetchImpl });
+}
+
+test('erasure ends a pending session it finds only by listing, and its context waits while that session runs', async (t) => {
+  const { store } = installation(t);
+  const browserbase = fakeBrowserbase({
+    fail: ({ method, url }) => method === 'POST' && url.endsWith('/v1/sessions/sess_pending') ? Response.json({}) : undefined,
+  });
+  browserbase.contexts.set('ctx_pending', own('pending'));
+  browserbase.sessions.set('sess_pending', { projectId: 'proj-platform', status: 'PENDING', contextId: 'ctx_pending', userMetadata: { installation: A } });
+  let clock = NOW;
+  const pass = await eraseBrowserPass({ store, provider: hostedProvider(store, browserbase), now: () => clock, sleep: async (ms) => { clock += ms; } });
+  assert.ok(browserbase.requests().includes('POST /v1/sessions/sess_pending'), 'its end is requested');
+  assert.ok(browserbase.contexts.has('ctx_pending'), 'its context is not deleted underneath it');
+  assert.deepEqual([pass.ended, pass.deleted, pass.remaining, pass.listingUnverified], [1, 0, 2, false]);
+});
+
+test('a session list that does not show whose its sessions are is reported, with one warning that names nothing', async (t) => {
+  const answers: Array<[string, () => Response]> = [
+    ['not a list', () => Response.json({ items: [{ id: 'sess_x', status: 'RUNNING' }] })],
+    ['no metadata', () => Response.json([{ id: 'sess_x', status: 'RUNNING', projectId: 'proj-platform', contextId: 'ctx_x' }])],
+    ['no project', () => Response.json([{ id: 'sess_x', status: 'RUNNING', userMetadata: { installation: A } }])],
+    ['unreadable entry', () => Response.json([{ projectId: 'proj-platform', userMetadata: { installation: A } }])],
+  ];
+  for (const [name, answer] of answers) {
+    const { store } = installation(t);
+    const warn = t.mock.method(console, 'warn', () => undefined);
+    const browserbase = fakeBrowserbase({
+      fail: ({ method, url }) => method === 'GET' && new URL(url).pathname === '/v1/sessions' ? answer() : undefined,
+    });
+    browserbase.contexts.set('ctx_x', own('x'));
+    const pass = await eraseBrowserPass({ store, provider: hostedProvider(store, browserbase), sleep: async () => undefined });
+    assert.equal(pass.listingUnverified, true, name);
+    assert.deepEqual([pass.ended, pass.deleted, pass.sessionsListed], [0, 0, 0], `${name}: nothing it lists is acted on`);
+    assert.ok(browserbase.contexts.has('ctx_x'), name);
+    const logged = warn.mock.calls.map((call) => String(call.arguments[0]));
+    assert.deepEqual(logged.filter((line) => line.includes('session_listing_unverified')),
+      [JSON.stringify({ component: 'hosted_browser', event: 'session_listing_unverified' })], `${name}: one warning`);
+    assert.doesNotMatch(logged.join('\n'), /sess_x|ctx_x|inst_erase/, `${name}: the log names nothing`);
+    warn.mock.restore();
+  }
 });
 
 test('erasure is refused for another installation and without the host browser port', async (t) => {

@@ -36,6 +36,12 @@ export interface BrowserbaseSessionRecord {
   userMetadata?: Record<string, unknown>;
 }
 
+/** A session list, and whether the answer or an entry in it was not the shape documented. */
+export interface BrowserbaseSessionList {
+  sessions: BrowserbaseSessionRecord[];
+  malformed: boolean;
+}
+
 /** The provider, plus the owner reads a deployment serving many installations checks against. */
 export interface BrowserbaseClient extends BrowserProvider {
   getContext(contextId: string): Promise<BrowserbaseContextRecord>;
@@ -45,7 +51,7 @@ export interface BrowserbaseClient extends BrowserProvider {
    * `metadata.value`, optionally in one status. The provider documents no
    * pagination for this list, so it may be incomplete.
    */
-  listSessions(filter: { metadata: { key: string; value: string }; status?: string }): Promise<BrowserbaseSessionRecord[]>;
+  listSessions(filter: { metadata: { key: string; value: string }; status?: string }): Promise<BrowserbaseSessionList>;
 }
 
 /**
@@ -187,7 +193,7 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
       return sessionRecord((await request('GET', sessionPath(sessionId))).data);
     },
 
-    async listSessions(filter): Promise<BrowserbaseSessionRecord[]> {
+    async listSessions(filter): Promise<BrowserbaseSessionList> {
       const { key, value } = filter.metadata;
       if (/['\\]/.test(key) || /['\\]/.test(value)) throw new BrowserProviderError('A session metadata filter cannot hold a quote');
       const query = new URLSearchParams({
@@ -196,10 +202,20 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
       });
       const { data } = await request('GET', `/v1/sessions?${query}`);
       const wrapper = asObject(data);
-      const list: unknown[] = Array.isArray(data)
+      const list: unknown[] | undefined = Array.isArray(data)
         ? data
-        : Array.isArray(wrapper.sessions) ? wrapper.sessions : Array.isArray(wrapper.data) ? wrapper.data : [];
-      return list.map(sessionRecord);
+        : Array.isArray(wrapper.sessions) ? wrapper.sessions : Array.isArray(wrapper.data) ? wrapper.data : undefined;
+      if (!list) return { sessions: [], malformed: true };
+      const sessions: BrowserbaseSessionRecord[] = [];
+      let malformed = false;
+      for (const entry of list) {
+        try {
+          sessions.push(sessionRecord(entry));
+        } catch {
+          malformed = true;
+        }
+      }
+      return { sessions, malformed };
     },
 
     async liveView(sessionId: string): Promise<BrowserLiveView> {
