@@ -22,13 +22,17 @@ import {
   WebsiteLoginInputError,
   WebsiteLoginLimitError,
   WebsiteLoginStateError,
+  websiteLoginDependencies,
   type WebsiteLoginDependencies,
 } from '../src/browser/logins.ts';
 import { websiteLoginsForTurn } from '../src/browser/capability.ts';
 import { computeSnapshotHash, type EffectiveSlackConfig } from '../src/config/effective-config.ts';
+import { InstallationContextError, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { encryptSlackSecretEnvelope, workspaceCredentialContext } from '../src/slack/secret-envelope.ts';
+import { withEnv } from './helpers/env.ts';
 
 const PASSWORD = 'pw-sentinel-Plaintext-7c1f';
 const TOTP = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
@@ -273,6 +277,50 @@ test('an envelope copied onto another login does not decrypt', async () => {
       envelope: firstRevision.envelope,
     });
     await assert.rejects(readWebsiteLoginSecrets(deps, second.id), WebsiteLoginStateError);
+  });
+});
+
+test('under tenancy a secret opens only in its own installation; a standalone row keeps its original binding', async () => {
+  const keyring = generateCredentialKeyring('website_login_tenancy');
+  const a = new SqliteSettingsStore(':memory:');
+  const b = new SqliteSettingsStore(':memory:');
+  try {
+    const login = await createWebsiteLogin({ store: a, keyring, installationId: 'inst_a' }, credentialsInput);
+    assert.equal((await readWebsiteLoginSecrets({ store: a, keyring, installationId: 'inst_a' }, login.id))?.password, PASSWORD);
+    // The catalog and the secret copied into B's store, under the one deployment keyring.
+    await b.setSetting(WEBSITE_LOGINS_SETTING, (await a.getSetting(WEBSITE_LOGINS_SETTING))!);
+    const secret = (await a.getEncryptedCredentialRevision(`website_login.${login.id}`))!;
+    await b.replaceEncryptedCredentialRevision({ ...secret, expectedRevision: null });
+    await assert.rejects(readWebsiteLoginSecrets({ store: b, keyring, installationId: 'inst_b' }, login.id),
+      WebsiteLoginStateError);
+    await assert.rejects(readWebsiteLoginSecrets({ store: b, keyring }, login.id), WebsiteLoginStateError);
+
+    // A row an earlier standalone build wrote, bound to the login alone, still opens.
+    const hex = 'c'.repeat(32);
+    await a.setSetting(WEBSITE_LOGINS_SETTING, JSON.stringify([{
+      id: `wl_${hex}`, host: 'legacy.example.com', label: 'Legacy', ownerKind: 'team',
+      createdByMembershipId: 'membership_admin', method: 'credentials', createdAt: 1,
+    }]));
+    const context = { contextId: `wl_ctx_${hex}`, identityId: 'website_login', appId: 'BROWSER', purpose: 'website_login' as const };
+    await a.replaceEncryptedCredentialRevision({
+      key: `website_login.wl_${hex}`, expectedRevision: null, revision: 'wl_rev_legacy', contextId: context.contextId,
+      envelope: await encryptSlackSecretEnvelope(keyring, workspaceCredentialContext({ ...context, revision: 'wl_rev_legacy' }),
+        { username: 'legacy-user', password: 'legacy-password' }),
+    });
+    assert.deepEqual(await readWebsiteLoginSecrets({ store: a, keyring }, `wl_${hex}`),
+      { username: 'legacy-user', password: 'legacy-password' });
+  } finally {
+    a.close();
+    b.close();
+  }
+});
+
+test('production dependencies bind the installation a scoped env serves, and refuse an unscoped hosted env', async () => {
+  await withEnv({ SLACK_STATE_DB_PATH: ':memory:', CHICKPEA_TENANCY: undefined }, () => {
+    const hosted = { CHICKPEA_TENANCY: 'installation' };
+    assert.equal(websiteLoginDependencies(scopeInstallationEnv(hosted, { installationId: 'inst_a' })).installationId, 'inst_a');
+    assert.equal(websiteLoginDependencies({}).installationId, undefined);
+    assert.throws(() => websiteLoginDependencies(hosted), InstallationContextError);
   });
 });
 

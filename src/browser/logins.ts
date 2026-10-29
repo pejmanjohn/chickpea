@@ -3,6 +3,7 @@ import {
   type EncryptedCredentialStore,
   type SettingsStore,
 } from '../config/settings-store.ts';
+import { requireInstallationScope } from '../config/installation-scope.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
 import {
@@ -82,6 +83,12 @@ export interface WebsiteLoginSecrets {
 export interface WebsiteLoginDependencies {
   store: SettingsStore & EncryptedCredentialStore;
   keyring: CredentialKeyring;
+  /**
+   * Under installation tenancy, the installation every secret is bound to,
+   * so a row copied into another installation's store does not decrypt.
+   * Standalone has none and keeps its original binding.
+   */
+  installationId?: string;
 }
 
 export interface CreateWebsiteLoginInput {
@@ -136,6 +143,7 @@ export class WebsiteLoginStateError extends Error {
 /** Production dependencies. The keyring loads lazily, only when a secret is touched. */
 export function websiteLoginDependencies(env?: PlatformEnv): WebsiteLoginDependencies {
   const store = getSettingsStore(env);
+  const installationId = websiteLoginInstallation(env);
   let keyring: CredentialKeyring | undefined;
   return {
     store,
@@ -143,7 +151,13 @@ export function websiteLoginDependencies(env?: PlatformEnv): WebsiteLoginDepende
       keyring ??= loadCredentialKeyring(env);
       return keyring;
     },
+    ...(installationId ? { installationId } : {}),
   };
+}
+
+/** The installation a deployment serving many binds website-login secrets to; standalone binds none. */
+function websiteLoginInstallation(env: PlatformEnv | undefined): string | undefined {
+  return requireInstallationScope(env)?.installationId;
 }
 
 /**
@@ -249,7 +263,7 @@ export async function createWebsiteLogin(
     const contextId = secretContextId(login.id);
     const envelope = await encryptSlackSecretEnvelope(
       deps.keyring,
-      credentialContext(contextId, revision),
+      credentialContext(contextId, revision, deps.installationId),
       { ...secrets },
     );
     const written = await deps.store.replaceEncryptedCredentialRevision({
@@ -289,8 +303,9 @@ export async function createWebsiteLogin(
 /**
  * Decrypt one login's secrets for the call-time consumer. Returns undefined
  * when the login is gone, is a hand-off login, or has no stored secret. The
- * envelope context is derived from the login id, so an envelope copied onto
- * another login's key does not decrypt.
+ * envelope context is derived from the login id, and under tenancy from the
+ * installation, so an envelope copied onto another login's key, or into
+ * another installation's store, does not decrypt.
  */
 export async function readWebsiteLoginSecrets(
   deps: WebsiteLoginDependencies,
@@ -306,7 +321,7 @@ export async function readWebsiteLoginSecrets(
   try {
     decrypted = await decryptSlackSecretEnvelope<Record<string, string>>(
       deps.keyring,
-      credentialContext(contextId, active.revision),
+      credentialContext(contextId, active.revision, deps.installationId),
       active.envelope,
     );
   } catch {
@@ -321,8 +336,9 @@ export async function readWebsiteLoginSecrets(
  * After the deployment keyring gains a new current key, re-encrypt each
  * website-login secret still under an older key ID as a fresh revision with
  * the same context. Every `website_login.` revision is listed, not the
- * catalog, so a secret a failed create left behind moves too. One under a
- * key ID the keyring no longer has, or that will not decrypt, remains. A
+ * catalog, so a secret a failed create left behind moves too. Each stays
+ * bound to the installation `env` serves. One under a key ID the keyring no
+ * longer has, or that will not decrypt, remains. A
  * compare-and-set lost to another writer (a delete, or a concurrent rewrap)
  * keeps that writer's result and counts only what still sits under an older
  * key. Running it again changes nothing; a store error propagates for a retry.
@@ -337,6 +353,8 @@ export async function rewrapWebsiteLoginSecrets(input: {
     throw new Error('This settings store cannot list its website login secrets.');
   }
   const { keyring } = input;
+  const installationId = websiteLoginInstallation(input.env);
+  const context = (contextId: string, revision: string) => credentialContext(contextId, revision, installationId);
   let rewrapped = 0;
   let remaining = 0;
   for (const row of await store.listEncryptedCredentialRevisions(SECRET_KEY_PREFIX)) {
@@ -344,7 +362,7 @@ export async function rewrapWebsiteLoginSecrets(input: {
     let secrets: Record<string, string> | undefined;
     if (Object.hasOwn(keyring.keys, row.envelope.keyId)) {
       try {
-        secrets = await decryptSlackSecretEnvelope(keyring, credentialContext(row.contextId, row.revision), row.envelope);
+        secrets = await decryptSlackSecretEnvelope(keyring, context(row.contextId, row.revision), row.envelope);
       } catch {
         // Tampered with, or bound to another context: it cannot be rewrapped.
       }
@@ -359,7 +377,7 @@ export async function rewrapWebsiteLoginSecrets(input: {
       expectedRevision: row.revision,
       revision,
       contextId: row.contextId,
-      envelope: await encryptSlackSecretEnvelope(keyring, credentialContext(row.contextId, revision), secrets),
+      envelope: await encryptSlackSecretEnvelope(keyring, context(row.contextId, revision), secrets),
     });
     if (written) {
       rewrapped += 1;
@@ -476,10 +494,14 @@ function secretContextId(id: string): string {
   return `wl_ctx_${id.slice(3)}`;
 }
 
-function credentialContext(contextId: string, revision: string): SlackSecretEnvelopeContext {
+function credentialContext(
+  contextId: string,
+  revision: string,
+  installationId: string | undefined,
+): SlackSecretEnvelopeContext {
   return workspaceCredentialContext({
     contextId,
-    identityId: CREDENTIAL_IDENTITY_ID,
+    identityId: installationId === undefined ? CREDENTIAL_IDENTITY_ID : `${CREDENTIAL_IDENTITY_ID}:${installationId}`,
     appId: CREDENTIAL_APP_ID,
     purpose: 'website_login',
     revision,

@@ -16,7 +16,7 @@ import {
   RuntimeModelReadinessError,
 } from '../src/config/installation-model-access.ts';
 import { createWebsiteLogin, deleteWebsiteLogin, readWebsiteLoginSecrets } from '../src/browser/logins.ts';
-import { InstallationContextError, scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { InstallationContextError, installationScopeOf, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   ModelCredentialKeyringUnavailableError,
   readHostedModelCredential,
@@ -334,6 +334,11 @@ const LOGIN = {
   password: 'pw-rewrap-sentinel',
 };
 
+/** Website-login storage as the installation's own requests reach it: bound to that installation. */
+function logins(installation: Installation, keyring: CredentialKeyring) {
+  return { store: installation.settings, keyring, installationId: installationScopeOf(installation.env)!.installationId };
+}
+
 /** The keyring after the first key is retired: only what a rewrap moved still opens. */
 function retiredTo(rotated: CredentialKeyring): CredentialKeyring {
   return { currentKeyId: rotated.currentKeyId, keys: { [rotated.currentKeyId]: rotated.keys[rotated.currentKeyId]! } };
@@ -342,12 +347,12 @@ function retiredTo(rotated: CredentialKeyring): CredentialKeyring {
 test('a drive rewraps website-login secrets, including an orphan no login names, and a second run changes nothing', async (t) => {
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     const { a, keyring, rotate } = await installations(t);
-    const saved = await createWebsiteLogin({ store: a.settings, keyring }, LOGIN);
+    const saved = await createWebsiteLogin(logins(a, keyring), LOGIN);
     // A create whose catalog write failed, and whose rollback failed too, leaves a secret nothing names.
     const failing = Object.create(a.settings) as SqliteSettingsStore;
     failing.applySettingsPatch = async () => { throw new Error('catalog unavailable'); };
     failing.deleteEncryptedCredentialRevision = async () => { throw new Error('realm unavailable'); };
-    await assert.rejects(createWebsiteLogin({ store: failing, keyring }, LOGIN), /catalog unavailable/);
+    await assert.rejects(createWebsiteLogin({ ...logins(a, keyring), store: failing }, LOGIN), /catalog unavailable/);
     assert.equal((await a.settings.listEncryptedCredentialRevisions('website_login.')).length, 2);
 
     const rotated = rotate();
@@ -361,7 +366,7 @@ test('a drive rewraps website-login secrets, including an orphan no login names,
     const second = await drive(a, rotated);
     assert.deepEqual(second.websiteLogins, { rewrapped: 0, remaining: 0 }, 'running it again changes nothing');
     assert.equal(second.done, true);
-    assert.deepEqual(await readWebsiteLoginSecrets({ store: a.settings, keyring: retiredTo(rotated) }, saved.id),
+    assert.deepEqual(await readWebsiteLoginSecrets(logins(a, retiredTo(rotated)), saved.id),
       { username: 'ops@example.com', password: 'pw-rewrap-sentinel' }, 'the login signs in once the old key is gone');
   });
 });
@@ -370,8 +375,8 @@ test('a website-login secret under a key the keyring lost remains and keeps the 
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     const { a, keyring, rotate } = await installations(t);
     const lostKey = generateCredentialKeyring('key_lost');
-    await createWebsiteLogin({ store: a.settings, keyring: lostKey }, LOGIN);
-    await createWebsiteLogin({ store: a.settings, keyring }, LOGIN);
+    await createWebsiteLogin(logins(a, lostKey), LOGIN);
+    await createWebsiteLogin(logins(a, keyring), LOGIN);
     const rotated = rotate();
     const result = await drive(a, rotated);
     assert.deepEqual(result.websiteLogins, { rewrapped: 1, remaining: 1 });
@@ -384,8 +389,8 @@ test('a website-login secret under a key the keyring lost remains and keeps the 
 test('a website-login rewrap that loses its compare-and-set leaves the other writer\'s result', async (t) => {
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     const { a, b, keyring, rotate } = await installations(t);
-    const deleted = await createWebsiteLogin({ store: a.settings, keyring }, LOGIN);
-    await createWebsiteLogin({ store: b.settings, keyring }, LOGIN);
+    const deleted = await createWebsiteLogin(logins(a, keyring), LOGIN);
+    await createWebsiteLogin(logins(b, keyring), LOGIN);
     const rotated = rotate();
 
     // A's login is removed between the rewrap's read and its write: the secret stays gone.
