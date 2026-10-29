@@ -106,20 +106,23 @@ const SEMANTIC_OBJECTS = [
 
 type SemanticObject = typeof SEMANTIC_OBJECTS[number];
 
-export type SemanticTargetFamily =
-  | 'managed_connector'
-  | 'custom_connection'
-  | 'skill'
-  | 'repository'
-  | 'memory'
-  | 'scheduled_work'
-  | 'workspace'
-  | 'connection_setup'
-  | 'agent_authoring'
-  | 'artifact'
-  | 'response'
-  | 'unknown'
-  | 'internal';
+export const SEMANTIC_TARGET_FAMILIES = [
+  'managed_connector',
+  'custom_connection',
+  'skill',
+  'repository',
+  'memory',
+  'scheduled_work',
+  'workspace',
+  'connection_setup',
+  'agent_authoring',
+  'artifact',
+  'response',
+  'unknown',
+  'internal',
+] as const;
+
+export type SemanticTargetFamily = typeof SEMANTIC_TARGET_FAMILIES[number];
 
 export type SemanticActivityPhase =
   | 'thinking'
@@ -199,6 +202,7 @@ export interface TypedActivityStatus extends ActivityStatus {
 
 const OPERATION_SET = new Set<string>(SEMANTIC_OPERATIONS);
 const OBJECT_SET = new Set<string>(SEMANTIC_OBJECTS);
+const TARGET_FAMILY_SET = new Set<string>(SEMANTIC_TARGET_FAMILIES);
 
 const MANAGED_OBJECTS = {
   account: 'account',
@@ -499,7 +503,7 @@ export function isSemanticActivityDescriptor(value: unknown): value is SemanticA
   if (!hasOnlyKeys(value, ['operation', 'target', 'label', 'object', 'effect', 'role', 'trust'])) {
     return false;
   }
-  if (!isSemanticOperation(value.operation) || !isTargetFamily(value.target) ||
+  if (!isSemanticOperation(value.operation) || !isSemanticTargetFamily(value.target) ||
       !isSemanticObject(value.object) || !isEffect(value.effect) ||
       !isLifecycleRole(value.role) || !isTrustTier(value.trust)) return false;
   if (value.label === undefined) return value.target !== 'managed_connector';
@@ -523,7 +527,7 @@ export function isSafeTypedActivityStatus(value: unknown): value is TypedActivit
       !hasOnlyKeys(value, ['kind', 'action', 'object', 'family', 'phase', 'text']) ||
       !isActivityKind(value.kind) ||
       typeof value.action !== 'string' || typeof value.object !== 'string' ||
-      !isTargetFamily(value.family) || !isSemanticActivityPhase(value.phase) ||
+      !isSemanticTargetFamily(value.family) || !isSemanticActivityPhase(value.phase) ||
       typeof value.text !== 'string' || value.text.length > ACTIVITY_STATUS_TEXT_LIMIT) return false;
   if (value.action === 'Thinking' && value.object === 'the request') {
     return value.kind === 'preparing' && value.family === 'unknown' &&
@@ -796,11 +800,8 @@ function isSemanticObject(value: unknown): value is SemanticObject {
   return typeof value === 'string' && OBJECT_SET.has(value);
 }
 
-function isTargetFamily(value: unknown): value is SemanticTargetFamily {
-  return value === 'managed_connector' || value === 'custom_connection' || value === 'skill' ||
-    value === 'repository' || value === 'memory' || value === 'scheduled_work' ||
-    value === 'workspace' || value === 'connection_setup' || value === 'agent_authoring' ||
-    value === 'artifact' || value === 'response' || value === 'unknown' || value === 'internal';
+export function isSemanticTargetFamily(value: unknown): value is SemanticTargetFamily {
+  return typeof value === 'string' && TARGET_FAMILY_SET.has(value);
 }
 
 function isSemanticActivityPhase(value: unknown): value is SemanticActivityPhase {
