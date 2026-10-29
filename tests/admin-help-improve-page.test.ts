@@ -130,7 +130,7 @@ async function harness(t: TestContext, options: {
   };
   const serverHtml = renderAdminPage({
     usageAdminUi: true, workspaceAdminUi: true, installationOwner: true,
-    browserOffered: false, selfHosted: false, billingOffered: false,
+    browserSetupOffered: false, websiteLoginsOffered: false, selfHosted: false, billingOffered: false,
     ...(options.offered ? { helpImprovePrivacyUrl: PRIVACY_URL } : {}),
     ...(onboarding ? { onboarding: { initial: onboarding, githubConnectPath: null, githubReturned: false } } : {}),
   } as Parameters<typeof renderAdminPage>[0]);
