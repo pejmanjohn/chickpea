@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test, type TestContext } from 'node:test';
 
 import { PENDING_CONTEXT_DELETIONS_SETTING } from '../src/browser/context-deletions.ts';
@@ -18,7 +19,11 @@ import { InstallationContextError } from '../src/config/installation-scope.ts';
 import type { SettingsStore } from '../src/config/settings-store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { promisify } from '../src/state/async-facade.ts';
-import { censusInstallationBrowser, eraseInstallationBrowser } from '../src/state/installation-objects.ts';
+import {
+  censusInstallationBrowser,
+  eraseInstallationBrowser,
+  installationStateStoreObject,
+} from '../src/state/installation-objects.ts';
 import { fakeBrowserbase } from './helpers/fake-browserbase.ts';
 import { hostedDeployment } from './helpers/installation-objects.ts';
 
@@ -101,7 +106,7 @@ test('erasure ends the installation\'s sessions and deletes its contexts, never 
   await seed(store);
   const browserbase = seededBrowserbase(t);
 
-  assert.deepEqual(await eraseInstallationBrowser(a.env, A, { store }), {
+  assert.deepEqual(await eraseInstallationBrowser(a.env, A), {
     ended: 2, deleted: 4, alreadyGone: 1, foreign: 1, remaining: 0, sessionsListed: 3, listingUnverified: false,
   });
   assert.deepEqual([...browserbase.contexts.keys()].sort(), ['ctx_b', 'ctx_foreign'], 'the foreign context is never deleted');
@@ -116,7 +121,7 @@ test('erasure ends the installation\'s sessions and deletes its contexts, never 
     contexts: 0, queued: 0, leases: 0, month: MONTH, meteredSeconds: 1_920,
   });
 
-  assert.deepEqual(await eraseInstallationBrowser(a.env, A, { store }), {
+  assert.deepEqual(await eraseInstallationBrowser(a.env, A), {
     ended: 0, deleted: 0, alreadyGone: 0, foreign: 0, remaining: 0, sessionsListed: 3, listingUnverified: false,
   });
 });
@@ -130,11 +135,11 @@ test('a context whose delete fails stays recorded for the next pass', async (t) 
     init?.method === 'DELETE' && String(input).endsWith('/ctx_queued')
     ? new Response('unavailable', { status: 503 })
     : browserbase.fetchImpl(input, init)) as typeof fetch);
-  const first = await eraseInstallationBrowser(a.env, A, { store });
+  const first = await eraseInstallationBrowser(a.env, A);
   assert.equal(first.remaining, 1);
   assert.match((await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!, /ctx_queued/);
   failing = false;
-  const second = await eraseInstallationBrowser(a.env, A, { store });
+  const second = await eraseInstallationBrowser(a.env, A);
   assert.deepEqual([second.deleted, second.remaining], [1, 0]);
 });
 
@@ -266,10 +271,34 @@ test('a session list that does not show whose its sessions are is reported, with
   }
 });
 
-test('erasure is refused for another installation and without the host browser port', async (t) => {
-  const { a, store } = installation(t);
-  await assert.rejects(eraseInstallationBrowser(a.env, B, { store }), InstallationContextError);
+test('erasure is refused for another installation, by a state store bound to another, and without the host browser port', async (t) => {
+  const { a, store, deployment } = installation(t);
+  await seed(store);
+  const browserbase = seededBrowserbase(t);
+  await assert.rejects(eraseInstallationBrowser(a.env, B), InstallationContextError);
+  await assert.rejects(eraseInstallationBrowser({}, A), InstallationContextError);
+  const stateStore = deployment.object('TAG_STATE', installationStateStoreObject(a.env).name);
+  await assert.rejects(
+    (stateStore.host.chickpeaHostBrowserErase as (request: { installationId: string }) => Promise<unknown>)({ installationId: B }),
+    InstallationContextError,
+    'the state store checks the caller\'s installation against its own name',
+  );
+
+  a.db.run('UPDATE installation_binding SET installation_id = ?', B);
+  await assert.rejects(eraseInstallationBrowser(a.env, A), (error: unknown) =>
+    error instanceof InstallationContextError && error.message === 'This state store belongs to another installation.');
+  assert.deepEqual(browserbase.requests(), [], 'nothing reached the provider');
+  assert.equal((await listWebsiteLogins(store)).filter(({ contextId }) => contextId).length, 4, 'and every id is still recorded');
+
   resetHostedBrowserForTests();
-  await assert.rejects(eraseInstallationBrowser(a.env, A, { store }), (error: unknown) =>
+  await assert.rejects(eraseInstallationBrowser(a.env, A), (error: unknown) =>
     error instanceof HostedBrowserRefusal && error.reason === 'unavailable');
+});
+
+test('the state store object serves the browser census and erasure through its host functions', () => {
+  const source = readFileSync(new URL('../src/cloudflare.ts', import.meta.url), 'utf8');
+  const store = source.slice(source.indexOf('export class TagStateStore'));
+  for (const method of ['chickpeaHostBrowserCensus', 'chickpeaHostBrowserErase']) {
+    assert.match(store, new RegExp(`async ${method}\\(request: ObjectHostRequest[^)]*\\) \\{\\s*return this\\.host\\(\\)\\.${method}\\(request\\);`), method);
+  }
 });

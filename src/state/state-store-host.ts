@@ -1,4 +1,4 @@
-import { censusBrowser, type BrowserCensus } from '../browser/hosted-erasure.ts';
+import { censusBrowser, eraseBrowserPass, type BrowserCensus, type BrowserErasePass } from '../browser/hosted-erasure.ts';
 import { InstallationContextError } from '../config/installation-scope.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { RoutinePersistenceTelemetrySink } from '../routines/telemetry.ts';
@@ -55,6 +55,7 @@ export interface StateStoreHostRpc extends Omit<InstallationObjectHostRpc, 'chic
   chickpeaHostInventoryBackfill(request: ObjectHostRequest): Promise<InstallationObjectBackfill>;
   chickpeaHostSandboxCensus(request: ObjectHostRequest & { now?: number }): Promise<StateSandboxCensus>;
   chickpeaHostBrowserCensus(request: ObjectHostRequest & { now?: number }): Promise<BrowserCensus>;
+  chickpeaHostBrowserErase(request: ObjectHostRequest): Promise<BrowserErasePass>;
   chickpeaHostExportPage(request: ObjectExportRequest): Promise<ObjectExportPage>;
   chickpeaHostErase(request: ObjectHostRequest): Promise<ObjectEraseResult>;
   chickpeaHostCancelPendingWork(request: ObjectHostRequest): Promise<StatePendingWorkCancellation>;
@@ -130,6 +131,14 @@ export function stateStoreHostFunctions(store: {
       const now = request.now ?? Date.now();
       if (!Number.isSafeInteger(now) || now < 0) throw new Error('A census time must be a timestamp.');
       return censusBrowser(promisify(local.settings, { close: () => undefined }), now);
+    },
+    /** One pass over this store's own ids, never another's: its binding must name the installation too. */
+    async chickpeaHostBrowserErase(request) {
+      const scope = assertObjectHostCall(store.env, request);
+      assertBinding(scope.installationId);
+      const settings = promisify(store.stores().settings, { close: () => undefined });
+      const { hostedBrowserProvider } = await import('../browser/hosted-provider.ts');
+      return eraseBrowserPass({ store: settings, provider: hostedBrowserProvider(settings, store.env) });
     },
     async chickpeaHostExportPage(request) {
       assertObjectHostCall(store.env, request);

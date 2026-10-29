@@ -34,6 +34,7 @@
  */
 import { CHICKPEA_CODING_WORKER_AGENT_NAME, CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME } from '../agents/names.ts';
 import type { BrowserCensus, BrowserErasePass } from '../browser/hosted-erasure.ts';
+import { HostedBrowserRefusal } from '../browser/provider.ts';
 import {
   deploymentTenancy,
   InstallationContextError,
@@ -41,8 +42,7 @@ import {
   splitInstallationObjectName,
   type InstallationScope,
 } from '../config/installation-scope.ts';
-import type { SettingsStore } from '../config/settings-store.ts';
-import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
+import { hostedBrowserAccess } from '../config/hosted-browser.ts';
 import { tagStateInstanceName, tagStateStub } from '../config/state-rpc.ts';
 import { installationCheckpointBucket } from '../sandbox/checkpoint-bucket.ts';
 import { sandboxNamespace } from '../sandbox/sandbox-object.ts';
@@ -387,22 +387,19 @@ export async function censusInstallationBrowser(
  * installation's id is counted, cleared and never touched. Run it after
  * the gate settles and before the state store is erased, until a pass
  * leaves nothing; a pass after a clean one counts only the sessions the
- * provider still lists, whose recordings age out there. Refused unless
- * `installationId` repeats the installation, and without the host's
- * browser port.
+ * provider still lists, whose recordings age out there. The pass runs in
+ * the installation's state store, over its own settings, as the census
+ * does, so no other store's ids can stand in for them. Refused unless
+ * `installationId` repeats the installation and the state store's binding
+ * names it too, and without the host's browser port.
  */
 export async function eraseInstallationBrowser(
   env: Record<string, unknown>,
   installationId: string,
-  options: { store?: SettingsStore } = {},
 ): Promise<BrowserErasePass> {
-  confirmedScope(env, installationId, 'Erasure must be confirmed with the installation it erases.');
-  const store = options.store ?? getSettingsStore(env as PlatformEnv);
-  const [{ hostedBrowserProvider }, { eraseBrowserPass }] = await Promise.all([
-    import('../browser/hosted-provider.ts'),
-    import('../browser/hosted-erasure.ts'),
-  ]);
-  return eraseBrowserPass({ store, provider: hostedBrowserProvider(store, env) });
+  const scope = confirmedScope(env, installationId, 'Erasure must be confirmed with the installation it erases.');
+  if (!hostedBrowserAccess()) throw new HostedBrowserRefusal('unavailable');
+  return stateStore(env).chickpeaHostBrowserErase({ installationId: scope.installationId });
 }
 
 function confirmedScope(env: Record<string, unknown>, installationId: string, message: string): InstallationScope {
