@@ -114,11 +114,23 @@ test('only the standalone branch of resolveBrowserProvider and the hosted wrappe
   const root = fileURLToPath(new URL('../src/', import.meta.url));
   const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
     entry.isDirectory() ? sources(join(dir, entry.name)) : entry.name.endsWith('.ts') ? [join(dir, entry.name)] : []);
-  const builders = sources(root)
-    .filter((file) => /createBrowserbaseProvider\b/.test(readFileSync(file, 'utf8')))
-    .map((file) => relative(root, file))
-    .sort();
-  assert.deepEqual(builders, ['browser/browserbase.ts', 'browser/hosted-provider.ts', 'browser/settings.ts']);
+  const files = sources(root).map((file) => ({ path: relative(root, file), text: readFileSync(file, 'utf8') }));
+  const using = (pattern: RegExp) => files.filter(({ text }) => pattern.test(text)).map(({ path }) => path).sort();
+
+  // Every function the client module exports reaches Browserbase with the key it is given.
+  const client = files.find(({ path }) => path === 'browser/browserbase.ts')!.text;
+  const callers: Record<string, string[]> = {
+    createBrowserbaseProvider: ['browser/browserbase.ts', 'browser/hosted-provider.ts', 'browser/settings.ts'],
+    // Only `PUT /admin/api/browser/key`, which is not found under tenancy.
+    verifyBrowserbaseApiKey: ['admin/routes.ts', 'browser/browserbase.ts'],
+  };
+  const exported = [...client.matchAll(/^export (?:async )?function (\w+)/gm)].map(([, name]) => name!).sort();
+  assert.deepEqual(exported, Object.keys(callers).sort(), 'a new Browserbase entry point needs its callers listed here');
+  for (const [name, allowed] of Object.entries(callers)) assert.deepEqual(using(new RegExp(`\\b${name}\\b`)), allowed, name);
+  // Nothing else talks to Browserbase directly.
+  assert.deepEqual(using(/api\.browserbase\.com/i), ['browser/browserbase.ts']);
+  assert.deepEqual(using(/x-bb-api-key/i), ['browser/browserbase.ts']);
+
   const settings = readFileSync(join(root, 'browser/settings.ts'), 'utf8');
   const resolver = settings.slice(settings.indexOf('export async function resolveBrowserProvider('));
   assert.ok(
