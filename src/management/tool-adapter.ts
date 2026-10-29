@@ -12,7 +12,7 @@ import {
   type ManagementRoutineInspectionInput,
   type SaveConnectionKeyInput,
 } from './types.ts';
-import type { ReadPublicDocInput } from './public-doc.ts';
+import type { ReadPublicDocInput } from '../web/page.ts';
 import type { PreviewWorkspaceRecipeInput } from './recipes.ts';
 import { emitManagementMetric } from './telemetry.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION, type AgentAuthoringReason } from './agent-authoring/index.ts';

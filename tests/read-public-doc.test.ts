@@ -13,7 +13,7 @@ import {
   type PublicDocPage,
   type PublicDocReaderOptions,
   type ReadPublicDocResult,
-} from '../src/management/public-doc.ts';
+} from '../src/web/page.ts';
 import { readPublicDocValibotSchema, slackApplyWorkspaceChangesValibotSchema } from '../src/management/schemas.ts';
 import {
   createPublicDocTurn,

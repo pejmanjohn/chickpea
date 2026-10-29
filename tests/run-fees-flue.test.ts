@@ -37,7 +37,7 @@ import {
   type RunRef,
 } from '../src/config/platform-funding.ts';
 import { buildSemanticActivityContext, registerActivityContext } from '../src/activity/status.ts';
-import { PUBLIC_DOC_READS_PER_TURN, readPublicDoc } from '../src/management/public-doc.ts';
+import { PUBLIC_DOC_READS_PER_TURN, readPublicDoc } from '../src/web/page.ts';
 import {
   createPublicDocTurn,
   invokeSlackWorkspaceManagementTool,

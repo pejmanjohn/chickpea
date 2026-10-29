@@ -204,7 +204,7 @@ import {
   PUBLIC_DOC_REFUSALS,
   type ReadPublicDocInput,
   type ReadPublicDocResult,
-} from './public-doc.ts';
+} from '../web/page.ts';
 import { changeSetAccessFits } from './change-set-presentation.ts';
 import {
   formatMarkdownChangeSetProposal,

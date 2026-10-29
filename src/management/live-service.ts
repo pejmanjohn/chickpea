@@ -70,7 +70,7 @@ import {
   saveManagedConnectionKey,
   testManagedConnection,
 } from './discovery.ts';
-import { readPublicDoc } from './public-doc.ts';
+import { readPublicDoc } from '../web/page.ts';
 
 interface LiveWorkspaceManagementServiceOptions {
   identity?: IdentityStore;

@@ -3,7 +3,7 @@ import { McpBlockedUrlError } from '../config/mcp-errors.ts';
 import { createMcpGuardedFetch, type McpGuardedFetchOptions } from '../config/mcp-url.ts';
 import { readTruncatedText } from '../http/bounded-body.ts';
 import { hasCredentialLikeContent, redactCredentialLikeContent } from '../security/content-validation.ts';
-import { htmlDocText, type HtmlDocText } from './public-doc-text.ts';
+import { htmlDocText, type HtmlDocText } from './page-text.ts';
 
 export const PUBLIC_DOC_READS_PER_TURN = 6;
 export const PUBLIC_DOC_MAX_TEXT_CHARS = 24_000;

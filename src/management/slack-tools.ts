@@ -80,7 +80,7 @@ import {
   slackUpdateAgentMemoryInputSchema,
 } from './slack-memory-actions.ts';
 import { parseAdmittedSlackListIds } from '../slack/lists/admission.ts';
-import { PUBLIC_DOC_READS_PER_TURN, type ReadPublicDocResult } from './public-doc.ts';
+import { PUBLIC_DOC_READS_PER_TURN, type ReadPublicDocResult } from '../web/page.ts';
 
 const SIGNAL_ATTRIBUTE_KEYS = [
   'workspaceId',
