@@ -357,3 +357,41 @@ test('a reuse can start with only some pages, and refuses a page the sign-in doe
     notion.close();
   }
 });
+
+test('signing in again as the same Notion person folds into that person\'s sign-in and deletes exactly its old credential', async () => {
+  const notion = await notionWorkspace();
+  try {
+    await notion.connect(MAYA, 'agent_ops', 'ca_one');
+    notion.calls.length = 0;
+    const sales = await notion.connect(BOB, 'agent_sales', 'ca_two');
+    assert.deepEqual(notion.calls.filter((call) => call.startsWith('revoke:')), ['revoke:ca_one']);
+    assert.equal(sales.createdByMembershipId, 'membership_bob');
+    const [ops, joined] = await Promise.all([notion.accountOf('agent_ops'), notion.accountOf('agent_sales')]);
+    for (const { account } of [ops, joined]) {
+      assert.equal(account.lifecycle, 'ready');
+      assert.equal(account.policy.accountRef, 'ca_two', 'both Agents use the one new credential');
+    }
+    assert.deepEqual(signInGroupPolicy(ops.account.policy), signInGroupPolicy(joined.account.policy));
+  } finally {
+    notion.close();
+  }
+});
+
+test('a sign-in of a different Notion person, or one Notion named nobody for, keeps its own credential', async () => {
+  const notion = await notionWorkspace();
+  try {
+    await notion.connect(MAYA, 'agent_ops', 'ca_one');
+    notion.people.set('ca_bob', 'notion:ws-1:user-bob');
+    notion.people.set('ca_nobody', null);
+    notion.people.set('ca_nobody_again', null);
+    await notion.connect(MAYA, 'agent_sales', 'ca_bob');
+    await notion.connect(MAYA, 'agent_scout', 'ca_nobody');
+    await notion.connect(MAYA, 'agent_notes', 'ca_nobody_again');
+    assert.deepEqual(notion.calls.filter((call) => call.startsWith('revoke:')), []);
+    const refs = await Promise.all(['agent_ops', 'agent_sales', 'agent_scout', 'agent_notes'].map(async (agentId) =>
+      (await notion.accountOf(agentId)).account.policy.accountRef));
+    assert.deepEqual(refs, ['ca_one', 'ca_bob', 'ca_nobody', 'ca_nobody_again'], 'two sign-ins by one member are not one person');
+  } finally {
+    notion.close();
+  }
+});

@@ -29,6 +29,7 @@ import {
 import { signInGroupKey, signInGroupPolicy } from '../config/sign-in-group.ts';
 import type {
   AgentConnectionBinding,
+  AgentConnectionBindingInput,
   AgentScheduleReference,
   ConnectionAccount,
   ConnectionAccountApiPolicy,
@@ -77,7 +78,13 @@ import {
   type NotionListedPage,
   type NotionPageListing,
 } from './notion-pages.ts';
-import { ManagedSignInMixError, signInMix, signInMixRefusal, signInSigner } from './sign-in-mix.ts';
+import {
+  ManagedSignInMixError,
+  providerNamedPerson,
+  signInMix,
+  signInMixRefusal,
+  signInSigner,
+} from './sign-in-mix.ts';
 import { managedPrincipalRef } from './managed-principal.ts';
 
 export interface ConnectionAccountServiceDependencies {
@@ -354,7 +361,7 @@ export class ConnectionAccountService {
   }): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
     const agent = await this.dependencies.config.getAgent(input.agentId);
     if (!canEditAgent(input.principal, agent)) throw new AuthorizationError();
-    const accountInput = await this.prepareAccountCreation(input);
+    const { account: accountInput, pages } = await this.prepareAccountCreation(input);
     const allowedCapabilities = accountInput.policy.kind === 'managed'
       ? [...(input.allowedCapabilities ?? accountInput.policy.allowedCapabilities)]
       : [...(input.allowedCapabilities ?? [])];
@@ -392,6 +399,22 @@ export class ConnectionAccountService {
         adapterId: managedPolicy.adapterId,
         toolkit: managedPolicy.toolkit,
       });
+      const group = await this.foldableSignIn({ ...accountInput, policy: managedPolicy }, connector);
+      if (group) {
+        return this.foldSignIn({
+          group,
+          account: { ...accountInput, policy: managedPolicy },
+          binding: {
+            agentId: input.agentId,
+            connectionAccountId: accountInput.id,
+            providerId: accountInput.providerId,
+            allowedCapabilities,
+            resourceConstraints,
+            enabled: true,
+          },
+          ...(pages ? { pages } : {}),
+        });
+      }
     }
     let secretSaved = false;
     try {
@@ -791,6 +814,78 @@ export class ConnectionAccountService {
     const binding = await this.dependencies.config.getAgentConnectionBindingForAccount(id);
     if (!created || !binding) throw new ManagedConnectionConflictError('That sign-in changed while this Agent was being added');
     this.captureConnectionReady(undefined, created, binding);
+    return { account: created, binding };
+  }
+
+  /**
+   * A ready sign-in a new one should join instead of standing beside it: the
+   * same Notion person, as Notion named it, with the same owner kind, owner
+   * and principal, and needing no more than the new credential's lane.
+   */
+  private async foldableSignIn(
+    account: ConnectionAccountInput & { policy: ConnectionAccountManagedPolicy },
+    connector: ManagedConnectorDefinition,
+  ): Promise<ConnectionAccount[] | undefined> {
+    const { signIn, adapterId, toolkit, principalRef } = account.policy;
+    if (!connector.sharedSignIn || !signIn || !providerNamedPerson(signIn.person)) return undefined;
+    const accounts = await this.dependencies.config.listConnectionAccounts(account.workspaceId);
+    return signInGroups(accounts).find((group) => group.every((member) =>
+      member.lifecycle === 'ready' && member.policy.kind === 'managed' &&
+      member.ownerKind === account.ownerKind && member.ownerMembershipId === account.ownerMembershipId &&
+      member.policy.adapterId.trim().toLowerCase() === adapterId.trim().toLowerCase() &&
+      member.policy.toolkit === toolkit && member.policy.principalRef === principalRef &&
+      member.policy.signIn?.person === signIn.person) &&
+      laneCovers(signIn.accessLane, signInGroupAccessLane(connector, group)));
+  }
+
+  /**
+   * Add a new Agent to the sign-in group of the same Notion person and move
+   * the whole group to the new credential in one write, then delete the old
+   * one, so that person keeps one credential.
+   */
+  private async foldSignIn(input: {
+    group: readonly ConnectionAccount[];
+    account: ConnectionAccountInput & { policy: ConnectionAccountManagedPolicy };
+    binding: AgentConnectionBindingInput;
+    pages?: NotionPageListing;
+  }): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
+    const previous = input.group[0]!.policy as ConnectionAccountManagedPolicy;
+    const { identity } = input.group[0]!;
+    const { identity: _identity, ...account } = input.account;
+    let folded: ConnectionAccount[];
+    try {
+      folded = await this.dependencies.config.applySignInGroup({
+        adapterId: previous.adapterId,
+        accountRef: previous.accountRef,
+        members: input.group.map(({ id, revision }) => ({ connectionAccountId: id, expectedRevision: revision })),
+        shared: signInGroupPolicy(input.account.policy),
+        join: { account: { ...account, ...(identity ? { identity } : {}) }, binding: input.binding },
+      });
+    } catch (error) {
+      if (error instanceof ManagedSignInGroupConflictError ||
+          error instanceof ConnectionAccountRevisionConflictError ||
+          error instanceof ManagedRemoteAccountAlreadyUsedError) {
+        throw new ManagedConnectionConflictError('That sign-in changed while this one finished');
+      }
+      throw error;
+    }
+    const created = folded.find(({ id }) => id === input.account.id);
+    const binding = await this.dependencies.config.getAgentConnectionBindingForAccount(input.account.id);
+    if (!created || !binding) throw new ManagedConnectionConflictError('That sign-in changed while this one finished');
+    this.captureConnectionReady(undefined, created, binding);
+    logSignInRecorded(created);
+    if (input.pages) await this.prunePageChoices(folded, input.pages);
+    try {
+      const provider = this.dependencies.managedProviders?.get(previous.adapterId);
+      if (!provider) throw new ManagedConnectionProviderUnavailableError(previous.adapterId);
+      await provider.revoke({ policy: previous });
+    } catch {
+      console.warn(JSON.stringify({
+        event: 'chickpea.managed_connection.previous_authorization_cleanup_failed',
+        adapterId: previous.adapterId,
+        connectionAccountId: created.id,
+      }));
+    }
     return { account: created, binding };
   }
 
@@ -1444,6 +1539,7 @@ export class ConnectionAccountService {
       input.ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal',
     );
     let policy = input.policy;
+    let pages: NotionPageListing | undefined;
     if (policy.kind === 'managed') {
       const connector = assertManagedAccountPolicy(this.catalog(), input.providerId, policy);
       const accessLane = input.issuedAccessLane ?? managedAccessLane(connector, policy.allowedCapabilities);
@@ -1454,6 +1550,7 @@ export class ConnectionAccountService {
       const provider = this.dependencies.managedProviders?.get(policy.adapterId);
       if (!provider) throw new ManagedConnectionProviderUnavailableError(policy.adapterId);
       const validation = await provider.validate({ policy });
+      pages = connector.pageScope && validation?.pages ? parsePageListing(validation.pages) : undefined;
       policy = {
         ...applyManagedValidation(policy, validation),
         signIn: managedSignIn(connector, accessLane, validation, input.principal.membershipId),
@@ -1475,7 +1572,7 @@ export class ConnectionAccountService {
       managedConnector?.resources?.some(({ required }) => required) &&
       policy.kind === 'managed' && !policy.resourceConstraints,
     );
-    return {
+    const account = {
       id,
       workspaceId: input.workspaceId,
       ownerKind: input.ownerKind,
@@ -1495,6 +1592,7 @@ export class ConnectionAccountService {
           ? 'ready' as const
           : input.pendingSetup ? 'pending' as const : 'needs_attention' as const,
     };
+    return { account, ...(pages ? { pages } : {}) };
   }
 
   private async requireUniqueManagedAccount(
