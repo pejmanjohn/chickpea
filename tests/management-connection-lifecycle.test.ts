@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { createWebsiteLogin, listWebsiteLogins } from '../src/browser/logins.ts';
@@ -18,6 +21,7 @@ import type {
   PrepareConnectorSetupResult,
 } from '../src/management/types.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { withEnv } from './helpers/env.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
@@ -633,6 +637,7 @@ test('a re-point preview names only fields the caller sent', () =>
   }));
 
 test('deleting an Agent over the management door refuses to take a login the member cannot remove', () =>
+  withEnv({ CHICKPEA_CREDENTIAL_KEYRING_PATH: join(mkdtempSync(join(tmpdir(), 'chickpea-keyring-')), 'keyring.json') }, () =>
   withFixture('delete-agent-login', async (f) => {
     const member = await addMember(f, 'U55555555');
     const holder = await addMember(f, 'U66666666');
@@ -686,4 +691,4 @@ test('deleting an Agent over the management door refuses to take a login the mem
       /"code":"forbidden".*This Agent uses a website login you can't remove\. Ask its owner or an Admin to remove it first\./);
     assert.equal((await f.config.getAgent(agent.id)).websiteLogins?.length, 1, 'the Agent is kept');
     assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id }) => id), [login.id]);
-  }));
+  })));
