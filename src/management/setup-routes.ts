@@ -3137,7 +3137,7 @@ type KeySavedCheck = Exclude<ApiConnectionCheck['kind'], 'ok' | 'key_rejected'>;
 /** What the completed page says when an API key was saved but its check did not show it working. */
 const KEY_SAVED_TEXT: Record<KeySavedCheck, string> = {
   not_permitted: 'The API refused the request Chickpea tried, which usually means your key works but lacks a permission. Some requests may be refused.',
-  path_not_found: 'The API did not find the path Chickpea tried, so Chickpea could not check your key.',
+  path_not_found: 'This API has no page at the address Chickpea tests, so Chickpea could not test the key there. To check it, ask your Agent in Slack to try a request.',
   unreachable: 'Chickpea could not reach the API to confirm that your key works.',
   inconclusive: 'Chickpea could not confirm that your key works.',
 };

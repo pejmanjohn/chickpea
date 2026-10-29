@@ -1938,7 +1938,7 @@ test('a key the setup page saves where the API answers 404 is never called accep
     assert.equal(await storedSecret(f.settings, f.tasks), 'sk-unchecked', 'the person typed this key on purpose');
     const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`)).text();
     assert.match(done, /<h1>Key saved<\/h1>/);
-    assert.match(done, /The API did not find the path Chickpea tried, so Chickpea could not check your key\./);
+    assert.match(done, /This API has no page at the address Chickpea tests, so Chickpea could not test the key there\. To check it, ask your Agent in Slack to try a request\./);
     assert.doesNotMatch(done, /accepted/);
   } finally {
     f.close();
