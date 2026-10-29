@@ -65,6 +65,12 @@ export function adminUiConfig(input: {
    */
   websiteLoginsOffered?: boolean;
   /**
+   * The host's browser is off, but an Agent's saved website logins can
+   * still be removed: its Websites tab shows for an Agent that has some,
+   * with removing as the only action.
+   */
+  websiteLoginsRemoveOnly?: boolean;
+  /**
    * False on a deployment serving many installations: its host runs the
    * deployment, so Admin leaves out guidance about environment variables and
    * secret bindings.
@@ -85,6 +91,7 @@ export function adminUiConfig(input: {
     installationOwner: input.installationOwner === true,
     browserSetupOffered: input.browserSetupOffered !== false,
     websiteLoginsOffered: input.websiteLoginsOffered !== false,
+    websiteLoginsRemoveOnly: input.websiteLoginsOffered === false && input.websiteLoginsRemoveOnly === true,
     selfHosted: input.selfHosted !== false,
     billingOffered: input.billingOffered === true,
     helpImproveOffered: input.helpImprovePrivacyUrl !== undefined,
@@ -147,6 +154,7 @@ export function renderAdminPage(
     installationOwner?: boolean;
     browserSetupOffered?: boolean;
     websiteLoginsOffered?: boolean;
+    websiteLoginsRemoveOnly?: boolean;
     selfHosted?: boolean;
     billingOffered?: boolean;
     helpImprovePrivacyUrl?: string | undefined;
@@ -224,7 +232,8 @@ ${onboarding ? `<div id="app" class="frame onboarding-frame" aria-busy="true"><m
 <script id="chickpea-admin-config" type="application/json">${adminUiConfigJson({
     isCloudflare, usageAdminUi, workspaceAdminUi, installationOwner: options.installationOwner === true,
     browserSetupOffered: options.browserSetupOffered !== false,
-    websiteLoginsOffered: options.websiteLoginsOffered !== false, selfHosted,
+    websiteLoginsOffered: options.websiteLoginsOffered !== false,
+    websiteLoginsRemoveOnly: options.websiteLoginsRemoveOnly === true, selfHosted,
     billingOffered: options.billingOffered === true, helpImprovePrivacyUrl: options.helpImprovePrivacyUrl,
     targetChip, onboarding, firstRun: options.firstRun,
   })}</script>

@@ -2002,12 +2002,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // A host serving many installations owns first-run setup, recovery, Slack
   // install and sign-in, the gateway, deployment activation, installing the
   // coding sandbox and the browser's key; under installation tenancy those
-  // surfaces are not found, before any store read. So are an Agent's website
-  // logins while the host's browser is off.
+  // surfaces are not found, before any store read. So are the website-login
+  // routes the host's browser does not serve now (hostedWebsiteLoginRoute).
   app.use('*', async (c, next) => {
     if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation' &&
         (standaloneOnlyRoute(c.req.method, c.req.path) ||
-          (websiteLoginRoute(c.req.path) && !hostedWebsiteLoginsOffered()))) return c.notFound();
+          (websiteLoginRoute(c.req.path) && !hostedWebsiteLoginRoute(c.req.method)))) return c.notFound();
     return next();
   });
   // Wall-clock breakdown of the request, reported to authenticated Admin
@@ -6628,6 +6628,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       installationOwner: isOwnerSession(principal),
       browserSetupOffered: standalone,
       websiteLoginsOffered: standalone || hostedWebsiteLoginsOffered(),
+      websiteLoginsRemoveOnly: !standalone && hostedBrowserConfigured() && !hostedWebsiteLoginsOffered(),
       selfHosted: standalone,
       billingOffered: !standalone && platformBilling() !== undefined,
       helpImprovePrivacyUrl: standalone ? undefined : runReview()?.privacyUrl,
@@ -12720,6 +12721,18 @@ function websiteLoginRoute(path: string): boolean {
 /** A deployment serving many installations offers website logins while its host's browser is on. */
 function hostedWebsiteLoginsOffered(): boolean {
   return hostedBrowserConfigured() && hostedBrowserPolicy().enabled;
+}
+
+/**
+ * Whether a deployment serving many installations serves a website-login
+ * route. While its host's browser is off, saved logins can still be listed
+ * and removed, so a person can delete a stored password; adding one or
+ * changing a level waits until the browser is on. Without the host's port,
+ * none is served.
+ */
+function hostedWebsiteLoginRoute(method: string): boolean {
+  if (!hostedBrowserConfigured()) return false;
+  return hostedBrowserPolicy().enabled || method === 'GET' || method === 'DELETE';
 }
 
 function canonicalRoutePath(path: string): string {

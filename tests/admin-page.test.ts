@@ -256,6 +256,7 @@ const MCP_CLIENTS_FIXTURE = {
 interface BrowserOffers {
   browserSetupOffered?: boolean;
   websiteLoginsOffered?: boolean;
+  websiteLoginsRemoveOnly?: boolean;
 }
 
 function inlineScript(
@@ -563,6 +564,8 @@ function runAdminPageHarness(
     browserSetupOffered?: boolean;
     /** False renders a deployment serving many installations whose host's browser is off. */
     websiteLoginsOffered?: boolean;
+    /** With websiteLoginsOffered false: saved logins stay removable while the host's browser is off. */
+    websiteLoginsRemoveOnly?: boolean;
     /** False renders a deployment serving many installations, whose host runs it. */
     selfHosted?: boolean;
     installationUpdates?: () => unknown;
@@ -3180,6 +3183,7 @@ function runAdminPageHarness(
       {
         ...(options.browserSetupOffered === undefined ? {} : { browserSetupOffered: options.browserSetupOffered }),
         ...(options.websiteLoginsOffered === undefined ? {} : { websiteLoginsOffered: options.websiteLoginsOffered }),
+        ...(options.websiteLoginsRemoveOnly === undefined ? {} : { websiteLoginsRemoveOnly: options.websiteLoginsRemoveOnly }),
       },
       options.selfHosted ?? true,
       (options.initialPath ?? '/admin/channels') === '/admin/onboarding' ? {
@@ -19820,6 +19824,34 @@ test('with the host\'s browser on, hosted Admin offers the Websites tab with hos
   const html = harness.app.innerHTML;
   assert.match(html, /Stored encrypted in your Chickpea install\. Chickpea keeps the signed-in session for each website so Agents stay signed in\./);
   assert.doesNotMatch(html, /Browserbase/);
+});
+
+test('with the host\'s browser off, an Agent with website logins keeps a Websites tab that can only remove them', async () => {
+  const hosted = { selfHosted: false, browserSetupOffered: false, websiteLoginsOffered: false, websiteLoginsRemoveOnly: true };
+  const granted = { ...releaseAgent, websiteLogins: [{ loginId: WEBSITE_LOGIN_TEAM_ID, level: 'check', enabled: true }] };
+  const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures(), { ...hosted, agents: [granted, opsAgent], initialSearch: '?tab=websites' });
+  await flushAsync();
+  let html = harness.app.innerHTML;
+  assert.match(html, /id="ptab-websites" class="ptab on"/);
+  assert.equal(calls.gets, 1, 'the Agent\'s website logins load');
+  assert.match(html, /The browser is off right now, so website logins can't be added or changed\. You can still remove them\./);
+  assert.doesNotMatch(html, /data-action="website-login-add"/, 'nothing can be added');
+  assert.doesNotMatch(html, /data-action="website-login-level"/, 'no level can be changed');
+  assert.match(html, /admin\.acme\.com/);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-add' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /Add a website login/, 'the add dialog never opens');
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-remove', 'data-login-id': WEBSITE_LOGIN_TEAM_ID }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-remove-confirm', 'data-login-id': WEBSITE_LOGIN_TEAM_ID }) });
+  await flushAsync();
+  assert.deepEqual(calls.deletes, [WEBSITE_LOGIN_TEAM_ID]);
+  html = harness.app.innerHTML;
+  assert.doesNotMatch(html, /qa-team@acme\.com/);
+
+  const ungranted = websiteLoginsHarness(websiteLoginFixtures(), { ...hosted, initialSearch: '?tab=websites' });
+  await flushAsync();
+  assert.doesNotMatch(ungranted.harness.app.innerHTML, /ptab-websites/, 'an Agent with none gets no tab');
+  assert.equal(ungranted.calls.gets, 0);
 });
 
 test('hosted Admin leaves out guidance only a self-hoster can follow; standalone keeps every sentence', async () => {

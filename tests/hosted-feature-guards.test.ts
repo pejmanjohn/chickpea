@@ -138,20 +138,37 @@ function hostedBrowser(t: TestContext, enabled: boolean): void {
 
 test('under tenancy Admin\'s browser key routes, and website-login routes without the host\'s browser, are not found, before any store is read', async (t) => {
   t.mock.method(console, 'error', () => {});
+  resetHostedBrowserForTests();
+  t.after(resetHostedBrowserForTests);
   const routes = createAdminRoutes({ identity: untouchable(), store: untouchable(), settings: untouchable() });
-  for (const port of ['none', 'off'] as const) {
-    if (port === 'off') hostedBrowser(t, false);
-    for (const [method, path] of BROWSER_ROUTES) {
-      for (const variant of new Set(ROUTE_VARIANTS(path))) {
-        const response = await routes.request(`https://hosted.example${variant}`, { method }, ENV_A);
-        assert.equal(response.status, 404, `${port}: ${method} ${variant}`);
-      }
+  for (const [method, path] of BROWSER_ROUTES) {
+    for (const variant of new Set(ROUTE_VARIANTS(path))) {
+      const response = await routes.request(`https://hosted.example${variant}`, { method }, ENV_A);
+      assert.equal(response.status, 404, `no port: ${method} ${variant}`);
     }
   }
   // An Agent's other routes, and standalone's browser routes, get past the guard.
   assert.equal((await routes.request('https://hosted.example/admin/api/agents/agent_shared', {}, ENV_A)).status, 500);
   for (const [method, path] of BROWSER_ROUTES) {
     assert.equal((await routes.request(`http://localhost${path}`, { method })).status, 500, `standalone ${method} ${path}`);
+  }
+});
+
+test('with the host\'s browser off, saved website logins can still be listed and removed, never added or changed', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  hostedBrowser(t, false);
+  const routes = createAdminRoutes({ identity: untouchable(), store: untouchable(), settings: untouchable() });
+  for (const [method, path] of WEBSITE_LOGIN_ROUTES) {
+    const served = method === 'GET' || method === 'DELETE';
+    for (const variant of new Set(ROUTE_VARIANTS(path))) {
+      const response = await routes.request(`https://hosted.example${variant}`, { method }, ENV_A);
+      assert.equal(response.status, served ? 500 : 404, `${method} ${variant} ${served ? 'reaches the store' : 'is not found'}`);
+    }
+  }
+  for (const [method, path] of BROWSER_KEY_ROUTES) {
+    for (const variant of new Set(ROUTE_VARIANTS(path))) {
+      assert.equal((await routes.request(`https://hosted.example${variant}`, { method }, ENV_A)).status, 404, `${method} ${variant}`);
+    }
   }
 });
 
@@ -241,12 +258,12 @@ test('the hosted Admin page tells its client browser setup is not offered, websi
   }, env)).text();
   const hosted = await page(ENV_A);
   const standalone = await page();
-  assert.match(hosted, /"browserSetupOffered":false,"websiteLoginsOffered":false/);
-  assert.match(standalone, /"browserSetupOffered":true,"websiteLoginsOffered":true/);
+  assert.match(hosted, /"browserSetupOffered":false,"websiteLoginsOffered":false,"websiteLoginsRemoveOnly":false/);
+  assert.match(standalone, /"browserSetupOffered":true,"websiteLoginsOffered":true,"websiteLoginsRemoveOnly":false/);
   assert.match(hosted, /"selfHosted":false/);
   assert.match(standalone, /"selfHosted":true/);
   hostedBrowser(t, false);
-  assert.match(await page(ENV_A), /"websiteLoginsOffered":false/, 'the host\'s browser is off');
+  assert.match(await page(ENV_A), /"websiteLoginsOffered":false,"websiteLoginsRemoveOnly":true/, 'the host\'s browser is off');
   hostedBrowser(t, true);
-  assert.match(await page(ENV_A), /"browserSetupOffered":false,"websiteLoginsOffered":true/);
+  assert.match(await page(ENV_A), /"browserSetupOffered":false,"websiteLoginsOffered":true,"websiteLoginsRemoveOnly":false/);
 });
