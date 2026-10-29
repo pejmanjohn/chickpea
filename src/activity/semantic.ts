@@ -418,9 +418,10 @@ export function webSearchSemanticDescriptor(query?: unknown): SemanticActivityDe
       .replace(/\s+/g, ' ')
       .trim(),
   );
+  // The cut is in UTF-16 units; a high surrogate it leaves behind is not text.
   const label = plain.length <= WEB_QUERY_LABEL_LIMIT
     ? plain
-    : `${plain.slice(0, WEB_QUERY_LABEL_LIMIT - 1).trimEnd()}…`;
+    : `${plain.slice(0, WEB_QUERY_LABEL_LIMIT - 1).replace(/[\uD800-\uDBFF]$/, '').trimEnd()}…`;
   return isSafeWebQueryLabel(label)
     ? { ...generic, label: { kind: 'web_query', id: label, label } }
     : generic;
@@ -875,6 +876,7 @@ function isSafeWebHostLabel(value: string): boolean {
 function isSafeWebQueryLabel(value: string): boolean {
   return value.length > 0 && value.length <= WEB_QUERY_LABEL_LIMIT && value.trim() === value &&
     !/\s{2}/.test(value) && !/[\u0000-\u001f\u007f-\u009f<>&*_~`|“”]/.test(value) &&
+    !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value) &&
     [...value.matchAll(/@/g)].every(({ index }) => value[index + 1] === SLACK_MENTION_BREAK) &&
     !hasCredentialLikeContent(value);
 }

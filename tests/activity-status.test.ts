@@ -1076,6 +1076,8 @@ test('a long search query is shortened with an ellipsis to fit the 50-character 
   const text = searchStatus('web-search-long', { query: 'how do I paginate the Statusboard incidents endpoint with cursors' })!;
   assert.equal(text, 'Searching: “how do I paginate the Statusboard i…”…');
   assert.ok(text.length <= 50, `${text.length} characters`);
+  assert.equal(searchStatus('web-search-emoji-cut', { query: `${'x'.repeat(34)}😀 and more` }),
+    `Searching: “${'x'.repeat(34)}…”…`, 'a cut through an emoji leaves no half of it behind');
   const status = narrateSemanticActivity(webSearchSemanticDescriptor('x'.repeat(400)), { phase: 'started' })!;
   assert.ok(isSafeTypedActivityStatus(status));
   assert.deepEqual(slackLoadingMessages(status), [slackStatusText(status)]);
