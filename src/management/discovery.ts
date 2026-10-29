@@ -210,10 +210,10 @@ const CONNECTION_CHANGED = 'The connection changed while the key was being saved
 
 /**
  * Checks a key against one of an Agent's API connections with one GET and,
- * when the answer shows the key works (2xx) or refuses only that request (403),
- * saves it the way the setup page does, so the account becomes ready. Unlike
- * the setup page, it saves nothing on an answer that says nothing about the
- * key, such as the 404 many APIs give at a bare prefix whatever the key. The
+ * only when the answer shows the key works (2xx), saves it the way the setup
+ * page does, so the account becomes ready. Unlike the setup page, it saves
+ * nothing on any other answer: a 403 can mean an invalid key, and many APIs
+ * give a 404 at a bare prefix whatever the key. The
  * check and the save are fenced on the account revision the caller checked.
  */
 export async function saveManagedConnectionKey(
