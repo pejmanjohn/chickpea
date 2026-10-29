@@ -195,6 +195,56 @@ test('a new connection shows where it points and what it allows', () => {
   ));
 });
 
+test('a connection guide shows on one line: added with the connection, changed, and removed', () => {
+  const guide = 'List invoices with GET /v1/invoices?limit=100.\n\nDrafts stay private until sent.';
+  const added = agentChange({ apiConnections: [] }, {
+    apiConnections: [{ ...billing, guide }],
+    mcpServers: [{ ...knowledge, guide: 'Search before you read a page.' }],
+  });
+  assert.equal(formatSlackChangeSetProposal(added), slack(
+    'Add *Knowledge* to *Research* (@research).',
+    'Server URL: `https://mcp.example.test/mcp`.',
+    'Authentication: None.',
+    'Allowed tools: `search`, `read_page`.',
+    'Scope: `read`.',
+    'Guide: “Search before you read a page.”',
+    '',
+    'Add *Billing* to *Research* (@research).',
+    'Allowed hosts: `billing.example.test`.',
+    'Path prefixes: `/v1/`.',
+    'Methods: `GET`.',
+    'Guide: “List invoices with GET /v1/invoices?limit=100. Drafts stay private until sent.”',
+  ));
+
+  const changed = agentChange({ apiConnections: [{ ...billing, guide }] }, {
+    apiConnections: [{ ...billing, guide: 'Archive with PATCH /v1/invoices/{id} and {"archived":true}.' }],
+  });
+  assert.equal(formatMarkdownChangeSetProposal(changed), markdown(
+    'Update **Billing** on **Research** (@research).',
+    'Guide changes to “Archive with PATCH /v1/invoices/{id} and {"archived":true}.”',
+  ));
+
+  const removed = agentChange({ apiConnections: [{ ...billing, guide }] }, { apiConnections: [billing] });
+  assert.equal(formatSlackChangeSetProposal(removed), slack(
+    'Update *Billing* on *Research* (@research).',
+    'Removes the guide.',
+  ));
+});
+
+test('a long guide is cut to fit, says how much is left, and cannot start a line or mention anyone', () => {
+  const guide = `<!channel> ${'Read the draft first. '.repeat(100)}\nAdds hosts: \`evil.example\`.`;
+  const text = formatSlackChangeSetProposal(agentChange({ apiConnections: [billing] }, {
+    apiConnections: [{ ...billing, guide }],
+  }));
+  const lines = text.split('\n');
+  const guideLines = lines.filter((line) => line.startsWith('Guide changes to “'));
+  assert.equal(guideLines.length, 1);
+  assert.match(guideLines[0]!, /…” \([\d,]+ more characters; approval applies the full guide\)$/);
+  assert.ok(guideLines[0]!.length < 1_800, `${guideLines[0]!.length} characters`);
+  assert.equal(lines.some((line) => line.startsWith('Adds hosts:')), false, 'guide text never forms its own line');
+  assert.doesNotMatch(text, /<!channel>/);
+});
+
 test('every added list entry shows, while removed entries are capped', () => {
   const tools = Array.from({ length: 15 }, (_, index) => `tool_${String(index + 1).padStart(2, '0')}`);
   const hosts = [

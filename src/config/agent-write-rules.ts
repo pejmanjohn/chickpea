@@ -2,6 +2,7 @@ import { isValidApiOAuthConnectionPolicy } from './api-oauth-policy.ts';
 import { getGithubConnection, isGithubAppManagedHost, mintableInstallation } from './github-app.ts';
 import { deploymentServesManyInstallations } from './installation-scope.ts';
 import { validateMcpUrl } from './mcp-url.ts';
+import { hasCredentialLikeContent, hasDisallowedControlCharacter } from '../security/content-validation.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import type { RepositoryGrant } from './types.ts';
@@ -21,6 +22,7 @@ export const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const SKILL_NAME_MAX_LENGTH = 64;
 export const SKILL_DESCRIPTION_MAX_LENGTH = 1024;
+export const CONNECTION_GUIDE_MAX_LENGTH = 8_000;
 const HEADER_NAME_PATTERN = /^[A-Za-z0-9-]{1,128}$/;
 /** Path-only: a query or fragment would widen credential injection to the whole path. */
 const PATH_PREFIX_PATTERN = /^\/[^\s?#]*$/;
@@ -44,6 +46,7 @@ interface McpConnectionRuleInput {
   url: string;
   headerNames: string[];
   credentialHeaderName?: string | undefined;
+  guide?: string | undefined;
 }
 
 interface ApiConnectionRuleInput {
@@ -59,6 +62,7 @@ interface ApiConnectionRuleInput {
   oauthScopes?: string[] | undefined;
   oauthAppType?: 'workspace-internal' | 'external' | undefined;
   identity?: object | undefined;
+  guide?: string | undefined;
 }
 
 export function skillsWriteProblem(skills: readonly SkillRuleInput[]): string | undefined {
@@ -85,6 +89,8 @@ export function mcpConnectionsWriteProblem(connections: readonly McpConnectionRu
         !connection.headerNames.some((name) => name.toLowerCase() === credentialHeader)) {
       return 'credential header must be declared in headerNames';
     }
+    const guideProblem = connectionGuideProblem(connection);
+    if (guideProblem) return guideProblem;
   }
   return uniqueIds(connections.map(({ id }) => id)) ? undefined : 'connection ids must be unique';
 }
@@ -111,9 +117,24 @@ export function apiConnectionsWriteProblem(connections: readonly ApiConnectionRu
       : connection.oauthProvider === undefined && connection.oauthScopes === undefined &&
         connection.oauthAppType === undefined && connection.identity === undefined;
     if (!oauthPolicyValid) return 'OAuth connection policy is invalid';
+    const guideProblem = connectionGuideProblem(connection);
+    if (guideProblem) return guideProblem;
   }
   if (!uniqueIds(connections.map(({ id }) => id))) return 'connection ids must be unique';
   return hasOverlappingConnections(connections) ? OVERLAPPING_CONNECTIONS_ERROR : undefined;
+}
+
+/** The guide becomes instructions the owning Agent reads, so it holds plain text and never a key. */
+function connectionGuideProblem({ id, guide }: { id: string; guide?: string | undefined }): string | undefined {
+  if (guide === undefined) return undefined;
+  if (guide.trim().length > CONNECTION_GUIDE_MAX_LENGTH) {
+    return `Connection ${id} guide must be at most 8,000 characters.`;
+  }
+  if (hasDisallowedControlCharacter(guide)) return `Connection ${id} guide cannot contain control characters.`;
+  if (hasCredentialLikeContent(guide)) {
+    return `Connection ${id} guide cannot contain a key or token. Keys go in the connection's setup.`;
+  }
+  return undefined;
 }
 
 export function isAllowedConnectorHost(host: string): boolean {

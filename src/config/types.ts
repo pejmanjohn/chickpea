@@ -101,6 +101,8 @@ export interface McpConnectionConfig {
    * this connection; enables badge rendering and "reset to preset".
    */
   presetId?: string;
+  /** Plain-text notes on using this connection, which the Agent that owns it reads as a skill. */
+  guide?: string;
 }
 
 /**
@@ -135,6 +137,8 @@ export interface ApiConnectionConfig {
   readyRevision?: number;
   identity?: McpConnectionIdentity;
   presetId?: string;
+  /** Plain-text notes on using this connection, which the Agent that owns it reads as a skill. */
+  guide?: string;
 }
 
 export interface RepositoryGrant {
@@ -696,6 +700,8 @@ export interface ConnectionAccountApiPolicy {
   /** Internal generation token for the currently authorized OAuth attempt. */
   oauthAttemptId?: string;
   presetId?: string;
+  /** Plain-text notes on using this connection, which the Agent that owns it reads as a skill. */
+  guide?: string;
 }
 
 /** Non-secret MCP policy owned by one Agent-scoped connection account. */
@@ -718,6 +724,8 @@ export interface ConnectionAccountMcpPolicy {
   /** Internal generation token for the currently authorized OAuth attempt. */
   oauthAttemptId?: string;
   presetId?: string;
+  /** Plain-text notes on using this connection, which the Agent that owns it reads as a skill. */
+  guide?: string;
 }
 
 /**

@@ -522,6 +522,8 @@ type ConnectionField =
       /** Said when the list empties: an empty list allows everything. */
       emptyAllows?: string;
     }
+  /** Prose the owning Agent reads, on one line and cut to fit; it grants nothing. */
+  | { show: 'text'; label: string; noun: string }
   /** Named among the other changes, without its value. */
   | { show: 'named'; label: string; widens: boolean }
   /** Part of the entry's name: a change removes the old entry and adds the new one. */
@@ -546,6 +548,8 @@ const CONNECTED_ACCOUNT: ConnectionField = {
 };
 /** A preset decides whether new tools need review. */
 const CONNECTOR_PRESET: ConnectionField = { show: 'named', label: 'Connector', widens: true };
+/** What the owning Agent is told about using the connection. */
+const CONNECTION_GUIDE: ConnectionField = { show: 'text', label: 'Guide', noun: 'guide' };
 /**
  * The store derives the credential reference on every write, so a patch
  * cannot choose one and the preview's record drops it.
@@ -579,6 +583,7 @@ const MCP_FIELDS: ConnectionFields<McpConnectionConfig> = {
   credentialHeaderName: { show: 'named', label: 'Custom headers', widens: true },
   credentialValuePrefix: { show: 'named', label: 'Custom headers', widens: false },
   credentialOptional: { show: 'named', label: 'Authentication', widens: true },
+  guide: CONNECTION_GUIDE,
   discoveredTools: BOOKKEEPING,
   presetId: CONNECTOR_PRESET,
   id: BOOKKEEPING,
@@ -622,6 +627,7 @@ const API_FIELDS: ConnectionFields<ApiConnectionConfig> = {
   headerValuePrefix: { show: 'value', label: 'Value prefix', format: 'code', widens: false, unlessNew: 'Bearer ' },
   enabled: CONNECTION_STATUS,
   identity: CONNECTED_ACCOUNT,
+  guide: CONNECTION_GUIDE,
   presetId: CONNECTOR_PRESET,
   id: BOOKKEEPING,
   credentialRef: CREDENTIAL_REFERENCE,
@@ -718,6 +724,10 @@ function newConnectionLines(
       const values = (field.read ?? stringList)(record[key]);
       return values.length > 0 ? [`${field.label}: ${formatValueList(values, 'all', dialect)}.`] : [];
     }
+    if (field.show === 'text') {
+      const value = stringValue(record[key]);
+      return value === undefined ? [] : [`${field.label}: ${formatTextExcerpt(value, field.noun, dialect)}`];
+    }
     return [];
   });
 }
@@ -759,6 +769,14 @@ function changedConnectionLines(
       const listed = listChangeLines(field, before[key], after[key], dialect);
       unexplained ||= listed.length === 0 && field.read === undefined;
       lines.push(...listed);
+    } else if (field.show === 'text') {
+      const now = stringValue(after[key]);
+      lines.push({
+        text: now === undefined
+          ? `Removes the ${field.noun}.`
+          : `${field.label} changes to ${formatTextExcerpt(now, field.noun, dialect)}`,
+        pinned: false,
+      });
     } else if (field.show === 'named') {
       named.set(field.label, named.get(field.label) === true || field.widens);
     }
@@ -812,6 +830,17 @@ function formatConnectionValue(
   if (format === 'name') return dialect.bold(plainText(value, dialect));
   if (format !== 'code' && format[value] !== undefined) return plainText(format[value], dialect);
   return formatCode(value, dialect);
+}
+
+const TEXT_EXCERPT_LIMIT = 1_600;
+
+/** Stored prose as one quoted line, cut at the limit with the count left out. */
+function formatTextExcerpt(value: string, noun: string, dialect: ChangeSetPresentationDialect): string {
+  const characters = [...value.replace(/\s+/g, ' ').trim()];
+  if (characters.length <= TEXT_EXCERPT_LIMIT) return `“${plainText(characters.join(''), dialect)}”`;
+  const shown = characters.slice(0, TEXT_EXCERPT_LIMIT).join('').trimEnd();
+  const hidden = (characters.length - [...shown].length).toLocaleString('en-US');
+  return `“${plainText(shown, dialect)}…” (${hidden} more characters; approval applies the full ${noun})`;
 }
 
 function formatValueList(

@@ -766,6 +766,34 @@ test('a recipe overwrite keeps the existing connections\' secrets and status', (
     assert.deepEqual(after.repositories, researcher.repositories);
   }, readyModels));
 
+test('a recipe carries each connection\'s guide, and an overwrite keeps it', () =>
+  withFixture('recipe-guide', async (f) => {
+    const { researcher } = await seedRecipeSource(f);
+    const before = await inspect(f, researcher.id);
+    const guide = 'List invoices with GET /v1/invoices?limit=100.';
+    const written = await mcpApply(f, { idempotencyKey: 'recipe-guide-write', operations: [{
+      itemId: 'guide',
+      kind: 'update_agent',
+      agentId: before.id,
+      expectedRevision: before.revision,
+      patch: {
+        apiConnections: before.apiConnections.map((connection) =>
+          connection.id === 'billing' ? { ...connection, guide } : connection),
+      },
+    }] });
+    assert.equal(written.status, 'completed', JSON.stringify(written.outcomes));
+
+    const recipe = await exportRecipe(f, [researcher.id]);
+    assert.equal(recipe.agents[0]!.apiRequirements.find(({ id }) => id === 'billing')?.guide, guide,
+      'the exported recipe carries the guide');
+    recipe.agents[0]!.instructions = 'Cite every source twice.';
+    const preview = await previewRecipe(f, recipe, 'update');
+    const applied = await mcpApply(f, { idempotencyKey: 'recipe-guide-overwrite', operations: preview.operations });
+    assert.equal(applied.status, 'completed', JSON.stringify(applied.outcomes));
+    const policy = (await accountOf(f, researcher.id, 'billing')).policy;
+    assert.equal(policy.kind === 'api' ? policy.guide : undefined, guide, 'a recipe overwrite keeps the guide');
+  }, readyModels));
+
 test('a recipe overwrite that drops a connection asks first over MCP, then keeps the rest on confirm', () =>
   withFixture('recipe-overwrite-removal', async (f) => {
     const { researcher } = await seedRecipeSource(f);
@@ -1007,3 +1035,53 @@ test('a recipe overwrite sends a setup link for a header credential, and none fo
     assert.equal(repointed.lifecycle, 'pending');
     assert.equal(await secretOf(f, repointed), undefined, 'the new URL retires the stored header credential');
   }, readyModels));
+
+test('a guide written over MCP lands on the account, reads back trimmed, and keeps the key', () =>
+  withFixture('round-trip-guide', async (f) => {
+    const stored = await seedAgent(f, 'agent_billing');
+    await connect(f, stored.id, billing);
+    const keyed = await accountOf(f, stored.id, 'billing');
+    const before = await inspect(f, stored.id);
+    assert.equal(Object.hasOwn(before.apiConnections[0]!, 'guide'), false,
+      'an account stored without a guide reads without one');
+
+    const guide = 'List invoices with GET /v1/invoices?limit=100.\nDrafts stay private until POST /v1/invoices/{id}/send.';
+    const withGuide = (value?: string): ManagementOperation => ({
+      itemId: 'guide',
+      kind: 'update_agent',
+      agentId: before.id,
+      expectedRevision: before.revision,
+      patch: {
+        apiConnections: before.apiConnections.map(({ guide: _guide, ...connection }) =>
+          value === undefined ? connection : { ...connection, guide: value }),
+      },
+    });
+    const written = await mcpApply(f, { idempotencyKey: 'guide-write', operations: [withGuide(`  ${guide}\n`)] });
+    assert.deepEqual(written.outcomes.map(({ disposition }) => disposition), ['applied'],
+      JSON.stringify(written.outcomes));
+    const guided = await accountOf(f, stored.id, 'billing');
+    assert.deepEqual(guided.policy, { ...billing.policy, guide });
+    assert.deepEqual([guided.id, guided.secretRefId, guided.lifecycle], [keyed.id, keyed.secretRefId, keyed.lifecycle]);
+    assert.equal(await secretOf(f, guided), billing.credential, 'a guide edit never resets the key');
+    assert.equal((await inspect(f, stored.id)).apiConnections[0]!.guide, guide);
+
+    const refused = await invokeWorkspaceManagementTool({
+      service: f.service,
+      resolveContext: async () => mcpContext(f),
+    }, 'apply_workspace_changes', {
+      idempotencyKey: 'guide-key',
+      operations: [withGuide(`Use ghp_${'0'.repeat(36)} for every request.`)],
+    });
+    assert.equal(refused.ok, false, JSON.stringify(refused));
+    assert.deepEqual((await accountOf(f, stored.id, 'billing')).policy, guided.policy,
+      'a guide holding a key is refused and stores nothing');
+
+    const current = await inspect(f, stored.id);
+    const cleared = await mcpApply(f, {
+      idempotencyKey: 'guide-clear',
+      operations: [{ ...withGuide(), expectedRevision: current.revision }],
+    });
+    assert.deepEqual(cleared.outcomes.map(({ disposition }) => disposition), ['applied']);
+    assert.deepEqual((await accountOf(f, stored.id, 'billing')).policy, billing.policy,
+      'a write without the guide removes it');
+  }));

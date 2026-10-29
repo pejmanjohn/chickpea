@@ -59,6 +59,8 @@ import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
 import { mcpToolEffect } from '../config/mcp-tool-policy.ts';
 import { AGENT_AUTHORING_SKILL_NAME } from '../management/agent-authoring/index.ts';
 import { GITHUB_OWNER_PATTERN } from '../config/github-app.ts';
+import { CONNECTION_GUIDE_MAX_LENGTH } from '../config/agent-write-rules.ts';
+import { connectionGuideSkillName } from '../config/connector-skills.ts';
 import {
   buildSemanticActivityContext,
   type ActivityContext,
@@ -119,6 +121,7 @@ export interface RuntimePlanMcpConnectionV2 {
   headerNames: string[];
   allowedTools: string[];
   optional: boolean;
+  guide?: string;
 }
 
 export interface RuntimePlanApiConnectionV2 {
@@ -134,6 +137,7 @@ export interface RuntimePlanApiConnectionV2 {
   authMode: 'credential' | 'oauth';
   oauthProvider?: 'google';
   oauthScopes?: string[];
+  guide?: string;
 }
 
 export interface RuntimePlanManagedConnectionV2 {
@@ -649,6 +653,8 @@ export function buildRuntimePlanActivityContext(
     families.add(descriptor.descriptor.target);
   }
 
+  const guideLabels = new Map([...plan.apiConnections, ...plan.mcpConnections].flatMap(({ id, displayName, guide }) =>
+    guide && displayName ? [[connectionGuideSkillName(id), displayName] as const] : []));
   return buildSemanticActivityContext(
     dedupeActivityDescriptors(descriptors),
     [...families],
@@ -660,7 +666,7 @@ export function buildRuntimePlanActivityContext(
         // An Agent's own skill keeps its own name even when it shadows a built-in one.
         const label = plan.skills.some((skill) => skill.name === name)
           ? undefined
-          : BUILT_IN_SKILL_LABELS[name];
+          : BUILT_IN_SKILL_LABELS[name] ?? guideLabels.get(name);
         return label ? { name, displayName: label } : { name };
       }),
       mcpConnections: plan.mcpConnections.flatMap(({ id, displayName }) =>
@@ -1273,6 +1279,7 @@ function compileMcpConnections(
       allowedTools: sortedUnique(connection.allowedTools),
       // Current Chickpea policy degrades unavailable profile MCP servers.
       optional: true,
+      ...(connection.guide ? { guide: connection.guide } : {}),
     }))
     .sort(compareBy('id'));
 }
@@ -1301,6 +1308,7 @@ function compileApiConnections(
       ...(connection.oauthScopes
         ? { oauthScopes: sortedUnique(connection.oauthScopes) }
         : {}),
+      ...(connection.guide ? { guide: connection.guide } : {}),
     }))
     .sort(compareBy('id'));
 }
@@ -1937,7 +1945,8 @@ function parseMcpConnection(value: unknown, index: number): RuntimePlanMcpConnec
     'headerNames',
     'allowedTools',
     'optional',
-  ], ['credentialRef', 'presetId', 'displayName', 'readOnlyTools', 'writeTools', 'toolArgumentConstraints', 'oauthScope', 'oauthAttemptId']);
+    'guide',
+  ], ['credentialRef', 'presetId', 'displayName', 'readOnlyTools', 'writeTools', 'toolArgumentConstraints', 'oauthScope', 'oauthAttemptId', 'guide']);
   if (record.optional !== true && record.optional !== false) {
     throw new Error(`Runtime plan ${label}.optional must be boolean.`);
   }
@@ -1980,6 +1989,8 @@ function parseMcpConnection(value: unknown, index: number): RuntimePlanMcpConnec
     headerNames: sortedUniqueStringArray(record.headerNames, `${label}.headerNames`, 64),
     allowedTools,
     optional: record.optional,
+    ...(record.guide === undefined
+      ? {} : { guide: boundedString(record.guide, `${label}.guide`, 1, CONNECTION_GUIDE_MAX_LENGTH) }),
   };
 }
 
@@ -1998,7 +2009,8 @@ function parseApiConnection(value: unknown, index: number): RuntimePlanApiConnec
     'oauthScopes',
     'presetId',
     'displayName',
-  ], ['credentialRef', 'headerValuePrefix', 'oauthProvider', 'oauthScopes', 'presetId', 'displayName']);
+    'guide',
+  ], ['credentialRef', 'headerValuePrefix', 'oauthProvider', 'oauthScopes', 'presetId', 'displayName', 'guide']);
   const authMode = oneOf(
     record.authMode,
     `${label}.authMode`,
@@ -2032,6 +2044,8 @@ function parseApiConnection(value: unknown, index: number): RuntimePlanApiConnec
     ...(oauthProvider ? { oauthProvider } : {}),
     ...(record.presetId === undefined ? {} : { presetId: boundedString(record.presetId, `${label}.presetId`, 1, 120) }),
     ...(oauthScopes ? { oauthScopes } : {}),
+    ...(record.guide === undefined
+      ? {} : { guide: boundedString(record.guide, `${label}.guide`, 1, CONNECTION_GUIDE_MAX_LENGTH) }),
   };
 }
 

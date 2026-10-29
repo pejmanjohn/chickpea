@@ -247,6 +247,7 @@ import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
 import { finishAgentSecretCleanup, stageAgentSecretCleanup } from '../config/agent-secret-cleanup.ts';
 import {
   apiConnectionsWriteProblem,
+  CONNECTION_GUIDE_MAX_LENGTH,
   CONNECTION_ID_PATTERN,
   GITHUB_API_CONNECTION_ERROR,
   isAllowedConnectorHost,
@@ -1150,6 +1151,7 @@ const skillsSchema = v.pipe(
 );
 
 const oauthScopeSchema = v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(MAX_MCP_OAUTH_SCOPE_LENGTH)));
+const connectionGuideSchema = v.optional(v.pipe(v.string(), v.trim(), v.maxLength(CONNECTION_GUIDE_MAX_LENGTH)));
 
 // A single discovered-tool record stored on a Connection's last successful
 // test. Bounded to keep the profile row small (matches types.ts limits).
@@ -1202,6 +1204,7 @@ const mcpServerSchema = v.pipe(
     lastCheckedAt: v.optional(v.number()),
     identity: v.optional(mcpIdentitySchema),
     presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
+    guide: connectionGuideSchema,
   }),
   v.check((s) => mcpConnectionsWriteProblem([s]) === undefined, 'MCP connection is invalid'),
 );
@@ -1256,6 +1259,7 @@ const apiConnectionSchema = v.pipe(
     oauthAppType: v.optional(v.picklist(['workspace-internal', 'external'])),
     identity: v.optional(mcpIdentitySchema),
     presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
+    guide: connectionGuideSchema,
   }),
   v.check(
     (connection) => apiConnectionsWriteProblem([connection]) === undefined,
@@ -9187,6 +9191,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               ? { oauthAppType: parsed.output.api.oauthAppType }
               : {}),
             ...(parsed.output.api.presetId ? { presetId: parsed.output.api.presetId } : {}),
+            ...(parsed.output.api.guide ? { guide: parsed.output.api.guide } : {}),
           }
         : {
             kind: 'mcp' as const,
@@ -9213,6 +9218,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             ...(parsed.output.mcp!.toolPolicies ? { toolPolicies: parsed.output.mcp!.toolPolicies } : {}),
             ...(parsed.output.mcp!.oauthScope ? { oauthScope: parsed.output.mcp!.oauthScope } : {}),
             ...(parsed.output.mcp!.presetId ? { presetId: parsed.output.mcp!.presetId } : {}),
+            ...(parsed.output.mcp!.guide ? { guide: parsed.output.mcp!.guide } : {}),
           };
       if (policy.kind === 'mcp' && isMcpToolReviewRequired(policy)) {
         if (policy.transport !== 'streamable-http' || policy.authMode !== 'oauth' || policy.headerNames.length) return invalidRequest(c);

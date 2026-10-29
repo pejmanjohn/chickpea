@@ -2073,6 +2073,8 @@ export async function replaceCatalogConnection(input: {
           : {}),
       };
     }
+    const guide = account.policy.kind === 'managed' ? undefined : account.policy.guide;
+    if (guide && nextPolicy.kind !== 'managed') nextPolicy = { ...nextPolicy, guide };
     updatedAccount = await input.config.putConnectionAccount({
       ...account,
       policy: nextPolicy,

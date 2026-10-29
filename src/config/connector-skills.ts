@@ -1,11 +1,27 @@
 import type { RepositoryGrant, SkillConfig } from './types.ts';
 
-interface ConnectorSkillScope {
+export interface ConnectorSkillScope {
+  id: string;
+  displayName?: string;
+  guide?: string;
   allowedHosts: string[];
   pathPrefixes: string[];
   allowedMethods: string[];
   presetId?: string;
   oauthScopes?: string[];
+}
+
+export interface McpConnectorSkillScope {
+  id: string;
+  displayName?: string;
+  guide?: string;
+  url: string;
+  allowedTools: string[];
+}
+
+export interface ConnectorSkillConnections {
+  apiConnections?: readonly ConnectorSkillScope[];
+  mcpConnections?: readonly McpConnectorSkillScope[];
 }
 
 type ConnectorSkillKind =
@@ -39,6 +55,9 @@ const API_REQUEST_AUTH = [
   "Call this service with the `connection_request` tool. Each recipe below is that tool's input: `url` (and `method`, default GET), plus `json` for a JSON body. Put query parameters in `url` or in `query`.",
   "Authentication is handled automatically by the workspace's connection. Never add authorization, cookie, or API-key headers, and never ask the user for a token.",
 ].join(' ');
+
+const MCP_AUTOMATIC_AUTH =
+  "Call this service with its MCP tools. Authentication is handled automatically by the workspace's connection; never ask the user for a token.";
 
 const API_REQUEST_ERRORS = [
   '## Errors and connection restrictions',
@@ -466,13 +485,13 @@ const CONNECTOR_SKILLS: ConnectorSkillDefinition[] = [
  * explicitly projected before they can reach instruction text.
  */
 export function connectorSkillsForConnections(
-  scopes: ConnectorSkillScope[],
+  { apiConnections = [], mcpConnections = [] }: ConnectorSkillConnections,
   repositoryGrants: readonly RepositoryGrant[] = [],
 ): SkillConfig[] {
   const skills: SkillConfig[] = [];
   const attached = new Set<ConnectorSkillKind>();
 
-  for (const scope of scopes) {
+  for (const scope of apiConnections) {
     const hosts = scope.allowedHosts.map((host) => host.toLowerCase());
     for (const definition of CONNECTOR_SKILLS) {
       const matches = definition.matchesScope
@@ -491,10 +510,66 @@ export function connectorSkillsForConnections(
     }
   }
 
+  skills.push(...apiConnections.flatMap(apiGuideSkill), ...mcpConnections.flatMap(mcpGuideSkill));
+
   const repositoriesSkill = repositoriesSkillForGrants(repositoryGrants);
   return repositoriesSkill
     ? [...skills.filter((skill) => skill.name !== 'github-api'), repositoriesSkill]
     : skills;
+}
+
+/** A guide skill's name: Flue's skill-name rule allows no underscore, which every account id has. */
+export function connectionGuideSkillName(connectionId: string): string {
+  const slug = connectionId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    .replace(/^connection-/, '');
+  return `connection-${slug}`.slice(0, 64).replace(/-+$/, '');
+}
+
+function apiGuideSkill(scope: ConnectorSkillScope): SkillConfig[] {
+  if (!scope.guide) return [];
+  const name = oneLine(scope.displayName ?? scope.id);
+  return [{
+    name: connectionGuideSkillName(scope.id),
+    description: `Notes on calling ${name}: its endpoints, request quirks, and the access each action needs.`,
+    instructions: [
+      `# ${name}`,
+      '',
+      API_REQUEST_AUTH,
+      '',
+      scope.guide,
+      '',
+      API_REQUEST_ERRORS,
+      '',
+      connectionContext(scope, () => true),
+    ].join('\n'),
+    enabled: true,
+  }];
+}
+
+function mcpGuideSkill(scope: McpConnectorSkillScope): SkillConfig[] {
+  if (!scope.guide) return [];
+  const name = oneLine(scope.displayName ?? scope.id);
+  return [{
+    name: connectionGuideSkillName(scope.id),
+    description: `Notes on using the ${name} tools: what they do, request quirks, and the access each action needs.`,
+    instructions: [
+      `# ${name}`,
+      '',
+      MCP_AUTOMATIC_AUTH,
+      '',
+      scope.guide,
+      '',
+      '## Your connection',
+      '',
+      `- Server: ${inlineValues([scope.url])}`,
+      `- Tools: ${inlineValues(scope.allowedTools)}`,
+    ].join('\n'),
+    enabled: true,
+  }];
+}
+
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 /**
