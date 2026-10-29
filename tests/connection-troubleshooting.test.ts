@@ -492,6 +492,11 @@ test('the approval admits only its own connection, the person who approved it, f
     f.typed.clear();
   }, (f) => next(f), 'the host no longer holds the proposing turn');
   await refused(async (f) => {
+    await approvedConnection(f);
+    const [at, proposing] = [...f.typed].find(([, { text }]) => text === UNTYPED_HOST)!;
+    f.typed.set(at, { ...proposing, userId: 'U99999999' });
+  }, (f) => next(f), 'another person typed the proposing message');
+  await refused(async (f) => {
     const other = { ...CONNECTION, id: 'statuspage', displayName: 'Statuspage', allowedHosts: ['api.statuspage.example'] };
     const added = ok<ManagementApplyResult>(await f.slack('apply_workspace_changes', await f.update({ apiConnections: [other] }),
       'add the Statuspage API at https://api.statuspage.example/v2'));
