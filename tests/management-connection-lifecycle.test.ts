@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { createWebsiteLogin, listWebsiteLogins } from '../src/browser/logins.ts';
 import type { ConnectionAccount, CustomAgentConfig } from '../src/config/types.ts';
 import type { IdentityResolution } from '../src/identity/types.ts';
+import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
 import {
   invokeWorkspaceManagementTool,
   type WorkspaceManagementToolArguments,
@@ -629,4 +630,60 @@ test('a re-point preview names only fields the caller sent', () =>
     const preview = result.presentation?.markdown ?? '';
     assert.match(preview, /Server URL changes from/);
     assert.doesNotMatch(preview, /Discovered tools/);
+  }));
+
+test('deleting an Agent over the management door refuses to take a login the member cannot remove', () =>
+  withFixture('delete-agent-login', async (f) => {
+    const member = await addMember(f, 'U55555555');
+    const holder = await addMember(f, 'U66666666');
+    const agent = await f.config.createAgent({
+      id: 'agent_desk',
+      name: 'Desk',
+      instructions: 'Help.',
+      enabled: true,
+      lifecycle: 'active',
+      creatorMembershipId: f.owner.membership.id,
+      editPolicy: 'all_workspace_members',
+      configurationGeneration: 1,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const login = await createWebsiteLogin({ store: f.settings, keyring: generateCredentialKeyring('delete_agent_login') }, {
+      host: 'mail.example.com',
+      label: 'Mail',
+      ownerKind: 'member',
+      ownerMembershipId: holder.membership.id,
+      createdByMembershipId: holder.membership.id,
+      method: 'handoff',
+    });
+    const granted = await f.config.updateAgent(agent.id, {
+      websiteLogins: [{ loginId: login.id, level: 'check', enabled: true }],
+    }, agent.revision);
+    const service = createLiveWorkspaceManagementService(undefined, {
+      identity: f.identity,
+      settings: f.settings,
+      overrides: {
+        config: f.config,
+        management: f.management,
+        memory: f.memory,
+        routines: f.routines,
+        setupBaseUrl: 'http://localhost',
+      },
+    });
+    const live = (context: ManagementActorContext, name: WorkspaceManagementToolName, args: unknown) =>
+      invokeWorkspaceManagementTool({ service, resolveContext: async () => context }, name, args as never);
+
+    const proposed = await live(mcpContext(member), 'apply_workspace_changes', {
+      idempotencyKey: 'delete-desk',
+      operations: [{ itemId: 'delete', kind: 'delete_agent', agentId: agent.id, expectedRevision: granted.revision }],
+    });
+    assert.equal(proposed.ok, true, JSON.stringify(proposed));
+    const proposalId = (proposed as { result: ManagementApplyResult }).result.outcomes[0]!.proposalId!;
+    const refused = await live(mcpContext(member), 'confirm_workspace_change', { proposalId });
+    assert.match(JSON.stringify(refused),
+      /"code":"forbidden".*This Agent uses a website login you can't remove\. Ask its owner or an Admin to remove it first\./);
+    assert.equal((await f.config.getAgent(agent.id)).websiteLogins?.length, 1, 'the Agent is kept');
+    assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id }) => id), [login.id]);
   }));

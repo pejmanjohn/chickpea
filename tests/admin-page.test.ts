@@ -4155,6 +4155,32 @@ test('Agent deletion explains how to replace a workspace Default Agent', async (
   );
 });
 
+test('Agent deletion shows the server\'s reason for a refusal it has no text of its own for', async () => {
+  const agent = { ...releaseAgent, id: 'agent_login_holder', name: 'Login Holder' };
+  const harness = runAdminPageHarness({
+    agents: [agent],
+    agentWriteError: {
+      status: 409,
+      error: 'website_login_not_removable',
+      message: 'This Agent uses a website login you can\'t remove. Ask its owner or an Admin to remove it first.',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': agent.id }) });
+  click({ target: actionTarget({ 'data-action': 'agent-overflow-toggle' }) });
+  click({ target: actionTarget({ 'data-action': 'agent-lifecycle-disable' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  click({ target: actionTarget({ 'data-action': 'delete-profile' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /uses a website login you can(?:'|&#39;|&#x27;)t remove\. Ask its owner or an Admin/);
+  assert.doesNotMatch(harness.app.innerHTML, /website_login_not_removable/);
+});
+
 test('New profile opens a blank create screen and validation gates save', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();

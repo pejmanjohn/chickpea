@@ -13,6 +13,7 @@ import {
 } from '../src/browser/logins.ts';
 import { PENDING_CONTEXT_DELETIONS_SETTING } from '../src/browser/context-deletions.ts';
 import { agentCredentialConfigurationBinding } from '../src/config/connection-credential-binding.ts';
+import { mcpSecretCleanupMarkerKey } from '../src/config/mcp-secrets.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -310,9 +311,9 @@ test('DELETE removes the grant and deletes the login only when no other Agent us
   }
 });
 
-async function deleteAgent(f: Fixture, agentId: string): Promise<Response> {
+async function deleteAgent(f: Fixture, agentId: string, who: Who = 'admin'): Promise<Response> {
   const agent = await f.store.getAgent(agentId);
-  return f.call('admin', `/admin/api/agents/${agentId}`, {
+  return f.call(who, `/admin/api/agents/${agentId}`, {
     method: 'DELETE',
     body: {
       expectedRevision: agent.revision,
@@ -341,6 +342,58 @@ test('deleting an Agent deletes the logins no other Agent holds and queues their
     assert.equal((await readWebsiteLoginSecrets(f.deps, shared))?.password, PASSWORD);
     assert.deepEqual(JSON.parse((await f.settings.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!)
       .map(({ contextId }: { contextId: string }) => contextId), ['ctx_own']);
+  } finally {
+    f.close();
+  }
+});
+
+const bosMail = {
+  host: 'mail.example.com', label: 'Mail', ownerKind: 'member', method: 'credentials',
+  username: 'bo', password: PASSWORD, totpSeed: TOTP,
+};
+
+test('a member cannot delete an Agent that would take another member\'s login with it; an Admin can', async () => {
+  const f = fixture();
+  try {
+    await createAgent(f, 'agent_one');
+    const personal = await loginIdOf(await addLogin(f, 'bo', 'agent_one', bosMail));
+    const team = await loginIdOf(await addLogin(f, 'admin', 'agent_one', { ...teamLogin, host: 'team.example.com' }));
+    await recordWebsiteLoginContext(f.settings, personal, 'ctx_bo');
+
+    const refused = await deleteAgent(f, 'agent_one', 'ana');
+    assert.equal(refused.status, 409);
+    assert.deepEqual(await refused.json(), {
+      error: 'website_login_not_removable',
+      message: 'This Agent uses a website login you can\'t remove. Ask its owner or an Admin to remove it first.',
+    });
+    assert.equal((await f.store.getAgent('agent_one')).websiteLogins?.length, 2, 'the Agent is kept');
+    assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id }) => id).sort(), [personal, team].sort());
+    assert.equal((await readWebsiteLoginSecrets(f.deps, personal))?.totpSeed, TOTP);
+    assert.equal((await readWebsiteLoginSecrets(f.deps, team))?.password, PASSWORD);
+    assert.equal(await f.settings.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), undefined);
+    const binding = agentCredentialConfigurationBinding((await f.store.getAgent('agent_one')).credentialIncarnation);
+    assert.equal(await f.settings.getSetting(mcpSecretCleanupMarkerKey('agent_one', binding)), undefined, 'no cleanup was staged');
+
+    assert.equal((await deleteAgent(f, 'agent_one', 'admin')).status, 204);
+    assert.deepEqual(await listWebsiteLogins(f.settings), []);
+    assert.equal(await f.settings.getEncryptedCredentialRevision(`website_login.${personal}`), undefined);
+  } finally {
+    f.close();
+  }
+});
+
+test('a login another Agent still holds never blocks a member\'s Agent deletion', async () => {
+  const f = fixture();
+  try {
+    await createAgent(f, 'agent_one');
+    const personal = await loginIdOf(await addLogin(f, 'bo', 'agent_one', bosMail));
+    assert.equal((await createAgentWithLogins(f, 'bo', 'agent_two', [{ loginId: personal, level: 'check', enabled: true }])).status, 201);
+    await f.store.archiveAgent('agent_two', { expectedRevision: (await f.store.getAgent('agent_two')).revision });
+
+    assert.equal((await deleteAgent(f, 'agent_one', 'ana')).status, 204);
+    await assert.rejects(f.store.getAgent('agent_one'));
+    assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id }) => id), [personal]);
+    assert.equal((await readWebsiteLoginSecrets(f.deps, personal))?.password, PASSWORD);
   } finally {
     f.close();
   }

@@ -484,12 +484,14 @@ import {
   type WorkspaceModelDefault,
 } from '../config/types.ts';
 import {
+  agentDeletionWebsiteLogins,
   projectAgentWebsiteLogins,
   removeAgentWebsiteLogin,
   removeDeletedAgentWebsiteLogins,
   updateAgentWebsiteLogins,
   websiteLoginView,
   WebsiteLoginGrantNotFoundError,
+  WebsiteLoginNotRemovableError,
   WebsiteLoginsUnavailableError,
 } from '../browser/agent-website-logins.ts';
 import {
@@ -10386,9 +10388,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         roots: liveSnapshotRoots,
       }, 409);
     }
+    let websiteLoginIds: string[];
     try {
       const principal = principalByContext.get(c);
       if (!principal) throw new AuthorizationError('principal_required');
+      websiteLoginIds = await agentDeletionWebsiteLogins({
+        principal,
+        agent,
+        config: configStore,
+        logins: websiteLoginSettings(c),
+      });
       await (await resolvedConnectionAccounts(c)).prepareAgentDeletion({
         principal,
         agentId,
@@ -10396,6 +10405,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         expectedCredentialIncarnation: agent.credentialIncarnation!,
       });
     } catch (error) {
+      if (error instanceof WebsiteLoginNotRemovableError) {
+        return c.json({ error: 'website_login_not_removable', message: error.message }, 409);
+      }
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof AgentRevisionConflictError) {
         return c.json({ error: 'agent_revision_conflict' }, 409);
@@ -10408,7 +10420,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return internalError(c, error);
     }
     const removeDeletedAgentLogins = () => removeDeletedAgentWebsiteLogins({
-      grants: agent.websiteLogins,
+      loginIds: websiteLoginIds,
       config: configStore,
       deletion: () => websiteLoginWriteDependencies(c),
     });

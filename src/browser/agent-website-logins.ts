@@ -132,23 +132,53 @@ export async function removeAgentWebsiteLogin(input: {
   return { loginDeleted: await deleteWebsiteLogin(deps, input.loginId) };
 }
 
+export class WebsiteLoginNotRemovableError extends Error {
+  readonly name = 'WebsiteLoginNotRemovableError';
+  constructor() {
+    super('This Agent uses a website login you can\'t remove. Ask its owner or an Admin to remove it first.');
+  }
+}
+
 /**
- * After an Agent is deleted, the same rule as Remove for each login it was
- * granted: delete the ones no remaining Agent holds, which nothing else can
- * reach. Never throws, since the Agent is gone either way: a failure is
- * logged without content, and a login that went is the queue's to finish.
+ * The logins deleting this Agent would delete: those it is granted that no
+ * other Agent, archived ones included, holds. Throws before anything changes
+ * when the principal could not Remove one of them, so deleting an Agent never
+ * reaches further than Remove does.
+ */
+export async function agentDeletionWebsiteLogins(input: {
+  principal: AuthPrincipal;
+  agent: Pick<CustomAgentConfig, 'id' | 'websiteLogins'>;
+  config: Pick<ConfigStore, 'listAgents'>;
+  logins: Parameters<typeof listWebsiteLogins>[0];
+}): Promise<string[]> {
+  const granted = new Set((input.agent.websiteLogins ?? []).map(({ loginId }) => loginId));
+  if (!granted.size) return [];
+  const held = await grantedLoginIds(input.config, input.agent.id);
+  const removed = (await listWebsiteLogins(input.logins))
+    .filter((login) => granted.has(login.id) && !held.has(login.id));
+  if (removed.some((login) => !canManageOwnedResource(input.principal, login))) {
+    throw new WebsiteLoginNotRemovableError();
+  }
+  return removed.map(({ id }) => id);
+}
+
+/**
+ * After an Agent is deleted, delete the logins `agentDeletionWebsiteLogins`
+ * found, unless an Agent was granted one meanwhile. Never throws, since the
+ * Agent is gone either way: a failure is logged without content, and a login
+ * that went is the queue's to finish.
  */
 export async function removeDeletedAgentWebsiteLogins(input: {
-  grants: readonly WebsiteLoginGrant[] | undefined;
+  loginIds: readonly string[];
   config: Pick<ConfigStore, 'listAgents'>;
   deletion: WebsiteLoginDeletion;
 }): Promise<void> {
-  if (!input.grants?.length) return;
+  if (!input.loginIds.length) return;
   try {
     const deps = input.deletion();
     if (!deps) return;
     const held = await grantedLoginIds(input.config);
-    for (const { loginId } of input.grants) {
+    for (const loginId of input.loginIds) {
       if (held.has(loginId)) continue;
       await deleteWebsiteLogin(deps, loginId).catch(() => {
         console.warn('[chickpea] A deleted Agent\'s website login could not be removed');
@@ -159,7 +189,9 @@ export async function removeDeletedAgentWebsiteLogins(input: {
   }
 }
 
-/** Every login some Agent is granted. */
-async function grantedLoginIds(config: Pick<ConfigStore, 'listAgents'>): Promise<Set<string>> {
-  return new Set((await config.listAgents()).flatMap((agent) => (agent.websiteLogins ?? []).map(({ loginId }) => loginId)));
+/** Every login some Agent other than `exceptAgentId` is granted. */
+async function grantedLoginIds(config: Pick<ConfigStore, 'listAgents'>, exceptAgentId?: string): Promise<Set<string>> {
+  return new Set((await config.listAgents())
+    .filter(({ id }) => id !== exceptAgentId)
+    .flatMap((agent) => (agent.websiteLogins ?? []).map(({ loginId }) => loginId)));
 }

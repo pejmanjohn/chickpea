@@ -28,7 +28,11 @@ import { resolveManagedAuthorizationProviderContext } from '../connections/manag
 import { ConnectionAccountService } from '../connections/store.ts';
 import { platformRepositoryGrants } from '../config/agent-write-rules.ts';
 import { finishAgentSecretCleanup, stageAgentSecretCleanup } from '../config/agent-secret-cleanup.ts';
-import { removeDeletedAgentWebsiteLogins } from '../browser/agent-website-logins.ts';
+import {
+  agentDeletionWebsiteLogins,
+  removeDeletedAgentWebsiteLogins,
+  WebsiteLoginNotRemovableError,
+} from '../browser/agent-website-logins.ts';
 import { websiteLoginDependencies } from '../browser/logins.ts';
 import { agentCredentialConfigurationBinding } from '../config/connection-credential-binding.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
@@ -364,6 +368,17 @@ export function createLiveWorkspaceManagementService(
       expectedCredentialIncarnation,
       idempotencyKey,
     }) => {
+      const principal = managementActorPrincipal(actor);
+      const websiteLoginIds = await agentDeletionWebsiteLogins({
+        principal,
+        agent: await config.getAgent(agentId),
+        config,
+        logins: settings,
+      }).catch((error: unknown) => {
+        throw error instanceof WebsiteLoginNotRemovableError
+          ? new ManagementError('forbidden', error.message)
+          : error;
+      });
       const providerContext = await resolveManagedAuthorizationProviderContext({
         settings,
         ...(env ? { platformEnv: env } : {}),
@@ -373,7 +388,7 @@ export function createLiveWorkspaceManagementService(
         settings,
         managedProviders: providerContext.providers,
       }).prepareAgentDeletion({
-        principal: managementActorPrincipal(actor),
+        principal,
         agentId,
         expectedRevision,
         expectedCredentialIncarnation,
@@ -390,7 +405,7 @@ export function createLiveWorkspaceManagementService(
           )
         : await config.deleteAgent(agentId, expectedRevision, expectedCredentialIncarnation);
       await removeDeletedAgentWebsiteLogins({
-        grants: agent.websiteLogins,
+        loginIds: websiteLoginIds,
         config,
         deletion: () => websiteLoginDependencies(env),
       });
