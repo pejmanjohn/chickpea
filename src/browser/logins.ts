@@ -1,4 +1,8 @@
-import type { EncryptedCredentialStore, SettingsStore } from '../config/settings-store.ts';
+import {
+  isEncryptedCredentialListingStore,
+  type EncryptedCredentialStore,
+  type SettingsStore,
+} from '../config/settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
 import {
@@ -314,6 +318,60 @@ export async function readWebsiteLoginSecrets(
 }
 
 /**
+ * After the deployment keyring gains a new current key, re-encrypt each
+ * website-login secret still under an older key ID as a fresh revision with
+ * the same context. Every `website_login.` revision is listed, not the
+ * catalog, so a secret a failed create left behind moves too. One under a
+ * key ID the keyring no longer has, or that will not decrypt, remains. A
+ * compare-and-set lost to another writer (a delete, or a concurrent rewrap)
+ * keeps that writer's result and counts only what still sits under an older
+ * key. Running it again changes nothing; a store error propagates for a retry.
+ */
+export async function rewrapWebsiteLoginSecrets(input: {
+  env: PlatformEnv | undefined;
+  settings: SettingsStore;
+  keyring: CredentialKeyring;
+}): Promise<{ rewrapped: number; remaining: number }> {
+  const store = input.settings;
+  if (!isEncryptedCredentialListingStore(store)) {
+    throw new Error('This settings store cannot list its website login secrets.');
+  }
+  const { keyring } = input;
+  let rewrapped = 0;
+  let remaining = 0;
+  for (const row of await store.listEncryptedCredentialRevisions(SECRET_KEY_PREFIX)) {
+    if (row.envelope.keyId === keyring.currentKeyId) continue;
+    let secrets: Record<string, string> | undefined;
+    if (Object.hasOwn(keyring.keys, row.envelope.keyId)) {
+      try {
+        secrets = await decryptSlackSecretEnvelope(keyring, credentialContext(row.contextId, row.revision), row.envelope);
+      } catch {
+        // Tampered with, or bound to another context: it cannot be rewrapped.
+      }
+    }
+    if (!secrets) {
+      remaining += 1;
+      continue;
+    }
+    const revision = `wl_rev_${randomHex()}`;
+    const written = await store.replaceEncryptedCredentialRevision({
+      key: row.key,
+      expectedRevision: row.revision,
+      revision,
+      contextId: row.contextId,
+      envelope: await encryptSlackSecretEnvelope(keyring, credentialContext(row.contextId, revision), secrets),
+    });
+    if (written) {
+      rewrapped += 1;
+      continue;
+    }
+    const latest = await store.getEncryptedCredentialRevision(row.key);
+    if (latest && latest.envelope.keyId !== keyring.currentKeyId) remaining += 1;
+  }
+  return { rewrapped, remaining };
+}
+
+/**
  * Delete a login: metadata and runtime state first (so no reader can reach
  * the secret), then its secret. A missing secret is fine. Returns whether
  * metadata existed.
@@ -332,7 +390,7 @@ export async function deleteWebsiteLogin(
   if (outcome instanceof Error) throw outcome;
   const active = await deps.store.getEncryptedCredentialRevision(secretKey(id));
   if (active && !await deps.store.deleteEncryptedCredentialRevision(secretKey(id), active.revision)) {
-    // A concurrent writer replaced it; nothing else ever writes this key, so retry once.
+    // A keyring rewrap replaced it meanwhile. It is the only other writer of this key, so retry once.
     const latest = await deps.store.getEncryptedCredentialRevision(secretKey(id));
     if (latest && !await deps.store.deleteEncryptedCredentialRevision(secretKey(id), latest.revision)) {
       throw new WebsiteLoginStateError();
