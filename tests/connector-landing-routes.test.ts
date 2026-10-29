@@ -22,7 +22,7 @@ import {
   createManagedConnectionProviderRegistry,
   type ManagedConnectionProvider,
 } from '../src/connections/managed.ts';
-import { managedPrincipalRef } from '../src/connections/managed-authorization-flow.ts';
+import { managedPrincipalRef } from '../src/connections/managed-principal.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
 import { signInMixRefusal, signInOtherKindNotice } from '../src/connections/sign-in-mix.ts';
 import { escapeHtml } from '../src/security/html-escape.ts';

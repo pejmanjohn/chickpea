@@ -152,8 +152,8 @@ import {
   attemptAccessLane,
   discardManagedAuthorizationAfterAuthorityLoss,
   managedOwnerLaneAccount,
-  managedPrincipalRef,
 } from '../connections/managed-authorization-flow.ts';
+import { managedPrincipalRef } from '../connections/managed-principal.ts';
 import {
   actorSignedOtherKind,
   ManagedSignInMixError,

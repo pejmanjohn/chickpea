@@ -4,13 +4,12 @@ import {
   requirePermission,
 } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
-import { composioEnvironmentName } from '../config/composio-settings.ts';
-import { deploymentTenancy, installationScopeOf } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { ConnectionAccount, CustomAgentConfig } from '../config/types.ts';
+import { managedPrincipalRef } from './managed-principal.ts';
 import {
   ConnectionAccountService,
   ManagedConnectionConflictError,
@@ -52,8 +51,6 @@ import {
   recordManagedAuthorizationRequest,
   type ManagedAuthorizationAttempt,
 } from './managed-authorization.ts';
-
-const MAX_MANAGED_PRINCIPAL_REF_LENGTH = 256;
 
 export interface ManagedAuthorizationProviderContext {
   providers: ManagedConnectionProviderRegistry;
@@ -617,30 +614,6 @@ export async function cancelManagedAuthorizationFlow(
     browserSecret: input.browserSecret,
   });
   return committed ? 'committed' : 'discarded';
-}
-
-/**
- * The Composio user a Personal or Team authorization belongs to. Under
- * installation tenancy it also names the deployment's Composio environment and
- * the installation, so installations sharing one project never share a remote
- * principal; without either it is undefined. Standalone forms are unchanged.
- */
-export function managedPrincipalRef(
-  principal: AuthPrincipal,
-  ownerKind: 'team' | 'member',
-  env: PlatformEnv | undefined,
-): string | undefined {
-  const local = ownerKind === 'member'
-    ? `membership:${principal.membershipId}`
-    : `organization:${principal.organizationId}`;
-  let value = `chickpea:${local}`;
-  if (deploymentTenancy(env) === 'installation') {
-    const environment = composioEnvironmentName(env);
-    const installationId = installationScopeOf(env)?.installationId;
-    if (!environment || !installationId) return undefined;
-    value = `chickpea:${environment}:installation:${installationId}:${local}`;
-  }
-  return value.length <= MAX_MANAGED_PRINCIPAL_REF_LENGTH ? value : undefined;
 }
 
 /**
