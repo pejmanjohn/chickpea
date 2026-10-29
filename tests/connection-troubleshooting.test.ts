@@ -372,6 +372,33 @@ test('basic_username sends the key as a Basic username, and save_connection_key 
   } finally { f.close(); }
 });
 
+test('basic_username refuses a key with a colon, which a Basic username cannot hold, and points at a setup link', async () => {
+  const f = await fixture();
+  try {
+    const pair = `${KEY}:s3cr3t`;
+    const text = `connect Statusboard at https://api.statusboard.example/v2, key ${pair}`;
+    const basicConnection = { ...CONNECTION, headerName: 'Authorization', headerValuePrefix: 'Basic ' };
+    ok(await f.slack('apply_workspace_changes', await f.update({ apiConnections: [basicConnection] }), text));
+    await withConnectionNetwork(statusboard, async (requests) => {
+      const colon = /^Nothing was (sent|saved): authShape basic_username (sends|saves) the key as an HTTP Basic username, which cannot hold a colon\. .*request_setup/;
+      assert.match(refusal(await f.slack('try_connection', {
+        draft: { ...DRAFT, headerName: 'Authorization', authShape: 'basic_username' }, key: pair, path: INCIDENTS,
+      }, text)).message, colon);
+      assert.match(refusal(await f.slack('try_connection', {
+        connectionId: CONNECTION.id, draft: { ...DRAFT, headerName: 'Authorization', authShape: 'basic_username' }, key: pair, path: INCIDENTS,
+      }, text)).message, colon);
+      assert.match(refusal(await f.mcp('try_connection', {
+        agentId: f.agent.id, draft: { ...DRAFT, headerName: 'Authorization', authShape: 'basic_username' }, key: pair, path: INCIDENTS,
+      })).message, colon);
+      assert.match(refusal(await f.slack('save_connection_key', {
+        connectionId: CONNECTION.id, key: pair, path: INCIDENTS, authShape: 'basic_username',
+      }, text)).message, colon);
+      assert.deepEqual(requests, [], 'nothing was sent');
+    });
+    assert.equal(await f.savedKey(), undefined, 'nothing was saved');
+  } finally { f.close(); }
+});
+
 test('saved-key mode tries a saved connection inside its own scope, and only the member\'s own lookup finds it', async () => {
   const f = await fixture();
   try {

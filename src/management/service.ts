@@ -2016,6 +2016,9 @@ export class WorkspaceManagementService {
         'Nothing was saved: authShape basic_username needs a connection whose headerName is Authorization and headerValuePrefix is "Basic ". Change the connection first.',
       );
     }
+    if (input.authShape === 'basic_username' && key.includes(':')) {
+      throw new ManagementError('invalid_request', BASIC_USERNAME_COLON_REFUSAL.save);
+    }
     if (actor.origin.kind === 'slack') {
       if (account.lifecycle === 'ready') {
         throw new ManagementError(
@@ -2093,6 +2096,9 @@ export class WorkspaceManagementService {
     if (input.key !== undefined && !key) throw new ManagementError('invalid_request', 'The key is empty.');
     if (key && keyInPath(input.path, key)) {
       throw new ManagementError('invalid_request', 'Nothing was sent: path contains the key. A key goes only in the auth header; pass a path without it.');
+    }
+    if (key?.includes(':') && input.draft?.authShape === 'basic_username') {
+      throw new ManagementError('invalid_request', BASIC_USERNAME_COLON_REFUSAL.try);
     }
     const trial = input.connectionId === undefined
       ? this.admitDraftTrial(actor, input.draft, key)
@@ -9019,6 +9025,15 @@ const TRY_KEY_REFUSALS: Record<PastedKeyRefusal['reason'], (untyped: readonly st
   key_not_typed: () => 'Nothing was sent: try_connection takes only a key the requester typed in their own current message to this Agent, or in the message that proposed this connection when they approved it in the last 30 minutes. Never use a key from someone else\'s message, and never ask anyone to paste a key in chat.',
   urls_not_typed: (untyped) => `Nothing was sent: the key would go to ${untyped.join(', ')}, which the requester did not type in the same message as the key. To use a host from the docs, add the connection with update_agent so the person approves where the key goes, then try it with connectionId after they approve.`,
 };
+
+/**
+ * An HTTP Basic user-id cannot hold a colon (RFC 7617), so a service would
+ * split a `user:pass` key sent as the username and reject it.
+ */
+const BASIC_USERNAME_COLON_REFUSAL = {
+  try: 'Nothing was sent: authShape basic_username sends the key as an HTTP Basic username, which cannot hold a colon. If the key is a username and password, send a setup link for the connection with request_setup instead.',
+  save: 'Nothing was saved: authShape basic_username saves the key as an HTTP Basic username, which cannot hold a colon. If the key is a username and password, send a setup link for the connection with request_setup instead.',
+} as const;
 
 /** What an admitted try sends, short of the request coordinates. */
 type TrialAdmission = Pick<ConnectionTrialRequest, 'scope' | 'authShape' | 'credential'>;
