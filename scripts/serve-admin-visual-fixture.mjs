@@ -453,6 +453,105 @@ async function seedConnections(store, ownerMembershipId) {
   }
 }
 
+const VISUAL_NOTION_PAGES = Object.freeze([
+  ['Q4 Roadmap', 'page'], ['Sales Playbook', 'page'], ['Engineering Wiki', 'page'],
+  ['Customer Interviews', 'database'], ['Launch Checklist', 'page'], ['Finance Ops', 'page'],
+].map(([label, kind], index) => ({
+  id: `0000000${index + 1}-0000-4000-8000-00000000000${index + 1}`,
+  kind,
+  label,
+})));
+
+/**
+ * With --notion-sign-ins: one team Notion sign-in that the research Agent
+ * signed and the release Agent reuses with two pages chosen, plus a Scout
+ * Agent without Notion, so the reuse form, the row summary, the page picker
+ * and the shared-change confirm can be reviewed. A member principal, who
+ * sees only Agents they created, also gets one personal sign-in that Scout
+ * and a Notes Agent share.
+ */
+async function seedNotionSignIns(store, ownerMembership, { MANAGED_CONNECTOR_CATALOG }, principalRole) {
+  const capabilities = MANAGED_CONNECTOR_CATALOG.capabilities('notion', 'write').map(({ id }) => id);
+  const grantSummary = {
+    items: VISUAL_NOTION_PAGES.map(({ id, kind, label }) => ({ id, type: kind, label })),
+    truncated: false,
+  };
+  const shareSignIn = async ({ ownerKind, accountRef, person, agents }) => {
+    const policy = {
+      kind: 'managed',
+      adapterId: 'composio',
+      toolkit: 'notion',
+      principalRef: ownerKind === 'team'
+        ? `chickpea:organization:${ownerMembership.organizationId}`
+        : `chickpea:membership:${ownerMembership.id}`,
+      accountRef,
+      allowedCapabilities: capabilities,
+      signIn: { person, accessLane: 'write' },
+      grantSummary,
+    };
+    const account = (agentId) => ({
+      id: `connection_notion_${agentId.replace('agent_', '')}`,
+      workspaceId: WORKSPACE_ID,
+      ownerKind,
+      ...(ownerKind === 'member' ? { ownerMembershipId: ownerMembership.id } : {}),
+      createdByMembershipId: ownerMembership.id,
+      providerId: 'notion',
+      label: `Notion · ${ownerKind === 'team' ? 'Team' : 'Personal'}`,
+      policy,
+      secretRefId: `secret_visual_notion_${agentId}`,
+      lifecycle: 'ready',
+    });
+    const binding = (agentId, notionPages) => ({
+      agentId, connectionAccountId: account(agentId).id, providerId: 'notion',
+      allowedCapabilities: capabilities, enabled: true,
+      ...(notionPages ? { resourceConstraints: { notionPages } } : {}),
+    });
+    const [[signerId], [joinerId, joinerPages]] = agents;
+    const signer = await store.putConnectionAccount(account(signerId), 0);
+    await store.putAgentConnectionBinding(binding(signerId));
+    const { kind: _kind, allowedCapabilities: _capabilities, ...shared } = policy;
+    await store.applySignInGroup({
+      adapterId: 'composio',
+      accountRef,
+      members: [{ connectionAccountId: signer.id, expectedRevision: signer.revision }],
+      shared,
+      join: { account: account(joinerId), binding: binding(joinerId, joinerPages) },
+    });
+  };
+  const agent = (id, name) => store.createAgent({
+    id, name, instructions: 'Research questions in Notion.', enabled: true,
+    lifecycle: 'active', configurationGeneration: 1, creatorMembershipId: ownerMembership.id,
+    editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  });
+  await agent('agent_scout', 'Scout');
+  await shareSignIn({
+    ownerKind: 'team', accountRef: 'ca_visual_notion_team', person: 'notion:visual:owner',
+    agents: [['agent_research'], ['agent_release', [VISUAL_NOTION_PAGES[0].id, VISUAL_NOTION_PAGES[3].id]]],
+  });
+  if (principalRole !== 'member') return;
+  await agent('agent_notes', 'Notes');
+  await shareSignIn({
+    ownerKind: 'member', accountRef: 'ca_visual_notion_personal', person: 'notion:visual:member',
+    agents: [['agent_scout'], ['agent_notes']],
+  });
+}
+
+/** Answers for Notion only: its pages, and a sign-in that is never opened. */
+function visualNotionProviders({ createManagedConnectionProviderRegistry }) {
+  const listing = () => ({ pages: VISUAL_NOTION_PAGES.map((page) => ({ ...page })), complete: true });
+  return createManagedConnectionProviderRegistry([{
+    id: 'composio',
+    availability: ({ toolkit }) => toolkit === 'notion'
+      ? { status: 'ready', missingConfiguration: [] }
+      : { status: 'unavailable', missingConfiguration: ['api_key_missing'] },
+    async authorize() { throw new Error('The Admin visual fixture does not open Notion.'); },
+    async validate() { return { person: 'notion:visual:owner', pages: listing() }; },
+    async listPages() { return listing(); },
+    async execute() { return { data: {} }; },
+    async revoke() {},
+  }]);
+}
+
 async function seedSettings(settings) {
   await settings.setSetting('slack.teamName', 'Acme Design');
 }
@@ -829,6 +928,9 @@ export async function startAdminVisualFixture(options = {}) {
     const owner = await seedVisualSlackOwner(identity);
     await seedVisualProposal(management, store, owner);
     await seedConnections(store, owner.membership.id);
+    if (options.notionSignIns) {
+      await seedNotionSignIns(store, owner.membership, await loadTsModule('src/connections/catalog/index.ts'), principalRole);
+    }
     await seedSchedules(store, routines, owner.membership.id, RoutineService);
     await seedVisualTeam(identity, provisionSlackInteractionMember, owner);
 
@@ -1027,7 +1129,11 @@ export async function startAdminVisualFixture(options = {}) {
       const body = await c.res.json();
       c.res = Response.json({ ...body, identity: { version: '0.1.0', sourceCommit: 'a'.repeat(40) }, deployment: 'cloudflare' });
     });
+    const managedConnectionProviders = options.notionSignIns
+      ? visualNotionProviders(await loadTsModule('src/connections/managed.ts'))
+      : undefined;
     app.route('/', createAdminRoutes({
+      ...(managedConnectionProviders ? { managedConnectionProviders } : {}),
       updateFetch: async () => new Response('', { status: 404 }),
       store,
       settings,
@@ -1129,6 +1235,8 @@ function parseCliArgs(args) {
     else if (value === '--onboarding-stage') parsed.onboardingStage = args[++index];
     else if (value === '--update-state') parsed.updateState = args[++index];
     else if (value === '--sandbox-state') parsed.sandboxState = args[++index];
+    else if (value === '--principal-role') parsed.principalRole = args[++index];
+    else if (value === '--notion-sign-ins') parsed.notionSignIns = true;
     else throw new Error(`Unknown argument: ${value}`);
   }
   return parsed;
