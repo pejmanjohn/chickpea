@@ -371,6 +371,31 @@ test('credentials are redacted before the cap, and the builder adds no Slack coo
   assert.equal(record.format, 'chickpea.run-review.v1');
 });
 
+test('a key the run saved with save_connection_key leaves every field of the copy', () => {
+  const key = ['sb', 'live', 'synthetic"Key\\value42'].join('_');
+  const record = buildRunReviewRecord(input({
+    trigger: { author: 'U12345678', text: `here is our key ${key} for https://api.statusboard.example/v2`, files: [] },
+    context: [{ author: 'U12345678', role: 'human', text: `earlier: ${key}`, files: [] }],
+    steps: [
+      { kind: 'tool', name: 'save_connection_key', input: JSON.stringify({ connectionId: 'statusboard', key }), output: '{"check":{"kind":"ok"}}' },
+      { kind: 'text', text: `Saved ${key}.` },
+      { kind: 'tool', name: 'save_connection_key', input: '{"connectionId":"statusboard","key":"sb_live_cut' },
+    ],
+    answer: `Connected with ${key}`,
+  }), runReviewPseudonymizer(KEY));
+  const serialized = JSON.stringify(record);
+  assert.equal(serialized.includes('synthetic'), false, serialized);
+  assert.equal(record.trigger.text, 'here is our key [credential redacted] for https://api.statusboard.example/v2');
+  assert.deepEqual(record.steps[0], {
+    kind: 'tool',
+    name: 'save_connection_key',
+    input: '{"connectionId":"statusboard","key":"[credential redacted]"}',
+    output: '{"check":{"kind":"ok"}}',
+  });
+  assert.equal(record.steps[2]?.kind === 'tool' && record.steps[2].input, '[input omitted]', 'a cut call is dropped whole');
+  assert.equal(record.answer, 'Connected with [credential redacted]');
+});
+
 test('a field is cut to 16 KiB and the record to 256 KiB, oldest steps first', () => {
   const pseudonymOf = runReviewPseudonymizer(KEY);
   const single = buildRunReviewRecord(input({

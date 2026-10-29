@@ -6,7 +6,7 @@
 
 import { createHmac } from 'node:crypto';
 
-import { redactCredentialLikeContent } from '../security/content-validation.ts';
+import { CREDENTIAL_REPLACEMENT, redactCredentialLikeContent } from '../security/content-validation.ts';
 import { SLACK_LIST_TOOL_NAMES } from '../slack/lists/tools.ts';
 
 export const RUN_REVIEW_RECORD_FORMAT = 'chickpea.run-review.v1';
@@ -120,8 +120,9 @@ export function runReviewPseudonymizer(key: Uint8Array): (slackUserId: string) =
 }
 
 /**
- * The record a port stores. Every string loses recognizable credentials,
- * then every Slack user ID, then is cut to its cap; file notes keep only a
+ * The record a port stores. Every string loses each key the run saved with
+ * save_connection_key and recognizable credentials, then every Slack user
+ * ID, then is cut to its cap; file notes keep only a
  * name and size; and a Slack List tool's output and error, and a Slack read's
  * result from another conversation, are omitted. The builder adds no Slack
  * team, channel, thread or message IDs. Past the record cap the oldest steps
@@ -132,8 +133,11 @@ export function buildRunReviewRecord(
   pseudonymOf: (slackUserId: string) => RunReviewPseudonym,
 ): RunReviewRecordV1 {
   let truncated = input.truncated;
+  const keys = savedConnectionKeys(input.steps);
   const field = (text: string): string => {
-    const scrubbed = redactCredentialLikeContent(text).replace(SLACK_USER_ID, (id) => pseudonymOf(id));
+    const scrubbed = redactCredentialLikeContent(
+      keys.reduce((value, key) => value.split(key).join(CREDENTIAL_REPLACEMENT), text),
+    ).replace(SLACK_USER_ID, (id) => pseudonymOf(id));
     const capped = capUtf8(scrubbed, RUN_REVIEW_FIELD_BYTES);
     if (capped.length < scrubbed.length) truncated = true;
     return capped;
@@ -162,7 +166,7 @@ export function buildRunReviewRecord(
       ? {
           kind: 'tool',
           name: field(step.name),
-          input: field(step.input),
+          input: field(keptInput(step.name, step.input)),
           ...(step.output === undefined ? {} : { output: field(keptOutput(step.name, step.output)) }),
           ...(step.error === undefined
             ? {}
@@ -187,6 +191,35 @@ export function buildRunReviewRecord(
  */
 function slackListTool(toolName: string): boolean {
   return (SLACK_LIST_TOOL_NAMES as readonly string[]).includes(toolName);
+}
+
+const SAVE_CONNECTION_KEY = 'save_connection_key';
+const KEY_INPUT_OMITTED = '[input omitted]';
+
+/**
+ * Each key the run saved, as typed and as JSON escapes it, so a copy drops it
+ * from the person's message and the answer as well as from the call.
+ */
+function savedConnectionKeys(steps: readonly RunReviewStep[]): string[] {
+  return steps.flatMap((step) => {
+    if (step.kind !== 'tool' || step.name !== SAVE_CONNECTION_KEY) return [];
+    const key = parsedKey(step.input);
+    return key ? [key, JSON.stringify(key).slice(1, -1)] : [];
+  }).sort((left, right) => right.length - left.length);
+}
+
+function parsedKey(input: string): string | undefined {
+  try {
+    const key = (JSON.parse(input) as { key?: unknown } | null)?.key;
+    return typeof key === 'string' && key.trim() ? key.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A save_connection_key call whose key cannot be read back, as when the collector cut it, is dropped whole. */
+function keptInput(toolName: string, input: string): string {
+  return toolName === SAVE_CONNECTION_KEY && parsedKey(input) === undefined ? KEY_INPUT_OMITTED : input;
 }
 
 /** None of a Slack List tool's; a Slack read's only when it says it read the current conversation, or read nothing. */
