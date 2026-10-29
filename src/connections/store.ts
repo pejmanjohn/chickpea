@@ -322,6 +322,8 @@ export class ConnectionAccountService {
     pendingSetup?: boolean;
     allowedCapabilities?: string[];
     resourceConstraints?: ManagedBindingResourceConstraints;
+    /** The lane a managed sign-in's credential was issued on, when an authorization attempt made it. */
+    issuedAccessLane?: ManagedAccessLane;
   }): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
     const agent = await this.dependencies.config.getAgent(input.agentId);
     if (!canEditAgent(input.principal, agent)) throw new AuthorizationError();
@@ -859,6 +861,8 @@ export class ConnectionAccountService {
     /** Capability ceiling to persist after provider validation. */
     allowedCapabilities: string[];
     accountRef: string;
+    /** The lane the new credential was issued on. */
+    issuedAccessLane: ManagedAccessLane;
     providerGeneration?: number;
     providerLineage?: string;
   }): Promise<ConnectionAccount> {
@@ -895,15 +899,16 @@ export class ConnectionAccountService {
         ? { providerLineage: input.providerLineage }
         : {}),
     };
+    // A sibling may have joined with write access after this sign-in began on read.
+    const needed = signInGroupAccessLane(connector, group.map((member) =>
+      member.id === account.id ? { ...member, policy: candidate } : member));
+    if (!laneCovers(input.issuedAccessLane, needed)) {
+      throw new ManagedConnectionConflictError('The sign-in does not cover the access this connection needs now');
+    }
     const validation = await provider.validate({ policy: candidate });
     const policy: ConnectionAccountManagedPolicy = {
       ...applyManagedValidation(candidate, validation),
-      signIn: managedSignIn(
-        connector,
-        signInGroupAccessLane(connector, group),
-        validation,
-        input.principal.membershipId,
-      ),
+      signIn: managedSignIn(connector, input.issuedAccessLane, validation, input.principal.membershipId),
     };
     await this.refuseSignInMix({
       principal: input.principal,
@@ -1189,6 +1194,7 @@ export class ConnectionAccountService {
     policy: ConnectionAccountPolicy;
     credential?: string;
     pendingSetup?: boolean;
+    issuedAccessLane?: ManagedAccessLane;
   }) {
     requirePermission(
       input.principal,
@@ -1197,18 +1203,17 @@ export class ConnectionAccountService {
     let policy = input.policy;
     if (policy.kind === 'managed') {
       const connector = assertManagedAccountPolicy(this.catalog(), input.providerId, policy);
+      const accessLane = input.issuedAccessLane ?? managedAccessLane(connector, policy.allowedCapabilities);
+      if (!laneCovers(accessLane, managedAccessLane(connector, policy.allowedCapabilities))) {
+        throw new ManagedConnectionConflictError('The sign-in does not cover the access this connection needs');
+      }
       await this.requireUniqueManagedAccount(policy.adapterId, policy.accountRef);
       const provider = this.dependencies.managedProviders?.get(policy.adapterId);
       if (!provider) throw new ManagedConnectionProviderUnavailableError(policy.adapterId);
       const validation = await provider.validate({ policy });
       policy = {
         ...applyManagedValidation(policy, validation),
-        signIn: managedSignIn(
-          connector,
-          managedAccessLane(connector, policy.allowedCapabilities),
-          validation,
-          input.principal.membershipId,
-        ),
+        signIn: managedSignIn(connector, accessLane, validation, input.principal.membershipId),
       };
       await this.refuseSignInMix({
         principal: input.principal,
@@ -1452,6 +1457,10 @@ function signInGroupAccessLane(
 ): ManagedAccessLane {
   return members.some(({ policy }) => policy.kind === 'managed' &&
     managedAccessLane(connector, policy.allowedCapabilities) === 'write') ? 'write' : 'read';
+}
+
+function laneCovers(issued: ManagedAccessLane, needed: ManagedAccessLane): boolean {
+  return issued === 'write' || needed === 'read';
 }
 
 /**

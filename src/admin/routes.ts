@@ -149,6 +149,7 @@ import {
 } from '../connections/managed-authorization.ts';
 import {
   assertManagedAttemptPrincipal,
+  attemptAccessLane,
   discardManagedAuthorizationAfterAuthorityLoss,
   managedOwnerLaneAccount,
   managedPrincipalRef,
@@ -5390,6 +5391,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ...(replacement
             ? { connectionAccountId: replacement.account.id }
             : { bindingCapabilities: [...capabilities] }),
+          accessLane,
           providerGeneration: providerContext.generation,
           providerLineage: providerContext.lineage,
         },
@@ -5646,6 +5648,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               expectedAllowedCapabilities: attempt.allowedCapabilities,
               allowedCapabilities: attempt.allowedCapabilities,
               accountRef: attempt.accountRef!,
+              issuedAccessLane: attemptAccessLane(attempt, managedCatalog),
               providerGeneration: providerContext.generation,
               providerLineage: providerContext.lineage,
             });
@@ -5682,6 +5685,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
                 providerLineage: providerContext.lineage,
               },
               allowedCapabilities: [...attempt.bindingCapabilities],
+              issuedAccessLane: attemptAccessLane(attempt, managedCatalog),
             });
             account = created.account;
           }

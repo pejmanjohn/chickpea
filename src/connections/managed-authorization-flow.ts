@@ -21,7 +21,11 @@ import {
   type ManagedConnectionProvider,
   type ManagedConnectionProviderRegistry,
 } from './managed.ts';
-import { managedAccessLane, type ManagedConnectorCatalog } from './catalog/index.ts';
+import {
+  managedAccessLane,
+  type ManagedAccessLane,
+  type ManagedConnectorCatalog,
+} from './catalog/index.ts';
 import {
   actorSignedOtherKind,
   ManagedSignInMixError,
@@ -236,6 +240,7 @@ export async function startManagedAuthorizationFlow(
         ...(replacement
           ? { connectionAccountId: replacement.id }
           : { bindingCapabilities: [...capabilities] }),
+        accessLane,
         providerGeneration: generation,
         providerLineage: lineage,
       },
@@ -416,6 +421,7 @@ export async function pollManagedAuthorizationFlow(
         expectedAllowedCapabilities: attempt.allowedCapabilities,
         allowedCapabilities: attempt.allowedCapabilities,
         accountRef: attempt.accountRef!,
+        issuedAccessLane: attemptAccessLane(attempt, dependencies.catalog),
         providerGeneration: providerContext.generation,
         providerLineage: providerContext.lineage,
       });
@@ -452,6 +458,7 @@ export async function pollManagedAuthorizationFlow(
           providerLineage: providerContext.lineage,
         },
         allowedCapabilities: [...attempt.bindingCapabilities],
+        issuedAccessLane: attemptAccessLane(attempt, dependencies.catalog),
       });
       account = created.account;
       accountMutation = { kind: 'created', accountId: account.id };
@@ -634,6 +641,21 @@ export function managedPrincipalRef(
     value = `chickpea:${environment}:installation:${installationId}:${local}`;
   }
   return value.length <= MAX_MANAGED_PRINCIPAL_REF_LENGTH ? value : undefined;
+}
+
+/**
+ * The lane an attempt's credential was issued on. An attempt from before the
+ * lane was recorded is taken at its own capabilities' lane, which is never
+ * wider than the lane it was issued on.
+ */
+export function attemptAccessLane(
+  attempt: Pick<ManagedAuthorizationAttempt, 'accessLane' | 'toolkit' | 'allowedCapabilities'>,
+  catalog: ManagedConnectorCatalog,
+): ManagedAccessLane {
+  if (attempt.accessLane) return attempt.accessLane;
+  const connector = catalog.connector(attempt.toolkit);
+  if (!connector) throw new ManagedAuthorizationError('invalid');
+  return managedAccessLane(connector, attempt.allowedCapabilities);
 }
 
 /**
