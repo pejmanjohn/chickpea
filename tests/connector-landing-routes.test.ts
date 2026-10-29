@@ -2024,7 +2024,10 @@ async function notionReuseSetupHarness(suffix: string, role: AuthPrincipal['role
           kind: 'managed', adapterId: 'composio', toolkit: 'notion',
           principalRef: managedPrincipalRef(principal, ownerKind, undefined)!, accountRef: `ca_${accountId}`,
           allowedCapabilities: ['notion.content.search'],
-          signIn: { person, accessLane: 'write' },
+          signIn: {
+            person, accessLane: 'write',
+            signedBy: ownerKind === 'member' ? owner.membership.id : 'membership_teammate',
+          },
         },
       },
       binding: { agentId, connectionAccountId: accountId, providerId: 'notion', allowedCapabilities: ['notion.content.search'], enabled: true },

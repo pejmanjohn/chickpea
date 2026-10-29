@@ -431,6 +431,27 @@ test('the member who signed a shared team sign-in, not one who added an Agent to
   }
 });
 
+test('a sign-in saved before its signer was recorded is neither offered nor reused', async () => {
+  for (const older of [{ person: 'member:membership_maya', accessLane: 'read' as const }, undefined]) {
+    const notion = await notionWorkspace();
+    try {
+      const ops = await notion.connect(MAYA, 'agent_ops', 'ca_team');
+      assert.ok(ops.policy.kind === 'managed');
+      const { signIn: _signIn, ...policy } = ops.policy;
+      await notion.config.putConnectionAccount({ ...ops, policy: { ...policy, ...(older ? { signIn: older } : {}) } }, ops.revision);
+      const before = await notion.config.listConnectionAccounts(WORKSPACE);
+      notion.calls.length = 0;
+
+      assert.deepEqual(await notion.reusable(BOB, 'agent_sales', 'team'), [], 'nobody would be credited with it');
+      await assert.rejects(notion.reuse(BOB, 'agent_sales', 'agent_ops'), ManagedConnectionConflictError);
+      assert.deepEqual(notion.calls, [], 'Notion is not asked');
+      assert.deepEqual(await notion.config.listConnectionAccounts(WORKSPACE), before, 'nothing was written');
+    } finally {
+      notion.close();
+    }
+  }
+});
+
 test('a shared sign-in names the member who signed it to everyone, whichever Agent\'s row is listed first', async () => {
   // Bob's row id sorts before, then after, the id the setup door gives Maya's row.
   for (const reusedId of ['0', 'z']) {

@@ -958,6 +958,11 @@ export class ConnectionAccountService {
     if (input.group.some(({ lifecycle }) => lifecycle !== 'ready')) {
       return new ManagedConnectionConflictError('That sign-in needs attention before another Agent can use it');
     }
+    // A sign-in saved before its signer was recorded would credit whoever joins it, and the
+    // personal and team rule would follow them; signing in again records the signer.
+    if (!source.policy.signIn?.signedBy) {
+      return new ManagedConnectionConflictError('Reconnect that sign-in before another Agent uses it');
+    }
     const issued = source.policy.signIn?.accessLane ?? signInGroupAccessLane(connector, input.group);
     if (!laneCovers(issued, input.needed)) {
       return new ManagedConnectionConflictError('That sign-in does not cover the access this Agent needs');

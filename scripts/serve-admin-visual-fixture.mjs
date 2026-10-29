@@ -486,7 +486,7 @@ async function seedNotionSignIns(store, ownerMembership, { MANAGED_CONNECTOR_CAT
         : `chickpea:membership:${ownerMembership.id}`,
       accountRef,
       allowedCapabilities: capabilities,
-      signIn: { person, accessLane: 'write' },
+      signIn: { person, accessLane: 'write', signedBy: ownerMembership.id },
       grantSummary,
     };
     const account = (agentId) => ({
