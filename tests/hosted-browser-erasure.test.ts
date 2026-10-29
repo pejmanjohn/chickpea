@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test, type TestContext } from 'node:test';
 
 import { PENDING_CONTEXT_DELETIONS_SETTING } from '../src/browser/context-deletions.ts';
-import { eraseBrowserPass } from '../src/browser/hosted-erasure.ts';
+import { censusBrowser, eraseBrowserPass } from '../src/browser/hosted-erasure.ts';
 import { HostedBrowserProvider } from '../src/browser/hosted-provider.ts';
 import {
   createWebsiteLogin,
@@ -225,6 +225,21 @@ test('erasure ends a queued hand-off session the provider does not list, and kee
   const second = await pass();
   assert.deepEqual([second.deleted, second.remaining], [1, 0]);
   assert.equal(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), undefined);
+});
+
+test('a lease holding another installation\'s session is dropped unmetered, and that session is never ended', async (t) => {
+  const { store } = installation(t);
+  await store.setSetting(BROWSER_SESSION_LEASES_KEY, JSON.stringify({
+    leases: { r1: { startedAt: NOW - 300_000, leaseUntil: NOW + 300_000, sessionId: 'sess_b' } },
+    recentCreations: [],
+  }));
+  await store.setSetting(`${BROWSER_SECONDS_PREFIX}${MONTH}`, JSON.stringify({ seconds: 600 }));
+  const browserbase = fakeBrowserbase();
+  browserbase.sessions.set('sess_b', { projectId: 'proj-platform', status: 'RUNNING', userMetadata: { installation: B } });
+  const pass = await eraseBrowserPass({ store, provider: hostedProvider(store, browserbase), sleep: async () => undefined });
+  assert.equal(pass.foreign, 1);
+  assert.equal(browserbase.sessions.get('sess_b')!.status, 'RUNNING');
+  assert.deepEqual(await censusBrowser(store, NOW), { contexts: 0, queued: 0, leases: 0, month: MONTH, meteredSeconds: 600 });
 });
 
 function hostedProvider(store: SettingsStore, browserbase: ReturnType<typeof fakeBrowserbase>) {

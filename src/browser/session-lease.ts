@@ -129,6 +129,16 @@ export async function closeBrowserSessionLease(input: {
   });
 }
 
+/** Drop the lease a session holds without metering it: one that never ran on this installation's time. */
+export async function dropBrowserSessionLease(input: { store: LeaseStore; sessionId: string; now: number }): Promise<void> {
+  await updateLeases(input.store, input.now, (row) => {
+    for (const [reservationId, lease] of Object.entries(row.leases)) {
+      if (lease.sessionId === input.sessionId) delete row.leases[reservationId];
+    }
+    return { charged: 0, result: undefined };
+  });
+}
+
 /** Work maintenance: charge each lease past its timeout up to it and drop it. Returns how many. */
 export async function chargeLapsedBrowserSessionLeases(input: { store: LeaseStore; now: number }): Promise<number> {
   const { now } = input;

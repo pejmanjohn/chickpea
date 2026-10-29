@@ -10,7 +10,7 @@ import { dropPendingContextDeletions, pendingContextDeletions } from './context-
 import type { HostedBrowserProvider } from './hosted-provider.ts';
 import { forgetWebsiteLoginContext, listWebsiteLogins } from './logins.ts';
 import { BrowserProviderError, HostedBrowserRefusal } from './provider.ts';
-import { closeBrowserSessionLease, readBrowserSessionUsage } from './session-lease.ts';
+import { closeBrowserSessionLease, dropBrowserSessionLease, readBrowserSessionUsage } from './session-lease.ts';
 
 /** Counts only: no id, name or host leaves the store. */
 export interface BrowserCensus {
@@ -112,14 +112,18 @@ export async function eraseBrowserPass(input: {
       continue;
     } catch (error) {
       if (isForeign(error)) {
+        // It never ran on this installation's time, so its lease goes unmetered.
         foreign += 1;
-      } else if (!isGone(error) && RUNNING.has(await provider.sessionStatus(sessionId).catch(() => 'RUNNING'))) {
+        await dropBrowserSessionLease({ store, sessionId, now: now() });
+        continue;
+      }
+      if (!isGone(error) && RUNNING.has(await provider.sessionStatus(sessionId).catch(() => 'RUNNING'))) {
         stillRunning.add(sessionId);
         remaining += 1;
         continue;
       }
     }
-    // Ended already, gone, or another installation's: its lease has nothing left to hold.
+    // Ended already, or gone: its lease has nothing left to hold.
     await closeBrowserSessionLease({ store, sessionId, now: now() });
   }
   const deadline = now() + END_WAIT_MS;
