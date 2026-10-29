@@ -1,7 +1,9 @@
 import { envValue } from '../config/env-value.ts';
+import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
 import { readMonthlyCounter, updateMonthlyCounter } from '../config/monthly-counter.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { trimmedNonEmpty } from '../security/content-validation.ts';
+import type { BrowserProvider } from './provider.ts';
 
 /**
  * Install-wide Browser settings. One hosted-browser provider per install
@@ -80,6 +82,27 @@ export async function resolveBrowserSettings(
     storedProjectId,
     envApiKey: envValue(env, BROWSER_ENV_VARS.apiKey),
     envProjectId: envValue(env, BROWSER_ENV_VARS.projectId),
+  });
+}
+
+/**
+ * The install's browser provider, keyed from current settings, or undefined
+ * when no key is configured. A deployment serving many installations has
+ * none here: it never reads a deployment variable or a stored key. The
+ * Browserbase client loads only when a provider is built, which keeps it out
+ * of the Worker's startup graph.
+ */
+export async function resolveBrowserProvider(
+  store: SettingsStore,
+  env: Record<string, unknown> | undefined,
+): Promise<BrowserProvider | undefined> {
+  if (deploymentServesManyInstallations(env)) return undefined;
+  const settings = await resolveBrowserSettings(store, env);
+  if (!settings.apiKey) return undefined;
+  const { createBrowserbaseProvider } = await import('./browserbase.ts');
+  return createBrowserbaseProvider({
+    apiKey: settings.apiKey,
+    ...(settings.projectId ? { projectId: settings.projectId } : {}),
   });
 }
 

@@ -259,6 +259,20 @@ test('export pages are stable and resumable, and a portable export leaves every 
   });
 });
 
+test('no export carries the browser\'s queued context deletions or recording handles', async () => {
+  const deployment = hostedDeployment(['inst_export_browser']);
+  const a = deployment.installation('inst_export_browser');
+  populate(deployment, a, 'T_A');
+  a.stores.settings.setSetting('browser.pendingContextDeletions', JSON.stringify([{ contextId: 'ctx_queued', queuedAt: 1 }]));
+  a.stores.settings.setSetting('browser_recordings:v1:index', JSON.stringify([{ id: 'rec:1', sessionId: 'sess_recorded' }]));
+  for (const mode of ['portable', 'full'] as const) {
+    const text = (await exportAll(a.env, installationStateStoreObject(a.env), mode)).text;
+    assert.ok(text.includes('slack.teamName'), `${mode}: the installation's settings are kept`);
+    assert.equal(text.includes('ctx_queued'), false, mode);
+    assert.equal(text.includes('sess_recorded'), false, mode);
+  }
+});
+
 test('no export carries a retired setting, such as the Outbound access policy', async () => {
   const deployment = hostedDeployment(['inst_export_retired']);
   const a = deployment.installation('inst_export_retired');

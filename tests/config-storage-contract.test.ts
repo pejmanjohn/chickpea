@@ -91,9 +91,9 @@ test(`this code upgrades v${release.release}'s config storage to the schema a fr
   assert.deepEqual(db.all('SELECT id FROM config_migrations ORDER BY id').map((row) => row.id), [...contract.migrations].sort());
 });
 
-test(`this code reads v${release.release}'s stored values as v${release.release} read them`, () => {
+test(`this code reads v${release.release}'s stored values as v${release.release} read them`, async () => {
   const db = releaseDatabase();
-  const readback = maskedJson(atScenarioClock(() => readConfigStorageScenario(kit, db)));
+  const readback = maskedJson(await atScenarioClock(() => readConfigStorageScenario(kit, db)));
   assert.deepEqual(readbackLosses(release.readback, readback), [],
     'This code reads these values differently. A version bump does not cover a read change. If the change is ' +
     'intended, change readConfigStorageScenario and regenerate the release fixture.');

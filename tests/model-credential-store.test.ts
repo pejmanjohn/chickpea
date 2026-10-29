@@ -246,3 +246,29 @@ test('the encrypted census counts revisions per class and key ID, locally and th
   assert.doesNotMatch(JSON.stringify(census), /sk-ant|login-secret/);
   assert.equal(replaySafeStateRpc('encryptedCredentialCensus'), true, 'a read, so a lost call is replayed');
 });
+
+test('a prefix listing returns whole revisions under exactly that prefix, locally and through the RPC', async () => {
+  const logic = new SettingsStoreLogic(new NodeStateDb(new DatabaseSync(':memory:')));
+  const login = await envelopeFor(1, 'login-secret', nextKeyring);
+  // `_` would match any character under LIKE: `websitexlogin.` must not list.
+  for (const key of ['website_login.login_2', 'website_login.login_1', 'websitexlogin.login_3', 'website_login', 'model_provider.anthropic']) {
+    logic.replaceEncryptedCredentialRevision({
+      key, expectedRevision: null, revision: 'v1', contextId: 'login_context_000001', envelope: login,
+    });
+  }
+  const listed = logic.listEncryptedCredentialRevisions('website_login.');
+  assert.deepEqual(listed.map(({ key }) => key), ['website_login.login_1', 'website_login.login_2']);
+  assert.deepEqual(listed[0]!.envelope, login, 'the envelope comes back for a rewrap to open');
+  assert.deepEqual(logic.listEncryptedCredentialRevisions('website_login.login_9'), []);
+  assert.throws(() => logic.listEncryptedCredentialRevisions('website_login.%'), /key is invalid/);
+
+  const stub = {
+    encryptedCredentialList: (prefix: string) =>
+      Promise.resolve({ ok: true as const, value: structuredClone(logic.listEncryptedCredentialRevisions(prefix)) }),
+  } as unknown as TagStateRpc;
+  assert.deepEqual(
+    await new CfSettingsStore(new FreshTagStateStubs(() => stub)).listEncryptedCredentialRevisions('website_login.'),
+    listed,
+  );
+  assert.equal(replaySafeStateRpc('encryptedCredentialList'), true, 'a read, so a lost call is replayed');
+});

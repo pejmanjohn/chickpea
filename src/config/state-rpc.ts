@@ -669,6 +669,8 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<boolean>>;
   /** Encrypted revisions per class and key ID; no value is read. */
   encryptedCredentialCensus(): Promise<StateRpcResult<EncryptedCredentialCensusRow[]>>;
+  /** The revisions whose key starts with `prefix`, compared literally. */
+  encryptedCredentialList(prefix: string): Promise<StateRpcResult<EncryptedCredentialRevision[]>>;
   modelCredentialRead(providerId: string): Promise<StateRpcResult<ModelCredentialRecord | null>>;
   /** Version-fenced: metadata and envelope publish (or the envelope goes) in one transaction. */
   modelCredentialPublish(input: PublishModelCredentialInput): Promise<StateRpcResult<boolean>>;

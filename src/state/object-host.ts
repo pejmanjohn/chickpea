@@ -846,13 +846,16 @@ const PORTABLE_EXCLUDED_SETTINGS: readonly RegExp[] = [
 /**
  * Settings no export carries: the host's operational records of the
  * installation's coding workspaces (running-container leases, metered
- * container time, the GitHub write rate). A census counts them; erasure
- * deletes them with the store.
+ * container time, the GitHub write rate) and of its browser (the provider
+ * objects queued for deletion, and recording handles naming provider
+ * sessions). A census counts them; erasure deletes them with the store.
  */
 const OPERATIONAL_SETTINGS: readonly RegExp[] = [
   /^sandbox\.containerLeases$/,
   /^sandbox\.monthlyContainerSeconds\./,
   /^sandbox\.githubWrites$/,
+  /^browser\.pendingContextDeletions$/,
+  /^browser_recordings:v1:index$/,
 ];
 
 /** A row as exported, or undefined when the export leaves it out. */

@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBrowserbaseProvider } from '../src/browser/browserbase.ts';
 import {
+  drainContextDeletions,
+  PENDING_CONTEXT_DELETIONS_SETTING,
+  queueContextDeletions,
+} from '../src/browser/context-deletions.ts';
+import {
   awaitRecordingDownload,
   BrowserProviderError,
   type BrowserRecordingDownload,
@@ -11,6 +16,7 @@ import {
   fakeFetch as sharedFakeFetch,
   type FakeFetchCall,
 } from './helpers/fake-cdp-socket.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 
 const API_KEY = 'bb_live_secret_key_123';
 
@@ -55,6 +61,13 @@ test('createSession posts browser settings with the API key header and returns t
     keepAlive: false,
     timeout: 300,
   });
+});
+
+test('createSession sends logSession only when it is set', async () => {
+  const { calls, fetchImpl } = fakeFetch(() => ({ status: 201, body: { id: 's', connectUrl: 'wss://x' } }));
+  const provider = createBrowserbaseProvider({ apiKey: API_KEY, fetch: fetchImpl });
+  await provider.createSession({ recording: false, logSession: false, keepAlive: true });
+  assert.deepEqual(calls[0]!.body, { browserSettings: { recordSession: false, logSession: false }, keepAlive: true });
 });
 
 test('createSession omits optional fields when not provided', async () => {
@@ -144,6 +157,23 @@ test('createContext posts project and name', async () => {
   assert.deepEqual(calls[0]!.body, { projectId: 'proj-1', name: 'agent-a' });
 });
 
+test('deleteContext deletes by id, treats 404 as already gone, and keeps the key out of other failures', async () => {
+  const { calls, fetchImpl } = fakeFetch((call) =>
+    call.url.endsWith('/gone') ? { status: 404 } : call.url.endsWith('/broken') ? { status: 500, body: `oops ${API_KEY}` } : { status: 204 });
+  const provider = createBrowserbaseProvider({ apiKey: API_KEY, fetch: fetchImpl });
+  await provider.deleteContext('ctx/1');
+  assert.equal(calls[0]!.method, 'DELETE');
+  assert.equal(calls[0]!.url, 'https://api.browserbase.com/v1/contexts/ctx%2F1');
+  assert.equal(calls[0]!.headers['X-BB-API-Key'], API_KEY);
+  await provider.deleteContext('gone');
+  await assert.rejects(provider.deleteContext('broken'), (error: unknown) => {
+    assert.ok(error instanceof BrowserProviderError);
+    assert.equal(error.status, 500);
+    assert.ok(!error.message.includes(API_KEY));
+    return true;
+  });
+});
+
 test('errors never contain the API key and truncate the body to 300 characters', async () => {
   const body = `bad key ${API_KEY} ` + 'x'.repeat(1000);
   const { fetchImpl } = fakeFetch(() => ({ status: 401, body }));
@@ -169,6 +199,41 @@ test('network failures are wrapped without leaking the key', async () => {
     assert.ok(!error.message.includes(API_KEY));
     return true;
   });
+});
+
+/** A fetch that answers only when its request is aborted, as a stalled Browserbase would. */
+const stalledFetch = (async (_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+  init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+})) as typeof fetch;
+
+test('every request times out as a provider error without a status, which the deletion queue retries', async () => {
+  const provider = createBrowserbaseProvider({ apiKey: API_KEY, fetch: stalledFetch, timeoutMs: 20 });
+  for (const call of [() => provider.deleteContext('ctx_slow'), () => provider.endSession('sess_slow')]) {
+    await assert.rejects(call(), (error: unknown) => {
+      assert.ok(error instanceof BrowserProviderError);
+      assert.equal(error.status, undefined);
+      assert.match(error.message, /^Browserbase request timed out: (DELETE|POST) \/v1\//);
+      return true;
+    });
+  }
+  const store = new SqliteSettingsStore(':memory:');
+  try {
+    await queueContextDeletions(store, [{ contextId: 'ctx_slow', queuedAt: Date.now() }]);
+    await drainContextDeletions({ store, provider: async () => provider });
+    assert.deepEqual(JSON.parse((await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!)
+      .map(({ contextId, attempts }: { contextId: string; attempts: number }) => [contextId, attempts]), [['ctx_slow', 1]]);
+  } finally {
+    store.close();
+  }
+});
+
+test('the default bound is 15 seconds', async (t) => {
+  t.mock.method(AbortSignal, 'timeout', (ms: number) => {
+    assert.equal(ms, 15_000);
+    return new AbortController().signal;
+  });
+  const { fetchImpl } = fakeFetch(() => ({ status: 200, body: { id: 'ctx_new' } }));
+  assert.deepEqual(await createBrowserbaseProvider({ apiKey: API_KEY, fetch: fetchImpl }).createContext(), { id: 'ctx_new' });
 });
 
 function fakeProvider(script: {

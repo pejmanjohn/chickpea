@@ -1,4 +1,9 @@
-import type { EncryptedCredentialStore, SettingsStore } from '../config/settings-store.ts';
+import {
+  isEncryptedCredentialListingStore,
+  type EncryptedCredentialStore,
+  type SettingsStore,
+} from '../config/settings-store.ts';
+import { deploymentServesManyInstallations, requireInstallationScope } from '../config/installation-scope.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
 import {
@@ -8,7 +13,15 @@ import {
   type SlackSecretEnvelopeContext,
   workspaceCredentialContext,
 } from '../slack/secret-envelope.ts';
-import { updateJsonSetting } from '../config/setting-string-set.ts';
+import {
+  drainContextDeletions,
+  PENDING_CONTEXT_DELETIONS_SETTING,
+  settleContextDeletions,
+  withPendingContextDeletions,
+  type PendingContextDeletion,
+} from './context-deletions.ts';
+import { BROWSER_PROVIDER_ID_PATTERN, type BrowserProvider } from './provider.ts';
+import { resolveBrowserProvider } from './settings.ts';
 
 /**
  * Website logins: a person's sign-in to a website, which Agents granted it can
@@ -30,7 +43,8 @@ const CREDENTIAL_IDENTITY_ID = 'website_login';
 const CREDENTIAL_APP_ID = 'BROWSER';
 const LOGIN_ID_PATTERN = /^wl_[a-f0-9]{32}$/;
 const MEMBERSHIP_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
-const BROWSER_CONTEXT_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
+/** Longer than any create takes between writing its secret and its catalog entry. */
+const ORPHAN_SECRET_GRACE_MS = 10 * 60 * 1000;
 const MAX_HOST_LENGTH = 260;
 const MAX_LABEL_LENGTH = 80;
 const MAX_USERNAME_LENGTH = 320;
@@ -78,6 +92,17 @@ export interface WebsiteLoginSecrets {
 export interface WebsiteLoginDependencies {
   store: SettingsStore & EncryptedCredentialStore;
   keyring: CredentialKeyring;
+  /**
+   * Under installation tenancy, the installation every secret is bound to,
+   * so a row copied into another installation's store does not decrypt.
+   * Standalone has none and keeps its original binding.
+   */
+  installationId?: string;
+  /**
+   * Deletes a removed login's browser context and hand-off session at once.
+   * Without one, or when it fails, work maintenance deletes them.
+   */
+  browserProvider?: () => Promise<BrowserProvider | undefined>;
 }
 
 export interface CreateWebsiteLoginInput {
@@ -132,6 +157,7 @@ export class WebsiteLoginStateError extends Error {
 /** Production dependencies. The keyring loads lazily, only when a secret is touched. */
 export function websiteLoginDependencies(env?: PlatformEnv): WebsiteLoginDependencies {
   const store = getSettingsStore(env);
+  const installationId = websiteLoginInstallation(env);
   let keyring: CredentialKeyring | undefined;
   return {
     store,
@@ -139,7 +165,14 @@ export function websiteLoginDependencies(env?: PlatformEnv): WebsiteLoginDepende
       keyring ??= loadCredentialKeyring(env);
       return keyring;
     },
+    ...(installationId ? { installationId } : {}),
+    browserProvider: () => resolveBrowserProvider(store, env),
   };
+}
+
+/** The installation a deployment serving many binds website-login secrets to; standalone binds none. */
+function websiteLoginInstallation(env: PlatformEnv | undefined): string | undefined {
+  return requireInstallationScope(env)?.installationId;
 }
 
 /**
@@ -167,7 +200,7 @@ export function normalizeWebsiteLoginHost(raw: string): string {
   return url.host.toLowerCase();
 }
 
-export async function listWebsiteLogins(store: SettingsStore): Promise<WebsiteLogin[]> {
+export async function listWebsiteLogins(store: Pick<SettingsStore, 'getSetting' | 'getSettings'>): Promise<WebsiteLogin[]> {
   const logins = parseLogins(await store.getSetting(WEBSITE_LOGINS_SETTING));
   if (!logins.length) return logins;
   const states = await store.getSettings(logins.map((login) => stateKey(login.id)));
@@ -245,7 +278,7 @@ export async function createWebsiteLogin(
     const contextId = secretContextId(login.id);
     const envelope = await encryptSlackSecretEnvelope(
       deps.keyring,
-      credentialContext(contextId, revision),
+      credentialContext(contextId, revision, deps.installationId),
       { ...secrets },
     );
     const written = await deps.store.replaceEncryptedCredentialRevision({
@@ -265,7 +298,8 @@ export async function createWebsiteLogin(
       await deps.store.deleteEncryptedCredentialRevision(secretKey(login.id), secretRevision);
     } catch {
       // The metadata row never names this login, so the orphan is unreadable
-      // through readWebsiteLoginSecrets; the original error is the useful one.
+      // through readWebsiteLoginSecrets, and work maintenance deletes it; the
+      // original error is the useful one.
     }
   };
 
@@ -285,8 +319,9 @@ export async function createWebsiteLogin(
 /**
  * Decrypt one login's secrets for the call-time consumer. Returns undefined
  * when the login is gone, is a hand-off login, or has no stored secret. The
- * envelope context is derived from the login id, so an envelope copied onto
- * another login's key does not decrypt.
+ * envelope context is derived from the login id, and under tenancy from the
+ * installation, so an envelope copied onto another login's key, or into
+ * another installation's store, does not decrypt.
  */
 export async function readWebsiteLoginSecrets(
   deps: WebsiteLoginDependencies,
@@ -302,7 +337,7 @@ export async function readWebsiteLoginSecrets(
   try {
     decrypted = await decryptSlackSecretEnvelope<Record<string, string>>(
       deps.keyring,
-      credentialContext(contextId, active.revision),
+      credentialContext(contextId, active.revision, deps.installationId),
       active.envelope,
     );
   } catch {
@@ -314,31 +349,167 @@ export async function readWebsiteLoginSecrets(
 }
 
 /**
- * Delete a login: metadata and runtime state first (so no reader can reach
- * the secret), then its secret. A missing secret is fine. Returns whether
- * metadata existed.
+ * After the deployment keyring gains a new current key, re-encrypt each
+ * website-login secret still under an older key ID as a fresh revision with
+ * the same context. Every `website_login.` revision is listed, not the
+ * catalog, so a secret a failed create left behind moves too. Each stays
+ * bound to the installation `env` serves. One under a key ID the keyring no
+ * longer has, or that will not decrypt, remains. A
+ * compare-and-set lost to another writer (a delete, or a concurrent rewrap)
+ * keeps that writer's result and counts only what still sits under an older
+ * key. Running it again changes nothing; a store error propagates for a retry.
+ */
+export async function rewrapWebsiteLoginSecrets(input: {
+  env: PlatformEnv | undefined;
+  settings: SettingsStore;
+  keyring: CredentialKeyring;
+}): Promise<{ rewrapped: number; remaining: number }> {
+  const store = input.settings;
+  if (!isEncryptedCredentialListingStore(store)) {
+    throw new Error('This settings store cannot list its website login secrets.');
+  }
+  const { keyring } = input;
+  const installationId = websiteLoginInstallation(input.env);
+  const context = (contextId: string, revision: string) => credentialContext(contextId, revision, installationId);
+  let rewrapped = 0;
+  let remaining = 0;
+  for (const row of await store.listEncryptedCredentialRevisions(SECRET_KEY_PREFIX)) {
+    if (row.envelope.keyId === keyring.currentKeyId) continue;
+    let secrets: Record<string, string> | undefined;
+    if (Object.hasOwn(keyring.keys, row.envelope.keyId)) {
+      try {
+        secrets = await decryptSlackSecretEnvelope(keyring, context(row.contextId, row.revision), row.envelope);
+      } catch {
+        // Tampered with, or bound to another context: it cannot be rewrapped.
+      }
+    }
+    if (!secrets) {
+      remaining += 1;
+      continue;
+    }
+    const revision = `wl_rev_${randomHex()}`;
+    const written = await store.replaceEncryptedCredentialRevision({
+      key: row.key,
+      expectedRevision: row.revision,
+      revision,
+      contextId: row.contextId,
+      envelope: await encryptSlackSecretEnvelope(keyring, context(row.contextId, revision), secrets),
+    });
+    if (written) {
+      rewrapped += 1;
+      continue;
+    }
+    const latest = await store.getEncryptedCredentialRevision(row.key);
+    if (latest && latest.envelope.keyId !== keyring.currentKeyId) remaining += 1;
+  }
+  return { rewrapped, remaining };
+}
+
+/**
+ * Delete a login. One compare-and-set removes its metadata and runtime state
+ * (so no reader can reach the secret) and queues its browser context and any
+ * open hand-off session for deletion, so a crash past it strands neither at
+ * the provider. Then its secret goes (a missing one is fine), and then, with
+ * a provider, the queued objects. Returns whether metadata existed.
  */
 export async function deleteWebsiteLogin(
-  deps: Pick<WebsiteLoginDependencies, 'store'>,
+  deps: Pick<WebsiteLoginDependencies, 'store' | 'browserProvider'>,
   id: string,
 ): Promise<boolean> {
   if (!LOGIN_ID_PATTERN.test(id)) return false;
-  let existed = false;
-  const outcome = await updateLogins(deps.store, (logins) => {
-    const next = logins.filter((login) => login.id !== id);
-    existed = next.length !== logins.length;
-    return existed ? { next, delete: [stateKey(id)] } : {};
-  });
-  if (outcome instanceof Error) throw outcome;
+  const removed = await removeLogin(deps.store, id);
   const active = await deps.store.getEncryptedCredentialRevision(secretKey(id));
   if (active && !await deps.store.deleteEncryptedCredentialRevision(secretKey(id), active.revision)) {
-    // A concurrent writer replaced it; nothing else ever writes this key, so retry once.
+    // A keyring rewrap replaced it meanwhile. It is the only other writer of this key, so retry once.
     const latest = await deps.store.getEncryptedCredentialRevision(secretKey(id));
     if (latest && !await deps.store.deleteEncryptedCredentialRevision(secretKey(id), latest.revision)) {
       throw new WebsiteLoginStateError();
     }
   }
-  return existed;
+  if (removed?.queued && deps.browserProvider) {
+    try {
+      const provider = await deps.browserProvider();
+      if (provider) await settleContextDeletions(deps.store, provider, [removed.queued]);
+    } catch {
+      console.warn('[chickpea] A deleted website login\'s browser context is left for work maintenance');
+    }
+  }
+  return removed !== undefined;
+}
+
+/**
+ * Remove a login's catalog entry and state row, queuing what the state
+ * names at the provider, in one write fenced on all three rows. Undefined
+ * when the login is already gone.
+ */
+async function removeLogin(
+  store: SettingsStore,
+  id: string,
+): Promise<{ queued?: PendingContextDeletion } | undefined> {
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const [catalog, state, pending] = await store.getSettings([
+      WEBSITE_LOGINS_SETTING, stateKey(id), PENDING_CONTEXT_DELETIONS_SETTING,
+    ]);
+    const logins = parseLogins(catalog);
+    const login = logins.find((entry) => entry.id === id);
+    if (!login) return undefined;
+    const { contextId, handoffSessionId } = withState(login, state);
+    const queued: PendingContextDeletion | undefined = contextId || handoffSessionId
+      ? { ...(contextId ? { contextId } : {}), ...(handoffSessionId ? { handoffSessionId } : {}), queuedAt: Date.now() }
+      : undefined;
+    const applied = await store.applySettingsPatch({
+      expected: { key: WEBSITE_LOGINS_SETTING, value: catalog ?? null },
+      expectedAll: [
+        { key: stateKey(id), value: state ?? null },
+        ...(queued ? [{ key: PENDING_CONTEXT_DELETIONS_SETTING, value: pending ?? null }] : []),
+      ],
+      set: [
+        { key: WEBSITE_LOGINS_SETTING, value: JSON.stringify(logins.filter((entry) => entry.id !== id)) },
+        ...(queued
+          ? [{ key: PENDING_CONTEXT_DELETIONS_SETTING, value: withPendingContextDeletions(pending, [queued]) }]
+          : []),
+      ],
+      delete: [stateKey(id)],
+    });
+    if (applied) return queued ? { queued } : {};
+  }
+  throw new WebsiteLoginStateError();
+}
+
+/**
+ * Delete each website-login secret that no catalog entry names: one a
+ * crash, or a failed step after the catalog write, left behind when its
+ * login was deleted. A secret written in the last ten minutes may belong to
+ * a create that has not written its catalog entry yet, so it waits. Each
+ * delete is fenced on the revision listed, as a create's rollback is, so one
+ * a rewrap replaced meanwhile waits for the next sweep. A catalog row that
+ * does not parse stops the sweep rather than make every secret an orphan.
+ */
+export async function deleteOrphanWebsiteLoginSecrets(store: SettingsStore, now = Date.now()): Promise<number> {
+  if (!isEncryptedCredentialListingStore(store)) return 0;
+  const rows = await store.listEncryptedCredentialRevisions(SECRET_KEY_PREFIX);
+  if (!rows.length) return 0;
+  const named = catalogLoginIds(await store.getSetting(WEBSITE_LOGINS_SETTING));
+  if (!named) return 0;
+  let deleted = 0;
+  for (const row of rows) {
+    if (named.has(row.key.slice(SECRET_KEY_PREFIX.length)) || now - row.updatedAt < ORPHAN_SECRET_GRACE_MS) continue;
+    if (await store.deleteEncryptedCredentialRevision(row.key, row.revision)) deleted += 1;
+  }
+  return deleted;
+}
+
+/**
+ * Work maintenance for one install's website logins: the context deletion
+ * queue, then secrets no login names. A deployment serving many
+ * installations leaves both alone: its browser key belongs to the host,
+ * never to a deployment variable or the installation's settings.
+ */
+export async function maintainWebsiteLogins(env: PlatformEnv | undefined, store?: SettingsStore): Promise<void> {
+  if (deploymentServesManyInstallations(env)) return;
+  const settings = store ?? getSettingsStore(env);
+  await drainContextDeletions({ store: settings, provider: () => resolveBrowserProvider(settings, env) });
+  await deleteOrphanWebsiteLoginSecrets(settings);
 }
 
 /** Record when the login was last used (bound to a session or signed in). Returns false when the login is gone. */
@@ -350,16 +521,26 @@ export async function touchWebsiteLoginUsed(
   return patchLoginState(store, id, (state) => ({ ...state, lastUsedAt: at }));
 }
 
-/** Remember the hosted-browser context holding this login's session. */
-export async function setWebsiteLoginContext(
+/**
+ * Record the hosted-browser context holding this login's session, unless one
+ * is recorded already. Returns the recorded context: the earlier one when
+ * another writer won. Undefined when the login is gone.
+ */
+export async function recordWebsiteLoginContext(
   store: SettingsStore,
   id: string,
   contextId: string,
-): Promise<boolean> {
-  if (!BROWSER_CONTEXT_ID_PATTERN.test(contextId)) {
+): Promise<string | undefined> {
+  if (!BROWSER_PROVIDER_ID_PATTERN.test(contextId)) {
     throw new WebsiteLoginInputError('invalid_context');
   }
-  return patchLoginState(store, id, (state) => ({ ...state, contextId }));
+  let recorded = contextId;
+  const found = await patchLoginState(store, id, (state) => {
+    if (!state.contextId) return { ...state, contextId };
+    recorded = state.contextId;
+    return undefined;
+  });
+  return found ? recorded : undefined;
 }
 
 /** Remember (or, with undefined, forget) a hand-off session still open for this login. */
@@ -368,7 +549,7 @@ export async function setWebsiteLoginHandoff(
   id: string,
   sessionId: string | undefined,
 ): Promise<boolean> {
-  if (sessionId !== undefined && !BROWSER_CONTEXT_ID_PATTERN.test(sessionId)) {
+  if (sessionId !== undefined && !BROWSER_PROVIDER_ID_PATTERN.test(sessionId)) {
     throw new WebsiteLoginInputError('invalid_context');
   }
   return patchLoginState(store, id, (state) => {
@@ -418,10 +599,14 @@ function secretContextId(id: string): string {
   return `wl_ctx_${id.slice(3)}`;
 }
 
-function credentialContext(contextId: string, revision: string): SlackSecretEnvelopeContext {
+function credentialContext(
+  contextId: string,
+  revision: string,
+  installationId: string | undefined,
+): SlackSecretEnvelopeContext {
   return workspaceCredentialContext({
     contextId,
-    identityId: CREDENTIAL_IDENTITY_ID,
+    identityId: installationId === undefined ? CREDENTIAL_IDENTITY_ID : `${CREDENTIAL_IDENTITY_ID}:${installationId}`,
     appId: CREDENTIAL_APP_ID,
     purpose: 'website_login',
     revision,
@@ -445,26 +630,32 @@ function randomHex(): string {
 }
 
 /**
- * Compare-and-set one login's runtime state row. Returns false when the login
- * is gone. A login whose state still sits in its catalog entry (written before
- * the state row existed) starts from that entry.
+ * Compare-and-set one login's runtime state row; `change` returns undefined
+ * to leave it. Returns false when the login is gone. A login whose state
+ * still sits in its catalog entry (written before the state row existed)
+ * starts from that entry. The write is fenced on the catalog too, so it can
+ * never land after a deletion removed the row and queued what it named.
  */
 async function patchLoginState(
   store: SettingsStore,
   id: string,
-  change: (state: WebsiteLoginState) => WebsiteLoginState,
+  change: (state: WebsiteLoginState) => WebsiteLoginState | undefined,
 ): Promise<boolean> {
   if (!LOGIN_ID_PATTERN.test(id)) return false;
-  const login = parseLogins(await store.getSetting(WEBSITE_LOGINS_SETTING)).find((entry) => entry.id === id);
-  if (!login) return false;
-  const written = await updateJsonSetting<WebsiteLoginState>(
-    store,
-    stateKey(id),
-    (current) => change(current ?? stateOf(login)),
-    parseState,
-  );
-  if (!written) throw new WebsiteLoginStateError();
-  return true;
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const [catalog, raw] = await store.getSettings([WEBSITE_LOGINS_SETTING, stateKey(id)]);
+    const login = parseLogins(catalog).find((entry) => entry.id === id);
+    if (!login) return false;
+    const next = change((raw === undefined ? undefined : parseState(raw)) ?? stateOf(login));
+    if (!next) return true;
+    const written = await store.applySettingsPatch({
+      expected: { key: stateKey(id), value: raw ?? null },
+      expectedAll: [{ key: WEBSITE_LOGINS_SETTING, value: catalog ?? null }],
+      set: [{ key: stateKey(id), value: JSON.stringify(next) }],
+    });
+    if (written) return true;
+  }
+  throw new WebsiteLoginStateError();
 }
 
 /**
@@ -488,6 +679,25 @@ async function updateLogins(
     if (applied) return undefined;
   }
   throw new WebsiteLoginStateError();
+}
+
+/**
+ * Every id the catalog row names, including entries `parseLogins` skips as
+ * malformed; undefined when the row itself does not parse.
+ */
+function catalogLoginIds(raw: string | undefined): Set<string> | undefined {
+  if (raw === undefined) return new Set();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  return new Set(parsed.flatMap((entry) =>
+    entry && typeof entry === 'object' && typeof (entry as { id?: unknown }).id === 'string'
+      ? [(entry as { id: string }).id]
+      : []));
 }
 
 function parseLogins(raw: string | undefined): WebsiteLogin[] {

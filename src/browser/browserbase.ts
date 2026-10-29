@@ -13,10 +13,17 @@ export interface BrowserbaseProviderOptions {
   projectId?: string;
   fetch?: typeof fetch;
   baseUrl?: string;
+  timeoutMs?: number;
 }
 
 const DEFAULT_BASE_URL = 'https://api.browserbase.com';
 const ERROR_BODY_LIMIT = 300;
+/**
+ * Every call is bounded: a stalled Browserbase must not hold an Admin
+ * request, a login's deletion, or a maintenance sweep for the platform's
+ * own socket timeout.
+ */
+const REQUEST_TIMEOUT_MS = 15_000;
 
 type Json = Record<string, unknown>;
 
@@ -32,14 +39,15 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   const apiKey = options.apiKey;
+  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
 
   // The exact key, whatever its shape: an environment key is never checked
   // against the bb_ signature that the shared redactor recognizes.
   const redact = (text: string) => (apiKey ? text.split(apiKey).join('[redacted]') : text);
 
-  async function request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ status: number; data: unknown }> {
+  async function request(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<{ status: number; data: unknown }> {
     const headers: Record<string, string> = { 'X-BB-API-Key': apiKey, Accept: 'application/json' };
-    const init: RequestInit = { method, headers };
+    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(timeoutMs) };
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(body);
@@ -48,6 +56,10 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
     try {
       response = await doFetch(`${baseUrl}${path}`, init);
     } catch (error) {
+      // No status, like any failure to reach Browserbase: every caller tries again later.
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        throw new BrowserProviderError(`Browserbase request timed out: ${method} ${path}`);
+      }
       const message = error instanceof Error ? error.message : String(error);
       throw new BrowserProviderError(`Browserbase request failed: ${method} ${path}: ${redact(message).slice(0, ERROR_BODY_LIMIT)}`);
     }
@@ -77,6 +89,7 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
 
     async createSession(opts: CreateBrowserSessionOptions): Promise<BrowserSessionHandle> {
       const browserSettings: Json = { recordSession: opts.recording ?? true };
+      if (opts.logSession !== undefined) browserSettings.logSession = opts.logSession;
       if (opts.viewport) browserSettings.viewport = { width: opts.viewport.width, height: opts.viewport.height };
       if (opts.contextId) browserSettings.context = { id: opts.contextId, persist: opts.persistContext ?? false };
       if (opts.allowedDomains && opts.allowedDomains.length > 0) browserSettings.allowedDomains = [...opts.allowedDomains];
@@ -154,6 +167,14 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
       if (!id) throw new BrowserProviderError('Browserbase context response is missing id');
       return { id };
     },
+
+    async deleteContext(contextId: string): Promise<void> {
+      try {
+        await request('DELETE', `/v1/contexts/${encodeURIComponent(contextId)}`);
+      } catch (error) {
+        if (!(error instanceof BrowserProviderError) || error.status !== 404) throw error;
+      }
+    },
   };
 }
 
@@ -170,6 +191,7 @@ export async function verifyBrowserbaseApiKey(options: {
   apiKey: string;
   fetch?: typeof fetch;
   baseUrl?: string;
+  timeoutMs?: number;
 }): Promise<BrowserbaseKeyVerification> {
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
@@ -178,6 +200,7 @@ export async function verifyBrowserbaseApiKey(options: {
     response = await doFetch(`${baseUrl}/v1/projects`, {
       method: 'GET',
       headers: { 'X-BB-API-Key': options.apiKey, Accept: 'application/json' },
+      signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
     });
   } catch {
     return { ok: false, reason: 'unreachable' };

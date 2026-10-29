@@ -33,6 +33,7 @@ import {
   websiteLoginMatchesUrl,
   type BrowserLoginOptions,
 } from './binding.ts';
+import { queueContextDeletions } from './context-deletions.ts';
 import {
   readWebsiteLoginSecrets,
   setWebsiteLoginHandoff,
@@ -44,6 +45,7 @@ import {
   BROWSER_HANDOFF_NEEDS_PAID_PLAN_MESSAGE,
   BROWSER_HANDOFF_NO_REQUESTER_MESSAGE,
   BROWSER_HANDOFF_NOTE,
+  BROWSER_LOGIN_REVOKED_MESSAGE,
   BROWSER_NOT_CONNECTED_MESSAGE,
   BROWSER_SIGN_IN_NOTE,
   BROWSER_VISION_UNAVAILABLE_MESSAGE,
@@ -686,6 +688,19 @@ export function createBrowserTools(options: BrowserToolsOptions) {
           if (isKeepAliveRefusal(error)) return refuse(BROWSER_HANDOFF_NEEDS_PAID_PLAN_MESSAGE);
           throw error;
         }
+        // Recorded before the person has the link, so deleting the login
+        // from here on ends this session before its context goes. A login
+        // already gone, or a record that failed, gets no link: the session is
+        // ended, and queued in case ending it fails.
+        const deps = await options.logins!.dependencies();
+        const recorded = await setWebsiteLoginHandoff(deps.store, login.id, opened.sessionId).catch(() => undefined);
+        if (!recorded) {
+          await queueContextDeletions(deps.store, [{ handoffSessionId: opened.sessionId, queuedAt: now().getTime() }])
+            .catch(() => undefined);
+          await session.close().catch(() => undefined);
+          if (recorded === false) return refuse(BROWSER_LOGIN_REVOKED_MESSAGE);
+          throw new Error('The private sign-in link could not be prepared.');
+        }
         try {
           await opened.page.navigate(startUrl, { timeoutMs: NAVIGATION_TIMEOUT_MS });
           const view = await session.provider.liveView(opened.sessionId);
@@ -699,10 +714,6 @@ export function createBrowserTools(options: BrowserToolsOptions) {
           await session.close().catch(() => undefined);
           throw error;
         }
-        const deps = await options.logins!.dependencies();
-        await setWebsiteLoginHandoff(deps.store, login.id, opened.sessionId).catch(() => {
-          options.log?.warn('browser_handoff could not remember the hand-off session');
-        });
         await session.detach();
         session.handedOff.add(login.id);
         return { output: { handedOff: true, host: login.host, note: BROWSER_HANDOFF_NOTE } };

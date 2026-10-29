@@ -1,3 +1,9 @@
+import {
+  finishDeletedAgentWebsiteLogins,
+  stageDeletedAgentWebsiteLogins,
+  type AgentDeletionWebsiteLogins,
+  type DeletedAgentWebsiteLogins,
+} from '../browser/agent-website-logins.ts';
 import { apiOAuthSettingKeys } from './api-oauth.ts';
 import { boundApiCredentialRef, boundMcpCredentialRef } from './connection-credential-binding.ts';
 import {
@@ -17,8 +23,9 @@ import type { PlatformEnv } from './state-backend.ts';
 import type { CustomAgentConfig } from './types.ts';
 
 /**
- * Record every secret of an Agent's own connections behind a durable cleanup
- * marker before the Agent is deleted, so a retry after a partial failure, or
+ * Record every secret of an Agent's own connections, and the website logins
+ * its deletion removes (`agentDeletionWebsiteLogins`), behind durable cleanup
+ * markers before the Agent is deleted, so a retry after a partial failure, or
  * after a delete whose response was lost, finishes the job.
  */
 export async function stageAgentSecretCleanup(
@@ -26,6 +33,7 @@ export async function stageAgentSecretCleanup(
   env: PlatformEnv | undefined,
   settings: SettingsStore,
   scope: string,
+  websiteLogins: AgentDeletionWebsiteLogins,
 ): Promise<void> {
   const secretKeys = new Set<string>();
   for (const server of agent.mcpServers) {
@@ -50,6 +58,7 @@ export async function stageAgentSecretCleanup(
     settings,
     scope,
   );
+  await stageDeletedAgentWebsiteLogins(agent.id, websiteLogins, settings, scope);
 }
 
 /** Delete what stageAgentSecretCleanup recorded; true when a marker was found. */
@@ -58,8 +67,10 @@ export async function finishAgentSecretCleanup(
   env: PlatformEnv | undefined,
   settings: SettingsStore,
   scope: string,
+  websiteLogins: DeletedAgentWebsiteLogins,
 ): Promise<boolean> {
   const mcp = await finishMcpSecretCleanup(agentId, settings, scope);
   const connector = await finishConnectorSecretCleanup(agentId, env, settings, scope);
-  return mcp || connector;
+  const logins = await finishDeletedAgentWebsiteLogins(agentId, settings, scope, websiteLogins);
+  return mcp || connector || logins;
 }

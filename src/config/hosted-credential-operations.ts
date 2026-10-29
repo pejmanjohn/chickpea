@@ -5,10 +5,10 @@
  * safe to run again, so a host drives every installation by running each one
  * on its own and retrying it independently.
  *
- * - `rewrapInstallationCredentials` re-encrypts the Slack bot bundle and the
- *   saved model keys under the deployment keyring's current key, and reports
- *   a key-ID census of every encrypted record, naming anything still under an
- *   older key that no rewrap covers.
+ * - `rewrapInstallationCredentials` re-encrypts the Slack bot bundle, the
+ *   saved model keys and the website-login secrets under the deployment
+ *   keyring's current key, and reports a key-ID census of every encrypted
+ *   record, naming anything still under an older key that no rewrap covers.
  * - `censusInstallationCredentials` reports that census alone, with which
  *   model providers still hold a plaintext key (never the key).
  * - `migrateInstallationPlaintextModelCredentials` encrypts any model key an
@@ -16,6 +16,7 @@
  *
  * Standalone keeps one installation and its own keyring file, and is refused.
  */
+import { rewrapWebsiteLoginSecrets } from '../browser/logins.ts';
 import { InstallationContextError, requireInstallationScope } from './installation-scope.ts';
 import {
   migratePlaintextModelCredentials,
@@ -31,8 +32,25 @@ import { rewrapSlackCredentialsToCurrentKey } from '../slack/installation-creden
 import type { CredentialKeyring } from '../slack/secret-envelope.ts';
 import type { UsageStore } from '../usage/types.ts';
 
-/** Encrypted settings classes a rewrap covers. Every other class blocks retiring a key it still uses. */
-const REWRAPPED_SETTINGS_CLASSES = new Set(['model_provider']);
+type SettingsRewrap = (input: {
+  env: PlatformEnv;
+  settings: SettingsStore;
+  keyring: CredentialKeyring;
+}) => Promise<unknown>;
+
+/**
+ * Each encrypted settings class a rewrap covers, by its census class, with
+ * the rewrap that moves it. Every one runs, so a class is never cleared
+ * without its rewrap; every other class blocks retiring a key it still uses.
+ */
+const SETTINGS_REWRAPS = {
+  model_provider: rewrapHostedModelCredentials,
+  website_login: rewrapWebsiteLoginSecrets,
+} satisfies Record<string, SettingsRewrap>;
+
+type SettingsRewrapResults = {
+  readonly [K in keyof typeof SETTINGS_REWRAPS]: Awaited<ReturnType<(typeof SETTINGS_REWRAPS)[K]>>;
+};
 
 /** Named in `unrewrappable` while a parked Slack candidate cannot be opened; retention scrubs it within a day. */
 export const UNREADABLE_SLACK_CANDIDATE = 'slack_credential_candidate';
@@ -61,6 +79,8 @@ export interface InstallationRewrapResult {
     readonly alreadyCurrent: readonly ProviderKeyId[];
     readonly remaining: readonly ProviderKeyId[];
   };
+  /** Website-login secrets moved to the current key, and those still under an older one. */
+  readonly websiteLogins: { readonly rewrapped: number; readonly remaining: number };
   readonly census: InstallationCredentialCensus;
   /** What still holds an older key that no rewrap moves; each blocks retiring that key. */
   readonly unrewrappable: readonly string[];
@@ -83,7 +103,7 @@ interface InstallationStores {
 }
 
 /**
- * Re-encrypt one installation's Slack bot bundle and saved model keys under
+ * Re-encrypt one installation's Slack bot bundle and encrypted settings under
  * the keyring's current key, then census what any older key still protects.
  * `expectedCurrentKeyId` is the current key the drive recorded when it
  * began: a keyring that changed underneath it stops the drive with
@@ -98,24 +118,34 @@ export async function rewrapInstallationCredentials(
   const keyring = options.keyring ?? loadCredentialKeyring(env);
   if (keyring.currentKeyId !== options.expectedCurrentKeyId) throw new CredentialKeyringChangedError();
   const slack = await rewrapSlackCredentialsToCurrentKey({ state: identity, keyring });
-  const modelKeys = await rewrapHostedModelCredentials({ env, settings, keyring });
+  const rewrapped = await rewrapSettings({ env, settings, keyring });
   const census = await censusInstallationCredentials(env, { identity, settings });
   const older = (byKey: Readonly<Record<string, number>>) =>
     Object.entries(byKey).some(([keyId, count]) => keyId !== keyring.currentKeyId && count > 0);
   const unrewrappable = [
     ...(slack.unreadableCandidates > 0 ? [UNREADABLE_SLACK_CANDIDATE] : []),
     ...Object.entries(census.encryptedSettings)
-      .filter(([credentialClass, byKey]) => !REWRAPPED_SETTINGS_CLASSES.has(credentialClass) && older(byKey))
+      .filter(([credentialClass, byKey]) => !Object.hasOwn(SETTINGS_REWRAPS, credentialClass) && older(byKey))
       .map(([credentialClass]) => credentialClass),
   ];
   return {
     slack,
-    modelKeys,
+    modelKeys: rewrapped.model_provider,
+    websiteLogins: rewrapped.website_login,
     census,
     unrewrappable,
     done: !slack.recoveryOnly && !older(census.slackCredentials) &&
       !Object.values(census.encryptedSettings).some(older),
   };
+}
+
+async function rewrapSettings(input: Parameters<SettingsRewrap>[0]): Promise<SettingsRewrapResults> {
+  const results: Record<string, unknown> = {};
+  for (const [credentialClass, rewrap] of Object.entries(SETTINGS_REWRAPS)) {
+    results[credentialClass] = await rewrap(input);
+  }
+  // Object.entries loses the registry's keys; every one was just filled.
+  return results as SettingsRewrapResults;
 }
 
 /** A key-ID census of every encrypted record in one installation's stores; no value is read. */

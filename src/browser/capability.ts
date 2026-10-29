@@ -48,3 +48,16 @@ export async function websiteLoginsForTurn(
     return [];
   }
 }
+
+/**
+ * Whether a run grants a website login, for "Help improve Chickpea". The
+ * Agent's enabled grants in the config the plan froze decide it, so a login
+ * read that failed, or a browser key removed, and so froze no logins, still
+ * counts. The plan's own logins count too.
+ */
+export function runGrantsWebsiteLogins(
+  plan: { websiteLogins?: readonly unknown[] },
+  grants: readonly WebsiteLoginGrant[] | undefined,
+): boolean {
+  return Boolean(plan.websiteLogins?.length) || Boolean(grants?.some((grant) => grant.enabled));
+}

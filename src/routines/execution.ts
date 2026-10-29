@@ -52,7 +52,7 @@ import {
 import type { EffectiveSlackConfig } from '../config/effective-config.ts';
 import { loadModelCatalog } from '../model-catalog/index.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import { browserCapabilityForTurn, websiteLoginsForTurn } from '../browser/capability.ts';
+import { browserCapabilityForTurn, runGrantsWebsiteLogins, websiteLoginsForTurn } from '../browser/capability.ts';
 import {
   getConfigStore,
   getSettingsStore,
@@ -374,6 +374,10 @@ export async function executeRoutineOccurrence(
       surface: 'routine',
       // Fails closed: a Channel routine is copied only once Slack said its Channel is unshared.
       sharedChannel: prepared.routine.destination.kind !== 'direct_thread' && prepared.access.channelShared !== false,
+      grantsWebsiteLogins: runGrantsWebsiteLogins(
+        executionInitialData(prepared.envelope).runtimePlan,
+        prepared.access.config.agent.websiteLogins,
+      ),
       settings: () => dependencies.settingsStore ?? getSettingsStore(input.env),
     });
     const remainingMs = prepared.run.deadlineAt - now();

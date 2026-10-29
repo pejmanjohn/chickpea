@@ -18557,7 +18557,7 @@
     if (error && error.payload && error.payload.error === "agent_live_snapshot_roots") {
       return "This Agent still has live Slack threads. Wait for those conversations to expire before deleting it.";
     }
-    return (error && error.message) || "Could not delete the Agent.";
+    return (error && (error.serverMessage || error.message)) || "Could not delete the Agent.";
   }
 
   function deleteProfile() {

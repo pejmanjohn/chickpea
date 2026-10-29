@@ -1,5 +1,5 @@
 {
-  "scenario": "0eae37add418c13126020f261a86af204414744d937c166fda2c79927f4eb32b",
+  "scenario": "5c26997cd365dd26675daebf96570f364d7d80ee6f2ff0e7c5161462385a25a5",
   "contract": {
     "schemaVersion": 12,
     "schemaMarker": "agent-first-v1",
@@ -49,11 +49,13 @@
       "config_slack_public_context.images_json": 1
     },
     "settings": {
+      "browser.*": 1,
       "connector.*": 1,
       "mcp.*": 1,
       "slack.gateway.binding.v1": 1,
       "slack.gateway.claim.v1": 1,
-      "slack.gateway.deploymentIdentity.v1": 1
+      "slack.gateway.deploymentIdentity.v1": 1,
+      "website_login_state.*": 1
     }
   },
   "view": {
@@ -1043,6 +1045,13 @@
       }
     },
     "settings": {
+      "browser.*": {
+        "\"browser.browserbase.apiKey\"": "\"synthetic-browserbase-key\"",
+        "\"browser.browserbase.projectId\"": "\"proj_scenario\"",
+        "\"browser.logins.v1\"": "[{\"createdAt\":1791997200000,\"createdByMembershipId\":\"membership_scenario_owner\",\"host\":\"billing.example.com\",\"id\":\"wl_5ce4a2105ce4a2105ce4a2105ce4a210\",\"label\":\"Billing portal\",\"method\":\"credentials\",\"ownerKind\":\"team\",\"username\":\"ops@example.com\"},{\"createdAt\":1792080000000,\"createdByMembershipId\":\"membership_scenario_member\",\"host\":\"desk.example.com:8443\",\"id\":\"wl_d35c0b17d35c0b17d35c0b17d35c0b17\",\"label\":\"Desk\",\"method\":\"handoff\",\"ownerKind\":\"member\",\"ownerMembershipId\":\"membership_scenario_member\"}]",
+        "\"browser.monthlyUsage.2026-10\"": "{\"seconds\":540,\"sessionIds\":[\"sess_scenario_first\",\"sess_scenario_second\"],\"sessions\":2}",
+        "\"browser.pendingContextDeletions\"": "[{\"contextId\":\"ctx_scenario_removed\",\"handoffSessionId\":\"sess_scenario_removed\",\"queuedAt\":1792080000000},{\"contextId\":\"ctx_scenario_unrecorded\",\"queuedAt\":1792080000000}]"
+      },
       "connector.*": {
         "\"connector.agent_scenario_researcher.credential.connection_<generated>.credential\"": "{\"synthetic\":\"connector.agent_scenario_researcher.credential.connection_<generated>.credential\"}",
         "\"connector.connection_scenario_calendar.account.oauth.tokens\"": "{\"synthetic\":\"connector.connection_scenario_calendar.account.oauth.tokens\"}"
@@ -1060,6 +1069,10 @@
       },
       "slack.gateway.deploymentIdentity.v1": {
         "\"slack.gateway.deploymentIdentity.v1\"": "{\"createdAt\":1791997200000,\"deploymentId\":\"deployment_scenario\",\"privateKeyEnvelope\":{\"algorithm\":\"AES-GCM-256\",\"ciphertext\":\"c2NlbmFyaW8tY2lwaGVydGV4dA\",\"keyId\":\"scenario-key\",\"nonce\":\"c2NlbmFyaW8tbm9uY2U\",\"version\":1},\"publicKey\":{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"c2NlbmFyaW8tcHVibGljLXg\",\"y\":\"c2NlbmFyaW8tcHVibGljLXk\"},\"version\":1}"
+      },
+      "website_login_state.*": {
+        "\"website_login_state.wl_5ce4a2105ce4a2105ce4a2105ce4a210\"": "{\"contextId\":\"ctx_scenario_billing\",\"lastUsedAt\":1792080000000}",
+        "\"website_login_state.wl_d35c0b17d35c0b17d35c0b17d35c0b17\"": "{\"contextId\":\"ctx_scenario_desk\",\"handoffSessionId\":\"sess_scenario_handoff\",\"lastUsedAt\":1792080000000}"
       }
     }
   }

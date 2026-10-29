@@ -192,7 +192,7 @@ import { createImageOutputStore } from '../images/output-store.ts';
 import { inspectImageOutput, type ImageInspectionInput } from '../images/inspect-output.ts';
 import { answerScreenshotQuestion } from '../browser/look.ts';
 import { createLazyBrowserProvider, useBrowserSession } from '../browser/runtime.ts';
-import { recordBrowserSessionUsage, resolveBrowserSettings } from '../browser/settings.ts';
+import { recordBrowserSessionUsage, resolveBrowserProvider } from '../browser/settings.ts';
 import { browserSkillForPlan } from '../browser/skill.ts';
 import { listWebsiteLogins, websiteLoginDependencies } from '../browser/logins.ts';
 import { createSlackRequesterNotifier, type SlackRequester } from '../browser/requester.ts';
@@ -2222,13 +2222,7 @@ export function createRuntimePlanBrowserSession(): BrowserTurnSession {
 function createRuntimePlanBrowserProvider(): BrowserTurnSession['provider'] {
   return createLazyBrowserProvider(async () => {
     const env = await resolveAgentPlatformEnv();
-    const settings = await resolveBrowserSettings(getSettingsStore(env), env);
-    if (!settings.apiKey) return undefined;
-    const { createBrowserbaseProvider } = await import('../browser/browserbase.ts');
-    return createBrowserbaseProvider({
-      apiKey: settings.apiKey,
-      ...(settings.projectId ? { projectId: settings.projectId } : {}),
-    });
+    return resolveBrowserProvider(getSettingsStore(env), env);
   });
 }
 

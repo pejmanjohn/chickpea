@@ -15,7 +15,8 @@ import {
   installationModelAccessGrant,
   RuntimeModelReadinessError,
 } from '../src/config/installation-model-access.ts';
-import { InstallationContextError, scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { createWebsiteLogin, deleteWebsiteLogin, readWebsiteLoginSecrets } from '../src/browser/logins.ts';
+import { InstallationContextError, installationScopeOf, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   ModelCredentialKeyringUnavailableError,
   readHostedModelCredential,
@@ -29,7 +30,11 @@ import {
   invalidateProviderKeyCache,
   resolveProviderApiKey,
 } from '../src/config/provider-keys.ts';
-import { SqliteSettingsStore, type RewrapModelCredentialInput } from '../src/config/settings-store.ts';
+import {
+  SqliteSettingsStore,
+  type ReplaceEncryptedCredentialRevisionInput,
+  type RewrapModelCredentialInput,
+} from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { generateCredentialKeyring, isCredentialKeyringUnavailable } from '../src/slack/credential-keyring.ts';
@@ -246,6 +251,7 @@ test('a drive rewraps each installation on its own; one failing installation lea
     const doneA = (results[0] as PromiseFulfilledResult<InstallationRewrapResult>).value;
     assert.deepEqual(doneA.slack, SLACK_REWRAPPED);
     assert.deepEqual(doneA.modelKeys, { rewrapped: ['anthropic'], alreadyCurrent: [], remaining: [] });
+    assert.deepEqual(doneA.websiteLogins, { rewrapped: 0, remaining: 0 });
     assert.deepEqual(doneA.census.slackCredentials, { key_next: 1 });
     assert.deepEqual(doneA.census.encryptedSettings, { model_provider: { key_next: 1 } });
     assert.deepEqual(doneA.unrewrappable, []);
@@ -297,10 +303,10 @@ test('the census counts every encrypted class under every older key, and a class
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     const { a, keyring, rotate } = await installations(t);
     const firstKeyId = keyring.currentKeyId;
-    // A website login saved under the first key (the browser is off hosted, but its data is counted).
+    // An Agent Slack app secret saved under the first key: no rewrap covers its class yet.
     const model = (await a.settings.getEncryptedCredentialRevision('model_provider.anthropic'))!;
     await a.settings.replaceEncryptedCredentialRevision({
-      key: 'website_login.login_1', expectedRevision: null, revision: 'v1', contextId: 'login_context_000001',
+      key: 'agent-slack-app.a0scenario', expectedRevision: null, revision: 'v1', contextId: 'app_context_000001',
       envelope: model.envelope,
     });
     // Two rotations later (first -> next -> last), the drive targets the last key.
@@ -309,12 +315,104 @@ test('the census counts every encrypted class under every older key, and a class
     const last = { currentKeyId: later.currentKeyId, keys: { ...next.keys, ...later.keys } };
     const result = await drive(a, last);
     assert.deepEqual(result.census.encryptedSettings, {
+      'agent-slack-app': { [firstKeyId]: 1 },
       model_provider: { key_last: 1 },
-      website_login: { [firstKeyId]: 1 },
     });
-    assert.deepEqual(result.unrewrappable, ['website_login'], 'a key older than the one just replaced still counts');
+    assert.deepEqual(result.unrewrappable, ['agent-slack-app'], 'a key older than the one just replaced still counts');
     assert.equal(result.done, false, 'no older key may be retired');
     assert.doesNotMatch(JSON.stringify(result), new RegExp(KEY_A));
+  });
+});
+
+const LOGIN = {
+  host: 'billing.example.com',
+  label: 'Billing',
+  ownerKind: 'team' as const,
+  createdByMembershipId: 'membership_owner',
+  method: 'credentials' as const,
+  username: 'ops@example.com',
+  password: 'pw-rewrap-sentinel',
+};
+
+/** Website-login storage as the installation's own requests reach it: bound to that installation. */
+function logins(installation: Installation, keyring: CredentialKeyring) {
+  return { store: installation.settings, keyring, installationId: installationScopeOf(installation.env)!.installationId };
+}
+
+/** The keyring after the first key is retired: only what a rewrap moved still opens. */
+function retiredTo(rotated: CredentialKeyring): CredentialKeyring {
+  return { currentKeyId: rotated.currentKeyId, keys: { [rotated.currentKeyId]: rotated.keys[rotated.currentKeyId]! } };
+}
+
+test('a drive rewraps website-login secrets, including an orphan no login names, and a second run changes nothing', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { a, keyring, rotate } = await installations(t);
+    const saved = await createWebsiteLogin(logins(a, keyring), LOGIN);
+    // A create whose catalog write failed, and whose rollback failed too, leaves a secret nothing names.
+    const failing = Object.create(a.settings) as SqliteSettingsStore;
+    failing.applySettingsPatch = async () => { throw new Error('catalog unavailable'); };
+    failing.deleteEncryptedCredentialRevision = async () => { throw new Error('realm unavailable'); };
+    await assert.rejects(createWebsiteLogin({ ...logins(a, keyring), store: failing }, LOGIN), /catalog unavailable/);
+    assert.equal((await a.settings.listEncryptedCredentialRevisions('website_login.')).length, 2);
+
+    const rotated = rotate();
+    const first = await drive(a, rotated);
+    assert.deepEqual(first.websiteLogins, { rewrapped: 2, remaining: 0 });
+    assert.deepEqual(first.census.encryptedSettings.website_login, { key_next: 2 });
+    assert.deepEqual(first.unrewrappable, []);
+    assert.equal(first.done, true);
+    assert.doesNotMatch(JSON.stringify(first), /pw-rewrap-sentinel|ops@example/);
+
+    const second = await drive(a, rotated);
+    assert.deepEqual(second.websiteLogins, { rewrapped: 0, remaining: 0 }, 'running it again changes nothing');
+    assert.equal(second.done, true);
+    assert.deepEqual(await readWebsiteLoginSecrets(logins(a, retiredTo(rotated)), saved.id),
+      { username: 'ops@example.com', password: 'pw-rewrap-sentinel' }, 'the login signs in once the old key is gone');
+  });
+});
+
+test('a website-login secret under a key the keyring lost remains and keeps the old key from retiring', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { a, keyring, rotate } = await installations(t);
+    const lostKey = generateCredentialKeyring('key_lost');
+    await createWebsiteLogin(logins(a, lostKey), LOGIN);
+    await createWebsiteLogin(logins(a, keyring), LOGIN);
+    const rotated = rotate();
+    const result = await drive(a, rotated);
+    assert.deepEqual(result.websiteLogins, { rewrapped: 1, remaining: 1 });
+    assert.deepEqual(result.census.encryptedSettings.website_login, { key_lost: 1, key_next: 1 });
+    assert.deepEqual(result.unrewrappable, [], 'the class has a rewrap; what it could not move still blocks');
+    assert.equal(result.done, false);
+  });
+});
+
+test('a website-login rewrap that loses its compare-and-set leaves the other writer\'s result', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { a, b, keyring, rotate } = await installations(t);
+    const deleted = await createWebsiteLogin(logins(a, keyring), LOGIN);
+    await createWebsiteLogin(logins(b, keyring), LOGIN);
+    const rotated = rotate();
+
+    // A's login is removed between the rewrap's read and its write: the secret stays gone.
+    const deleting = Object.create(a.settings) as SqliteSettingsStore;
+    deleting.replaceEncryptedCredentialRevision = async (input: ReplaceEncryptedCredentialRevisionInput) => {
+      await deleteWebsiteLogin({ store: a.settings }, deleted.id);
+      return a.settings.replaceEncryptedCredentialRevision(input);
+    };
+    assert.deepEqual((await drive({ ...a, settings: deleting }, rotated)).websiteLogins, { rewrapped: 0, remaining: 0 });
+    assert.deepEqual(await a.settings.listEncryptedCredentialRevisions('website_login.'), []);
+
+    // Two drives race on B: the one that loses counts nothing, and the secret opens under the new key.
+    const racing = Object.create(b.settings) as SqliteSettingsStore;
+    racing.replaceEncryptedCredentialRevision = async (input: ReplaceEncryptedCredentialRevisionInput) => {
+      assert.deepEqual((await drive(b, rotated)).websiteLogins, { rewrapped: 1, remaining: 0 });
+      return b.settings.replaceEncryptedCredentialRevision(input);
+    };
+    const lost = await drive({ ...b, settings: racing }, rotated);
+    assert.deepEqual(lost.websiteLogins, { rewrapped: 0, remaining: 0 });
+    assert.equal(lost.done, true);
+    const [secret] = await b.settings.listEncryptedCredentialRevisions('website_login.');
+    assert.equal(secret!.envelope.keyId, 'key_next');
   });
 });
 

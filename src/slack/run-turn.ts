@@ -55,7 +55,7 @@ import {
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
-import { browserCapabilityForTurn, websiteLoginsForTurn } from '../browser/capability.ts';
+import { browserCapabilityForTurn, runGrantsWebsiteLogins, websiteLoginsForTurn } from '../browser/capability.ts';
 import type {
   SlackInteractionProgress,
   SlackInteractionProgressPatch,
@@ -1169,6 +1169,7 @@ async function runTurnAttempt(
         sharedChannel: slackConversationKind(turn) === 'im'
           ? turn.sharedChannel === true
           : turn.sharedChannel !== false,
+        grantsWebsiteLogins: runGrantsWebsiteLogins(runtimePlanDecision.runtimePlan, assignment.agent.websiteLogins),
         settings: () => settingsStore ?? getSettingsStore(platformEnv),
         ...(options.runReviewSettings ? { prefetched: options.runReviewSettings } : {}),
       })

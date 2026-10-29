@@ -28,6 +28,8 @@ export interface CreateBrowserSessionOptions {
   contextId?: string;
   persistContext?: boolean;
   recording?: boolean;
+  /** False keeps the provider's own session logs off; unset leaves its default (on). */
+  logSession?: boolean;
   allowedDomains?: string[];
   viewport?: { width: number; height: number };
   keepAlive?: boolean;
@@ -44,7 +46,12 @@ export interface BrowserProvider {
   requestRecordingDownloads(sessionId: string): Promise<void>;
   listRecordingDownloads(sessionId: string): Promise<BrowserRecordingDownload[]>;
   createContext(name?: string): Promise<{ id: string }>;
+  /** Deletes a context and the signed-in state it holds; one already gone counts as deleted. */
+  deleteContext(contextId: string): Promise<void>;
 }
+
+/** The shape of a context or session id this code stores or queues. */
+export const BROWSER_PROVIDER_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
 
 export class BrowserProviderError extends Error {
   constructor(message: string, readonly status?: number) {

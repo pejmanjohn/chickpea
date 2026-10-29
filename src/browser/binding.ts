@@ -6,10 +6,11 @@
  * a login, before `browser_sign_in` reads secrets, and when an approved step
  * is claimed. Reading or looking at an open page never reads the store.
  */
+import { queueContextDeletions } from './context-deletions.ts';
 import {
   getWebsiteLogin,
   intersectFrozenWebsiteLogins,
-  setWebsiteLoginContext,
+  recordWebsiteLoginContext,
   touchWebsiteLoginUsed,
   setWebsiteLoginHandoff,
   type FrozenWebsiteLoginEntry,
@@ -23,6 +24,7 @@ import {
   BROWSER_UNKNOWN_LOGIN_MESSAGE,
 } from './messages.ts';
 import type { BrowserPage } from './page.ts';
+import { BrowserProviderError } from './provider.ts';
 import type { BrowserSessionBinding, BrowserTurnSession } from './turn-session.ts';
 
 /** A granted website login as the tools see it: metadata only, never a secret. */
@@ -44,7 +46,7 @@ export interface BrowserLoginOptions {
 export type LiveLogins = () => Promise<readonly BrowserWebsiteLogin[]>;
 
 const HANDOFF_END_POLL_MS = 1_000;
-const HANDOFF_END_WAIT_MS = 10_000;
+const HANDOFF_END_POLLS = 10;
 
 /**
  * Whether `url` is on a login's host: the same host or a subdomain of it, on
@@ -181,14 +183,35 @@ export class BrowserLoginBinder {
     const stored = await getWebsiteLogin(deps.store, current.id);
     if (!stored || stored.host !== current.host) throw new Error(BROWSER_LOGIN_REVOKED_MESSAGE);
     await this.finishHandoff(deps, stored);
-    let contextId = stored.contextId;
-    if (!contextId) {
-      contextId = (await this.session.provider.createContext(stored.label)).id;
-      await setWebsiteLoginContext(deps.store, stored.id, contextId);
-    }
+    const contextId = stored.contextId ?? await this.createContext(deps, stored);
     // Opening the site on its saved session is a use of the login, signed in or not.
     await touchWebsiteLoginUsed(deps.store, stored.id, this.now()).catch(() => undefined);
     return { loginId: stored.id, host: stored.host, contextId, level: current.level };
+  }
+
+  /**
+   * A new browser context for the login, recorded only if it has none. When
+   * another bind recorded one first, that one is used. A context this bind
+   * cannot record is queued for deletion, so none is left at the provider
+   * that nothing records. A record whose answer was lost may still have
+   * landed, so the login is read again first: a context it names is kept.
+   */
+  private async createContext(deps: WebsiteLoginDependencies, stored: WebsiteLogin): Promise<string> {
+    const created = (await this.session.provider.createContext(stored.label)).id;
+    const discard = () => queueContextDeletions(deps.store, [{ contextId: created, queuedAt: this.now() }]);
+    let recorded: string | undefined;
+    try {
+      recorded = await recordWebsiteLoginContext(deps.store, stored.id, created);
+    } catch (error) {
+      // When the login cannot be read either, the context stays: it holds no
+      // sign-in yet, and it may be the one the login now records.
+      const current = await getWebsiteLogin(deps.store, stored.id).then((login) => ({ login }), () => undefined);
+      if (current && current.login?.contextId !== created) await discard();
+      throw error;
+    }
+    if (recorded !== created) await discard();
+    if (!recorded) throw new Error(BROWSER_LOGIN_REVOKED_MESSAGE);
+    return recorded;
   }
 
   /**
@@ -210,17 +233,20 @@ export class BrowserLoginBinder {
 
   /**
    * End a hand-off session a person may have left open, so the provider
-   * saves its sign-in to the context before a new session loads it.
+   * saves its sign-in to the context before a new session loads it. Its
+   * record goes only once the provider reports it ended: one still open
+   * stays recorded, for the next bind or the login's deletion to end.
    */
   private async finishHandoff(deps: WebsiteLoginDependencies, stored: WebsiteLogin): Promise<void> {
     const sessionId = stored.handoffSessionId;
     if (!sessionId) return;
-    await this.session.provider.endSession(sessionId).catch(() => undefined);
-    const deadline = Date.now() + HANDOFF_END_WAIT_MS;
-    for (;;) {
-      const status = await this.session.provider.sessionStatus(sessionId).catch(() => 'UNKNOWN');
-      if (status !== 'RUNNING' && status !== 'PENDING') break;
-      if (Date.now() >= deadline) break;
+    const { provider } = this.session;
+    await provider.endSession(sessionId).catch(() => undefined);
+    for (let poll = 0; ; poll += 1) {
+      const status = await provider.sessionStatus(sessionId).catch((error: unknown) =>
+        error instanceof BrowserProviderError && error.status === 404 ? 'GONE' : 'UNKNOWN');
+      if (!['RUNNING', 'PENDING', 'UNKNOWN'].includes(status)) break;
+      if (poll >= HANDOFF_END_POLLS) return;
       await this.sleep(HANDOFF_END_POLL_MS);
     }
     await setWebsiteLoginHandoff(deps.store, stored.id, undefined).catch(() => undefined);

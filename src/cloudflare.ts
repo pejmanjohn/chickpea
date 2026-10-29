@@ -164,6 +164,7 @@ import {
 } from './sandbox/hosted-limits.ts';
 import type { SandboxContainerLimits } from './config/sandbox-settings.ts';
 import { isCheckpointSweepMinute, sweepInstallationCheckpoints } from './sandbox/checkpoint-sweep.ts';
+import { maintainWebsiteLogins } from './browser/logins.ts';
 import { isOAuthKeepAliveMinute, runOAuthKeepAliveSweep } from './connections/oauth-keepalive.ts';
 import {
   SandboxWorkspaceState,
@@ -1953,6 +1954,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.call((stores) => stores.settings.censusEncryptedCredentialRevisions());
   }
 
+  async encryptedCredentialList(prefix: string) {
+    return this.call((stores) => stores.settings.listEncryptedCredentialRevisions(prefix));
+  }
+
   async encryptedCredentialDelete(key: string, expectedRevision: string) {
     return this.call((stores) => stores.settings.deleteEncryptedCredentialRevision(
       key,
@@ -3560,6 +3565,8 @@ async function runWorkMaintenance(
     if (isContainerLeaseSweepMinute(scheduledTime)) {
       try { await maintainWorkspaceContainerLeases(platformEnv, scheduledTime); }
       catch { console.warn('[chickpea] Coding workspace container lease cleanup did not complete'); }
+      try { await maintainWebsiteLogins(platformEnv); }
+      catch { console.warn('[chickpea] Website login cleanup did not complete'); }
     }
     if (isCheckpointSweepMinute(scheduledTime)) {
       try { await sweepInstallationCheckpoints(platformEnv, scheduledTime); }

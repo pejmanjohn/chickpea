@@ -180,6 +180,15 @@ test('verifyBrowserbaseApiKey calls GET /v1/projects with the key header and ret
   assert.equal(calls[0]!.headers['X-BB-API-Key'], GOOD_KEY);
 });
 
+test('verifyBrowserbaseApiKey reports a stalled Browserbase as unreachable once its bound passes', async () => {
+  const stalled = (async (_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+  })) as typeof fetch;
+  assert.deepEqual(await verifyBrowserbaseApiKey({ apiKey: GOOD_KEY, fetch: stalled, timeoutMs: 20 }), {
+    ok: false, reason: 'unreachable',
+  });
+});
+
 test('verifyBrowserbaseApiKey returns ok without a project when several are visible', async () => {
   const { fetchImpl } = fakeFetch(() => new Response(JSON.stringify([{ id: 'a' }, { id: 'b' }]), { status: 200 }));
   assert.deepEqual(await verifyBrowserbaseApiKey({ apiKey: GOOD_KEY, fetch: fetchImpl }), { ok: true });

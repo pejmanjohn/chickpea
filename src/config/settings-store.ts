@@ -53,6 +53,18 @@ export function isEncryptedCredentialCensusStore(
   return typeof (store as Partial<EncryptedCredentialCensusStore>).censusEncryptedCredentialRevisions === 'function';
 }
 
+/** Every revision of one class of keys, for a rewrap that must also reach a key nothing else names. */
+export interface EncryptedCredentialListingStore extends EncryptedCredentialStore {
+  /** The revisions whose key starts with `prefix`, compared literally, in key order. */
+  listEncryptedCredentialRevisions(prefix: string): Promise<EncryptedCredentialRevision[]>;
+}
+
+export function isEncryptedCredentialListingStore(
+  store: SettingsStore,
+): store is SettingsStore & EncryptedCredentialListingStore {
+  return typeof (store as Partial<EncryptedCredentialListingStore>).listEncryptedCredentialRevisions === 'function';
+}
+
 /** One provider's current model credential: version metadata and, while active, its key's envelope. */
 export interface ModelCredentialRecord {
   /**
@@ -314,6 +326,17 @@ export class SettingsStoreLogic {
     }));
   }
 
+  listEncryptedCredentialRevisions(prefix: string): EncryptedCredentialRevision[] {
+    const normalized = credentialKey(prefix);
+    // Not LIKE: `_` is a LIKE wildcard and an ordinary key character here.
+    return (this.db.all(
+      `SELECT * FROM app_encrypted_credential_revisions
+       WHERE substr(credential_key, 1, length(?)) = ?
+       ORDER BY credential_key`,
+      normalized, normalized,
+    ) as Record<string, unknown>[]).map(encryptedCredentialRevisionFromRow);
+  }
+
   deleteEncryptedCredentialRevision(key: string, expectedRevision: string): boolean {
     return this.db.run(
       `DELETE FROM app_encrypted_credential_revisions
@@ -433,7 +456,7 @@ export class SettingsStoreLogic {
 
 /** Node backend: the target-neutral logic over `node:sqlite`, async-wrapped. */
 export interface SqliteSettingsStore
-  extends SettingsStore, EncryptedCredentialStore, EncryptedCredentialCensusStore, ModelCredentialStore {
+  extends SettingsStore, EncryptedCredentialListingStore, EncryptedCredentialCensusStore, ModelCredentialStore {
   close(): void;
 }
 
@@ -443,7 +466,7 @@ export class SqliteSettingsStore {
     // The Proxy facade drops the `implements` compile check, so this typed
     // binding is the conformance assertion that keeps it: a logic method that
     // stops matching SettingsStore fails typecheck here.
-    const _conforms: SettingsStore & EncryptedCredentialStore & EncryptedCredentialCensusStore &
+    const _conforms: SettingsStore & EncryptedCredentialListingStore & EncryptedCredentialCensusStore &
       ModelCredentialStore = promisify(
       new SettingsStoreLogic(db, now), {
         close: () => db.close(),

@@ -9,7 +9,8 @@
  * A session is either public or bound to one website login, whose saved
  * browser context it loads and persists. Switching between them ends the open
  * session and starts another within the same budget. A session handed to a
- * person to sign in is detached: it outlives the turn and ends by timeout.
+ * person to sign in is not recorded and is detached: it outlives the turn
+ * and ends by timeout.
  */
 import type { CdpClient, CdpSocket } from './cdp.ts';
 import type { BrowserPage } from './page.ts';
@@ -78,6 +79,8 @@ interface OpenOptions {
 
 /** A hand-off window: how long a detached session stays open for the person. */
 export const BROWSER_HANDOFF_SECONDS = 600;
+/** Refusing downloads is best effort; a browser that does not answer must not hold up the session. */
+const DOWNLOAD_POLICY_TIMEOUT_MS = 5_000;
 /** Secrets shorter than this are not redacted from page text (they would erase ordinary words). */
 const MIN_REDACTED_LENGTH = 4;
 
@@ -220,7 +223,8 @@ export class BrowserTurnSession {
     const remainingMs = this.maxSessionMs - this.usedMs;
     const { binding } = options;
     const handle = await this.deps.provider.createSession({
-      recording: true,
+      // A person signs in during a hand-off: no Agent receipt needs its video or the provider's logs of it.
+      recording: !options.keepAlive,
       viewport: { ...BROWSER_VIEWPORT },
       timeoutSeconds: options.timeoutSeconds ?? Math.ceil(remainingMs / 1000) + 60,
       // A bound session stays on its site. A hand-off session is driven by a
@@ -233,7 +237,7 @@ export class BrowserTurnSession {
             ...(options.keepAlive ? {} : { allowedDomains: [domainOf(binding.host)] }),
           }
         : {}),
-      ...(options.keepAlive ? { keepAlive: true } : {}),
+      ...(options.keepAlive ? { keepAlive: true, logSession: false } : {}),
     });
     const startedAt = this.now();
     try {
@@ -247,6 +251,11 @@ export class BrowserTurnSession {
       const client = new CdpClient(socket);
       try {
         const pageSessionId = await client.attachFirstPage();
+        // Chickpea never reads a download, and the provider would keep a copy of any file a click starts.
+        await client.send('Browser.setDownloadBehavior', { behavior: 'deny' }, undefined, DOWNLOAD_POLICY_TIMEOUT_MS)
+          .catch(() => {
+            console.warn('[chickpea] A browser session could not refuse downloads');
+          });
         const page = new BrowserPage(client, pageSessionId, this.deps.sleep ? { sleep: this.deps.sleep } : {});
         const active: ActiveSession = { sessionId: handle.id, client, page, startedAt, ...(binding ? { binding } : {}) };
         this.current = active;

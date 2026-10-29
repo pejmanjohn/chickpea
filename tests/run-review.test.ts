@@ -138,22 +138,32 @@ test('a thread runner prefetches the review key only where the host captures run
 
 test('a session starts only with a port, an installation, a capturing host and an unshared channel', async (t) => {
   const settings = () => memorySettings();
-  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'channel', settings }), undefined, 'no port');
+  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'channel', grantsWebsiteLogins: false, settings }), undefined, 'no port');
 
   const { capturingCalls } = fakePort(t);
-  assert.equal(await startRunReview({}, { surface: 'channel', settings }), undefined, 'standalone has no installation');
-  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'channel', sharedChannel: true, settings }), undefined);
+  assert.equal(await startRunReview({}, { surface: 'channel', grantsWebsiteLogins: false, settings }), undefined, 'standalone has no installation');
+  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'channel', grantsWebsiteLogins: false, sharedChannel: true, settings }), undefined);
   assert.deepEqual(capturingCalls, [], 'neither asks the host');
-  assert.ok(await startRunReview(HOSTED_ENV, { surface: 'channel', settings }));
+  assert.ok(await startRunReview(HOSTED_ENV, { surface: 'channel', grantsWebsiteLogins: false, settings }));
   assert.deepEqual(capturingCalls, [INSTALLATION]);
 
   configureRunReview({ ...runReview()!, capturing: async () => false });
-  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', settings }), undefined, 'the host is not capturing');
+  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: false, settings }), undefined, 'the host is not capturing');
   t.mock.method(console, 'warn', () => undefined);
   configureRunReview({ ...runReview()!, capturing: async () => { throw new Error('registry down'); } });
-  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', settings }), undefined, 'a failing answer fails closed');
+  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: false, settings }), undefined, 'a failing answer fails closed');
   configureRunReview({ ...runReview()!, capturing: () => { throw new Error('registry down'); } });
-  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', settings }), undefined, 'so does a synchronous throw');
+  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: false, settings }), undefined, 'so does a synchronous throw');
+});
+
+test('a run that grants a website login is never captured, never asks the host, and says why without content', async (t) => {
+  const { capturingCalls } = fakePort(t);
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (line: string) => { warnings.push(line); });
+  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: true, settings: () => memorySettings() }),
+    undefined);
+  assert.deepEqual(capturingCalls, []);
+  assert.deepEqual(warnings, [JSON.stringify({ component: 'run_review', event: 'website_logins_granted' })]);
 });
 
 test('a slow capturing answer fails closed after about a second', async (t) => {
@@ -161,7 +171,7 @@ test('a slow capturing answer fails closed after about a second', async (t) => {
   const warnings: string[] = [];
   t.mock.method(console, 'warn', (line: string) => { warnings.push(line); });
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const started = startRunReview(HOSTED_ENV, { surface: 'channel', settings: () => memorySettings() });
+  const started = startRunReview(HOSTED_ENV, { surface: 'channel', grantsWebsiteLogins: false, settings: () => memorySettings() });
   await Promise.resolve();
   t.mock.timers.tick(1_000);
   assert.equal(await started, undefined);
@@ -437,7 +447,7 @@ test('past 256 KiB with every step dropped, the oldest context rows go next', ()
 test('a finished session scrubs and records once, with one key per installation', async (t) => {
   const { records } = fakePort(t);
   const settings = memorySettings();
-  const session = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => settings });
+  const session = await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: false, settings: () => settings });
   assert.ok(session);
   session.ingest(chunk({ type: 'message-started', messageId: 'm', submissionId: SUBMISSION }), SUBMISSION);
   session.ingest(chunk({ type: 'message-delta', messageId: 'm', kind: 'text', delta: 'Hi U012ABCDEF3' }), SUBMISSION);
@@ -456,7 +466,7 @@ test('a finished session scrubs and records once, with one key per installation'
   assert.equal(record.trigger.author.startsWith('u_'), true);
   assert.deepEqual(record.steps, [{ kind: 'text', text: `Hi ${record.trigger.author}` }]);
 
-  const again = await startRunReview(HOSTED_ENV, { surface: 'channel', settings: () => settings });
+  const again = await startRunReview(HOSTED_ENV, { surface: 'channel', grantsWebsiteLogins: false, settings: () => settings });
   await again!.finish(ENDING);
   assert.equal(records[1]?.record.trigger.author, record.trigger.author, 'the stored key is reused');
 });
@@ -467,14 +477,14 @@ test('a key another isolate wrote after the runner prefetched is read back from 
   store.values.set(RUN_REVIEW_PSEUDONYM_SETTING, JSON.stringify({ version: 1, key: encodeBase64Url(KEY) }));
   // The runner's snapshot predates the other write; writes reach the store.
   const prefetched: SettingsStore = { ...store, getSetting: async () => undefined, getSettings: async (keys) => keys.map(() => undefined) };
-  const session = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => store, prefetched });
+  const session = await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: false, settings: () => store, prefetched });
   await session!.finish(ENDING);
   assert.equal(records[0]?.record.trigger.author, runReviewPseudonymizer(KEY)('U012ABCDEF3'));
 });
 
 test('a session with no observed stream reads the settled history once', async (t) => {
   const { records } = fakePort(t);
-  const session = await startRunReview(HOSTED_ENV, { surface: 'channel', settings: () => memorySettings() });
+  const session = await startRunReview(HOSTED_ENV, { surface: 'channel', grantsWebsiteLogins: false, settings: () => memorySettings() });
   let reads = 0;
   await session!.finish({
     ...ENDING,
@@ -498,14 +508,14 @@ test('a failing or hanging store never throws and logs nothing of the run', asyn
   const warnings: string[] = [];
   t.mock.method(console, 'warn', (line: string) => { warnings.push(line); });
   fakePort(t, { record: async () => { throw new Error(`store refused ${SYNTHETIC_SLACK_TOKEN}`); } });
-  const failing = await startRunReview(HOSTED_ENV, { surface: 'channel', settings: () => memorySettings() });
+  const failing = await startRunReview(HOSTED_ENV, { surface: 'channel', grantsWebsiteLogins: false, settings: () => memorySettings() });
   await failing!.finish(ENDING);
   assert.deepEqual(warnings, [JSON.stringify({ component: 'run_review', event: 'record_failed' })]);
 
   warnings.length = 0;
   let recorded = false;
   configureRunReview({ ...runReview()!, record: () => new Promise<void>(() => { recorded = true; }) });
-  const hanging = await startRunReview(HOSTED_ENV, { surface: 'channel', settings: () => memorySettings() });
+  const hanging = await startRunReview(HOSTED_ENV, { surface: 'channel', grantsWebsiteLogins: false, settings: () => memorySettings() });
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const finished = hanging!.finish(ENDING);
   for (let turn = 0; turn < 20 && !recorded; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve));
