@@ -32,7 +32,6 @@ import {
   discoverSlackChannelsValibotSchema,
   testConnectionValibotSchema,
   saveConnectionKeyValibotSchema,
-  readPublicDocValibotSchema,
   inspectMemoryValibotSchema,
   inspectRoutinesValibotSchema,
   exportRecipeValibotSchema,
@@ -80,7 +79,6 @@ import {
   slackUpdateAgentMemoryInputSchema,
 } from './slack-memory-actions.ts';
 import { parseAdmittedSlackListIds } from '../slack/lists/admission.ts';
-import { PUBLIC_DOC_READS_PER_TURN, type ReadPublicDocResult } from '../web/page.ts';
 
 const SIGNAL_ATTRIBUTE_KEYS = [
   'workspaceId',
@@ -162,9 +160,9 @@ export interface SlackManagementSignal {
   /** Verified Slack profile timezone, supplied by the host. */
   requesterTimezone?: string;
   /**
-   * A read_public_doc call in this conversation answered. Set only from the
-   * Slack tools' own read state (`signalAfterPublicDocReads`), never from a
-   * delivery or a tool's input.
+   * A web page, search result or browser page entered this conversation. Set
+   * only from the web capability's own turn state (`signalAfterPageRead`),
+   * never from a delivery or a tool's input.
    */
   publicDocRead?: true;
 }
@@ -172,7 +170,6 @@ export interface SlackManagementSignal {
 export type PlatformEnvResolver = () => Promise<PlatformEnv | undefined>;
 
 const SLACK_MANAGEMENT_TURN_GUARD_STATE = 'slack-management-turn-guard';
-const SLACK_PUBLIC_DOC_TURN_STATE = 'slack-public-doc-turn';
 const SLACK_AGENT_CREATION_TURN_STATE = 'slack-agent-creation-turn';
 
 const MUTATING_TOOLS = new Set<WorkspaceManagementToolName>([
@@ -546,92 +543,14 @@ export function useSlackManagementTurnGuard(turnJobId: string): SlackManagementT
   return createSlackManagementTurnGuard(turnJobId, persisted, persist);
 }
 
-/** This turn's read_public_doc calls: how many went out, and the same-host links their pages returned. */
-export interface PublicDocTurnState {
-  turnJobId: string;
-  reads: number;
-  links: string[];
-  /**
-   * A read in this conversation went out and answered. What it brought back
-   * stays in the model's context after the turn, so this outlives the turn.
-   */
-  fetched?: true;
-}
-
-export interface PublicDocTurn {
-  /** Takes one of the turn's reads and returns the links earlier pages gave, or undefined when none are left. */
-  begin(): readonly string[] | undefined;
-  /** A refused read gives its read back; a page adds its links. */
-  finish(result: ReadPublicDocResult | undefined): void;
-  /** Whether a read in this conversation went out and answered. */
-  fetched(): boolean;
-}
-
-export function createPublicDocTurn(
-  turnJobId: string,
-  persisted: PublicDocTurnState,
-  persist: (state: PublicDocTurnState) => void = () => undefined,
-): PublicDocTurn {
-  let current: PublicDocTurnState = persisted.turnJobId === turnJobId
-    ? persisted
-    : { turnJobId, reads: 0, links: [], ...(persisted.fetched ? { fetched: true } : {}) };
-  const update = (next: PublicDocTurnState) => {
-    current = next;
-    persist(next);
-  };
-  return {
-    begin() {
-      if (current.reads >= PUBLIC_DOC_READS_PER_TURN) return undefined;
-      const { links } = current;
-      update({ ...current, reads: current.reads + 1 });
-      return links;
-    },
-    finish(result) {
-      if (!result) update({ ...current, reads: current.reads - 1 });
-      else {
-        update({
-          ...current,
-          fetched: true,
-          ...(result.outcome === 'read' ? { links: [...new Set([...current.links, ...result.links])] } : {}),
-        });
-      }
-    },
-    fetched: () => current.fetched === true,
-  };
-}
-
 /**
- * The signal a call that writes Agent configuration carries. Once a read has
- * answered, text the model writes may be the page's, so the service sends
- * the change to the person's approval card instead of applying it at once.
+ * The signal a call that writes Agent configuration carries. Once web content
+ * has entered the conversation, text the model writes may be that content's,
+ * so the service sends the change to the person's approval card instead of
+ * applying it at once.
  */
-export function signalAfterPublicDocReads(signal: SlackManagementSignal, turn: PublicDocTurn): SlackManagementSignal {
-  return turn.fetched() ? { ...signal, publicDocRead: true } : signal;
-}
-
-const PUBLIC_DOC_TURN_SPENT: WorkspaceManagementToolResult = {
-  ok: false,
-  error: {
-    code: 'invalid_request',
-    message: `Nothing was read: this turn already read ${PUBLIC_DOC_READS_PER_TURN} pages, the most read_public_doc reads in one turn. Work from the pages already read, or ask the requester to send the page you still need in a new message.`,
-  },
-};
-
-/** One read_public_doc call: within the turn's reads, and able to follow the links its earlier pages returned. */
-export async function readPublicDocInTurn(
-  turn: PublicDocTurn,
-  url: string,
-  invoke: (args: WorkspaceManagementToolArguments['read_public_doc']) => Promise<WorkspaceManagementToolResult>,
-): Promise<WorkspaceManagementToolResult> {
-  const turnLinks = turn.begin();
-  if (!turnLinks) return PUBLIC_DOC_TURN_SPENT;
-  let result: WorkspaceManagementToolResult | undefined;
-  try {
-    result = await invoke({ url, turnLinks });
-    return result;
-  } finally {
-    turn.finish(result?.ok ? result.result as ReadPublicDocResult : undefined);
-  }
+export function signalAfterPageRead(signal: SlackManagementSignal, pageRead: boolean): SlackManagementSignal {
+  return pageRead ? { ...signal, publicDocRead: true } : signal;
 }
 
 /** Shared with the bounded synthetic contract evaluation; the live tool uses the same values. */
@@ -668,6 +587,8 @@ export function slackManagementInstruction(agentId: string): string {
 export function useWorkspaceManagementSlackTools(
   plan: RuntimePlanV2,
   resolvePlatformEnv: PlatformEnvResolver,
+  /** Whether web content entered this conversation, from the web capability's turn state. */
+  pageRead: () => boolean,
   writeAgentCreationTerminal?: (intent: SlackAgentCreationTerminalIntent) => void,
   writeMemoryUpdate?: (receipt: SlackMemoryUpdate) => void,
 ): void {
@@ -684,11 +605,6 @@ export function useWorkspaceManagementSlackTools(
     persistCreationState,
     writeAgentCreationTerminal,
   );
-  const [publicDocState, persistPublicDocState] = usePersistentState<PublicDocTurnState>(
-    SLACK_PUBLIC_DOC_TURN_STATE,
-    { turnJobId: signal.turnJobId, reads: 0, links: [] },
-  );
-  const publicDocTurn = createPublicDocTurn(signal.turnJobId, publicDocState, persistPublicDocState);
 
   // System Chickpea's routing reads the same in every workspace, so it opens the shared system block instead.
   if (plan.agentId !== CHICKPEA_AGENT_ID) useInstruction(slackManagementRoutingInstruction(plan.agentId));
@@ -760,15 +676,6 @@ export function useWorkspaceManagementSlackTools(
     },
   });
   useTool({
-    name: 'read_public_doc',
-    description: workspaceManagementToolDescription('read_public_doc'),
-    input: readPublicDocValibotSchema,
-    async run({ data }) {
-      return slackToolOutput(await readPublicDocInTurn(publicDocTurn, data.url, (args) =>
-        invokeLiveSlackTool(signal, resolvePlatformEnv, 'read_public_doc', args, turnGuard)));
-    },
-  });
-  useTool({
     name: 'inspect_memory',
     description: workspaceManagementToolDescription('inspect_memory'),
     input: inspectMemoryValibotSchema,
@@ -787,7 +694,7 @@ export function useWorkspaceManagementSlackTools(
         signal, data, memoryEpoch: plan.memoryEpoch,
         inspect: () => invokeLiveSlackTool(signal, resolvePlatformEnv, 'inspect_memory', { agentId: signal.agentId }, turnGuard),
         apply: (args) => invokeLiveSlackTool(
-          signalAfterPublicDocReads(signal, publicDocTurn), resolvePlatformEnv, 'apply_workspace_changes', args, turnGuard,
+          signalAfterPageRead(signal, pageRead()), resolvePlatformEnv, 'apply_workspace_changes', args, turnGuard,
         ),
       });
       if (receipt) writeMemoryUpdate?.(receipt);
@@ -899,7 +806,7 @@ export function useWorkspaceManagementSlackTools(
     input: proposeWorkspaceChangesValibotSchema,
     async run({ data }) {
       const result = await invokeLiveSlackTool(
-        signalAfterPublicDocReads(signal, publicDocTurn),
+        signalAfterPageRead(signal, pageRead()),
         resolvePlatformEnv,
         'propose_workspace_changes',
         { ...data, operations: data.operations as ManagementOperation[] },
@@ -920,7 +827,7 @@ export function useWorkspaceManagementSlackTools(
         ...(data.connectorMentions ? { connectorMentions: data.connectorMentions } : {}),
       });
       const result = await invokeLiveSlackTool(
-        signalAfterPublicDocReads(signal, publicDocTurn),
+        signalAfterPageRead(signal, pageRead()),
         resolvePlatformEnv,
         'apply_workspace_changes',
         { idempotencyKey: prepared.idempotencyKey, operations: prepared.operations },

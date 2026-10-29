@@ -4,6 +4,7 @@ import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
 import { ATTACH_FILE_TO_CONNECTION_TOOL_NAME } from '../connections/file-upload-tool.ts';
 import { CONNECTION_REQUEST_TOOL_NAME } from '../connections/request-tool.ts';
 import { WORKSPACE_MANAGEMENT_TOOL_NAMES } from '../management/tool-adapter.ts';
+import { WEB_TOOL_NAMES } from '../web/names.ts';
 import { POST_ARTIFACT_TOOL_NAME } from '../sandbox/artifact-tool.ts';
 import { GENERATE_IMAGE_TOOL_NAME } from '../sandbox/image-tool.ts';
 import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
@@ -49,13 +50,9 @@ const SLACK_LIST_TOOLS: Record<(typeof SLACK_LIST_TOOL_NAMES)[number], boolean> 
   share_slack_list: true,
 };
 
-// Reading the web is work done for the person, like the browser, though it is
-// mounted with the management tools.
-const WEB_READING_TOOLS = ['read_public_doc'] as const satisfies readonly (typeof WORKSPACE_MANAGEMENT_TOOL_NAMES)[number][];
-
 const QUALIFYING_TOOLS: readonly string[] = [
   ...MANAGED_CONNECTOR_CATALOG.list().flatMap(({ capabilities }) => capabilities.map(({ toolName }) => toolName)),
-  ...WEB_READING_TOOLS,
+  ...WEB_TOOL_NAMES,
   CONNECTION_REQUEST_TOOL_NAME,
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
   ...BROWSER_TOOL_NAMES,
@@ -63,7 +60,7 @@ const QUALIFYING_TOOLS: readonly string[] = [
 ];
 
 const NON_QUALIFYING_TOOLS: readonly string[] = [
-  ...WORKSPACE_MANAGEMENT_TOOL_NAMES.filter((name) => !(WEB_READING_TOOLS as readonly string[]).includes(name)),
+  ...WORKSPACE_MANAGEMENT_TOOL_NAMES,
   'manage_scheduled_work',
   'update_agent_memory',
   'authorize_personal_connection',

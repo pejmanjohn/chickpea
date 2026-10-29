@@ -19,6 +19,8 @@ import { useRuntimePlanAgent } from './slack-thread.ts';
 import { installationAgentExtension } from './cloudflare-extension.ts';
 import { RoutineModelResultSchema } from '../routines/prompt.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
+import { webRequest } from '../web/tools.ts';
+import { useWebTurn } from '../web/turn.ts';
 
 export {
   ROUTINE_RESULT_DATA_NAME,
@@ -33,9 +35,13 @@ import {
 
 export function ChickpeaRoutineExecution({ id }: { id: string }) {
   const data = parseRoutineExecutionInitialData(useInitialData());
-  const artifactPlan = routineArtifactPlan(data.runtimePlan, useDelivery());
+  const delivery = useDelivery();
+  const artifactPlan = routineArtifactPlan(data.runtimePlan, delivery);
+  // One instance runs one occurrence, so its ID keys the occurrence's web reads and searches.
+  const webTurn = useWebTurn(id);
   useRuntimePlanAgent(artifactPlan ?? data.runtimePlan, id, {
     artifactToolsDisabled: artifactPlan === undefined,
+    web: { turn: webTurn, request: webRequest(delivery.body) },
     sandboxConversationKey: runtimePlanSandboxConversationKey(data.runtimePlan, id),
     // Nobody follows up in a scheduled run's workspace, so it never stays warm.
     releaseCodingWorkspace: true,

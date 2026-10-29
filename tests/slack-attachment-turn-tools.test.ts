@@ -145,7 +145,7 @@ function UploadTurnProbe() {
   };
   renders.push(record);
 
-  useWorkspaceManagementSlackTools(PLAN, async () => undefined);
+  useWorkspaceManagementSlackTools(PLAN, async () => undefined, () => false);
   useSlackListsTools(PLAN, async () => undefined);
   useTool(createSlackPresentTableTool(() => {}));
   const presentationIntent = slackPresentationIntentCapability(parseCurrentRequestEnvelope(delivery.body));

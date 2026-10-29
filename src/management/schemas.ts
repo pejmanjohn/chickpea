@@ -788,14 +788,6 @@ export const saveConnectionKeyValibotSchema = v.strictObject({
   ),
   path: v.pipe(v.string(), v.maxLength(2048), v.regex(CONNECTION_CHECK_PATH_PATTERN)),
 });
-export const readPublicDocValibotSchema = v.strictObject({
-  url: v.pipe(
-    v.string(),
-    v.minLength(1),
-    v.maxLength(2048),
-    v.description('A full https URL the requester typed in their own current message, or a link from links of a page read earlier in this turn.'),
-  ),
-});
 export const inspectMemoryValibotSchema = v.strictObject({ agentId: vAgentId });
 export const inspectRoutinesValibotSchema = v.strictObject({
   workspaceId: vid,

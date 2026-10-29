@@ -298,7 +298,7 @@ test('connector, browser, web reading and coding workspace tools make a reply a 
   const work = [
     ...CATALOG_TOOL_NAMES,
     'connection_request',
-    'read_public_doc',
+    'read_web_page',
     'attach_file_to_connection',
     ...BROWSER_TOOL_NAMES,
     ...WORKSPACE_TOOL_NAMES,

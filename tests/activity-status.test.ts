@@ -23,7 +23,7 @@ import {
   thinkingSemanticActivity,
   webPageSemanticDescriptor,
 } from '../src/activity/semantic.ts';
-import { workspaceManagementSemanticDescriptor } from '../src/management/tool-adapter.ts';
+import { WEB_TOOL_DESCRIPTORS, WEB_TOOL_NAMES } from '../src/web/tools.ts';
 import { slackLoadingMessages, slackStatusText } from '../src/slack/replies.ts';
 import {
   MANAGED_CONNECTOR_CATALOG,
@@ -970,19 +970,19 @@ const TOKEN_HOST = `${['xoxb', '0000000000', '000000000000'].join('-')}.example`
 
 function registerWebContext(instanceId: string): void {
   registerActivityContext(instanceId, buildSemanticActivityContext([
-    { toolName: 'read_public_doc', descriptor: workspaceManagementSemanticDescriptor('read_public_doc') },
+    ...WEB_TOOL_NAMES.map((toolName) => ({ toolName, descriptor: WEB_TOOL_DESCRIPTORS[toolName] })),
   ]));
 }
 
 function readStatus(instanceId: string, args: unknown, toolCallId = 'w1'): string | undefined {
-  return observeNamed(instanceId, { type: 'tool_start', toolName: 'read_public_doc', toolCallId, args });
+  return observeNamed(instanceId, { type: 'tool_start', toolName: 'read_web_page', toolCallId, args });
 }
 
 test('a web read names the host it reads, and nothing else from its input', () => {
   registerWebContext('web-read');
   assert.equal(readStatus('web-read', { url: 'https://Docs.Statusboard.example/api/v2?key=secret#auth' }),
     'Reading docs.statusboard.example…');
-  assert.equal(observeNamed('web-read', { type: 'tool', toolName: 'read_public_doc', toolCallId: 'w1', isError: false }),
+  assert.equal(observeNamed('web-read', { type: 'tool', toolName: 'read_web_page', toolCallId: 'w1', isError: false }),
     'Reviewing the page…');
 
   registerWebContext('web-forms');
