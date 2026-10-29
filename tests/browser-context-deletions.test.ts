@@ -19,12 +19,18 @@ import {
   type WebsiteLogin,
 } from '../src/browser/logins.ts';
 import { BROWSER_LOGIN_REVOKED_MESSAGE } from '../src/browser/messages.ts';
+import type { BrowserProvider } from '../src/browser/provider.ts';
 import { BrowserTurnSession } from '../src/browser/turn-session.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 import { fakeBrowserProvider, fakeFetch } from './helpers/fake-cdp-socket.ts';
+
+const NOW = Date.UTC(2026, 9, 28);
+const DAY = 24 * 60 * 60 * 1000;
+const sweep = (store: SqliteSettingsStore, provider: () => Promise<BrowserProvider | undefined>, at = NOW) =>
+  drainContextDeletions({ store, provider, now: () => at });
 
 const LOGIN = {
   host: 'billing.example.com',
@@ -82,8 +88,8 @@ test('with a provider, deleting a login deletes its context at once and leaves n
 test('a sweep keeps what failed, less the steps that finished, and keeps what was queued meanwhile', async (t) => {
   const { store, queue } = setup(t);
   await queueContextDeletions(store, [
-    { contextId: 'ctx_a', handoffSessionId: 'sess_a', queuedAt: 1 },
-    { contextId: 'ctx_b', queuedAt: 2 },
+    { contextId: 'ctx_a', handoffSessionId: 'sess_a', queuedAt: NOW - 3 },
+    { contextId: 'ctx_b', queuedAt: NOW - 2 },
   ]);
   const ended: string[] = [];
   const deleted: string[] = [];
@@ -92,46 +98,105 @@ test('a sweep keeps what failed, less the steps that finished, and keeps what wa
     async endSession(id) { ended.push(id); },
     async deleteContext(id) {
       if (id === 'ctx_a' && refuse) throw new Error('provider unavailable');
-      if (id === 'ctx_b') await queueContextDeletions(store, [{ contextId: 'ctx_c', queuedAt: 3 }]);
+      if (id === 'ctx_b') await queueContextDeletions(store, [{ contextId: 'ctx_c', queuedAt: NOW - 1 }]);
       deleted.push(id);
     },
   });
-  await drainContextDeletions({ store, provider: async () => provider });
-  assert.deepEqual(await queue(), [{ contextId: 'ctx_a', queuedAt: 1 }, { contextId: 'ctx_c', queuedAt: 3 }]);
+  await sweep(store, async () => provider);
+  assert.deepEqual(await queue(), [
+    { contextId: 'ctx_c', queuedAt: NOW - 1 },
+    { contextId: 'ctx_a', queuedAt: NOW - 3, attempts: 1 },
+  ], 'what failed is counted and goes behind what was queued meanwhile');
 
   refuse = false;
-  await drainContextDeletions({ store, provider: async () => provider });
+  await sweep(store, async () => provider);
   assert.deepEqual(ended, ['sess_a'], 'an ended hand-off is not ended again');
-  assert.deepEqual(deleted, ['ctx_b', 'ctx_a', 'ctx_c']);
+  assert.deepEqual(deleted, ['ctx_b', 'ctx_c', 'ctx_a']);
   assert.equal(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), undefined);
 });
 
 test('a 404 from Browserbase dequeues; any other failure keeps the entry', async (t) => {
   const { store, queue } = setup(t);
   await queueContextDeletions(store, [
-    { contextId: 'ctx_gone', handoffSessionId: 'sess_gone', queuedAt: 1 },
-    { contextId: 'ctx_flaky', queuedAt: 2 },
+    { contextId: 'ctx_gone', handoffSessionId: 'sess_gone', queuedAt: NOW - 2 },
+    { contextId: 'ctx_flaky', queuedAt: NOW - 1 },
   ]);
   const { calls, fetchImpl } = fakeFetch((call) =>
     new Response(null, { status: call.url.endsWith('/ctx_flaky') ? 503 : 404 }));
   const provider = createBrowserbaseProvider({ apiKey: 'bb_live_queue_test', fetch: fetchImpl });
-  await drainContextDeletions({ store, provider: async () => provider });
+  await sweep(store, async () => provider);
   assert.deepEqual(calls.map(({ method, url }) => `${method} ${new URL(url).pathname}`), [
     'POST /v1/sessions/sess_gone',
     'DELETE /v1/contexts/ctx_gone',
     'DELETE /v1/contexts/ctx_flaky',
   ]);
-  assert.deepEqual(await queue(), [{ contextId: 'ctx_flaky', queuedAt: 2 }]);
+  assert.deepEqual(await queue(), [{ contextId: 'ctx_flaky', queuedAt: NOW - 1, attempts: 1 }]);
 });
 
-test('standalone with no browser key drops the queue; a deployment serving many leaves it for its host', async (t) => {
-  const { store, queue } = setup(t);
-  const entries = [{ contextId: 'ctx_unreachable', queuedAt: 1 }];
+test('standalone with no browser key keeps the queue for a reconnect; a deployment serving many leaves it for its host', async (t) => {
+  const { store, queue, provider, deleted } = setup(t);
+  const entries = [{ contextId: 'ctx_waiting', queuedAt: Date.now() }];
   await queueContextDeletions(store, entries);
   await maintainContextDeletions(scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' }), store);
   assert.deepEqual(await queue(), entries);
   await withEnv({ BROWSERBASE_API_KEY: undefined, CHICKPEA_TENANCY: undefined }, () => maintainContextDeletions({}, store));
+  await withEnv({ BROWSERBASE_API_KEY: undefined, CHICKPEA_TENANCY: undefined }, () => maintainContextDeletions({}, store));
+  assert.deepEqual(await queue(), entries, 'nothing is dropped or counted while there is no key');
+
+  // The same project connected again: the waiting context goes.
+  await drainContextDeletions({ store, provider: async () => provider });
+  assert.deepEqual(deleted, ['ctx_waiting']);
   assert.equal(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), undefined);
+});
+
+test('entries the provider keeps refusing go behind the rest, so newer ones are still deleted', async (t) => {
+  const { store, queue } = setup(t);
+  const stuck = Array.from({ length: 25 }, (_, index) => ({ contextId: `ctx_stuck_${index}`, queuedAt: NOW - 100 + index }));
+  await queueContextDeletions(store, [...stuck, { contextId: 'ctx_fine', queuedAt: NOW - 50 }]);
+  const deleted: string[] = [];
+  const { provider } = fakeBrowserProvider({
+    async deleteContext(id) {
+      if (id.startsWith('ctx_stuck_')) throw new Error('provider refuses');
+      deleted.push(id);
+    },
+  });
+  await sweep(store, async () => provider);
+  assert.deepEqual(deleted, [], 'the first sweep takes the 25 oldest');
+  await sweep(store, async () => provider);
+  assert.deepEqual(deleted, ['ctx_fine']);
+  const left = await queue() as Array<{ contextId: string; attempts: number }>;
+  assert.deepEqual(left.map(({ contextId, attempts }) => `${contextId}:${attempts}`),
+    ['ctx_stuck_24:1', ...stuck.slice(0, 24).map(({ contextId }) => `${contextId}:2`)]);
+});
+
+test('an entry older than 30 days is dropped with a warning that names nothing, with or without a key', async (t) => {
+  const { store, queue } = setup(t);
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  await queueContextDeletions(store, [
+    { contextId: 'ctx_old', handoffSessionId: 'sess_old', queuedAt: NOW - 31 * DAY, attempts: 40 },
+    { contextId: 'ctx_recent', queuedAt: NOW - 29 * DAY },
+  ]);
+  await sweep(store, async () => undefined);
+  assert.deepEqual((await queue()).map(({ contextId }) => contextId), ['ctx_recent']);
+  const logged = JSON.stringify(warn.mock.calls.map((call) => call.arguments));
+  assert.match(logged, /queued for deletion for 30 days were dropped/);
+  assert.doesNotMatch(logged, /ctx_|sess_/);
+
+  const refusing = fakeBrowserProvider({ async deleteContext() { throw new Error('provider refuses'); } }).provider;
+  await sweep(store, async () => refusing, NOW + 2 * DAY);
+  assert.equal(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), undefined);
+});
+
+test('the row keeps at most 1,000 entries, dropping the oldest with a warning', async (t) => {
+  const { store, queue } = setup(t);
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  await queueContextDeletions(store, Array.from({ length: 1_000 }, (_, index) => ({ contextId: `ctx_${index}`, queuedAt: NOW })));
+  assert.equal(warn.mock.callCount(), 0);
+  await queueContextDeletions(store, [{ contextId: 'ctx_newest', queuedAt: NOW }]);
+  const kept = await queue();
+  assert.equal(kept.length, 1_000);
+  assert.deepEqual([kept[0]?.contextId, kept.at(-1)?.contextId], ['ctx_1', 'ctx_newest']);
+  assert.match(JSON.stringify(warn.mock.calls[0]?.arguments), /queue is full/);
 });
 
 /** One turn's bind of `login`, on its own session. */
