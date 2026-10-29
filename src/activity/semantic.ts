@@ -1,3 +1,4 @@
+import { validateMcpUrl } from '../config/mcp-url.ts';
 import { hasCredentialLikeContent, isRecord } from '../security/content-validation.ts';
 import type {
   ManagedCapabilityDefinition,
@@ -106,20 +107,24 @@ const SEMANTIC_OBJECTS = [
 
 type SemanticObject = typeof SEMANTIC_OBJECTS[number];
 
-export type SemanticTargetFamily =
-  | 'managed_connector'
-  | 'custom_connection'
-  | 'skill'
-  | 'repository'
-  | 'memory'
-  | 'scheduled_work'
-  | 'workspace'
-  | 'connection_setup'
-  | 'agent_authoring'
-  | 'artifact'
-  | 'response'
-  | 'unknown'
-  | 'internal';
+export const SEMANTIC_TARGET_FAMILIES = [
+  'managed_connector',
+  'custom_connection',
+  'skill',
+  'repository',
+  'memory',
+  'scheduled_work',
+  'workspace',
+  'connection_setup',
+  'agent_authoring',
+  'artifact',
+  'web',
+  'response',
+  'unknown',
+  'internal',
+] as const;
+
+export type SemanticTargetFamily = typeof SEMANTIC_TARGET_FAMILIES[number];
 
 export type SemanticActivityPhase =
   | 'thinking'
@@ -132,15 +137,24 @@ type SemanticLifecycleRole = 'work' | 'answer_generation' | 'internal_hidden';
 type SemanticTrustTier = 'managed_catalog' | 'built_in' | 'customer_configuration' | 'unknown';
 type SemanticEffectClass = ManagedEffectClass | 'none';
 
-type SemanticLabelKind = 'managed_connector' | 'custom_connection' | 'skill';
+/**
+ * The labels a web tool's own input may supply, each with the only check that
+ * admits it. Every other label is catalog copy or an admin-given name.
+ */
+const WEB_LABELS = {
+  web_host: isSafeWebHostLabel,
+} as const satisfies Record<string, (label: string) => boolean>;
+
+type WebLabelKind = keyof typeof WEB_LABELS;
+type SemanticLabelKind = 'managed_connector' | 'custom_connection' | 'skill' | WebLabelKind;
 
 interface SemanticLabelReference {
   readonly kind: SemanticLabelKind;
-  /** Catalog identity, or the configured connection id or skill name. */
+  /** Catalog identity, the configured connection id or skill name, or the web label itself. */
   readonly id: string;
   /**
-   * Catalog copy, or the name a workspace admin gave the connection or skill.
-   * Validated again before narration.
+   * Catalog copy, the name a workspace admin gave the connection or skill, or
+   * a web label that passed its check. Validated again before narration.
    */
   readonly label: string;
 }
@@ -199,6 +213,7 @@ export interface TypedActivityStatus extends ActivityStatus {
 
 const OPERATION_SET = new Set<string>(SEMANTIC_OPERATIONS);
 const OBJECT_SET = new Set<string>(SEMANTIC_OBJECTS);
+const TARGET_FAMILY_SET = new Set<string>(SEMANTIC_TARGET_FAMILIES);
 
 const MANAGED_OBJECTS = {
   account: 'account',
@@ -318,6 +333,7 @@ const GENERIC_DESCRIPTORS = {
   connection_setup: descriptor('connect', 'connection_setup', 'the connection', 'reversible_write', 'built_in'),
   agent_authoring: descriptor('inspect', 'agent_authoring', 'Agent changes', 'read', 'customer_configuration'),
   artifact: descriptor('create', 'artifact', 'the artifact', 'reversible_write', 'built_in'),
+  web: descriptor('read', 'web', 'pages', 'read', 'built_in'),
   unknown: unknownSemanticDescriptor(),
 } as const satisfies Record<
   Exclude<SemanticTargetFamily, 'managed_connector' | 'response' | 'internal'>,
@@ -348,6 +364,33 @@ export function configuredSemanticDescriptor(
   const generic = genericSemanticDescriptor(family);
   if (!isSafeLabelId(id) || !isSafeConfiguredLabel(label)) return generic;
   return { ...generic, label: { kind: family, id, label } };
+}
+
+/** Room for a host in `Reading <host>…`. */
+const WEB_HOST_LABEL_LIMIT = ACTIVITY_STATUS_TEXT_LIMIT - 'Reading …'.length;
+
+/**
+ * Name the host a web read's input gives. It must be a public https host on
+ * the standard port, as the read itself requires; a bare http link becomes
+ * https, as the read does. The URL parser lowercases it and spells an
+ * international name in punycode. A host too long for the status keeps the
+ * rightmost labels that fit. Anything else keeps the generic web read.
+ */
+export function webPageSemanticDescriptor(url: unknown): SemanticActivityDescriptor {
+  const generic = genericSemanticDescriptor('web');
+  const parsed = typeof url === 'string' ? URL.parse(url.trim()) : null;
+  if (!parsed) return generic;
+  if (parsed.protocol === 'http:' && parsed.port === '') parsed.protocol = 'https:';
+  const checked = validateMcpUrl(parsed.href);
+  if (!checked.ok) return generic;
+  const { hostname, port } = new URL(checked.url);
+  if (port !== '') return generic;
+  const labels = hostname.split('.');
+  const host = labels.map((_, start) => labels.slice(start).join('.'))
+    .find((suffix) => suffix.includes('.') && suffix.length <= WEB_HOST_LABEL_LIMIT);
+  return host && isSafeWebHostLabel(host)
+    ? { ...generic, label: { kind: 'web_host', id: host, label: host } }
+    : generic;
 }
 
 export function unknownSemanticDescriptor(): SemanticActivityDescriptor {
@@ -499,7 +542,7 @@ export function isSemanticActivityDescriptor(value: unknown): value is SemanticA
   if (!hasOnlyKeys(value, ['operation', 'target', 'label', 'object', 'effect', 'role', 'trust'])) {
     return false;
   }
-  if (!isSemanticOperation(value.operation) || !isTargetFamily(value.target) ||
+  if (!isSemanticOperation(value.operation) || !isSemanticTargetFamily(value.target) ||
       !isSemanticObject(value.object) || !isEffect(value.effect) ||
       !isLifecycleRole(value.role) || !isTrustTier(value.trust)) return false;
   if (value.label === undefined) return value.target !== 'managed_connector';
@@ -514,6 +557,10 @@ export function isSemanticActivityDescriptor(value: unknown): value is SemanticA
     return value.trust === 'customer_configuration' && kind === value.target &&
       isSafeLabelId(id) && isSafeConfiguredLabel(label);
   }
+  if (value.target === 'web') {
+    return value.trust === 'built_in' && typeof kind === 'string' && Object.hasOwn(WEB_LABELS, kind) &&
+      id === label && WEB_LABELS[kind as WebLabelKind](label);
+  }
   return false;
 }
 
@@ -523,7 +570,7 @@ export function isSafeTypedActivityStatus(value: unknown): value is TypedActivit
       !hasOnlyKeys(value, ['kind', 'action', 'object', 'family', 'phase', 'text']) ||
       !isActivityKind(value.kind) ||
       typeof value.action !== 'string' || typeof value.object !== 'string' ||
-      !isTargetFamily(value.family) || !isSemanticActivityPhase(value.phase) ||
+      !isSemanticTargetFamily(value.family) || !isSemanticActivityPhase(value.phase) ||
       typeof value.text !== 'string' || value.text.length > ACTIVITY_STATUS_TEXT_LIMIT) return false;
   if (value.action === 'Thinking' && value.object === 'the request') {
     return value.kind === 'preparing' && value.family === 'unknown' &&
@@ -708,6 +755,11 @@ function familyActivity(
       return settled
         ? activityStatus('reading', 'Reviewing', 'the artifact')
         : activityStatus('writing', 'Creating', 'an artifact');
+    case 'web': {
+      if (settled) return activityStatus('reading', 'Reviewing', 'the page');
+      const host = descriptorValue.label?.kind === 'web_host' ? descriptorValue.label.label : undefined;
+      return activityStatus('reading', 'Reading', host ?? 'a web page');
+    }
     default:
       return genericActivity(event);
   }
@@ -763,6 +815,17 @@ export function isSafeConfiguredLabel(value: string): boolean {
     !hasCredentialLikeContent(value);
 }
 
+/**
+ * A lowercase ASCII host of two or more letter-digit-hyphen labels, so it can
+ * carry no mention, broadcast, mrkdwn or control character, short enough for
+ * `Reading <host>…`, and never credential-shaped.
+ */
+function isSafeWebHostLabel(value: string): boolean {
+  return value.length <= WEB_HOST_LABEL_LIMIT &&
+    /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(value) &&
+    !hasCredentialLikeContent(value);
+}
+
 function isSafeLabelId(value: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,191}$/.test(value);
 }
@@ -796,11 +859,8 @@ function isSemanticObject(value: unknown): value is SemanticObject {
   return typeof value === 'string' && OBJECT_SET.has(value);
 }
 
-function isTargetFamily(value: unknown): value is SemanticTargetFamily {
-  return value === 'managed_connector' || value === 'custom_connection' || value === 'skill' ||
-    value === 'repository' || value === 'memory' || value === 'scheduled_work' ||
-    value === 'workspace' || value === 'connection_setup' || value === 'agent_authoring' ||
-    value === 'artifact' || value === 'response' || value === 'unknown' || value === 'internal';
+export function isSemanticTargetFamily(value: unknown): value is SemanticTargetFamily {
+  return typeof value === 'string' && TARGET_FAMILY_SET.has(value);
 }
 
 function isSemanticActivityPhase(value: unknown): value is SemanticActivityPhase {

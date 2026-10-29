@@ -21,7 +21,10 @@ import {
   semanticDescriptorForCoreTool,
   semanticInvocationFact,
   thinkingSemanticActivity,
+  webPageSemanticDescriptor,
 } from '../src/activity/semantic.ts';
+import { workspaceManagementSemanticDescriptor } from '../src/management/tool-adapter.ts';
+import { slackLoadingMessages, slackStatusText } from '../src/slack/replies.ts';
 import {
   MANAGED_CONNECTOR_CATALOG,
   semanticDescriptorForManagedCapability,
@@ -960,4 +963,85 @@ test('configured activity labels are Slack-safe and bounded', () => {
 
   assert.equal(status.text, 'Connecting to a connected service…');
   assert.equal(connectingActivityStatus('Zendesk').text, 'Connecting to Zendesk…');
+});
+
+/** A synthetic Slack token shaped as a hostname label, assembled at runtime. */
+const TOKEN_HOST = `${['xoxb', '0000000000', '000000000000'].join('-')}.example`;
+
+function registerWebContext(instanceId: string): void {
+  registerActivityContext(instanceId, buildSemanticActivityContext([
+    { toolName: 'read_public_doc', descriptor: workspaceManagementSemanticDescriptor('read_public_doc') },
+  ]));
+}
+
+function readStatus(instanceId: string, args: unknown, toolCallId = 'w1'): string | undefined {
+  return observeNamed(instanceId, { type: 'tool_start', toolName: 'read_public_doc', toolCallId, args });
+}
+
+test('a web read names the host it reads, and nothing else from its input', () => {
+  registerWebContext('web-read');
+  assert.equal(readStatus('web-read', { url: 'https://Docs.Statusboard.example/api/v2?key=secret#auth' }),
+    'Reading docs.statusboard.example…');
+  assert.equal(observeNamed('web-read', { type: 'tool', toolName: 'read_public_doc', toolCallId: 'w1', isError: false }),
+    'Reviewing the page…');
+
+  registerWebContext('web-forms');
+  assert.equal(readStatus('web-forms', { url: 'http://docs.statusboard.example/api' }, 'w2'),
+    'Reading docs.statusboard.example…', 'Slack links a bare domain as http, which the read upgrades');
+  assert.equal(readStatus('web-forms', { url: 'https://bücher.example/docs' }, 'w3'),
+    'Reading xn--bcher-kva.example…', 'an international name shows as punycode');
+  assert.equal(readStatus('web-forms', { url: 'https://a.very.deep.chain.of.mirrors.for.docs.statusboard.example/' }, 'w4'),
+    'Reading of.mirrors.for.docs.statusboard.example…', 'a long host keeps the labels that fit');
+});
+
+test('a web host that fails validation keeps the generic web-read status', () => {
+  const rejected: Array<[unknown, string]> = [
+    [{}, 'no URL'],
+    [{ url: 42 }, 'a URL that is not text'],
+    [{ url: 'docs statusboard' }, 'not a URL'],
+    [{ url: 'ftp://docs.statusboard.example/' }, 'not https'],
+    [{ url: 'https://reader:hunter2@docs.statusboard.example/' }, 'embedded credentials'],
+    [{ url: 'https://U123@docs.statusboard.example/' }, 'a user name, which is how a mention would ride along'],
+    [{ url: 'https://localhost/docs' }, 'a local host'],
+    [{ url: 'https://10.0.0.5/docs' }, 'a private address'],
+    [{ url: 'https://metadata.internal/latest' }, 'an internal name'],
+    [{ url: 'https://[2606:4700::1111]/' }, 'an IPv6 literal'],
+    [{ url: 'https://docs.statusboard.example:8443/' }, 'a port the read refuses'],
+    [{ url: 'https://<!channel>.example/' }, 'a broadcast'],
+    [{ url: 'https://*bold*.example/' }, 'mrkdwn bold'],
+    [{ url: 'https://under_score.example/' }, 'mrkdwn italic'],
+    [{ url: 'https://strike~.example/' }, 'mrkdwn strike'],
+    [{ url: `https://${TOKEN_HOST}/` }, 'a credential-shaped host'],
+    [{ url: `https://${'a'.repeat(34)}.example/` }, 'two labels too long for the status'],
+  ];
+  for (const [index, [args, why]] of rejected.entries()) {
+    registerWebContext(`web-generic-${index}`);
+    assert.equal(readStatus(`web-generic-${index}`, args), 'Reading a web page…', why);
+  }
+});
+
+test('a web status reaches Slack inside its limit, and a forged host never does', () => {
+  const longest = `${'a'.repeat(33)}.example`;
+  for (const [url, expected] of [
+    ['https://docs.statusboard.example/api', 'Reading docs.statusboard.example…'],
+    [`https://${longest}/`, `Reading ${longest}…`],
+  ] as const) {
+    const status = narrateSemanticActivity(webPageSemanticDescriptor(url), { phase: 'started' })!;
+    assert.equal(slackStatusText(status), expected);
+    assert.deepEqual(slackLoadingMessages(status), [expected]);
+    assert.ok(expected.length <= 50, `${expected.length} characters`);
+  }
+
+  const web = genericSemanticDescriptor('web');
+  for (const label of ['<!channel> *now*', 'docs.statusboard.example\n<@U123>', TOKEN_HOST, 'Docs.Statusboard.example']) {
+    const forged = { ...web, label: { kind: 'web_host', id: label, label } };
+    assert.equal(isSemanticActivityDescriptor(forged), false, label);
+    const text = slackStatusText(narrateSemanticActivity(forged, { phase: 'started' })!);
+    assert.equal(text, 'Working on the request…', label);
+  }
+  const host = webPageSemanticDescriptor('https://docs.statusboard.example/');
+  assert.equal(isSemanticActivityDescriptor(host), true);
+  assert.equal(isSemanticActivityDescriptor({ ...host, label: { ...host.label!, id: 'other.example' } }), false);
+  assert.equal(isSemanticActivityDescriptor({ ...genericSemanticDescriptor('custom_connection'), label: host.label }), false,
+    'a web host names only a web read');
 });

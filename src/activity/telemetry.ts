@@ -1,7 +1,8 @@
-import type {
-  SemanticActivityPhase,
-  SemanticTargetFamily,
-  TypedActivityStatus,
+import {
+  SEMANTIC_TARGET_FAMILIES,
+  type SemanticActivityPhase,
+  type SemanticTargetFamily,
+  type TypedActivityStatus,
 } from './semantic.ts';
 
 const SEMANTIC_ACTIVITY_TELEMETRY_SCHEMA_VERSION = 1;
@@ -96,21 +97,7 @@ type SemanticActivityTelemetryEvent =
       durationMs: number;
     };
 
-const TARGET_FAMILIES = new Set<SemanticTargetFamily>([
-  'managed_connector',
-  'custom_connection',
-  'skill',
-  'repository',
-  'memory',
-  'scheduled_work',
-  'workspace',
-  'connection_setup',
-  'agent_authoring',
-  'artifact',
-  'response',
-  'unknown',
-  'internal',
-]);
+const TARGET_FAMILIES = new Set<SemanticTargetFamily>(SEMANTIC_TARGET_FAMILIES);
 
 const PHASES = new Set<SemanticActivityTelemetryPhase>([
   'thinking', 'working', 'reviewing', 'drafting', 'reassessing',

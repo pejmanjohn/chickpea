@@ -106,6 +106,21 @@ export async function readBoundedText(
   response: Response,
   options: BoundedBodyOptions,
 ): Promise<string> {
+  return (await decodeBoundedText(response, options)).text;
+}
+
+/** Decode the body as UTF-8 text up to `maxBytes`, and say whether the read stopped there. */
+export async function readTruncatedText(
+  response: Response,
+  options: Omit<BoundedBodyOptions, 'onOversize' | 'checkContentLength'>,
+): Promise<{ text: string; truncated: boolean }> {
+  return decodeBoundedText(response, { ...options, onOversize: 'truncate' });
+}
+
+async function decodeBoundedText(
+  response: Response,
+  options: BoundedBodyOptions,
+): Promise<{ text: string; truncated: boolean }> {
   const decoder = new TextDecoder('utf-8', { fatal: options.fatalDecoder === true });
   const state = { truncated: false };
   let text = '';
@@ -114,7 +129,7 @@ export async function readBoundedText(
   }
   // A truncated read stops mid-stream, so the decoder's pending bytes belong to
   // a character the caller never asked for; flushing them would append U+FFFD.
-  return state.truncated ? text : text + decoder.decode();
+  return state.truncated ? { text, truncated: true } : { text: text + decoder.decode(), truncated: false };
 }
 
 /**
@@ -169,6 +184,9 @@ async function* boundedBodyChunks(
       const next = aborted
         ? await Promise.race([reader.read(), aborted])
         : await reader.read();
+      // The abort cancels the reader, which ends its pending read as done, and
+      // that can win the race: a cut body must never read as a whole one.
+      if (signal?.aborted) throw abortError();
       if (next.done) {
         consumed = true;
         break;

@@ -199,6 +199,12 @@ import {
   type OpenMcpServer,
 } from './discovery.ts';
 import type { ManagementStore } from './store.ts';
+import {
+  admitPublicDocUrl,
+  PUBLIC_DOC_REFUSALS,
+  type ReadPublicDocInput,
+  type ReadPublicDocResult,
+} from './public-doc.ts';
 import { changeSetAccessFits } from './change-set-presentation.ts';
 import {
   formatMarkdownChangeSetProposal,
@@ -452,6 +458,8 @@ export interface WorkspaceManagementServiceInput {
     expectedRevision: number;
     surface: ManagementOrigin['kind'];
   }) => Promise<SavedConnectionKeyCheck>;
+  /** Reads one admitted public page with no cookies or credentials. */
+  readPublicDoc?: (url: URL) => Promise<ReadPublicDocResult>;
   /** Lists an open MCP server's tools before a write saves it, as Admin's Test connection does. */
   discoverMcpServer?: (server: OpenMcpServer) => Promise<McpConnectionTestResult>;
   /** The website-login realm Admin reads and deletes from. */
@@ -2068,6 +2076,32 @@ export class WorkspaceManagementService {
     }
   }
 
+  /**
+   * Reads one public page for the requester in Slack: a URL they typed in
+   * their own current message to this Agent, or a link a page read earlier
+   * in this turn returned. The page is untrusted content.
+   */
+  async readPublicDoc(
+    context: ApplyWorkspaceChangesInput['context'],
+    input: ReadPublicDocInput,
+  ): Promise<ReadPublicDocResult> {
+    const actor = await this.requireLiveActor(context);
+    if (actor.origin.kind !== 'slack') {
+      throw new ManagementError('invalid_request', 'read_public_doc is available only in Slack.');
+    }
+    const requestText = requestAddressedHere(actor);
+    const admission = admitPublicDocUrl(
+      input.url,
+      requestText ? requesterTypedUrls(requestText) : [],
+      input.turnLinks,
+    );
+    if (!admission.admitted) throw new ManagementError('invalid_request', PUBLIC_DOC_REFUSALS[admission.reason]);
+    if (!this.stores.readPublicDoc) {
+      throw new ManagementError('invalid_request', 'Reading public pages is unavailable.');
+    }
+    return this.stores.readPublicDoc(admission.url);
+  }
+
   async inspectMemory(
     context: ApplyWorkspaceChangesInput['context'],
     agentId: string,
@@ -2838,6 +2872,7 @@ export class WorkspaceManagementService {
     await this.assertRevisionMap(targetRevisions);
     const preview = boundedChangeSetPreview({
       summary: `${operations.length} reviewed workspace change${operations.length === 1 ? '' : 's'}`,
+      ...(actor.origin.kind === 'slack' && actor.origin.publicDocRead ? { publicDocRead: true } : {}),
       changes,
       missingSetup,
     }, meta.skillSourceUrl);
@@ -8193,6 +8228,7 @@ function publicChangeSetPreview(
 ): ManagementChangeSetPreview {
   return {
     summary: preview.summary,
+    ...(preview.publicDocRead ? { publicDocRead: true } : {}),
     changes: preview.changes.map((change) => ({
       itemId: change.itemId,
       operationKind: change.operationKind,
@@ -8296,6 +8332,7 @@ export function slackManagementOrigin(
     ...(signal.requesterText === undefined ? {} : { requestText: signal.requesterText }),
     ...(signal.requesterTextSource ? { requestTextSource: signal.requesterTextSource } : {}),
     ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
+    ...(signal.publicDocRead ? { publicDocRead: true } : {}),
     agentId: signal.agentId,
   };
 }

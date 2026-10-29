@@ -179,8 +179,11 @@ function managementPolicyReason(
     const fields = Object.keys(operation.patch);
     // A new connection that needs a key does nothing until a key arrives, and
     // a pasted key must be the requester's own (save_connection_key), so the
-    // hosts they typed are all the approval card would have shown.
+    // hosts they typed are all the approval card would have shown. After a
+    // public page is read, its guide may be the page's words, which the card
+    // shows.
     if (facts.requesterTypedNewKeyedConnections && facts.currentAgent?.kind === 'user' &&
+        !(actor.origin.kind === 'slack' && actor.origin.publicDocRead) &&
         fields.every((field) => field === 'apiConnections' || field === 'mcpServers')) {
       return { allowed: true, reason: 'typed_new_keyed_connection' };
     }

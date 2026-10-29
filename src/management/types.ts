@@ -58,6 +58,8 @@ export type ManagementOrigin =
       conversationKind?: 'channel' | 'im' | 'mpim';
       /** Trusted Agent selected by Slack routing, never by model text. */
       agentId?: string;
+      /** A read_public_doc call in this conversation answered, so text the model writes may be the page's. */
+      publicDocRead?: true;
     }
   | {
       kind: 'mcp';
@@ -1390,6 +1392,8 @@ export type ManagementChangeStatement =
 
 export interface ManagementChangeSetPreview {
   summary: string;
+  /** Proposed after a read_public_doc call in the conversation answered: every guide shows whole. */
+  publicDocRead?: true;
   changes: Array<{
     itemId: string;
     operationKind: ManagementOperation['kind'];

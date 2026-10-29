@@ -20,6 +20,7 @@ import {
   safeActivityLabel,
   thinkingSemanticActivity,
   unknownSemanticDescriptor,
+  webPageSemanticDescriptor,
   type ActivityStatus,
   type SemanticActivityDescriptor,
   type SemanticInvocationFact,
@@ -328,6 +329,9 @@ function namedDescriptor(
     return connection?.id
       ? configuredSemanticDescriptor('custom_connection', connection.id, connection.displayName)
       : registered;
+  }
+  if (toolName === 'read_public_doc' && registered.target === 'web') {
+    return webPageSemanticDescriptor(objectString(args, 'url'));
   }
   return registered;
 }

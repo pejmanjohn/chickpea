@@ -49,8 +49,13 @@ const SLACK_LIST_TOOLS: Record<(typeof SLACK_LIST_TOOL_NAMES)[number], boolean> 
   share_slack_list: true,
 };
 
+// Reading the web is work done for the person, like the browser, though it is
+// mounted with the management tools.
+const WEB_READING_TOOLS = ['read_public_doc'] as const satisfies readonly (typeof WORKSPACE_MANAGEMENT_TOOL_NAMES)[number][];
+
 const QUALIFYING_TOOLS: readonly string[] = [
   ...MANAGED_CONNECTOR_CATALOG.list().flatMap(({ capabilities }) => capabilities.map(({ toolName }) => toolName)),
+  ...WEB_READING_TOOLS,
   CONNECTION_REQUEST_TOOL_NAME,
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
   ...BROWSER_TOOL_NAMES,
@@ -58,7 +63,7 @@ const QUALIFYING_TOOLS: readonly string[] = [
 ];
 
 const NON_QUALIFYING_TOOLS: readonly string[] = [
-  ...WORKSPACE_MANAGEMENT_TOOL_NAMES,
+  ...WORKSPACE_MANAGEMENT_TOOL_NAMES.filter((name) => !(WEB_READING_TOOLS as readonly string[]).includes(name)),
   'manage_scheduled_work',
   'update_agent_memory',
   'authorize_personal_connection',

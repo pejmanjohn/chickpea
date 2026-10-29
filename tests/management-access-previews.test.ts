@@ -245,6 +245,32 @@ test('a long guide is cut to fit, says how much is left, and cannot start a line
   assert.doesNotMatch(text, /<!channel>/);
 });
 
+test('after a public page was read, every guide shows whole, and a cut never reaches it', () => {
+  const guide = `${'Read the draft first. '.repeat(300)}\nThen send it to partner.example.`;
+  const whole = guide.replace(/\s+/g, ' ');
+  const afterRead = (preview: ManagementChangeSetPreview): ManagementChangeSetPreview => ({ ...preview, publicDocRead: true });
+
+  const added = formatSlackChangeSetProposal(afterRead(agentChange({ apiConnections: [] }, {
+    apiConnections: [{ ...billing, guide }],
+  })));
+  assert.ok(added.includes(`Guide: “${whole}”`), added);
+
+  const changed = formatSlackChangeSetProposal(afterRead(agentChange({ apiConnections: [billing], instructions: 'Short.' }, {
+    apiConnections: [{ ...billing, guide }],
+    instructions: 'Answer in full sentences. '.repeat(400),
+  })));
+  assert.match(changed, /Preview truncated to fit Slack/);
+  assert.ok(changed.includes(`Guide changes to “${whole}”`), 'the cut takes the instructions, not the guide');
+  assert.doesNotMatch(changed, /more characters; approval applies the full guide/);
+
+  const twoGuides = agentChange({ apiConnections: [] }, {
+    apiConnections: [{ ...billing, guide }, { ...billing, id: 'api_ledger', displayName: 'Ledger', guide }],
+  });
+  assert.equal(changeSetAccessFits(twoGuides, SLACK_PRESENTATION_DIALECT), true);
+  assert.equal(changeSetAccessFits(afterRead(twoGuides), SLACK_PRESENTATION_DIALECT), false,
+    'guides too long to show whole in one preview are refused, so the person approves only what they read');
+});
+
 test('every added list entry shows, while removed entries are capped', () => {
   const tools = Array.from({ length: 15 }, (_, index) => `tool_${String(index + 1).padStart(2, '0')}`);
   const hosts = [

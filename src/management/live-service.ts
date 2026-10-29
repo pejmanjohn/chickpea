@@ -64,6 +64,7 @@ import {
   saveManagedConnectionKey,
   testManagedConnection,
 } from './discovery.ts';
+import { readPublicDoc } from './public-doc.ts';
 
 interface LiveWorkspaceManagementServiceOptions {
   identity?: IdentityStore;
@@ -227,6 +228,7 @@ export function createLiveWorkspaceManagementService(
       settings,
       productTelemetry,
     }),
+    readPublicDoc: (url) => readPublicDoc(url),
     managedConnectorAvailable: async ({ toolkit, accessLane }) => {
       const context = await resolveManagedAuthorizationProviderContext({
         settings,
