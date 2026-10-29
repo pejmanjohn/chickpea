@@ -7,7 +7,11 @@ import { test, type TestContext } from 'node:test';
 import type { AgentInstanceHandle, ConversationStreamChunk } from '@flue/runtime';
 import type { WebClient } from '@slack/web-api';
 
-import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
+import {
+  compileRuntimePlanV2,
+  deriveRuntimePlanInstanceId,
+  type CompileRuntimePlanV2Input,
+} from '../src/agents/runtime-plan.ts';
 import {
   configureInstallationAdmission,
   resetInstallationAdmissionForTests,
@@ -151,14 +155,19 @@ function slackClient(calls: string[]): WebClient {
 /** One turn through runTurn on the legacy presenter; returns its Slack writes and delivery outcomes. */
 async function reviewedTurn(
   env: PlatformEnv | undefined,
-  extra: Partial<RunTurnOptions> & { turn?: NormalizedSlackTurn; assignment?: ResolvedAssignment; ids?: boolean } = {},
+  extra: Partial<RunTurnOptions> & {
+    turn?: NormalizedSlackTurn;
+    assignment?: ResolvedAssignment;
+    ids?: boolean;
+    browser?: Pick<CompileRuntimePlanV2Input, 'browserCapability' | 'websiteLogins'>;
+  } = {},
 ) {
-  const { turn: givenTurn, assignment = ASSIGNMENT, ids = true, ...options } = extra;
+  const { turn: givenTurn, assignment = ASSIGNMENT, ids = true, browser = {}, ...options } = extra;
   const turn = givenTurn ?? dmTurn();
   const installation = installationOwnershipOf(env);
   const runtimePlan = compileRuntimePlanV2({
     ...(installation ? { installation } : {}),
-    turn, assignment, instructions: 'Answer directly.', memoryEpoch: 1,
+    turn, assignment, instructions: 'Answer directly.', memoryEpoch: 1, ...browser,
   });
   const calls: string[] = [];
   const delivered: Array<string | undefined> = [];
@@ -251,6 +260,37 @@ test('a settled hosted turn is copied once, last, with the steps its stream show
   for (const id of ['U012ABCDEF3', 'UMEMBER12', TEAM, ASSIGNMENT.channelId, turn.messageTs]) {
     assert.equal(serialized.includes(id), false, `${id} is not in the copy`);
   }
+});
+
+const BROWSER = { browserCapability: { provider: 'browserbase' as const } };
+const SIGNED_IN = {
+  ...BROWSER,
+  websiteLogins: [{
+    id: `wl_${'b'.repeat(32)}`, host: 'billing.example.com', label: 'Billing', level: 'check' as const,
+    method: 'credentials' as const, username: 'ops@example.com',
+  }],
+};
+
+test('a turn whose plan grants a website login keeps no copy, and its reply is unchanged', async (t) => {
+  await turnState(t);
+  const port = reviewPort();
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (line: string) => { warnings.push(line); });
+  const { delivered, calls } = await reviewedTurn(HOSTED_ENV, { ...streamedReply('signed_in'), browser: SIGNED_IN });
+  assert.deepEqual(delivered, ['succeeded']);
+  assert.ok(calls.length > 0, 'the reply reached Slack');
+  assert.equal(port.records.length, 0);
+  assert.ok(warnings.includes(JSON.stringify({ component: 'run_review', event: 'website_logins_granted' })));
+  assert.equal(warnings.some((line) => /ops@example|billing|wl_b/i.test(line)), false, 'the reason carries no content');
+});
+
+test('a turn with the browser but no website login is still copied', async (t) => {
+  await turnState(t);
+  const port = reviewPort();
+  const { delivered } = await reviewedTurn(HOSTED_ENV, { ...streamedReply('public_browse'), browser: BROWSER });
+  assert.deepEqual(delivered, ['succeeded']);
+  assert.equal(port.records.length, 1);
+  assert.equal(port.records[0]?.record.source, 'stream');
 });
 
 test('a failed Agent run is copied with its error; delivery and telemetry outcomes are unchanged', async (t) => {
@@ -383,53 +423,63 @@ test('a Channel mention copies the name and size of the file it carried, never i
   }
 });
 
-test('a settlement replayed from its checkpoint is copied from one bounded history read', async (t) => {
-  await turnState(t);
-  const port = reviewPort();
-  const requests: string[] = [];
-  const submissionId = 'sub_checkpoint';
-  const turn = dmTurn();
-  const env = scopeInstallationEnv({
-    ...HOSTED,
-    [CHICKPEA_SLACK_AGENT_BINDING]: {
-      idFromName: (name: string) => name,
-      get: () => ({
-        fetch: async (request: Request) => {
-          requests.push(new URL(request.url).search);
-          return Response.json({
-            v: 1, conversationId: 'c', offset: '4', settlements: [{ submissionId, outcome: 'completed' }],
-            messages: [
-              { id: 'prompt', role: 'user', purpose: 'user', display: 'visible', submissionId, parts: [{ type: 'text', text: 'the whole prompt', state: 'done' }] },
-              {
-                id: 'response', role: 'assistant', purpose: 'assistant', display: 'visible', submissionId,
-                parts: [
-                  { type: 'dynamic-tool', toolName: 'web_fetch', toolCallId: 'call_1', state: 'output-available', input: {}, output: 'ok' },
-                  { type: 'text', text: 'Here is the plan.', state: 'done' },
-                ],
-              },
-            ],
-          });
-        },
-      }),
-    },
-  }, { installationId: INSTALLATION });
-  const { delivered } = await reviewedTurn(env, {
-    turn,
-    flueDispatch: {
-      dispatchEnvelope: { instanceId: 'instance_checkpoint' } as FlueDispatchEnvelopeV1,
-      dispatchReceipt: { submissionId, acceptedAt: new Date().toISOString(), uid: 'uid_checkpoint' },
-      flueSettlement: { outcome: 'completed', settledAt: Date.now(), result: ANSWER },
-    } as unknown as SlackFlueDispatchState,
-    // The real dispatch: a saved settlement returns before any observation.
-    agentPrompt: promptSlackThreadAgent,
+for (const signedIn of [false, true]) {
+  test(signedIn
+    ? 'a replayed settlement whose plan grants a website login keeps no copy and reads no history'
+    : 'a settlement replayed from its checkpoint is copied from one bounded history read', async (t) => {
+    await turnState(t);
+    const port = reviewPort();
+    if (signedIn) t.mock.method(console, 'warn', () => undefined);
+    const requests: string[] = [];
+    const submissionId = 'sub_checkpoint';
+    const turn = dmTurn();
+    const env = scopeInstallationEnv({
+      ...HOSTED,
+      [CHICKPEA_SLACK_AGENT_BINDING]: {
+        idFromName: (name: string) => name,
+        get: () => ({
+          fetch: async (request: Request) => {
+            requests.push(new URL(request.url).search);
+            return Response.json({
+              v: 1, conversationId: 'c', offset: '4', settlements: [{ submissionId, outcome: 'completed' }],
+              messages: [
+                { id: 'prompt', role: 'user', purpose: 'user', display: 'visible', submissionId, parts: [{ type: 'text', text: 'the whole prompt', state: 'done' }] },
+                {
+                  id: 'response', role: 'assistant', purpose: 'assistant', display: 'visible', submissionId,
+                  parts: [
+                    { type: 'dynamic-tool', toolName: 'web_fetch', toolCallId: 'call_1', state: 'output-available', input: {}, output: 'ok' },
+                    { type: 'text', text: 'Here is the plan.', state: 'done' },
+                  ],
+                },
+              ],
+            });
+          },
+        }),
+      },
+    }, { installationId: INSTALLATION });
+    const { delivered } = await reviewedTurn(env, {
+      turn,
+      flueDispatch: {
+        dispatchEnvelope: { instanceId: 'instance_checkpoint' } as FlueDispatchEnvelopeV1,
+        dispatchReceipt: { submissionId, acceptedAt: new Date().toISOString(), uid: 'uid_checkpoint' },
+        flueSettlement: { outcome: 'completed', settledAt: Date.now(), result: ANSWER },
+      } as unknown as SlackFlueDispatchState,
+      // The real dispatch: a saved settlement returns before any observation.
+      agentPrompt: promptSlackThreadAgent,
+      ...(signedIn ? { browser: SIGNED_IN } : {}),
+    });
+    assert.deepEqual(delivered, ['succeeded']);
+    if (signedIn) {
+      assert.deepEqual([requests, port.records], [[], []]);
+      return;
+    }
+    assert.deepEqual(requests, ['?view=history&limit=20']);
+    assert.equal(port.records.length, 1);
+    assert.equal(port.records[0]?.record.source, 'history');
+    assert.equal(port.records[0]?.record.model, 'local-stub/review-1');
+    assert.deepEqual(port.records[0]?.record.steps, [
+      { kind: 'tool', name: 'web_fetch', input: '{}', output: 'ok' },
+      { kind: 'text', text: 'Here is the plan.' },
+    ]);
   });
-  assert.deepEqual(delivered, ['succeeded']);
-  assert.deepEqual(requests, ['?view=history&limit=20']);
-  assert.equal(port.records.length, 1);
-  assert.equal(port.records[0]?.record.source, 'history');
-  assert.equal(port.records[0]?.record.model, 'local-stub/review-1');
-  assert.deepEqual(port.records[0]?.record.steps, [
-    { kind: 'tool', name: 'web_fetch', input: '{}', output: 'ok' },
-    { kind: 'text', text: 'Here is the plan.' },
-  ]);
-});
+}

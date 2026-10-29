@@ -374,6 +374,7 @@ export async function executeRoutineOccurrence(
       surface: 'routine',
       // Fails closed: a Channel routine is copied only once Slack said its Channel is unshared.
       sharedChannel: prepared.routine.destination.kind !== 'direct_thread' && prepared.access.channelShared !== false,
+      grantsWebsiteLogins: Boolean(executionInitialData(prepared.envelope).runtimePlan.websiteLogins?.length),
       settings: () => dependencies.settingsStore ?? getSettingsStore(input.env),
     });
     const remainingMs = prepared.run.deadlineAt - now();

@@ -29,6 +29,12 @@ export interface RunReviewStart {
   surface: RunReviewSurface;
   /** Shared beyond the workspace, as through Slack Connect: never captured. */
   sharedChannel?: boolean;
+  /**
+   * The run's frozen plan grants a website login: never captured. Such a run
+   * may browse signed in, and no step-by-step rule can keep what a signed-in
+   * page showed out of its trace, its truncation, or the Agent's own words.
+   */
+  grantsWebsiteLogins: boolean;
   /** Where the installation's review key is kept; reached only once a copy is built. */
   settings: () => SettingsStore;
   /** A read of the key already made, as a thread runner's is; it answers the first read only. */
@@ -62,8 +68,8 @@ export interface RunReviewSession {
 
 /**
  * A run's review session, or undefined: no port, no installation, a shared
- * channel, or the host not capturing. A slow or failing answer is not
- * capturing.
+ * channel, the host not capturing, or a plan that grants a website login. A
+ * slow or failing answer is not capturing.
  */
 export async function startRunReview(
   env: PlatformEnv | undefined,
@@ -75,7 +81,12 @@ export async function startRunReview(
   if (!installationId) return undefined;
   const capturing = await within(() => port.capturing(installationId), CAPTURING_BOUND_MS).catch(() => TIMED_OUT);
   if (capturing === TIMED_OUT) warn('capturing_unavailable');
-  return capturing === true ? new Session(port, installationId, start) : undefined;
+  if (capturing !== true) return undefined;
+  if (start.grantsWebsiteLogins) {
+    warn('website_logins_granted');
+    return undefined;
+  }
+  return new Session(port, installationId, start);
 }
 
 /** A Slack turn's trigger and context rows; people are named by Slack user ID until the builder pseudonymizes them. */

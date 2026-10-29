@@ -1169,6 +1169,7 @@ async function runTurnAttempt(
         sharedChannel: slackConversationKind(turn) === 'im'
           ? turn.sharedChannel === true
           : turn.sharedChannel !== false,
+        grantsWebsiteLogins: Boolean(runtimePlanDecision.runtimePlan.websiteLogins?.length),
         settings: () => settingsStore ?? getSettingsStore(platformEnv),
         ...(options.runReviewSettings ? { prefetched: options.runReviewSettings } : {}),
       })
