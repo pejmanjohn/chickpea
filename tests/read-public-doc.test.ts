@@ -387,10 +387,16 @@ test('a page that does not answer in time is reported, not waited on', async () 
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     });
   }) as typeof globalThis.fetch;
+  // Node unrefs AbortSignal.timeout's timer; with nothing else live the loop drains and the read never settles.
+  const keepAlive = setTimeout(() => undefined, 5_000);
   const started = Date.now();
-  const result = await readPublicDoc(new URL(DOCS), { cloudflare: true, fetch: silent, timeoutMs: 50 });
-  assert.equal(result.outcome === 'unreadable' ? result.reason : result.outcome, 'timeout');
-  assert.ok(Date.now() - started < 5_000);
+  try {
+    const result = await readPublicDoc(new URL(DOCS), { cloudflare: true, fetch: silent, timeoutMs: 50 });
+    assert.equal(result.outcome === 'unreadable' ? result.reason : result.outcome, 'timeout');
+    assert.ok(Date.now() - started < 5_000);
+  } finally {
+    clearTimeout(keepAlive);
+  }
 });
 
 test('read_public_doc is not on the MCP door, and the service refuses it there', async () => {
