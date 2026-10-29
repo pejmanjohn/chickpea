@@ -115,6 +115,7 @@ export function fakeBrowserProvider(overrides: Partial<BrowserProvider> = {}) {
     async createContext() {
       return { id: 'ctx' };
     },
+    async deleteContext() {},
     ...overrides,
   };
   return { provider, created, ended };

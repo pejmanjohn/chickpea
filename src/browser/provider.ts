@@ -44,6 +44,8 @@ export interface BrowserProvider {
   requestRecordingDownloads(sessionId: string): Promise<void>;
   listRecordingDownloads(sessionId: string): Promise<BrowserRecordingDownload[]>;
   createContext(name?: string): Promise<{ id: string }>;
+  /** Deletes a context and the signed-in state it holds; one already gone counts as deleted. */
+  deleteContext(contextId: string): Promise<void>;
 }
 
 export class BrowserProviderError extends Error {

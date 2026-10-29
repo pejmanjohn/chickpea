@@ -37,7 +37,7 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
   // against the bb_ signature that the shared redactor recognizes.
   const redact = (text: string) => (apiKey ? text.split(apiKey).join('[redacted]') : text);
 
-  async function request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ status: number; data: unknown }> {
+  async function request(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<{ status: number; data: unknown }> {
     const headers: Record<string, string> = { 'X-BB-API-Key': apiKey, Accept: 'application/json' };
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
@@ -153,6 +153,14 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
       const id = str(asObject(data).id);
       if (!id) throw new BrowserProviderError('Browserbase context response is missing id');
       return { id };
+    },
+
+    async deleteContext(contextId: string): Promise<void> {
+      try {
+        await request('DELETE', `/v1/contexts/${encodeURIComponent(contextId)}`);
+      } catch (error) {
+        if (!(error instanceof BrowserProviderError) || error.status !== 404) throw error;
+      }
     },
   };
 }

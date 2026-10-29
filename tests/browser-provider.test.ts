@@ -144,6 +144,23 @@ test('createContext posts project and name', async () => {
   assert.deepEqual(calls[0]!.body, { projectId: 'proj-1', name: 'agent-a' });
 });
 
+test('deleteContext deletes by id, treats 404 as already gone, and keeps the key out of other failures', async () => {
+  const { calls, fetchImpl } = fakeFetch((call) =>
+    call.url.endsWith('/gone') ? { status: 404 } : call.url.endsWith('/broken') ? { status: 500, body: `oops ${API_KEY}` } : { status: 204 });
+  const provider = createBrowserbaseProvider({ apiKey: API_KEY, fetch: fetchImpl });
+  await provider.deleteContext('ctx/1');
+  assert.equal(calls[0]!.method, 'DELETE');
+  assert.equal(calls[0]!.url, 'https://api.browserbase.com/v1/contexts/ctx%2F1');
+  assert.equal(calls[0]!.headers['X-BB-API-Key'], API_KEY);
+  await provider.deleteContext('gone');
+  await assert.rejects(provider.deleteContext('broken'), (error: unknown) => {
+    assert.ok(error instanceof BrowserProviderError);
+    assert.equal(error.status, 500);
+    assert.ok(!error.message.includes(API_KEY));
+    return true;
+  });
+});
+
 test('errors never contain the API key and truncate the body to 300 characters', async () => {
   const body = `bad key ${API_KEY} ` + 'x'.repeat(1000);
   const { fetchImpl } = fakeFetch(() => ({ status: 401, body }));
