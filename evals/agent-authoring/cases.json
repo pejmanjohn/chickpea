@@ -1349,7 +1349,7 @@
         "skillCreation": "forbidden",
         "posture": "commit",
         "placements": ["connection"],
-        "requiredInspections": ["read_web_page", "try_connection"],
+        "requiredInspections": ["try_connection"],
         "toolClass": "direct_apply",
         "mutationAllowance": "direct_apply",
         "approvalPosture": "proposal_required",
