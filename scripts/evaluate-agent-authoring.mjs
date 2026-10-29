@@ -36,7 +36,7 @@ import {
   manageAgentSkillValibotSchema,
   prepareConnectorSetupValibotSchema,
   proposeWorkspaceChangesValibotSchema,
-  testMcpConnectionValibotSchema,
+  testConnectionValibotSchema,
 } from '../src/management/schemas.ts';
 
 const CORPUS_PATH = new URL('../evals/agent-authoring/cases.json', import.meta.url);
@@ -97,7 +97,7 @@ const INSPECTION_TOOLS = new Set([
   'inspect_memory',
   'inspect_routines',
   'discover_slack_channels',
-  'test_mcp_connection',
+  'test_connection',
 ]);
 const MANAGEMENT_TOOLS = new Set([
   ...INSPECTION_TOOLS,
@@ -234,9 +234,9 @@ function useEvaluationTools() {
     run: () => ({ output: JSON.stringify({ channels: ['support', 'incidents'] }) }),
   });
   useTool({
-    name: 'test_mcp_connection',
-    description: 'Test one already-configured MCP connection without changing it.',
-    input: testMcpConnectionValibotSchema,
+    name: 'test_connection',
+    description: 'Test one already-configured API or MCP connection without changing it.',
+    input: testConnectionValibotSchema,
     output: v.string(),
     run: () => ({ output: JSON.stringify({ healthy: true }) }),
   });

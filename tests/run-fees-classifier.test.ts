@@ -285,7 +285,7 @@ test('setting up Chickpea itself never makes a reply a task', () => {
     'Agent authoring': ['propose_workspace_changes', 'apply_workspace_changes', 'confirm_workspace_change', 'undo_workspace_change', 'get_operation'],
     schedules: ['manage_scheduled_work', 'inspect_routines'],
     skills: ['propose_skill_import', 'import_skill', 'manage_agent_skill'],
-    destinations: ['discover_slack_channels', 'prepare_connector_setup', 'test_mcp_connection', 'authorize_personal_connection', 'revoke_setup_link'],
+    destinations: ['discover_slack_channels', 'prepare_connector_setup', 'test_connection', 'authorize_personal_connection', 'revoke_setup_link'],
     settings: ['inspect_workspace', 'prepare_provider_setup', 'export_workspace_recipe', 'preview_workspace_recipe'],
     memory: ['update_agent_memory', 'inspect_memory'],
   };

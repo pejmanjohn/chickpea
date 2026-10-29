@@ -51,6 +51,14 @@
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
   var MANAGED_CONNECTOR_PRESETS = CONFIG.managedConnectorPresets;
   var CONNECTION_CATALOG_PRESETS = CONFIG.connectionCatalogPresets;
+  // What a saved API connection's key check found (ConnectionCheckOutcome in connection-check.ts).
+  var CONNECTION_CHECK_NOTICES = {
+    ok: " is connected, and its token works.",
+    not_permitted: " is saved. The API accepted its token but did not permit the request Chickpea tried.",
+    path_not_found: " is saved. The API accepted its token but did not find the path Chickpea tried.",
+    unreachable: " is saved, but Chickpea could not reach the API to check its token.",
+    inconclusive: " is saved, but Chickpea could not confirm that its token works."
+  };
   var CONNECTOR_LOGOS = CONFIG.connectorLogos;
   // Reuse the server-painted mascot after the first render instead of embedding
   // its raster data URL a third time inside this client script.
@@ -4186,6 +4194,7 @@
     var prepare = Promise.resolve();
     var accountCreated = false;
     var createdAccountId = "";
+    var createdCheck = "";
     var googleClientSaved = false;
     if (form.kind === "mcp" && !form.preset && !mcpOauth) {
       var customTest = { id: connectionId, url: body.mcp.url, transport: body.mcp.transport, authMode: body.mcp.authMode };
@@ -4230,6 +4239,7 @@
     }).then(function (created) {
       accountCreated = true;
       createdAccountId = created && created.account && created.account.id || "";
+      createdCheck = created && created.check && created.check.kind || "";
       if ((googleOauth || mcpOauth) && !createdAccountId) throw new Error("Connection response was missing its account.");
       if (googleOauth) {
         return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(createdAccountId) + "/oauth/api/client", "PUT", {
@@ -4247,7 +4257,8 @@
       return loadAgentConnections(agentId);
     }).then(function (result) {
       if (result && result.oauthStarted) return;
-      setAgentConnectionNotice(label + (form.kind === "api" && !form.preset ? " is saved. Its API token has not been verified." : " is connected to this Agent."), createdAccountId);
+      var noticeCheck = form.preset && createdCheck === "path_not_found" ? "" : createdCheck;
+      setAgentConnectionNotice(label + (Object.prototype.hasOwnProperty.call(CONNECTION_CHECK_NOTICES, noticeCheck) ? CONNECTION_CHECK_NOTICES[noticeCheck] : " is connected to this Agent."), createdAccountId);
       render();
     }).catch(function (error) {
       if (accountCreated) {
@@ -7042,7 +7053,7 @@
       '<div class="field"><label class="field-label" for="custom-api-name">Name</label><input id="custom-api-name" class="input" value="' + esc(form.label) + '" data-action="connection-account-label"></div>' +
       connectionAccountEndpointHtml(form, null, false) +
       '<div class="field"><label class="field-label" for="custom-api-token">API token</label><input id="custom-api-token" class="input mono" type="password" autocomplete="off" value="' + esc(form.credential) + '" data-action="connection-account-credential"><p class="hint">For Google sign-in, choose a Google connector from Connections.</p></div>' +
-      '<div class="field"><label class="field-label" for="custom-api-access">Request access</label><select id="custom-api-access" class="input" data-action="custom-api-access"><option value="read"' + (form.apiAccess !== 'write' ? ' selected' : '') + '>Read only (GET, HEAD)</option><option value="write"' + (form.apiAccess === 'write' ? ' selected' : '') + '>Read and write</option></select><p class="hint">Requests are limited to the host and path entered above. Saving does not verify the token with the API.</p></div>' +
+      '<div class="field"><label class="field-label" for="custom-api-access">Request access</label><select id="custom-api-access" class="input" data-action="custom-api-access"><option value="read"' + (form.apiAccess !== 'write' ? ' selected' : '') + '>Read only (GET, HEAD)</option><option value="write"' + (form.apiAccess === 'write' ? ' selected' : '') + '>Read and write</option></select><p class="hint">Requests are limited to the host and path entered above. Saving checks the token with one read request to that URL.</p></div>' +
       '<details class="advanced"><summary>Advanced</summary><div class="field"><label class="field-label" for="custom-api-header">Token header</label><input id="custom-api-header" class="input mono" value="' + esc(form.headerName || 'Authorization') + '" data-action="custom-api-header"></div><div class="field"><label class="field-label" for="custom-api-prefix">Token prefix</label><input id="custom-api-prefix" class="input mono" value="' + esc(form.headerValuePrefix === undefined ? 'Bearer ' : form.headerValuePrefix) + '" data-action="custom-api-prefix"><p class="hint">Use an empty prefix for headers such as X-API-Key.</p></div></details>' +
       (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
       '<div class="skill-form-actions"><button class="btn btn-ghost btn-sm" data-action="connection-account-cancel">Cancel</button><button class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !form.ownerKind ? ' disabled' : '') + '>' + (busy ? 'Saving&hellip;' : 'Save connection') + '</button></div></div></fieldset>';

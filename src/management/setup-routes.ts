@@ -121,6 +121,13 @@ import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { MANAGED_CONNECTOR_CATALOG, type ManagedConnectorCatalog } from '../connections/catalog/index.ts';
 import {
+  checkConnection,
+  connectionUrlPrefixes,
+  type ApiConnectionCheck,
+  type ApiConnectionScope,
+  type ConnectionCheckOptions,
+} from '../connections/connection-check.ts';
+import {
   ManagedConnectionLaneExistsError,
   cancelManagedAuthorizationFlow,
   pollManagedAuthorizationFlow,
@@ -213,6 +220,8 @@ interface ManagementSetupRoutesOptions {
   resolveMcpOAuthToken?: typeof resolveMcpOAuthAccessToken;
   discoverMcp?: typeof discoverMcpTools;
   identifyMcp?: typeof discoverMcpConnectionIdentity;
+  /** Test seam; production checks a key on the running target with the default timeout. */
+  connectionCheck?: ConnectionCheckOptions;
   /** Test seam; production resolves the current Better Auth browser session. */
   authenticatePrincipal?: (request: Request) => Promise<AuthPrincipal | undefined>;
 }
@@ -340,7 +349,7 @@ export function createManagementSetupRoutes(
     if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
       return terminalPage(c, setup);
     }
-    return c.html(await renderSetupSummary(setup));
+    return c.html(await renderSetupSummary(setup, { destination: await setupDestination(setup, dependencies) }));
   });
 
   app.post('/setup/:setupOperationId/exchange', async (c) => {
@@ -412,7 +421,7 @@ export function createManagementSetupRoutes(
     );
     if (!setup) return genericDenied(c);
     const fields = await readFormFields(c);
-    if (!fields) return formFailure(c, setup, 'invalid_form');
+    if (!fields) return formFailure(c, setup, dependencies);
     try {
       if (setup.action === 'catalog_connection') {
         if (principal.organizationId !== setup.organizationId) throw new AuthorizationError();
@@ -428,11 +437,14 @@ export function createManagementSetupRoutes(
       const result = await completeFormAction(setup, fields, dependencies, options, now());
       await finishSetup(c, setup, result, dependencies, options, now());
       clearSetupCookie(c, setupId);
-      return c.redirect(`/setup/${encodeURIComponent(setupId)}`, 303);
+      const check = result.check && result.check !== 'ok' ? `?check=${result.check}` : '';
+      return c.redirect(`/setup/${encodeURIComponent(setupId)}${check}`, 303);
     } catch (error) {
       if (error instanceof AuthorizationError) return genericDenied(c);
       await markSetupFailure(setup, c, dependencies.management, safeFailureCode(error), now());
-      return formFailure(c, setup, safeFailureCode(error));
+      return formFailure(
+        c, setup, dependencies, error instanceof SetupKeyRejectedError ? error.message : undefined,
+      );
     }
   });
 
@@ -531,7 +543,7 @@ export function createManagementSetupRoutes(
     );
     if (!setup) return genericDenied(c);
     const fields = await readFormFields(c);
-    if (!fields) return formFailure(c, setup, 'invalid_form');
+    if (!fields) return formFailure(c, setup, dependencies);
 
     let activeSetup = setup;
     try {
@@ -747,7 +759,7 @@ export function createManagementSetupRoutes(
           ? c.html(renderCatalogConnectionSetupPage({ ...page, failureMessage: message }), 422)
           : unavailablePage(c);
       }
-      return formFailure(c, activeSetup, safeFailureCode(error));
+      return formFailure(c, activeSetup, dependencies);
     }
   });
 
@@ -2289,7 +2301,7 @@ async function completeFormAction(
   dependencies: SetupDependencies,
   options: ManagementSetupRoutesOptions,
   at: number,
-): Promise<{ connector?: string; accountLabel?: string }> {
+): Promise<{ connector?: string; accountLabel?: string; check?: ApiConnectionCheck['kind'] }> {
   await assertExactTarget(setup, dependencies);
   if (setup.action === 'provider_credential') {
     const providerId = setup.target.provider as ProviderKeyId;
@@ -2329,12 +2341,21 @@ async function completeFormAction(
   }
   if (setup.action === 'api_credential') {
     const entry = await currentSetupConnection(setup, dependencies);
-    if (entry.account.policy.kind !== 'api' || entry.account.policy.authMode !== 'credential') {
+    const { policy } = entry.account;
+    if (policy.kind !== 'api' || policy.authMode !== 'credential') {
       throw new Error('target_changed');
     }
     const credential = requiredField(fields, 'credential', 16_384);
+    const check = await checkConnection({
+      kind: 'api',
+      connection: policy,
+      credential,
+      authorize: async () => (await currentSetupConnection(setup, dependencies)
+        .catch(() => undefined))?.account.revision === entry.account.revision,
+    }, options.connectionCheck);
+    if (check.kind === 'key_rejected') throw new SetupKeyRejectedError(policy.allowedHosts[0]!);
     await completeSetupCredential(setup, dependencies, entry, credential, {});
-    return { connector: setup.target.targetLabel };
+    return { connector: setup.target.targetLabel, check: check.kind };
   }
   if (setup.action === 'mcp_credentials') {
     const entry = await currentSetupConnection(setup, dependencies);
@@ -2369,8 +2390,13 @@ async function completeFormAction(
       headers,
       authorizeRequest,
     };
-    const discovery = await (options.discoverMcp ?? discoverMcpTools)(discoveryInput);
+    const check = await checkConnection({ kind: 'mcp', server: discoveryInput }, {
+      ...options.connectionCheck,
+      ...(options.discoverMcp ? { discoverMcp: options.discoverMcp } : {}),
+    });
     await authorizeRequest();
+    if (check.kind === 'key_rejected') throw new SetupKeyRejectedError(new URL(validated.url).host);
+    if (check.kind !== 'ok') throw new Error('mcp_check_failed');
     const identity = await (options.identifyMcp ?? discoverMcpConnectionIdentity)({
       ...discoveryInput,
       ...(policy.presetId ? { presetId: policy.presetId } : {}),
@@ -2378,8 +2404,8 @@ async function completeFormAction(
     await completeSetupCredential(setup, dependencies, entry, credential, {
       policy: {
         ...policy,
-        discoveredTools: discovery.tools,
-        allowedTools: allowedToolsAfterMcpDiscovery(policy, discovery.tools),
+        discoveredTools: check.tools,
+        allowedTools: allowedToolsAfterMcpDiscovery(policy, check.tools),
       },
       ...(identity ? { identity } : {}),
     });
@@ -2935,8 +2961,9 @@ async function markSetupFailure(
 
 async function renderSetupSummary(
   setup: ManagementSetupRecord,
-  failureCode?: string,
+  input: { failure?: string | undefined; destination?: ApiConnectionScope | undefined } = {},
 ): Promise<string> {
+  const failure = input.failure ?? (setup.status === 'failed' ? SETUP_FAILED_TEXT : undefined);
   const action = setup.action === 'api_oauth' || setup.action === 'mcp_oauth' ||
       setup.action === 'repository_access'
     ? 'authorize'
@@ -2951,9 +2978,10 @@ async function renderSetupSummary(
     <h1>Connect ${escapeHtml(setup.target.targetLabel)}</h1>
     <dl><div><dt>Provider</dt><dd>${escapeHtml(setup.target.provider)}</dd></div>
     <div><dt>Target</dt><dd>${escapeHtml(setup.target.agentName ?? setup.target.targetLabel)}</dd></div>
-    <div><dt>Requested access</dt><dd>${escapeHtml(setup.scopes.join(', ') || 'Provider default')}</dd></div></dl>
+    <div><dt>Requested access</dt><dd>${escapeHtml(setup.scopes.join(', ') || 'Provider default')}</dd></div>
+    ${input.destination ? destinationRows(input.destination) : ''}</dl>
     ${setup.target.replacement ? '<p class="warning">This will replace the currently connected credential.</p>' : ''}
-    ${failureCode || setup.status === 'failed' ? '<p class="error">Setup did not complete. Secret fields were cleared; follow the steps and try again.</p>' : ''}
+    ${failure ? `<p class="error">${escapeHtml(failure)}</p>` : ''}
     <form method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/${action}" autocomplete="off">
       ${fields}<button type="submit">Continue</button>
     </form>`,
@@ -2965,10 +2993,13 @@ function terminalPage(c: Context, setup: ManagementSetupRecord): Response {
     return managedUnavailablePage(c);
   }
   if (setup.status === 'completed') {
+    const saved = keySavedText(c.req.query('check'));
     return c.html(renderSetupPanelPage({
       title: 'Setup complete',
       surface: 'setup-complete',
-      content: '<h1>Connected</h1><p>This setup is complete. You can close this window.</p>',
+      content: saved
+        ? `<h1>Key saved</h1><p>${escapeHtml(saved)} You can close this window.</p>`
+        : '<h1>Connected</h1><p>This setup is complete. You can close this window.</p>',
     }));
   }
   return unavailablePage(c);
@@ -2989,9 +3020,54 @@ function unavailablePage(c: Context): Response {
 async function formFailure(
   c: Context,
   setup: ManagementSetupRecord,
-  code: string,
+  dependencies: SetupDependencies,
+  failure = SETUP_FAILED_TEXT,
 ): Promise<Response> {
-  return c.html(await renderSetupSummary(setup, code), 422);
+  return c.html(await renderSetupSummary(setup, {
+    failure,
+    destination: await setupDestination(setup, dependencies),
+  }), 422);
+}
+
+const SETUP_FAILED_TEXT = 'Setup did not complete. Secret fields were cleared; follow the steps and try again.';
+
+type KeySavedCheck = Exclude<ApiConnectionCheck['kind'], 'ok' | 'key_rejected'>;
+
+/** What the completed page says when an API key was saved but its check did not show it working. */
+const KEY_SAVED_TEXT: Record<KeySavedCheck, string> = {
+  not_permitted: 'The API accepted your key but did not permit the request Chickpea tried, so some requests may be refused.',
+  path_not_found: 'The API accepted your key but did not find the path Chickpea tried.',
+  unreachable: 'Chickpea could not reach the API to confirm that your key works.',
+  inconclusive: 'Chickpea could not confirm that your key works.',
+};
+
+function keySavedText(check: string | undefined): string | undefined {
+  return check !== undefined && Object.hasOwn(KEY_SAVED_TEXT, check)
+    ? KEY_SAVED_TEXT[check as KeySavedCheck]
+    : undefined;
+}
+
+class SetupKeyRejectedError extends Error {
+  constructor(host: string) {
+    super(`${host} rejected this key. Check that you copied the whole key, then try again.`);
+  }
+}
+
+/** The API connection an API setup's key is for, so the page can show where the key goes. */
+async function setupDestination(
+  setup: ManagementSetupRecord,
+  dependencies: SetupDependencies,
+): Promise<ApiConnectionScope | undefined> {
+  if (setup.action !== 'api_credential') return undefined;
+  const policy = (await setupConnectionEntry(setup, dependencies))?.account.policy;
+  return policy?.kind === 'api' ? policy : undefined;
+}
+
+function destinationRows(connection: ApiConnectionScope): string {
+  const methods = connection.allowedMethods.map((method) => method.toUpperCase());
+  const access = methods.every((method) => method === 'GET' || method === 'HEAD') ? 'Read only' : 'Read and write';
+  return `<div><dt>Key sent only to</dt><dd>${connectionUrlPrefixes(connection).map(escapeHtml).join('<br>')}</dd></div>
+    <div><dt>Allowed requests</dt><dd>${escapeHtml(`${access} (${methods.join(', ')})`)}</dd></div>`;
 }
 
 function renderGithubManifestPost(target: string, manifest: unknown): string {
@@ -3141,6 +3217,7 @@ function digest(value: string): string {
 }
 
 function safeFailureCode(error: unknown): string {
+  if (error instanceof SetupKeyRejectedError) return 'key_rejected';
   if (error instanceof ManagementError) return error.code;
   if (error instanceof McpOAuthError) return error.code;
   if (error instanceof AgentConnectionCredentialConflictError) return 'target_changed';

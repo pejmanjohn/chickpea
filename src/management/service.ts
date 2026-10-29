@@ -186,7 +186,8 @@ import {
   type WorkspaceRecipe,
   type WorkspaceRecipePreview,
 } from './recipes.ts';
-import type { McpConnectionTestActor, McpConnectionTestResult, OpenMcpServer } from './discovery.ts';
+import type { ConnectionCheckOutcome } from '../connections/connection-check.ts';
+import type { ConnectionTestActor, McpConnectionTestResult, OpenMcpServer } from './discovery.ts';
 import type { ManagementStore } from './store.ts';
 import { changeSetAccessFits } from './change-set-presentation.ts';
 import {
@@ -416,11 +417,12 @@ export interface WorkspaceManagementServiceInput {
     patch: ConfigAgentPatch;
   }) => Promise<CustomAgentConfig>;
   discoverSlackChannels?: (actor: LiveManagementActor) => Promise<unknown>;
-  testMcpConnection?: (
-    agentId: string,
-    connectionId: string,
-    actor: McpConnectionTestActor,
-  ) => Promise<unknown>;
+  testConnection?: (input: {
+    agentId: string;
+    connectionId: string;
+    actor: ConnectionTestActor;
+    path?: string;
+  }) => Promise<ConnectionCheckOutcome>;
   /** Lists an open MCP server's tools before a write saves it, as Admin's Test connection does. */
   discoverMcpServer?: (server: OpenMcpServer) => Promise<McpConnectionTestResult>;
   /** The website-login realm Admin reads and deletes from. */
@@ -1883,33 +1885,43 @@ export class WorkspaceManagementService {
     return this.stores.discoverSlackChannels(actor);
   }
 
-  async testMcpConnection(
+  async testConnection(
     context: ApplyWorkspaceChangesInput['context'],
-    agentId: string,
-    connectionId: string,
-  ): Promise<unknown> {
+    input: { agentId: string; connectionId: string; path?: string | undefined },
+  ): Promise<ConnectionCheckOutcome> {
+    const { agentId, connectionId } = input;
     const actor = await this.requireLiveActor(context);
     this.assertActingAgentScope(actor, {
       scope: 'agent',
       agentId,
-      requestedAction: 'test_mcp_connection',
+      requestedAction: 'test_connection',
       target: { kind: 'agent', id: agentId },
     });
     const { connections } = await this.agentWithConnections(
       actor,
       await this.requireEditableAgent(actor, agentId),
     );
-    if (!this.stores.testMcpConnection) {
-      throw new ManagementError('invalid_request', 'MCP connection testing is unavailable.');
+    if (!this.stores.testConnection) {
+      throw new ManagementError('invalid_request', 'Connection testing is unavailable.');
     }
     const [workspaceId] = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
-    if (!workspaceId) throw new ManagementError('invalid_request', 'The MCP connection was not found.');
-    const resolved = resolveAgentConnectionId(connections, 'mcp', connectionId);
-    return this.stores.testMcpConnection(
+    if (!workspaceId) throw new ManagementError('invalid_request', 'The connection was not found.');
+    const accountIds = new Set((['mcp', 'api'] as const).flatMap((lane) => {
+      const resolved = resolveAgentConnectionId(connections, lane, connectionId);
+      return resolved === undefined ? [] : [connections[lane].get(resolved)!.account.id];
+    }));
+    if (accountIds.size > 1) {
+      throw new ManagementError(
+        'invalid_request',
+        `More than one connection uses ${connectionId}. Name the one to test by its id from inspect_workspace.`,
+      );
+    }
+    return this.stores.testConnection({
       agentId,
-      resolved === undefined ? connectionId : connections.mcp.get(resolved)!.account.id,
-      { workspaceId, actorMembershipId: actor.membershipId },
-    );
+      connectionId: [...accountIds][0] ?? connectionId,
+      actor: { workspaceId, actorMembershipId: actor.membershipId },
+      ...(input.path === undefined ? {} : { path: input.path }),
+    });
   }
 
   async inspectMemory(

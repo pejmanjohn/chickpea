@@ -9,13 +9,11 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { ConnectionAccountPolicy } from '../src/config/types.ts';
 import { ConnectionAccountService } from '../src/connections/store.ts';
 import type { IdentityResolution } from '../src/identity/types.ts';
-import { discoverOpenMcpServer, testManagedMcpConnection } from '../src/management/discovery.ts';
+import { discoverOpenMcpServer, testManagedConnection } from '../src/management/discovery.ts';
 import type { ManagementMcpConnection } from '../src/management/agent-connections.ts';
-import {
-  ManagementError,
-  type ManagementApplyResult,
-  type ManagementWorkspaceSnapshot,
-} from '../src/management/types.ts';
+import { invokeWorkspaceManagementTool, type WorkspaceManagementToolResult } from '../src/management/tool-adapter.ts';
+import type { ManagementApplyResult, ManagementWorkspaceSnapshot } from '../src/management/types.ts';
+import { withConnectionNetwork } from './helpers/connection-network.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 interface FakeServer {
@@ -66,15 +64,14 @@ function fakeRemoteServers() {
 async function fixture() {
   const settings = new SqliteSettingsStore(':memory:');
   const remote = fakeRemoteServers();
-  const f = await createManagementAdapterFixture('test-mcp-connection', {
-    testMcpConnection: (agentId, connectionId, actor) => testManagedMcpConnection({
-      agentId,
-      connectionId,
-      actor,
+  const f = await createManagementAdapterFixture('test-connection', {
+    testConnection: (input) => testManagedConnection({
+      ...input,
       config: f.config,
       identity: f.identity,
       settings,
       createGuardedFetch: remote.createGuardedFetch,
+      connectionCheck: { cloudflare: true },
     }),
     discoverMcpServer: (server) => discoverOpenMcpServer({ server, createGuardedFetch: remote.createGuardedFetch }),
   });
@@ -82,7 +79,7 @@ async function fixture() {
   const member = await addMember(f, 'U11223344');
   const otherMember = await addMember(f, 'U55667788');
   const agent = await f.config.createAgent({
-    id: 'agent_test_mcp_connection', name: 'MCP tester', instructions: 'Answer directly.',
+    id: 'agent_test_connection', name: 'Connection tester', instructions: 'Answer directly.',
     enabled: true, kind: 'user', creatorMembershipId: member.membership.id,
     editPolicy: 'all_workspace_members', skills: [], mcpServers: [], apiConnections: [], repositories: [],
   });
@@ -94,24 +91,34 @@ async function fixture() {
     policy: ConnectionAccountPolicy;
     credential?: string;
     agentId?: string;
+    providerId?: string;
+    allowedCapabilities?: string[];
   }) => (await accounts.createForAgent({
     principal: principal(input.by),
     agentId: input.agentId ?? agent.id,
     workspaceId,
     ownerKind: input.ownerKind,
-    providerId: 'fixture',
+    providerId: input.providerId ?? 'fixture',
     label: 'Fixture MCP',
     policy: input.policy,
     ...(input.credential ? { credential: input.credential } : {}),
-    allowedCapabilities: ['fixture_status'],
+    allowedCapabilities: input.allowedCapabilities ?? ['fixture_status'],
   })).account;
-  const testAs = (by: IdentityResolution, connectionId: string, agentId = agent.id) =>
-    f.service.testMcpConnection({
+  /** Calls test_connection through the tool adapter, as both doors do. */
+  const testAs = (
+    by: IdentityResolution,
+    connectionId: string,
+    agentId = agent.id,
+    path?: string,
+  ): Promise<WorkspaceManagementToolResult> => invokeWorkspaceManagementTool({
+    service: f.service,
+    resolveContext: async () => ({
       userId: by.user.id,
       membershipId: by.membership.id,
       organizationId: by.membership.organizationId,
-      origin: { kind: 'mcp', clientId: 'test-mcp-connection' },
-    }, agentId, connectionId);
+      origin: { kind: 'mcp', clientId: 'test-connection' },
+    }),
+  }, 'test_connection', { agentId, connectionId, ...(path === undefined ? {} : { path }) });
   const admin = f.admin;
   return {
     ...f, settings, remote, agent, member, otherMember, admin, workspaceId, createConnection, testAs,
@@ -195,7 +202,7 @@ function principal(resolution: IdentityResolution): AuthPrincipal {
     role: resolution.membership.role,
     authenticatorKind: 'session',
     credentialId: `session:${resolution.membership.id}`,
-    correlationId: 'test-mcp-connection',
+    correlationId: 'test-connection',
     machine: false,
   };
 }
@@ -211,15 +218,21 @@ function mcpPolicy(
   };
 }
 
-function toolNames(result: unknown): string[] {
-  assert.equal((result as { ok?: unknown }).ok, true, `expected a passing test, got ${JSON.stringify(result)}`);
-  return (result as { tools: Array<{ name: string }> }).tools.map(({ name }) => name);
+/** The check test_connection returned. */
+function outcome(response: WorkspaceManagementToolResult): Record<string, unknown> & { kind: string } {
+  assert.equal(response.ok, true, JSON.stringify(response));
+  return (response as { result: Record<string, unknown> & { kind: string } }).result;
 }
 
-const notFound = (error: unknown) =>
-  error instanceof ManagementError && error.message === 'The MCP connection was not found.';
+function toolNames(response: WorkspaceManagementToolResult): string[] {
+  const result = outcome(response);
+  assert.equal(result.kind, 'ok', `expected a passing test, got ${JSON.stringify(result)}`);
+  return (result.tools as Array<{ name: string }>).map(({ name }) => name);
+}
 
-test('test_mcp_connection tests an Admin-created bearer-token connection with its saved credential', async () => {
+const NOT_FOUND = { ok: false, error: { code: 'invalid_request', message: 'The connection was not found.' } };
+
+test('test_connection tests an Admin-created bearer-token MCP connection with its saved credential', async () => {
   const f = await fixture();
   try {
     const origin = 'https://bearer.example.com';
@@ -237,7 +250,7 @@ test('test_mcp_connection tests an Admin-created bearer-token connection with it
   } finally { f.close(); }
 });
 
-test('test_mcp_connection sends a header-credential connection its saved key with the prefix', async () => {
+test('test_connection sends a header-credential MCP connection its saved key with the prefix', async () => {
   const f = await fixture();
   try {
     const origin = 'https://header.example.com';
@@ -256,7 +269,7 @@ test('test_mcp_connection sends a header-credential connection its saved key wit
   } finally { f.close(); }
 });
 
-test('test_mcp_connection tests an Admin-created OAuth connection once its sign-in completes', async () => {
+test('test_connection tests an Admin-created OAuth MCP connection once its sign-in completes', async () => {
   const f = await fixture();
   try {
     const origin = 'https://oauth.example.com';
@@ -270,10 +283,9 @@ test('test_mcp_connection tests an Admin-created OAuth connection once its sign-
     });
 
     // Before sign-in the connection is listed but not ready, and nothing is sent.
-    assert.deepEqual(await f.testAs(f.member, account.id), {
-      ok: false,
-      code: 'unauthorized',
-      message: 'This connection is not ready for this Agent. Finish its setup in Admin, then test it again.',
+    assert.deepEqual(outcome(await f.testAs(f.member, account.id)), {
+      kind: 'inconclusive',
+      detail: 'This connection is not ready for this Agent. Finish its setup, then test it again.',
     });
     assert.equal(f.remote.requestsTo(origin).length, 0);
 
@@ -304,7 +316,7 @@ test('an Admin save during a test\'s OAuth refresh keeps the refreshed team toke
     };
 
     // The test in flight is refused because the connection changed under it.
-    assert.equal(((await f.testAs(f.member, account.id)) as { ok: boolean }).ok, false);
+    assert.notEqual(outcome(await f.testAs(f.member, account.id)).kind, 'ok');
     assert.deepEqual(await storedTokens(), {
       access_token: 'refreshed-access-token', refresh_token: 'rotated-refresh-token',
       token_type: 'Bearer', expires_in: 3600,
@@ -325,14 +337,14 @@ test('a tester suspended during a test\'s OAuth refresh does not delete the team
       });
     };
 
-    assert.equal(((await f.testAs(f.member, account.id)) as { ok: boolean }).ok, false);
+    assert.notEqual(outcome(await f.testAs(f.member, account.id)).kind, 'ok');
     assert.equal((await storedTokens())?.access_token, 'refreshed-access-token');
     assert.deepEqual(toolNames(await f.testAs(f.admin, account.id)), ['fixture_status']);
     assert.equal(refresh.requests, 1);
   } finally { f.close(); }
 });
 
-test('test_mcp_connection names a connection by the id inspect_workspace gives it', async () => {
+test('test_connection names a connection by the id inspect_workspace gives it', async () => {
   const f = await fixture();
   try {
     const origin = 'https://named.example.com';
@@ -343,7 +355,7 @@ test('test_mcp_connection names a connection by the id inspect_workspace gives i
   } finally { f.close(); }
 });
 
-test('test_mcp_connection keeps personal connections personal and Agent bindings exact', async () => {
+test('test_connection keeps personal connections personal and Agent bindings exact', async () => {
   const f = await fixture();
   try {
     const origin = 'https://personal.example.com';
@@ -359,19 +371,110 @@ test('test_mcp_connection keeps personal connections personal and Agent bindings
     const sentByOwner = f.remote.requestsTo(origin).length;
 
     // Another member's personal connection is not found, whatever the caller's role.
-    await assert.rejects(f.testAs(f.otherMember, personal.id), notFound);
-    await assert.rejects(f.testAs(f.owner, personal.id), notFound);
+    assert.deepEqual(await f.testAs(f.otherMember, personal.id), NOT_FOUND);
+    assert.deepEqual(await f.testAs(f.owner, personal.id), NOT_FOUND);
     assert.equal(f.remote.requestsTo(origin).length, sentByOwner, 'a refused test sends nothing');
 
     // A connection bound to a different Agent is not this Agent's to test.
     const otherAgent = await f.config.createAgent({
-      ...f.agent, id: 'agent_test_mcp_other', name: 'Other MCP tester',
+      ...f.agent, id: 'agent_test_connection_other', name: 'Other connection tester',
     });
     const elsewhere = await f.createConnection({
       by: f.admin, ownerKind: 'team', agentId: otherAgent.id,
       policy: mcpPolicy('https://elsewhere.example.com/mcp'),
     });
-    await assert.rejects(f.testAs(f.admin, elsewhere.id), notFound);
+    assert.deepEqual(await f.testAs(f.admin, elsewhere.id), NOT_FOUND);
+  } finally { f.close(); }
+});
+
+const REPORTS_POLICY: ConnectionAccountPolicy = {
+  kind: 'api',
+  allowedHosts: ['reports.example.com'],
+  pathPrefixes: ['/v1'],
+  headerName: 'Authorization',
+  headerValuePrefix: 'Bearer ',
+  allowedMethods: ['GET', 'HEAD', 'POST', 'DELETE'],
+  authMode: 'credential',
+};
+
+test('test_connection checks an API connection with its saved key: one GET inside its scope, never the key back', async () => {
+  const f = await fixture();
+  try {
+    const account = await f.createConnection({
+      by: f.admin, ownerKind: 'team', providerId: 'reports', credential: 'sk-reports-saved', policy: REPORTS_POLICY,
+      allowedCapabilities: [],
+    });
+    await withConnectionNetwork((request) => {
+      if (request.headers.get('authorization') !== 'Bearer sk-reports-saved') {
+        return Response.json({ message: 'Invalid token' }, { status: 401 });
+      }
+      if (request.url.endsWith('/admin')) return Response.json({ message: 'Missing scope' }, { status: 403 });
+      return Response.json({ items: [] });
+    }, async (requests) => {
+      assert.deepEqual(outcome(await f.testAs(f.member, 'reports')), {
+        kind: 'ok', url: 'https://reports.example.com/v1', status: 200,
+      });
+      assert.deepEqual(outcome(await f.testAs(f.member, account.id, f.agent.id, '/v1/reports?limit=1')), {
+        kind: 'ok', url: 'https://reports.example.com/v1/reports?limit=1', status: 200,
+      });
+      const limited = outcome(await f.testAs(f.member, account.id, f.agent.id, '/v1/admin'));
+      assert.equal(limited.kind, 'not_permitted');
+      assert.equal(limited.status, 403);
+      assert.deepEqual(requests.map(({ url, method }) => [method, url]), [
+        ['GET', 'https://reports.example.com/v1'],
+        ['GET', 'https://reports.example.com/v1/reports?limit=1'],
+        ['GET', 'https://reports.example.com/v1/admin'],
+      ]);
+
+      assert.deepEqual(await f.testAs(f.member, account.id, f.agent.id, '/v2/reports'), {
+        ok: false,
+        error: {
+          code: 'invalid_request',
+          message: 'path must be inside the connection on its first host: https://reports.example.com/v1.',
+        },
+      });
+      assert.equal(requests.length, 3, 'a path outside the connection sends nothing');
+    });
+
+    const rotated = (await f.config.listConnectionAccounts(f.workspaceId)).find(({ id }) => id === account.id)!;
+    const { saveConnectionAccountSecret } = await import('../src/config/connector-secrets.ts');
+    await saveConnectionAccountSecret(rotated.secretRefId, 'sk-reports-revoked', undefined, f.settings);
+    const rejected = await withConnectionNetwork(
+      () => Response.json({ message: 'Invalid token sk-reports-revoked' }, { status: 401 }),
+      async () => outcome(await f.testAs(f.member, account.id)),
+    );
+    assert.equal(rejected.kind, 'key_rejected');
+    assert.equal(rejected.status, 401);
+    assert.doesNotMatch(JSON.stringify(rejected), /sk-reports-revoked/);
+  } finally { f.close(); }
+});
+
+test('test_connection refuses a path for an MCP connection, and a Google sign-in API connection', async () => {
+  const f = await fixture();
+  try {
+    const origin = 'https://pathless.example.com';
+    f.remote.servers.set(origin, { tools: ['fixture_status'] });
+    const mcp = await f.createConnection({ by: f.admin, ownerKind: 'team', policy: mcpPolicy(`${origin}/mcp`) });
+    assert.deepEqual(await f.testAs(f.admin, mcp.id, f.agent.id, '/mcp'), {
+      ok: false, error: { code: 'invalid_request', message: 'path applies only to API connections.' },
+    });
+    assert.equal(f.remote.requestsTo(origin).length, 0);
+
+    const google = await f.createConnection({
+      by: f.admin, ownerKind: 'team', providerId: 'google', allowedCapabilities: [],
+      policy: {
+        kind: 'api', allowedHosts: ['gmail.googleapis.com'], pathPrefixes: ['/gmail/v1/users/me'],
+        headerName: 'Authorization', headerValuePrefix: 'Bearer ', allowedMethods: ['GET', 'HEAD'],
+        authMode: 'oauth', oauthProvider: 'google', oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+      },
+    });
+    assert.deepEqual(await f.testAs(f.admin, google.id), {
+      ok: false,
+      error: {
+        code: 'invalid_request',
+        message: 'Only API connections with a key and MCP connections can be tested. This one signs in with Google.',
+      },
+    });
   } finally { f.close(); }
 });
 
@@ -390,7 +493,7 @@ async function applyAsAdmin(f: Fixture, key: string, connection: ManagementMcpCo
     userId: f.admin.user.id,
     membershipId: f.admin.membership.id,
     organizationId: f.admin.membership.organizationId,
-    origin: { kind: 'mcp' as const, clientId: 'test-mcp-connection' },
+    origin: { kind: 'mcp' as const, clientId: 'test-connection' },
   };
   const snapshot = await f.service.inspectWorkspace(context) as ManagementWorkspaceSnapshot;
   const agent = snapshot.agents.find(({ id }) => id === f.agent.id)!;

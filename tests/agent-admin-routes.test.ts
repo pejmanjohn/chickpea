@@ -66,6 +66,7 @@ import type {
 } from '../src/slack/transport/types.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { withConnectionNetwork } from './helpers/connection-network.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { defaultAgentAvatarPng } from '../src/slack/agent-presence/default-avatar-pool.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
@@ -6542,6 +6543,86 @@ test('workspace Members cannot use legacy connector authority from a creator-onl
   } finally {
     settings.close();
     store.close();
+  }
+});
+
+test('Admin refuses a custom API connection whose token the API rejects, and saves one with any other check result', async () => {
+  const fixture = harness(new FakeTransport(), { connectionCheck: { cloudflare: true } });
+  const save = (credential: string) => fixture.app.request('http://localhost/admin/api/agents/agent_support/connections', {
+    method: 'POST',
+    headers: auth(),
+    body: JSON.stringify({
+      workspaceId: 'T_TEST',
+      ownerKind: 'team',
+      providerId: 'reports',
+      label: 'Reports API',
+      credential,
+      allowedCapabilities: [],
+      api: {
+        id: 'reports',
+        displayName: 'Reports API',
+        allowedHosts: ['reports.example.com'],
+        pathPrefixes: ['/v1'],
+        headerName: 'Authorization',
+        headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET', 'HEAD', 'POST'],
+        enabled: true,
+        authMode: 'credential',
+      },
+    }),
+  });
+  try {
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+    });
+    await createAgent(fixture.app);
+
+    const rejected = await withConnectionNetwork(
+      () => Response.json({ message: 'Invalid token' }, { status: 401 }),
+      async (requests) => {
+        const response = await save('sk-wrong');
+        assert.deepEqual(requests.map(({ url, method, headers }) => [url, method, headers.get('authorization')]), [
+          ['https://reports.example.com/v1', 'GET', 'Bearer sk-wrong'],
+        ]);
+        return response;
+      },
+    );
+    assert.equal(rejected.status, 422);
+    assert.deepEqual(await rejected.json(), {
+      error: 'key_rejected',
+      message: 'reports.example.com rejected this token. Check the token, and the token header and prefix under Advanced, then save again.',
+    });
+    assert.deepEqual(await fixture.store.listConnectionAccounts('T_TEST'), [], 'a rejected token saves nothing');
+
+    const limited = await withConnectionNetwork(
+      () => Response.json({ category: 'MISSING_SCOPES' }, { status: 403 }),
+      async () => save('sk-limited'),
+    );
+    assert.equal(limited.status, 201, await limited.clone().text());
+    const created = await limited.json() as { account: { id: string }; check: unknown };
+    assert.deepEqual(created.check, { kind: 'not_permitted', status: 403 });
+    assert.doesNotMatch(JSON.stringify(created), /sk-limited/);
+    const [account] = await fixture.store.listConnectionAccounts('T_TEST');
+    assert.equal(account?.id, created.account.id);
+    assert.equal(account?.lifecycle, 'ready');
+
+    const replaced = await withConnectionNetwork(
+      () => Response.json({ message: 'Invalid token' }, { status: 401 }),
+      async () => fixture.app.request(
+        `http://localhost/admin/api/agents/agent_support/connections/${encodeURIComponent(account!.id)}/credential`,
+        { method: 'PUT', headers: auth(), body: JSON.stringify({ expectedRevision: account!.revision, credential: 'sk-replaced' }) },
+      ),
+    );
+    assert.equal(replaced.status, 422);
+    assert.deepEqual(await replaced.json(), {
+      error: 'key_rejected',
+      message: 'reports.example.com rejected this token. Check the token, then save again.',
+    });
+    assert.equal(await resolveConnectionAccountSecret(account!, undefined, fixture.settings), 'sk-limited',
+      'a rejected replacement keeps the saved token');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
   }
 });
 

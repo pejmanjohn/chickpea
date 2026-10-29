@@ -104,7 +104,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
   surface: new Set(['admin', 'mcp', 'service', 'setup', 'slack', 'unknown']),
   tool: new Set([
     'inspect_workspace', 'prepare_connector_setup', 'prepare_provider_setup',
-    'discover_slack_channels', 'test_mcp_connection',
+    'discover_slack_channels', 'test_connection',
     'inspect_memory', 'inspect_routines',
     'export_workspace_recipe', 'preview_workspace_recipe',
     'import_skill', 'manage_agent_skill', 'propose_skill_import',
@@ -118,7 +118,7 @@ const REASON_TOKENS = new Set([
   'capability_scope_expansion', 'credential_replacement', 'dependency_not_applied',
   'chickpea_handoff', 'confirmation_needs_own_call',
   'forbidden', 'idempotency_conflict', 'insufficient_scope', 'invalid_request',
-  'invalid_state', 'invalid_token', 'live_access_denied', 'management_error',
+  'invalid_state', 'invalid_token', 'key_rejected', 'live_access_denied', 'management_error',
   'management_outcome_unknown',
   'missing_token', 'operation_in_progress', 'operation_not_found', 'other',
   'operational_access_required', 'owner_required', 'proposal_binding_mismatch',
