@@ -28,6 +28,8 @@ export interface CreateBrowserSessionOptions {
   contextId?: string;
   persistContext?: boolean;
   recording?: boolean;
+  /** False keeps the provider's own session logs off; unset leaves its default (on). */
+  logSession?: boolean;
   allowedDomains?: string[];
   viewport?: { width: number; height: number };
   keepAlive?: boolean;

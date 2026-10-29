@@ -77,6 +77,7 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
 
     async createSession(opts: CreateBrowserSessionOptions): Promise<BrowserSessionHandle> {
       const browserSettings: Json = { recordSession: opts.recording ?? true };
+      if (opts.logSession !== undefined) browserSettings.logSession = opts.logSession;
       if (opts.viewport) browserSettings.viewport = { width: opts.viewport.width, height: opts.viewport.height };
       if (opts.contextId) browserSettings.context = { id: opts.contextId, persist: opts.persistContext ?? false };
       if (opts.allowedDomains && opts.allowedDomains.length > 0) browserSettings.allowedDomains = [...opts.allowedDomains];

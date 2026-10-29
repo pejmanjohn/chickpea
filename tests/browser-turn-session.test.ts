@@ -161,6 +161,10 @@ test('a hand-off session is kept alive for ten minutes and detach lets it outliv
   assert.equal(created[1]?.keepAlive, true);
   assert.equal(created[1]?.timeoutSeconds, 600);
   assert.equal(created[1]?.contextId, 'ctx-github');
+  assert.equal(created[1]?.recording, false, 'a person signing in is not recorded');
+  assert.equal(created[1]?.logSession, false);
+  assert.equal(created[0]?.recording, true, 'an Agent session keeps its recording');
+  assert.equal(created[0]?.logSession, undefined, 'and the provider keeps its logs');
   advance(5_000);
   assert.deepEqual(await session.detach(), { sessionId: 'sess-2', seconds: 0 });
   assert.equal(session.active, false);
@@ -170,6 +174,29 @@ test('a hand-off session is kept alive for ten minutes and detach lets it outliv
   assert.deepEqual(ended, ['sess-1']);
   assert.deepEqual(closedInfo.at(-1), { sessionId: 'sess-2', seconds: 0 });
   assert.equal(await session.detach(), undefined);
+});
+
+test('every session refuses downloads at the browser, and a browser that cannot still opens', async (t) => {
+  const { session, sockets } = setup();
+  await session.ensure();
+  const refusal = sockets[0]!.sent.find(({ method }) => method === 'Browser.setDownloadBehavior');
+  assert.deepEqual(refusal?.params, { behavior: 'deny' });
+  assert.equal(refusal?.sessionId, undefined, 'sent to the browser, not the page');
+  await session.close();
+
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const refusing = new BrowserTurnSession({
+    provider: fakeBrowserProvider().provider,
+    connect: async () => {
+      const socket = FakeCdpSocket.withPage();
+      socket.responders.set('Browser.setDownloadBehavior', () => ({ error: { code: -32000, message: 'Browser context management is not supported.' } }));
+      return socket;
+    },
+    sleep: async () => undefined,
+  });
+  assert.equal((await refusing.ensure()).sessionId, 'sess-1');
+  assert.deepEqual(warn.mock.calls.map((call) => call.arguments), [['[chickpea] A browser session could not refuse downloads']]);
+  await refusing.close();
 });
 
 test('redaction replaces typed secrets and skips values too short to redact safely', () => {

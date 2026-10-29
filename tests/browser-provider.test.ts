@@ -57,6 +57,13 @@ test('createSession posts browser settings with the API key header and returns t
   });
 });
 
+test('createSession sends logSession only when it is set', async () => {
+  const { calls, fetchImpl } = fakeFetch(() => ({ status: 201, body: { id: 's', connectUrl: 'wss://x' } }));
+  const provider = createBrowserbaseProvider({ apiKey: API_KEY, fetch: fetchImpl });
+  await provider.createSession({ recording: false, logSession: false, keepAlive: true });
+  assert.deepEqual(calls[0]!.body, { browserSettings: { recordSession: false, logSession: false }, keepAlive: true });
+});
+
 test('createSession omits optional fields when not provided', async () => {
   const { calls, fetchImpl } = fakeFetch(() => ({ status: 201, body: { id: 's', connectUrl: 'wss://x' } }));
   const provider = createBrowserbaseProvider({ apiKey: API_KEY, fetch: fetchImpl, baseUrl: 'https://bb.test/' });
