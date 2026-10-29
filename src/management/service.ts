@@ -8652,7 +8652,12 @@ function requesterTypedUrls(requestText: string): URL[] {
     .replace(/&amp;/gi, '&');
   return [...text.matchAll(/https?:\/\/[^\s<>"'`|]+/gi)].flatMap(([match]) => {
     try {
-      return [new URL(match.replace(/[.,;:!?)\]}]+$/, ''))];
+      const url = new URL(match.replace(/[.,;:!?)\]}]+$/, ''));
+      // `https://api.example.com@evil.example/` names evil.example; never count it as typed.
+      if (url.username || url.password) return [];
+      // Slack links a bare `api.example.com/v1` as http://; a connection only ever sends over https.
+      if (url.protocol === 'http:' && url.port === '') url.protocol = 'https:';
+      return [url];
     } catch {
       return [];
     }
