@@ -659,6 +659,8 @@ function runAdminPageHarness(
       connectionId: string,
       body: Record<string, unknown>,
     ) => Promise<FakeResponse>;
+    /** What the server's key check found for a new API connection with a token; ok by default. */
+    connectionAccountCheck?: { kind: string; status?: number } | { refused: { status: number; error: string; message: string } };
     composioSettings?: Record<string, unknown>;
     composioSettingsError?: {
       status: number;
@@ -2007,6 +2009,15 @@ function runAdminPageHarness(
       const agentId = decodeURIComponent(agentConnectionsMatch[1] as string);
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
       connectionAccountPosts.push({ agentId, body });
+      const keyCheck = body.api && body.credential
+        ? harnessOptions.connectionAccountCheck ?? { kind: 'ok', status: 200 }
+        : undefined;
+      if (keyCheck && 'refused' in keyCheck) {
+        return Promise.resolve(jsonResponse(
+          { error: keyCheck.refused.error, message: keyCheck.refused.message },
+          keyCheck.refused.status,
+        ));
+      }
       return Promise.resolve(jsonResponse({
         account: {
           id: 'connection_created',
@@ -2026,6 +2037,7 @@ function runAdminPageHarness(
           allowedCapabilities: body.allowedCapabilities ?? [],
           enabled: true,
         },
+        ...(keyCheck ? { check: keyCheck } : {}),
       }, 201));
     }
     const agentSchedulesMatch = path.match(/^\/admin\/api\/agents\/([^/]+)\/schedules$/);
@@ -9978,7 +9990,59 @@ for (const access of ['read', 'write']) {
     assert.equal(api.headerName, access === 'write' ? 'X-API-Key' : 'Authorization');
     assert.equal(api.headerValuePrefix, access === 'write' ? '' : 'Bearer ');
     assert.equal(harness.oauthStartPosts.length, 0);
-    assert.match(harness.app.innerHTML, /API token has not been verified/);
+    assert.match(harness.app.innerHTML, /Reports API is connected, and its token works\./);
+  });
+}
+
+/** Fill the custom REST API form for reports.example.test and save it. */
+async function saveCustomApi(harness: ReturnType<typeof runAdminPageHarness>): Promise<void> {
+  await flushAsync();
+  const { click, input } = harness.listeners;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
+  input({ target: inputTarget({ 'data-action': 'connection-account-label' }, 'Reports API') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-url' }, 'https://reports.example.test/v1') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-credential' }, 'test-api-token') });
+  chooseConnectionOwner(harness);
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+}
+
+test('the custom REST API form says the token is checked, and a rejected token keeps the form open with the reason', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [] },
+    connectionAccountCheck: { refused: {
+      status: 422,
+      error: 'key_rejected',
+      message: 'reports.example.test rejected this token. Check the token, and the token header and prefix under Advanced, then save again.',
+    } },
+  });
+  await saveCustomApi(harness);
+  const html = harness.app.innerHTML;
+  assert.match(html, /Saving checks the token with one read request to that URL\./);
+  assert.match(html, /role="alert">reports\.example\.test rejected this token\./);
+  assert.match(html, /data-action="connection-account-create"/, 'the form stays open to fix the token');
+});
+
+for (const [kind, notice] of [
+  ['not_permitted', 'Reports API is saved. The API accepted its token but did not permit the request Chickpea tried.'],
+  ['path_not_found', 'Reports API is saved. The API accepted its token but did not find the path Chickpea tried.'],
+  ['unreachable', 'Reports API is saved, but Chickpea could not reach the API to check its token.'],
+  ['inconclusive', 'Reports API is saved, but Chickpea could not confirm that its token works.'],
+] as const) {
+  test(`a saved custom REST API whose token check is ${kind} says so in one line`, async () => {
+    const harness = runAdminPageHarness({
+      agents: [connectionsAgent()],
+      connectionAccounts: { attached: [] },
+      connectionAccountCheck: { kind },
+    });
+    await saveCustomApi(harness);
+    assert.ok(harness.app.innerHTML.includes(notice), harness.app.innerHTML);
   });
 }
 

@@ -9,6 +9,7 @@ import {
 import { ChannelDirectoryCache } from '../slack/channel-directory-cache.ts';
 import { apiOAuthLifecycleDependencies } from '../connections/api-oauth-lifecycle.ts';
 import { mcpOAuthLifecycleDependencies } from '../connections/mcp-oauth-lifecycle.ts';
+import { checkConnection, type ConnectionCheckOptions } from '../connections/connection-check.ts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { Hono, type Context, type Next } from 'hono';
@@ -1002,6 +1003,8 @@ interface AdminRoutesOptions {
   // resolve route takes a resolver: tests pass a mock so no real network
   // connect is attempted; production uses the shared discover routine.
   discoverMcp?: ((input: McpConnectInput) => Promise<McpDiscoveryResult>) | undefined;
+  /** Test seam; production checks a new API connection's key on the running target. */
+  connectionCheck?: ConnectionCheckOptions | undefined;
   startMcpOAuth?: ((
     input: StartMcpOAuthInput,
     dependencies: McpOAuthDependencies,
@@ -8992,6 +8995,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         policy.allowedTools = [];
         policy.toolPolicies = {};
       }
+      const check = policy.kind === 'api' && policy.authMode === 'credential' && parsed.output.credential
+        ? await checkConnection(
+            { kind: 'api', connection: policy, credential: parsed.output.credential },
+            options.connectionCheck,
+          )
+        : undefined;
+      if (check?.kind === 'key_rejected') {
+        return c.json({
+          error: 'key_rejected',
+          message: `${new URL(check.url).host} rejected this token. ` + (parsed.output.api?.presetId
+            ? 'Check the token, then save again.'
+            : 'Check the token, and the token header and prefix under Advanced, then save again.'),
+        }, 422);
+      }
       const service = connectionAccounts(c);
       const created = await service.createForAgent({
         principal,
@@ -9017,7 +9034,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       });
       const { account, binding } = created;
       const { secretRefId: _secretRefId, ...safeAccount } = account;
-      return c.json({ account: safeAccount, binding }, 201);
+      return c.json({
+        account: safeAccount,
+        binding,
+        ...(check ? { check: { kind: check.kind, ...(check.status === undefined ? {} : { status: check.status }) } } : {}),
+      }, 201);
     } catch (error) {
       if (error instanceof ConfiguredMcpOAuthClientError && error.code === 'invalid_scope') return invalidRequest(c, error.message);
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
