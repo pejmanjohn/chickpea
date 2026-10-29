@@ -7,6 +7,7 @@ import { ConnectionAccountService } from '../src/connections/store.ts';
 import type { IdentityResolution } from '../src/identity/types.ts';
 import type { ManagementApiConnection } from '../src/management/agent-connections.ts';
 import { saveManagedConnectionKey } from '../src/management/discovery.ts';
+import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
 import {
   invokeSlackWorkspaceManagementTool,
   type SlackManagementSignal,
@@ -411,8 +412,18 @@ test('a working key checked where the API answers 404 saves nothing and hands ba
       f.slack('save_connection_key', { ...SAVE, path: KB_PATH }, PASTED));
     const error = refusal(response);
     assert.equal(error.code, 'key_unconfirmed');
-    await assertConnectionSetup(f, setupLinkIn(error.message));
-    assert.doesNotMatch(JSON.stringify(response), new RegExp(KEY));
+    const setupId = await assertConnectionSetup(f, setupLinkIn(error.message));
+    assert.match(error.message, /^Nothing was saved, because Chickpea could not confirm the key\. https:\/\/api\.hubapi\.com\/cms\/knowledge-base\/2027-03-beta answered HTTP 404\./);
+    assert.match(error.message, /Tell the person Chickpea could not confirm the key works, suggest they rotate the key at the service because they pasted it in chat, and give them the setup link below/);
+    assert.match(error.message, /Never repeat the key/);
+    assert.doesNotMatch(error.message, /call save_connection_key again/, 'the model only relays the link');
+    for (const [where, text] of [
+      ['the result', JSON.stringify(response)],
+      ['the stored setup', JSON.stringify(await f.management.getSetup(setupId))],
+      ['other management store calls', f.managementCalls.filter((call) => !call.startsWith('putSetup ')).join('\n')],
+      ['settings', f.settingWrites.join('\n')],
+      ['telemetry', JSON.stringify(f.telemetry)],
+    ] as const) assert.doesNotMatch(text, new RegExp(KEY), `the key is absent from ${where}`);
     assert.equal(await f.savedKey(), undefined);
     assert.equal((await f.account()).lifecycle, 'pending');
   } finally { f.close(); }
@@ -425,10 +436,83 @@ test('a 401 saves nothing and says the key did not work, without the key', async
     const response = await withConnectionNetwork(hubspot(OTHER_KEY), async () => f.slack('save_connection_key', SAVE, PASTED));
     const error = refusal(response);
     assert.equal(error.code, 'key_rejected');
-    assert.match(error.message, /^api\.hubapi\.com rejected this key \(HTTP 401\), so nothing was saved\./);
+    assert.match(error.message, /^api\.hubapi\.com rejected this key \(HTTP 401\), so nothing was saved\. Tell the person the key did not work, suggest they rotate the key/);
+    const setupId = await assertConnectionSetup(f, setupLinkIn(error.message));
     assert.doesNotMatch(JSON.stringify(response), new RegExp(KEY));
+    assert.doesNotMatch(JSON.stringify(await f.management.getSetup(setupId)), new RegExp(KEY));
     assert.equal(await f.savedKey(), undefined);
     assert.equal((await f.account()).lifecycle, 'pending');
+  } finally { f.close(); }
+});
+
+test('when no setup link can be issued, a refused key still saves nothing and the refusal says how to get one', async () => {
+  const f = await fixture();
+  try {
+    await addKeyedConnection(f);
+    f.management.putSetup = async () => { throw new Error('the setup store is unavailable'); };
+    const { result: response, logs } = await capturingLogs(() => withConnectionNetwork(hubspot(KEY), async () =>
+      f.slack('save_connection_key', { ...SAVE, path: KB_PATH }, PASTED)));
+    const error = refusal(response);
+    assert.equal(error.code, 'key_unconfirmed');
+    assert.equal(error.message, `Nothing was saved, because Chickpea could not confirm the key. ${KB_URL} answered HTTP 404. To check it, call save_connection_key again with path set to a read endpoint of this API that the key can read, such as a list endpoint, or send a setup link with request_setup. Never repeat the key.`);
+    assert.doesNotMatch(logs, new RegExp(KEY));
+    assert.equal(await f.savedKey(), undefined, 'a working key is still not saved when its link fails');
+    assert.equal((await f.account()).lifecycle, 'pending');
+  } finally { f.close(); }
+});
+
+test('the setup link a refused key returns completes like a request_setup link, for the requester only', async () => {
+  const f = await fixture();
+  try {
+    await addKeyedConnection(f);
+    const error = refusal(await withConnectionNetwork(hubspot(OTHER_KEY), async () =>
+      f.slack('save_connection_key', SAVE, PASTED)));
+    const link = setupLinkIn(error.message);
+    const setupId = await assertConnectionSetup(f, link);
+    const issuedAt = (await f.management.getSetup(setupId))!.createdAt;
+    let signedIn = f.owner;
+    const app = createManagementSetupRoutes({
+      management: f.management,
+      config: f.config,
+      settings: f.settings,
+      identity: f.identity,
+      now: () => issuedAt,
+      authenticatePrincipal: async () => ({
+        userId: signedIn.user.id,
+        membershipId: signedIn.membership.id,
+        organizationId: signedIn.membership.organizationId,
+        role: signedIn.membership.role,
+        authenticatorKind: 'better_auth',
+        credentialId: `session_${signedIn.membership.id}`,
+        correlationId: 'custom-connection-chat',
+        machine: false,
+      }),
+      deliverReceipt: async () => ({ deliveryRef: 'slack:receipt' }),
+      connectionCheck: { cloudflare: true },
+    });
+    const claim = () => app.request(`http://localhost/setup/${setupId}/exchange`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ capability: link.hash.slice('#setup='.length) }),
+    });
+    assert.notEqual((await claim()).status, 200, 'another signed-in person cannot claim the link');
+    signedIn = f.admin;
+    const claimed = await claim();
+    assert.equal(claimed.status, 200, await claimed.clone().text());
+    const completed = await withConnectionNetwork(hubspot(KEY), async () =>
+      app.request(`http://localhost/setup/${setupId}/complete`, {
+        method: 'POST',
+        headers: {
+          origin: 'http://localhost',
+          cookie: claimed.headers.get('set-cookie')!,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({ credential: KEY }).toString(),
+      }));
+    assert.equal(completed.status, 303, await completed.clone().text());
+    assert.equal(await f.savedKey(), KEY);
+    assert.equal((await f.account()).lifecycle, 'ready');
+    assert.equal((await f.management.getSetup(setupId))?.status, 'completed');
   } finally { f.close(); }
 });
 
@@ -444,9 +528,7 @@ test('a bogus key checked at a prefix that answers 404 saves nothing; a read pat
     const error = refusal(unchecked);
     assert.equal(error.code, 'key_unconfirmed');
     assert.match(error.message, /^Nothing was saved/);
-    assert.match(error.message, /call save_connection_key again with path set to a read endpoint of this API that the key can read/);
-    assert.match(error.message, /request_setup/);
-    assert.match(error.message, /Never repeat the key\./);
+    await assertConnectionSetup(f, setupLinkIn(error.message));
     assert.doesNotMatch(error.message, /accepted/);
     assert.doesNotMatch(JSON.stringify(unchecked), new RegExp(KEY));
     assert.equal(await f.savedKey(), undefined);
@@ -472,10 +554,13 @@ test('a 5xx, an unreadable answer or a failed request saves nothing either, over
       const error = refusal(await withConnectionNetwork(respond, async () => f.slack('save_connection_key', SAVE, PASTED)));
       assert.equal(error.code, 'key_unconfirmed');
       assert.match(error.message, said);
+      await assertConnectionSetup(f, setupLinkIn(error.message));
     }
-    const viaMcp = await withConnectionNetwork(hubspot(OTHER_KEY), async () =>
-      f.mcp('save_connection_key', { ...SAVE_WITHOUT_PATH, agentId: f.agent.id }));
-    assert.equal(refusal(viaMcp).code, 'key_unconfirmed');
+    const viaMcp = refusal(await withConnectionNetwork(hubspot(OTHER_KEY), async () =>
+      f.mcp('save_connection_key', { ...SAVE_WITHOUT_PATH, agentId: f.agent.id })));
+    assert.equal(viaMcp.code, 'key_unconfirmed');
+    await assertConnectionSetup(f, setupLinkIn(viaMcp.message));
+    assert.doesNotMatch(viaMcp.message, /rotate/, 'over MCP the person gave the key to their own coding agent, not a chat');
     assert.equal(await f.savedKey(), undefined);
     assert.equal((await f.account()).lifecycle, 'pending');
   } finally { f.close(); }
@@ -563,6 +648,7 @@ test('a 403 saves nothing from chat, since some APIs answer 403 to an invalid ke
     const error = refusal(response);
     assert.equal(error.code, 'key_unconfirmed');
     assert.match(error.message, /A 403 can mean the key is invalid or that it lacks access to that path/);
+    await assertConnectionSetup(f, setupLinkIn(error.message));
     assert.doesNotMatch(JSON.stringify(response), new RegExp(KEY));
     assert.equal(await f.savedKey(), undefined);
     assert.equal((await f.account()).lifecycle, 'pending');

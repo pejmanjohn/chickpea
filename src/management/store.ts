@@ -2058,10 +2058,19 @@ function changeSetProposalFromRow(
   };
 }
 
-/** The host's approval stamp holds for one turn, so no stored record keeps it. */
+/**
+ * The host's approval stamp and the requester's message hold for one turn,
+ * so no stored record keeps them: the message can hold a key the person
+ * pasted.
+ */
 function storedOrigin(origin: ManagementOrigin): ManagementOrigin {
-  if (origin.kind !== 'slack' || origin.approvedProposalId === undefined) return origin;
-  const { approvedProposalId: _turnOnly, ...stored } = origin;
+  if (origin.kind !== 'slack') return origin;
+  const {
+    approvedProposalId: _approval,
+    requestText: _message,
+    requestTextSource: _messageSource,
+    ...stored
+  } = origin;
   return stored;
 }
 

@@ -192,7 +192,12 @@ import {
   type ApiConnectionScope,
   type ConnectionCheckOutcome,
 } from '../connections/connection-check.ts';
-import type { ConnectionTestActor, McpConnectionTestResult, OpenMcpServer } from './discovery.ts';
+import {
+  ConnectionKeyRefusedError,
+  type ConnectionTestActor,
+  type McpConnectionTestResult,
+  type OpenMcpServer,
+} from './discovery.ts';
 import type { ManagementStore } from './store.ts';
 import { changeSetAccessFits } from './change-set-presentation.ts';
 import {
@@ -432,9 +437,9 @@ export interface WorkspaceManagementServiceInput {
     path?: string;
   }) => Promise<ConnectionCheckOutcome>;
   /**
-   * Checks a key against one API connection with one GET and, unless the
-   * service rejects it, saves it the way the setup page does. Never returns
-   * the key.
+   * Checks a key against one API connection with one GET and, only when it
+   * answers 2xx, saves it the way the setup page does; any other answer
+   * throws ConnectionKeyRefusedError. Never returns the key.
    */
   saveConnectionKey?: (input: {
     agentId: string;
@@ -2000,15 +2005,24 @@ export class WorkspaceManagementService {
     }
     const [workspaceId] = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
     if (!workspaceId) throw new ManagementError('invalid_request', 'The API connection was not found.');
-    const check = await this.stores.saveConnectionKey({
-      agentId: agent.id,
-      connectionId: account.id,
-      actor: { workspaceId, actorMembershipId: actor.membershipId },
-      key,
-      ...(input.path === undefined ? {} : { path: input.path }),
-      expectedRevision: account.revision,
-      surface: actor.origin.kind,
-    });
+    let check: SavedConnectionKeyCheck;
+    try {
+      check = await this.stores.saveConnectionKey({
+        agentId: agent.id,
+        connectionId: account.id,
+        actor: { workspaceId, actorMembershipId: actor.membershipId },
+        key,
+        ...(input.path === undefined ? {} : { path: input.path }),
+        expectedRevision: account.revision,
+        surface: actor.origin.kind,
+      });
+    } catch (error) {
+      if (!(error instanceof ConnectionKeyRefusedError)) throw error;
+      const url = await this.setupLinkAfterRefusedKey(actor, agent.id, account.id);
+      throw url
+        ? new ConnectionKeyRefusedError(error.check, { url, pastedInChat: actor.origin.kind === 'slack' })
+        : error;
+    }
     return {
       agent: { id: agent.id, name: agent.name },
       connection: {
@@ -2022,6 +2036,36 @@ export class WorkspaceManagementService {
         ? `${SAVED_KEY_INSTRUCTION} Because the person pasted the key in Slack, suggest they rotate it at the service and use the setup link next time.`
         : SAVED_KEY_INSTRUCTION,
     };
+  }
+
+  /**
+   * The setup link request_setup would issue the requester for this
+   * connection, so a refused key still leaves the person a way to finish.
+   * Undefined when that request would not issue one now, or issuing fails;
+   * the refusal then stands without it.
+   */
+  private async setupLinkAfterRefusedKey(
+    actor: LiveManagementActor,
+    agentId: string,
+    connectionId: string,
+  ): Promise<string | undefined> {
+    const operation: Extract<ManagementOperation, { kind: 'request_setup' }> = {
+      itemId: 'save_connection_key',
+      kind: 'request_setup',
+      target: { kind: 'api_connection', agentId, connectionId },
+    };
+    try {
+      const policy = classifyManagementOperation(await this.policyFacts(actor, operation, { operationCount: 1 }));
+      if (!policy.allowed || policy.posture !== 'immediate') return undefined;
+      return (await this.issueSetup(actor, operation)).url;
+    } catch (error) {
+      if (!isExpectedMutationError(error)) {
+        console.warn('[chickpea:management] no setup link for a refused connection key', JSON.stringify({
+          errorName: error instanceof Error ? error.name : typeof error,
+        }));
+      }
+      return undefined;
+    }
   }
 
   async inspectMemory(
