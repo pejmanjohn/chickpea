@@ -382,8 +382,8 @@ export interface SaveConnectionKeyInput {
   path?: string | undefined;
 }
 
-/** What one GET with a saved key found. Only ok, or a 403 that usually means a missing scope, saves the key. */
-export type SavedConnectionKeyCheck = Extract<ApiConnectionCheck, { kind: 'ok' | 'not_permitted' }>;
+/** What one GET with a saved key found. Only ok saves a key from chat. */
+export type SavedConnectionKeyCheck = Extract<ApiConnectionCheck, { kind: 'ok' }>;
 
 /** What save_connection_key returns: never the key. */
 export interface SaveConnectionKeyResult {

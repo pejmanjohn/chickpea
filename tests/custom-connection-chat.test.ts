@@ -402,7 +402,7 @@ test('a bogus key checked at a prefix that answers 404 saves nothing; a read pat
     const error = refusal(unchecked);
     assert.equal(error.code, 'key_unconfirmed');
     assert.match(error.message, /^Nothing was saved/);
-    assert.match(error.message, /call save_connection_key again with path set to a read endpoint of this API that requires the key/);
+    assert.match(error.message, /call save_connection_key again with path set to a read endpoint of this API that the key can read/);
     assert.match(error.message, /request_setup/);
     assert.match(error.message, /Never repeat the key\./);
     assert.doesNotMatch(error.message, /accepted/);
@@ -511,18 +511,19 @@ test('with no key in the message, the same call adds the connection and returns 
   } finally { f.close(); }
 });
 
-test('a 403 still saves the key and reports what the service refused', async () => {
+test('a 403 saves nothing from chat, since some APIs answer 403 to an invalid key', async () => {
   const f = await fixture();
   try {
     await addKeyedConnection(f);
-    const result = await withConnectionNetwork((request) => request.headers.get('authorization') === `Bearer ${KEY}`
+    const response = await withConnectionNetwork((request) => request.headers.get('authorization') === `Bearer ${KEY}`
       ? Response.json({ category: 'MISSING_SCOPES' }, { status: 403 })
-      : Response.json({}, { status: 401 }), async () => saved(await f.slack('save_connection_key', SAVE, PASTED)));
-    assert.equal(result.check.kind, 'not_permitted');
-    assert.match(result.instruction, /not_permitted means the service refused the test request, which usually means the key works but lacks a scope/);
-    assert.doesNotMatch(result.instruction, /accepted/);
-    assert.equal(await f.savedKey(), KEY);
-    assert.equal((await f.account()).lifecycle, 'ready');
+      : Response.json({}, { status: 401 }), async () => f.slack('save_connection_key', SAVE, PASTED));
+    const error = refusal(response);
+    assert.equal(error.code, 'key_unconfirmed');
+    assert.match(error.message, /A 403 can mean the key is invalid or that it lacks access to that path/);
+    assert.doesNotMatch(JSON.stringify(response), new RegExp(KEY));
+    assert.equal(await f.savedKey(), undefined);
+    assert.equal((await f.account()).lifecycle, 'pending');
   } finally { f.close(); }
 });
 

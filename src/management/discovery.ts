@@ -247,11 +247,15 @@ export async function saveManagedConnectionKey(
       `${new URL(check.url).host} rejected this key (HTTP 401), so nothing was saved. Tell the person the key did not work and send a setup link with request_setup for this connection, where they can enter a working key. Never ask them to paste a key in chat.`,
     );
   }
-  if (check.kind !== 'ok' && check.kind !== 'not_permitted') {
+  if (check.kind !== 'ok') {
     const answer = check.status === undefined ? check.detail : `${check.url} answered HTTP ${check.status}.`;
+    // Some APIs (Datadog, AWS API Gateway) answer 403 to an invalid key, so a 403 confirms nothing.
+    const reading = check.kind === 'not_permitted'
+      ? ' A 403 can mean the key is invalid or that it lacks access to that path.'
+      : '';
     throw new ManagementError(
       'key_unconfirmed',
-      `Nothing was saved, because Chickpea could not check the key. ${answer} To check it, call save_connection_key again with path set to a read endpoint of this API that requires the key, such as a list endpoint, or send a setup link with request_setup. Never repeat the key.`,
+      `Nothing was saved, because Chickpea could not confirm the key. ${answer}${reading} To check it, call save_connection_key again with path set to a read endpoint of this API that the key can read, such as a list endpoint, or send a setup link with request_setup. Never repeat the key.`,
     );
   }
   await saveConnectionCredential({
