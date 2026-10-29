@@ -1,15 +1,16 @@
 import { fakeFetch, type FakeFetchCall } from './fake-cdp-socket.ts';
 
+/** A field left out is left out of the provider's answer too. */
 export interface FakeContext {
-  projectId: string;
-  name: string;
+  projectId?: string;
+  name?: string;
 }
 
 export interface FakeSession {
-  projectId: string;
+  projectId?: string;
   status: string;
   contextId?: string;
-  userMetadata: Record<string, unknown>;
+  userMetadata?: Record<string, unknown>;
 }
 
 /**
@@ -64,7 +65,7 @@ export function fakeBrowserbase(options: { projectId?: string; fail?: (call: Fak
         const status = url.searchParams.get('status');
         const match = /^user_metadata\['([^']+)'\]:'([^']*)'$/.exec(url.searchParams.get('q') ?? '');
         return Response.json([...sessions].filter(([, session]) =>
-          (!status || session.status === status) && (!match || session.userMetadata[match[1]!] === match[2]))
+          (!status || session.status === status) && (!match || session.userMetadata?.[match[1]!] === match[2]))
           .map(([sessionId, session]) => ({ id: sessionId, ...session })));
       }
       const session = id ? sessions.get(id) : undefined;

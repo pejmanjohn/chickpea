@@ -15,6 +15,9 @@
  *   and keeps the provider's session logs off. A session this instance did
  *   not create is used only once its record names the project and the
  *   installation: a stored hand-off session, a recording handle, erasure.
+ * - Only a record that names another project or installation is another's.
+ *   One missing the field cannot be judged: that is a failure to try again,
+ *   so no queue or erasure forgets an id it could not check.
  * - The policy is read again on every create, so the host's off switch
  *   holds mid-turn. Every session holds a lease against the policy's
  *   limits from just before its create until it ends (session-lease.ts).
@@ -25,7 +28,12 @@
 import { hostedBrowserAccess, hostedBrowserPolicy, type HostedBrowserAccess } from '../config/hosted-browser.ts';
 import { requireInstallationScope } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import { createBrowserbaseProvider, type BrowserbaseClient, type BrowserbaseSessionRecord } from './browserbase.ts';
+import {
+  createBrowserbaseProvider,
+  type BrowserbaseClient,
+  type BrowserbaseContextRecord,
+  type BrowserbaseSessionRecord,
+} from './browserbase.ts';
 import {
   admitBrowserSession,
   attachBrowserSession,
@@ -57,6 +65,9 @@ export interface HostedBrowserProviderOptions {
 const INSTALLATION_METADATA_KEY = 'installation';
 /** A session asked for with no timeout gets this one, so its lease and the provider agree on when it ends. */
 const DEFAULT_TIMEOUT_SECONDS = 600;
+
+/** Whose a provider record is: this installation's, provably another's, or not known from what it holds. */
+type Ownership = 'own' | 'foreign' | 'unverified';
 
 export class HostedBrowserProvider implements BrowserProvider {
   readonly id = 'browserbase' as const;
@@ -165,9 +176,8 @@ export class HostedBrowserProvider implements BrowserProvider {
       if (error instanceof BrowserProviderError && error.status === 404) throw new BrowserContextGoneError();
       throw failure('get_context', error);
     }
-    if (record.projectId !== this.#projectId || !record.name.startsWith(this.#contextPrefix)) {
-      throw refusedForeign('context');
-    }
+    const ownership = this.#contextOwnership(record);
+    if (ownership !== 'own') throw refused(ownership, 'context');
     this.#ownContexts.add(contextId);
   }
 
@@ -198,7 +208,7 @@ export class HostedBrowserProvider implements BrowserProvider {
       metadata: { key: INSTALLATION_METADATA_KEY, value: this.#installationId },
       ...(status ? { status } : {}),
     }));
-    const own = listed.filter((record) => this.#ownsSession(record));
+    const own = listed.filter((record) => this.#sessionOwnership(record) === 'own');
     for (const record of own) this.#ownSessions.add(record.id);
     return own;
   }
@@ -207,14 +217,23 @@ export class HostedBrowserProvider implements BrowserProvider {
   async #requireSession(sessionId: string): Promise<BrowserbaseSessionRecord | undefined> {
     if (this.#ownSessions.has(sessionId)) return undefined;
     const record = await this.#call('get_session', () => this.#client.getSession(sessionId));
-    if (!this.#ownsSession(record)) throw refusedForeign('session');
+    const ownership = this.#sessionOwnership(record);
+    if (ownership !== 'own') throw refused(ownership, 'session');
     this.#ownSessions.add(sessionId);
     return record;
   }
 
-  #ownsSession(record: BrowserbaseSessionRecord): boolean {
-    return record.projectId === this.#projectId &&
-      record.userMetadata[INSTALLATION_METADATA_KEY] === this.#installationId;
+  #contextOwnership(record: BrowserbaseContextRecord): Ownership {
+    if ((record.projectId && record.projectId !== this.#projectId) ||
+        (record.name && !record.name.startsWith(this.#contextPrefix))) return 'foreign';
+    return record.projectId && record.name ? 'own' : 'unverified';
+  }
+
+  #sessionOwnership(record: BrowserbaseSessionRecord): Ownership {
+    const installation = record.userMetadata?.[INSTALLATION_METADATA_KEY];
+    if ((record.projectId && record.projectId !== this.#projectId) ||
+        (installation !== undefined && installation !== this.#installationId)) return 'foreign';
+    return record.projectId && installation !== undefined ? 'own' : 'unverified';
   }
 
   async #call<T>(operation: string, run: () => Promise<T>): Promise<T> {
@@ -249,7 +268,15 @@ function failure(operation: string, error: unknown): Error {
   return new HostedBrowserFailure(status, error instanceof BrowserProviderError ? error.retryAfterMs : undefined);
 }
 
-function refusedForeign(kind: 'context' | 'session'): HostedBrowserRefusal {
+/**
+ * Another installation's id is refused for good. One whose record could not
+ * be judged fails like the provider did, so every caller tries it again.
+ */
+function refused(ownership: Exclude<Ownership, 'own'>, kind: 'context' | 'session'): Error {
+  if (ownership === 'unverified') {
+    log('ownership_unverified', { kind });
+    return new HostedBrowserFailure();
+  }
   log('ownership_refused', { kind });
   return new HostedBrowserRefusal('ownership');
 }

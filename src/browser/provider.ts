@@ -130,9 +130,10 @@ export class HostedBrowserRefusal extends Error {
 
 /**
  * The provider failed a call made for a deployment serving many
- * installations. Its message is fixed (busy on a 429, unavailable
- * otherwise), and the provider's own response is dropped. The status still
- * drives the retries that read it.
+ * installations, or answered with a record that does not show its owner.
+ * Its message is fixed (busy on a 429, unavailable otherwise), and the
+ * provider's own response is dropped. The status still drives the retries
+ * that read it.
  */
 export class HostedBrowserFailure extends BrowserProviderError {
   constructor(status?: number, retryAfterMs?: number) {

@@ -56,6 +56,11 @@ function refused(reason: HostedBrowserRefusal['reason']) {
     error.message === HOSTED_BROWSER_UNAVAILABLE_MESSAGE;
 }
 
+/** A record that does not show its owner fails as the provider would, to be tried again; it is never refused as another's. */
+function unverified(error: unknown) {
+  return error instanceof HostedBrowserFailure && error.status === undefined && error.message === HOSTED_BROWSER_UNAVAILABLE_MESSAGE;
+}
+
 /** One turn's bind of `login`, on its own session. */
 function bindIn(store: SqliteSettingsStore, login: WebsiteLogin, provider: BrowserProvider) {
   const deps = { store, keyring: generateCredentialKeyring('hosted_provider_test') };
@@ -96,10 +101,19 @@ test('a context named for another installation, or kept in another project, neve
   browserbase.contexts.set('ctx_case', { projectId: 'proj-platform', name: 'chickpea.INST_A.wl_1.00000000' });
   browserbase.contexts.set('ctx_label', { projectId: 'proj-platform', name: 'Billing' });
   browserbase.contexts.set('ctx_project', { projectId: 'proj-other', name: 'chickpea.inst_a.wl_1.00000000' });
-  for (const id of ['ctx_b', 'ctx_prefix', 'ctx_case', 'ctx_label', 'ctx_project']) {
+  browserbase.contexts.set('ctx_project_nameless', { projectId: 'proj-other' });
+  browserbase.contexts.set('ctx_nameless', { projectId: 'proj-platform' });
+  browserbase.contexts.set('ctx_projectless', { name: 'chickpea.inst_a.wl_1.00000000' });
+  for (const id of ['ctx_b', 'ctx_prefix', 'ctx_case', 'ctx_label', 'ctx_project', 'ctx_project_nameless']) {
     const wrapper = provider();
     await assert.rejects(wrapper.createSession({ contextId: id, persistContext: true }), refused('ownership'), id);
     await assert.rejects(wrapper.deleteContext(id), refused('ownership'), id);
+    assert.ok(browserbase.contexts.has(id), `${id} is never deleted`);
+  }
+  for (const id of ['ctx_nameless', 'ctx_projectless']) {
+    const wrapper = provider();
+    await assert.rejects(wrapper.createSession({ contextId: id, persistContext: true }), unverified, id);
+    await assert.rejects(wrapper.deleteContext(id), unverified, id);
     assert.ok(browserbase.contexts.has(id), `${id} is never deleted`);
   }
   assert.deepEqual(browserbase.requests().filter((request) => !request.startsWith('GET /v1/contexts/')), [],
@@ -110,8 +124,10 @@ test('a session another instance made is used only when its record names this pr
   const { browserbase, provider } = setup(t);
   browserbase.sessions.set('sess_own', { projectId: 'proj-platform', status: 'RUNNING', userMetadata: { chickpea: '1', installation: INSTALLATION } });
   browserbase.sessions.set('sess_b', { projectId: 'proj-platform', status: 'RUNNING', userMetadata: { chickpea: '1', installation: 'inst_b' } });
-  browserbase.sessions.set('sess_untagged', { projectId: 'proj-platform', status: 'RUNNING', userMetadata: {} });
   browserbase.sessions.set('sess_project', { projectId: 'proj-other', status: 'RUNNING', userMetadata: { installation: INSTALLATION } });
+  browserbase.sessions.set('sess_untagged', { projectId: 'proj-platform', status: 'RUNNING', userMetadata: {} });
+  browserbase.sessions.set('sess_no_metadata', { projectId: 'proj-platform', status: 'RUNNING' });
+  browserbase.sessions.set('sess_no_project', { status: 'RUNNING', userMetadata: { installation: INSTALLATION } });
   const calls: Array<[string, (wrapper: BrowserProvider, id: string) => Promise<unknown>]> = [
     ['endSession', (wrapper, id) => wrapper.endSession(id)],
     ['sessionStatus', (wrapper, id) => wrapper.sessionStatus(id)],
@@ -120,13 +136,16 @@ test('a session another instance made is used only when its record names this pr
     ['listRecordingDownloads', (wrapper, id) => wrapper.listRecordingDownloads(id)],
   ];
   for (const [name, call] of calls) {
-    for (const id of ['sess_b', 'sess_untagged', 'sess_project']) {
+    for (const id of ['sess_b', 'sess_project', 'sess_untagged', 'sess_no_metadata', 'sess_no_project']) {
       const before = browserbase.calls.length;
-      await assert.rejects(call(provider(), id), refused('ownership'), `${name} ${id}`);
+      const foreign = id === 'sess_b' || id === 'sess_project';
+      await assert.rejects(call(provider(), id), foreign ? refused('ownership') : unverified, `${name} ${id}`);
       assert.deepEqual(browserbase.requests().slice(before), [`GET /v1/sessions/${id}`], `${name} ${id} reads only the record`);
     }
   }
-  assert.equal(browserbase.sessions.get('sess_b')!.status, 'RUNNING', 'another installation\'s session is never ended');
+  for (const [id, session] of browserbase.sessions) {
+    if (id !== 'sess_own') assert.equal(session.status, 'RUNNING', `${id} is never ended`);
+  }
 
   const wrapper = provider();
   assert.equal(await wrapper.sessionStatus('sess_own'), 'RUNNING');
@@ -169,6 +188,27 @@ test('the deletion queue drops what the wrapper finds another installation\'s, d
   assert.ok(browserbase.contexts.has('ctx_b'));
   assert.equal(browserbase.sessions.get('sess_b')!.status, 'RUNNING');
   assert.ok(!browserbase.contexts.has('ctx_a'), 'the installation\'s own context is deleted');
+});
+
+test('the deletion queue keeps what the wrapper cannot judge, deleting and ending none of it', async (t) => {
+  const { store, browserbase, provider, logged } = setup(t);
+  browserbase.contexts.set('ctx_nameless', { projectId: 'proj-platform' });
+  browserbase.contexts.set('ctx_a', { projectId: 'proj-platform', name: 'chickpea.inst_a.wl_1.00000000' });
+  browserbase.sessions.set('sess_no_metadata', { projectId: 'proj-platform', status: 'RUNNING' });
+  const queuedAt = Date.now();
+  await queueContextDeletions(store, [
+    { contextId: 'ctx_nameless', queuedAt },
+    { contextId: 'ctx_a', handoffSessionId: 'sess_no_metadata', queuedAt },
+  ]);
+  await drainContextDeletions({ store, provider: async () => provider() });
+  assert.deepEqual(JSON.parse((await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!), [
+    { contextId: 'ctx_nameless', queuedAt, attempts: 1 },
+    { contextId: 'ctx_a', handoffSessionId: 'sess_no_metadata', queuedAt, attempts: 1 },
+  ]);
+  assert.deepEqual(browserbase.requests().filter((request) => !request.startsWith('GET ')), [], 'nothing is deleted or ended');
+  assert.ok(browserbase.contexts.has('ctx_a'), 'a context waits for the hand-off session it sits behind');
+  assert.ok(logged.some((line) => JSON.parse(line).event === 'ownership_unverified'));
+  assert.ok(!logged.some((line) => JSON.parse(line).event === 'ownership_refused'));
 });
 
 test('provider failures reach the model as fixed texts, the body only nowhere, the status only in the log', async (t) => {

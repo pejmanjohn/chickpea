@@ -160,6 +160,32 @@ test('a context whose session will not stop waits for the next pass, still recor
   assert.equal((await listWebsiteLogins(store))[0]!.contextId, 'ctx_busy');
 });
 
+test('an id whose record does not show its owner stays in the store, counted remaining and never foreign, and nothing is deleted', async (t) => {
+  const { store } = installation(t);
+  const deps = { store: store as never, keyring: generateCredentialKeyring('hosted_erasure_test') };
+  const login = await createWebsiteLogin(deps, LOGIN);
+  await recordWebsiteLoginContext(store, login.id, 'ctx_nameless');
+  await store.setSetting(PENDING_CONTEXT_DELETIONS_SETTING, JSON.stringify([
+    { contextId: 'ctx_projectless', queuedAt: 1 },
+    { handoffSessionId: 'sess_no_metadata', queuedAt: 2 },
+  ]));
+  const browserbase = fakeBrowserbase();
+  browserbase.contexts.set('ctx_nameless', { projectId: 'proj-platform' });
+  browserbase.contexts.set('ctx_projectless', { name: own('projectless').name });
+  browserbase.sessions.set('sess_no_metadata', { projectId: 'proj-platform', status: 'RUNNING' });
+  const pass = await eraseBrowserPass({
+    store,
+    provider: new HostedBrowserProvider({ access: { apiKey: 'bb_live_platform', projectId: 'proj-platform' }, installationId: A, store, fetch: browserbase.fetchImpl }),
+    sleep: async () => undefined,
+  });
+  assert.equal(pass.foreign, 0);
+  assert.equal(pass.remaining, 2);
+  assert.equal(pass.deleted, 0);
+  assert.equal((await listWebsiteLogins(store))[0]!.contextId, 'ctx_nameless');
+  assert.match((await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!, /ctx_projectless/);
+  assert.deepEqual(browserbase.requests().filter((request) => request.startsWith('DELETE')), []);
+});
+
 test('erasure is refused for another installation and without the host browser port', async (t) => {
   const { a, store } = installation(t);
   await assert.rejects(eraseInstallationBrowser(a.env, B, { store }), InstallationContextError);

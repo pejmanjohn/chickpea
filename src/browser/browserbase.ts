@@ -32,7 +32,8 @@ export interface BrowserbaseSessionRecord {
   projectId: string;
   status: string;
   contextId?: string;
-  userMetadata: Record<string, unknown>;
+  /** Absent when the response carries none, which is not the same as an empty one. */
+  userMetadata?: Record<string, unknown>;
 }
 
 /** The provider, plus the owner reads a deployment serving many installations checks against. */
@@ -82,7 +83,7 @@ function sessionRecord(value: unknown): BrowserbaseSessionRecord {
     projectId: str(obj.projectId),
     status,
     ...(contextId ? { contextId } : {}),
-    userMetadata: asObject(obj.userMetadata),
+    ...(isRecord(obj.userMetadata) ? { userMetadata: obj.userMetadata } : {}),
   };
 }
 
