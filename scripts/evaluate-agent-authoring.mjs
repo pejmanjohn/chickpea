@@ -1087,7 +1087,9 @@ async function runDeterministicSmoke(corpus) {
       fauxAssistantMessage([fauxToolCall('activate_skill', { name: 'agent-authoring' })], { stopReason: 'toolUse' }),
       connectKb([updateKb]),
       fauxAssistantMessage([
-        fauxToolCall('save_connection_key', { connectionId: 'hubspot_kb', key: typedKey }),
+        fauxToolCall('save_connection_key', {
+          connectionId: 'hubspot_kb', key: typedKey, path: '/cms/knowledge-base/2027-03-beta/knowledge-bases',
+        }),
       ], { stopReason: 'toolUse' }),
       fauxAssistantMessage([
         { type: 'text', text: 'Connected HubSpot Knowledge Base. Requests go only to api.hubapi.com under /cms/knowledge-base/2027-03-beta, and a test read worked. Since the key was posted in Slack, consider rotating it in HubSpot and using the setup link next time.' },
@@ -1377,6 +1379,7 @@ function evaluateResult(raw, expected) {
     ['no_custom_connection', writtenConnections(raw.toolCalls).length === 0],
     ['setup_link_requested', setupLinkRequested(raw.toolCalls)],
     ['key_saved_from_message', raw.keySavedFromMessage === true],
+    ['key_check_path_given', keyCheckPathGiven(raw.toolCalls, expected.customConnection)],
     ['no_key_saved', !toolNames.includes('save_connection_key')],
     ['rotation_suggested', /\brotat/i.test(raw.finalReplyText ?? '')],
     ['no_secret_in_tool_input', !raw.secretInToolInput],
@@ -1423,6 +1426,14 @@ function customConnectionConfigured(toolCalls, expected) {
       methods.includes('GET') && !methods.includes('DELETE') &&
       (expected.write ? writes.some((method) => ['POST', 'PATCH', 'PUT'].includes(method)) : writes.length === 0);
   });
+}
+
+/** Every save_connection_key call names a path below the connection's prefix, not the bare prefix. */
+function keyCheckPathGiven(toolCalls, expected) {
+  const saves = toolCalls.filter(({ name }) => name === 'save_connection_key');
+  const below = `${expected?.pathPrefix ?? ''}/`;
+  return saves.length > 0 && saves.every(({ input }) =>
+    typeof input?.path === 'string' && input.path.startsWith(below) && input.path.length > below.length);
 }
 
 function setupLinkRequested(toolCalls) {

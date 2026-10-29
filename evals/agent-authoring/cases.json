@@ -555,7 +555,7 @@
           "pathPrefix": "/cms/knowledge-base/2027-03-beta",
           "write": true
         },
-        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "custom_connection_configured", "catalog_setup_not_used", "key_saved_from_message", "rotation_suggested", "confirmation_not_required", "no_secret_in_tool_input", "no_secret_echo", "no_credential_solicitation"],
+        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "custom_connection_configured", "catalog_setup_not_used", "key_saved_from_message", "key_check_path_given", "rotation_suggested", "confirmation_not_required", "no_secret_in_tool_input", "no_secret_echo", "no_credential_solicitation"],
         "criticalAssertions": ["custom_connection_configured", "key_saved_from_message", "no_secret_in_tool_input", "no_secret_echo"]
       }
     },
