@@ -3228,16 +3228,16 @@ test('a new managed account records who signed in and under which access lane', 
 
     assert.deepEqual(
       await signIn('agent_docs', 'notion', 'ca_notion_one', ['notion.content.search']),
-      { person: 'notion:ws-1:user-1', accessLane: 'read' },
+      { person: 'notion:ws-1:user-1', accessLane: 'read', signedBy: 'membership_alice' },
     );
     person = undefined;
     assert.deepEqual(
       await signIn('agent_mail', 'notion', 'ca_notion_two', ['notion.content.search', 'notion.pages.create']),
-      { person: 'member:membership_alice', accessLane: 'write' },
+      { person: 'member:membership_alice', accessLane: 'write', signedBy: 'membership_alice' },
     );
     assert.deepEqual(
       await signIn('agent_mail', 'gmail', 'ca_gmail', ['gmail.messages.search']),
-      { accessLane: 'read' },
+      { accessLane: 'read', signedBy: 'membership_alice' },
     );
     const recorded = logged.filter((message) => message.includes('sign_in_recorded'));
     assert.deepEqual(recorded.map((message) => JSON.parse(message)), [
@@ -3422,7 +3422,7 @@ test('changing a shared sign-in from either Agent moves every member, revokes th
       for (const account of [opsAfter, salesAfter]) {
         assert.equal(account.lifecycle, 'ready');
         assert.equal(account.policy.accountRef, accountRef);
-        assert.deepEqual(account.policy.signIn, { person: 'notion:ws-1:user-1', accessLane: 'write' });
+        assert.deepEqual(account.policy.signIn, { person: 'notion:ws-1:user-1', accessLane: 'write', signedBy: 'membership_bob' });
         assert.equal(account.policy.providerGeneration, 2);
       }
       assert.deepEqual(signInGroupPolicy(opsAfter.policy), signInGroupPolicy(salesAfter.policy));

@@ -18,9 +18,14 @@ interface SignInLane {
   accounts: readonly ConnectionAccount[];
 }
 
-/** The member a connection's sign-in belongs to: a personal owner, or whoever created a team connection. */
+/**
+ * The member a connection's sign-in belongs to: whoever completed it. Another
+ * member can add a row to that sign-in, so a row's owner or creator stands in
+ * only for a sign-in recorded before signers were.
+ */
 export function signInSigner(account: ConnectionAccount): string | undefined {
-  return account.ownerKind === 'member' ? account.ownerMembershipId : account.createdByMembershipId;
+  const signedBy = account.policy.kind === 'managed' ? account.policy.signIn?.signedBy : undefined;
+  return signedBy ?? (account.ownerKind === 'member' ? account.ownerMembershipId : account.createdByMembershipId);
 }
 
 /** A live connection of the other owner kind that the actor signed, checked before the provider opens. */

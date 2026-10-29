@@ -15,6 +15,7 @@ import { createManagedConnectionProviderRegistry, type ManagedConnectionProvider
 import { notionPageHandle, readAgentPageChoice, type NotionId } from '../src/connections/notion-pages.ts';
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
 import { projectEffectiveConnectionAccounts } from '../src/connections/runtime.ts';
+import { ManagedSignInOtherKindError } from '../src/connections/sign-in-mix.ts';
 import {
   ConnectionAccountService,
   ManagedConnectionConflictError,
@@ -41,11 +42,14 @@ function principal(membershipId: string, role: AuthPrincipal['role']): AuthPrinc
 const MAYA = principal('membership_maya', 'owner');
 const BOB = principal('membership_bob', 'admin');
 const ZED = principal('membership_zed', 'member');
-const NAMES: Record<string, string> = { membership_maya: 'Maya Chen', membership_zed: 'Zed Park' };
+const NAMES: Record<string, string> = { membership_maya: 'Maya Chen', membership_bob: 'Bob Diaz', membership_zed: 'Zed Park' };
 const signerName = async (membershipId: string) => NAMES[membershipId];
 
-/** A workspace whose Notion sign-ins all share the same pages; each sign-in's person is set per account. */
-async function notionWorkspace() {
+/**
+ * A workspace whose Notion sign-ins all share the same pages; each sign-in's person is set per account.
+ * `randomId` names the accounts the service creates; Notion sign-ins from the setup door get random ids.
+ */
+async function notionWorkspace(options: { randomId?: () => string } = {}) {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const calls: string[] = [];
@@ -100,7 +104,7 @@ async function notionWorkspace() {
   };
   const service = new ConnectionAccountService({
     config, settings, managedProviders: providers,
-    randomId: (() => { let next = 0; return () => `shared${++next}`; })(),
+    randomId: options.randomId ?? (() => { let next = 0; return () => `shared${++next}`; })(),
   });
 
   /** Starts a Notion sign-in through the Slack setup door: a new connection, or another sign-in for one. */
@@ -108,11 +112,13 @@ async function notionWorkspace() {
     ownerKind?: 'team' | 'member';
     access?: 'read' | 'write';
     connectionAccountId?: string;
+    differentAccount?: boolean;
   } = {}) => {
     nextRef = ref;
     const agent = await config.getAgent(agentId);
     const started = await startManagedAuthorizationFlow(flow, {
       principal: actor, agent, workspaceId: WORKSPACE,
+      ...(options.differentAccount ? { differentAccount: true } : {}),
       ...(options.connectionAccountId
         ? { connectionAccountId: options.connectionAccountId }
         : { ownerKind: options.ownerKind ?? 'team', toolkit: 'notion', access: options.access ?? 'read' }),
@@ -183,7 +189,8 @@ test('a sign-in that began on read fails closed when its sign-in group needs wri
   const notion = await notionWorkspace();
   try {
     const ops = await notion.connect(MAYA, 'agent_ops', 'ca_read');
-    assert.deepEqual(ops.policy.kind === 'managed' && ops.policy.signIn, { person: 'notion:ws-1:user-maya', accessLane: 'read' });
+    assert.deepEqual(ops.policy.kind === 'managed' && ops.policy.signIn,
+      { person: 'notion:ws-1:user-maya', accessLane: 'read', signedBy: 'membership_maya' });
 
     const again = await notion.start(MAYA, 'agent_ops', 'ca_again', { connectionAccountId: ops.id });
     assert.equal(again.attempt.accessLane, 'read', 'the attempt records the lane its credential is issued on');
@@ -216,7 +223,7 @@ test('a sign-in records the lane it was issued on, not the lane its group needs 
     })).lifecycle, 'revoked');
     assert.equal((await again.finish()).status, 'connected');
     const { account } = await notion.accountOf('agent_sales');
-    assert.deepEqual(account.policy.signIn, { person: 'notion:ws-1:user-maya', accessLane: 'write' });
+    assert.deepEqual(account.policy.signIn, { person: 'notion:ws-1:user-maya', accessLane: 'write', signedBy: 'membership_maya' });
   } finally {
     notion.close();
   }
@@ -391,6 +398,76 @@ test('a sign-in of a different Notion person, or one Notion named nobody for, ke
     const refs = await Promise.all(['agent_ops', 'agent_sales', 'agent_scout', 'agent_notes'].map(async (agentId) =>
       (await notion.accountOf(agentId)).account.policy.accountRef));
     assert.deepEqual(refs, ['ca_one', 'ca_bob', 'ca_nobody', 'ca_nobody_again'], 'two sign-ins by one member are not one person');
+  } finally {
+    notion.close();
+  }
+});
+
+test('the member who signed a shared team sign-in, not one who added an Agent to it, is held to the personal and team rule', async () => {
+  const notion = await notionWorkspace();
+  try {
+    notion.people.set('ca_team', null);
+    notion.people.set('ca_maya', null);
+    const ops = await notion.connect(MAYA, 'agent_ops', 'ca_team');
+    await notion.reuse(BOB, 'agent_sales', 'agent_ops');
+    await notion.service.disconnectForAgent({ principal: MAYA, agentId: 'agent_ops', connectionAccountId: ops.id });
+    const [left] = await notion.config.listConnectionAccounts(WORKSPACE).then((accounts) =>
+      accounts.filter(({ lifecycle }) => lifecycle !== 'revoked'));
+    assert.equal(left?.createdByMembershipId, 'membership_bob', 'only the row Bob added remains');
+
+    await assert.rejects(notion.start(MAYA, 'agent_ops', 'ca_maya', { ownerKind: 'member' }),
+      (error) => error instanceof ManagedSignInOtherKindError && /already connected Notion for team use/.test(error.message),
+      'Maya signed the team sign-in, so she hears the rule before Notion opens');
+    assert.equal((await notion.start(BOB, 'agent_notes', 'ca_bob', { ownerKind: 'member' })).attempt.ownerKind, 'member',
+      'Bob never signed in to Notion, so he is not stopped');
+
+    const personal = await notion.start(MAYA, 'agent_ops', 'ca_maya', { ownerKind: 'member', differentAccount: true });
+    assert.equal((await personal.finish()).status, 'refused',
+      'Notion named nobody, and Maya signed the team sign-in, so her personal one may be the same account');
+    assert.deepEqual((await notion.config.listConnectionAccounts(WORKSPACE))
+      .filter(({ ownerKind, lifecycle }) => ownerKind === 'member' && lifecycle !== 'revoked'), []);
+  } finally {
+    notion.close();
+  }
+});
+
+test('a shared sign-in names the member who signed it to everyone, whichever Agent\'s row is listed first', async () => {
+  // Bob's row id sorts before, then after, the id the setup door gives Maya's row.
+  for (const reusedId of ['0', 'z']) {
+    const notion = await notionWorkspace({ randomId: () => reusedId });
+    try {
+      await notion.connect(MAYA, 'agent_ops', 'ca_team');
+      await notion.reuse(BOB, 'agent_sales', 'agent_ops');
+      for (const actor of [MAYA, BOB]) {
+        const offered = await notion.reusable(actor, 'agent_scout', 'team');
+        assert.deepEqual(offered.map(({ signerName, signedByYou }) => [signerName, signedByYou]),
+          [['Maya Chen', actor === MAYA]], `${actor.membershipId}, Bob's row id ${reusedId}`);
+      }
+      const bindings = await Promise.all(['agent_ops', 'agent_sales'].map(async (agentId) =>
+        (await notion.accountOf(agentId)).binding));
+      const summaries = await notion.service.pageSummaries(WORKSPACE, bindings);
+      assert.deepEqual([...summaries.values()].map(({ signerMembershipId }) => signerMembershipId),
+        ['membership_maya', 'membership_maya'], `Bob's row id ${reusedId}`);
+    } finally {
+      notion.close();
+    }
+  }
+});
+
+test('another Admin signing in again to a shared team sign-in becomes its signer on every Agent', async () => {
+  const notion = await notionWorkspace();
+  try {
+    await notion.connect(MAYA, 'agent_ops', 'ca_team');
+    await notion.reuse(BOB, 'agent_sales', 'agent_ops');
+    const sales = (await notion.accountOf('agent_sales')).account;
+    assert.equal((await (await notion.start(BOB, 'agent_sales', 'ca_again', { connectionAccountId: sales.id })).finish()).status,
+      'connected');
+    for (const agentId of ['agent_ops', 'agent_sales']) {
+      const { account } = await notion.accountOf(agentId);
+      assert.deepEqual([account.policy.accountRef, account.policy.signIn?.signedBy], ['ca_again', 'membership_bob'], agentId);
+    }
+    assert.deepEqual((await notion.reusable(MAYA, 'agent_scout', 'team')).map(({ signerName, signedByYou }) => [signerName, signedByYou]),
+      [['Bob Diaz', false]]);
   } finally {
     notion.close();
   }

@@ -1850,9 +1850,9 @@ function laneCovers(issued: ManagedAccessLane, needed: ManagedAccessLane): boole
 }
 
 /**
- * A connector whose sign-ins may be shared always records whose sign-in it
- * is: the person the provider named for this sign-in, or the signer when it
- * names nobody.
+ * Every sign-in records the member who completed it. A connector whose
+ * sign-ins may be shared also records whose sign-in it is: the person the
+ * provider named for this sign-in, or the signer when it names nobody.
  */
 function managedSignIn(
   connector: ManagedConnectorDefinition,
@@ -1862,7 +1862,7 @@ function managedSignIn(
 ): ManagedSignIn {
   const person = validation?.person ??
     (connector.sharedSignIn ? `member:${signerMembershipId}` : undefined);
-  return { ...(person ? { person } : {}), accessLane };
+  return { ...(person ? { person } : {}), accessLane, signedBy: signerMembershipId };
 }
 
 /**

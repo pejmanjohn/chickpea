@@ -8,6 +8,7 @@ import {
   signInMix,
   signInMixRefusal,
   signInOtherKindNotice,
+  signInSigner,
 } from '../src/connections/sign-in-mix.ts';
 
 const notion = MANAGED_CONNECTOR_CATALOG.connector('notion')!;
@@ -18,6 +19,8 @@ function account(input: {
   ownerKind: 'team' | 'member';
   signer: string;
   person?: string;
+  /** Whoever completed the sign-in, when it was recorded; `signer` stays the owner or creator. */
+  signedBy?: string;
   toolkit?: string;
   lifecycle?: ConnectionAccount['lifecycle'];
 }): ConnectionAccount {
@@ -41,7 +44,9 @@ function account(input: {
       principalRef: `principal_${input.id}`,
       accountRef: `ca_${input.id}`,
       allowedCapabilities: ['notion.content.search'],
-      ...(input.person ? { signIn: { person: input.person, accessLane: 'read' as const } } : {}),
+      ...(input.person
+        ? { signIn: { person: input.person, accessLane: 'read' as const, ...(input.signedBy ? { signedBy: input.signedBy } : {}) } }
+        : {}),
     },
   };
 }
@@ -114,6 +119,23 @@ test('a completed sign-in mixes with the other kind on the same Notion person or
     'a connection of the same kind is not a mix');
   assert.equal(signInMix({ ...lane('member', 'm_maya', [team]), connector: gmail, person: maya }), undefined,
     'a connector without shared sign-ins is untouched');
+});
+
+test('the member a sign-in records as its signer is the signer; one recorded before that falls back to the owner or creator', () => {
+  // Maya signed the team sign-in; Bob created this row by adding another Agent to it.
+  const added = account({ id: 'team', ownerKind: 'team', signer: 'm_bob', person: 'member:m_maya', signedBy: 'm_maya' });
+  assert.equal(signInSigner(added), 'm_maya');
+  assert.equal(actorSignedOtherKind(lane('member', 'm_maya', [added]))?.id, 'team');
+  assert.equal(actorSignedOtherKind(lane('member', 'm_bob', [added])), undefined);
+  assert.equal(signInMix({ ...lane('member', 'm_maya', [added]), person: 'member:m_maya' })?.account.id, 'team');
+  assert.equal(signInMix({ ...lane('member', 'm_bob', [added]), person: 'member:m_bob' }), undefined);
+
+  const older = account({ id: 'team', ownerKind: 'team', signer: 'm_bob', person: 'member:m_maya' });
+  assert.equal(signInSigner(older), 'm_bob', 'a team sign-in recorded before signers names its creator');
+  assert.equal(signInMix({ ...lane('member', 'm_bob', [older]), person: 'member:m_bob' })?.account.id, 'team');
+  assert.equal(signInMix({ ...lane('member', 'm_maya', [older]), person: 'member:m_maya' }), undefined);
+  assert.equal(signInSigner(account({ id: 'personal', ownerKind: 'member', signer: 'm_zed' })), 'm_zed',
+    'a personal sign-in recorded before signers names its owner');
 });
 
 test('the notice and refusal explain the rule without naming anyone', () => {
