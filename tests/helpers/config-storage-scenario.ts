@@ -1,3 +1,4 @@
+import { listWebsiteLogins } from '../../src/browser/logins.ts';
 import type { ConfigStoreLogic } from '../../src/config/store.ts';
 import type { SettingsStoreLogic } from '../../src/config/settings-store.ts';
 import type { SignInGroupPolicy } from '../../src/config/sign-in-group.ts';
@@ -730,11 +731,13 @@ const DESK_LOGIN = `wl_${'d35c0b17'.repeat(4)}`;
 
 /**
  * The browser's settings rows, shaped as src/browser writes them: the
- * website-login catalog, one login's runtime state, the provider objects
- * queued for deletion, and a month's usage. Login secrets live in the
- * encrypted realm, outside the contract.
+ * connected key and project, the website-login catalog, each login's
+ * runtime state, the provider objects queued for deletion, and a month's
+ * usage. Login secrets live in the encrypted realm, outside the contract.
  */
 function writeBrowser({ settings }: ConfigStorageStores): void {
+  settings.setSetting('browser.browserbase.apiKey', 'synthetic-browserbase-key');
+  settings.setSetting('browser.browserbase.projectId', 'proj_scenario');
   settings.setSetting('browser.logins.v1', JSON.stringify([
     {
       id: BILLING_LOGIN, host: 'billing.example.com', label: 'Billing portal', ownerKind: 'team',
@@ -1003,8 +1006,13 @@ export function writeConfigStorageScenario(kit: ConfigStorageKit, db: StateDb): 
   kit(db);
 }
 
-/** Reads back everything the scenario wrote, through the public store API only, as plain JSON-serializable data. Must not write. */
-export function readConfigStorageScenario(kit: ConfigStorageKit, db: StateDb): unknown {
+/**
+ * Reads back everything the scenario wrote, through the public store API
+ * only, as plain JSON-serializable data. Must not write. The website logins
+ * are read last, as the browser lists them; every config read runs before
+ * that first await, so a caller's scenario clock still covers it.
+ */
+export async function readConfigStorageScenario(kit: ConfigStorageKit, db: StateDb): Promise<unknown> {
   const { config, settings } = kit(db);
   const agents = config.listAgents();
   const agentIds = agents.map(({ id }) => id);
@@ -1040,5 +1048,9 @@ export function readConfigStorageScenario(kit: ConfigStorageKit, db: StateDb): u
     },
     agentSecrets: Object.fromEntries([...LEGACY_SECRET_KEYS, ...CURRENT_SECRET_KEYS].map((key) =>
       [key, settings.getSetting(key) ?? null])),
+    websiteLogins: await listWebsiteLogins({
+      getSetting: async (key) => settings.getSetting(key),
+      getSettings: async (keys) => settings.getSettings(keys),
+    }),
   };
 }

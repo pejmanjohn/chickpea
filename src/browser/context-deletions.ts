@@ -9,7 +9,7 @@
  * the rest, so a few that always fail never hold up the others.
  */
 import type { SettingsStore } from '../config/settings-store.ts';
-import { BrowserProviderError, type BrowserProvider } from './provider.ts';
+import { BROWSER_PROVIDER_ID_PATTERN, BrowserProviderError, type BrowserProvider } from './provider.ts';
 
 export const PENDING_CONTEXT_DELETIONS_SETTING = 'browser.pendingContextDeletions';
 
@@ -32,7 +32,6 @@ const MAX_PENDING = 1_000;
 /** Each sweep's share, so a long queue never holds up the rest of maintenance. */
 const PER_SWEEP = 25;
 const MAX_CAS_ATTEMPTS = 12;
-const PROVIDER_ID = /^[A-Za-z0-9_-]{1,200}$/;
 
 /** The queue row with `entries` appended: what a caller writes in its own compare-and-set. */
 export function withPendingContextDeletions(raw: string | undefined, entries: readonly PendingContextDeletion[]): string {
@@ -106,7 +105,7 @@ function parsePendingContextDeletions(raw: string | undefined): PendingContextDe
   return value.flatMap((item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
     const { contextId, handoffSessionId, queuedAt, attempts } = item as Record<string, unknown>;
-    const id = (candidate: unknown) => typeof candidate === 'string' && PROVIDER_ID.test(candidate) ? candidate : undefined;
+    const id = (candidate: unknown) => typeof candidate === 'string' && BROWSER_PROVIDER_ID_PATTERN.test(candidate) ? candidate : undefined;
     const context = id(contextId);
     const handoff = id(handoffSessionId);
     if ((!context && !handoff) || typeof queuedAt !== 'number') return [];

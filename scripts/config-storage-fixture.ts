@@ -51,7 +51,7 @@ if (mode === 'current') {
     release: JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version,
     scenario: scenarioDigest(),
     ...written,
-    readback: maskedJson(atScenarioClock(() => readConfigStorageScenario(kit, db))),
+    readback: maskedJson(await atScenarioClock(() => readConfigStorageScenario(kit, db))),
   });
 } else {
   console.error('Usage: npm run fixture:config-storage -- current | release <checkout of the previous release>');

@@ -50,6 +50,9 @@ export interface BrowserProvider {
   deleteContext(contextId: string): Promise<void>;
 }
 
+/** The shape of a context or session id this code stores or queues. */
+export const BROWSER_PROVIDER_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
+
 export class BrowserProviderError extends Error {
   constructor(message: string, readonly status?: number) {
     super(message);

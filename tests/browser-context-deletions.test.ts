@@ -21,7 +21,7 @@ import {
   type WebsiteLogin,
 } from '../src/browser/logins.ts';
 import { BROWSER_LOGIN_REVOKED_MESSAGE } from '../src/browser/messages.ts';
-import type { BrowserProvider } from '../src/browser/provider.ts';
+import { BrowserProviderError, type BrowserProvider } from '../src/browser/provider.ts';
 import { BrowserTurnSession } from '../src/browser/turn-session.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -115,6 +115,39 @@ test('a sweep keeps what failed, less the steps that finished, and keeps what wa
   assert.deepEqual(ended, ['sess_a'], 'an ended hand-off is not ended again');
   assert.deepEqual(deleted, ['ctx_b', 'ctx_c', 'ctx_a']);
   assert.equal(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), undefined);
+});
+
+test('a hand-off whose release fails is ended once the provider reports it ended, and kept while it runs', async (t) => {
+  const { store, queue } = setup(t);
+  await queueContextDeletions(store, [
+    { contextId: 'ctx_done', handoffSessionId: 'sess_done', queuedAt: NOW - 2 },
+    { contextId: 'ctx_open', handoffSessionId: 'sess_open', queuedAt: NOW - 1 },
+  ]);
+  const deleted: string[] = [];
+  const { provider } = fakeBrowserProvider({
+    async endSession() { throw new BrowserProviderError('Browserbase POST returned 409', 409); },
+    async sessionStatus(id) { return id === 'sess_done' ? 'COMPLETED' : 'RUNNING'; },
+    async deleteContext(id) { deleted.push(id); },
+  });
+  await sweep(store, async () => provider);
+  assert.deepEqual(deleted, ['ctx_done'], 'a context goes only once the session that would save into it ended');
+  assert.deepEqual((await queue()).map(({ contextId, handoffSessionId }) => [contextId, handoffSessionId]),
+    [['ctx_open', 'sess_open']]);
+});
+
+test('a login\'s deletion succeeds and leaves its context queued when the provider cannot be resolved', async (t) => {
+  const { store, deps, queue } = setup(t);
+  const login = await createWebsiteLogin(deps, LOGIN);
+  await recordWebsiteLoginContext(store, login.id, 'ctx_saved');
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const resolving = async (): Promise<BrowserProvider | undefined> => { throw new Error(`settings unavailable for ${login.id}`); };
+  assert.equal(await deleteWebsiteLogin({ store, browserProvider: resolving }, login.id), true);
+  assert.deepEqual(await listWebsiteLogins(store), []);
+  assert.equal(await store.getEncryptedCredentialRevision(`website_login.${login.id}`), undefined);
+  assert.deepEqual((await queue()).map(({ contextId }) => contextId), ['ctx_saved']);
+  const logged = JSON.stringify(warn.mock.calls.map((call) => call.arguments));
+  assert.match(logged, /left for work maintenance/);
+  assert.doesNotMatch(logged, new RegExp(`${login.id}|ctx_saved`));
 });
 
 test('a 404 from Browserbase dequeues; any other failure keeps the entry', async (t) => {

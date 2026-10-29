@@ -20,7 +20,7 @@ import {
   withPendingContextDeletions,
   type PendingContextDeletion,
 } from './context-deletions.ts';
-import type { BrowserProvider } from './provider.ts';
+import { BROWSER_PROVIDER_ID_PATTERN, type BrowserProvider } from './provider.ts';
 import { resolveBrowserProvider } from './settings.ts';
 
 /**
@@ -43,7 +43,6 @@ const CREDENTIAL_IDENTITY_ID = 'website_login';
 const CREDENTIAL_APP_ID = 'BROWSER';
 const LOGIN_ID_PATTERN = /^wl_[a-f0-9]{32}$/;
 const MEMBERSHIP_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
-const BROWSER_CONTEXT_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
 /** Longer than any create takes between writing its secret and its catalog entry. */
 const ORPHAN_SECRET_GRACE_MS = 10 * 60 * 1000;
 const MAX_HOST_LENGTH = 260;
@@ -201,7 +200,7 @@ export function normalizeWebsiteLoginHost(raw: string): string {
   return url.host.toLowerCase();
 }
 
-export async function listWebsiteLogins(store: SettingsStore): Promise<WebsiteLogin[]> {
+export async function listWebsiteLogins(store: Pick<SettingsStore, 'getSetting' | 'getSettings'>): Promise<WebsiteLogin[]> {
   const logins = parseLogins(await store.getSetting(WEBSITE_LOGINS_SETTING));
   if (!logins.length) return logins;
   const states = await store.getSettings(logins.map((login) => stateKey(login.id)));
@@ -532,7 +531,7 @@ export async function recordWebsiteLoginContext(
   id: string,
   contextId: string,
 ): Promise<string | undefined> {
-  if (!BROWSER_CONTEXT_ID_PATTERN.test(contextId)) {
+  if (!BROWSER_PROVIDER_ID_PATTERN.test(contextId)) {
     throw new WebsiteLoginInputError('invalid_context');
   }
   let recorded = contextId;
@@ -550,7 +549,7 @@ export async function setWebsiteLoginHandoff(
   id: string,
   sessionId: string | undefined,
 ): Promise<boolean> {
-  if (sessionId !== undefined && !BROWSER_CONTEXT_ID_PATTERN.test(sessionId)) {
+  if (sessionId !== undefined && !BROWSER_PROVIDER_ID_PATTERN.test(sessionId)) {
     throw new WebsiteLoginInputError('invalid_context');
   }
   return patchLoginState(store, id, (state) => {

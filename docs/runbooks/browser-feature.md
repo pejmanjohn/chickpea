@@ -39,20 +39,32 @@ state, deploy path, and first checks when a browser tool fails.
 
 ## Website logins
 
-- Metadata row: `browser.logins.v1` (host, label, method, owner, which Agents
-  hold it, last used; at most 100 logins). No secret is in this row.
+- Metadata row: `browser.logins.v1` (host, label, method, owner; at most 100
+  logins). No secret is in this row. Each login's saved context, open
+  hand-off session and last use live in its own `website_login_state.<id>`
+  row.
 - Secrets: encrypted revisions keyed `website_login.<id>`, envelope purpose
   `website_login`, sealed with the install's credential keyring. Passwords and
   one-time code secrets are typed by Chickpea and never enter model context.
-- Keyring rotation gap: website-login secrets are not re-encrypted when the
-  current credential key changes. Keep every retired key slot
-  (`CHICKPEA_CREDENTIAL_KEY_<ID>` on Cloudflare, the keyring file on Node)
-  until each login has been saved again under the new key.
-- Saved sign-in: each login's signed-in session lives in the Browserbase
-  project. Removing a login from an Agent deletes the saved sign-in only when
-  no other Agent still holds that login.
-- Hand-off: a kept-alive Browserbase session of up to 10 minutes. The private
-  live-view link goes only to the requester; it never enters model context.
+  A keyring rewrap re-encrypts them under the new key. Work maintenance
+  deletes a secret no login names once it is ten minutes old.
+- Saved sign-in: each login's signed-in session lives in a Browserbase
+  context. Removing a login from an Agent deletes the login, its secret and
+  its context only when no other Agent, archived ones included, still holds
+  it. Deleting an Agent does the same for each of its logins, and is refused
+  when one of them is a login the person deleting could not remove.
+- Deletion queue: the context and any open hand-off session of a deleted
+  login are queued in `browser.pendingContextDeletions` in the same write
+  that removes the login, then deleted at Browserbase at once or by work
+  maintenance. A failed entry is retried behind the rest. An entry is dropped
+  after 30 days, including on an install with no browser key, with a log line
+  that names nothing.
+- Hand-off: a kept-alive Browserbase session of up to 10 minutes, never
+  recorded and without Browserbase session logs. The private live-view link
+  goes only to the requester; it never enters model context.
+- Downloads: each session Chickpea opens asks the browser to refuse them.
+  Whether that refusal still holds once Chickpea detaches from a hand-off
+  session is not yet verified live.
 
 ## Actions and approval
 

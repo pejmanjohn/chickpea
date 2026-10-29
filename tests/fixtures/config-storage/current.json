@@ -1,5 +1,5 @@
 {
-  "scenario": "c2b9ffa5f7d8af3348b05e4c268f8aff2ec313a50fe5b884b4b802dff91121af",
+  "scenario": "5c26997cd365dd26675daebf96570f364d7d80ee6f2ff0e7c5161462385a25a5",
   "contract": {
     "schemaVersion": 12,
     "schemaMarker": "agent-first-v1",
@@ -1046,6 +1046,8 @@
     },
     "settings": {
       "browser.*": {
+        "\"browser.browserbase.apiKey\"": "\"synthetic-browserbase-key\"",
+        "\"browser.browserbase.projectId\"": "\"proj_scenario\"",
         "\"browser.logins.v1\"": "[{\"createdAt\":1791997200000,\"createdByMembershipId\":\"membership_scenario_owner\",\"host\":\"billing.example.com\",\"id\":\"wl_5ce4a2105ce4a2105ce4a2105ce4a210\",\"label\":\"Billing portal\",\"method\":\"credentials\",\"ownerKind\":\"team\",\"username\":\"ops@example.com\"},{\"createdAt\":1792080000000,\"createdByMembershipId\":\"membership_scenario_member\",\"host\":\"desk.example.com:8443\",\"id\":\"wl_d35c0b17d35c0b17d35c0b17d35c0b17\",\"label\":\"Desk\",\"method\":\"handoff\",\"ownerKind\":\"member\",\"ownerMembershipId\":\"membership_scenario_member\"}]",
         "\"browser.monthlyUsage.2026-10\"": "{\"seconds\":540,\"sessionIds\":[\"sess_scenario_first\",\"sess_scenario_second\"],\"sessions\":2}",
         "\"browser.pendingContextDeletions\"": "[{\"contextId\":\"ctx_scenario_removed\",\"handoffSessionId\":\"sess_scenario_removed\",\"queuedAt\":1792080000000},{\"contextId\":\"ctx_scenario_unrecorded\",\"queuedAt\":1792080000000}]"
