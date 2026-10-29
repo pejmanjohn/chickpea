@@ -32,6 +32,7 @@ import type {
   AgentScheduleReference,
   ConnectionAccount,
   ConnectionAccountApiPolicy,
+  ConnectionAccountInput,
   ConnectionAccountManagedPolicy,
   ConnectionAccountMcpPolicy,
   ConnectionAccountPolicy,
@@ -76,7 +77,8 @@ import {
   type NotionListedPage,
   type NotionPageListing,
 } from './notion-pages.ts';
-import { ManagedSignInMixError, signInMix, signInMixRefusal } from './sign-in-mix.ts';
+import { ManagedSignInMixError, signInMix, signInMixRefusal, signInSigner } from './sign-in-mix.ts';
+import { managedPrincipalRef } from './managed-principal.ts';
 
 export interface ConnectionAccountServiceDependencies {
   config: ConfigStore;
@@ -86,6 +88,8 @@ export interface ConnectionAccountServiceDependencies {
   randomId?: () => string;
   productTelemetry?: ProductTelemetryCapture;
   telemetrySurface?: 'admin' | 'slack' | 'mcp' | 'other';
+  /** The env the request runs in; it names the actor's remote principal. */
+  platformEnv?: PlatformEnv;
 }
 
 /** A page an Agent may choose, as the browser sees it. */
@@ -93,6 +97,22 @@ export interface ChoosablePage {
   handle: string;
   kind: 'page' | 'database';
   label: string;
+}
+
+/** "All pages", or only the pages a choice names by handle. */
+export type AgentPageChoice = { mode: 'all' } | { mode: 'only'; pages: readonly string[] };
+
+/** A sign-in another Agent may use without signing in again. */
+export interface ReusableSignIn {
+  sourceConnectionId: string;
+  /** The display name of whoever signed in, when Chickpea knows it. */
+  signerName?: string;
+  signedByYou: boolean;
+  pages: ChoosablePage[];
+  /** False when Notion had more pages than Chickpea lists. */
+  complete: boolean;
+  /** The Agents already using it. Only Owners and Admins may see their names. */
+  agentIds: string[];
 }
 
 export class ManagedConnectionConflictError extends Error {
@@ -620,6 +640,204 @@ export class ConnectionAccountService {
       },
       binding: updatedBinding,
     };
+  }
+
+  /**
+   * The sign-ins the actor may add `agentId` to as `ownerKind` without signing
+   * in again: their own personal ones, or the team's for Owners and Admins,
+   * each ready, covering `access`, and with its pages as this Agent may choose them.
+   */
+  async listReusableSignIns(input: {
+    principal: AuthPrincipal;
+    agentId: string;
+    workspaceId: string;
+    toolkit: string;
+    ownerKind: 'team' | 'member';
+    access: ManagedAccessLane;
+    signerName?: (membershipId: string) => Promise<string | undefined>;
+    signal?: AbortSignal;
+  }): Promise<ReusableSignIn[]> {
+    const connector = this.catalog().connector(input.toolkit);
+    if (!connector?.sharedSignIn) return [];
+    try {
+      await this.assertManagedLaneAvailable({ ...input, adapterId: 'composio' });
+    } catch (error) {
+      if (error instanceof ManagedConnectionConflictError) return [];
+      throw error;
+    }
+    const accounts = await this.dependencies.config.listConnectionAccounts(input.workspaceId);
+    const reusable: ReusableSignIn[] = [];
+    for (const group of signInGroups(accounts)) {
+      const source = group[0]!;
+      if (source.policy.kind !== 'managed' || source.policy.toolkit !== connector.toolkit ||
+          this.reuseRefusal({ ...input, connector, source, group, accounts, needed: input.access })) continue;
+      const { pages, complete } = await this.choosablePages(source.policy, input.signal);
+      const signer = signInSigner(source);
+      const signerName = signer ? await input.signerName?.(signer) : undefined;
+      const bindings = await Promise.all(group.map(({ id }) =>
+        this.dependencies.config.getAgentConnectionBindingForAccount(id)));
+      reusable.push({
+        sourceConnectionId: source.id,
+        ...(signerName ? { signerName } : {}),
+        signedByYou: signer === input.principal.membershipId,
+        pages: pages.map(({ id: _id, ...page }) => page),
+        complete,
+        agentIds: bindings.flatMap((binding) => binding?.enabled ? [binding.agentId] : []),
+      });
+    }
+    return reusable;
+  }
+
+  /**
+   * Add `agentId` to an existing sign-in without asking the provider for a
+   * new one. The new account's owner and principal come from the actor and
+   * must equal the sign-in's; everything the sign-in shares, provider
+   * generation and lineage included, is copied from it.
+   */
+  async reuseSignIn(input: {
+    principal: AuthPrincipal;
+    agentId: string;
+    workspaceId: string;
+    sourceConnectionId: string;
+    ownerKind: 'team' | 'member';
+    access: ManagedAccessLane;
+    /** A setup link's frozen capability ceiling; otherwise every capability of `access`. */
+    capabilities?: readonly string[];
+    choice: AgentPageChoice;
+    signal?: AbortSignal;
+  }): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
+    const requested = requestedPages(input.choice);
+    let source: ConnectionAccount;
+    try {
+      source = await this.findAccount(input.sourceConnectionId);
+    } catch {
+      throw new AuthorizationError();
+    }
+    const connector = source.policy.kind === 'managed'
+      ? this.catalog().connector(source.policy.toolkit)
+      : undefined;
+    if (source.policy.kind !== 'managed' || !connector?.sharedSignIn) throw new AuthorizationError();
+    await this.assertManagedLaneAvailable({
+      principal: input.principal,
+      agentId: input.agentId,
+      ownerKind: input.ownerKind,
+      adapterId: source.policy.adapterId,
+      toolkit: connector.toolkit,
+    });
+    const live = this.catalog().capabilities(connector.toolkit, input.access).map(({ id }) => id);
+    const capabilities = input.capabilities ? [...input.capabilities] : live;
+    if (capabilities.length === 0 || new Set(capabilities).size !== capabilities.length ||
+        capabilities.some((capability) => !live.includes(capability))) {
+      throw new ManagedResourceSelectionError('invalid', 'Requested capabilities are invalid');
+    }
+    const accounts = await this.dependencies.config.listConnectionAccounts(input.workspaceId);
+    const group = await this.signInGroup(source);
+    const refusal = this.reuseRefusal({
+      ...input, connector, source, group, accounts, needed: managedAccessLane(connector, capabilities),
+    });
+    if (refusal) throw refusal;
+    const policy = source.policy;
+    const provider = this.dependencies.managedProviders?.get(policy.adapterId);
+    if (!provider) throw new ManagedConnectionProviderUnavailableError(policy.adapterId);
+    await provider.validate({ policy, ...(input.signal ? { signal: input.signal } : {}) });
+    const chosen = requested && await this.chosenPages(policy, requested, input.signal);
+    const id = `connection_${this.id()}`;
+    const account: ConnectionAccountInput = {
+      id,
+      workspaceId: input.workspaceId,
+      ownerKind: input.ownerKind,
+      ...(input.ownerKind === 'member' ? { ownerMembershipId: input.principal.membershipId } : {}),
+      createdByMembershipId: input.principal.membershipId,
+      providerId: connector.providerId,
+      label: `${connector.label} · ${input.ownerKind === 'team' ? 'Team' : 'Personal'}`,
+      ...(source.identity ? { identity: source.identity } : {}),
+      policy: {
+        kind: 'managed',
+        ...signInGroupPolicy(policy),
+        principalRef: managedPrincipalRef(input.principal, input.ownerKind, this.dependencies.platformEnv)!,
+        allowedCapabilities: capabilities,
+      },
+      secretRefId: `secret_${this.id()}`,
+      lifecycle: 'ready',
+    };
+    let joined: ConnectionAccount[];
+    try {
+      joined = await this.dependencies.config.applySignInGroup({
+        adapterId: policy.adapterId,
+        accountRef: policy.accountRef,
+        members: group.map((member) => ({ connectionAccountId: member.id, expectedRevision: member.revision })),
+        shared: signInGroupPolicy(policy),
+        join: {
+          account,
+          binding: {
+            agentId: input.agentId,
+            connectionAccountId: id,
+            providerId: connector.providerId,
+            allowedCapabilities: capabilities,
+            resourceConstraints: writeAgentPageChoice(projectManagedResourceHandles(policy.resourceConstraints), chosen),
+            enabled: true,
+          },
+        },
+      });
+    } catch (error) {
+      if (error instanceof ManagedSignInGroupConflictError ||
+          error instanceof ConnectionAccountRevisionConflictError ||
+          error instanceof ManagedRemoteAccountAlreadyUsedError) {
+        throw new ManagedConnectionConflictError('That sign-in changed while this Agent was being added');
+      }
+      throw error;
+    }
+    const created = joined.find((member) => member.id === id);
+    const binding = await this.dependencies.config.getAgentConnectionBindingForAccount(id);
+    if (!created || !binding) throw new ManagedConnectionConflictError('That sign-in changed while this Agent was being added');
+    this.captureConnectionReady(undefined, created, binding);
+    return { account: created, binding };
+  }
+
+  /** Why the actor cannot add an Agent to `source`'s sign-in as `ownerKind`; undefined when they can. */
+  private reuseRefusal(input: {
+    principal: AuthPrincipal;
+    workspaceId: string;
+    ownerKind: 'team' | 'member';
+    needed: ManagedAccessLane;
+    connector: ManagedConnectorDefinition;
+    source: ConnectionAccount;
+    group: readonly ConnectionAccount[];
+    accounts: readonly ConnectionAccount[];
+  }): Error | undefined {
+    const { source, connector } = input;
+    const principalRef = managedPrincipalRef(input.principal, input.ownerKind, this.dependencies.platformEnv);
+    if (source.policy.kind !== 'managed' || source.lifecycle === 'revoked' ||
+        source.workspaceId !== input.workspaceId || source.providerId !== connector.providerId ||
+        source.policy.adapterId.trim().toLowerCase() !== 'composio' ||
+        source.policy.toolkit !== connector.toolkit || source.ownerKind !== input.ownerKind ||
+        !principalRef || source.policy.principalRef !== principalRef ||
+        (input.ownerKind === 'member' && source.ownerMembershipId !== input.principal.membershipId)) {
+      return new AuthorizationError();
+    }
+    if (input.group.some(({ lifecycle }) => lifecycle !== 'ready')) {
+      return new ManagedConnectionConflictError('That sign-in needs attention before another Agent can use it');
+    }
+    const issued = source.policy.signIn?.accessLane ?? signInGroupAccessLane(connector, input.group);
+    if (!laneCovers(issued, input.needed)) {
+      return new ManagedConnectionConflictError('That sign-in does not cover the access this Agent needs');
+    }
+    // The sign-in's own signer stands in for the actor: it is their account that would back both kinds.
+    const mix = signInMix({
+      connector,
+      adapterId: source.policy.adapterId,
+      ownerKind: input.ownerKind,
+      actorMembershipId: signInSigner(source) ?? input.principal.membershipId,
+      person: source.policy.signIn?.person,
+      accounts: input.accounts,
+    });
+    if (mix) {
+      return new ManagedConnectionConflictError(
+        `That ${connector.label} account is also used for a ${mix.account.ownerKind === 'team' ? 'team' : 'personal'} ` +
+          `connection in this workspace, so another Agent can't use it.`,
+      );
+    }
+    return undefined;
   }
 
   /** Preflight the one-Team/one-Personal lane invariant before remote import. */
@@ -1519,6 +1737,16 @@ function logSignInRecorded(account: ConnectionAccount): void {
     accessLane: policy.signIn.accessLane,
     personSource: policy.signIn.person?.startsWith('member:') ? 'member' : 'provider',
   }));
+}
+
+/** The live sign-in groups among a workspace's accounts. */
+function signInGroups(accounts: readonly ConnectionAccount[]): ConnectionAccount[][] {
+  const groups = new Map<string, ConnectionAccount[]>();
+  for (const account of accounts) {
+    const key = signInGroupKey(account);
+    if (key) groups.set(key, [...groups.get(key) ?? [], account]);
+  }
+  return [...groups.values()];
 }
 
 /** The pages a choice names, or undefined for all of them; any other choice is refused before Notion is asked. */

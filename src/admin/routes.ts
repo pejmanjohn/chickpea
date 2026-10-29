@@ -2747,6 +2747,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       managedCatalog,
       ...(telemetry ? { productTelemetry: telemetry } : {}),
       telemetrySurface: 'admin',
+      ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
     });
   };
   const resumeComposioReconciliation = async (

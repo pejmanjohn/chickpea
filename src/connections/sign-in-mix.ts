@@ -19,7 +19,7 @@ interface SignInLane {
 }
 
 /** The member a connection's sign-in belongs to: a personal owner, or whoever created a team connection. */
-function signInSigner(account: ConnectionAccount): string | undefined {
+export function signInSigner(account: ConnectionAccount): string | undefined {
   return account.ownerKind === 'member' ? account.ownerMembershipId : account.createdByMembershipId;
 }
 

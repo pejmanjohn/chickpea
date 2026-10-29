@@ -712,6 +712,7 @@ function connectionAccounts(
     managedCatalog: dependencies.catalog,
     ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
     telemetrySurface: dependencies.telemetrySurface ?? 'other',
+    ...(dependencies.providerContext.platformEnv ? { platformEnv: dependencies.providerContext.platformEnv } : {}),
   });
 }
 
