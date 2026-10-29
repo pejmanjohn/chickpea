@@ -67,15 +67,15 @@ export async function censusBrowser(store: SettingsStore, now: number): Promise<
 /**
  * One pass of erasure. First every running session ends: those the lease
  * row holds, the hand-off sessions queued with a deleted login, and those
- * the provider lists running or pending under the installation's metadata. A queued
- * hand-off leaves the queue only once its session has ended. Then every
- * context is deleted: the ones website logins record
- * (legacy catalog fields included), the queued ones, and every one the
- * provider lists on the installation's sessions, finished ones included,
- * which catches a context nothing recorded. Each goes through the wrapper's
- * ownership check and is cleared from the store as it is settled. A context
- * whose session still runs waits for the next pass. A second pass after a
- * clean one finds nothing to count but the sessions listed.
+ * the provider lists running or pending under the installation's metadata.
+ * A queued hand-off leaves the queue only once its session has ended. Then
+ * every context is deleted: the ones website logins record (legacy catalog
+ * fields included), the queued ones, and every one the provider lists on
+ * the installation's sessions, finished ones included, which catches a
+ * context nothing recorded. Each goes through the wrapper's ownership check
+ * and is cleared from the store as it is settled. A context whose session
+ * still runs waits for the next pass. A second pass after a clean one finds
+ * nothing to count but the sessions listed.
  */
 export async function eraseBrowserPass(input: {
   store: SettingsStore;
