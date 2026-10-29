@@ -69,11 +69,11 @@ const INSTALLATION_METADATA_KEY = 'installation';
 const DEFAULT_TIMEOUT_SECONDS = 600;
 
 /**
- * Answers to a session create that prove Browserbase made no session. Any
- * other failure (no answer, a timeout, a 5xx, 408, 429) may follow a
- * session it made and bills to its timeout.
+ * Answers to a session create that prove Browserbase made no session; it
+ * documents a 429 as dropping the request. Any other failure (no answer, a
+ * timeout, a 5xx, 408) may follow a session it made and bills to its timeout.
  */
-const CREATE_REFUSED = new Set([400, 401, 403, 404, 409, 422]);
+const CREATE_REFUSED = new Set([400, 401, 403, 404, 409, 422, 429]);
 
 const RUNNING_STATUSES = new Set(['RUNNING', 'PENDING']);
 

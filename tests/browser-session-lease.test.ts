@@ -187,7 +187,7 @@ test('a create Browserbase refused releases its lease; one it may have carried o
   const createFails = (answer: () => Response) => ({
     fail: ({ method, url }: { method: string; url: string }) => method === 'POST' && url.endsWith('/v1/sessions') ? answer() : undefined,
   });
-  for (const status of [400, 401, 403, 404, 409, 422]) {
+  for (const status of [400, 401, 403, 404, 409, 422, 429]) {
     const { store, provider } = hostedSetup(t, {}, createFails(() => new Response('no', { status })));
     await assert.rejects(provider().createSession({ timeoutSeconds: 660 }), HostedBrowserFailure);
     assert.deepEqual((await readBrowserSessionUsage({ store, now: T0 })).leases, [], `${status} holds nothing`);
@@ -197,7 +197,6 @@ test('a create Browserbase refused releases its lease; one it may have carried o
     ['500', () => new Response('no', { status: 500 })],
     ['503', () => new Response('no', { status: 503 })],
     ['408', () => new Response('no', { status: 408 })],
-    ['429', () => new Response('no', { status: 429 })],
     ['network', () => { throw new TypeError('fetch failed'); }],
     ['timeout', timedOut],
     ['no id', () => Response.json({ connectUrl: 'wss://connect.example/' }, { status: 201 })],
