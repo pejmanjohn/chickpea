@@ -16,7 +16,8 @@
  *   not create is used only once its record names the project and the
  *   installation: a stored hand-off session, a recording handle, erasure.
  * - The policy is read again on every create, so the host's off switch
- *   holds mid-turn.
+ *   holds mid-turn. Every session holds a lease against the policy's
+ *   limits from just before its create until it ends (session-lease.ts).
  * - Refusals and the provider's failures reach the model only as fixed
  *   texts; the provider's own response goes nowhere, and the log names
  *   the operation and status alone.
@@ -25,6 +26,12 @@ import { hostedBrowserAccess, hostedBrowserPolicy, type HostedBrowserAccess } fr
 import { requireInstallationScope } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { createBrowserbaseProvider, type BrowserbaseClient, type BrowserbaseSessionRecord } from './browserbase.ts';
+import {
+  admitBrowserSession,
+  attachBrowserSession,
+  closeBrowserSessionLease,
+  releaseBrowserReservation,
+} from './session-lease.ts';
 import {
   BrowserContextGoneError,
   BrowserProviderError,
@@ -43,10 +50,13 @@ export interface HostedBrowserProviderOptions {
   installationId: string;
   store: Pick<SettingsStore, 'getSettings' | 'applySettingsPatch'>;
   fetch?: typeof fetch;
+  now?: () => number;
 }
 
 /** The session list's metadata key naming the installation. */
 const INSTALLATION_METADATA_KEY = 'installation';
+/** A session asked for with no timeout gets this one, so its lease and the provider agree on when it ends. */
+const DEFAULT_TIMEOUT_SECONDS = 600;
 
 export class HostedBrowserProvider implements BrowserProvider {
   readonly id = 'browserbase' as const;
@@ -58,8 +68,12 @@ export class HostedBrowserProvider implements BrowserProvider {
   /** Sessions this instance created or found the installation's; a refused id is asked again. */
   readonly #ownSessions = new Set<string>();
   readonly #ownContexts = new Set<string>();
+  readonly #store: HostedBrowserProviderOptions['store'];
+  readonly #now: () => number;
 
   constructor(options: HostedBrowserProviderOptions) {
+    this.#store = options.store;
+    this.#now = options.now ?? Date.now;
     this.#projectId = options.access.projectId;
     this.#installationId = options.installationId;
     this.#contextPrefix = `chickpea.${options.installationId}.`;
@@ -72,20 +86,46 @@ export class HostedBrowserProvider implements BrowserProvider {
   }
 
   async createSession(options: CreateBrowserSessionOptions): Promise<BrowserSessionHandle> {
-    if (!hostedBrowserPolicy().enabled) throw new HostedBrowserRefusal('off');
+    const policy = hostedBrowserPolicy();
+    if (!policy.enabled) throw new HostedBrowserRefusal('off');
     if (options.contextId) await this.checkContext(options.contextId);
-    const handle = await this.#call('create_session', () => this.#client.createSession({
-      ...options,
-      logSession: false,
-      userMetadata: { chickpea: '1', [INSTALLATION_METADATA_KEY]: this.#installationId },
-    }));
+    const timeoutSeconds = options.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
+    const reservationId = crypto.randomUUID();
+    const admission = await admitBrowserSession({
+      store: this.#store,
+      policy,
+      reservationId,
+      ...(options.contextId ? { contextId: options.contextId } : {}),
+      timeoutSeconds,
+      now: this.#now(),
+    });
+    if (admission !== 'admitted') throw new HostedBrowserRefusal(admission);
+    let handle: BrowserSessionHandle;
+    try {
+      handle = await this.#call('create_session', () => this.#client.createSession({
+        ...options,
+        timeoutSeconds,
+        logSession: false,
+        userMetadata: { chickpea: '1', [INSTALLATION_METADATA_KEY]: this.#installationId },
+      }));
+    } catch (error) {
+      await releaseBrowserReservation({ store: this.#store, reservationId, now: this.#now() })
+        .catch(() => log('lease_release_failed', {}));
+      throw error;
+    }
     this.#ownSessions.add(handle.id);
+    // Unattached, the lease stands to its timeout and is charged up to it.
+    await attachBrowserSession({ store: this.#store, reservationId, sessionId: handle.id, now: this.#now() })
+      .catch(() => log('lease_attach_failed', {}));
     return handle;
   }
 
+  /** Ends the session, then releases its lease and meters the run. A failed end keeps the lease to its timeout. */
   async endSession(sessionId: string): Promise<void> {
     await this.#requireSession(sessionId);
     await this.#call('end_session', () => this.#client.endSession(sessionId));
+    await closeBrowserSessionLease({ store: this.#store, sessionId, now: this.#now() })
+      .catch(() => log('lease_close_failed', {}));
   }
 
   async sessionStatus(sessionId: string): Promise<string> {
