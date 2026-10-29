@@ -60,7 +60,7 @@
   var CONNECTION_CHECK_NOTICES = {
     ok: " is connected, and its token works.",
     not_permitted: " is saved. The API refused the request Chickpea tried, which usually means its token works but lacks a permission.",
-    path_not_found: " is saved, but Chickpea could not check its token because the API did not find the path Chickpea tried.",
+    path_not_found: " is saved. This API has no page at the address Chickpea tests, so Chickpea skipped the test. To check its token, ask the Agent to try a request.",
     unreachable: " is saved, but Chickpea could not reach the API to check its token.",
     inconclusive: " is saved, but Chickpea could not confirm that its token works."
   };

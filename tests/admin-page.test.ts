@@ -10081,7 +10081,7 @@ test('the custom REST API form says the token is checked, and a rejected token k
 
 for (const [kind, notice] of [
   ['not_permitted', 'Reports API is saved. The API refused the request Chickpea tried, which usually means its token works but lacks a permission.'],
-  ['path_not_found', 'Reports API is saved, but Chickpea could not check its token because the API did not find the path Chickpea tried.'],
+  ['path_not_found', 'Reports API is saved. This API has no page at the address Chickpea tests, so Chickpea skipped the test. To check its token, ask the Agent to try a request.'],
   ['unreachable', 'Reports API is saved, but Chickpea could not reach the API to check its token.'],
   ['inconclusive', 'Reports API is saved, but Chickpea could not confirm that its token works.'],
 ] as const) {
