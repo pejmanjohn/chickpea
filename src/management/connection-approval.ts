@@ -3,10 +3,12 @@ import type { ManagementChangeSetProposalRecord } from './types.ts';
 /** How long after a person approves a new keyed connection the key they pasted may be tried and saved. */
 export const CONNECTION_APPROVAL_WINDOW_MS = 30 * 60_000;
 
-/** An API connection a change set added to an Agent, by its Agent connection id. */
+/** An API connection a change set added to an Agent, by its Agent connection id, and where it sent a key then. */
 export interface ApprovedApiConnection {
   agentId: string;
   connectionId: string;
+  allowedHosts: string[];
+  pathPrefixes: string[];
 }
 
 /**
@@ -25,7 +27,9 @@ export function approvedNewKeyedApiConnections(
     if (outcome?.disposition !== 'applied' || !before) return [];
     return (operation.patch.apiConnections ?? [])
       .filter(({ id, authMode }) => authMode !== 'oauth' && !before.has(id))
-      .map(({ id }) => ({ agentId: operation.agentId, connectionId: id }));
+      .map(({ id, allowedHosts, pathPrefixes }) => ({
+        agentId: operation.agentId, connectionId: id, allowedHosts: [...allowedHosts], pathPrefixes: [...pathPrefixes],
+      }));
   });
 }
 

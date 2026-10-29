@@ -202,6 +202,7 @@ import { approvedNewKeyedApiConnections, CONNECTION_APPROVAL_WINDOW_MS } from '.
 import {
   assertScopeInsideConnection,
   ConnectionKeyRefusedError,
+  urlsOutsideConnection,
   type ConnectionTestActor,
   type ConnectionTrialRequest,
   type McpConnectionTestResult,
@@ -2005,8 +2006,8 @@ export class WorkspaceManagementService {
       target: { kind: 'agent', id: input.agentId },
     });
     const agent = await this.requireUserAgentForConnectionKey(actor, input.agentId, 'Save the key to');
-    const { connectionId, entry, policy } = await this.keyedApiConnection(actor, agent, input.connectionId, 'save_connection_key saves keys');
-    const { account } = entry;
+    const keyed = await this.keyedApiConnection(actor, agent, input.connectionId, 'save_connection_key saves keys');
+    const { entry: { account }, policy } = keyed;
     const key = input.key.trim();
     if (!key) throw new ManagementError('invalid_request', 'The key is empty.');
     if (input.authShape === 'basic_username' && !sendsBasicCredentials(policy)) {
@@ -2023,7 +2024,7 @@ export class WorkspaceManagementService {
         );
       }
       const refusal = slackPastedKeyRefusal(actor, connectionUrlPrefixes(policy), key);
-      if (refusal && !(await this.keyFromApprovedConnection(actor, agent.id, connectionId, key))) {
+      if (refusal && !(await this.keyFromApprovedConnection(actor, agent.id, keyed, key))) {
         throw new ManagementError('invalid_request', SAVE_KEY_REFUSALS[refusal.reason](refusal.untyped));
       }
     }
@@ -2153,8 +2154,8 @@ export class WorkspaceManagementService {
     input: TryConnectionInput & { connectionId: string },
     key: string | undefined,
   ): Promise<TrialAdmission> {
-    const { connectionId, entry, policy } = await this.keyedApiConnection(actor, agent, input.connectionId, 'try_connection tries keys');
-    const { account } = entry;
+    const keyed = await this.keyedApiConnection(actor, agent, input.connectionId, 'try_connection tries keys');
+    const { entry: { account }, policy } = keyed;
     const scope = input.draft ? draftScope(input.draft) : {
       allowedHosts: [...policy.allowedHosts],
       pathPrefixes: [...policy.pathPrefixes],
@@ -2175,7 +2176,7 @@ export class WorkspaceManagementService {
     }
     if (actor.origin.kind === 'slack') {
       const refusal = slackPastedKeyRefusal(actor, connectionUrlPrefixes(scope), key);
-      if (refusal && !(await this.keyFromApprovedConnection(actor, agent.id, connectionId, key))) {
+      if (refusal && !(await this.keyFromApprovedConnection(actor, agent.id, keyed, key))) {
         throw new ManagementError('invalid_request', TRY_KEY_REFUSALS[refusal.reason](refusal.untyped));
       }
     }
@@ -2203,7 +2204,7 @@ export class WorkspaceManagementService {
     agent: CustomAgentConfig,
     id: string,
     tool: string,
-  ): Promise<{ connectionId: string; entry: AgentConnectionEntry; policy: ConnectionAccountApiPolicy }> {
+  ): Promise<KeyedApiConnection> {
     const { connections } = await this.agentWithConnections(actor, agent);
     const connectionId = resolveAgentConnectionId(connections, 'api', id);
     const entry = connectionId === undefined ? undefined : connections.api.get(connectionId);
@@ -2229,18 +2230,21 @@ export class WorkspaceManagementService {
    * Slack, after an Approve click, which no model turn follows: the key may
    * come from the message that proposed this connection when, in the last
    * 30 minutes and in this conversation, the requester approved a change
-   * that added it, and they typed the key whole in that message. The text
-   * is the host's own record of the turn; nothing is read from Slack, and
-   * nothing about the key is stored.
+   * that added it, and they typed the key whole in that message. It admits
+   * only the connection's first key, and only while the connection sends it
+   * inside the hosts and paths that change approved, so an edit made since
+   * cannot move the key elsewhere. The text is the host's own record of the
+   * turn; nothing is read from Slack, and nothing about the key is stored.
    */
   private async keyFromApprovedConnection(
     actor: LiveManagementActor,
     agentId: string,
-    connectionId: string,
+    { connectionId, entry, policy }: KeyedApiConnection,
     key: string,
   ): Promise<boolean> {
     const { origin } = actor;
     if (origin.kind !== 'slack' || startedByAgentAsk(actor) || !this.stores.typedSlackMessage) return false;
+    if (entry.account.lifecycle !== 'pending') return false;
     const proposal = await this.stores.management.findConnectionApproval({
       organizationId: actor.organizationId,
       actorUserId: actor.userId,
@@ -2250,9 +2254,9 @@ export class WorkspaceManagementService {
       connectionId,
       completedSince: this.now() - CONNECTION_APPROVAL_WINDOW_MS,
     });
-    if (!proposal?.proposedMessageTs ||
-        !approvedNewKeyedApiConnections(proposal).some((added) =>
-          added.agentId === agentId && added.connectionId === connectionId)) return false;
+    const approved = proposal && approvedNewKeyedApiConnections(proposal).find((added) =>
+      added.agentId === agentId && added.connectionId === connectionId);
+    if (!proposal?.proposedMessageTs || !approved || urlsOutsideConnection(policy, approved).length > 0) return false;
     const [message, user] = await Promise.all([
       this.stores.typedSlackMessage({
         workspaceId: origin.workspaceId,
@@ -9018,6 +9022,13 @@ const TRY_KEY_REFUSALS: Record<PastedKeyRefusal['reason'], (untyped: readonly st
 
 /** What an admitted try sends, short of the request coordinates. */
 type TrialAdmission = Pick<ConnectionTrialRequest, 'scope' | 'authShape' | 'credential'>;
+
+/** One of an Agent's API connections that takes a key, by its Agent connection id. */
+interface KeyedApiConnection {
+  connectionId: string;
+  entry: AgentConnectionEntry;
+  policy: ConnectionAccountApiPolicy;
+}
 
 /**
  * The scope a draft describes, held to the rules a saved API connection

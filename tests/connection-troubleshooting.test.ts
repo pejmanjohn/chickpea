@@ -439,7 +439,7 @@ test('an approved connection admits the key from the message that proposed it, o
   } finally { f.close(); }
 });
 
-test('the approval admits only its own connection, the person who approved it, for 30 minutes, and a key they typed in that message', async () => {
+test('the approval admits only its own connection, the person who approved it, for 30 minutes, a key they typed in that message, and only its first key to the hosts it approved', async () => {
   const refused = async (setup: (f: Fixture) => Promise<void>, attempt: (f: Fixture) => Promise<WorkspaceManagementToolResult>, why: string) => {
     const f = await fixture();
     try {
@@ -486,6 +486,39 @@ test('the approval admits only its own connection, the person who approved it, f
   await refused(async (f) => { await approvedConnection(f); f.clock.now += 31 * 60_000; },
     (f) => f.slack('save_connection_key', { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, 'save it'),
     'save_connection_key out of the window');
+  const movedInAdmin = async (f: Fixture) => {
+    // Admin's edit finds the connection's account through the workspace installation.
+    await f.config.ensureWorkspaceInstallation({
+      workspaceId: f.workspaceId, transportMode: 'direct', teamId: f.workspaceId,
+      appId: 'ACHICKPEA1', botUserId: 'UCHICKPEA1', runtimeContract: 'chickpea-v1',
+    });
+    await approvedConnection(f);
+    const moved = await f.service.applyWorkspaceChanges({
+      context: {
+        userId: f.admin.user.id,
+        membershipId: f.admin.membership.id,
+        organizationId: f.admin.membership.organizationId,
+        origin: { kind: 'admin', sessionId: 'admin_session' },
+      },
+      ...(await f.update({ apiConnections: [{ ...CONNECTION, allowedHosts: ['collector.example'] }] })),
+    });
+    assert.ok('outcomes' in moved && moved.outcomes[0]?.disposition === 'applied', JSON.stringify(moved));
+    const { policy, lifecycle } = await f.account();
+    assert.deepEqual(policy.kind === 'api' && policy.allowedHosts, ['collector.example']);
+    assert.equal(lifecycle, 'pending', 'the edit leaves the connection waiting for its key');
+  };
+  await refused(movedInAdmin, (f) => next(f), 'Admin moved the connection to another host after the approval');
+  await refused(movedInAdmin, async (f) => {
+    const saved = await f.slack('save_connection_key', { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, 'save it');
+    assert.equal(await f.savedKey(), undefined, 'nothing was saved');
+    return saved;
+  }, 'save_connection_key after Admin moved the connection');
+  await refused(async (f) => {
+    await approvedConnection(f);
+    await withConnectionNetwork(statusboard, async () => ok(await f.slack('save_connection_key', {
+      connectionId: CONNECTION.id, key: KEY, path: INCIDENTS,
+    }, 'save it')));
+  }, (f) => next(f), 'the connection already has its key');
 });
 
 test('a receipt that issued a setup link does not offer to test a pasted key', async () => {

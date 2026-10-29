@@ -405,11 +405,17 @@ export async function tryManagedConnection(input: TryManagedConnectionInput): Pr
   }, input.connectionCheck);
 }
 
+/** The URLs the scope sends to that sit inside none of the connection's own. */
+export function urlsOutsideConnection(scope: UrlScope, connection: UrlScope): string[] {
+  const own = connectionUrlPrefixes(connection);
+  return connectionUrlPrefixes(scope).filter((url) => !own.some((prefix) => matchesEgressPrefix(url, prefix)));
+}
+
 /** Every URL the scope sends to sits inside one of the connection's own. */
 export function assertScopeInsideConnection(scope: UrlScope, connection: UrlScope): void {
-  const own = connectionUrlPrefixes(connection);
-  const outside = connectionUrlPrefixes(scope).filter((url) => !own.some((prefix) => matchesEgressPrefix(url, prefix)));
+  const outside = urlsOutsideConnection(scope, connection);
   if (outside.length > 0) {
+    const own = connectionUrlPrefixes(connection);
     throw new ManagementError(
       'invalid_request',
       `Nothing was sent: this connection's key goes only to ${own.join(', ')}, not ${outside.join(', ')}.`,
