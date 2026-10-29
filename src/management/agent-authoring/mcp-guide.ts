@@ -39,7 +39,7 @@ export const AGENT_AUTHORING_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonly [fr
     'It applies at once.',
   ],
   [
-    'If the requester pasted the key in their own current message, call `save_connection_key` with it instead, report what its check found, and suggest they rotate the key and use the setup link next time.',
+    'If the requester pasted the key in their own current message, call `save_connection_key` with it instead, report what its check found, and suggest they rotate the key and use the setup link next time, even when the key could not be used.',
     'If the person gave you the key, call `save_connection_key` with it instead and report what its check found.',
   ],
   [
