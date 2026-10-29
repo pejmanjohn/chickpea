@@ -64,8 +64,9 @@ async function fixture(editPolicy: 'creator_and_admins' | 'all_workspace_members
   const managementCalls: string[] = [];
   const settingWrites: string[] = [];
   const telemetry: ProductTelemetryEventInput[] = [];
+  const management = recording(new SqliteManagementStore(':memory:'), managementCalls);
   const f = await createManagementAdapterFixture('custom-connection-chat', {
-    management: recording(new SqliteManagementStore(':memory:'), managementCalls),
+    management,
     saveConnectionKey: (input) => saveManagedConnectionKey({
       ...input,
       config: f.config,
@@ -157,7 +158,7 @@ async function fixture(editPolicy: 'creator_and_admins' | 'all_workspace_members
   const savedKey = async (label = KB_CONNECTION.displayName) =>
     await f.settings.getSetting(connectionAccountSecretSettingKey((await account(label)).secretRefId)) ?? undefined;
   return {
-    ...f, agent, member, workspaceId, managementCalls, settingWrites, telemetry,
+    ...f, management, agent, member, workspaceId, managementCalls, settingWrites, telemetry,
     slack, mcp, update, connectFromSlack, account, savedKey,
   };
 }
@@ -178,6 +179,32 @@ function saved(response: WorkspaceManagementToolResult): SaveConnectionKeyResult
 function refusal(response: WorkspaceManagementToolResult): { code: string; message: string } {
   assert.equal(response.ok, false, JSON.stringify(response));
   return (response as { error: { code: string; message: string } }).error;
+}
+
+/** The one Chickpea setup link a refusal hands the model to relay. */
+function setupLinkIn(message: string): URL {
+  const links = message.match(/http:\/\/localhost\/setup\/[\w-]+#setup=[\w-]{43}/g) ?? [];
+  assert.equal(links.length, 1, message);
+  return new URL(links[0]!);
+}
+
+/** The pending setup record behind a link: a request_setup for this Agent's connection, bound to `by`. */
+async function assertConnectionSetup(f: Fixture, link: URL, by: IdentityResolution = f.admin) {
+  const setupId = decodeURIComponent(link.pathname.split('/')[2]!);
+  const record = await f.management.getSetup(setupId);
+  assert.ok(record, `${setupId} was issued`);
+  assert.deepEqual({
+    actorMembershipId: record.actorMembershipId,
+    action: record.action,
+    status: record.status,
+    target: { kind: record.target.kind, agentId: record.target.agentId, connectionId: record.target.connectionId },
+  }, {
+    actorMembershipId: by.membership.id,
+    action: 'api_credential',
+    status: 'pending',
+    target: { kind: 'api_connection', agentId: f.agent.id, connectionId: (await f.account()).id },
+  });
+  return setupId;
 }
 
 /**
@@ -373,6 +400,21 @@ test('save_connection_key refuses a member a team connection, as its setup link 
       code: 'forbidden', message: 'Only a Chickpea Admin can change or remove a team connection.',
     });
     assert.equal(await f.savedKey(), undefined);
+  } finally { f.close(); }
+});
+
+test('a working key checked where the API answers 404 saves nothing and hands back a setup link for that connection', async () => {
+  const f = await fixture();
+  try {
+    await addKeyedConnection(f);
+    const response = await withConnectionNetwork(hubspot(KEY), async () =>
+      f.slack('save_connection_key', { ...SAVE, path: KB_PATH }, PASTED));
+    const error = refusal(response);
+    assert.equal(error.code, 'key_unconfirmed');
+    await assertConnectionSetup(f, setupLinkIn(error.message));
+    assert.doesNotMatch(JSON.stringify(response), new RegExp(KEY));
+    assert.equal(await f.savedKey(), undefined);
+    assert.equal((await f.account()).lifecycle, 'pending');
   } finally { f.close(); }
 });
 
