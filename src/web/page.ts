@@ -33,6 +33,12 @@ export interface WebPage {
   text: string;
 }
 
+/** A call refused before anything went out. It costs none of the turn's budget and no fee. */
+export interface WebRefusal {
+  outcome: 'refused';
+  message: string;
+}
+
 type WebPageUnreadableReason = 'timeout' | 'unreachable' | 'blocked' | 'too_many_redirects' | 'not_text' | 'error_status';
 
 /** A read that went out but brought back no page. It still counts toward the turn's reads. */

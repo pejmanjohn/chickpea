@@ -314,6 +314,7 @@ import {
   WEB_TOOL_DESCRIPTORS,
   webRequest,
   type WebRequest,
+  type WebToolName,
 } from '../web/tools.ts';
 import { useWebTurn, type WebTurn } from '../web/turn.ts';
 import { webSearchProvider } from '../web/exa.ts';
@@ -1353,7 +1354,7 @@ export function useRuntimePlanAgent(
     : [];
   const activityToolDescriptors = [
     ...options.additionalActivityToolDescriptors ?? [],
-    ...webTools.map(({ name }) => ({ toolName: name, descriptor: WEB_TOOL_DESCRIPTORS[name as keyof typeof WEB_TOOL_DESCRIPTORS] })),
+    ...webTools.map(({ name }) => ({ toolName: name, descriptor: WEB_TOOL_DESCRIPTORS[name as WebToolName] })),
   ];
   registerActivityContext(id, buildRuntimePlanActivityContext(plan, {
     ...(options.includeAgentAuthoringSkill === undefined
@@ -1509,6 +1510,7 @@ export function useRuntimePlanAgent(
     }
   }
   for (const tool of universalTools) useTool(tool);
+  // The same on every turn of a deployment, so they belong to the shared prompt prefix.
   for (const tool of webTools) useTool(tool);
   options.mountBeforeTenantTools?.();
   for (const tool of tenantTools) useTool(tool);
