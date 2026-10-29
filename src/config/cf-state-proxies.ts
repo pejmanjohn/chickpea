@@ -17,7 +17,7 @@ import {
 import type { UiSurfaceRpcRequest } from '../slack/ui/surface-store.ts';
 import type {
   EncryptedCredentialCensusStore,
-  EncryptedCredentialStore,
+  EncryptedCredentialListingStore,
   ModelCredentialStore,
   PublishModelCredentialInput,
   ReplaceEncryptedCredentialRevisionInput,
@@ -335,7 +335,8 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'configListAgentScheduleReferences', 'configListAgents', 'configListChannels',
   'configListConnectionAccounts', 'configListRecentSlackPublicContext', 'configListSlackPublicContext',
   'configListUserAgents', 'configListWorkspaceInstallations', 'configPreflightChickpeaCutover',
-  'configSummarizeAdoptionInventory', 'encryptedCredentialCensus', 'encryptedCredentialGet', 'modelCredentialRead',
+  'configSummarizeAdoptionInventory', 'encryptedCredentialCensus', 'encryptedCredentialGet', 'encryptedCredentialList',
+  'modelCredentialRead',
   'runtimeDrainStatus', 'settingGet',
   'settingGetMany', 'slackAgentBindingGet', 'slackFlueObservationMatch',
   'slackInstallationPendingDeliveryCount', 'slackPresentationGet',
@@ -2469,7 +2470,7 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
 }
 
 export class CfSettingsStore
-implements SettingsStore, EncryptedCredentialStore, EncryptedCredentialCensusStore, ModelCredentialStore {
+implements SettingsStore, EncryptedCredentialListingStore, EncryptedCredentialCensusStore, ModelCredentialStore {
   constructor(private readonly stub: TagStateStubSource) {}
 
   async getSetting(key: string): Promise<string | undefined> {
@@ -2509,6 +2510,10 @@ implements SettingsStore, EncryptedCredentialStore, EncryptedCredentialCensusSto
 
   async censusEncryptedCredentialRevisions() {
     return rpcVia(this.stub, 'encryptedCredentialCensus', (stub) => stub.encryptedCredentialCensus());
+  }
+
+  async listEncryptedCredentialRevisions(prefix: string) {
+    return rpcVia(this.stub, 'encryptedCredentialList', (stub) => stub.encryptedCredentialList(prefix));
   }
 
   async deleteEncryptedCredentialRevision(key: string, expectedRevision: string) {

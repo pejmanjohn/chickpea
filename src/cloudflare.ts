@@ -1953,6 +1953,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.call((stores) => stores.settings.censusEncryptedCredentialRevisions());
   }
 
+  async encryptedCredentialList(prefix: string) {
+    return this.call((stores) => stores.settings.listEncryptedCredentialRevisions(prefix));
+  }
+
   async encryptedCredentialDelete(key: string, expectedRevision: string) {
     return this.call((stores) => stores.settings.deleteEncryptedCredentialRevision(
       key,
