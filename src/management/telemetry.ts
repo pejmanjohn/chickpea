@@ -118,7 +118,7 @@ const REASON_TOKENS = new Set([
   'capability_scope_expansion', 'credential_replacement', 'dependency_not_applied',
   'chickpea_handoff', 'confirmation_needs_own_call',
   'forbidden', 'idempotency_conflict', 'insufficient_scope', 'invalid_request',
-  'invalid_state', 'invalid_token', 'live_access_denied', 'management_error',
+  'invalid_state', 'invalid_token', 'key_rejected', 'live_access_denied', 'management_error',
   'management_outcome_unknown',
   'missing_token', 'operation_in_progress', 'operation_not_found', 'other',
   'operational_access_required', 'owner_required', 'proposal_binding_mismatch',

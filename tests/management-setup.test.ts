@@ -59,6 +59,7 @@ import {
   type ManagementSetupRecord,
 } from '../src/management/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
+import { withConnectionNetwork } from './helpers/connection-network.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { unstyledClasses } from './helpers/unstyled-classes.ts';
@@ -266,6 +267,7 @@ test('the initiating member claims one authenticated browser and completes an ex
         delivered.push(formatManagementSetupReceipt(record.receipt));
         return { deliveryRef: 'slack:C_ADMIN:receipt.1' };
       },
+      connectionCheck: { cloudflare: true },
     });
 
     const initial = await app.request(`http://localhost/setup/${setupId}`);
@@ -345,15 +347,16 @@ test('the initiating member claims one authenticated browser and completes an ex
     assert.doesNotMatch(summaryHtml, new RegExp(CAPABILITY));
 
     const credential = 'credential-value-only-the-browser-sees';
-    const completed = await app.request(`http://localhost/setup/${setupId}/complete`, {
-      method: 'POST',
-      headers: {
-        origin: 'http://localhost',
-        cookie,
-        'content-type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({ credential }).toString(),
-    });
+    const completed = await withConnectionNetwork(() => Response.json({}), async () =>
+      app.request(`http://localhost/setup/${setupId}/complete`, {
+        method: 'POST',
+        headers: {
+          origin: 'http://localhost',
+          cookie,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({ credential }).toString(),
+      }));
     const completedBody = completed.status === 303 ? '' : await completed.clone().text();
     assert.equal(
       completed.status,
@@ -1573,12 +1576,12 @@ test('an API setup cannot cross an Agent delete-recreate race before the ready t
       randomCapability: () => 's'.repeat(43),
       authenticatePrincipal: async () => browserPrincipal(owner),
       deliverReceipt: async () => { throw new Error('must not deliver'); },
+      connectionCheck: { cloudflare: true },
     });
     const cookie = await claimSetup(app, setupId);
 
-    const response = await postSetupForm(app, setupId, 'complete', cookie, {
-      credential: 'must-not-cross-incarnations',
-    });
+    const response = await withConnectionNetwork(() => Response.json({}), async () =>
+      postSetupForm(app, setupId, 'complete', cookie, { credential: 'must-not-cross-incarnations' }));
     assert.equal(response.status, 422, await response.clone().text());
     assert.ok(replacement);
     assert.equal(await storedSecret(settings, issued), undefined, 'the revoked account keeps no credential');
@@ -1646,10 +1649,12 @@ test('a failed older API setup cannot erase a newer same-incarnation credential'
       now: () => START,
       authenticatePrincipal: async () => browserPrincipal(owner),
       deliverReceipt: async () => { throw new Error('must not deliver'); },
+      connectionCheck: { cloudflare: true },
     });
     const cookie = await claimSetup(app, setupId);
 
-    const response = await postSetupForm(app, setupId, 'complete', cookie, { credential: 'older-credential' });
+    const response = await withConnectionNetwork(() => Response.json({}), async () =>
+      postSetupForm(app, setupId, 'complete', cookie, { credential: 'older-credential' }));
     assert.equal(response.status, 422, await response.clone().text());
     assert.equal(await storedSecret(settings, tasks), 'newer-credential');
     const current = await currentAccount(config, tasks);
@@ -1720,10 +1725,15 @@ test('a credential API connection added over MCP is ready to run once its setup 
       identity: f.identity,
       authenticatePrincipal: async () => browserPrincipal(f.owner),
       deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+      connectionCheck: { cloudflare: true },
     });
     const cookie = await claimSetup(app, setupId);
-    const completed = await postSetupForm(app, setupId, 'complete', cookie, { credential: 'sk-billing' });
+    const completed = await withConnectionNetwork(() => Response.json({}), async () =>
+      postSetupForm(app, setupId, 'complete', cookie, { credential: 'sk-billing' }));
     assert.equal(completed.status, 303, await completed.clone().text());
+    assert.equal(completed.headers.get('location'), `/setup/${setupId}`);
+    const done = await (await app.request(`http://localhost${completed.headers.get('location')}`)).text();
+    assert.match(done, /<h1>Connected<\/h1>/);
 
     const [account] = await f.config.listConnectionAccounts('T_SETUP');
     assert.ok(account);
@@ -1780,6 +1790,7 @@ test('a setup link needs authority over its connection account, not only the Age
       now: () => START,
       authenticatePrincipal: async () => principal,
       deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+      connectionCheck: { cloudflare: true },
     });
     const cookie = await claimSetup(app, setupId);
 
@@ -1792,7 +1803,8 @@ test('a setup link needs authority over its connection account, not only the Age
     assert.equal((await management.getSetup(setupId))?.status, 'claimed');
 
     principal = browserPrincipal(owner);
-    const completed = await postSetupForm(app, setupId, 'complete', cookie, { credential: 'sk-tasks' });
+    const completed = await withConnectionNetwork(() => Response.json({}), async () =>
+      postSetupForm(app, setupId, 'complete', cookie, { credential: 'sk-tasks' }));
     assert.equal(completed.status, 303, await completed.clone().text());
     assert.equal(await storedSecret(settings, tasks), 'sk-tasks');
     assert.equal((await currentAccount(config, tasks)).lifecycle, 'ready');
@@ -1801,6 +1813,115 @@ test('a setup link needs authority over its connection account, not only the Age
     config.close();
     management.close();
     settings.close();
+  }
+});
+
+/** A pending team Tasks connection with a claimed setup link, served by routes whose check uses the stubbed network. */
+async function claimedTasksSetup(suffix: string) {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const agent = await config.createAgent({
+    id: `agent_${suffix.replaceAll('-', '_')}`,
+    name: 'Tasks helper',
+    creatorMembershipId: owner.membership.id,
+    editPolicy: 'creator_and_admins',
+    instructions: 'Track tasks.',
+    enabled: true,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  });
+  const tasks = await seedConnection({ config, settings }, owner, agent.id, {
+    providerId: 'tasks', label: 'Tasks', policy: TASKS_POLICY,
+  });
+  const service = new WorkspaceManagementService({
+    identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+    randomId: () => suffix, randomCapability: () => CAPABILITY,
+  });
+  const setupId = await requestConnectionSetup(service, owner, {
+    kind: 'api_connection', agentId: agent.id, connectionId: 'tasks',
+  });
+  const app = createManagementSetupRoutes({
+    management,
+    config,
+    settings,
+    identity,
+    now: () => START,
+    authenticatePrincipal: async () => browserPrincipal(owner),
+    deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+    connectionCheck: { cloudflare: true },
+  });
+  const cookie = await claimSetup(app, setupId);
+  return {
+    app, setupId, cookie, tasks, config, management, settings,
+    close() {
+      identity.close();
+      config.close();
+      management.close();
+      settings.close();
+    },
+  };
+}
+
+test('the setup page refuses a key the API rejects, saves nothing, and names the host', async () => {
+  const f = await claimedTasksSetup('setup-key-rejected');
+  try {
+    const rejected = await withConnectionNetwork(
+      () => Response.json({ message: 'Invalid token' }, { status: 401 }),
+      async (requests) => {
+        const response = await postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-wrong' });
+        assert.deepEqual(requests.map(({ url, method, headers }) => [url, method, headers.get('authorization')]), [
+          ['https://api.example.com/v1', 'GET', 'Bearer sk-wrong'],
+        ]);
+        return response;
+      },
+    );
+    assert.equal(rejected.status, 422);
+    const html = await rejected.text();
+    assert.match(html, /api\.example\.com rejected this key/);
+    assert.doesNotMatch(html, /sk-wrong/);
+    assert.equal(await storedSecret(f.settings, f.tasks), undefined);
+    assert.equal((await currentAccount(f.config, f.tasks)).lifecycle, 'pending');
+    assert.equal((await f.management.getSetup(f.setupId))?.failureCode, 'key_rejected');
+
+    const accepted = await withConnectionNetwork(() => Response.json({ data: [] }), async () =>
+      postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-right' }));
+    assert.equal(accepted.status, 303, await accepted.clone().text());
+    assert.equal(accepted.headers.get('location'), `/setup/${f.setupId}`);
+    assert.equal(await storedSecret(f.settings, f.tasks), 'sk-right');
+    assert.equal((await currentAccount(f.config, f.tasks)).lifecycle, 'ready');
+  } finally {
+    f.close();
+  }
+});
+
+test('the setup page shows where the key goes, and saves a key the API accepts but does not permit', async () => {
+  const f = await claimedTasksSetup('setup-key-not-permitted');
+  try {
+    const summary = await (await f.app.request(`http://localhost/setup/${f.setupId}`, {
+      headers: { cookie: f.cookie },
+    })).text();
+    assert.match(summary, /<dt>Key sent only to<\/dt><dd>https:\/\/api\.example\.com\/v1<\/dd>/);
+    assert.match(summary, /<dt>Allowed requests<\/dt><dd>Read only \(GET\)<\/dd>/);
+    assert.deepEqual(unstyledClasses(summary), []);
+
+    const saved = await withConnectionNetwork(
+      () => Response.json({ category: 'MISSING_SCOPES' }, { status: 403 }),
+      async () => postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-limited' }),
+    );
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.equal(saved.headers.get('location'), `/setup/${f.setupId}?check=not_permitted`);
+    assert.equal(await storedSecret(f.settings, f.tasks), 'sk-limited');
+    assert.equal((await currentAccount(f.config, f.tasks)).lifecycle, 'ready');
+    const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`)).text();
+    assert.match(done, /<h1>Key saved<\/h1>/);
+    assert.match(done, /accepted your key but did not permit the request Chickpea tried/);
+  } finally {
+    f.close();
   }
 });
 
