@@ -1043,5 +1043,43 @@ test('a web status reaches Slack inside its limit, and a forged host never does'
   assert.equal(isSemanticActivityDescriptor(host), true);
   assert.equal(isSemanticActivityDescriptor({ ...host, label: { ...host.label!, id: 'other.example' } }), false);
   assert.equal(isSemanticActivityDescriptor({ ...genericSemanticDescriptor('custom_connection'), label: host.label }), false,
-    'a web host names only a web read');
+    'a web host names only a web read or a connection try');
+});
+
+function registerTryContext(instanceId: string): void {
+  registerActivityContext(instanceId, buildSemanticActivityContext(
+    [{ toolName: 'try_connection', descriptor: workspaceManagementSemanticDescriptor('try_connection') }],
+    [],
+    { apiConnections: [{
+      id: 'statusboard', displayName: 'Statusboard', allowedHosts: ['api.statusboard.example'],
+      pathPrefixes: ['/v2'], allowedMethods: ['GET'],
+    }] },
+  ));
+}
+
+test('a connection try names the host it tests, from its draft or its named connection', () => {
+  const tryStatus = (instanceId: string, args: unknown) => {
+    registerTryContext(instanceId);
+    return observeNamed(instanceId, { type: 'tool_start', toolName: 'try_connection', toolCallId: 't1', args });
+  };
+  assert.equal(tryStatus('try-draft', {
+    draft: { allowedHosts: ['API.Statusboard.example', 'other.example'], pathPrefixes: ['/v2'], headerName: 'X-Api-Key' },
+    key: 'sb_live_never_shown', path: '/v2/incidents',
+  }), 'Testing api.statusboard.example…');
+  assert.equal(tryStatus('try-saved', { connectionId: 'statusboard', path: '/v2/incidents' }), 'Testing api.statusboard.example…');
+  assert.equal(observeNamed('try-saved', { type: 'tool', toolName: 'try_connection', toolCallId: 't1', isError: false }),
+    'Checking the connection…');
+  const draft = (host: unknown) => ({ draft: { allowedHosts: [host], pathPrefixes: [], headerName: 'X-Api-Key' }, path: '/' });
+  for (const [index, [args, why]] of ([
+    [{ connectionId: 'unknown', path: '/v2' }, 'a connection the Agent does not have'],
+    [draft(TOKEN_HOST), 'a credential-shaped host'],
+    [draft('<!channel>.example'), 'a broadcast'],
+    [draft('evil.example/@api.statusboard.example'), 'a host that carries a path'],
+    [draft('10.0.0.5'), 'a private address'],
+    [draft(42), 'a host that is not text'],
+  ] as const).entries()) {
+    assert.equal(tryStatus(`try-generic-${index}`, args), 'Setting up a connection…', why);
+  }
+  const forged = { ...genericSemanticDescriptor('connection_setup'), label: { kind: 'web_host', id: TOKEN_HOST, label: TOKEN_HOST } };
+  assert.equal(isSemanticActivityDescriptor(forged), false, 'a forged host never crosses the activity wire');
 });
