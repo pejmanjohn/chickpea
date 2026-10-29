@@ -31,7 +31,9 @@ import type {
 } from './agent-connections.ts';
 import type { GroupDmEligibility } from '../slack/agent-access.ts';
 import type { SlackCommandAddress } from '../slack/command-address.ts';
-import type { ApiConnectionCheck } from '../connections/connection-check.ts';
+import type { ApiConnectionCheck, ConnectionAuthShape } from '../connections/connection-check.ts';
+
+export type { ConnectionAuthShape };
 
 export type ManagementOrigin =
   | {
@@ -341,7 +343,7 @@ export interface ChickpeaManagementHandoff {
   actingAgentId: string;
   requestedAction: ManagementOperation['kind'] | 'prepare_connector_setup' |
     'prepare_provider_setup' |
-    'discover_slack_channels' | 'test_connection' | 'save_connection_key' | 'inspect_routines' |
+    'discover_slack_channels' | 'test_connection' | 'save_connection_key' | 'try_connection' | 'inspect_routines' |
     'inspect_memory' | 'export_workspace_recipe' | 'preview_workspace_recipe' |
     'revoke_setup_link';
   target: {
@@ -382,6 +384,43 @@ export interface SaveConnectionKeyInput {
   key: string;
   /** A read endpoint inside the connection the check GETs on its first host. */
   path: string;
+  /** basic_username saves the key as HTTP Basic credentials, the key as the username. */
+  authShape?: ConnectionAuthShape | undefined;
+}
+
+/** A candidate setup try_connection sends one GET with. It is never saved. */
+export interface ConnectionDraft {
+  allowedHosts: string[];
+  pathPrefixes: string[];
+  headerName: string;
+  headerValuePrefix?: string | undefined;
+  authShape?: ConnectionAuthShape | undefined;
+}
+
+/**
+ * try_connection's input once the door has resolved the Agent. Without
+ * `connectionId` it tries `draft` with `key` (draft mode). With it, the key
+ * is the connection's saved one (no `key`) or one the person pasted for the
+ * pending connection they approved (`key`); a `draft` there may change the
+ * header but stays inside the connection's own hosts and paths.
+ */
+export interface TryConnectionInput {
+  agentId: string;
+  draft?: ConnectionDraft | undefined;
+  connectionId?: string | undefined;
+  /** Never returned, logged, recorded or saved. */
+  key?: string | undefined;
+  /** The path the one GET goes to on the first host. */
+  path: string;
+  /** Slack: the tries this turn has left after this one, from the Slack tools' own turn state. Never model input. */
+  turnTriesLeft?: number | undefined;
+}
+
+/** What try_connection returns: the check, never the key. */
+export interface TryConnectionResult {
+  check: ApiConnectionCheck;
+  /** Tries left this turn (Slack) or in the current 10-minute window (MCP). */
+  triesLeft: number;
 }
 
 /** What one GET with a saved key found. Only ok saves a key from chat. */
@@ -1624,6 +1663,21 @@ export interface GetActiveManagementChangeSetProposalInput {
   approvalScopeKey: string;
 }
 
+/**
+ * The requester's latest change set in one approval scope, completed since
+ * `completedSince`, whose update_agent for `agentId` writes the API
+ * connection `connectionId`.
+ */
+export interface FindConnectionApprovalInput {
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  approvalScopeKey: string;
+  agentId: string;
+  connectionId: string;
+  completedSince: number;
+}
+
 export interface ReclaimManagementChangeSetProposalInput extends ClaimManagementProposalInput {
   expectedUpdatedAt: number;
 }
@@ -1656,6 +1710,7 @@ export type ManagementRpcRequest =
       agentId: string;
     }
   | { kind: 'get_active_change_set_proposal'; input: GetActiveManagementChangeSetProposalInput }
+  | { kind: 'find_connection_approval'; input: FindConnectionApprovalInput }
   | { kind: 'claim_change_set_proposal'; input: ClaimManagementProposalInput }
   | { kind: 'reclaim_change_set_proposal'; input: ReclaimManagementChangeSetProposalInput }
   | {

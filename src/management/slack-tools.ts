@@ -32,6 +32,7 @@ import {
   discoverSlackChannelsValibotSchema,
   testConnectionValibotSchema,
   saveConnectionKeyValibotSchema,
+  tryConnectionValibotSchema,
   readPublicDocValibotSchema,
   inspectMemoryValibotSchema,
   inspectRoutinesValibotSchema,
@@ -173,6 +174,7 @@ export type PlatformEnvResolver = () => Promise<PlatformEnv | undefined>;
 
 const SLACK_MANAGEMENT_TURN_GUARD_STATE = 'slack-management-turn-guard';
 const SLACK_PUBLIC_DOC_TURN_STATE = 'slack-public-doc-turn';
+const SLACK_CONNECTION_TRY_TURN_STATE = 'slack-connection-try-turn';
 const SLACK_AGENT_CREATION_TURN_STATE = 'slack-agent-creation-turn';
 
 const MUTATING_TOOLS = new Set<WorkspaceManagementToolName>([
@@ -180,6 +182,7 @@ const MUTATING_TOOLS = new Set<WorkspaceManagementToolName>([
   'discover_slack_channels',
   'test_connection',
   'save_connection_key',
+  'try_connection',
   'revoke_setup_link',
   'import_skill',
   'manage_agent_skill',
@@ -634,6 +637,44 @@ export async function readPublicDocInTurn(
   }
 }
 
+/** How many try_connection calls one Slack turn may make. */
+export const CONNECTION_TRIES_PER_TURN = 8;
+
+/** This turn's try_connection calls, kept across re-renders and redrives of the turn. */
+export interface ConnectionTryTurnState {
+  turnJobId: string;
+  tries: number;
+}
+
+/**
+ * Takes one of the turn's tries and returns how many are left after it, or
+ * undefined when none are. A try is taken before its call goes out and is
+ * never given back, whatever the call returns.
+ */
+export function createConnectionTryTurn(
+  turnJobId: string,
+  persisted: ConnectionTryTurnState,
+  persist: (state: ConnectionTryTurnState) => void = () => undefined,
+): { take(): number | undefined } {
+  let tries = persisted.turnJobId === turnJobId ? persisted.tries : 0;
+  return {
+    take() {
+      if (tries >= CONNECTION_TRIES_PER_TURN) return undefined;
+      tries += 1;
+      persist({ turnJobId, tries });
+      return CONNECTION_TRIES_PER_TURN - tries;
+    },
+  };
+}
+
+const CONNECTION_TRIES_SPENT: WorkspaceManagementToolResult = {
+  ok: false,
+  error: {
+    code: 'invalid_request',
+    message: `Nothing was sent: this turn already made ${CONNECTION_TRIES_PER_TURN} try_connection calls, the most in one turn. Tell the person what was tried, without the key, and the one next step, and give them a setup link with request_setup.`,
+  },
+};
+
 /** Shared with the bounded synthetic contract evaluation; the live tool uses the same values. */
 export const scheduleActionDescription = 'Create, edit, pause, resume, disable, or run scheduled work in the current Slack Channel or one-to-one DM. Use for any clear future or recurring request, including phrasing such as “check again in 5 minutes,” without asking for approval. Channel delivery defaults to a new channel message, even when requested in a thread. Set delivery to thread only when the requester explicitly asks for future results in this thread, not merely for the creation acknowledgement here. Existing schedules retain their saved destination. Do not use this tool to delete scheduled work; deleting a routine uses the existing proposal and explicit-confirmation flow. The host derives the destination and addressed Agent from trusted Slack context.';
 
@@ -689,6 +730,11 @@ export function useWorkspaceManagementSlackTools(
     { turnJobId: signal.turnJobId, reads: 0, links: [] },
   );
   const publicDocTurn = createPublicDocTurn(signal.turnJobId, publicDocState, persistPublicDocState);
+  const [connectionTryState, persistConnectionTryState] = usePersistentState<ConnectionTryTurnState>(
+    SLACK_CONNECTION_TRY_TURN_STATE,
+    { turnJobId: signal.turnJobId, tries: 0 },
+  );
+  const connectionTryTurn = createConnectionTryTurn(signal.turnJobId, connectionTryState, persistConnectionTryState);
 
   // System Chickpea's routing reads the same in every workspace, so it opens the shared system block instead.
   if (plan.agentId !== CHICKPEA_AGENT_ID) useInstruction(slackManagementRoutingInstruction(plan.agentId));
@@ -756,6 +802,18 @@ export function useWorkspaceManagementSlackTools(
     async run({ data }) {
       return slackToolOutput(await invokeLiveSlackTool(
         signal, resolvePlatformEnv, 'save_connection_key', data, turnGuard,
+      ));
+    },
+  });
+  useTool({
+    name: 'try_connection',
+    description: workspaceManagementToolDescription('try_connection'),
+    input: tryConnectionValibotSchema,
+    async run({ data }) {
+      const turnTriesLeft = connectionTryTurn.take();
+      if (turnTriesLeft === undefined) return slackToolOutput(CONNECTION_TRIES_SPENT);
+      return slackToolOutput(await invokeLiveSlackTool(
+        signal, resolvePlatformEnv, 'try_connection', { ...data, turnTriesLeft }, turnGuard,
       ));
     },
   });

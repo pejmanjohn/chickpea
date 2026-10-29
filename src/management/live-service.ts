@@ -1,4 +1,5 @@
 import { resolveBetterAuthEnvironment, withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
+import { AuthRateLimitError, AuthRateLimiter } from '../auth/rate-limit.ts';
 import {
   getAgentSnapshotStore,
   getConfigStore,
@@ -7,6 +8,7 @@ import {
   getMemoryStateStore,
   getRoutineStore,
   getSettingsStore,
+  getSlackStateStore,
   getUsageStore,
   getWorkStore,
   getSlackCredentialDependencies,
@@ -60,6 +62,7 @@ import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import type { SlackTransport } from '../slack/transport/types.ts';
 import {
   managementActorPrincipal,
+  MEMBER_CONNECTION_TRIES,
   WorkspaceManagementService,
   type WorkspaceManagementServiceInput,
 } from './service.ts';
@@ -69,6 +72,7 @@ import {
   discoverOpenMcpServer,
   saveManagedConnectionKey,
   testManagedConnection,
+  tryManagedConnection,
 } from './discovery.ts';
 import { readPublicDoc } from './public-doc.ts';
 
@@ -234,6 +238,31 @@ export function createLiveWorkspaceManagementService(
       settings,
       productTelemetry,
     }),
+    tryConnection: (input) => tryManagedConnection({
+      ...input,
+      ...(env ? { env } : {}),
+      config: config as ConfigStore,
+      identity,
+      settings,
+    }),
+    takeConnectionTry: async (membershipId) => {
+      const control = await identity.getAuthControl();
+      const secret = control ? (await resolveBetterAuthEnvironment({ control, platformEnv: env }))?.secret : undefined;
+      if (!secret) throw new ManagementError('invalid_request', 'Trying a connection is unavailable.');
+      const limiter = new AuthRateLimiter(identity, {
+        pepper: secret,
+        perKeyLimit: MEMBER_CONNECTION_TRIES.tries,
+        windowMs: MEMBER_CONNECTION_TRIES.windowMs,
+        globalLimit: 1_000,
+      });
+      try {
+        return await limiter.take('try_connection', membershipId);
+      } catch (error) {
+        if (error instanceof AuthRateLimitError) return undefined;
+        throw error;
+      }
+    },
+    typedSlackMessage: async (query) => getSlackStateStore(env).typedSlackMessage?.(query),
     readPublicDoc: (url) => readPublicDoc(url),
     managedConnectorAvailable: async ({ toolkit, accessLane }) => {
       const context = await resolveManagedAuthorizationProviderContext({

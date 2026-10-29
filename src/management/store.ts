@@ -24,6 +24,7 @@ import {
   type ManagementOrigin,
   type ManagementReceiptOutboxRecord,
   type ManagementIntroductionClaim,
+  type FindConnectionApprovalInput,
   type GetActiveManagementChangeSetProposalInput,
   type ManagementRequestProgress,
   type ManagementRequestRecord,
@@ -221,6 +222,9 @@ export interface ManagementStore {
   getActiveChangeSetProposal(
     input: GetActiveManagementChangeSetProposalInput,
   ): Promise<ManagementChangeSetProposalRecord | undefined>;
+  findConnectionApproval(
+    input: FindConnectionApprovalInput,
+  ): Promise<ManagementChangeSetProposalRecord | undefined>;
   claimChangeSetProposal(
     input: ClaimManagementProposalInput,
   ): Promise<ManagementChangeSetProposalRecord>;
@@ -348,6 +352,11 @@ export class ManagementStoreLogic {
         return {
           kind: 'change_set_proposal',
           proposal: this.getActiveChangeSetProposal(request.input) ?? null,
+        };
+      case 'find_connection_approval':
+        return {
+          kind: 'change_set_proposal',
+          proposal: this.findConnectionApproval(request.input) ?? null,
         };
       case 'list_agent_update_proposals': {
         const originPrefix = `slack:${request.workspaceId}:`;
@@ -799,6 +808,29 @@ export class ManagementStoreLogic {
       input.actorUserId,
       input.actorMembershipId,
       input.approvalScopeKey,
+    ) as unknown as ManagementChangeSetProposalRow | undefined;
+    return row ? changeSetProposalFromRow(row) : undefined;
+  }
+
+  findConnectionApproval(input: FindConnectionApprovalInput): ManagementChangeSetProposalRecord | undefined {
+    const row = this.db.get(
+      `SELECT p.* FROM management_change_set_proposals p
+       WHERE organization_id = ? AND actor_user_id = ? AND actor_membership_id = ?
+         AND approval_scope_key = ? AND status = 'completed' AND updated_at >= ?
+         AND EXISTS (SELECT 1 FROM json_each(p.operations_json) operation,
+             json_each(json_extract(operation.value, '$.patch.apiConnections')) connection
+           WHERE json_extract(operation.value, '$.kind') = 'update_agent'
+             AND json_extract(operation.value, '$.agentId') = ?
+             AND json_extract(connection.value, '$.id') = ?)
+       ORDER BY updated_at DESC, p.rowid DESC
+       LIMIT 1`,
+      input.organizationId,
+      input.actorUserId,
+      input.actorMembershipId,
+      input.approvalScopeKey,
+      input.completedSince,
+      input.agentId,
+      input.connectionId,
     ) as unknown as ManagementChangeSetProposalRow | undefined;
     return row ? changeSetProposalFromRow(row) : undefined;
   }

@@ -72,6 +72,7 @@ const MCP_TOOL_ANNOTATIONS = {
   discover_slack_channels: READ,
   test_connection: READ,
   save_connection_key: WRITE,
+  try_connection: READ,
   inspect_memory: READ,
   inspect_routines: READ,
   export_workspace_recipe: READ,
@@ -208,6 +209,11 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         listedTools.find(({ name }) => name === 'save_connection_key')?.inputSchema?.required?.toSorted(),
         ['connectionId', 'key', 'path'],
         `${client.name} must require a read path for a key's check`,
+      );
+      assert.deepEqual(
+        listedTools.find(({ name }) => name === 'try_connection')?.inputSchema?.required,
+        ['path'],
+        `${client.name} must require the path a try GETs`,
       );
       const inspected = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
         name: 'inspect_workspace',

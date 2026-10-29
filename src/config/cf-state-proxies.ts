@@ -341,7 +341,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'settingGetMany', 'slackAgentBindingGet', 'slackFlueObservationMatch',
   'slackInstallationPendingDeliveryCount', 'slackPresentationGet',
   'slackPresentationLatestThreadGeneration', 'slackPresentationRepairList', 'slackPresentationSummary',
-  'slackProposalApprovalTurns', 'slackLatestAgentTurn', 'slackTurnEnvelopeGet', 'slackTurnRecoveryList', 'snapshotGet',
+  'slackProposalApprovalTurns', 'slackLatestAgentTurn', 'slackTypedMessage', 'slackTurnEnvelopeGet', 'slackTurnRecoveryList', 'snapshotGet',
   'snapshotListLiveRootsByAgent', 'threadActiveWorkGet', 'threadHas',
   // Idempotent writes: a keyed set or delete, first-write-wins, or version-gated.
   'threadActiveWorkSet', // the flag for one generation, set to a value
@@ -1176,6 +1176,14 @@ export class CfManagementStore implements ManagementStore {
     input: Parameters<ManagementStore['getActiveChangeSetProposal']>[0],
   ) {
     const response = await this.execute({ kind: 'get_active_change_set_proposal', input });
+    if (response.kind !== 'change_set_proposal') throw unexpectedManagementResponse();
+    return orUndefined(response.proposal);
+  }
+
+  async findConnectionApproval(
+    input: Parameters<ManagementStore['findConnectionApproval']>[0],
+  ) {
+    const response = await this.execute({ kind: 'find_connection_approval', input });
     if (response.kind !== 'change_set_proposal') throw unexpectedManagementResponse();
     return orUndefined(response.proposal);
   }
@@ -2149,6 +2157,10 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async latestAgentTurnMessageTs(input: Parameters<TagStateRpc['slackLatestAgentTurn']>[0]) {
     return orUndefined(await rpcVia(this.stub, 'slackLatestAgentTurn', (stub) => stub.slackLatestAgentTurn(input)));
+  }
+
+  async typedSlackMessage(input: Parameters<TagStateRpc['slackTypedMessage']>[0]) {
+    return orUndefined(await rpcVia(this.stub, 'slackTypedMessage', (stub) => stub.slackTypedMessage(input)));
   }
 
   async getLatestThreadSessionGeneration(

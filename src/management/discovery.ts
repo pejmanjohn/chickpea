@@ -18,10 +18,12 @@ import type { ConfigStore } from '../config/store.ts';
 import {
   checkConnection,
   connectionCheckUrl,
+  connectionHeaderCredential,
   connectionUrlPrefixes,
   mcpCheckFailure,
   type ApiConnectionCheck,
   type ApiConnectionScope,
+  type ConnectionAuthShape,
   type ConnectionCheckOptions,
   type ConnectionCheckOutcome,
 } from '../connections/connection-check.ts';
@@ -196,6 +198,8 @@ interface SaveManagedConnectionKeyInput {
   actor: ConnectionTestActor;
   key: string;
   path: string;
+  /** basic_username saves base64 of `key:`, for a connection that sends `Authorization: Basic `. */
+  authShape?: ConnectionAuthShape;
   /** The account revision whose hosts and paths the caller checked the key may reach. */
   expectedRevision: number;
   surface: ManagementOrigin['kind'];
@@ -274,7 +278,8 @@ export async function saveManagedConnectionKey(
     throw new ManagementError('invalid_request', CONNECTION_CHANGED);
   }
   assertPathInsideConnection(policy, input.path);
-  if (input.surface === 'slack' && await keySavedOnAnotherConnection(input, entry.account.id)) {
+  const credential = connectionHeaderCredential(input.key, input.authShape);
+  if (input.surface === 'slack' && await keySavedOnAnotherConnection({ ...input, key: credential }, entry.account.id)) {
     throw new ManagementError(
       'invalid_request',
       'Nothing was saved: this key is already saved on another of this Agent\'s connections, and a key pasted in chat fills one connection. Send a setup link with request_setup for this one.',
@@ -286,6 +291,7 @@ export async function saveManagedConnectionKey(
     kind: 'api',
     connection: policy,
     credential: input.key,
+    ...(input.authShape ? { authShape: input.authShape } : {}),
     path: input.path,
     authorize: unchanged,
   }, input.connectionCheck);
@@ -295,7 +301,7 @@ export async function saveManagedConnectionKey(
     settings: input.settings,
     platformEnv: input.env,
     productTelemetry: input.productTelemetry,
-  }, entry, input.key, {
+  }, entry, credential, {
     surface: input.surface,
     retired: async () => {
       try {
@@ -307,6 +313,108 @@ export async function saveManagedConnectionKey(
     },
   });
   return check;
+}
+
+type UrlScope = Pick<ApiConnectionScope, 'allowedHosts' | 'pathPrefixes'>;
+
+/** The connection a try stays inside: its account id and the revision the door admitted. */
+export interface ConnectionTrialBound {
+  connectionId: string;
+  revision: number;
+}
+
+/**
+ * The key one try sends. A pasted key may be bounded by the connection it is
+ * meant for; a saved key always is, and is read from that connection.
+ */
+export type ConnectionTrialCredential =
+  | { kind: 'key'; key: string; within?: ConnectionTrialBound }
+  | { kind: 'saved'; within: ConnectionTrialBound };
+
+/** One try_connection GET as the door admitted it. */
+export interface ConnectionTrialRequest {
+  agentId: string;
+  actor: ConnectionTestActor;
+  /** Where the key goes and in which header. Only GET is ever sent. */
+  scope: Omit<ApiConnectionScope, 'allowedMethods'>;
+  authShape: ConnectionAuthShape;
+  path: string;
+  credential: ConnectionTrialCredential;
+}
+
+interface TryManagedConnectionInput extends ConnectionTrialRequest {
+  env?: PlatformEnv;
+  config: ConfigStore;
+  settings: SettingsStore;
+  identity: TestManagedConnectionInput['identity'];
+  /** Test seam; production checks on the running target. */
+  connectionCheck?: ConnectionCheckOptions;
+}
+
+/**
+ * Sends one GET for try_connection and saves nothing. A bounded try finds its
+ * connection among the Agent's connections this member manages, never by an
+ * account id alone, stays inside that connection's hosts and paths, and stops
+ * if the connection changes before the request leaves.
+ */
+export async function tryManagedConnection(input: TryManagedConnectionInput): Promise<ApiConnectionCheck> {
+  const { within } = input.credential;
+  const scope: ApiConnectionScope = { ...input.scope, allowedMethods: ['GET'] };
+  let authorize: (() => Promise<boolean>) | undefined;
+  if (within) {
+    const lookup = { agentId: input.agentId, connectionId: within.connectionId, actor: input.actor, config: input.config };
+    const entry = await memberApiConnection(lookup);
+    const policy = entry?.account.policy;
+    if (!entry || entry.account.revision !== within.revision || policy?.kind !== 'api' ||
+        policy.authMode !== 'credential') {
+      throw new ManagementError('invalid_request', 'The connection changed, so nothing was sent. Inspect the workspace again, then retry.');
+    }
+    assertScopeInsideConnection(scope, policy);
+    authorize = async () => (await memberApiConnection(lookup).catch(() => undefined))?.account.revision === within.revision;
+  }
+  assertPathInsideConnection(scope, input.path);
+  let key: string;
+  if (input.credential.kind === 'key') {
+    key = input.credential.key;
+  } else {
+    try {
+      key = await resolveConnectionSecretForInvocation({
+        ...input.actor,
+        config: input.config,
+        settings: input.settings,
+        identity: input.identity,
+        ...(input.env ? { env: input.env } : {}),
+        agentId: input.agentId,
+        connectionAccountId: input.credential.within.connectionId,
+      });
+    } catch {
+      return {
+        kind: 'inconclusive',
+        url: connectionCheckUrl(scope, input.path) ?? '',
+        detail: 'The saved key could not be read for this check.',
+      };
+    }
+  }
+  return checkConnection({
+    kind: 'api',
+    connection: scope,
+    credential: key,
+    authShape: input.authShape,
+    path: input.path,
+    ...(authorize ? { authorize } : {}),
+  }, input.connectionCheck);
+}
+
+/** Every URL the scope sends to sits inside one of the connection's own. */
+export function assertScopeInsideConnection(scope: UrlScope, connection: UrlScope): void {
+  const own = connectionUrlPrefixes(connection);
+  const outside = connectionUrlPrefixes(scope).filter((url) => !own.some((prefix) => matchesEgressPrefix(url, prefix)));
+  if (outside.length > 0) {
+    throw new ManagementError(
+      'invalid_request',
+      `Nothing was sent: this connection's key goes only to ${own.join(', ')}, not ${outside.join(', ')}.`,
+    );
+  }
 }
 
 /**
@@ -341,7 +449,7 @@ async function memberApiConnection(
     .find(({ account }) => account.id === input.connectionId);
 }
 
-function assertPathInsideConnection(policy: ApiConnectionScope, path: string): void {
+function assertPathInsideConnection(policy: UrlScope, path: string): void {
   const url = connectionCheckUrl(policy, path);
   if (url === undefined || !connectionUrlPrefixes(policy).some((prefix) => matchesEgressPrefix(url, prefix))) {
     throw new ManagementError(

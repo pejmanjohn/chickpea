@@ -21,6 +21,7 @@ import { conversationThreadTs, slackConversationKind } from '../slack/thread-key
 import type { SlackLatestAgentTurnQuery } from '../slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { ManagementStore } from './store.ts';
+import { approvedNewKeyedApiConnections } from './connection-approval.ts';
 import { agentWelcomeInGroupDm } from './receipts.ts';
 import { slackManagementOrigin, WorkspaceManagementService } from './service.ts';
 import {
@@ -490,7 +491,22 @@ async function formatHostSlackManagementReceipt(input: {
   return message(receipt, [
     ...codes.map((code) => `Issue: ${escapeSlackControlCharacters(code)}`),
     ...warnings.map(escapeSlackControlCharacters),
+    ...(deferredSetup.length === 0 && await createdPendingKeyedConnection(input) ? [TEST_PASTED_KEY] : []),
   ]);
+}
+
+/**
+ * No model turn follows an Approve click, so the key the person pasted with
+ * the request waits for their next message, which may use it for 30 minutes.
+ */
+const TEST_PASTED_KEY = 'Reply here and I’ll test the key you pasted.';
+
+async function createdPendingKeyedConnection(input: {
+  proposalId: string;
+  management: { getChangeSetProposal?: ManagementStore['getChangeSetProposal'] };
+}): Promise<boolean> {
+  const proposal = await input.management.getChangeSetProposal?.(input.proposalId);
+  return proposal !== undefined && approvedNewKeyedApiConnections(proposal).length > 0;
 }
 
 async function formatAppliedSkillReceipt(input: {

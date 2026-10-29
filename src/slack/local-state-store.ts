@@ -87,6 +87,7 @@ export function localSlackStateStore(input: {
     getRunPresentation: async (runId) => presentations.get(runId),
     listProposalApprovalTurns: async (input) => turnJobs.listProposalApprovalTurns(input),
     latestAgentTurnMessageTs: async (input) => turnJobs.latestAgentTurnMessageTs(input),
+    typedSlackMessage: async (input) => turnJobs.typedSlackMessage(input),
     getLatestThreadSessionGeneration: async (root) =>
       presentations.getLatestThreadSessionGeneration(root),
     transitionRunPresentation: async (transition) => presentations.transition(transition),

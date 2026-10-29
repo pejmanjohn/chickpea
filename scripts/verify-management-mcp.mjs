@@ -12,6 +12,7 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'discover_slack_channels',
   'test_connection',
   'save_connection_key',
+  'try_connection',
   'inspect_memory',
   'inspect_routines',
   'export_workspace_recipe',

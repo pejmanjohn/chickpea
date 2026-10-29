@@ -258,6 +258,20 @@ export interface SlackLatestAgentTurnQuery {
   agentId: string;
 }
 
+/** One Slack message, by its conversation and timestamp. */
+export interface SlackMessageQuery {
+  workspaceId: string;
+  channelId: string;
+  messageTs: string;
+}
+
+/** What a person typed in one Slack message, as the host admitted it. */
+export interface SlackTypedMessage {
+  /** The Slack user who typed it. */
+  userId: string;
+  text: string;
+}
+
 /** Content-free retained approval coordinates, including completed turns. */
 export interface SlackProposalApprovalTurn extends SlackProposalApprovalQuery {
   turnJobId: string;
@@ -1355,6 +1369,32 @@ export class TurnJobStoreLogic {
           input.agentId,
         );
     return typeof row?.messageTs === 'string' ? row.messageTs : undefined;
+  }
+
+  /**
+   * The text a person typed in one message, while a turn for it is retained.
+   * A click's, a reaction's or another Agent's ask's turn carries text the
+   * host or that Agent wrote, so it is never one.
+   */
+  typedSlackMessage(input: SlackMessageQuery): SlackTypedMessage | undefined {
+    for (const part of [input.workspaceId, input.channelId]) validateBoundedString(part, 'Slack conversation coordinate', 128);
+    if (!validSlackTs(input.messageTs)) throw new Error('Invalid Slack message timestamp');
+    const rows = this.db.all(
+      `SELECT turn_json FROM turn_jobs
+       WHERE message_ts = ? AND json_extract(turn_json, '$.channelId') = ?
+         AND json_extract(turn_json, '$.workspaceId') = ?
+       ORDER BY rowid`,
+      input.messageTs,
+      input.channelId,
+      input.workspaceId,
+    );
+    for (const row of rows) {
+      const turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
+      const text = personRequestText(turn);
+      if (text === undefined || personRequestTextSource(turn) || turn.source === 'reaction_added') continue;
+      return { userId: turn.userId, text };
+    }
+    return undefined;
   }
 
   listProposalApprovalTurns(input: SlackProposalApprovalQuery): SlackProposalApprovalTurn[] {
