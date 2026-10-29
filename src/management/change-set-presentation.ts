@@ -546,6 +546,8 @@ const CONNECTED_ACCOUNT: ConnectionField = {
 };
 /** A preset decides whether new tools need review. */
 const CONNECTOR_PRESET: ConnectionField = { show: 'named', label: 'Connector', widens: true };
+/** What the owning Agent is told about using the connection; it grants nothing. */
+const CONNECTION_GUIDE: ConnectionField = { show: 'named', label: 'Guide', widens: false };
 /**
  * The store derives the credential reference on every write, so a patch
  * cannot choose one and the preview's record drops it.
@@ -579,6 +581,7 @@ const MCP_FIELDS: ConnectionFields<McpConnectionConfig> = {
   credentialHeaderName: { show: 'named', label: 'Custom headers', widens: true },
   credentialValuePrefix: { show: 'named', label: 'Custom headers', widens: false },
   credentialOptional: { show: 'named', label: 'Authentication', widens: true },
+  guide: CONNECTION_GUIDE,
   discoveredTools: BOOKKEEPING,
   presetId: CONNECTOR_PRESET,
   id: BOOKKEEPING,
@@ -622,6 +625,7 @@ const API_FIELDS: ConnectionFields<ApiConnectionConfig> = {
   headerValuePrefix: { show: 'value', label: 'Value prefix', format: 'code', widens: false, unlessNew: 'Bearer ' },
   enabled: CONNECTION_STATUS,
   identity: CONNECTED_ACCOUNT,
+  guide: CONNECTION_GUIDE,
   presetId: CONNECTOR_PRESET,
   id: BOOKKEEPING,
   credentialRef: CREDENTIAL_REFERENCE,

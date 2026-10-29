@@ -1,5 +1,5 @@
 {
-  "scenario": "b6b6e0fb439d916a4f6006ceef1ec62f5a8145ad20551b197cd1b0b22a3ca0e4",
+  "scenario": "7da92a8f5dea90b0d4574fba33c0657cb967d287fbfdad9025141e2531e97bd4",
   "contract": {
     "schemaVersion": 12,
     "schemaMarker": "agent-first-v1",
@@ -44,7 +44,7 @@
       "config_agents.slack_presence_json": 1,
       "config_agents.website_logins_json": 1,
       "config_connection_accounts.identity_json": 1,
-      "config_connection_accounts.policy_json": 4,
+      "config_connection_accounts.policy_json": 5,
       "config_slack_public_context.files_json": 1,
       "config_slack_public_context.images_json": 1
     },
@@ -529,7 +529,7 @@
             "label": "\"Tracker (team)\"",
             "purpose": "null",
             "identity_json": "null",
-            "policy_json": "{\"allowedTools\":[\"search_issues\",\"create_issue\"],\"authMode\":\"bearer\",\"credentialHeaderName\":\"Authorization\",\"credentialValuePrefix\":\"Bearer \",\"discoveredTools\":[{\"name\":\"search_issues\",\"readOnlyHint\":true},{\"name\":\"create_issue\",\"title\":\"Create issue\"}],\"headerNames\":[\"Authorization\"],\"kind\":\"mcp\",\"presetId\":\"preset_scenario_tracker\",\"toolAccessMode\":\"review\",\"toolPolicies\":{\"create_issue\":{\"argumentConstraints\":{\"project\":[\"SCN\"]},\"effect\":\"write\"}},\"transport\":\"streamable-http\",\"url\":\"https://tracker.example.com/\"}",
+            "policy_json": "{\"allowedTools\":[\"search_issues\",\"create_issue\"],\"authMode\":\"bearer\",\"credentialHeaderName\":\"Authorization\",\"credentialValuePrefix\":\"Bearer \",\"discoveredTools\":[{\"name\":\"search_issues\",\"readOnlyHint\":true},{\"name\":\"create_issue\",\"title\":\"Create issue\"}],\"guide\":\"Search by project key, for example SCN.\",\"headerNames\":[\"Authorization\"],\"kind\":\"mcp\",\"presetId\":\"preset_scenario_tracker\",\"toolAccessMode\":\"review\",\"toolPolicies\":{\"create_issue\":{\"argumentConstraints\":{\"project\":[\"SCN\"]},\"effect\":\"write\"}},\"transport\":\"streamable-http\",\"url\":\"https://tracker.example.com/\"}",
             "secret_ref_id": "\"secret_scenario_tracker\"",
             "lifecycle": "\"ready\"",
             "created_at": "1792083600000",
@@ -546,7 +546,7 @@
             "label": "\"Weather (team, renamed)\"",
             "purpose": "\"Daily forecast lookups\"",
             "identity_json": "{\"accountName\":\"weather-team\",\"workspaceName\":\"Example Workspace\"}",
-            "policy_json": "{\"allowedHosts\":[\"api.weather.example.com\"],\"allowedMethods\":[\"GET\"],\"authMode\":\"credential\",\"headerName\":\"Authorization\",\"headerValuePrefix\":\"Bearer \",\"kind\":\"api\",\"pathPrefixes\":[\"/v1/\"],\"presetId\":\"preset_scenario_weather\"}",
+            "policy_json": "{\"allowedHosts\":[\"api.weather.example.com\"],\"allowedMethods\":[\"GET\"],\"authMode\":\"credential\",\"guide\":\"Forecasts live under /v1/forecast?city=NAME.\\nUse metric units.\",\"headerName\":\"Authorization\",\"headerValuePrefix\":\"Bearer \",\"kind\":\"api\",\"pathPrefixes\":[\"/v1/\"],\"presetId\":\"preset_scenario_weather\"}",
             "secret_ref_id": "\"secret_scenario_weather\"",
             "lifecycle": "\"ready\"",
             "created_at": "1792083600000",
