@@ -29,6 +29,7 @@ import { hostedBrowserAccess, hostedBrowserPolicy, type HostedBrowserAccess } fr
 import { requireInstallationScope } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
+  BrowserbaseIncompleteSessionError,
   createBrowserbaseProvider,
   type BrowserbaseClient,
   type BrowserbaseContextRecord,
@@ -65,6 +66,13 @@ export interface HostedBrowserProviderOptions {
 const INSTALLATION_METADATA_KEY = 'installation';
 /** A session asked for with no timeout gets this one, so its lease and the provider agree on when it ends. */
 const DEFAULT_TIMEOUT_SECONDS = 600;
+
+/**
+ * Answers to a session create that prove Browserbase made no session. Any
+ * other failure (no answer, a timeout, a 5xx, 408, 429) may follow a
+ * session it made and bills to its timeout.
+ */
+const CREATE_REFUSED = new Set([400, 401, 403, 404, 409, 422]);
 
 /** Whose a provider record is: this installation's, provably another's, or not known from what it holds. */
 type Ownership = 'own' | 'foreign' | 'unverified';
@@ -113,22 +121,42 @@ export class HostedBrowserProvider implements BrowserProvider {
     if (admission !== 'admitted') throw new HostedBrowserRefusal(admission);
     let handle: BrowserSessionHandle;
     try {
-      handle = await this.#call('create_session', () => this.#client.createSession({
+      handle = await this.#client.createSession({
         ...options,
         timeoutSeconds,
         logSession: false,
         userMetadata: { chickpea: '1', [INSTALLATION_METADATA_KEY]: this.#installationId },
-      }));
+      });
     } catch (error) {
+      await this.#settleFailedCreate(reservationId, error);
+      throw failure('create_session', error);
+    }
+    await this.#attach(reservationId, handle.id);
+    return handle;
+  }
+
+  /**
+   * The lease of a create that failed. It is released only when Browserbase
+   * refused the create. Otherwise it stands to its timeout, as an unattached
+   * lease does, so a session Browserbase may have made stays inside the
+   * running limit and the meter; one the answer names is ended.
+   */
+  async #settleFailedCreate(reservationId: string, error: unknown): Promise<void> {
+    if (error instanceof BrowserProviderError && error.status !== undefined && CREATE_REFUSED.has(error.status)) {
       await releaseBrowserReservation({ store: this.#store, reservationId, now: this.#now() })
         .catch(() => log('lease_release_failed', {}));
-      throw error;
+      return;
     }
-    this.#ownSessions.add(handle.id);
-    // Unattached, the lease stands to its timeout and is charged up to it.
-    await attachBrowserSession({ store: this.#store, reservationId, sessionId: handle.id, now: this.#now() })
+    if (!(error instanceof BrowserbaseIncompleteSessionError) || !error.sessionId) return;
+    await this.#attach(reservationId, error.sessionId);
+    await this.endSession(error.sessionId).catch(() => undefined);
+  }
+
+  /** Unattached, the lease stands to its timeout and is charged up to it. */
+  async #attach(reservationId: string, sessionId: string): Promise<void> {
+    this.#ownSessions.add(sessionId);
+    await attachBrowserSession({ store: this.#store, reservationId, sessionId, now: this.#now() })
       .catch(() => log('lease_attach_failed', {}));
-    return handle;
   }
 
   /** Ends the session, then releases its lease and meters the run. A failed end keeps the lease to its timeout. */

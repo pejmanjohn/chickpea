@@ -48,6 +48,16 @@ export interface BrowserbaseClient extends BrowserProvider {
   listSessions(filter: { metadata: { key: string; value: string }; status?: string }): Promise<BrowserbaseSessionRecord[]>;
 }
 
+/**
+ * A create Browserbase answered without a session to connect to. When the
+ * answer named one anyway, that session may be running and billed.
+ */
+export class BrowserbaseIncompleteSessionError extends BrowserProviderError {
+  constructor(readonly sessionId: string | undefined) {
+    super('Browserbase session response is missing id or connectUrl');
+  }
+}
+
 const DEFAULT_BASE_URL = 'https://api.browserbase.com';
 const ERROR_BODY_LIMIT = 300;
 /**
@@ -155,7 +165,7 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
       const obj = asObject(data);
       const id = str(obj.id);
       const connectUrl = str(obj.connectUrl);
-      if (!id || !connectUrl) throw new BrowserProviderError('Browserbase session response is missing id or connectUrl');
+      if (!id || !connectUrl) throw new BrowserbaseIncompleteSessionError(id || undefined);
       const handle: BrowserSessionHandle = { id, connectUrl };
       const contextId = str(obj.contextId) || opts.contextId;
       if (contextId) handle.contextId = contextId;

@@ -166,7 +166,43 @@ test('each hosted refusal reaches the model as its own text, and nothing is crea
   }
 });
 
-test('a hosted session holds its lease from create to end; a failed create or end does what the provider billed', async (t) => {
+test('a create Browserbase refused releases its lease; one it may have carried out holds it to its timeout', async (t) => {
+  const createFails = (answer: () => Response) => ({
+    fail: ({ method, url }: { method: string; url: string }) => method === 'POST' && url.endsWith('/v1/sessions') ? answer() : undefined,
+  });
+  for (const status of [400, 401, 403, 404, 409, 422]) {
+    const { store, provider } = hostedSetup(t, {}, createFails(() => new Response('no', { status })));
+    await assert.rejects(provider().createSession({ timeoutSeconds: 660 }), HostedBrowserFailure);
+    assert.deepEqual((await readBrowserSessionUsage({ store, now: T0 })).leases, [], `${status} holds nothing`);
+  }
+  const timedOut = () => { throw Object.assign(new Error('The operation timed out.'), { name: 'TimeoutError' }); };
+  const ambiguous: Array<[string, () => Response]> = [
+    ['500', () => new Response('no', { status: 500 })],
+    ['503', () => new Response('no', { status: 503 })],
+    ['408', () => new Response('no', { status: 408 })],
+    ['429', () => new Response('no', { status: 429 })],
+    ['network', () => { throw new TypeError('fetch failed'); }],
+    ['timeout', timedOut],
+    ['no id', () => Response.json({ connectUrl: 'wss://connect.example/' }, { status: 201 })],
+  ];
+  for (const [name, answer] of ambiguous) {
+    const { store, provider } = hostedSetup(t, {}, createFails(answer));
+    await assert.rejects(provider().createSession({ timeoutSeconds: 660 }), HostedBrowserFailure, name);
+    assert.deepEqual((await readBrowserSessionUsage({ store, now: T0 })).leases, [
+      { startedAt: T0, leaseUntil: T0 + 660_000 },
+    ], `${name}: held unattached to its timeout`);
+    assert.equal(await metered(store), 0, `${name}: metered only once it lapses`);
+  }
+
+  const partial = hostedSetup(t, {}, createFails(() => Response.json({ id: 'sess_partial' }, { status: 201 })));
+  partial.browserbase.sessions.set('sess_partial', { projectId: 'proj-platform', status: 'RUNNING', userMetadata: { installation: 'inst_a' } });
+  await assert.rejects(partial.provider().createSession({ timeoutSeconds: 660 }), HostedBrowserFailure);
+  assert.equal(partial.browserbase.sessions.get('sess_partial')!.status, 'COMPLETED', 'a session the answer names is ended');
+  assert.deepEqual((await readBrowserSessionUsage({ store: partial.store, now: T0 })).leases, []);
+  assert.equal(await metered(partial.store), 60, 'and metered as the provider bills it');
+});
+
+test('a hosted session holds its lease from create to end; a failed end does what the provider billed', async (t) => {
   const { store, provider, advance } = hostedSetup(t);
   const wrapper = provider();
   const handle = await wrapper.createSession({ timeoutSeconds: 660 });
@@ -177,12 +213,6 @@ test('a hosted session holds its lease from create to end; a failed create or en
   await wrapper.endSession(handle.id);
   assert.deepEqual((await readBrowserSessionUsage({ store, now: T0 })).leases, []);
   assert.equal(await metered(store), 120);
-
-  const failing = hostedSetup(t, {}, {
-    fail: ({ method, url }) => method === 'POST' && url.endsWith('/v1/sessions') ? new Response('no', { status: 500 }) : undefined,
-  });
-  await assert.rejects(failing.provider().createSession({ timeoutSeconds: 660 }), HostedBrowserFailure);
-  assert.deepEqual((await readBrowserSessionUsage({ store: failing.store, now: T0 })).leases, [], 'a failed create holds nothing');
 
   const stuck = hostedSetup(t, {}, {
     fail: ({ method, url }) => method === 'POST' && /\/v1\/sessions\/sess_/.test(url) ? new Response('no', { status: 500 }) : undefined,
