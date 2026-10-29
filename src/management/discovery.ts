@@ -210,9 +210,11 @@ const CONNECTION_CHANGED = 'The connection changed while the key was being saved
 
 /**
  * Checks a key against one of an Agent's API connections with one GET and,
- * unless the service rejects the key, saves it the way the setup page does,
- * so the account becomes ready. The check and the save are fenced on the
- * account revision the caller checked.
+ * when the answer shows the key works (2xx) or refuses only that request (403),
+ * saves it the way the setup page does, so the account becomes ready. Unlike
+ * the setup page, it saves nothing on an answer that says nothing about the
+ * key, such as the 404 many APIs give at a bare prefix whatever the key. The
+ * check and the save are fenced on the account revision the caller checked.
  */
 export async function saveManagedConnectionKey(
   input: SaveManagedConnectionKeyInput,
@@ -243,6 +245,13 @@ export async function saveManagedConnectionKey(
     throw new ManagementError(
       'key_rejected',
       `${new URL(check.url).host} rejected this key (HTTP 401), so nothing was saved. Tell the person the key did not work and send a setup link with request_setup for this connection, where they can enter a working key. Never ask them to paste a key in chat.`,
+    );
+  }
+  if (check.kind !== 'ok' && check.kind !== 'not_permitted') {
+    const answer = check.status === undefined ? check.detail : `${check.url} answered HTTP ${check.status}.`;
+    throw new ManagementError(
+      'key_unconfirmed',
+      `Nothing was saved, because Chickpea could not check the key. ${answer} To check it, call save_connection_key again with path set to a read endpoint of this API that requires the key, such as a list endpoint, or send a setup link with request_setup. Never repeat the key.`,
     );
   }
   await saveConnectionCredential({

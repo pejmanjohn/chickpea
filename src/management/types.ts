@@ -382,8 +382,8 @@ export interface SaveConnectionKeyInput {
   path?: string | undefined;
 }
 
-/** What one GET with a saved key found. A rejected key saves nothing, so it is never one. */
-export type SavedConnectionKeyCheck = Exclude<ApiConnectionCheck, { kind: 'key_rejected' }>;
+/** What one GET with a saved key found. Only ok, or a 403 that usually means a missing scope, saves the key. */
+export type SavedConnectionKeyCheck = Extract<ApiConnectionCheck, { kind: 'ok' | 'not_permitted' }>;
 
 /** What save_connection_key returns: never the key. */
 export interface SaveConnectionKeyResult {
@@ -1481,7 +1481,8 @@ export class ManagementError extends Error {
       | 'schedule_authority_missing'
       | 'slack_unavailable'
       | 'mcp_client_not_found'
-      | 'key_rejected',
+      | 'key_rejected'
+      | 'key_unconfirmed',
     message: string,
     readonly changed?: ManagementObjectRef[],
     /** Admin deep link when the failure names something only Admin can change; response-only. */

@@ -8201,7 +8201,7 @@ function memoryMutation(memory: AgentMemory, inverse?: ManagementOperation): Imm
 
 const SETUP_LINK_ON_APPROVAL = 'The person gets this setup link with the receipt when they approve the change set. Tell them it follows their approval, and do not prepare it yourself.';
 const CHANGE_AFTER_APPROVAL = 'This change conflicts with the pending change set. Make it in a new request after the person approves that one.';
-const SAVED_KEY_INSTRUCTION = 'The key is saved and the connection is ready. Tell the person the connection name, where its requests go (sendsKeyTo), what it may do (allowedMethods), and what the check found: ok means a test request worked; not_permitted or path_not_found means the service accepted the key but refused or did not find the test path; unreachable or inconclusive means Chickpea could not confirm the key yet. Never repeat the key.';
+const SAVED_KEY_INSTRUCTION = 'The key is saved and the connection is ready. Tell the person the connection name, where its requests go (sendsKeyTo), what it may do (allowedMethods), and what the check found: ok means a test request with the key worked; not_permitted means the service refused the test request, which usually means the key works but lacks a scope that request needs. Never repeat the key.';
 
 const SLACK_SETUP_APPROVAL_UNAVAILABLE = 'Replacing saved credentials needs an approval Slack cannot collect for a setup link. Ask the person to replace them from Admin.';
 

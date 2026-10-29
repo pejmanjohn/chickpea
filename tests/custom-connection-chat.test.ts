@@ -418,6 +418,27 @@ test('a bogus key checked at a prefix that answers 404 saves nothing; a read pat
   } finally { f.close(); }
 });
 
+test('a 5xx, an unreadable answer or a failed request saves nothing either, over Slack and MCP', async () => {
+  const f = await fixture();
+  try {
+    await addKeyedConnection(f);
+    for (const [respond, said] of [
+      [() => new Response(null, { status: 503 }), /answered HTTP 503\./],
+      [() => new Response(null, { status: 429 }), /answered HTTP 429\./],
+      [() => { throw new TypeError('fetch failed'); }, /did not complete/],
+    ] as const) {
+      const error = refusal(await withConnectionNetwork(respond, async () => f.slack('save_connection_key', SAVE, PASTED)));
+      assert.equal(error.code, 'key_unconfirmed');
+      assert.match(error.message, said);
+    }
+    const viaMcp = await withConnectionNetwork(hubspot(OTHER_KEY), async () =>
+      f.mcp('save_connection_key', { ...SAVE_WITHOUT_PATH, agentId: f.agent.id }));
+    assert.equal(refusal(viaMcp).code, 'key_unconfirmed');
+    assert.equal(await f.savedKey(), undefined);
+    assert.equal((await f.account()).lifecycle, 'pending');
+  } finally { f.close(); }
+});
+
 test('a key typed with its URLs is checked, saved and makes the connection ready; Slack never replaces it', async () => {
   const f = await fixture();
   try {
@@ -498,6 +519,8 @@ test('a 403 still saves the key and reports what the service refused', async () 
       ? Response.json({ category: 'MISSING_SCOPES' }, { status: 403 })
       : Response.json({}, { status: 401 }), async () => saved(await f.slack('save_connection_key', SAVE, PASTED)));
     assert.equal(result.check.kind, 'not_permitted');
+    assert.match(result.instruction, /not_permitted means the service refused the test request, which usually means the key works but lacks a scope/);
+    assert.doesNotMatch(result.instruction, /accepted/);
     assert.equal(await f.savedKey(), KEY);
     assert.equal((await f.account()).lifecycle, 'ready');
   } finally { f.close(); }

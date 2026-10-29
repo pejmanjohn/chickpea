@@ -16,7 +16,7 @@ export type ConnectionCheckFailure =
 /** What one GET with an API connection's key found. `url` and `detail` never carry the key. */
 export type ApiConnectionCheck =
   | { kind: 'ok'; url: string; status: number }
-  | { kind: ConnectionCheckFailure; url: string; status?: number; detail: string };
+  | { [K in ConnectionCheckFailure]: { kind: K; url: string; status?: number; detail: string } }[ConnectionCheckFailure];
 
 export type McpConnectionCheck =
   | { kind: 'ok'; tools: McpConnectionToolInfo[] }
