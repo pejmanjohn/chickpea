@@ -38,3 +38,16 @@ export const BROWSER_HANDOFF_NOTE =
   'Tell the person you have sent them a private sign-in link and that you will continue when they reply. End your reply now.';
 export const BROWSER_SIGN_IN_NOTE =
   'Judge from the page whether you are signed in. If it asks for a code this login cannot supply, or shows a challenge you cannot pass, call browser_handoff.';
+
+/**
+ * A deployment serving many installations runs the browser on the host's
+ * project. Its refusals and the provider's failures reach the model only as
+ * these texts, never as the provider's own response.
+ */
+export const HOSTED_BROWSER_UNAVAILABLE_MESSAGE = 'The browser is unavailable right now.';
+export const HOSTED_BROWSER_BUSY_MESSAGE = 'The browser is busy right now. Try again in a minute.';
+export const HOSTED_BROWSER_RUNNING_LIMIT_MESSAGE =
+  'The browser is busy with other work in this workspace. Try again in a few minutes.';
+export const HOSTED_BROWSER_HOURS_CAP_MESSAGE = 'This workspace has used its browser time for this month.';
+export const HOSTED_BROWSER_CONTEXT_IN_USE_MESSAGE =
+  'This website login is in use in another conversation. Try again when it finishes.';

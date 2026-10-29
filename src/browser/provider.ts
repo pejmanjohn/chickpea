@@ -5,6 +5,13 @@
  * their live view and recordings. The page itself is driven over raw Chrome
  * DevTools Protocol (see cdp.ts / page.ts), so providers only own lifecycle.
  */
+import {
+  HOSTED_BROWSER_BUSY_MESSAGE,
+  HOSTED_BROWSER_CONTEXT_IN_USE_MESSAGE,
+  HOSTED_BROWSER_HOURS_CAP_MESSAGE,
+  HOSTED_BROWSER_RUNNING_LIMIT_MESSAGE,
+  HOSTED_BROWSER_UNAVAILABLE_MESSAGE,
+} from './messages.ts';
 
 export interface BrowserSessionHandle {
   id: string;
@@ -54,9 +61,59 @@ export interface BrowserProvider {
 export const BROWSER_PROVIDER_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
 
 export class BrowserProviderError extends Error {
-  constructor(message: string, readonly status?: number) {
+  constructor(
+    message: string,
+    readonly status?: number,
+    /** From a 429's `retry-after`: how long the provider asks to wait. */
+    readonly retryAfterMs?: number,
+  ) {
     super(message);
     this.name = 'BrowserProviderError';
+  }
+}
+
+/** Why a deployment serving many installations refused a browser call. */
+export type HostedBrowserRefusalReason =
+  | 'off'
+  | 'unavailable'
+  | 'ownership'
+  | 'running_limit'
+  | 'hours_cap'
+  | 'rate_limit'
+  | 'context_in_use';
+
+const HOSTED_BROWSER_REFUSALS: Record<HostedBrowserRefusalReason, string> = {
+  off: HOSTED_BROWSER_UNAVAILABLE_MESSAGE,
+  unavailable: HOSTED_BROWSER_UNAVAILABLE_MESSAGE,
+  ownership: HOSTED_BROWSER_UNAVAILABLE_MESSAGE,
+  running_limit: HOSTED_BROWSER_RUNNING_LIMIT_MESSAGE,
+  hours_cap: HOSTED_BROWSER_HOURS_CAP_MESSAGE,
+  rate_limit: HOSTED_BROWSER_BUSY_MESSAGE,
+  context_in_use: HOSTED_BROWSER_CONTEXT_IN_USE_MESSAGE,
+};
+
+/**
+ * A refusal by a deployment serving many installations, before any call to
+ * the provider. Its message is the fixed text for the model. Not a provider
+ * error, so nothing reads it as one of the provider's answers.
+ */
+export class HostedBrowserRefusal extends Error {
+  constructor(readonly reason: HostedBrowserRefusalReason) {
+    super(HOSTED_BROWSER_REFUSALS[reason]);
+    this.name = 'HostedBrowserRefusal';
+  }
+}
+
+/**
+ * The provider failed a call made for a deployment serving many
+ * installations. Its message is fixed (busy on a 429, unavailable
+ * otherwise), and the provider's own response is dropped. The status still
+ * drives the retries that read it.
+ */
+export class HostedBrowserFailure extends BrowserProviderError {
+  constructor(status?: number, retryAfterMs?: number) {
+    super(status === 429 ? HOSTED_BROWSER_BUSY_MESSAGE : HOSTED_BROWSER_UNAVAILABLE_MESSAGE, status, retryAfterMs);
+    this.name = 'HostedBrowserFailure';
   }
 }
 

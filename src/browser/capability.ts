@@ -3,6 +3,7 @@ import {
   type RuntimePlanBrowserCapabilityV1,
   type RuntimePlanWebsiteLoginV1,
 } from '../agents/runtime-plan.ts';
+import { hostedBrowserConfigured, hostedBrowserPolicy } from '../config/hosted-browser.ts';
 import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { WebsiteLoginGrant } from '../config/types.ts';
@@ -13,15 +14,18 @@ import { resolveBrowserSettings } from './settings.ts';
  * Freezes the bounded browser capability for an admitted turn. Only a
  * connected install freezes a record, so installs without a browser keep
  * their existing harness revision. The key never enters the plan: the tools
- * read it again at call time. A deployment serving many installations does
- * not offer the browser: a deployment Browserbase key would put every
- * installation in one project, and no rewrap covers its website logins.
+ * read it again at call time. A deployment serving many installations offers
+ * the browser only when its host installed the hosted browser port and that
+ * policy is on; neither an installation's stored key nor a deployment
+ * variable is read there.
  */
 export async function browserCapabilityForTurn(
   store: SettingsStore,
   env: Record<string, unknown> | undefined,
 ): Promise<RuntimePlanBrowserCapabilityV1 | undefined> {
-  if (deploymentServesManyInstallations(env)) return undefined;
+  if (deploymentServesManyInstallations(env)) {
+    return hostedBrowserConfigured() && hostedBrowserPolicy().enabled ? { provider: 'browserbase' } : undefined;
+  }
   try {
     const settings = await resolveBrowserSettings(store, env);
     return settings.connected ? { provider: 'browserbase' } : undefined;

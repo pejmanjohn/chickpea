@@ -87,16 +87,20 @@ export async function resolveBrowserSettings(
 
 /**
  * The install's browser provider, keyed from current settings, or undefined
- * when no key is configured. A deployment serving many installations has
- * none here: it never reads a deployment variable or a stored key. The
- * Browserbase client loads only when a provider is built, which keeps it out
- * of the Worker's startup graph.
+ * when no key is configured. A deployment serving many installations always
+ * gets the hosted wrapper on the host's access, and never reads a deployment
+ * variable or a stored key; without the host's access it throws rather than
+ * answering undefined. The Browserbase client loads only when a provider is
+ * built, which keeps it out of the Worker's startup graph.
  */
 export async function resolveBrowserProvider(
   store: SettingsStore,
   env: Record<string, unknown> | undefined,
 ): Promise<BrowserProvider | undefined> {
-  if (deploymentServesManyInstallations(env)) return undefined;
+  if (deploymentServesManyInstallations(env)) {
+    const { hostedBrowserProvider } = await import('./hosted-provider.ts');
+    return hostedBrowserProvider(store, env);
+  }
   const settings = await resolveBrowserSettings(store, env);
   if (!settings.apiKey) return undefined;
   const { createBrowserbaseProvider } = await import('./browserbase.ts');

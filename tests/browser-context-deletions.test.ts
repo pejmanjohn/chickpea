@@ -21,7 +21,7 @@ import {
   type WebsiteLogin,
 } from '../src/browser/logins.ts';
 import { BROWSER_LOGIN_REVOKED_MESSAGE } from '../src/browser/messages.ts';
-import { BrowserProviderError, type BrowserProvider } from '../src/browser/provider.ts';
+import { BrowserProviderError, HostedBrowserRefusal, type BrowserProvider } from '../src/browser/provider.ts';
 import { BrowserTurnSession } from '../src/browser/turn-session.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -168,11 +168,14 @@ test('a 404 from Browserbase dequeues; any other failure keeps the entry', async
   assert.deepEqual(await queue(), [{ contextId: 'ctx_flaky', queuedAt: NOW - 1, attempts: 1 }]);
 });
 
-test('standalone with no browser key keeps the queue for a reconnect; a deployment serving many leaves it for its host', async (t) => {
+test('standalone with no browser key keeps the queue for a reconnect; a deployment serving many with no hosted browser keeps it too', async (t) => {
   const { store, queue, provider, deleted } = setup(t);
   const entries = [{ contextId: 'ctx_waiting', queuedAt: Date.now() }];
   await queueContextDeletions(store, entries);
-  await maintainWebsiteLogins(scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' }), store);
+  await assert.rejects(
+    maintainWebsiteLogins(scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' }), store),
+    HostedBrowserRefusal,
+  );
   assert.deepEqual(await queue(), entries);
   await withEnv({ BROWSERBASE_API_KEY: undefined, CHICKPEA_TENANCY: undefined }, () => maintainWebsiteLogins({}, store));
   await withEnv({ BROWSERBASE_API_KEY: undefined, CHICKPEA_TENANCY: undefined }, () => maintainWebsiteLogins({}, store));

@@ -3,7 +3,7 @@ import {
   type EncryptedCredentialStore,
   type SettingsStore,
 } from '../config/settings-store.ts';
-import { deploymentServesManyInstallations, requireInstallationScope } from '../config/installation-scope.ts';
+import { requireInstallationScope } from '../config/installation-scope.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
 import {
@@ -501,12 +501,12 @@ export async function deleteOrphanWebsiteLoginSecrets(store: SettingsStore, now 
 
 /**
  * Work maintenance for one install's website logins: the context deletion
- * queue, then secrets no login names. A deployment serving many
- * installations leaves both alone: its browser key belongs to the host,
- * never to a deployment variable or the installation's settings.
+ * queue, then secrets no login names. On a deployment serving many
+ * installations the queue's provider is the hosted wrapper on the host's
+ * access; without that access the sweep fails and the queue waits for the
+ * next.
  */
 export async function maintainWebsiteLogins(env: PlatformEnv | undefined, store?: SettingsStore): Promise<void> {
-  if (deploymentServesManyInstallations(env)) return;
   const settings = store ?? getSettingsStore(env);
   await drainContextDeletions({ store: settings, provider: () => resolveBrowserProvider(settings, env) });
   await deleteOrphanWebsiteLoginSecrets(settings);
