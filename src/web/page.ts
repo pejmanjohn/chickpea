@@ -102,7 +102,7 @@ export const WEB_URL_REFUSALS: Record<WebUrlRefusal, string> = {
   long_path: `Nothing was read: a URL you write yourself may have a path of at most ${MAX_COMPOSED_PATH_CHARS} characters.`,
   host: 'Nothing was read: a URL you write yourself must be on a host the requester typed or one of this Agent\'s connections. To read another site, search for the page and pass a result\'s URL as given, or ask the requester for the link.',
   path: 'Nothing was read: on a connection\'s host, a URL you write yourself must stay within that connection\'s path scope. To read another page there, search for it and pass a result\'s URL as given, or ask the requester for the link.',
-  encoded_path: 'Nothing was read: a URL you write yourself may not percent-encode a slash, a backslash, a dot or a percent sign in its path. Pass a URL from this turn\'s search results or page links exactly as given, or one the requester typed.',
+  encoded_path: 'Nothing was read: a URL you write yourself may not have a percent-escape, a semicolon or two dots in a row in its path. Pass a URL from this turn\'s search results or page links exactly as given, or one the requester typed.',
   request_text: 'Nothing was read: a URL you write yourself may not contain words from the requester\'s message in its path. Use a URL from this turn\'s search results or page links, or ask the requester to send the link.',
 };
 
@@ -123,9 +123,10 @@ export function admitWebUrl(raw: string, sources: WebUrlSources): WebUrlAdmissio
   }
   if (url.search) return { admitted: false, reason: 'query' };
   if (url.pathname.length > MAX_COMPOSED_PATH_CHARS) return { admitted: false, reason: 'long_path' };
-  // A server that decodes before it resolves `..` would read `/v2/..%2Fv3` as
-  // `/v3`, outside the scope the WHATWG path appears to stay in.
-  if (ENCODED_PATH_SYNTAX.test(url.pathname)) return { admitted: false, reason: 'encoded_path' };
+  // Servers differ on what a path means: some decode before resolving `..`
+  // (`/v2/..%2Fv3`), some drop `;` parameters (`/v2/..;/v3`), some accept
+  // overlong or fullwidth slashes. A written path is plain text instead.
+  if (UNSAFE_WRITTEN_PATH.test(url.pathname)) return { admitted: false, reason: 'encoded_path' };
   const onHost = sources.spaces.filter(({ host }) => host.toLowerCase() === url.hostname);
   if (onHost.length === 0) return { admitted: false, reason: 'host' };
   if (!onHost.some(({ pathPrefixes }) => pathPrefixes.some((prefix) => matchesEgressPrefix(url.href, url.origin + prefix)))) {
@@ -135,8 +136,8 @@ export function admitWebUrl(raw: string, sources: WebUrlSources): WebUrlAdmissio
   return { admitted: true, url };
 }
 
-/** Percent-encoded `/`, `\`, `.` or `%` in a written path. */
-const ENCODED_PATH_SYNTAX = /%(?:2f|5c|2e|25)/i;
+/** Any percent-escape, any `;`, or a segment with `..` in a written path. */
+const UNSAFE_WRITTEN_PATH = /[%;]|\.\./;
 
 /**
  * The request's words a URL the model writes may not carry: each run of 8 or
