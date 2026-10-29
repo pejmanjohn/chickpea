@@ -486,6 +486,7 @@ import {
 import {
   projectAgentWebsiteLogins,
   removeAgentWebsiteLogin,
+  removeDeletedAgentWebsiteLogins,
   updateAgentWebsiteLogins,
   websiteLoginView,
   WebsiteLoginGrantNotFoundError,
@@ -10406,6 +10407,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }, 409);
       return internalError(c, error);
     }
+    const removeDeletedAgentLogins = () => removeDeletedAgentWebsiteLogins({
+      grants: agent.websiteLogins,
+      config: configStore,
+      deletion: () => websiteLoginWriteDependencies(c),
+    });
     // Persist the cleanup inventory before deleting the Agent. The marker is
     // independent of the config row, so settings cleanup can be retried after a
     // partial failure or an ambiguous DO/RPC response where the delete committed
@@ -10433,6 +10439,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (inspectionError instanceof UnknownAgentError) {
           // The delete committed but its response was lost. Continue using the
           // durable marker rather than restoring secrets into an orphaned scope.
+          await removeDeletedAgentLogins();
           try {
             await finishAgentSecretCleanup(agentId, c.env as PlatformEnv | undefined, settingsStore, cleanupScope);
             return c.body(null, 204);
@@ -10454,6 +10461,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return internalError(c, err);
     }
 
+    await removeDeletedAgentLogins();
     try {
       await finishAgentSecretCleanup(agentId, c.env as PlatformEnv | undefined, settingsStore, cleanupScope);
       return c.body(null, 204);

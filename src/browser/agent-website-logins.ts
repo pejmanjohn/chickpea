@@ -101,6 +101,8 @@ export async function removableAgentWebsiteLogin(input: {
   return login;
 }
 
+type WebsiteLoginDeletion = () => Pick<WebsiteLoginDependencies, 'store' | 'browserProvider'> | undefined;
+
 /**
  * Admin's Remove: drop the Agent's grant, then delete the login and its
  * secret once no Agent is granted it.
@@ -111,7 +113,7 @@ export async function removeAgentWebsiteLogin(input: {
   loginId: string;
   config: AgentWebsiteLoginStore & Pick<ConfigStore, 'listAgents'>;
   logins: Parameters<typeof listWebsiteLogins>[0];
-  deletion: () => Pick<WebsiteLoginDependencies, 'store' | 'browserProvider'> | undefined;
+  deletion: WebsiteLoginDeletion;
 }): Promise<{ loginDeleted: boolean }> {
   const login = await removableAgentWebsiteLogin({
     principal: input.principal,
@@ -124,10 +126,40 @@ export async function removeAgentWebsiteLogin(input: {
     return next.length === grants.length ? undefined : next;
   });
   if (!login) return { loginDeleted: false };
-  const stillGranted = (await input.config.listAgents()).some((candidate) =>
-    (candidate.websiteLogins ?? []).some((grant) => grant.loginId === input.loginId));
-  if (stillGranted) return { loginDeleted: false };
+  if ((await grantedLoginIds(input.config)).has(input.loginId)) return { loginDeleted: false };
   const deps = input.deletion();
   if (!deps) throw new WebsiteLoginsUnavailableError();
   return { loginDeleted: await deleteWebsiteLogin(deps, input.loginId) };
+}
+
+/**
+ * After an Agent is deleted, the same rule as Remove for each login it was
+ * granted: delete the ones no remaining Agent holds, which nothing else can
+ * reach. Never throws, since the Agent is gone either way: a failure is
+ * logged without content, and a login that went is the queue's to finish.
+ */
+export async function removeDeletedAgentWebsiteLogins(input: {
+  grants: readonly WebsiteLoginGrant[] | undefined;
+  config: Pick<ConfigStore, 'listAgents'>;
+  deletion: WebsiteLoginDeletion;
+}): Promise<void> {
+  if (!input.grants?.length) return;
+  try {
+    const deps = input.deletion();
+    if (!deps) return;
+    const held = await grantedLoginIds(input.config);
+    for (const { loginId } of input.grants) {
+      if (held.has(loginId)) continue;
+      await deleteWebsiteLogin(deps, loginId).catch(() => {
+        console.warn('[chickpea] A deleted Agent\'s website login could not be removed');
+      });
+    }
+  } catch {
+    console.warn('[chickpea] A deleted Agent\'s website logins could not be removed');
+  }
+}
+
+/** Every login some Agent is granted. */
+async function grantedLoginIds(config: Pick<ConfigStore, 'listAgents'>): Promise<Set<string>> {
+  return new Set((await config.listAgents()).flatMap((agent) => (agent.websiteLogins ?? []).map(({ loginId }) => loginId)));
 }
