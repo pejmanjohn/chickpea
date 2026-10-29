@@ -903,7 +903,6 @@ export class ConnectionAccountService {
         signInGroupAccessLane(connector, group),
         validation,
         input.principal.membershipId,
-        previous.signIn,
       ),
     };
     await this.refuseSignInMix({
@@ -911,8 +910,7 @@ export class ConnectionAccountService {
       workspaceId: account.workspaceId,
       ownerKind: account.ownerKind,
       connector,
-      adapterId: policy.adapterId,
-      person: validation?.person,
+      policy,
     });
     const lifecycle = connector.resources?.some((resource) =>
       resource.required && !(policy.resourceConstraints?.[resource.key]?.length)
@@ -1217,8 +1215,7 @@ export class ConnectionAccountService {
         workspaceId: input.workspaceId,
         ownerKind: input.ownerKind,
         connector,
-        adapterId: policy.adapterId,
-        person: validation?.person,
+        policy,
       });
     }
     const id = `connection_${this.id()}`;
@@ -1282,20 +1279,15 @@ export class ConnectionAccountService {
     workspaceId: string;
     ownerKind: 'team' | 'member';
     connector: ManagedConnectorDefinition;
-    adapterId: string;
-    /**
-     * Only the person this sign-in's provider named: one kept from before a
-     * failed lookup belongs to an earlier sign-in, so it cannot be compared.
-     */
-    person: string | undefined;
+    policy: ConnectionAccountManagedPolicy;
   }): Promise<void> {
     if (!input.connector.sharedSignIn) return;
     const mix = signInMix({
       connector: input.connector,
-      adapterId: input.adapterId,
+      adapterId: input.policy.adapterId,
       ownerKind: input.ownerKind,
       actorMembershipId: input.principal.membershipId,
-      person: input.person,
+      person: input.policy.signIn?.person,
       accounts: await this.dependencies.config.listConnectionAccounts(input.workspaceId),
     });
     if (!mix) return;
@@ -1464,18 +1456,16 @@ function signInGroupAccessLane(
 
 /**
  * A connector whose sign-ins may be shared always records whose sign-in it
- * is. When the provider could not be asked, a sign-in again keeps the person
- * it already knows; only a provider that names nobody falls back to the signer.
+ * is: the person the provider named for this sign-in, or the signer when it
+ * names nobody.
  */
 function managedSignIn(
   connector: ManagedConnectorDefinition,
   accessLane: ManagedAccessLane,
   validation: ManagedConnectionValidationResult | void,
   signerMembershipId: string,
-  previous?: ManagedSignIn,
 ): ManagedSignIn {
   const person = validation?.person ??
-    (validation?.personLookupFailed ? previous?.person : undefined) ??
     (connector.sharedSignIn ? `member:${signerMembershipId}` : undefined);
   return { ...(person ? { person } : {}), accessLane };
 }

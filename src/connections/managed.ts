@@ -89,8 +89,6 @@ export interface ManagedConnectionValidationResult {
   };
   /** Who signed in, as the provider names them; see `ManagedSignIn.person`. */
   person?: string;
-  /** The provider could not be asked who signed in, as opposed to naming nobody. */
-  personLookupFailed?: true;
   /** For a connector with a page scope: what this credential reaches now. */
   pages?: ManagedPageListing;
 }

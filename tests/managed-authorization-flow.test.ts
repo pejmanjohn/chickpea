@@ -17,6 +17,7 @@ import {
   createManagedConnectionProviderRegistry,
   type ManagedConnectionProvider,
 } from '../src/connections/managed.ts';
+import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
 import {
   ManagedSignInOtherKindError,
   signInMixRefusal,
@@ -576,8 +577,8 @@ const NOTION = MANAGED_CONNECTOR_CATALOG.connector('notion')!;
 /**
  * One workspace whose live Notion connections sit on another Agent unless
  * their id ends in `_target`, and a Composio fake whose sign-ins name
- * `state.person`, or no one while it is undefined, unless
- * `state.lookupFailed` says Notion could not be asked.
+ * `state.person`, or no one while it is undefined. While `state.lookupFailed`
+ * is set, Notion cannot be asked who signed in, which fails the sign-in.
  */
 async function notionMixHarness(existing: Array<{
   id: string;
@@ -606,7 +607,11 @@ async function notionMixHarness(existing: Array<{
       return { status: 'active', accountRef: input.authorizationRef, toolkit: 'notion' };
     },
     async validate() {
-      if (state.lookupFailed) return { personLookupFailed: true as const };
+      if (state.lookupFailed) {
+        throw new ManagedProviderRequestError('validation_failed', 'Notion sign-in could not be checked', {
+          remoteCallCount: 2, providerToolCallCount: 1, capabilityToolDispatched: false, definiteFailure: true,
+        });
+      }
       return state.person ? { person: state.person } : undefined;
     },
     async execute() { return { data: {} }; },
@@ -773,7 +778,7 @@ test('a team reconnect whose person Notion did not name fails closed against the
   }
 });
 
-test('a team reconnect whose Notion lookup failed is not compared as the person it had before', async () => {
+test('a reconnect Notion cannot name saves nothing, rather than keeping the person of the earlier sign-in', async () => {
   const h = await notionMixHarness([
     { id: 'connection_team_target', ownerKind: 'team', signer: 'm_lee', person: RAVI },
     { id: 'connection_personal', ownerKind: 'member', signer: 'm_admin', person: MAYA },
@@ -783,7 +788,7 @@ test('a team reconnect whose Notion lookup failed is not compared as the person 
     h.state.lookupFailed = true;
     const result = await h.signIn(h.principal('m_admin', 'admin'), { connectionAccountId: 'connection_team_target' });
 
-    assert.deepEqual(result, { status: 'refused', message: signInMixRefusal(NOTION, 'member', { samePerson: false, manageable: true }) });
+    assert.deepEqual(result, { status: 'terminal', reason: 'failed' });
     assert.deepEqual(h.cleaned, ['ca_new_1']);
     assert.deepEqual(await h.saved(), before, 'the team connection keeps its revision, connected account and person');
   } finally {

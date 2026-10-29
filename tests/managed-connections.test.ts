@@ -3247,7 +3247,7 @@ test('a new managed account records who signed in and under which access lane', 
   }
 });
 
-test('signing in again keeps the known Notion person when Notion cannot be asked, and falls back to the signer only when Notion names nobody', async () => {
+test('signing in again records only the Notion person that sign-in named, falling back to the signer when Notion names nobody', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let answer: Awaited<ReturnType<ManagedConnectionProvider['validate']>> = { person: 'notion:ws-1:user-1' };
@@ -3283,10 +3283,10 @@ test('signing in again keeps the known Notion person when Notion cannot be asked
       return account.policy.kind === 'managed' ? account.policy.signIn?.person : undefined;
     };
 
-    answer = { personLookupFailed: true };
-    assert.equal(await signInAgain('ca_notion_2'), 'notion:ws-1:user-1');
+    answer = { person: 'notion:ws-1:user-2' };
+    assert.equal(await signInAgain('ca_notion_2'), 'notion:ws-1:user-2');
     answer = {};
-    assert.equal(await signInAgain('ca_notion_3'), 'member:membership_bob');
+    assert.equal(await signInAgain('ca_notion_3'), 'member:membership_bob', 'the earlier person is not kept');
   } finally {
     config.close();
     settings.close();
