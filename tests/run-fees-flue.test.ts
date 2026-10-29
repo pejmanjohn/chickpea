@@ -39,7 +39,8 @@ import {
 import { buildSemanticActivityContext, registerActivityContext } from '../src/activity/status.ts';
 import { readWebPage } from '../src/web/page.ts';
 import { createWebTools, webRequest } from '../src/web/tools.ts';
-import { createWebTurn, WEB_READS_PER_TURN, type WebTurnState } from '../src/web/turn.ts';
+import type { WebSearchProvider } from '../src/web/search.ts';
+import { createWebTurn, WEB_READS_PER_TURN, WEB_SEARCHES_PER_TURN, type WebTurnState } from '../src/web/turn.ts';
 import { genericSemanticDescriptor } from '../src/activity/semantic.ts';
 import { runFeeInterceptor } from '../src/config/run-fee-interceptor.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
@@ -248,6 +249,16 @@ const docsWeb = (async (input: RequestInfo | URL, init?: RequestInit) => {
 }) as typeof fetch;
 /** The web state the probe's turn starts from. */
 let webTurnStart: WebTurnState = { turnKey: 'fees-web', reads: 0, searches: 0, sourced: [] };
+/** Queries that reached the stub search service, and whether it answers. */
+const searched: string[] = [];
+let searchAnswers = true;
+const searchService: WebSearchProvider = {
+  async search(query) {
+    searched.push(query);
+    if (!searchAnswers) throw new Error('search service down');
+    return [{ url: 'https://docs.fees.example/api', title: 'Fees API', text: 'GET /v1/fees lists fees.' }];
+  },
+};
 
 /** The web tools as a turn mounts them, over the synthetic web, answering the requester's message. */
 function WebProbe() {
@@ -258,12 +269,17 @@ function WebProbe() {
     request: webRequest(DOCS_ASKED),
     connectionHosts: [],
     readPage: (url) => readWebPage(url, { cloudflare: true, fetch: docsWeb }),
+    searchProvider: async () => searchService,
   })) useTool(tool);
   return 'Read the docs.';
 }
 
 const readsPage = (url: string) => (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
   { type: 'toolCall', id: 'call_read_page', name: 'read_web_page', arguments: { url } },
+], 'toolUse');
+
+const searches = (query: string) => (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
+  { type: 'toolCall', id: 'call_search', name: 'web_search', arguments: { query } },
 ], 'toolUse');
 
 /** Stops the turn `slackTurn` is running as a requester's stop does: Flue aborts the instance's work. */
@@ -509,6 +525,48 @@ test('a read_web_page that fetched posts its task row, even when it brought back
     assert.deepEqual(tiers(posts.slice(before)), ['chat:posted', 'task:posted'], url);
   }
   assert.deepEqual(fetched, [DOCS, LOGO, DOWN]);
+});
+
+test('a web_search refused before it goes out posts no task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  let output = '';
+  const captureOutput: FlueExecutionInterceptor = async (operation, _context, next) => {
+    const result = await next();
+    if (operation.type === 'tool') output = String((result as { details?: { output?: unknown } }).details?.output);
+    return result;
+  };
+  interceptors(t, replyRun(hostedEnv()), captureOutput);
+  searched.length = 0;
+  searchAnswers = true;
+  const token = ['ghp', 'synthetic0000000000000000000000000000'].join('_');
+  for (const [query, searchesSpent, expected] of [
+    [`why does ${token} fail`, 0, /looks like it contains a credential/],
+    ['fees api pagination', WEB_SEARCHES_PER_TURN, /already ran 4 searches/],
+  ] as const) {
+    webTurnStart = { turnKey: 'fees-web', reads: 0, searches: searchesSpent, sourced: [] };
+    const before = posts.length;
+    output = '';
+    scriptedProvider([searches(query), answers]);
+    assert.deepEqual(await slackTurn(`fees-search-refused-${posts.length}`, WebProbe), { text: 'done' });
+    assert.match(output, expected, query);
+    assert.deepEqual(tiers(posts.slice(before)), ['chat:posted'], `${query} posts no task row`);
+  }
+  assert.deepEqual(searched, [], 'nothing reached the search service');
+});
+
+test('a web_search that went out posts its task row, even when the service failed', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  searched.length = 0;
+  for (const answering of [true, false]) {
+    searchAnswers = answering;
+    webTurnStart = { turnKey: 'fees-web', reads: 0, searches: 0, sourced: [] };
+    const before = posts.length;
+    scriptedProvider([searches('fees api pagination'), answers]);
+    assert.deepEqual(await slackTurn(`fees-search-sent-${posts.length}`, WebProbe), { text: 'done' });
+    assert.deepEqual(tiers(posts.slice(before)), ['chat:posted', 'task:posted'], `answering: ${answering}`);
+  }
+  assert.deepEqual(searched, ['fees api pagination', 'fees api pagination']);
 });
 
 test('a hosted reply run posts one chat row, keyed by its submission and Agent, and no task row without a qualifying tool', { timeout: 20_000 }, async (t) => {

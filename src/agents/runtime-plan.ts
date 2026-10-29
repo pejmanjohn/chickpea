@@ -254,6 +254,11 @@ export interface RuntimePlanV2 {
    */
   browserCapability?: RuntimePlanBrowserCapabilityV1;
   /**
+   * The deployment had a web search key when the turn was admitted, so
+   * `web_search` mounts. The key is read again at call time.
+   */
+  webSearch?: true;
+  /**
    * Frozen coding-workspace capability. Present only when a coding workspace
    * is available this turn; carries the coding model frozen for the whole
    * turn, so a long coding run never changes model midway.
@@ -378,6 +383,8 @@ export interface CompileRuntimePlanV2Input {
   imageCapability?: RuntimePlanImageCapabilityV3;
   /** Resolved hosted-browser capability. Absent means no browser is frozen. */
   browserCapability?: RuntimePlanBrowserCapabilityV1;
+  /** The deployment has a web search key. */
+  webSearch?: boolean;
   /** A coding workspace is available this turn. */
   codingWorkspace?: boolean;
   /** Frozen coding model; emitted only inside an available coding workspace. */
@@ -519,6 +526,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
         }
       : {}),
     ...(input.browserCapability ? { browserCapability: { provider: 'browserbase' as const } } : {}),
+    ...(input.webSearch ? { webSearch: true as const } : {}),
     ...(input.codingWorkspace
       ? {
           codingWorkspace: {
@@ -904,6 +912,7 @@ export function parseRuntimePlanV2(
     'effort',
     'imageCapability',
     'browserCapability',
+    'webSearch',
     'codingWorkspace',
     'websiteLogins',
     'modelAttribution',
@@ -935,6 +944,7 @@ export function parseRuntimePlanV2(
     'effort',
     'imageCapability',
     'browserCapability',
+    'webSearch',
     'codingWorkspace',
     'websiteLogins',
     'modelAttribution',
@@ -1049,6 +1059,9 @@ export function parseRuntimePlanV2(
   const browserCapability = record.browserCapability === undefined
     ? undefined
     : parseBrowserCapability(record.browserCapability);
+  if (record.webSearch !== undefined && record.webSearch !== true) {
+    throw new Error('Runtime plan webSearch must be true when present.');
+  }
   const codingWorkspace = record.codingWorkspace === undefined
     ? undefined
     : parseCodingWorkspace(record.codingWorkspace);
@@ -1146,6 +1159,7 @@ export function parseRuntimePlanV2(
     ...(effort ? { effort } : {}),
     ...(imageCapability ? { imageCapability } : {}),
     ...(browserCapability ? { browserCapability } : {}),
+    ...(record.webSearch === true ? { webSearch: true as const } : {}),
     ...(codingWorkspace ? { codingWorkspace } : {}),
     ...(attachedContainer ? { codingWorkspace: { available: true as const } } : {}),
     ...(websiteLogins ? { websiteLogins } : {}),
@@ -1418,6 +1432,7 @@ function computeHarnessRevision(plan: HarnessRevisionInput): string {
       ...(plan.effort ? { effort: plan.effort } : {}),
       ...(plan.imageCapability ? { imageCapability: plan.imageCapability } : {}),
       ...(plan.browserCapability ? { browserCapability: plan.browserCapability } : {}),
+      ...(plan.webSearch ? { webSearch: plan.webSearch } : {}),
       // Hashed because the plan is the instance's immutable initial data: a
       // changed coding model must reach a new incarnation, not a stale one.
       ...(plan.codingWorkspace ? { codingWorkspace: plan.codingWorkspace } : {}),

@@ -56,6 +56,7 @@ import { resolveModelCredentialAttribution } from '../config/model-credential-re
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
 import { browserCapabilityForTurn, runGrantsWebsiteLogins, websiteLoginsForTurn } from '../browser/capability.ts';
+import { webSearchConfigured } from '../web/exa.ts';
 import type {
   SlackInteractionProgress,
   SlackInteractionProgressPatch,
@@ -2860,6 +2861,8 @@ export async function freezeRuntimePlanForTurn(input: {
     imageCapability,
     ...(codingWorkspace ? { codingWorkspace, ...(codingModel ? { codingModel } : {}) } : {}),
     ...(browserCapability ? { browserCapability, websiteLogins } : {}),
+    // Only that the key exists is frozen; web_search reads the key at call time.
+    webSearch: webSearchConfigured(input.platformEnv),
     instructions,
     memoryEpoch: await input.memoryEpoch,
     effectiveConnections: connectionResolution.selected,

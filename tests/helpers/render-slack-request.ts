@@ -15,6 +15,8 @@ import type { ThreadImageRecord } from '../../src/slack/thread-images.ts';
 
 process.env.ANTHROPIC_API_KEY = 'render-only-not-a-key';
 process.env.OPENAI_API_KEY = 'render-only-not-a-key';
+// Chickpea Cloud, whose turns share the prompt prefix, has a search key.
+process.env.EXA_API_KEY = 'render-only-not-a-key';
 process.env.SLACK_STATE_DB_PATH = join(mkdtempSync(join(tmpdir(), 'render-slack-request-')), 'state.db');
 
 const Anthropic = (await import('@anthropic-ai/sdk')).default as any;
@@ -186,6 +188,7 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
         runtimeModel: decision.runtimePlan.runtimeModel,
         ...(decision.runtimePlan.runtimeModelRoute ? { runtimeModelRoute: decision.runtimePlan.runtimeModelRoute } : {}),
         ...(decision.runtimePlan.imageCapability ? { imageCapability: decision.runtimePlan.imageCapability } : {}),
+        ...(decision.runtimePlan.webSearch ? { webSearch: true } : {}),
         codingWorkspace: true,
       } as any)
     : decision.runtimePlan;

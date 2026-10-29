@@ -316,6 +316,8 @@ import {
   type WebRequest,
 } from '../web/tools.ts';
 import { useWebTurn, type WebTurn } from '../web/turn.ts';
+import { webSearchProvider } from '../web/exa.ts';
+import type { WebSearchProvider } from '../web/search.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
   buildRuntimePlanActivityContext,
@@ -827,6 +829,11 @@ function runtimePlanConnectionHosts(plan: RuntimePlanV2): string[] {
     ...plan.apiConnections.flatMap(({ allowedHosts }) => allowedHosts),
     ...plan.mcpConnections.flatMap(({ url }) => URL.parse(url)?.hostname ?? []),
   ];
+}
+
+/** The deployment's search provider, keyed from its environment on each call. */
+async function resolveWebSearchProvider(): Promise<WebSearchProvider | undefined> {
+  return webSearchProvider(await resolveAgentPlatformEnv());
 }
 
 /** Flue 2 hook-authored Slack agent. Every declaration comes from validated,
@@ -1341,6 +1348,7 @@ export function useRuntimePlanAgent(
         turn: options.web.turn,
         request: options.web.request,
         connectionHosts: runtimePlanConnectionHosts(plan),
+        ...(plan.webSearch ? { searchProvider: resolveWebSearchProvider } : {}),
       })
     : [];
   const activityToolDescriptors = [
