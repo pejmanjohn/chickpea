@@ -224,6 +224,29 @@ test('a hosted session holds its lease from create to end; a failed end does wha
   assert.equal(await metered(stuck.store), 0);
 });
 
+test('a release refused because the session already ended meters it to when it ended, not to its timeout', async (t) => {
+  const releaseRefused = {
+    fail: ({ method, url }: { method: string; url: string }) =>
+      method === 'POST' && /\/v1\/sessions\/sess_/.test(url) ? new Response('already stopped', { status: 409 }) : undefined,
+  };
+  const ended = hostedSetup(t, {}, releaseRefused);
+  const wrapper = ended.provider();
+  const { id } = await wrapper.createSession({ timeoutSeconds: 660 });
+  Object.assign(ended.browserbase.sessions.get(id)!, { status: 'TIMED_OUT', endedAt: new Date(T0 + 150_000).toISOString() });
+  ended.advance(400_000);
+  await wrapper.endSession(id);
+  assert.deepEqual((await readBrowserSessionUsage({ store: ended.store, now: T0 })).leases, []);
+  assert.equal(await metered(ended.store), 180, 'two and a half minutes, billed as three');
+
+  const undated = hostedSetup(t, {}, releaseRefused);
+  const other = undated.provider();
+  const session = await other.createSession({ timeoutSeconds: 660 });
+  undated.browserbase.sessions.get(session.id)!.status = 'COMPLETED';
+  undated.advance(30_000);
+  await other.endSession(session.id);
+  assert.equal(await metered(undated.store), 60, 'no end time: metered to now');
+});
+
 test('a hand-off session holds its lease for its 600-second window, through detach, until it is ended', async (t) => {
   const { store, provider, advance } = hostedSetup(t);
   const turn = provider();

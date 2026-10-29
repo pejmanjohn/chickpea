@@ -107,15 +107,24 @@ export async function releaseBrowserReservation(input: { store: LeaseStore; rese
   });
 }
 
-/** Release the lease of a session that ended and meter its run. Returns the seconds charged. */
-export async function closeBrowserSessionLease(input: { store: LeaseStore; sessionId: string; now: number }): Promise<number> {
+/**
+ * Release the lease of a session that ended and meter its run, up to
+ * `endedAt` when the provider says when it ended, else up to now. Returns
+ * the seconds charged.
+ */
+export async function closeBrowserSessionLease(input: {
+  store: LeaseStore;
+  sessionId: string;
+  now: number;
+  endedAt?: number;
+}): Promise<number> {
   const { now } = input;
   return updateLeases(input.store, now, (row) => {
     const held = Object.entries(row.leases).find(([, lease]) => lease.sessionId === input.sessionId);
     if (!held) return { charged: 0, result: 0 };
     const [reservationId, lease] = held;
     delete row.leases[reservationId];
-    const charged = billedSeconds(lease, Math.min(now, lease.leaseUntil));
+    const charged = billedSeconds(lease, Math.min(input.endedAt ?? now, now, lease.leaseUntil));
     return { charged, result: charged };
   });
 }

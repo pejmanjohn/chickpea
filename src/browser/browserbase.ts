@@ -34,6 +34,8 @@ export interface BrowserbaseSessionRecord {
   contextId?: string;
   /** Absent when the response carries none, which is not the same as an empty one. */
   userMetadata?: Record<string, unknown>;
+  /** When the session ended, once it has. */
+  endedAt?: number;
 }
 
 /** A session list, and whether the answer or an entry in it was not the shape documented. */
@@ -94,12 +96,14 @@ function sessionRecord(value: unknown): BrowserbaseSessionRecord {
   const status = str(obj.status);
   if (!id || !status) throw new BrowserProviderError('Browserbase session response is missing id or status');
   const contextId = str(obj.contextId);
+  const endedAt = Date.parse(str(obj.endedAt));
   return {
     id,
     projectId: str(obj.projectId),
     status,
     ...(contextId ? { contextId } : {}),
     ...(isRecord(obj.userMetadata) ? { userMetadata: obj.userMetadata } : {}),
+    ...(Number.isFinite(endedAt) ? { endedAt } : {}),
   };
 }
 

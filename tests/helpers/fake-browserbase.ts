@@ -11,6 +11,8 @@ export interface FakeSession {
   status: string;
   contextId?: string;
   userMetadata?: Record<string, unknown>;
+  /** ISO 8601, as the API answers it. */
+  endedAt?: string;
 }
 
 /**

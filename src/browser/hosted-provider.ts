@@ -74,6 +74,8 @@ const DEFAULT_TIMEOUT_SECONDS = 600;
  */
 const CREATE_REFUSED = new Set([400, 401, 403, 404, 409, 422]);
 
+const RUNNING_STATUSES = new Set(['RUNNING', 'PENDING']);
+
 /** Whose a provider record is: this installation's, provably another's, or not known from what it holds. */
 type Ownership = 'own' | 'foreign' | 'unverified';
 
@@ -159,11 +161,27 @@ export class HostedBrowserProvider implements BrowserProvider {
       .catch(() => log('lease_attach_failed', {}));
   }
 
-  /** Ends the session, then releases its lease and meters the run. A failed end keeps the lease to its timeout. */
+  /**
+   * Ends the session, then releases its lease and meters the run. A session
+   * that already ended may refuse its release, so a failed end reads the
+   * session: one that ended is metered to when it did. Otherwise the lease
+   * stands to its timeout.
+   */
   async endSession(sessionId: string): Promise<void> {
     await this.#requireSession(sessionId);
-    await this.#call('end_session', () => this.#client.endSession(sessionId));
-    await closeBrowserSessionLease({ store: this.#store, sessionId, now: this.#now() })
+    try {
+      await this.#client.endSession(sessionId);
+    } catch (error) {
+      const record = await this.#client.getSession(sessionId).catch(() => undefined);
+      if (!record || RUNNING_STATUSES.has(record.status)) throw failure('end_session', error);
+      await this.#closeLease(sessionId, record.endedAt);
+      return;
+    }
+    await this.#closeLease(sessionId);
+  }
+
+  async #closeLease(sessionId: string, endedAt?: number): Promise<void> {
+    await closeBrowserSessionLease({ store: this.#store, sessionId, now: this.#now(), ...(endedAt === undefined ? {} : { endedAt }) })
       .catch(() => log('lease_close_failed', {}));
   }
 
