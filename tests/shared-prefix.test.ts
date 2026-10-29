@@ -12,6 +12,8 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import test from 'node:test';
 
+import { withEnv } from './helpers/env.ts';
+
 import {
   RUNTIME_PLAN_INSTRUCTIONS,
   SHARED_PREFIX_LAST_TOOL,
@@ -381,6 +383,15 @@ test('a customer-funded request goes out exactly as pi-ai builds it', async () =
   const lastMounted = customer.tools.length - 1 - PI_TRAILER_TOOLS.length;
   assert.deepEqual(markers(customer), [`tools[${lastMounted}] stream_answer 5m`, 'system[0] 5m', 'user 5m']);
   assert.deepEqual(customer.tools[lastMounted].cache_control, { type: 'ephemeral' });
+});
+
+test('only a deployment with a search key mounts web_search; every Slack turn mounts read_web_page', async () => {
+  const names = (request: RenderedRequest) => request.tools.map((tool: { name: string }) => tool.name);
+  const withKey = names(await render(ALPHA));
+  const withoutKey = names(await withEnv({ EXA_API_KEY: undefined }, () => renderSlackRequest({ ...ALPHA, thread: '1787009000.000100' })));
+  assert.ok(withKey.includes('web_search') && withKey.includes('read_web_page'));
+  assert.ok(!withoutKey.includes('web_search'), 'no key, no search tool');
+  assert.ok(withoutKey.includes('read_web_page'));
 });
 
 test('a request whose system block does not match goes out unchanged and counts a miss', async () => {

@@ -53,6 +53,7 @@ import type { EffectiveSlackConfig } from '../config/effective-config.ts';
 import { loadModelCatalog } from '../model-catalog/index.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { browserCapabilityForTurn, runGrantsWebsiteLogins, websiteLoginsForTurn } from '../browser/capability.ts';
+import { webSearchConfigured } from '../web/exa.ts';
 import {
   getConfigStore,
   getSettingsStore,
@@ -625,6 +626,7 @@ async function prepareExecution(
       imageCapability,
       ...(codingWorkspace ? { codingWorkspace, ...(codingModel ? { codingModel } : {}) } : {}),
       ...(browserCapability ? { browserCapability, websiteLogins } : {}),
+      webSearch: webSearchConfigured(input.env),
       modelCredential,
     });
     sandboxUnavailableFallback = workspaceDecision.unavailableFallback;
@@ -738,6 +740,7 @@ function createEnvelope(input: {
   codingModel?: RuntimePlanCodingModelV1;
   browserCapability?: RuntimePlanBrowserCapabilityV1;
   websiteLogins?: readonly RuntimePlanWebsiteLoginV1[];
+  webSearch?: boolean;
   modelCredential: EffectiveSlackConfig['modelCredential'] | null;
 }): RoutineAgentDispatchEnvelopeV2 {
   const runtimePlan = compileRuntimePlanV2({
@@ -764,6 +767,7 @@ function createEnvelope(input: {
       : {}),
     ...(input.browserCapability ? { browserCapability: input.browserCapability } : {}),
     ...(input.websiteLogins ? { websiteLogins: input.websiteLogins } : {}),
+    ...(input.webSearch ? { webSearch: true } : {}),
     instructions: [
       input.access.config.instructions,
       externalActionAuthorityInstructions(input.access.config.agent.instructions),

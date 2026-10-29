@@ -1,34 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { defineTool } from '@flue/runtime';
 import * as v from 'valibot';
 
-import type { IdentityResolution } from '../src/identity/types.ts';
 import type { ManagementApiConnection } from '../src/management/agent-connections.ts';
 import { WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES } from '../src/management/mcp.ts';
+import { slackApplyWorkspaceChangesValibotSchema } from '../src/management/schemas.ts';
 import {
-  PUBLIC_DOC_MAX_TEXT_CHARS,
-  PUBLIC_DOC_READS_PER_TURN,
-  readPublicDoc,
-  type PublicDocPage,
-  type PublicDocReaderOptions,
-  type ReadPublicDocResult,
-} from '../src/management/public-doc.ts';
-import { readPublicDocValibotSchema, slackApplyWorkspaceChangesValibotSchema } from '../src/management/schemas.ts';
-import {
-  createPublicDocTurn,
   invokeSlackWorkspaceManagementTool,
   parseSlackManagementSignal,
-  readPublicDocInTurn,
-  signalAfterPublicDocReads,
-  type PublicDocTurnState,
+  signalAfterPageRead,
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
-import {
-  invokeWorkspaceManagementTool,
-  type WorkspaceManagementToolResult,
-} from '../src/management/tool-adapter.ts';
+import { WORKSPACE_MANAGEMENT_TOOL_NAMES } from '../src/management/tool-adapter.ts';
 import type { ManagementApplyResult } from '../src/management/types.ts';
+import {
+  readWebPage,
+  WEB_PAGE_MAX_TEXT_CHARS,
+  type WebPage,
+  type WebPageReaderOptions,
+  type WebPageResult,
+} from '../src/web/page.ts';
+import { readWebPageInTurn, recordingPageRead, webRequest, type WebRefusal } from '../src/web/tools.ts';
+import { createWebTurn, WEB_READS_PER_TURN, type WebTurn, type WebTurnState } from '../src/web/turn.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 const DOCS = 'https://docs.statusboard.example/api';
@@ -76,191 +71,129 @@ function web(pages: Record<string, () => Response | Promise<Response>>) {
     const page = pages[request.url];
     return page ? page() : new Response('missing', { status: 404 });
   }) as typeof globalThis.fetch;
-  const options: PublicDocReaderOptions = { cloudflare: true, fetch };
-  return { requests, options, read: (url: string) => readPublicDoc(new URL(url), options) };
+  const options: WebPageReaderOptions = { cloudflare: true, fetch };
+  return { requests, options, read: (url: string) => readWebPage(new URL(url), options) };
 }
 
 const html = (body: string, status = 200) => () =>
   new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8' } });
 const redirect = (location: string, status = 302) => () => new Response(null, { status, headers: { location } });
 
-async function fixture(read: (url: URL) => Promise<ReadPublicDocResult>) {
-  const f = await createManagementAdapterFixture('read-public-doc', { readPublicDoc: read });
-  let turn = 0;
-  const signal = (requesterText: string | undefined, by: IdentityResolution, source?: 'click'): SlackManagementSignal => {
-    turn += 1;
-    return {
-      agentId: 'agent_scribe',
-      workspaceId: f.admin.user.slackTeamId,
-      channelId: 'D_SCRIBE',
-      threadTs: '700.1',
-      conversationKind: 'im',
-      slackUserId: by.binding.slackUserId,
-      eventId: `Ev_DOC_${turn}`,
-      messageTs: `700.${turn + 1}`,
-      turnJobId: `turn_DOC_${turn}`,
-      ...(requesterText === undefined ? {} : { requesterText }),
-      ...(source ? { requesterTextSource: source } : {}),
-    };
-  };
-  /** One Slack message to the Agent, then read_public_doc with the links this turn already holds. */
-  const slack = (
-    url: string,
-    requesterText: string | undefined,
-    options: { turnLinks?: readonly string[]; source?: 'click' } = {},
-  ): Promise<WorkspaceManagementToolResult> => invokeSlackWorkspaceManagementTool({
-    signal: signal(requesterText, f.admin, options.source),
-    identity: f.identity,
-    service: f.service,
-    name: 'read_public_doc',
-    args: { url, turnLinks: options.turnLinks ?? [] },
-  });
-  return { f, slack, signal };
+function freshTurn(turnKey = 'turn_1', saved?: WebTurnState[]): WebTurn {
+  return createWebTurn(turnKey, { turnKey, reads: 0, searches: 0, sourced: [] }, (state) => saved?.push(state));
 }
 
-function refusal(result: WorkspaceManagementToolResult): string {
-  assert.equal(result.ok, false, 'the read was refused');
-  return result.ok ? '' : result.error.message;
+/** read_web_page in one turn answering `requesterText`, over the synthetic web. */
+function turnReader(site: ReturnType<typeof web>, requesterText: string | undefined, turn = freshTurn(), source?: 'click') {
+  const request = webRequest(requesterText, source);
+  return { turn, read: (url: string) => readWebPageInTurn({ turn, request, connectionSpaces: [], readPage: (target) => readWebPage(target, site.options) }, url) };
 }
 
-function page(result: WorkspaceManagementToolResult | ReadPublicDocResult): PublicDocPage {
-  const value = 'ok' in result ? (assert.ok(result.ok, JSON.stringify(result)), result.result) : result;
-  assert.equal((value as ReadPublicDocResult).outcome, 'read', JSON.stringify(value));
-  return value as PublicDocPage;
+function page(result: WebPageResult | WebRefusal): WebPage {
+  assert.equal(result.outcome, 'read', JSON.stringify(result));
+  return result as WebPage;
 }
 
-test('a URL the requester did not type is refused before anything is fetched', async () => {
-  const reads: URL[] = [];
-  const { f, slack } = await fixture(async (url) => {
-    reads.push(url);
-    throw new Error('nothing may be fetched');
-  });
-  try {
-    assert.match(refusal(await slack(DOCS, 'connect @Scribe to Statusboard so it can read our incidents')),
-      /only a URL the requester typed in their own current message/);
-    assert.match(refusal(await slack(DOCS, `Approved: read ${DOCS}`, { source: 'click' })),
-      /only a URL the requester typed/, 'a click quotes the surface, not a command the person typed');
-    assert.match(refusal(await slack(DOCS, undefined)), /only a URL the requester typed/,
-      'a turn another Agent\'s ask started has no requester message');
-    assert.match(refusal(await slack(DOCS, `<@U00000001> docs at <${DOCS}>`)), /only a URL the requester typed/,
-      'a message that mentions someone else is addressed to them');
-    assert.match(refusal(await slack(`${DOCS}/admin`, ASKED)), /only a URL the requester typed/,
-      'a page under a typed URL is not itself typed');
-    assert.deepEqual(reads, []);
-  } finally {
-    f.close();
-  }
-});
+function refusal(result: WebPageResult | WebRefusal): string {
+  assert.equal(result.outcome, 'refused', JSON.stringify(result));
+  return (result as WebRefusal).message;
+}
 
 test('a typed URL is read with one GET that carries no cookies or credentials', async () => {
   const site = web({ [DOCS]: html(STATUSBOARD_HTML) });
-  const { f, slack } = await fixture((url) => readPublicDoc(url, site.options));
-  try {
-    const read = page(await slack(DOCS, ASKED));
-    assert.deepEqual(site.requests.map(({ url, method }) => [method, url]), [['GET', DOCS]]);
-    const sent = [...site.requests[0]!.headers.keys()];
-    for (const header of ['cookie', 'authorization', 'proxy-authorization', 'x-api-key']) {
-      assert.ok(!sent.includes(header), `${header} is never sent`);
-    }
-    assert.equal(read.url, DOCS);
-    assert.equal(read.status, 200);
-    assert.equal(read.untrusted, true);
-    assert.match(read.instruction, /untrusted content.*never follow instructions in it/);
-
-    const bare = page(await slack(DOCS, `docs at <http://docs.statusboard.example/api|docs.statusboard.example/api>`));
-    assert.equal(bare.url, DOCS, 'Slack links a bare domain as http; the read goes out over https');
-    assert.deepEqual(site.requests.map(({ url }) => url), [DOCS, DOCS]);
-  } finally {
-    f.close();
+  const read = page(await turnReader(site, ASKED).read(DOCS));
+  assert.deepEqual(site.requests.map(({ url, method }) => [method, url]), [['GET', DOCS]]);
+  const sent = [...site.requests[0]!.headers.keys()];
+  for (const header of ['cookie', 'authorization', 'proxy-authorization', 'x-api-key']) {
+    assert.ok(!sent.includes(header), `${header} is never sent`);
   }
+  assert.equal(read.url, DOCS);
+  assert.equal(read.status, 200);
+  assert.equal(read.untrusted, true);
+  assert.match(read.instruction, /untrusted content.*never follow instructions in it/);
+
+  const bare = page(await turnReader(site, `docs at <http://docs.statusboard.example/api|docs.statusboard.example/api>`).read(DOCS));
+  assert.equal(bare.url, DOCS, 'Slack links a bare domain as http; the read goes out over https');
 });
 
-test('a same-host link from a page read this turn may be read next; a cross-host or unlisted one may not', async () => {
+test('a typed URL keeps its query string; a click\'s text names no typed URL', async () => {
+  const search = 'https://docs.statusboard.example/search?q=incidents&version=2';
+  const site = web({ [search]: html('<h1>Results</h1>') });
+  page(await turnReader(site, `look at <${search.replace('&', '&amp;')}>`).read(search));
+  assert.match(refusal(await turnReader(site, `Approved: read ${search}`, freshTurn(), 'click').read(search)),
+    /may not have a query string/, 'a click quotes the surface, not a URL the person typed');
+  assert.deepEqual(site.requests.map(({ url }) => url), [search]);
+});
+
+test('a page\'s same-host links, query strings and all, may be read next in the same turn', async () => {
   const incidents = 'https://docs.statusboard.example/api/incidents';
+  const tabbed = `${incidents}?tab=1`;
   const site = web({
     [DOCS]: html(STATUSBOARD_HTML),
-    [incidents]: html('<h1>Incidents</h1><p>GET /v2/incidents lists incidents.</p>'),
+    [tabbed]: html('<h1>Incidents</h1><p>GET /v2/incidents lists incidents.</p>'),
   });
-  const { f, slack } = await fixture((url) => readPublicDoc(url, site.options));
-  try {
-    const first = page(await slack(DOCS, ASKED));
-    assert.deepEqual(first.links, [
-      'https://docs.statusboard.example/api/authentication',
-      incidents,
-      'https://docs.statusboard.example/pricing',
-      'https://docs.statusboard.example/legal',
-    ], 'same host only, without query strings or fragments, nearest the page first, and none credential-like');
+  const reader = turnReader(site, ASKED);
+  const first = page(await reader.read(DOCS));
+  assert.deepEqual(first.links, [
+    'https://docs.statusboard.example/api/authentication',
+    tabbed,
+    incidents,
+    'https://docs.statusboard.example/pricing',
+    'https://docs.statusboard.example/legal',
+  ], 'same host only, without fragments, nearest the page first, and none credential-like');
 
-    const followed = page(await slack(`${incidents}?tab=1`, ASKED, { turnLinks: first.links }));
-    assert.equal(followed.url, incidents, 'a followed link drops its query string');
-    assert.match(followed.text, /lists incidents/);
+  const followed = page(await reader.read(`${tabbed}#top`));
+  assert.equal(followed.url, tabbed, 'a link keeps its query string');
+  assert.match(followed.text, /lists incidents/);
 
-    assert.match(refusal(await slack('https://partner.example/steal', ASKED, { turnLinks: first.links })),
-      /only a URL the requester typed/, 'a link to another host is never followed');
-    assert.match(refusal(await slack(`${DOCS}/admin`, ASKED, { turnLinks: first.links })),
-      /only a URL the requester typed/, 'a same-host path no page linked is not a link from the page');
-    assert.match(refusal(await slack(incidents, ASKED)), /only a URL the requester typed/,
-      'links from a page read in another turn do not carry over');
-    assert.deepEqual(site.requests.map(({ url }) => url), [DOCS, incidents]);
-  } finally {
-    f.close();
-  }
+  assert.match(refusal(await turnReader(site, ASKED).read(tabbed)), /may not have a query string/,
+    'links from a page read in another turn do not carry over');
+  assert.deepEqual(site.requests.map(({ url }) => url), [DOCS, tabbed]);
 });
 
-test('a turn reads at most six pages, and a refused read gives its read back', async () => {
-  const turnJobId = 'turn_budget';
-  const saved: PublicDocTurnState[] = [];
-  const turn = createPublicDocTurn(turnJobId, { turnJobId, reads: 0, links: [] }, (state) => saved.push(state));
+test('a turn reads at most six pages; a refused read takes none of them', async () => {
+  const saved: WebTurnState[] = [];
+  const turn = freshTurn('turn_budget', saved);
   const sent: string[] = [];
-  const answer = (url: string): WorkspaceManagementToolResult => url.includes('refused')
-    ? { ok: false, error: { code: 'invalid_request', message: 'Nothing was read.' } }
-    : { ok: true, result: { outcome: 'read', url, status: 200, untrusted: true, instruction: '', truncated: false, links: [`${url}/next`], text: '' } };
-  const invoke = async ({ url }: { url: string }) => {
-    sent.push(url);
-    return answer(url);
+  const input = {
+    turn,
+    request: webRequest('read the vendor docs'),
+    connectionSpaces: [{ host: 'docs.vendor.example', pathPrefixes: ['/'] }],
+    readPage: async (url: URL): Promise<WebPageResult> => {
+      sent.push(url.href);
+      return { outcome: 'read', url: url.href, status: 200, untrusted: true, instruction: '', truncated: false, links: [], text: '' };
+    },
   };
-
-  assert.equal((await readPublicDocInTurn(turn, 'https://refused.example/', invoke)).ok, false);
-  const reads = await Promise.all(Array.from({ length: PUBLIC_DOC_READS_PER_TURN + 2 }, (_, index) =>
-    readPublicDocInTurn(turn, `https://docs.statusboard.example/${index}`, invoke)));
-  assert.equal(reads.filter(({ ok }) => ok).length, PUBLIC_DOC_READS_PER_TURN,
+  assert.equal((await readWebPageInTurn(input, 'https://localhost/')).outcome, 'refused');
+  const reads = await Promise.all(Array.from({ length: WEB_READS_PER_TURN + 2 }, (_, index) =>
+    readWebPageInTurn(input, `https://docs.vendor.example/${index}`)));
+  assert.equal(reads.filter(({ outcome }) => outcome === 'read').length, WEB_READS_PER_TURN,
     'reads started together still share one budget');
   assert.match(refusal(reads.at(-1)!), /already read 6 pages/);
-  assert.equal(sent.length, PUBLIC_DOC_READS_PER_TURN + 1, 'a read past the budget never reaches the service');
+  assert.equal(sent.length, WEB_READS_PER_TURN, 'a read past the budget never goes out');
 
-  const resumed = createPublicDocTurn(turnJobId, saved.at(-1)!);
-  assert.equal(resumed.begin(), undefined, 'the budget survives a resumed turn');
-  assert.ok(saved.at(-1)!.links.includes('https://docs.statusboard.example/0/next'), 'the turn keeps each page\'s links');
-  const next = createPublicDocTurn('turn_next', saved.at(-1)!);
-  assert.deepEqual(next.begin(), [], 'a new message starts a new turn with no links');
+  assert.equal(createWebTurn('turn_budget', saved.at(-1)!).takeRead(), false, 'the budget survives a re-render');
+  assert.equal(createWebTurn('turn_next', saved.at(-1)!).takeRead(), true, 'a new message starts a new budget');
 });
 
 test('local, private and non-https addresses are refused even when the requester typed them', async () => {
-  const reads: URL[] = [];
-  const { f, slack } = await fixture(async (url) => {
-    reads.push(url);
-    throw new Error('nothing may be fetched');
-  });
-  try {
-    for (const url of [
-      'https://localhost/docs',
-      'https://localhost./docs',
-      'https://127.0.0.1/docs',
-      'https://10.0.0.5/docs',
-      'https://192.168.1.10/docs',
-      'https://169.254.169.254/latest/meta-data',
-      'https://[::1]/docs',
-      'https://metadata.internal/docs',
-      'https://intranet/docs',
-      'http://docs.statusboard.example:8080/api',
-      'https://docs.statusboard.example:8443/api',
-    ]) {
-      assert.match(refusal(await slack(url, `docs at <${url}>`)), /only public https pages/, url);
-    }
-    assert.deepEqual(reads, []);
-  } finally {
-    f.close();
+  const site = web({});
+  for (const url of [
+    'https://localhost/docs',
+    'https://localhost./docs',
+    'https://127.0.0.1/docs',
+    'https://10.0.0.5/docs',
+    'https://192.168.1.10/docs',
+    'https://169.254.169.254/latest/meta-data',
+    'https://[::1]/docs',
+    'https://metadata.internal/docs',
+    'https://intranet/docs',
+    'http://docs.statusboard.example:8080/api',
+    'https://docs.statusboard.example:8443/api',
+  ]) {
+    assert.match(refusal(await turnReader(site, `docs at <${url}>`).read(url)), /only public https pages/, url);
   }
+  assert.deepEqual(site.requests, []);
 });
 
 test('a redirect is followed at most three times, and never to a private or non-https address', async () => {
@@ -300,7 +233,7 @@ test('a redirect is followed at most three times, and never to a private or non-
 
 test('a host that resolves to a private address is never connected to', async () => {
   const connected: string[] = [];
-  const result = await readPublicDoc(new URL(DOCS), {
+  const result = await readWebPage(new URL(DOCS), {
     cloudflare: false,
     resolveAddresses: async () => [{ address: '10.0.0.7', family: 4 }],
     pinnedFetch: async (request) => {
@@ -310,6 +243,38 @@ test('a host that resolves to a private address is never connected to', async ()
   });
   assert.equal(result.outcome === 'unreadable' ? result.reason : result.outcome, 'blocked');
   assert.deepEqual(connected, []);
+});
+
+test('an error page is unreadable with its status, and its body is never read', async () => {
+  let pulled = false;
+  const site = web({
+    [DOCS]: () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled = true;
+        controller.enqueue(new TextEncoder().encode('error code: 1016'));
+        controller.close();
+      },
+    }, { highWaterMark: 0 }), { status: 530, headers: { 'content-type': 'text/plain' } }),
+  });
+  const reader = turnReader(site, ASKED);
+  const result = await reader.read(DOCS);
+  assert.deepEqual(result, {
+    outcome: 'unreadable',
+    url: DOCS,
+    reason: 'error_status',
+    status: 530,
+    message: 'The site answered HTTP 530 instead of the page, so nothing was read.',
+  });
+  assert.equal(pulled, false, 'the error page\'s text never reaches the model');
+  assert.equal(reader.turn.pageRead(), false, 'an error page brings no web content into the conversation');
+
+  for (const status of [203, 299]) {
+    assert.equal((await web({ [DOCS]: html('<p>ok</p>', status) }).read(DOCS)).outcome, 'read', `${status} is a page`);
+  }
+  for (const status of [400, 404, 500]) {
+    const other = await web({ [DOCS]: html('<p>not found</p>', status) }).read(DOCS);
+    assert.equal(other.outcome === 'unreadable' && other.status, status, `${status} is an error page`);
+  }
 });
 
 test('the download stops at 2 MB and the text at 24,000 characters', async () => {
@@ -325,13 +290,13 @@ test('the download stops at 2 MB and the text at 24,000 characters', async () =>
   });
   const big = page(await endless.read(DOCS));
   assert.equal(big.truncated, true);
-  assert.equal(big.text.length, PUBLIC_DOC_MAX_TEXT_CHARS);
+  assert.equal(big.text.length, WEB_PAGE_MAX_TEXT_CHARS);
   assert.ok(sentBytes <= 2 * 1024 * 1024 + 2 * chunk.byteLength, `stopped reading after ${sentBytes} bytes`);
 
   const long = web({ [DOCS]: html(`<p>${'word '.repeat(10_000)}</p>`) });
   const longPage = page(await long.read(DOCS));
   assert.equal(longPage.truncated, true);
-  assert.equal(longPage.text.length, PUBLIC_DOC_MAX_TEXT_CHARS);
+  assert.equal(longPage.text.length, WEB_PAGE_MAX_TEXT_CHARS);
 
   const small = page(await web({ [DOCS]: html('<p>Short page.</p>') }).read(DOCS));
   assert.deepEqual([small.truncated, small.text], [false, 'Short page.']);
@@ -398,7 +363,7 @@ test('a page that does not answer in time is reported, not waited on', async () 
   const keepAlive = setTimeout(() => undefined, 5_000);
   const started = Date.now();
   try {
-    const result = await readPublicDoc(new URL(DOCS), { cloudflare: true, fetch: silent, timeoutMs: 50 });
+    const result = await readWebPage(new URL(DOCS), { cloudflare: true, fetch: silent, timeoutMs: 50 });
     assert.equal(result.outcome === 'unreadable' ? result.reason : result.outcome, 'timeout');
     assert.ok(Date.now() - started < 5_000);
   } finally {
@@ -419,7 +384,7 @@ test('a page whose body stalls after its headers is cancelled at the timeout', a
   });
   try {
     const result = await Promise.race([
-      readPublicDoc(new URL(DOCS), { cloudflare: true, fetch: stalled, timeoutMs: 50 }),
+      readWebPage(new URL(DOCS), { cloudflare: true, fetch: stalled, timeoutMs: 50 }),
       stillWaiting,
     ]);
     assert.equal(result.outcome === 'unreadable' ? result.reason : result.outcome, 'timeout');
@@ -429,27 +394,10 @@ test('a page whose body stalls after its headers is cancelled at the timeout', a
   }
 });
 
-test('read_public_doc is not on the MCP door, and the service refuses it there', async () => {
-  assert.ok(!(WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES as readonly string[]).includes('read_public_doc'));
-  const reads: URL[] = [];
-  const { f } = await fixture(async (url) => {
-    reads.push(url);
-    throw new Error('nothing may be fetched');
-  });
-  try {
-    const result = await invokeWorkspaceManagementTool({
-      service: f.service,
-      resolveContext: async () => ({
-        userId: f.admin.user.id,
-        membershipId: f.admin.membership.id,
-        organizationId: f.admin.membership.organizationId,
-        origin: { kind: 'mcp', clientId: 'read-public-doc' },
-      }),
-    }, 'read_public_doc', { url: DOCS, turnLinks: [] });
-    assert.match(refusal(result), /only in Slack/);
-    assert.deepEqual(reads, []);
-  } finally {
-    f.close();
+test('the web tools are not management tools, so the MCP door never offers them', () => {
+  for (const name of ['read_web_page', 'web_search', 'read_public_doc']) {
+    assert.ok(!(WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES as readonly string[]).includes(name), name);
+    assert.ok(!(WORKSPACE_MANAGEMENT_TOOL_NAMES as readonly string[]).includes(name), name);
   }
 });
 
@@ -470,9 +418,9 @@ const STATUSBOARD: ManagementApiConnection = {
   guide: GUIDE,
 };
 
-/** Scribe, and Slack turns to it: the requester's message, the reads the model makes, then the connection it adds. */
-async function connectionFixture(read: (url: URL) => Promise<ReadPublicDocResult>) {
-  const { f, signal } = await fixture(read);
+/** Scribe, and Slack turns to it: the requester's message, the web reads the model makes, then the connection it adds. */
+async function connectionFixture(site: ReturnType<typeof web>) {
+  const f = await createManagementAdapterFixture('web-page');
   await f.config.createAgent({
     id: 'agent_scribe',
     name: 'Scribe',
@@ -487,22 +435,35 @@ async function connectionFixture(read: (url: URL) => Promise<ReadPublicDocResult
     apiConnections: [],
     repositories: [],
   });
-  const saved: PublicDocTurnState[] = [];
+  let sequence = 0;
+  const saved: WebTurnState[] = [];
   /** A turn from the requester's message; `prior` is the state an earlier turn in the conversation left. */
-  const turn = (requesterText: string, prior?: PublicDocTurnState) => {
-    const asked = signal(requesterText, f.admin);
-    const reads = createPublicDocTurn(
+  const turn = (requesterText: string, prior?: WebTurnState) => {
+    sequence += 1;
+    const asked: SlackManagementSignal = {
+      agentId: 'agent_scribe',
+      workspaceId: f.admin.user.slackTeamId,
+      channelId: 'D_SCRIBE',
+      threadTs: '700.1',
+      conversationKind: 'im',
+      slackUserId: f.admin.binding.slackUserId,
+      eventId: `Ev_DOC_${sequence}`,
+      messageTs: `700.${sequence + 1}`,
+      turnJobId: `turn_DOC_${sequence}`,
+      requesterText,
+    };
+    const web = createWebTurn(
       asked.turnJobId,
-      prior ?? { turnJobId: asked.turnJobId, reads: 0, links: [] },
+      prior ?? { turnKey: asked.turnJobId, reads: 0, searches: 0, sourced: [] },
       (state) => saved.push(state),
     );
+    const request = webRequest(requesterText);
     return {
-      read: (url: string) => readPublicDocInTurn(reads, url, (args) => invokeSlackWorkspaceManagementTool({
-        signal: asked, identity: f.identity, service: f.service, name: 'read_public_doc', args,
-      })),
+      web,
+      read: (url: string) => readWebPageInTurn({ turn: web, request, connectionSpaces: [], readPage: (target) => readWebPage(target, site.options) }, url),
       connect: async (): Promise<ManagementApplyResult> => {
         const result = await invokeSlackWorkspaceManagementTool({
-          signal: signalAfterPublicDocReads(asked, reads),
+          signal: signalAfterPageRead(asked, web.pageRead()),
           identity: f.identity,
           service: f.service,
           name: 'apply_workspace_changes',
@@ -526,19 +487,16 @@ async function connectionFixture(read: (url: URL) => Promise<ReadPublicDocResult
   return { f, turn, saved, connections };
 }
 
-test('a new keyed connection whose address the requester typed applies at once when no page was read', async () => {
-  const reads: URL[] = [];
-  const { f, turn, connections } = await connectionFixture(async (url) => {
-    reads.push(url);
-    throw new Error('nothing may be fetched');
-  });
+test('a new keyed connection whose address the requester typed applies at once when no web content was read', async () => {
+  const site = web({ [DOCS]: html('<p>error code: 1016</p>', 530) });
+  const { f, turn, connections } = await connectionFixture(site);
   try {
     const asked = turn(ASKED_WITH_API);
-    assert.match(refusal(await asked.read('https://partner.example/docs')), /only a URL the requester typed/);
+    assert.match(refusal(await asked.read('https://partner.example/docs?ref=1')), /may not have a query string/);
+    assert.equal((await asked.read(DOCS)).outcome, 'unreadable');
     const result = await asked.connect();
-    assert.equal(result.outcomes[0]?.disposition, 'applied', 'a refused read reads nothing');
+    assert.equal(result.outcomes[0]?.disposition, 'applied', 'a refused read and an error page read nothing');
     assert.deepEqual((await connections()).map(({ label }) => label), ['Statusboard']);
-    assert.deepEqual(reads, []);
   } finally {
     f.close();
   }
@@ -546,7 +504,7 @@ test('a new keyed connection whose address the requester typed applies at once w
 
 test('after a page is read, a new connection to an address the requester typed waits for the person', async () => {
   const site = web({ [DOCS]: html(STATUSBOARD_HTML) });
-  const { f, turn, saved, connections } = await connectionFixture((url) => readPublicDoc(url, site.options));
+  const { f, turn, saved, connections } = await connectionFixture(site);
   try {
     const asked = turn(ASKED_WITH_API);
     page(await asked.read(DOCS));
@@ -565,7 +523,26 @@ test('after a page is read, a new connection to an address the requester typed w
   }
 });
 
-test('nothing the model sends, and nothing in the delivery, can clear a page read', async () => {
+test('a browser call sets the page-read fact as a page does; other tools do not', async () => {
+  const { f, turn, connections } = await connectionFixture(web({}));
+  try {
+    const asked = turn(ASKED_WITH_API);
+    const ran: string[] = [];
+    const tool = (name: string) => recordingPageRead(defineTool({
+      name, description: name, run: async () => { ran.push(name); return 'done'; },
+    }), asked.web);
+    await tool('post_artifact').run({} as never);
+    assert.equal(asked.web.pageRead(), false, 'a tool that reads no web page records nothing');
+    await tool('browser_open').run({} as never);
+    assert.deepEqual(ran, ['post_artifact', 'browser_open'], 'the browser tool still runs');
+    assert.equal((await asked.connect()).outcomes[0]?.disposition, 'confirmation_required');
+    assert.deepEqual(await connections(), []);
+  } finally {
+    f.close();
+  }
+});
+
+test('nothing the model sends, and nothing in the delivery, can set or clear the page-read fact', async () => {
   const apply = {
     idempotencyKey: 'connect',
     operations: [{
@@ -574,12 +551,8 @@ test('nothing the model sends, and nothing in the delivery, can clear a page rea
     }],
   };
   assert.equal(v.safeParse(slackApplyWorkspaceChangesValibotSchema, apply).success, true);
-  for (const [schema, input] of [
-    [slackApplyWorkspaceChangesValibotSchema, { ...apply, publicDocRead: false }],
-    [readPublicDocValibotSchema, { url: DOCS, publicDocRead: false }],
-  ] as const) {
-    assert.equal(v.safeParse(schema, input).success, false, 'a tool call cannot name the fact');
-  }
+  assert.equal(v.safeParse(slackApplyWorkspaceChangesValibotSchema, { ...apply, publicDocRead: false }).success, false,
+    'a tool call cannot name the fact');
 
   const conversation = { workspaceId: 'T_SCRIBE', channelId: 'D_SCRIBE', threadTs: '700.1' };
   const delivery = (extra: Record<string, string>) => ({
@@ -598,13 +571,13 @@ test('nothing the model sends, and nothing in the delivery, can clear a page rea
     'a delivery that names the fact is not a Slack request');
 
   const site = web({ [DOCS]: html(STATUSBOARD_HTML) });
-  const { f, turn, connections } = await connectionFixture((url) => readPublicDoc(url, site.options));
+  const { f, turn, connections } = await connectionFixture(site);
   try {
     const asked = turn(ASKED_WITH_API);
     page(await asked.read(DOCS));
-    assert.match(refusal(await asked.read('https://partner.example/docs')), /only a URL the requester typed/);
+    assert.match(refusal(await asked.read('https://partner.example/docs?ref=1')), /may not have a query string/);
     assert.equal((await asked.connect()).outcomes[0]?.disposition, 'confirmation_required',
-      'a refused read after the page gives back only its own read');
+      'a refused read after the page clears nothing');
     assert.deepEqual(await connections(), []);
   } finally {
     f.close();

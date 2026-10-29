@@ -22,8 +22,9 @@ import {
   semanticInvocationFact,
   thinkingSemanticActivity,
   webPageSemanticDescriptor,
+  webSearchSemanticDescriptor,
 } from '../src/activity/semantic.ts';
-import { workspaceManagementSemanticDescriptor } from '../src/management/tool-adapter.ts';
+import { WEB_TOOL_DESCRIPTORS, WEB_TOOL_NAMES } from '../src/web/tools.ts';
 import { slackLoadingMessages, slackStatusText } from '../src/slack/replies.ts';
 import {
   MANAGED_CONNECTOR_CATALOG,
@@ -970,19 +971,19 @@ const TOKEN_HOST = `${['xoxb', '0000000000', '000000000000'].join('-')}.example`
 
 function registerWebContext(instanceId: string): void {
   registerActivityContext(instanceId, buildSemanticActivityContext([
-    { toolName: 'read_public_doc', descriptor: workspaceManagementSemanticDescriptor('read_public_doc') },
+    ...WEB_TOOL_NAMES.map((toolName) => ({ toolName, descriptor: WEB_TOOL_DESCRIPTORS[toolName] })),
   ]));
 }
 
 function readStatus(instanceId: string, args: unknown, toolCallId = 'w1'): string | undefined {
-  return observeNamed(instanceId, { type: 'tool_start', toolName: 'read_public_doc', toolCallId, args });
+  return observeNamed(instanceId, { type: 'tool_start', toolName: 'read_web_page', toolCallId, args });
 }
 
 test('a web read names the host it reads, and nothing else from its input', () => {
   registerWebContext('web-read');
   assert.equal(readStatus('web-read', { url: 'https://Docs.Statusboard.example/api/v2?key=secret#auth' }),
     'Reading docs.statusboard.example…');
-  assert.equal(observeNamed('web-read', { type: 'tool', toolName: 'read_public_doc', toolCallId: 'w1', isError: false }),
+  assert.equal(observeNamed('web-read', { type: 'tool', toolName: 'read_web_page', toolCallId: 'w1', isError: false }),
     'Reviewing the page…');
 
   registerWebContext('web-forms');
@@ -1044,4 +1045,72 @@ test('a web status reaches Slack inside its limit, and a forged host never does'
   assert.equal(isSemanticActivityDescriptor({ ...host, label: { ...host.label!, id: 'other.example' } }), false);
   assert.equal(isSemanticActivityDescriptor({ ...genericSemanticDescriptor('custom_connection'), label: host.label }), false,
     'a web host names only a web read');
+});
+
+function searchStatus(instanceId: string, args: unknown, toolCallId = 's1'): string | undefined {
+  registerWebContext(instanceId);
+  return observeNamed(instanceId, { type: 'tool_start', toolName: 'web_search', toolCallId, args });
+}
+
+/** The word joiner neutralizeSlackBroadcastMentions puts after an inert `@`. */
+const JOIN = '\u2060';
+
+test('a web search quotes its query, then reviews the results', () => {
+  assert.equal(searchStatus('web-search', { query: 'statusboard api auth header' }), 'Searching: “statusboard api auth header”…');
+  assert.equal(observeNamed('web-search', { type: 'tool', toolName: 'web_search', toolCallId: 's1', isError: false }),
+    'Reviewing the results…');
+  assert.equal(searchStatus('web-search-spaces', { query: '  what   changed\nin\tPostgres 18  ' }),
+    'Searching: “what changed in Postgres 18”…', 'whitespace and control characters collapse');
+  assert.equal(searchStatus('web-search-mrkdwn', { query: '*bold* _quiet_ ~gone~ `code` <https://x.example|link>' }),
+    'Searching: “bold quiet gone code https://x.exam…”…', 'mrkdwn is stripped');
+});
+
+test('a search query shows its mentions and broadcasts inert', () => {
+  assert.equal(searchStatus('web-search-broadcast', { query: '<!channel> outage' }), `Searching: “@${JOIN}channel outage”…`);
+  assert.equal(searchStatus('web-search-plain', { query: '@here outage' }), `Searching: “@${JOIN}here outage”…`);
+  assert.equal(searchStatus('web-search-user', { query: '<@U0123ABCD> profile' }), `Searching: “@${JOIN}U0123ABCD profile”…`);
+  assert.equal(searchStatus('web-search-group', { query: '<!subteam^S0123|@ops> pager' }), `Searching: “@${JOIN}ops pager”…`);
+});
+
+test('a long search query is shortened with an ellipsis to fit the 50-character status', () => {
+  const text = searchStatus('web-search-long', { query: 'how do I paginate the Statusboard incidents endpoint with cursors' })!;
+  assert.equal(text, 'Searching: “how do I paginate the Statusboard i…”…');
+  assert.ok(text.length <= 50, `${text.length} characters`);
+  assert.equal(searchStatus('web-search-emoji-cut', { query: `${'x'.repeat(34)}😀 and more` }),
+    `Searching: “${'x'.repeat(34)}…”…`, 'a cut through an emoji leaves no half of it behind');
+  const status = narrateSemanticActivity(webSearchSemanticDescriptor('x'.repeat(400)), { phase: 'started' })!;
+  assert.ok(isSafeTypedActivityStatus(status));
+  assert.deepEqual(slackLoadingMessages(status), [slackStatusText(status)]);
+  assert.ok(slackStatusText(status).length <= 50);
+});
+
+test('a search query that fails validation shows the generic search status', () => {
+  const token = ['xoxb', '0000000000', '000000000000'].join('-');
+  const rejected: Array<[unknown, string]> = [
+    [{}, 'no query'],
+    [{ query: 42 }, 'a query that is not text'],
+    [{ query: '   ' }, 'only whitespace'],
+    [{ query: '*_~`' }, 'only mrkdwn'],
+    [{ query: `why does ${token} fail` }, 'a credential'],
+    [{ query: `why does the Statusboard api say ${token} fails` }, 'a credential the shortened status would cut'],
+    [{ query: 'mail ops@example.com' }, 'an @ that is not a mention the neutralizer marks'],
+  ];
+  for (const [index, [args, why]] of rejected.entries()) {
+    assert.equal(searchStatus(`web-search-generic-${index}`, args), 'Searching the web…', why);
+  }
+});
+
+test('a forged query label never reaches Slack', () => {
+  const generic = webSearchSemanticDescriptor();
+  for (const label of ['<!channel> now', '@here now', 'line\nbreak', '*bold*', 'x'.repeat(37), '“quoted”']) {
+    const forged = { ...generic, label: { kind: 'web_query', id: label, label } };
+    assert.equal(isSemanticActivityDescriptor(forged), false, label);
+    assert.equal(slackStatusText(narrateSemanticActivity(forged, { phase: 'started' })!), 'Working on the request…', label);
+  }
+  const query = webSearchSemanticDescriptor('statusboard');
+  assert.equal(isSemanticActivityDescriptor(query), true);
+  assert.equal(isSemanticActivityDescriptor({ ...genericSemanticDescriptor('web'), label: query.label }), true,
+    'a query label passes its own check on any web descriptor');
+  assert.equal(isSemanticActivityDescriptor({ ...genericSemanticDescriptor('skill'), label: query.label }), false,
+    'a query names only a web call');
 });

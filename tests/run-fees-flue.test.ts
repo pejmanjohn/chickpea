@@ -37,14 +37,10 @@ import {
   type RunRef,
 } from '../src/config/platform-funding.ts';
 import { buildSemanticActivityContext, registerActivityContext } from '../src/activity/status.ts';
-import { PUBLIC_DOC_READS_PER_TURN, readPublicDoc } from '../src/management/public-doc.ts';
-import {
-  createPublicDocTurn,
-  invokeSlackWorkspaceManagementTool,
-  readPublicDocInTurn,
-  type PublicDocTurnState,
-} from '../src/management/slack-tools.ts';
-import type { WorkspaceManagementToolArguments, WorkspaceManagementToolResult } from '../src/management/tool-adapter.ts';
+import { readWebPage } from '../src/web/page.ts';
+import { createWebTools, webRequest } from '../src/web/tools.ts';
+import type { WebSearchProvider } from '../src/web/search.ts';
+import { createWebTurn, WEB_READS_PER_TURN, WEB_SEARCHES_PER_TURN, type WebTurnState } from '../src/web/turn.ts';
 import { genericSemanticDescriptor } from '../src/activity/semantic.ts';
 import { runFeeInterceptor } from '../src/config/run-fee-interceptor.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
@@ -57,7 +53,6 @@ import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
 import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
 import type { RunKind } from '../src/usage/run-fees.ts';
 import { withEnv } from './helpers/env.ts';
-import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { answers, callsTools, SCRIPTED_MODEL, scriptedMessage, scriptedProvider } from './helpers/scripted-provider.ts';
 
@@ -240,70 +235,52 @@ const readsChannel = (channel: string) => (model: Parameters<typeof answers>[0])
 
 const DOCS = 'https://docs.fees.example/api';
 const LOGO = 'https://docs.fees.example/logo.png';
-/** The requester's message: the docs, an image and a local address, each typed. */
-const DOCS_ASKED = `connect the Fees API, docs at <${DOCS}>, logo at <${LOGO}>, mirror at <https://localhost/docs>`;
+const DOWN = 'https://docs.fees.example/down';
+/** The requester's message: the docs, an image, a page that is down and a local address, each typed. */
+const DOCS_ASKED = `connect the Fees API, docs at <${DOCS}>, logo at <${LOGO}>, status at <${DOWN}>, mirror at <https://localhost/docs>`;
 /** URLs the synthetic web was asked for. */
 const fetched: string[] = [];
 const docsWeb = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const { url } = new Request(input, init);
   fetched.push(url);
-  return url === DOCS
-    ? new Response('<h1>Fees API</h1><p>GET /v1/fees lists fees.</p>', { headers: { 'content-type': 'text/html' } })
-    : new Response(new Uint8Array([137, 80, 78, 71]), { headers: { 'content-type': 'image/png' } });
+  if (url === DOCS) return new Response('<h1>Fees API</h1><p>GET /v1/fees lists fees.</p>', { headers: { 'content-type': 'text/html' } });
+  if (url === DOWN) return new Response('error code: 1016', { status: 530, headers: { 'content-type': 'text/plain' } });
+  return new Response(new Uint8Array([137, 80, 78, 71]), { headers: { 'content-type': 'image/png' } });
 }) as typeof fetch;
-/** The read state the probe's turn starts from, and the service call behind each read. */
-let docTurnStart: PublicDocTurnState = { turnJobId: 'fees-doc', reads: 0, links: [] };
-let readDoc: (args: WorkspaceManagementToolArguments['read_public_doc']) => Promise<WorkspaceManagementToolResult> =
-  async () => { throw new Error('No docs service is set up.'); };
+/** The web state the probe's turn starts from. */
+let webTurnStart: WebTurnState = { turnKey: 'fees-web', reads: 0, searches: 0, sourced: [] };
+/** Queries that reached the stub search service, and whether it answers. */
+const searched: string[] = [];
+let searchAnswers = true;
+const searchService: WebSearchProvider = {
+  async search(query) {
+    searched.push(query);
+    if (!searchAnswers) throw new Error('search service down');
+    return [{ url: 'https://docs.fees.example/api', title: 'Fees API', text: 'GET /v1/fees lists fees.' }];
+  },
+};
 
-/** read_public_doc as the Slack tools mount it. */
-function PublicDocProbe() {
+/** The web tools as a turn mounts them, over the synthetic web, answering the requester's message. */
+function WebProbe() {
   useModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/${SCRIPTED_MODEL}`);
-  const turn = createPublicDocTurn('fees-doc', docTurnStart);
-  useTool({
-    name: 'read_public_doc',
-    description: 'Read one public page the requester linked.',
-    input: v.object({ url: v.string() }),
-    run: async ({ data }) => JSON.stringify(await readPublicDocInTurn(turn, data.url, readDoc)),
-  });
+  const turn = createWebTurn('fees-web', webTurnStart);
+  for (const tool of createWebTools({
+    turn,
+    request: webRequest(DOCS_ASKED),
+    connectionSpaces: [],
+    readPage: (url) => readWebPage(url, { cloudflare: true, fetch: docsWeb }),
+    searchProvider: async () => searchService,
+  })) useTool(tool);
   return 'Read the docs.';
 }
 
-const readsDoc = (url: string) => (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
-  { type: 'toolCall', id: 'call_read_doc', name: 'read_public_doc', arguments: { url } },
+const readsPage = (url: string) => (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
+  { type: 'toolCall', id: 'call_read_page', name: 'read_web_page', arguments: { url } },
 ], 'toolUse');
 
-/** The real service behind read_public_doc, reading the synthetic web for the requester's message. */
-async function withDocsService<T>(run: () => Promise<T>): Promise<T> {
-  const f = await createManagementAdapterFixture('run-fees-docs', {
-    readPublicDoc: (url) => readPublicDoc(url, { cloudflare: true, fetch: docsWeb }),
-  });
-  let turn = 0;
-  readDoc = (args) => invokeSlackWorkspaceManagementTool({
-    signal: {
-      agentId: 'agent_fees',
-      workspaceId: f.admin.user.slackTeamId,
-      channelId: 'D_FEES',
-      threadTs: '900.1',
-      conversationKind: 'im',
-      slackUserId: f.admin.binding.slackUserId,
-      eventId: `Ev_FEES_${++turn}`,
-      messageTs: `900.${turn + 1}`,
-      turnJobId: 'fees-doc',
-      requesterText: DOCS_ASKED,
-    },
-    identity: f.identity,
-    service: f.service,
-    name: 'read_public_doc',
-    args,
-  });
-  fetched.length = 0;
-  try {
-    return await run();
-  } finally {
-    f.close();
-  }
-}
+const searches = (query: string) => (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
+  { type: 'toolCall', id: 'call_search', name: 'web_search', arguments: { query } },
+], 'toolUse');
 
 /** Stops the turn `slackTurn` is running as a requester's stop does: Flue aborts the instance's work. */
 let stopTurn: () => Promise<void> = async () => {
@@ -509,7 +486,7 @@ test('a read of a channel this Agent was never added to posts no task row, and S
   assert.deepEqual(tiers(posts), ['chat:posted']);
 });
 
-test('a read_public_doc refused before anything is fetched posts no task row', { timeout: 20_000 }, async (t) => {
+test('a read_web_page refused before anything is fetched posts no task row', { timeout: 20_000 }, async (t) => {
   const posts = hostedPort(t);
   let output = '';
   const captureOutput: FlueExecutionInterceptor = async (operation, _context, next) => {
@@ -518,38 +495,78 @@ test('a read_public_doc refused before anything is fetched posts no task row', {
     return result;
   };
   interceptors(t, replyRun(hostedEnv()), captureOutput);
-  await withDocsService(async () => {
-    for (const [url, reads, expected] of [
-      ['https://docs.fees.example/other', 0, /only a URL the requester typed/],
-      ['https://localhost/docs', 0, /only public https pages/],
-      ['not a url', 0, /pass one full https URL/],
-      [DOCS, PUBLIC_DOC_READS_PER_TURN, /already read 6 pages/],
-    ] as const) {
-      docTurnStart = { turnJobId: 'fees-doc', reads, links: [] };
-      const before = posts.length;
-      output = '';
-      scriptedProvider([readsDoc(url), answers]);
-      assert.deepEqual(await slackTurn(`fees-doc-refused-${posts.length}`, PublicDocProbe), { text: 'done' });
-      assert.match(output, expected, url);
-      assert.deepEqual(tiers(posts.slice(before)), ['chat:posted'], `${url} posts no task row`);
-    }
-    assert.deepEqual(fetched, [], 'nothing was fetched');
-  });
+  fetched.length = 0;
+  for (const [url, reads, expected] of [
+    ['https://docs.fees.example/other?page=2', 0, /may not have a query string/],
+    ['https://localhost/docs', 0, /only public https pages/],
+    ['not a url', 0, /pass one full https URL/],
+    [DOCS, WEB_READS_PER_TURN, /already read 6 pages/],
+  ] as const) {
+    webTurnStart = { turnKey: 'fees-web', reads, searches: 0, sourced: [] };
+    const before = posts.length;
+    output = '';
+    scriptedProvider([readsPage(url), answers]);
+    assert.deepEqual(await slackTurn(`fees-web-refused-${posts.length}`, WebProbe), { text: 'done' });
+    assert.match(output, expected, url);
+    assert.deepEqual(tiers(posts.slice(before)), ['chat:posted'], `${url} posts no task row`);
+  }
+  assert.deepEqual(fetched, [], 'nothing was fetched');
 });
 
-test('a read_public_doc that fetched posts its task row, even when the page could not be read', { timeout: 20_000 }, async (t) => {
+test('a read_web_page that fetched posts its task row, even when it brought back no page', { timeout: 20_000 }, async (t) => {
   const posts = hostedPort(t);
   interceptors(t, replyRun(hostedEnv()));
-  await withDocsService(async () => {
-    for (const url of [DOCS, LOGO]) {
-      docTurnStart = { turnJobId: 'fees-doc', reads: 0, links: [] };
-      const before = posts.length;
-      scriptedProvider([readsDoc(url), answers]);
-      assert.deepEqual(await slackTurn(`fees-doc-fetched-${posts.length}`, PublicDocProbe), { text: 'done' });
-      assert.deepEqual(tiers(posts.slice(before)), ['chat:posted', 'task:posted'], url);
-    }
-    assert.deepEqual(fetched, [DOCS, LOGO]);
-  });
+  fetched.length = 0;
+  for (const url of [DOCS, LOGO, DOWN]) {
+    webTurnStart = { turnKey: 'fees-web', reads: 0, searches: 0, sourced: [] };
+    const before = posts.length;
+    scriptedProvider([readsPage(url), answers]);
+    assert.deepEqual(await slackTurn(`fees-web-fetched-${posts.length}`, WebProbe), { text: 'done' });
+    assert.deepEqual(tiers(posts.slice(before)), ['chat:posted', 'task:posted'], url);
+  }
+  assert.deepEqual(fetched, [DOCS, LOGO, DOWN]);
+});
+
+test('a web_search refused before it goes out posts no task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  let output = '';
+  const captureOutput: FlueExecutionInterceptor = async (operation, _context, next) => {
+    const result = await next();
+    if (operation.type === 'tool') output = String((result as { details?: { output?: unknown } }).details?.output);
+    return result;
+  };
+  interceptors(t, replyRun(hostedEnv()), captureOutput);
+  searched.length = 0;
+  searchAnswers = true;
+  const token = ['ghp', 'synthetic0000000000000000000000000000'].join('_');
+  for (const [query, searchesSpent, expected] of [
+    [`why does ${token} fail`, 0, /looks like it contains a credential/],
+    ['fees api pagination', WEB_SEARCHES_PER_TURN, /already ran 4 searches/],
+  ] as const) {
+    webTurnStart = { turnKey: 'fees-web', reads: 0, searches: searchesSpent, sourced: [] };
+    const before = posts.length;
+    output = '';
+    scriptedProvider([searches(query), answers]);
+    assert.deepEqual(await slackTurn(`fees-search-refused-${posts.length}`, WebProbe), { text: 'done' });
+    assert.match(output, expected, query);
+    assert.deepEqual(tiers(posts.slice(before)), ['chat:posted'], `${query} posts no task row`);
+  }
+  assert.deepEqual(searched, [], 'nothing reached the search service');
+});
+
+test('a web_search that went out posts its task row, even when the service failed', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  searched.length = 0;
+  for (const answering of [true, false]) {
+    searchAnswers = answering;
+    webTurnStart = { turnKey: 'fees-web', reads: 0, searches: 0, sourced: [] };
+    const before = posts.length;
+    scriptedProvider([searches('fees api pagination'), answers]);
+    assert.deepEqual(await slackTurn(`fees-search-sent-${posts.length}`, WebProbe), { text: 'done' });
+    assert.deepEqual(tiers(posts.slice(before)), ['chat:posted', 'task:posted'], `answering: ${answering}`);
+  }
+  assert.deepEqual(searched, ['fees api pagination', 'fees api pagination']);
 });
 
 test('a hosted reply run posts one chat row, keyed by its submission and Agent, and no task row without a qualifying tool', { timeout: 20_000 }, async (t) => {

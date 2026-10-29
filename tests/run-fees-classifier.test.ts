@@ -66,6 +66,7 @@ const FULL_PLAN: RuntimePlanV2 = {
   model: MODEL,
   imageCapability: { role: 'image', filled: true, acceptsImageInput: true },
   browserCapability: { provider: 'browserbase' },
+  webSearch: true,
   websiteLogins: [{
     id: `wl_${'b'.repeat(32)}`, host: 'app.example.com', label: 'Example', level: 'act', method: 'credentials',
     username: 'ops',
@@ -298,7 +299,8 @@ test('connector, browser, web reading and coding workspace tools make a reply a 
   const work = [
     ...CATALOG_TOOL_NAMES,
     'connection_request',
-    'read_public_doc',
+    'read_web_page',
+    'web_search',
     'attach_file_to_connection',
     ...BROWSER_TOOL_NAMES,
     ...WORKSPACE_TOOL_NAMES,

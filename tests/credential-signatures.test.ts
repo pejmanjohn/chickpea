@@ -98,6 +98,7 @@ test('credential markers stay the exact projection the streaming path relies on'
     'COMPOSIO_WEBHOOK_SECRET',
     'GITHUB_TOKEN',
     'BROWSERBASE_API_KEY',
+    'EXA_API_KEY',
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
   ]);

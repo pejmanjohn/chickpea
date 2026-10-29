@@ -308,6 +308,18 @@ import {
   useAgentAuthoringSkill,
 } from '../management/agent-authoring/index.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
+import {
+  connectionPathSpaces,
+  createWebTools,
+  recordingPageRead,
+  WEB_TOOL_DESCRIPTORS,
+  webRequest,
+  type WebRequest,
+  type WebToolName,
+} from '../web/tools.ts';
+import { useWebTurn, type WebTurn } from '../web/turn.ts';
+import { webSearchProvider } from '../web/exa.ts';
+import type { WebSearchProvider } from '../web/search.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
   buildRuntimePlanActivityContext,
@@ -813,6 +825,11 @@ async function resolveRuntimePlanApiConnections(plan: RuntimePlanV2, env?: Platf
   return resolveApiConnectionsForTurn(plan.agentId, connections, env, { accountContext });
 }
 
+/** The deployment's search provider, keyed from its environment on each call. */
+async function resolveWebSearchProvider(): Promise<WebSearchProvider | undefined> {
+  return webSearchProvider(await resolveAgentPlatformEnv());
+}
+
 /** Flue 2 hook-authored Slack agent. Every declaration comes from validated,
  * secret-free creation data; live credentials stay behind lazy resolvers. */
 export function ChickpeaSlack({ id }: AgentProps) {
@@ -934,6 +951,8 @@ export function useChickpeaSlackRuntimeCapabilities(
   writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
   writeDisplayComponent?: (parts: SlackDisplayComponentPart[]) => void,
 ): void {
+  const signal = parseSlackManagementSignal(useDelivery(), plan);
+  const webTurn = useWebTurn(signal?.turnJobId);
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
     ...(turn ? { turn } : {}),
@@ -952,9 +971,15 @@ export function useChickpeaSlackRuntimeCapabilities(
       tablePresentationToolName: SLACK_PRESENT_TABLE_TOOL_NAME,
     }),
     instructionsInSystemBase: true,
+    web: {
+      turn: webTurn,
+      ...(signal ? { request: webRequest(signal.requesterText, signal.requesterTextSource) } : {}),
+    },
     mountBeforeTenantTools: () => {
       useAgentAuthoringSkill();
-      useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv, writeAgentCreationTerminal, writeMemoryUpdate);
+      useWorkspaceManagementSlackTools(
+        plan, resolveAgentPlatformEnv, webTurn.pageRead, writeAgentCreationTerminal, writeMemoryUpdate,
+      );
       useSlackListsTools(plan, resolveAgentPlatformEnv);
       useSlackReadingTools(plan, resolveAgentPlatformEnv);
       useTool(createSlackPresentTableTool(writeTablePresentation));
@@ -1245,6 +1270,12 @@ export function useRuntimePlanAgent(
     /** The caller's returned instruction already carries the unconditional instructions (slackSystemBase). */
     instructionsInSystemBase?: boolean;
     /**
+     * The conversation's web turn. With `request`, the message this turn
+     * answers, the web tools mount; without one, a browser call still
+     * records that web content entered the conversation.
+     */
+    web?: { turn: WebTurn; request?: WebRequest };
+    /**
      * Mounts the tools every turn of the caller shares, after post_artifact
      * and complete_file_delivery and before any tool that differs by
      * workspace, Agent, or turn, so the shared tools form a cacheable prefix.
@@ -1304,6 +1335,20 @@ export function useRuntimePlanAgent(
     threadTs: plan.conversation.threadTs,
   });
   const skills = runtimePlanSkills(plan, { browser: browserMounted });
+  // Not artifact tools: an old routine occurrence without a file destination
+  // still reads the web. A file-delivery repair may not.
+  const webTools = options.web?.request && !fileCompletion.repairing
+    ? createWebTools({
+        turn: options.web.turn,
+        request: options.web.request,
+        connectionSpaces: connectionPathSpaces(plan),
+        ...(plan.webSearch ? { searchProvider: resolveWebSearchProvider } : {}),
+      })
+    : [];
+  const activityToolDescriptors = [
+    ...options.additionalActivityToolDescriptors ?? [],
+    ...webTools.map(({ name }) => ({ toolName: name, descriptor: WEB_TOOL_DESCRIPTORS[name as WebToolName] })),
+  ];
   registerActivityContext(id, buildRuntimePlanActivityContext(plan, {
     ...(options.includeAgentAuthoringSkill === undefined
       ? {}
@@ -1311,9 +1356,7 @@ export function useRuntimePlanAgent(
     reservedToolNames: [AGENT_AUTHORING_SKILL_NAME],
     browserMounted,
     mountedSkillNames: skills.map(({ name }) => name),
-    ...(options.additionalActivityToolDescriptors === undefined
-      ? {}
-      : { additionalToolDescriptors: options.additionalActivityToolDescriptors }),
+    ...(activityToolDescriptors.length === 0 ? {} : { additionalToolDescriptors: activityToolDescriptors }),
   }));
   useFrozenModel(plan.model, plan.runtimeModel ?? plan.model, plan.runtimeModelRoute, plan.effort);
   if (options.responseMetadataModel) {
@@ -1439,7 +1482,9 @@ export function useRuntimePlanAgent(
         ...(options.turn ? { turn: options.turn } : {}),
       },
     )) {
-      (UNIVERSAL_ARTIFACT_TOOL_NAMES.has(tool.name) ? universalTools : tenantTools).push(tool);
+      (UNIVERSAL_ARTIFACT_TOOL_NAMES.has(tool.name) ? universalTools : tenantTools).push(
+        options.web ? recordingPageRead(tool, options.web.turn) : tool,
+      );
     }
     if (!fileCompletion.repairing) {
       useInstruction(buildArtifactToolsInstruction({
@@ -1458,6 +1503,8 @@ export function useRuntimePlanAgent(
     }
   }
   for (const tool of universalTools) useTool(tool);
+  // The same on every turn of a deployment, so they belong to the shared prompt prefix.
+  for (const tool of webTools) useTool(tool);
   options.mountBeforeTenantTools?.();
   for (const tool of tenantTools) useTool(tool);
 }
