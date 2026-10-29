@@ -1351,6 +1351,7 @@ export class ConnectionAccountService {
     complete: boolean;
   }> {
     const { account, binding } = await this.requireAgentOwnedAccount(input);
+    this.requirePagesOwner(input.principal, account);
     const { pages, complete } = await this.choosablePages(this.pageScopedPolicy(account), input.signal);
     const choice = readAgentPageChoice(binding.resourceConstraints);
     const chosen = choice && new Set(choice);
@@ -1375,6 +1376,7 @@ export class ConnectionAccountService {
   }): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
     const requested = requestedPages(input.choice);
     const { account, binding } = await this.requireAgentOwnedAccount(input);
+    this.requirePagesOwner(input.principal, account);
     if (account.revision !== input.expectedRevision) {
       throw new ManagedResourceSelectionError('stale', 'Managed connection changed');
     }
@@ -1781,6 +1783,13 @@ export class ConnectionAccountService {
 
   private requireManage(principal: AuthPrincipal, account: ConnectionAccount): void {
     if (!canManageOwnedResource(principal, account)) throw new AuthorizationError();
+  }
+
+  /** A personal connection's pages are its owner's to see and choose, whatever the actor's role. */
+  private requirePagesOwner(principal: AuthPrincipal, account: ConnectionAccount): void {
+    if (account.ownerKind === 'member' && account.ownerMembershipId !== principal.membershipId) {
+      throw new AuthorizationError();
+    }
   }
 
   private id(): string {

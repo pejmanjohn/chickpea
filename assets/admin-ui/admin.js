@@ -7197,7 +7197,8 @@
     if (managedResources.length && (!pendingResourceSelection || managedAction || oauthAction)) {
       menuItems.push('<button type="button" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">' + (pendingResourceSelection ? "Choose " : "Change ") + esc(managedResourceSelectionLabel(account)) + '</button>');
     }
-    if (account.lifecycle === "ready" && pagesSummary && (WORKSPACE_ADMIN_UI || account.ownerKind === "member")) {
+    // Only its owner signs in to a personal connection, so its signer is its owner.
+    if (account.lifecycle === "ready" && pagesSummary && (account.ownerKind === "member" ? entry.signedByYou : WORKSPACE_ADMIN_UI)) {
       menuItems.unshift('<button type="button" data-action="connection-account-pages-open" data-connection-id="' + esc(account.id) + '">Choose pages for this Agent</button>');
     }
     if (account.policy && account.policy.kind === "managed" && account.lifecycle === "ready") {

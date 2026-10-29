@@ -11511,6 +11511,18 @@ test('a Notion row offers page choice when another Agent shares its sign-in or i
   ]);
 });
 
+test('an Admin is not offered page choice on another member\'s personal Notion row', async () => {
+  const theirs = notionRow('connection_notion_theirs', {
+    pageMode: 'all', pageCount: 3, sharedPageCount: 3, sharedWithOtherAgents: true, signerName: 'Zed Park', signedByYou: false,
+  }, 'member');
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()], connectionAccounts: sharedNotionConnections([theirs]) });
+  await openConnections(harness);
+  const row = htmlChunkWith(harness.app.innerHTML, 'class="connection-account-row connection-account-row-attached"', 'data-connection-id="connection_notion_theirs"');
+  assert.match(row, /Personal &middot; All shared pages/);
+  assert.match(row, /data-action="connection-account-disconnect"/);
+  assert.doesNotMatch(row, /Choose pages for this Agent/, 'only its owner chooses a personal connection\'s pages');
+});
+
 test('disconnecting one Agent from a shared Notion sign-in says the other Agents keep it', async () => {
   const shared = notionRow('connection_notion_shared', {
     pageMode: 'all', sharedWithOtherAgents: true, signerName: 'Maya Chen', signedByYou: false,

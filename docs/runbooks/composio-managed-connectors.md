@@ -378,7 +378,7 @@ A Notion sign-in group grows in two ways, and neither asks Composio for a new co
   The new account copies every shared field, provider generation and lineage included.
 - **Fold.** When a new Notion sign-in names the same Notion person as a ready group with the same owner kind, owner member and principal, and the new credential's lane covers what the group needs, the new Agent joins that group. The whole group moves to the new connected account in one write, and the old one is deleted. A person Notion did not name (`member:` fallback) never folds.
 
-Every Agent defaults to all pages its sign-in shares. "Choose pages for this Agent" in Admin limits one Agent to some of them. The choice lives on that Agent's binding and never narrows another Agent. Pages travel to the browser by handle, never by Notion ID. Owners and Admins see which other Agents use a sign-in; Members never see other Agents' names.
+Every Agent defaults to all pages its sign-in shares. "Choose pages for this Agent" in Admin limits one Agent to some of them. The choice lives on that Agent's binding and never narrows another Agent. Only its owner sees or chooses a personal connection's pages; Owners and Admins do so for team connections. Pages travel to the browser by handle, never by Notion ID. Owners and Admins see which other Agents use a sign-in; Members never see other Agents' names.
 
 Both Admin and the Slack setup door record in the authorization attempt the lane a credential was issued on. If the group needs write by the time a read sign-in completes, Chickpea refuses the sign-in and deletes its connected account instead of moving the group onto it.
 

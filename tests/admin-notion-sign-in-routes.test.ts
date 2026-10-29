@@ -209,3 +209,24 @@ test('a reuse onto an Agent that already has that Notion connection is a conflic
     notion.close();
   }
 });
+
+test('only its owner reads or changes the pages of a personal Notion connection, even beside an Admin', async () => {
+  const notion = await workspace();
+  try {
+    const [row] = await notion.member.attached('agent_scout');
+    const path = `agent_scout/connections/${encodeURIComponent(row!.account.id)}/pages`;
+    const choice = { workspaceId: 'T_TEST', expectedRevision: row!.account.revision, choice: { mode: 'only', pages: [] as string[] } };
+    const read = await notion.owner.call('GET', `${path}?workspaceId=T_TEST`);
+    assert.deepEqual([read.status, read.body], [403, { error: 'forbidden' }], 'an Owner sees no page title of Zed\'s personal Notion');
+    assert.equal((await notion.owner.call('PUT', path, choice)).status, 403);
+
+    const own = await notion.member.call('GET', `${path}?workspaceId=T_TEST`);
+    assert.equal(own.status, 200);
+    choice.choice.pages = [own.body.pages[0].handle];
+    assert.equal((await notion.member.call('PUT', path, choice)).status, 200);
+    const [after] = await notion.member.attached('agent_scout');
+    assert.deepEqual([after!.pageMode, after!.pageCount], ['only', 1]);
+  } finally {
+    notion.close();
+  }
+});
