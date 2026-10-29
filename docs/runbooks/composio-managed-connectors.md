@@ -363,7 +363,24 @@ Chickpea deliberately calls Composio account deletion with `revoke_on_delete=fal
 
 ## Agent ownership and release preflight
 
-Every Chickpea connection belongs permanently to one Agent. A saved account cannot be attached, moved, or reused by another Agent, including when its binding is disabled. For a connector that allows it (Notion), the accounts of several Agents may share one Composio connected account as a sign-in group. The accounts in a group change together: changing pages or reconnecting from any Agent moves every account to the new connected account, and Chickpea deletes the old one once. Disconnecting one Agent revokes only that Agent's account. The connected account is deleted at Composio only when the last account that uses it disconnects. For other connectors, each Agent's setup creates a separate Chickpea account and a separate Composio connected-account reference, even for the same external identity.
+Every Chickpea connection belongs permanently to one Agent. A saved account cannot be attached to or moved to another Agent, including when its binding is disabled. For a connector that allows it (Notion), the accounts of several Agents may share one Composio connected account as a sign-in group. Each Agent still has its own account and binding. The accounts in a group change together: changing pages or reconnecting from any Agent moves every account to the new connected account, and Chickpea deletes the old one once. Disconnecting one Agent revokes only that Agent's account. The connected account is deleted at Composio only when the last account that uses it disconnects. For other connectors, each Agent's setup creates a separate Chickpea account and a separate Composio connected-account reference, even for the same external identity.
+
+A Notion sign-in group grows in two ways, and neither asks Composio for a new connected account:
+
+- **Reuse.** When the person connecting Notion to an Agent may use an existing sign-in, Admin and the Slack setup page offer it before Notion opens. Using it creates the Agent's own account and binding in the group (`ConnectionAccountService.reuseSignIn`, through `applySignInGroup.join`). The browser names only the source connection; Chickpea never accepts a connected-account reference from it. Chickpea refuses the reuse unless all of these hold:
+  - The person may edit the target Agent and create connections of the source's owner kind.
+  - The new account's owner kind, owner member and Composio principal come from the person and equal the group's. Only the owner reuses a personal sign-in. Owners and Admins reuse a team sign-in; Members cannot.
+  - Every account in the group is ready and in the same workspace, and the access asked for fits the lane the credential was issued on (`signIn.accessLane`).
+  - The target Agent has no Notion connection of that owner kind yet.
+  - The sign-in's Notion account does not also back a connection of the other owner kind (the personal and team rule).
+  - A live validation of the source succeeds.
+
+  The new account copies every shared field, provider generation and lineage included.
+- **Fold.** When a new Notion sign-in names the same Notion person as a ready group with the same owner kind, owner member and principal, and the new credential's lane covers what the group needs, the new Agent joins that group. The whole group moves to the new connected account in one write, and the old one is deleted. A person Notion did not name (`member:` fallback) never folds.
+
+Every Agent defaults to all pages its sign-in shares. "Choose pages for this Agent" in Admin limits one Agent to some of them. The choice lives on that Agent's binding and never narrows another Agent. Pages travel to the browser by handle, never by Notion ID. Owners and Admins see which other Agents use a sign-in; Members never see other Agents' names.
+
+Both Admin and the Slack setup door record in the authorization attempt the lane a credential was issued on. If the group needs write by the time a read sign-in completes, Chickpea refuses the sign-in and deletes its connected account instead of moving the group onto it.
 
 Before deploying the unique binding index, run these read-only checks against the configuration database. Any row from the first query stops the release; do not choose an owner or repair it automatically. Review the second result as inert legacy inventory before proceeding.
 
@@ -392,7 +409,11 @@ ORDER BY a.workspace_id, a.id;
 
 Save baseline counts for non-revoked accounts, bindings, non-revoked unbound accounts, and distinct managed remote references. After deployment, monitor unique-binding conflicts, exact-binding authorization failures, managed remote-reference collisions, and failed cleanup reconciliation. A code rollback must leave `config_agent_connection_bindings_account_uidx` in place: older code is safe only while the database continues to reject cross-Agent reuse.
 
-For the release canary, use two disposable Agents and one controlled external identity. Complete two fresh authorizations and record two Chickpea account IDs plus two distinct Composio account refs. Prove each Agent invokes only its exact account. Disconnect Agent A and prove Agent B still invokes its own account and retains its schedules. Then confirm signed-in Admin and management inspection never show Agent A's account under Agent B. Keep `revoke_on_delete=false`: two separate Composio accounts can still depend on one upstream OAuth grant, and grant-wide provider revocation can break the surviving Agent.
+For the release canary, use two disposable Agents and one controlled external identity. For a connector without shared sign-ins, complete two fresh authorizations and record two Chickpea account IDs plus two distinct Composio account refs. Prove each Agent invokes only its exact account. Disconnect Agent A and prove Agent B still invokes its own account and retains its schedules. Then confirm signed-in Admin and management inspection never show Agent A's account under Agent B.
+
+For Notion, connect Agent A, then add Agent B by reusing A's sign-in, and record two Chickpea account IDs that share one Composio account ref. Limit Agent B to one page and prove B cannot read a page outside it while A still can. Disconnect Agent A and prove Agent B keeps working on the same ref; the ref is deleted only when B disconnects too. A Member who edits Agent B must not see Agent A's name on it.
+
+Keep `revoke_on_delete=false`: two separate Composio accounts can still depend on one upstream OAuth grant, and grant-wide provider revocation can break the surviving Agent.
 
 ## Versioned execution
 
