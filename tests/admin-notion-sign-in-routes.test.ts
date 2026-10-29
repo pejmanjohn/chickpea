@@ -230,3 +230,27 @@ test('only its owner reads or changes the pages of a personal Notion connection,
     notion.close();
   }
 });
+
+test('a reuse refused by the personal and team rule says why in one sentence', async () => {
+  const notion = await workspace();
+  try {
+    const team = (await notion.store.listConnectionAccounts('T_TEST')).find(({ ownerKind }) => ownerKind === 'team');
+    assert.ok(team?.ownerKind === 'team' && team.policy.kind === 'managed');
+    // A personal connection for the same Notion person, as an older build could have saved.
+    await notion.store.putConnectionAccount({
+      id: 'connection_legacy', workspaceId: 'T_TEST', ownerKind: 'member', ownerMembershipId: OWNER.membershipId,
+      createdByMembershipId: OWNER.membershipId, providerId: 'notion', label: 'Notion · Personal',
+      policy: { ...team.policy, accountRef: 'ca_personal', principalRef: `chickpea:membership:${OWNER.membershipId}` },
+      secretRefId: 'secret_legacy', lifecycle: 'ready',
+    });
+    const refused = await notion.owner.call('POST', 'agent_sales/connections/managed/reuse', {
+      workspaceId: 'T_TEST', sourceConnectionId: team.id, ownerKind: 'team', access: 'read', choice: { mode: 'all' },
+    });
+    assert.deepEqual([refused.status, refused.body], [409, {
+      error: 'managed_connection_changed',
+      message: 'That Notion account is also used for a personal connection in this workspace, so another Agent can\'t use it.',
+    }]);
+  } finally {
+    notion.close();
+  }
+});

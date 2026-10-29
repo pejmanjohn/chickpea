@@ -974,7 +974,7 @@ export class ConnectionAccountService {
     if (mix) {
       return new ManagedConnectionConflictError(
         `That ${connector.label} account is also used for a ${mix.account.ownerKind === 'team' ? 'team' : 'personal'} ` +
-          `connection in this workspace, so another Agent can't use it.`,
+          `connection in this workspace, so another Agent can't use it`,
       );
     }
     return undefined;
