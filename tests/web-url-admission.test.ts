@@ -67,11 +67,12 @@ test('a URL the model writes on a host the requester typed is read; its path may
     'https://docs.statusboard.example/leak/bluebird42',
     'https://docs.statusboard.example/leak/BLUEBIRD42',
     'https://docs.statusboard.example/leak/%42luebird42',
-    'https://docs.statusboard.example/leak/%2542luebird42',
     'https://docs.statusboard.example/leak/blue-bird-42',
   ]) {
     assert.deepEqual(admitWebUrl(url, typed), { admitted: false, reason: 'request_text' }, url);
   }
+  assert.deepEqual(admitWebUrl('https://docs.statusboard.example/leak/%2542luebird42', typed),
+    { admitted: false, reason: 'encoded_path' }, 'a double-encoded word is refused before it is decoded');
   assert.deepEqual(admitWebUrl('https://docs.statusboard.example/api?page=2', typed), { admitted: false, reason: 'query' });
   assert.deepEqual(admitWebUrl(`https://docs.statusboard.example/${'a'.repeat(200)}`, typed), { admitted: false, reason: 'long_path' });
   assert.deepEqual(admitWebUrl('http://docs.statusboard.example:8080/api', typed), { admitted: false, reason: 'not_public' });
@@ -108,6 +109,22 @@ test('a URL the model writes on a connection\'s host outside its path scope is r
     const result = await reader.read(url);
     assert.equal(result.outcome, 'refused', url);
     assert.match(result.outcome === 'refused' ? result.message : '', /within that connection's path scope/, url);
+  }
+  assert.deepEqual(reader.fetched, []);
+});
+
+test('a URL the model writes may not percent-encode path syntax, which a decoding proxy would resolve', async () => {
+  const reader = recordingReader('what does the proxy offer', SHARED_HOST_CONNECTIONS);
+  for (const url of [
+    'https://api.shared.example/v2/..%2Fv3/collect',
+    'https://api.shared.example/v2/%252e%252e/v3/collect',
+    'https://api.shared.example/v2/..%5Cv3/collect',
+    'https://api.shared.example/v2/%2E%2E%2fv3',
+    'https://mcp.proxy.example/tenants/acme/mcp/..%2F..%2Fother/mcp',
+  ]) {
+    const result = await reader.read(url);
+    assert.equal(result.outcome, 'refused', url);
+    assert.match(result.outcome === 'refused' ? result.message : '', /may not percent-encode/, url);
   }
   assert.deepEqual(reader.fetched, []);
 });
