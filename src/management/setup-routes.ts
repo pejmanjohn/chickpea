@@ -32,11 +32,7 @@ import {
   type ApiOAuthDependencies,
 } from '../config/api-oauth.ts';
 import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
-import {
-  connectionAccountSecretSettingKey,
-  saveConnectionAccountSecret,
-  tombstoneConnectionAccountSecret,
-} from '../config/connector-secrets.ts';
+import { connectionAccountSecretSettingKey, saveConnectionAccountSecret } from '../config/connector-secrets.ts';
 import {
   exchangeGithubAppManifest,
   getGithubConnection,
@@ -118,6 +114,7 @@ import {
   type McpConnectionConfig,
 } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
+import { markConnectionAccountReady, saveConnectionCredential } from './connection-credential.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { MANAGED_CONNECTOR_CATALOG, type ManagedConnectorCatalog } from '../connections/catalog/index.ts';
 import {
@@ -961,11 +958,11 @@ export function createManagementSetupRoutes(
         throw new Error('target_changed');
       }
       const accountName = completed.identity?.accountName;
-      const ready = await markSetupAccountReady(
-        setup,
+      const ready = await markConnectionAccountReady(
         dependencies,
         entry,
         accountName ? { identity: { accountName } } : {},
+        setup.origin.kind,
       );
       if (!await apiOAuthClientBindingMatches(
         completed.ref,
@@ -2591,10 +2588,10 @@ async function verifyMcpConnection(
   const requiresToolReview = isMcpToolReviewRequired(account.policy);
   requireSetupOAuthAccountPermission(setup, principal, account, binding);
   await requireCurrentAccountOAuthAuthorization(dependencies, authorizationAuthority, ref);
-  const ready = await markSetupAccountReady(setup, dependencies, { account, binding }, {
+  const ready = await markConnectionAccountReady(dependencies, { account, binding }, {
     policy: { ...account.policy, discoveredTools: discovery.tools, allowedTools },
     ...(identity ? { identity } : {}),
-  });
+  }, setup.origin.kind);
   return {
     connector: setup.target.targetLabel,
     connectionAccountId: ready.id,
@@ -2699,16 +2696,11 @@ async function completeSetupCredential(
   credential: string,
   changes: Partial<Pick<ConnectionAccount, 'policy' | 'identity'>>,
 ): Promise<void> {
-  const { secretRefId } = entry.account;
-  await saveConnectionAccountSecret(secretRefId, credential, dependencies.platformEnv, dependencies.settings);
-  try {
-    await markSetupAccountReady(setup, dependencies, entry, changes);
-  } catch (error) {
-    if (await setupCredentialWasRetired(setup, dependencies) === true) {
-      await tombstoneConnectionAccountSecret(secretRefId, dependencies.platformEnv, dependencies.settings);
-    }
-    throw error;
-  }
+  await saveConnectionCredential(dependencies, entry, credential, {
+    changes,
+    surface: setup.origin.kind,
+    retired: () => setupCredentialWasRetired(setup, dependencies),
+  });
 }
 
 /**
@@ -2725,31 +2717,6 @@ async function setupCredentialWasRetired(
   } catch {
     return undefined;
   }
-}
-
-/** Mark a setup's account ready, fenced on the revision the setup read. */
-async function markSetupAccountReady(
-  setup: ManagementSetupRecord,
-  dependencies: SetupDependencies,
-  { account, binding }: { account: ConnectionAccount; binding: AgentConnectionBinding },
-  changes: Partial<Pick<ConnectionAccount, 'policy' | 'identity'>>,
-): Promise<ConnectionAccount> {
-  const ready = await dependencies.config.putConnectionAccount(
-    { ...account, ...changes, lifecycle: 'ready' },
-    account.revision,
-  );
-  if (account.lifecycle !== 'ready' &&
-      !(ready.policy.kind === 'mcp' && isMcpToolReviewRequired(ready.policy))) {
-    dependencies.productTelemetry?.capture({
-      event: 'connection_ready',
-      workspaceId: ready.workspaceId,
-      agentId: binding.agentId,
-      connectionKind: ready.policy.kind,
-      ownerKind: ready.ownerKind,
-      surface: setup.origin.kind,
-    });
-  }
-  return ready;
 }
 
 function catalogSetupConnectionId(
