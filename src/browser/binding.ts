@@ -203,7 +203,8 @@ export class BrowserLoginBinder {
     try {
       recorded = await recordWebsiteLoginContext(deps.store, stored.id, created);
     } catch (error) {
-      // Unread, it stays: a new context holds no sign-in yet, and one the login names must not go.
+      // When the login cannot be read either, the context stays: it holds no
+      // sign-in yet, and it may be the one the login now records.
       const current = await getWebsiteLogin(deps.store, stored.id).then((login) => ({ login }), () => undefined);
       if (current && current.login?.contextId !== created) await discard();
       throw error;
