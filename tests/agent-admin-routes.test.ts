@@ -6605,6 +6605,21 @@ test('Admin refuses a custom API connection whose token the API rejects, and sav
     const [account] = await fixture.store.listConnectionAccounts('T_TEST');
     assert.equal(account?.id, created.account.id);
     assert.equal(account?.lifecycle, 'ready');
+
+    const replaced = await withConnectionNetwork(
+      () => Response.json({ message: 'Invalid token' }, { status: 401 }),
+      async () => fixture.app.request(
+        `http://localhost/admin/api/agents/agent_support/connections/${encodeURIComponent(account!.id)}/credential`,
+        { method: 'PUT', headers: auth(), body: JSON.stringify({ expectedRevision: account!.revision, credential: 'sk-replaced' }) },
+      ),
+    );
+    assert.equal(replaced.status, 422);
+    assert.deepEqual(await replaced.json(), {
+      error: 'key_rejected',
+      message: 'reports.example.com rejected this token. Check the token, then save again.',
+    });
+    assert.equal(await resolveConnectionAccountSecret(account!, undefined, fixture.settings), 'sk-limited',
+      'a rejected replacement keeps the saved token');
   } finally {
     fixture.store.close();
     fixture.settings.close();

@@ -9081,7 +9081,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const agentId = c.req.param('agentId');
       const connectionAccountId = c.req.param('connectionAccountId');
-      const { principal } = await managedConnectionAccount(c, agentId, connectionAccountId);
+      const { principal, account } = await managedConnectionAccount(c, agentId, connectionAccountId);
+      if (account.policy.kind === 'api' && (account.policy.authMode ?? 'credential') === 'credential') {
+        const check = await checkConnection(
+          { kind: 'api', connection: account.policy, credential: parsed.output.credential },
+          options.connectionCheck,
+        );
+        if (check.kind === 'key_rejected') {
+          return c.json({
+            error: 'key_rejected',
+            message: `${new URL(check.url).host} rejected this token. Check the token, then save again.`,
+          }, 422);
+        }
+      }
       const updated = await connectionAccounts(c).setCredentialForAgent({
         principal, agentId, connectionAccountId, ...parsed.output,
       });
