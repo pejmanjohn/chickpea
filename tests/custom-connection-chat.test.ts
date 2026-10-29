@@ -97,7 +97,7 @@ async function fixture(editPolicy: 'creator_and_admins' | 'all_workspace_members
   const slack = <TName extends WorkspaceManagementToolName>(
     name: TName,
     args: WorkspaceManagementToolArguments[TName],
-    requesterText: string,
+    requesterText: string | undefined,
     by: IdentityResolution = f.admin,
     source?: 'click',
   ): Promise<WorkspaceManagementToolResult> => {
@@ -112,7 +112,7 @@ async function fixture(editPolicy: 'creator_and_admins' | 'all_workspace_members
       eventId: `Ev_SCRIBE_${turn}`,
       messageTs: `500.${turn + 1}`,
       turnJobId: `turn_SCRIBE_${turn}`,
-      requesterText,
+      ...(requesterText === undefined ? {} : { requesterText }),
       ...(source ? { requesterTextSource: source } : {}),
     };
     return invokeSlackWorkspaceManagementTool({ signal, identity: f.identity, service: f.service, name, args });
@@ -482,5 +482,76 @@ test('over MCP the person\'s own key is saved as given and may replace a saved k
       saved(await f.mcp('save_connection_key', { ...SAVE, agentId: f.agent.id, key: OTHER_KEY }));
     });
     assert.equal(await f.savedKey(), OTHER_KEY);
+  } finally { f.close(); }
+});
+
+test('one pasted key fills one connection, even when the message names a second URL', async () => {
+  const f = await fixture();
+  try {
+    const docs = 'https://docs.example.com/api';
+    const message = `key ${KEY} for <${KB_URL}>, docs at <${docs}>`;
+    assert.equal((await f.connectFromSlack(message)).disposition, 'applied');
+    await withConnectionNetwork(hubspot(KEY), async () => saved(await f.slack('save_connection_key', SAVE, message)));
+    assert.equal(await f.savedKey(), KEY);
+
+    const docsConnection = {
+      ...KB_CONNECTION, id: 'docs_api', displayName: 'Docs API',
+      allowedHosts: ['docs.example.com'], pathPrefixes: ['/api'],
+    };
+    assert.equal((await f.connectFromSlack(message, { apiConnections: [KB_CONNECTION, docsConnection] })).disposition, 'applied');
+    await withConnectionNetwork(hubspot(KEY), async (requests) => {
+      assert.match(refusal(await f.slack('save_connection_key', { ...SAVE, connectionId: 'docs_api' }, message)).message,
+        /already saved on another of this Agent's connections/);
+      assert.equal(requests.length, 0, 'the key never reaches the second URL');
+    });
+    assert.equal(await f.savedKey('Docs API'), undefined);
+  } finally { f.close(); }
+});
+
+test('a bare domain Slack linked as http counts as typed, and a URL with userinfo never does', async () => {
+  const f = await fixture();
+  try {
+    const bare = KB_URL.replace('https://', '');
+    const linked = `here's our key ${KEY} for <http://${bare}|${bare}>, read and write articles`;
+    assert.equal((await f.connectFromSlack(linked)).disposition, 'applied');
+    await withConnectionNetwork(hubspot(KEY), async () => saved(await f.slack('save_connection_key', SAVE, linked)));
+    assert.equal(await f.savedKey(), KEY);
+
+    const disguised = {
+      ...KB_CONNECTION, id: 'disguised', displayName: 'Disguised',
+      allowedHosts: ['evil.example'], pathPrefixes: ['/cms'],
+    };
+    const decision = await f.connectFromSlack(`key ${OTHER_KEY} for <https://api.hubapi.com@evil.example/cms>`, {
+      apiConnections: [KB_CONNECTION, disguised],
+    });
+    assert.notEqual(decision.disposition, 'applied', 'userinfo hides the real host, so the person must confirm');
+  } finally { f.close(); }
+});
+
+test('save_connection_key refuses an empty key, a path outside the connection, an Agent ask and a stale revision', async () => {
+  const f = await fixture();
+  try {
+    await addKeyedConnection(f);
+    await withConnectionNetwork(hubspot(KEY), async (requests) => {
+      assert.ok(refusal(await f.slack('save_connection_key', { ...SAVE, key: '   ' }, PASTED)).message);
+      assert.match(refusal(await f.slack('save_connection_key', { ...SAVE, path: '/crm/v3/objects/contacts' }, PASTED)).message,
+        /path must be inside the connection/);
+      assert.match(refusal(await f.slack('save_connection_key', SAVE, undefined)).message,
+        /typed in their own current message/, 'an Agent ask carries no requester text');
+      const account = await f.account();
+      await assert.rejects(saveManagedConnectionKey({
+        agentId: f.agent.id,
+        connectionId: account.id,
+        actor: { workspaceId: f.workspaceId, actorMembershipId: f.admin.membership.id },
+        key: KEY,
+        expectedRevision: account.revision + 1,
+        surface: 'slack',
+        config: f.config,
+        settings: f.settings,
+        connectionCheck: { cloudflare: true },
+      }), /changed/i);
+      assert.equal(requests.length, 0, 'no refused save sends anything');
+    });
+    assert.equal(await f.savedKey(), undefined);
   } finally { f.close(); }
 });
