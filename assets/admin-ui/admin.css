@@ -2652,9 +2652,24 @@ button.capability-pill { cursor: pointer; }
 .connection-account-owner-copy { display: grid; gap: 3px; min-width: 0; }
 .connection-account-owner-copy strong { color: var(--text); font-size: .8125rem; }
 .connection-account-owner-copy span { color: var(--text); font-size: .8125rem; line-height: 1.4; text-wrap: pretty; }
+.connection-account-owner-option-plain { grid-template-columns: 18px minmax(0, 1fr); min-height: 72px; }
+.notion-page-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.notion-page-option { align-items: center; }
+.notion-page-option .tool-body { flex: 1; }
+.notion-page-grid .notion-page-option .tool-name { font-family: inherit; font-size: .8125rem; }
+.notion-page-kind { color: var(--text-3); font-size: .6875rem; font-weight: 600; white-space: nowrap; }
+.notion-page-grid-all .notion-page-option { opacity: .72; }
+.notion-pages-warning { align-items: center; justify-content: space-between; }
+.notion-pages-warning-actions { display: flex; flex-shrink: 0; gap: 8px; }
 @media (max-width: 720px) {
   .connection-account-owner-options { grid-template-columns: 1fr; }
   .connection-account-owner-option { min-height: 80px; }
+  .notion-page-grid { grid-template-columns: 1fr; }
+  .notion-pages-warning { align-items: stretch; flex-direction: column; }
 }
 .google-access-label { align-items: center; display: flex; gap: 8px; }
 .google-access-label .conn-logo { border-radius: 6px; height: 24px; width: 24px; }

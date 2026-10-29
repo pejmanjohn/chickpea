@@ -229,6 +229,8 @@
     connectionAccountsSupported: null,
     connectionAccountForm: null,
     managedResourceEditor: null,
+    notionPagePicker: null,
+    sharedSignInConfirm: null,
     // Non-null only while the gallery's single Custom connection flow is open.
     // Both lane editors may coexist so tab switches preserve typed values.
     customConnectionLane: null,
@@ -3912,6 +3914,7 @@
         error: ""
       };
       state.connectorGallerySearch = "";
+      loadReusableSignIns(state.connectionAccountForm);
       render();
       return;
     }
@@ -4030,6 +4033,10 @@
       if (!managedConnectorDescriptorByToolkit(form.managedToolkit)) {
         form.error = "This managed connector is unavailable.";
         render();
+        return;
+      }
+      if (reusableSignIn(form)) {
+        reuseManagedSignIn(false);
         return;
       }
       var managedStart = {
@@ -4408,8 +4415,11 @@
   function startManagedAuthorization(body, label, context) {
     var form = state.connectionAccountForm;
     var agentId = context && context.agentId || state.profileDraft && state.profileDraft.id;
-    if (!agentId || state.managedAuthorization) return;
-    var signInTab = openManagedAuthorizationTab();
+    if (!agentId || state.managedAuthorization) {
+      closeManagedAuthorizationTab(context && context.tab);
+      return;
+    }
+    var signInTab = context && context.tab || openManagedAuthorizationTab();
     if (form) { form.busy = true; form.error = ""; }
     state.agentConnections.error = "";
     state.agentConnections.actionError = "";
@@ -4590,9 +4600,12 @@
     });
   }
 
-  function reconnectManagedConnection(accountId) {
+  function reconnectManagedConnection(accountId, tab) {
     var agentId = state.profileDraft && state.profileDraft.id;
-    if (!agentId || !accountId) return;
+    if (!agentId || !accountId) {
+      closeManagedAuthorizationTab(tab);
+      return;
+    }
     var entry = (state.agentConnections.attached || []).find(function (candidate) {
       return candidate.account && candidate.account.id === accountId;
     });
@@ -4606,7 +4619,7 @@
     startManagedAuthorization(
       { workspaceId: state.agentConnections.workspaceId, connectionAccountId: accountId },
       start.label,
-      { mode: start.mode, selection: start.selection }
+      { mode: start.mode, selection: start.selection, tab: tab }
     );
   }
 
@@ -4638,7 +4651,10 @@
     });
     if (!agentId || !entry) return;
     var label = connectionAccountDisplayName(entry.account);
-    if (!window.confirm("Disconnect " + label + "? This Agent will lose access and dependent schedules will pause.")) return;
+    var confirmation = entry.sharedWithOtherAgents
+      ? "Disconnect " + label + " from " + agentDisplayName() + "? Other Agents using this sign-in keep it."
+      : "Disconnect " + label + "? This Agent will lose access and dependent schedules will pause.";
+    if (!window.confirm(confirmation)) return;
     var path = "/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId);
     function disconnectWithCleanupRetry(allowRetry) {
       return api(path, { method: "DELETE" }).catch(function (error) {
@@ -6833,9 +6849,303 @@
       '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-resource-cancel"' + (editor.busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-resource-save"' + (!complete || editor.busy ? " disabled" : "") + '>' + (editor.busy ? "Saving&hellip;" : "Save access") + '</button></div></div>';
   }
 
+  function agentDisplayName() {
+    return String(state.profileDraft && state.profileDraft.name || "this Agent").trim() || "this Agent";
+  }
+
+  // "your" for the actor's own sign-in, otherwise the signer's first name.
+  function signInPossessive(signIn) {
+    if (signIn.signedByYou) return "your";
+    var first = String(signIn.label || signIn.signerName || "").trim().split(/\s+/)[0];
+    return first ? first + "’s" : "the team’s";
+  }
+
+  function reusableSignIn(form) {
+    var reuse = form && form.reuse;
+    if (!reuse) return null;
+    return reuse.signIns.find(function (signIn) { return signIn.sourceConnectionId === reuse.source; }) || null;
+  }
+
+  // Offered only for a connector whose sign-ins Agents can share; with none to offer the form is unchanged.
+  function loadReusableSignIns(form) {
+    if (!form) return;
+    form.reuse = null;
+    var descriptor = form.kind === "managed" && managedConnectorDescriptorByToolkit(form.managedToolkit);
+    var agentId = state.profileDraft && state.profileDraft.id;
+    if (!descriptor || !descriptor.sharedSignIn || !agentId ||
+        (form.ownerKind !== "member" && form.ownerKind !== "team")) return;
+    var request = {};
+    form.reuseRequest = request;
+    api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/managed/reusable?workspaceId=" +
+      encodeURIComponent(state.agentConnections.workspaceId) + "&toolkit=" + encodeURIComponent(form.managedToolkit) +
+      "&ownerKind=" + form.ownerKind + "&access=" + (form.managedAccess === "write" ? "write" : "read"), { cache: "no-store" }).then(function (body) {
+      if (state.connectionAccountForm !== form || form.reuseRequest !== request || form.busy) return;
+      var signIns = body && Array.isArray(body.signIns) ? body.signIns : [];
+      if (!signIns.length) return;
+      form.reuse = { signIns: signIns, source: signIns[0].sourceConnectionId, mode: "all", selected: {}, warning: false };
+      setNotionPageMode(form.reuse, signIns[0].pages, "all");
+      render();
+    }).catch(function () { /* Without the list, connecting signs in to the provider as before. */ });
+  }
+
+  // Switching mode starts from every page checked.
+  function setNotionPageMode(choice, pages, mode) {
+    choice.mode = mode;
+    choice.selected = {};
+    (pages || []).forEach(function (page) { choice.selected[page.handle] = true; });
+  }
+
+  // Unchecking a page while "All pages" is chosen limits the Agent to the rest.
+  function toggleNotionPage(choice, pages, handle, checked) {
+    if (!handle) return;
+    if (choice.mode === "all") {
+      setNotionPageMode(choice, pages, "only");
+      delete choice.selected[handle];
+      return;
+    }
+    if (checked) choice.selected[handle] = true;
+    else delete choice.selected[handle];
+  }
+
+  function notionPageModeHtml(name, mode, disabled) {
+    function option(value, title, detail) {
+      return '<label class="connection-account-owner-option connection-account-owner-option-plain"><input type="radio" name="' + name + '" value="' + value + '" data-action="' + name + '"' + (mode === value ? " checked" : "") + (disabled ? " disabled" : "") + '>' +
+        '<span class="connection-account-owner-radio" aria-hidden="true"></span><span class="connection-account-owner-copy"><strong>' + title + '</strong><span>' + detail + '</span></span></label>';
+    }
+    return '<div class="connection-account-owner-options" role="radiogroup">' +
+      option("all", "All pages shared in Notion (recommended)", "Includes pages shared in Notion later.") +
+      option("only", "Only these pages", "Pages shared in Notion later are not added.") + '</div>';
+  }
+
+  function notionPageGridHtml(pages, choice, action, disabled) {
+    if (!pages.length) return '<p class="hint">Notion shares no pages with Chickpea yet.</p>';
+    return '<div class="notion-page-grid' + (choice.mode === "all" ? " notion-page-grid-all" : "") + '">' + pages.map(function (page) {
+      var checked = choice.mode === "all" || !!choice.selected[page.handle];
+      return '<label class="conn-tool notion-page-option"><span class="import-check' + (checked ? " on" : "") + '"><input type="checkbox" data-action="' + action + '" data-page-handle="' + esc(page.handle) + '"' + (checked ? " checked" : "") + (disabled ? " disabled" : "") + '></span>' +
+        '<span class="tool-body"><span class="tool-name">' + esc(page.label || "Untitled") + '</span></span><span class="notion-page-kind">' + (page.kind === "database" ? "Database" : "Page") + '</span></label>';
+    }).join("") + '</div>';
+  }
+
+  function managedReuseHtml(form) {
+    var reuse = form.reuse;
+    if (!reuse) return "";
+    var connector = form.preset && form.preset.name || "Notion";
+    var agentName = agentDisplayName();
+    var busy = !!form.busy;
+    var only = reuse.signIns.length === 1 ? reuse.signIns[0] : null;
+    var intro = only && only.signedByYou ? "You already connected " + connector + " in this workspace."
+      : only && only.label ? only.label + " already connected " + connector + " in this workspace."
+      : connector + " is already connected in this workspace.";
+    var team = form.ownerKind === "team";
+    var options = reuse.signIns.map(function (signIn) {
+      var shared = signIn.pageCount + (signIn.complete ? "" : "+") +
+        (signIn.pageCount === 1 && signIn.complete ? " page" : " pages") + " shared";
+      var usedBy = signIn.alsoUsedBy && signIn.alsoUsedBy.length ? " already used by " + joinNames(signIn.alsoUsedBy) : "";
+      return websiteLoginRadioHtml("connection-account-reuse-source", esc(signIn.sourceConnectionId), reuse.source === signIn.sourceConnectionId, busy,
+        team ? "user-group" : "user", team ? "connection-account-owner-icon-team" : "connection-account-owner-icon-personal",
+        "Use " + esc(signInPossessive(signIn)) + " " + esc(connector) + " (" + shared + ")",
+        esc((team ? "Team account" : "Your personal account") + usedBy + ". No new " + connector + " sign-in."));
+    }).join("") + websiteLoginRadioHtml("connection-account-reuse-source", "other", reuse.source === "other", busy, "user", "connection-account-owner-icon-personal",
+      "Sign in to " + esc(connector) + " with another account",
+      esc(team ? "Opens " + connector + " so someone else can sign in and choose pages." : "Opens " + connector + " so you can sign in with a different account and choose pages."));
+    var html = '<div class="connection-account-owner"><div class="connection-account-owner-head"><span class="field-label">Which ' + esc(connector) + ' account?</span><p class="hint">' + esc(intro) + '</p></div>' +
+      '<div class="connection-account-owner-options" role="radiogroup">' + options + '</div></div>';
+    var signIn = reusableSignIn(form);
+    if (!signIn) return html;
+    var others = (signIn.alsoUsedBy || []).length ? joinNames(signIn.alsoUsedBy) : "every Agent using this sign-in";
+    return html + '<div class="connection-account-owner"><div class="connection-account-owner-head"><span class="field-label">Pages ' + esc(agentName) + ' can use</span>' +
+      '<p class="hint">' + esc(connector) + ' decides which pages Chickpea can reach. Choose which of them ' + esc(agentName) + ' uses.</p></div>' +
+      notionPageModeHtml("connection-account-reuse-mode", reuse.mode, busy) +
+      notionPageGridHtml(signIn.pages || [], reuse, "connection-account-reuse-page", busy) +
+      (signIn.complete ? '' : '<p class="hint">Chickpea lists the first 256 pages.</p>') +
+      (reuse.warning
+        ? '<div class="callout notion-pages-warning" role="status"><span>' + esc(connector + " opens with every page " + signInPossessive(signIn) + " " + connector + " already shares. Pages you uncheck there are removed from " + others + " too.") + '</span>' +
+          '<span class="notion-pages-warning-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-reuse-add-pages-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-soft btn-sm" data-action="connection-account-reuse-add-pages-continue"' + (busy ? " disabled" : "") + '>Continue to ' + esc(connector) + '</button></span></div>'
+        : '<p class="hint"><button type="button" class="link-btn" data-action="connection-account-reuse-add-pages"' + (busy ? " disabled" : "") + '>Add pages in ' + esc(connector) + '</button></p>') +
+      '</div>';
+  }
+
+  // Joins this Agent to an existing sign-in; with `thenChangePages` it then opens the provider to change that sign-in's pages.
+  function reuseManagedSignIn(thenChangePages) {
+    var form = state.connectionAccountForm;
+    var signIn = reusableSignIn(form);
+    var agentId = state.profileDraft && state.profileDraft.id;
+    if (!form || !signIn || !agentId || form.busy) return;
+    var tab = thenChangePages ? openManagedAuthorizationTab() : null;
+    var connector = form.preset && form.preset.name || "Notion";
+    var agentName = agentDisplayName();
+    var choice = form.reuse.mode === "all"
+      ? { mode: "all" }
+      : { mode: "only", pages: Object.keys(form.reuse.selected) };
+    form.busy = true;
+    form.error = "";
+    render();
+    postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/managed/reuse", "POST", {
+      workspaceId: state.agentConnections.workspaceId,
+      sourceConnectionId: signIn.sourceConnectionId,
+      ownerKind: form.ownerKind === "member" ? "member" : "team",
+      access: form.managedAccess === "write" ? "write" : "read",
+      choice: choice
+    }).then(function (body) {
+      var accountId = body && body.account && body.account.id || "";
+      if (state.connectionAccountForm === form) state.connectionAccountForm = null;
+      var notice = connector + " added to " + agentName + " with " + signInPossessive(signIn) + " sign-in." +
+        (choice.mode === "only" ? " " + agentName + " can use " + choice.pages.length + " of " + signIn.pageCount + " pages." : "");
+      invalidateAgentConnections(agentId);
+      return loadAgentConnections(agentId).then(function () {
+        if (state.agentConnections.agentId !== agentId) return;
+        setAgentConnectionNotice(notice, accountId);
+        if (thenChangePages && accountId) reconnectManagedConnection(accountId, tab);
+        else render();
+      });
+    }).catch(function (error) {
+      closeManagedAuthorizationTab(tab);
+      if (state.connectionAccountForm !== form) return;
+      form.busy = false;
+      form.error = (error && (error.serverMessage || error.message)) || "Could not add " + connector + " to this Agent.";
+      render();
+    });
+  }
+
+  // "All shared pages" or "2 of 6 pages" on a row whose sign-in other Agents share, or that is limited.
+  function notionRowPagesText(entry) {
+    if (!entry.pageMode || !(entry.sharedWithOtherAgents || entry.pageMode === "only")) return "";
+    if (entry.pageMode === "all") return "All shared pages";
+    var count = entry.pageCount || 0;
+    return typeof entry.sharedPageCount === "number"
+      ? count + " of " + entry.sharedPageCount + " pages"
+      : count + (count === 1 ? " page" : " pages");
+  }
+
+  function attachedConnectionEntry(accountId) {
+    return (state.agentConnections.attached || []).find(function (candidate) {
+      return candidate.account && candidate.account.id === accountId;
+    }) || null;
+  }
+
+  function openNotionPagePicker(accountId) {
+    var entry = attachedConnectionEntry(accountId);
+    var agentId = state.agentConnections.agentId;
+    if (!entry || !agentId) return;
+    var picker = {
+      accountId: accountId,
+      expectedRevision: entry.account.revision,
+      signIn: { label: entry.signerName || "", signedByYou: !!entry.signedByYou },
+      loading: true,
+      busy: false,
+      error: "",
+      mode: "all",
+      selected: {},
+      pages: [],
+      complete: true,
+      alsoUsedBy: []
+    };
+    state.notionPagePicker = picker;
+    state.sharedSignInConfirm = null;
+    state.managedResourceEditor = null;
+    render();
+    api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) +
+      "/pages?workspaceId=" + encodeURIComponent(state.agentConnections.workspaceId), { cache: "no-store" }).then(function (body) {
+      if (state.notionPagePicker !== picker) return;
+      picker.loading = false;
+      picker.pages = body && Array.isArray(body.pages) ? body.pages : [];
+      picker.complete = !body || body.complete !== false;
+      picker.mode = body && body.mode === "only" ? "only" : "all";
+      picker.selected = {};
+      picker.pages.forEach(function (page) { if (page.chosen) picker.selected[page.handle] = true; });
+      picker.alsoUsedBy = body && Array.isArray(body.alsoUsedBy) ? body.alsoUsedBy : [];
+      render();
+    }).catch(function (error) {
+      if (state.notionPagePicker !== picker) return;
+      picker.loading = false;
+      picker.error = (error && (error.serverMessage || error.message)) || "Could not load the pages for this Agent.";
+      render();
+    });
+  }
+
+  function saveNotionPagePicker() {
+    var picker = state.notionPagePicker;
+    var agentId = state.agentConnections.agentId;
+    if (!picker || picker.busy || picker.loading || !agentId) return;
+    var choice = picker.mode === "all" ? { mode: "all" } : { mode: "only", pages: Object.keys(picker.selected) };
+    var entry = attachedConnectionEntry(picker.accountId);
+    var connector = entry ? connectionAccountDisplayName(entry.account) : "Notion";
+    picker.busy = true;
+    picker.error = "";
+    render();
+    postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(picker.accountId) + "/pages", "PUT", {
+      workspaceId: state.agentConnections.workspaceId,
+      expectedRevision: picker.expectedRevision,
+      choice: choice
+    }).then(function () {
+      if (state.notionPagePicker === picker) state.notionPagePicker = null;
+      var count = choice.mode === "all" ? "all pages" : choice.pages.length + (choice.pages.length === 1 ? " page" : " pages");
+      var notice = "Page access saved. " + agentDisplayName() + " can use " + count + " from " + signInPossessive(picker.signIn) + " " + connector + ".";
+      invalidateAgentConnections(agentId);
+      return loadAgentConnections(agentId).then(function () {
+        if (state.agentConnections.agentId !== agentId) return;
+        setAgentConnectionNotice(notice, picker.accountId);
+        render();
+      });
+    }).catch(function (error) {
+      if (state.notionPagePicker !== picker) return;
+      picker.busy = false;
+      picker.error = (error && (error.serverMessage || error.message)) || "Could not save page access.";
+      render();
+    });
+  }
+
+  function notionPagePickerHtml(entry) {
+    var picker = state.notionPagePicker;
+    if (!picker || picker.accountId !== entry.account.id) return "";
+    if (picker.loading) return '<div class="skill-form"><p class="hint">Loading pages&hellip;</p></div>';
+    var agentName = agentDisplayName();
+    var connector = connectionAccountDisplayName(entry.account);
+    var busy = picker.busy;
+    var incomplete = picker.mode === "only" && !Object.keys(picker.selected).length;
+    return '<div class="skill-form notion-pages">' +
+      '<div class="connection-account-owner"><div class="connection-account-owner-head"><span class="field-label">Pages ' + esc(agentName) + ' can use</span>' +
+      '<p class="hint">' + esc(connector) + ' decides which pages Chickpea can reach. Choose which of them ' + esc(agentName) + ' uses.</p></div>' +
+      notionPageModeHtml("connection-account-pages-mode", picker.mode, busy) +
+      notionPageGridHtml(picker.pages, picker, "connection-account-pages-toggle", busy) +
+      (picker.complete ? '' : '<p class="hint">Chickpea lists the first 256 pages.</p>') + '</div>' +
+      '<p class="hint"><button type="button" class="link-btn" data-action="connection-account-pages-notion" data-connection-id="' + esc(entry.account.id) + '"' + (busy ? " disabled" : "") + '>Add or remove pages in ' + esc(connector) + '</button>' +
+      (entry.sharedWithOtherAgents ? ' Changes in ' + esc(connector) + ' apply to every Agent using ' + esc(signInPossessive(picker.signIn)) + ' ' + esc(connector) + '.' : '') + '</p>' +
+      (picker.alsoUsedBy.length ? '<p class="hint">Also used by ' + esc(joinNames(picker.alsoUsedBy)) + '.</p>' : '') +
+      (picker.error ? '<p class="field-error" role="alert">' + esc(picker.error) + '</p>' : '') +
+      '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-pages-cancel"' + (busy ? " disabled" : "") + '>Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="connection-account-pages-save"' + (busy || incomplete ? " disabled" : "") + '>' + (busy ? "Saving&hellip;" : "Save access") + '</button></div></div>';
+  }
+
+  // A shared sign-in's pages change for every Agent on it, so say so before the provider opens.
+  function changeSharedSignInPages(accountId) {
+    var entry = attachedConnectionEntry(accountId);
+    if (!entry) return;
+    state.notionPagePicker = null;
+    if (!entry.sharedWithOtherAgents) {
+      reconnectManagedConnection(accountId);
+      return;
+    }
+    state.sharedSignInConfirm = accountId;
+    render();
+  }
+
+  function sharedSignInConfirmHtml(entry) {
+    if (state.sharedSignInConfirm !== entry.account.id) return "";
+    var connector = connectionAccountDisplayName(entry.account);
+    var signIn = { label: entry.signerName || "", signedByYou: !!entry.signedByYou };
+    var applies = entry.alsoUsedBy && entry.alsoUsedBy.length
+      ? "Changes there apply to " + joinNames([agentDisplayName()].concat(entry.alsoUsedBy)) + "."
+      : "Changes there apply to every Agent using this sign-in.";
+    return '<div class="callout notion-pages-warning" role="status"><span>' + esc(connector + " opens with the pages " + signInPossessive(signIn) + " " + connector + " shares. " + applies) + '</span>' +
+      '<span class="notion-pages-warning-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-shared-change-cancel">Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="connection-account-shared-change-continue">Continue to ' + esc(connector) + '</button></span></div>';
+  }
+
   function connectionAccountRowHtml(entry) {
     var account = entry.account;
     var identity = connectionAccountIdentity(account);
+    var pagesSummary = notionRowPagesText(entry);
     var owner = connectionAccountOwnerLabel(account);
     var displayName = connectionAccountDisplayName(account);
     var oauthAction = account.policy && account.policy.authMode === "oauth" && account.lifecycle !== "ready"
@@ -6887,18 +7197,21 @@
     if (managedResources.length && (!pendingResourceSelection || managedAction || oauthAction)) {
       menuItems.push('<button type="button" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">' + (pendingResourceSelection ? "Choose " : "Change ") + esc(managedResourceSelectionLabel(account)) + '</button>');
     }
+    if (account.lifecycle === "ready" && pagesSummary && (WORKSPACE_ADMIN_UI || account.ownerKind === "member")) {
+      menuItems.unshift('<button type="button" data-action="connection-account-pages-open" data-connection-id="' + esc(account.id) + '">Choose pages for this Agent</button>');
+    }
     if (account.policy && account.policy.kind === "managed" && account.lifecycle === "ready") {
-      menuItems.push('<button type="button" data-action="connection-account-managed-reconnect" data-connection-id="' + esc(account.id) + '">' + esc(managedReconnectLabel(managedConnectorDescriptorByToolkit(account.policy.toolkit))) + '</button>');
+      menuItems.push('<button type="button" data-action="' + (entry.sharedWithOtherAgents ? "connection-account-shared-change" : "connection-account-managed-reconnect") + '" data-connection-id="' + esc(account.id) + '">' + esc(managedReconnectLabel(managedConnectorDescriptorByToolkit(account.policy.toolkit))) + '</button>');
     }
     menuItems.push('<button type="button" class="danger" data-action="connection-account-disconnect" data-connection-id="' + esc(account.id) + '">Disconnect account&hellip;</button>');
     var menu = '<details class="connection-row-menu"><summary aria-label="More actions for ' + esc(displayName) + '">&#8943;</summary>' +
       '<div class="connection-row-menu-panel">' + menuItems.join("") + '</div></details>';
-    var resourceEditor = managedResourceEditorHtml(account);
+    var resourceEditor = managedResourceEditorHtml(account) || notionPagePickerHtml(entry) || sharedSignInConfirmHtml(entry);
     var keyEditor = awaitsKey ? connectionAccountKeyEditorHtml(account) : "";
     return '<div class="connection-account-row connection-account-row-attached">' +
       connectionAccountLogoHtml(account) +
       '<span class="connection-account-copy"><span class="connection-account-name">' + esc(displayName) + '</span>' +
-      '<span class="connection-account-identity">' + (identity ? esc(identity) + ' &middot; ' : '') + owner + '</span></span>' +
+      '<span class="connection-account-identity">' + (identity ? esc(identity) + ' &middot; ' : '') + owner + (pagesSummary ? ' &middot; ' + esc(pagesSummary) : '') + '</span></span>' +
       status + connectionAccountCapabilitiesHtml(account, entry.binding ? entry.binding.allowedCapabilities : null) + action + menu +
       (customMcpEditor ? '<div class="connection-row-editor">' + customMcpEditor + '</div>' : '') +
       (resourceEditor ? '<div class="connection-row-editor">' + resourceEditor + '</div>' : '') +
@@ -7199,13 +7512,18 @@
         !/composio/i.test(managedDescriptor.securityDescription)
         ? managedDescriptor.securityDescription
         : "Sign-in opens in a secure " + managedPreset.name + " tab. Chickpea keeps a reference to the connected account and this Agent’s access level — never your password or refresh tokens.";
+      var reusing = reusableSignIn(form);
+      var managedSubmitLabel = reusing
+        ? (busy ? "Adding&hellip;" : "Use " + esc(signInPossessive(reusing)) + " " + esc(managedPreset.name))
+        : busy ? "Opening sign-in&hellip;" : form.signInNotice ? "Continue with a different " + esc(managedPreset.name) + " account" : "Continue to " + esc(managedPreset.name);
+      var reuseIncomplete = !!(reusing && form.reuse.mode === "only" && !Object.keys(form.reuse.selected).length);
       return '<div class="skill-form"><div class="conn-title connection-account-form-connector">' + connectorLogoHtml(managedPreset) + '<div><strong>' + esc(managedPreset.name) + '</strong><p class="hint">' + esc(managedPreset.description || "") + '</p></div></div>' +
         connectionAccountOwnerHtml(form) +
-        connectionAccountAccessHtml(form) +
-        '<p class="conn-security">' + esc(managedSecurityCopy) + '</p>' +
-        (form.signInNotice ? '<div class="callout" role="status"><span>' + esc(form.signInNotice) + '</span></div>' : '') +
+        managedReuseHtml(form) +
+        (reusing ? '' : connectionAccountAccessHtml(form) + '<p class="conn-security">' + esc(managedSecurityCopy) + '</p>') +
+        (form.signInNotice && !reusing ? '<div class="callout" role="status"><span>' + esc(form.signInNotice) + '</span></div>' : '') +
         (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
-        '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !ownerSelected ? " disabled" : "") + '>' + (busy ? "Opening sign-in&hellip;" : form.signInNotice ? "Continue with a different " + esc(managedPreset.name) + " account" : "Continue to " + esc(managedPreset.name)) + '</button></div></div>';
+        '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !ownerSelected || reuseIncomplete ? " disabled" : "") + '>' + managedSubmitLabel + '</button></div></div>';
     }
     var oauth = form.kind === "api" && form.authMode === "google_oauth";
     var mcpOauth = form.kind === "mcp" && form.authMode === "oauth";
@@ -14571,6 +14889,39 @@
       );
     }
     if (action === "connection-account-resource-cancel") { state.managedResourceEditor = null; render(); }
+    if (action === "connection-account-reuse-page" && state.connectionAccountForm && state.connectionAccountForm.reuse &&
+        !state.connectionAccountForm.busy) {
+      var pageSignIn = reusableSignIn(state.connectionAccountForm);
+      toggleNotionPage(state.connectionAccountForm.reuse, pageSignIn ? pageSignIn.pages : [],
+        target.getAttribute("data-page-handle") || "", !!target.checked);
+      render();
+    }
+    if (action === "connection-account-reuse-add-pages" && state.connectionAccountForm && state.connectionAccountForm.reuse) {
+      state.connectionAccountForm.reuse.warning = true;
+      render();
+    }
+    if (action === "connection-account-reuse-add-pages-cancel" && state.connectionAccountForm && state.connectionAccountForm.reuse) {
+      state.connectionAccountForm.reuse.warning = false;
+      render();
+    }
+    if (action === "connection-account-reuse-add-pages-continue") { reuseManagedSignIn(true); }
+    if (action === "connection-account-pages-open") { openNotionPagePicker(target.getAttribute("data-connection-id") || ""); }
+    if (action === "connection-account-pages-toggle" && state.notionPagePicker && !state.notionPagePicker.busy) {
+      toggleNotionPage(state.notionPagePicker, state.notionPagePicker.pages,
+        target.getAttribute("data-page-handle") || "", !!target.checked);
+      render();
+    }
+    if (action === "connection-account-pages-cancel") { state.notionPagePicker = null; render(); }
+    if (action === "connection-account-pages-save") { saveNotionPagePicker(); }
+    if (action === "connection-account-pages-notion" || action === "connection-account-shared-change") {
+      changeSharedSignInPages(target.getAttribute("data-connection-id") || "");
+    }
+    if (action === "connection-account-shared-change-cancel") { state.sharedSignInConfirm = null; render(); }
+    if (action === "connection-account-shared-change-continue" && state.sharedSignInConfirm) {
+      var confirmedAccountId = state.sharedSignInConfirm;
+      state.sharedSignInConfirm = null;
+      reconnectManagedConnection(confirmedAccountId);
+    }
     if (action === "connection-account-resource-save") { saveManagedResourceSelection(); }
     if (action === "connection-account-disconnect") { disconnectAgentConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "connection-account-revoke") { revokeConnectionAccount(target.getAttribute("data-connection-id") || ""); }
@@ -15440,6 +15791,27 @@
       state.connectionAccountForm.ownerKind = target.value;
       state.connectionAccountForm.error = "";
       state.connectionAccountForm.signInNotice = "";
+      loadReusableSignIns(state.connectionAccountForm);
+      render();
+    }
+    if (state.connectionAccountForm && state.connectionAccountForm.reuse && !state.connectionAccountForm.busy &&
+        action === "connection-account-reuse-source") {
+      var reuseForm = state.connectionAccountForm;
+      reuseForm.reuse.source = target.value;
+      reuseForm.reuse.warning = false;
+      setNotionPageMode(reuseForm.reuse, reusableSignIn(reuseForm) ? reusableSignIn(reuseForm).pages : [], "all");
+      reuseForm.error = "";
+      render();
+    }
+    if (state.connectionAccountForm && state.connectionAccountForm.reuse && !state.connectionAccountForm.busy &&
+        action === "connection-account-reuse-mode" && (target.value === "all" || target.value === "only")) {
+      var modeSignIn = reusableSignIn(state.connectionAccountForm);
+      setNotionPageMode(state.connectionAccountForm.reuse, modeSignIn ? modeSignIn.pages : [], target.value);
+      render();
+    }
+    if (state.notionPagePicker && !state.notionPagePicker.busy && action === "connection-account-pages-mode" &&
+        (target.value === "all" || target.value === "only")) {
+      setNotionPageMode(state.notionPagePicker, state.notionPagePicker.pages, target.value);
       render();
     }
     if (action === "meta-ads-app-id") state.metaAdsSettings.clientId = target.value;
