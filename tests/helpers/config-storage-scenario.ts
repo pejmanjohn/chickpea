@@ -519,15 +519,15 @@ const NOTES_DATABASE = '5c3e1a2b-7d4f-4e6a-9b8c-0d1e2f3a4b5c';
 const NOTES_HANDBOOK = '6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d';
 
 /**
- * One Notion sign-in that two Agents share: the researcher connected it, the
- * concierge joined it and is limited to one of its pages.
+ * One Notion sign-in that two Agents share: the owner signed in for the
+ * researcher, and a member added the concierge, limited to one of its pages.
  */
 const NOTES_SIGN_IN: SignInGroupPolicy = {
   adapterId: 'composio',
   toolkit: 'notion',
   principalRef: 'principal_scenario',
   accountRef: 'account_scenario_notes',
-  signIn: { person: 'notion:workspace-scenario:user-scenario', accessLane: 'write' },
+  signIn: { person: 'notion:workspace-scenario:user-scenario', accessLane: 'write', signedBy: OWNER },
   grantSummary: {
     items: [
       { id: NOTES_DATABASE, type: 'database', label: 'Scenario Notes' },

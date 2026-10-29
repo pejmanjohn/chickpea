@@ -13,7 +13,13 @@ import {
 } from '../src/connections/managed-authorization-flow.ts';
 import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
 import { createManagedConnectionProviderRegistry, type ManagedConnectionProvider } from '../src/connections/managed.ts';
-import { pageRoots, parseNotionId, readAgentPageChoice, type NotionId } from '../src/connections/notion-pages.ts';
+import {
+  notionPageHandle,
+  pageRoots,
+  parseNotionId,
+  readAgentPageChoice,
+  type NotionId,
+} from '../src/connections/notion-pages.ts';
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
 import { projectEffectiveConnectionAccounts } from '../src/connections/runtime.ts';
 import {
@@ -168,10 +174,14 @@ async function notionWorkspace() {
     if (!binding || account?.policy.kind !== 'managed') throw new Error(`expected ${agentId}'s Notion account`);
     return { account: { ...account, policy: account.policy }, binding };
   };
+  /** Chooses pages by Notion id, sent as the handles the browser sends. */
   const choose = async (agentId: string, choice: Parameters<ConnectionAccountService['setAgentPages']>[0]['choice']) => {
     const { account } = await accountOf(agentId);
+    const byHandle = 'pages' in choice && Array.isArray(choice.pages)
+      ? { ...choice, pages: await Promise.all(choice.pages.map((page) => notionPageHandle(page as NotionId))) }
+      : choice;
     return service.setAgentPages({
-      principal: MAYA, agentId, connectionAccountId: account.id, expectedRevision: account.revision, choice,
+      principal: MAYA, agentId, connectionAccountId: account.id, expectedRevision: account.revision, choice: byHandle,
     });
   };
   /** The pages an Agent can read, by title. */
@@ -236,8 +246,8 @@ test('an Agent is offered the roots its sign-in lists, and may limit itself to t
     assert.deepEqual(await notion.service.agentPages(team), {
       mode: 'all',
       pages: [
-        { id: TEAM_PLAN.id, kind: 'page', label: 'Team plan', chosen: true },
-        { id: TEAM_WIKI.id, kind: 'page', label: 'Team wiki', chosen: true },
+        { handle: await notionPageHandle(TEAM_PLAN.id), kind: 'page', label: 'Team plan', chosen: true },
+        { handle: await notionPageHandle(TEAM_WIKI.id), kind: 'page', label: 'Team wiki', chosen: true },
       ],
       complete: true,
     });
@@ -248,15 +258,19 @@ test('an Agent is offered the roots its sign-in lists, and may limit itself to t
       await assert.rejects(notion.choose('agent_ops', { mode: 'only', pages }), refused, pages[0]);
     }
     await assert.rejects(notion.service.setAgentPages({
-      ...team, expectedRevision: ops.revision - 1, choice: { mode: 'only', pages: [TEAM_PLAN.id] },
+      ...team, expectedRevision: ops.revision - 1, choice: { mode: 'only', pages: [await notionPageHandle(TEAM_PLAN.id)] },
     }), (error) => error instanceof ManagedResourceSelectionError && error.code === 'stale');
     await assert.rejects(notion.service.setAgentPages({
       ...team, principal: { ...principal('membership_zed'), role: 'member' },
-      expectedRevision: ops.revision, choice: { mode: 'only', pages: [TEAM_PLAN.id] },
+      expectedRevision: ops.revision, choice: { mode: 'only', pages: [await notionPageHandle(TEAM_PLAN.id)] },
     }), AuthorizationError, 'someone who cannot edit the Agent cannot limit it');
     assert.deepEqual(await notion.reached('agent_ops'), ALL_SHARED, 'a refused choice changes nothing');
 
-    const limited = await notion.choose('agent_ops', { mode: 'only', pages: [TEAM_PLAN.id.replaceAll('-', '')] });
+    for (const pages of [[TEAM_PLAN.id.replaceAll('-', '')], [TEAM_PLAN.id]]) {
+      await assert.rejects(notion.service.setAgentPages({ ...team, expectedRevision: ops.revision, choice: { mode: 'only', pages } }),
+        refused, 'a Notion id is not a page handle');
+    }
+    const limited = await notion.choose('agent_ops', { mode: 'only', pages: [TEAM_PLAN.id] });
     assert.equal(limited.account.revision, ops.revision + 1, 'a choice moves the account revision like any other edit');
     await assert.rejects(notion.service.setAgentPages({
       ...team, expectedRevision: ops.revision, choice: { mode: 'all' },

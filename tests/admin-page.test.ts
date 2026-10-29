@@ -613,6 +613,8 @@ function runAdminPageHarness(
     githubAccountDisconnectError?: { status: number; error: string };
     settingsLoadFetch?: (path: string, method: string) => Promise<FakeResponse> | undefined;
     websiteLoginsFetch?: (path: string, method: string, body: string | undefined) => Promise<FakeResponse> | undefined;
+    /** Answers the shared Notion sign-in routes: reusable sign-ins, reuse, and an Agent's pages. */
+    notionPagesFetch?: (path: string, method: string, body: string | undefined) => Promise<FakeResponse> | undefined;
     githubRepoPages?: Record<string, GithubRepoPageFixture>;
     githubRepoError?: { status: number; error: string; message?: string };
     githubRepoFetch?: (path: string) => Promise<FakeResponse>;
@@ -734,6 +736,7 @@ function runAdminPageHarness(
   usageApiCalls: string[];
   scheduledApiCalls: string[];
   fetchCalls: Array<{ path: string; method: string }>;
+  confirmMessages: string[];
   modelReadinessRequests: string[];
   channelListCalls: string[];
   providerKeyPosts: Array<{ id: string; key: string }>;
@@ -1175,6 +1178,8 @@ function runAdminPageHarness(
   const githubStatus = options.githubStatus;
   const settingsLoadFetch = options.settingsLoadFetch;
   const websiteLoginsFetch = options.websiteLoginsFetch;
+  const notionPagesFetch = options.notionPagesFetch;
+  const confirmMessages: string[] = [];
   const githubRepoPages = options.githubRepoPages;
   const githubRepoError = options.githubRepoError;
   const githubRepoFetch = options.githubRepoFetch;
@@ -1301,7 +1306,7 @@ function runAdminPageHarness(
       return timerId;
     },
     clearTimeout(timerId: number) { scheduledTimers.delete(timerId); },
-    confirm() { return true; },
+    confirm(message?: string) { confirmMessages.push(String(message)); return true; },
     // As a browser does: a blocked popup returns null, and so does a tab that
     // opened with `noopener` or `noreferrer` in its features.
     open(url?: string, _target?: string, features?: string) {
@@ -1649,6 +1654,10 @@ function runAdminPageHarness(
       ['/admin/api/github/status', '/admin/api/sandbox/status'].includes(path)
     ) {
       settingsGetCalls.push(path);
+    }
+    if (notionPagesFetch && /^\/admin\/api\/agents\/[^/]+\/connections\/(?:managed\/reus(?:e|able)|[^/]+\/pages)(?:\?|$)/.test(path)) {
+      const notionPagesResponse = notionPagesFetch(path, method, options?.body);
+      if (notionPagesResponse) return notionPagesResponse;
     }
     if (websiteLoginsFetch && /^\/admin\/api\/agents\/[^/]+\/website-logins(?:\/|$)/.test(path)) {
       const websiteLoginsResponse = websiteLoginsFetch(path, method, options?.body);
@@ -3252,6 +3261,7 @@ function runAdminPageHarness(
     usageApiCalls,
     scheduledApiCalls,
     fetchCalls,
+    confirmMessages,
     modelReadinessRequests,
     channelListCalls,
     providerKeyPosts,
@@ -11321,6 +11331,264 @@ test('choosing the other owner clears the Notion notice', async () => {
   chooseConnectionOwner(harness, 'team');
   assert.ok(!harness.app.innerHTML.includes(escapeHtml(notice)));
   assert.match(harness.app.innerHTML, /data-action="connection-account-create"[^>]*>Continue to Notion<\/button>/);
+});
+
+const NOTION_PAGE_FIXTURES = [
+  { handle: 'page_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1', kind: 'page', label: 'Q4 Roadmap' },
+  { handle: 'page_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2', kind: 'page', label: 'Engineering Wiki' },
+  { handle: 'page_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3', kind: 'database', label: 'Customer Interviews' },
+];
+
+function sharedNotionConnections(attached: Array<Record<string, unknown>> = [], sharedSignIn = true) {
+  const connections = managedNotionConnections();
+  const [notion] = connections.managedConnectors.catalog;
+  return {
+    ...connections,
+    attached,
+    managedConnectors: {
+      ...connections.managedConnectors,
+      catalog: [{ ...notion, providerSelection: { label: 'pages' }, ...(sharedSignIn ? { sharedSignIn: true } : {}) }],
+    },
+  };
+}
+
+/** The shared Notion sign-in routes, recording what the page sends. */
+function notionPagesRoutes(answers: { signIns?: Array<Record<string, unknown>>; pages?: Record<string, unknown> }) {
+  const requests: Array<{ path: string; method: string; body?: Record<string, unknown> }> = [];
+  const fetch = (path: string, method: string, body: string | undefined) => {
+    requests.push({ path, method, ...(body ? { body: JSON.parse(body) as Record<string, unknown> } : {}) });
+    if (path.includes('/connections/managed/reusable?')) return Promise.resolve(jsonResponse({ signIns: answers.signIns ?? [] }));
+    if (path.endsWith('/connections/managed/reuse')) {
+      return Promise.resolve(jsonResponse({ account: { id: 'connection_notion_new' }, binding: {} }, 201));
+    }
+    if (/\/pages\?workspaceId=/.test(path)) return Promise.resolve(jsonResponse(answers.pages ?? {}));
+    if (path.endsWith('/pages') && method === 'PUT') return Promise.resolve(jsonResponse({ account: {}, binding: {} }));
+    return undefined;
+  };
+  return { requests, fetch };
+}
+
+const MAYA_SIGN_IN = {
+  sourceConnectionId: 'connection_notion_ops', label: 'Maya Chen', signedByYou: false, pageCount: 3,
+  pages: NOTION_PAGE_FIXTURES, complete: true, alsoUsedBy: ['Atlas', 'Penny'],
+};
+
+function pageCheckbox(handle: string, checked: boolean) {
+  return { target: { ...actionTarget({ 'data-action': 'connection-account-reuse-page', 'data-page-handle': handle }), checked } as FakeTarget & { checked: boolean } };
+}
+
+test('the first Notion connect form is unchanged when no sign-in can be reused', async () => {
+  const render = async (sharedSignIn: boolean) => {
+    const routes = notionPagesRoutes({ signIns: [] });
+    const harness = runAdminPageHarness({
+      agents: [connectionsAgent()], connectionAccounts: sharedNotionConnections([], sharedSignIn), notionPagesFetch: routes.fetch,
+    });
+    await flushAsync();
+    await openManagedNotionDialog(harness, 'team');
+    await flushAsync();
+    return { html: harness.app.innerHTML, requests: routes.requests };
+  };
+  const shared = await render(true);
+  const today = await render(false);
+  assert.deepEqual(shared.requests.map(({ path }) => path.split('?')[0]), ['/admin/api/agents/agent_conn/connections/managed/reusable']);
+  assert.deepEqual(today.requests, [], 'a connector without shared sign-ins asks nothing');
+  assert.equal(shared.html, today.html);
+  assert.match(shared.html, /data-action="connection-account-create"[^>]*>Continue to Notion<\/button>/);
+});
+
+test('a reusable Notion sign-in is offered with its pages, and clicking a page limits the Agent to the rest', async () => {
+  const routes = notionPagesRoutes({ signIns: [MAYA_SIGN_IN] });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()], connectionAccounts: sharedNotionConnections(), notionPagesFetch: routes.fetch,
+  });
+  await flushAsync();
+  const click = await openManagedNotionDialog(harness, 'team');
+  await flushAsync();
+  const html = () => harness.app.innerHTML;
+  assert.ok(routes.requests[0]?.path.endsWith('&toolkit=notion&ownerKind=team&access=write'));
+  assert.match(html(), /Which Notion account\?/);
+  assert.match(html(), /Maya Chen already connected Notion in this workspace\./);
+  assert.match(html(), /value="connection_notion_ops" data-action="connection-account-reuse-source" checked>/);
+  assert.match(html(), /<strong>Use Maya’s Notion \(3 pages shared\)<\/strong><span>Team account already used by Atlas and Penny\. No new Notion sign-in\.<\/span>/);
+  assert.match(html(), /<strong>Sign in to Notion with another account<\/strong><span>Opens Notion so someone else can sign in and choose pages\.<\/span>/);
+  assert.match(html(), /Pages Conn Profile can use/);
+  assert.match(html(), /value="all" data-action="connection-account-reuse-mode" checked>/);
+  assert.equal(html().match(/data-action="connection-account-reuse-page" data-page-handle="[^"]+" checked/g)?.length, 3);
+  assert.match(html(), /data-action="connection-account-create"[^>]*>Use Maya’s Notion<\/button>/);
+  assert.doesNotMatch(html(), /Review the permissions requested/, 'no Notion sign-in, so no permissions to review');
+
+  click(pageCheckbox(NOTION_PAGE_FIXTURES[1]!.handle, false));
+  assert.match(html(), /value="only" data-action="connection-account-reuse-mode" checked>/);
+  assert.match(html(), /data-page-handle="page_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2">/, 'the clicked page is unchecked');
+  assert.equal(html().match(/data-action="connection-account-reuse-page" data-page-handle="[^"]+" checked/g)?.length, 2);
+
+  click({ target: actionTarget({ 'data-action': 'connection-account-reuse-add-pages' }) });
+  assert.match(html(), /Notion opens with every page Maya’s Notion already shares\. Pages you uncheck there are removed from Atlas and Penny too\./);
+  assert.match(html(), /data-action="connection-account-reuse-add-pages-continue"[^>]*>Continue to Notion<\/button>/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-reuse-add-pages-cancel' }) });
+  assert.doesNotMatch(html(), /Notion opens with every page/);
+
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+  assert.deepEqual(routes.requests.filter(({ method }) => method === 'POST').map(({ body }) => body), [{
+    workspaceId: 'T_DESIGN', sourceConnectionId: 'connection_notion_ops', ownerKind: 'team', access: 'write',
+    choice: { mode: 'only', pages: [NOTION_PAGE_FIXTURES[0]!.handle, NOTION_PAGE_FIXTURES[2]!.handle] },
+  }]);
+  assert.deepEqual(harness.managedAuthorizationPosts, [], 'Notion is not opened');
+  assert.match(html(), /Notion added to Conn Profile with Maya’s sign-in\. Conn Profile can use 2 of 3 pages\./);
+});
+
+test('choosing another account on the Notion reuse form goes back to signing in', async () => {
+  const routes = notionPagesRoutes({ signIns: [MAYA_SIGN_IN] });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()], connectionAccounts: sharedNotionConnections(), notionPagesFetch: routes.fetch,
+  });
+  await flushAsync();
+  const click = await openManagedNotionDialog(harness, 'team');
+  await flushAsync();
+  harness.listeners.change?.({ target: inputTarget({ 'data-action': 'connection-account-reuse-source' }, 'other') });
+  assert.doesNotMatch(harness.app.innerHTML, /Pages Conn Profile can use/);
+  assert.match(harness.app.innerHTML, /Review the permissions requested/);
+  assert.match(harness.app.innerHTML, /data-action="connection-account-create"[^>]*>Continue to Notion<\/button>/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+  assert.deepEqual(harness.managedAuthorizationPosts.map(({ body }) => body), [
+    { workspaceId: 'T_DESIGN', ownerKind: 'team', toolkit: 'notion', access: 'write' },
+  ]);
+});
+
+function notionRow(id: string, extra: Record<string, unknown>, ownerKind: 'team' | 'member' = 'team') {
+  const account = {
+    ...managedTeamAccount(id, 'notion', ownerKind === 'team' ? 'Notion · Team' : 'Notion · Personal', 'ready', 'notion.content.search'),
+    ownerKind,
+    revision: 3,
+  };
+  return { ...ownedConnection(account), ...extra, account };
+}
+
+async function openConnections(harness: ReturnType<typeof runAdminPageHarness>) {
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  return click;
+}
+
+test('a Notion row offers page choice when another Agent shares its sign-in or it is limited, and names those Agents to Admins', async () => {
+  const shared = notionRow('connection_notion_shared', {
+    pageMode: 'all', pageCount: 3, sharedPageCount: 3, sharedWithOtherAgents: true, alsoUsedBy: ['Penny'],
+    signerName: 'Maya Chen', signedByYou: false,
+  });
+  const limited = notionRow('connection_notion_limited', {
+    pageMode: 'only', pageCount: 1, sharedPageCount: 3, sharedWithOtherAgents: false, signerName: 'Maya Chen', signedByYou: false,
+  });
+  const alone = notionRow('connection_notion_alone', {
+    pageMode: 'all', pageCount: 3, sharedPageCount: 3, sharedWithOtherAgents: false, signerName: 'Maya Chen', signedByYou: false,
+  });
+  const routes = notionPagesRoutes({
+    pages: {
+      mode: 'all', complete: true, alsoUsedBy: ['Penny'],
+      pages: NOTION_PAGE_FIXTURES.map((page) => ({ ...page, chosen: true })),
+    },
+  });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()], connectionAccounts: sharedNotionConnections([shared, limited, alone]), notionPagesFetch: routes.fetch,
+  });
+  const click = await openConnections(harness);
+  const row = (id: string) => htmlChunkWith(harness.app.innerHTML, 'class="connection-account-row connection-account-row-attached"', `data-connection-id="${id}"`);
+  assert.match(row('connection_notion_shared'), /<span class="connection-account-identity">Team &middot; All shared pages<\/span>/);
+  assert.match(row('connection_notion_limited'), /<span class="connection-account-identity">Team &middot; 1 of 3 pages<\/span>/);
+  assert.match(row('connection_notion_alone'), /<span class="connection-account-identity">Team<\/span>/);
+  assert.match(row('connection_notion_shared'),
+    /<div class="connection-row-menu-panel"><button type="button" data-action="connection-account-pages-open" data-connection-id="connection_notion_shared">Choose pages for this Agent<\/button><button type="button" data-action="connection-account-shared-change"[^>]*>Change Notion pages<\/button>/);
+  assert.match(row('connection_notion_limited'), /data-action="connection-account-pages-open"[^>]*>Choose pages for this Agent</);
+  assert.match(row('connection_notion_limited'), /data-action="connection-account-managed-reconnect"[^>]*>Change Notion pages</);
+  assert.doesNotMatch(row('connection_notion_alone'), /Choose pages for this Agent/);
+
+  click({ target: actionTarget({ 'data-action': 'connection-account-pages-open', 'data-connection-id': shared.account.id }) });
+  await flushAsync();
+  const picker = row('connection_notion_shared');
+  assert.match(picker, /Pages Conn Profile can use/);
+  assert.match(picker, /value="all" data-action="connection-account-pages-mode" checked>/);
+  assert.match(picker, />Add or remove pages in Notion<\/button> Changes in Notion apply to every Agent using Maya’s Notion\./);
+  assert.match(picker, /Also used by Penny\./);
+  click({ target: { ...actionTarget({ 'data-action': 'connection-account-pages-toggle', 'data-page-handle': NOTION_PAGE_FIXTURES[0]!.handle }), checked: false } as FakeTarget & { checked: boolean } });
+  assert.match(row('connection_notion_shared'), /value="only" data-action="connection-account-pages-mode" checked>/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-pages-save' }) });
+  await flushAsync();
+  assert.deepEqual(routes.requests.filter(({ method }) => method === 'PUT').map(({ body }) => body), [{
+    workspaceId: 'T_DESIGN', expectedRevision: 3,
+    choice: { mode: 'only', pages: [NOTION_PAGE_FIXTURES[1]!.handle, NOTION_PAGE_FIXTURES[2]!.handle] },
+  }]);
+  assert.match(harness.app.innerHTML, /Page access saved\. Conn Profile can use 2 pages from Maya’s Notion\./);
+
+  click({ target: actionTarget({ 'data-action': 'connection-account-shared-change', 'data-connection-id': shared.account.id }) });
+  assert.match(row('connection_notion_shared'),
+    /Notion opens with the pages Maya’s Notion shares\. Changes there apply to Conn Profile and Penny\./);
+  assert.deepEqual(harness.managedAuthorizationPosts, [], 'Notion waits for the confirm');
+  click({ target: actionTarget({ 'data-action': 'connection-account-shared-change-continue' }) });
+  await flushAsync();
+  assert.deepEqual(harness.managedAuthorizationPosts.map(({ body }) => body), [
+    { workspaceId: 'T_DESIGN', connectionAccountId: shared.account.id },
+  ]);
+});
+
+test('an Admin is not offered page choice on another member\'s personal Notion row', async () => {
+  const theirs = notionRow('connection_notion_theirs', {
+    pageMode: 'all', pageCount: 3, sharedPageCount: 3, sharedWithOtherAgents: true, signerName: 'Zed Park', signedByYou: false,
+  }, 'member');
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()], connectionAccounts: sharedNotionConnections([theirs]) });
+  await openConnections(harness);
+  const row = htmlChunkWith(harness.app.innerHTML, 'class="connection-account-row connection-account-row-attached"', 'data-connection-id="connection_notion_theirs"');
+  assert.match(row, /Personal &middot; All shared pages/);
+  assert.match(row, /data-action="connection-account-disconnect"/);
+  assert.doesNotMatch(row, /Choose pages for this Agent/, 'only its owner chooses a personal connection\'s pages');
+});
+
+test('disconnecting one Agent from a shared Notion sign-in says the other Agents keep it', async () => {
+  const shared = notionRow('connection_notion_shared', {
+    pageMode: 'all', sharedWithOtherAgents: true, signerName: 'Maya Chen', signedByYou: false,
+  });
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()], connectionAccounts: sharedNotionConnections([shared]) });
+  const click = await openConnections(harness);
+  click({ target: actionTarget({ 'data-action': 'connection-account-disconnect', 'data-connection-id': shared.account.id }) });
+  assert.deepEqual(harness.confirmMessages, ['Disconnect Notion from Conn Profile? Other Agents using this sign-in keep it.']);
+});
+
+test('a Member sees their own Notion sign-in and the shared-change confirm without other Agents\' names', async () => {
+  const own = notionRow('connection_notion_mine', {
+    pageMode: 'all', pageCount: 3, sharedPageCount: 3, sharedWithOtherAgents: true, signerName: 'Zed Park', signedByYou: true,
+  }, 'member');
+  const routes = notionPagesRoutes({
+    signIns: [{ ...MAYA_SIGN_IN, sourceConnectionId: 'connection_notion_mine', label: 'Zed Park', signedByYou: true, alsoUsedBy: undefined }],
+    pages: { mode: 'all', complete: true, pages: NOTION_PAGE_FIXTURES.map((page) => ({ ...page, chosen: true })) },
+  });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()], connectionAccounts: sharedNotionConnections([own]), notionPagesFetch: routes.fetch,
+  });
+  const click = await openConnections(harness);
+  click({ target: actionTarget({ 'data-action': 'connection-account-shared-change', 'data-connection-id': own.account.id }) });
+  assert.match(harness.app.innerHTML,
+    /Notion opens with the pages your Notion shares\. Changes there apply to every Agent using this sign-in\./);
+  click({ target: actionTarget({ 'data-action': 'connection-account-shared-change-cancel' }) });
+  click({ target: actionTarget({ 'data-action': 'connection-account-pages-open', 'data-connection-id': own.account.id }) });
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /Also used by/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-pages-cancel' }) });
+
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'notion-managed' }) });
+  chooseConnectionOwner(harness, 'member');
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /You already connected Notion in this workspace\./);
+  assert.match(harness.app.innerHTML, /<strong>Use your Notion \(3 pages shared\)<\/strong><span>Your personal account\. No new Notion sign-in\.<\/span>/);
+  assert.match(harness.app.innerHTML, /<strong>Sign in to Notion with another account<\/strong><span>Opens Notion so you can sign in with a different account and choose pages\.<\/span>/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-reuse-add-pages' }) });
+  assert.match(harness.app.innerHTML,
+    /Notion opens with every page your Notion already shares\. Pages you uncheck there are removed from every Agent using this sign-in too\./);
+  assert.doesNotMatch(harness.app.innerHTML, /Atlas|Penny/);
 });
 
 test('a refused Notion sign-in shows its reason above the Agent\'s connections, which stay in reach', async () => {

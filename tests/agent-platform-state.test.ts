@@ -601,6 +601,33 @@ function sharedPolicy(account: ConnectionAccount) {
   return signInGroupPolicy(account.policy);
 }
 
+test('a stored sign-in may name the member who signed it, and older sign-ins without one still save', async () => {
+  const store = await platformStoreWithAgents('agent_support', 'agent_sales');
+  try {
+    const { account: older } = await store.createAgentOwnedConnection(
+      teamManagedConnection('connection_notion_support', 'agent_support', 'notion', 'ca_notion_support'),
+    );
+    assert.deepEqual(older.policy.kind === 'managed' && older.policy.signIn,
+      { person: 'notion:workspace-1:user-1', accessLane: 'read' });
+    assert.equal((await store.putConnectionAccount({ ...older, label: 'Notion, renamed' }, older.revision)).revision,
+      older.revision + 1);
+
+    const signedBy = (value: unknown) => teamManagedConnection(
+      'connection_notion_sales', 'agent_sales', 'notion', 'ca_notion_sales',
+      { signIn: { person: 'notion:workspace-1:user-1', accessLane: 'read', signedBy: value as string } },
+    );
+    for (const value of ['', 'membership owner', 'm'.repeat(201), 7]) {
+      await assert.rejects(store.createAgentOwnedConnection(signedBy(value)), /sign-in is invalid/, JSON.stringify(value));
+    }
+    const { account } = await store.createAgentOwnedConnection(signedBy('membership_owner'));
+    const [stored] = (await store.listConnectionAccounts('T_PLATFORM')).filter(({ id }) => id === account.id);
+    assert.deepEqual(stored?.policy.kind === 'managed' && stored.policy.signIn,
+      { person: 'notion:workspace-1:user-1', accessLane: 'read', signedBy: 'membership_owner' });
+  } finally {
+    store.close();
+  }
+});
+
 test('a sign-in group gains an account only through a join, and only for a connector that shares sign-ins', async () => {
   const store = await platformStoreWithAgents('agent_support', 'agent_sales');
   try {
