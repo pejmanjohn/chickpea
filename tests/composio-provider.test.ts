@@ -3021,26 +3021,37 @@ test('Notion validation names the Notion person who signed in, nobody when Notio
     assert.deepEqual(fallback.validation?.grantSummary, { items: [], truncated: false });
   }
 
-  const unreachableCalls: string[] = [];
-  const unreachable = new ComposioManagedConnectionProvider({
-    apiKey: 'test-key',
-    getConnectedAccount: async () => ({
-      id: policy.accountRef, status: 'ACTIVE', isDisabled: false, toolkit: 'notion', userId: policy.principalRef,
-    }),
-    createClient: async () => ({
-      sessions: { async create() { throw new Error('session execution must not be used'); } },
-      tools: {
-        async execute(tool) {
-          unreachableCalls.push(tool);
-          if (tool === 'NOTION_GET_ABOUT_ME') throw new Error('socket hang up');
-          return { data: { results: [], has_more: false }, successful: true, error: null };
+  const aboutMeFailing = (aboutMe: () => Promise<{ data: Record<string, unknown>; successful: boolean; error: string }>) => {
+    const calls: string[] = [];
+    const provider = new ComposioManagedConnectionProvider({
+      apiKey: 'test-key',
+      getConnectedAccount: async () => ({
+        id: policy.accountRef, status: 'ACTIVE', isDisabled: false, toolkit: 'notion', userId: policy.principalRef,
+      }),
+      createClient: async () => ({
+        sessions: { async create() { throw new Error('session execution must not be used'); } },
+        tools: {
+          async execute(tool) {
+            calls.push(tool);
+            if (tool === 'NOTION_GET_ABOUT_ME') return aboutMe();
+            return { data: { results: [], has_more: false }, successful: true, error: null };
+          },
         },
-      },
-    }),
-  });
-  await assert.rejects(unreachable.validate({ policy }), (error: unknown) =>
-    error instanceof ManagedProviderRequestError && error.code === 'validation_failed');
-  assert.deepEqual(unreachableCalls, ['NOTION_GET_ABOUT_ME'], 'a sign-in nobody could name is not listed');
+      }),
+    });
+    return { provider, calls };
+  };
+
+  const refused = aboutMeFailing(async () => ({ data: {}, successful: false, error: 'rate limited' }));
+  await assert.rejects(refused.provider.validate({ policy }), (error: unknown) =>
+    error instanceof ManagedProviderRequestError && error.code === 'validation_failed' &&
+    error.metadata.definiteFailure === true);
+  assert.deepEqual(refused.calls, ['NOTION_GET_ABOUT_ME'], 'a sign-in Notion would not name is not listed');
+
+  const unreachable = aboutMeFailing(async () => { throw new Error('socket hang up'); });
+  await assert.rejects(unreachable.provider.validate({ policy }), (error: unknown) =>
+    error instanceof ManagedProviderRequestError && error.metadata.definiteFailure !== true);
+  assert.deepEqual(unreachable.calls, ['NOTION_GET_ABOUT_ME'], 'an unreachable Notion is asked again on the next poll');
 });
 
 test('Notion validation rejects a provider response that explicitly reports unsuccessful', async () => {
