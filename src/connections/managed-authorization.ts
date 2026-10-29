@@ -27,6 +27,8 @@ interface ManagedAuthorizationInput {
   bindingCapabilities?: string[];
   /** Existing Chickpea account whose remote authorization is being replaced. */
   connectionAccountId?: string;
+  /** The auth-config lane the provider was asked to issue the credential on; older attempts lack it. */
+  accessLane?: 'read' | 'write';
   /** Installation provider revision that created this remote request. */
   providerGeneration?: number;
   /** One-way project fingerprint. It is safe metadata, never a credential. */
@@ -488,6 +490,7 @@ function validateInput(input: ManagedAuthorizationInput): void {
       (input.connectionAccountId !== undefined &&
         !/^connection_[A-Za-z0-9_-]{1,180}$/.test(input.connectionAccountId)) ||
       (input.ownerKind !== 'team' && input.ownerKind !== 'member') ||
+      (input.accessLane !== undefined && input.accessLane !== 'read' && input.accessLane !== 'write') ||
       ((input.providerGeneration === undefined) !== (input.providerLineage === undefined)) ||
       (input.providerGeneration !== undefined && (
         !Number.isSafeInteger(input.providerGeneration) || input.providerGeneration < 1 ||

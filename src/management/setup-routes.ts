@@ -19,7 +19,7 @@ import { validateBrowserMutationProvenance } from '../auth/request-provenance.ts
 import { AuthService } from '../auth/service.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { actualBodyLimit } from '../security/request-body-limit.ts';
-import { AgentConnectionCredentialConflictError } from '../config/errors.ts';
+import { AgentConnectionCredentialConflictError, ManagedSignInGroupConflictError } from '../config/errors.ts';
 
 import {
   ApiOAuthError,
@@ -146,10 +146,13 @@ import { resolveManagedAuthorizationProviderContext } from '../connections/manag
 import { projectEffectiveMcpConnections } from '../connections/runtime.ts';
 import {
   ConnectionAccountService,
+  ManagedConnectionConflictError,
   ManagedConnectionProviderUnavailableError,
+  ManagedResourceSelectionError,
   markCancelledMcpOAuthAccount,
   markConnectionAccountNeedsAttention,
 } from '../connections/store.ts';
+import { signInGroupKey } from '../config/sign-in-group.ts';
 import {
   agentAvatarInstallation,
   agentAvatarUrl,
@@ -293,9 +296,11 @@ export function createManagementSetupRoutes(
         return c.html(renderSetupClaimPage({ setupId, reusable: true }));
       }
       if (setup.status !== 'pending') return managedUnavailablePage(c);
-      const page = await managedConnectionPageInput(c, setup, dependencies, options);
+      // The waiting page offers nothing to reuse, so it skips the page listings.
+      const polling = c.req.query('poll') === '1';
+      const page = await managedConnectionPageInput(c, setup, dependencies, options, polling ? undefined : principal);
       if (!page) return managedUnavailablePage(c);
-      return c.html(c.req.query('poll') === '1'
+      return c.html(polling
         ? renderManagedConnectionWaitingPage(page)
         : renderManagedConnectionSetupPage(page));
     }
@@ -576,6 +581,10 @@ export function createManagementSetupRoutes(
             throw new ManagedAuthorizationError('invalid');
           }
         }
+        if (fields.reuseSignInId) {
+          if (setup.target.replacement) throw new ManagedAuthorizationError('invalid');
+          return await reuseSetupSignIn(c, setup, agent, principal, selection, fields, dependencies, options);
+        }
         const browserSession = setupSession(c, setupId);
         if (!browserSession) throw new ManagedAuthorizationError('invalid');
         const browserSecret = sha256HexNode(browserSession);
@@ -726,7 +735,7 @@ export function createManagementSetupRoutes(
         if (authorizationJsonRequest(c)) {
           return c.json({ error: 'managed_sign_in_other_kind', message: error.message }, 409);
         }
-        const page = await managedConnectionPageInput(c, activeSetup, dependencies, options);
+        const page = await managedConnectionPageInput(c, activeSetup, dependencies, options, principal);
         const signInNotice = {
           ownerKind: fields.ownerKind === 'team' ? 'team' as const : 'member' as const,
           message: error.message,
@@ -741,7 +750,7 @@ export function createManagementSetupRoutes(
         if (authorizationJsonRequest(c)) {
           return c.json({ error: safeFailureCode(error), message }, 422);
         }
-        const page = await managedConnectionPageInput(c, activeSetup, dependencies, options);
+        const page = await managedConnectionPageInput(c, activeSetup, dependencies, options, principal);
         return page
           ? c.html(renderManagedConnectionSetupPage({ ...page, failureMessage: message }), 422)
           : managedUnavailablePage(c);
@@ -1384,6 +1393,8 @@ async function managedConnectionPageInput(
   setup: ManagementSetupRecord,
   dependencies: SetupDependencies,
   options: ManagementSetupRoutesOptions,
+  /** Whoever opened a pending link; their reusable sign-ins are offered. */
+  principal?: AuthPrincipal,
 ) {
   try {
     const agent = await currentManagedAgent(setup, dependencies.config);
@@ -1404,10 +1415,21 @@ async function managedConnectionPageInput(
     const changingSelection = reconnecting?.lifecycle === 'ready'
       ? dependencies.catalog.connector(setup.target.provider)?.providerSelection?.label
       : undefined;
+    const writeAvailable = writeReady && setup.scopes.some((scope) => writeCapabilities.has(scope));
+    const reconnectGroupKey = reconnecting && signInGroupKey(reconnecting);
+    const sharedSignIn = Boolean(reconnectGroupKey) && setup.origin.kind === 'slack' &&
+      (await dependencies.config.listConnectionAccounts(setup.origin.workspaceId))
+        .some((account) => account.id !== reconnecting!.id && signInGroupKey(account) === reconnectGroupKey);
+    const reusable = principal && !reconnecting && setup.origin.kind === 'slack' &&
+        dependencies.catalog.connector(setup.target.provider)?.sharedSignIn
+      ? await reusableSetupSignIns(setup, agent, principal, writeAvailable ? 'write' : 'read', dependencies, providerContext.providers)
+      : undefined;
     return {
       setup,
       agent,
-      writeAvailable: writeReady && setup.scopes.some((scope) => writeCapabilities.has(scope)),
+      writeAvailable,
+      ...(sharedSignIn ? { sharedSignIn } : {}),
+      ...(reusable ? { reusable } : {}),
       ...(reconnecting
         ? {
             locked: {
@@ -1542,6 +1564,118 @@ async function catalogConnectionPageInput(
 }
 
 /** The account a reconnect link re-authorizes; the page and the flow keep its owner and access. */
+function setupConnectionAccounts(
+  dependencies: SetupDependencies,
+  providers: ManagedConnectionProviderRegistry,
+): ConnectionAccountService {
+  return new ConnectionAccountService({
+    config: dependencies.config,
+    settings: dependencies.settings,
+    managedProviders: providers,
+    managedCatalog: dependencies.catalog,
+    ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
+    telemetrySurface: 'slack',
+    ...(dependencies.platformEnv ? { platformEnv: dependencies.platformEnv } : {}),
+  });
+}
+
+/**
+ * The sign-ins this person may add the setup's Agent to, per owner kind. The
+ * page is not Admin, so no other Agent is named; a list that cannot be read
+ * leaves the page as it was.
+ */
+async function reusableSetupSignIns(
+  setup: ManagementSetupRecord,
+  agent: CustomAgentConfig,
+  principal: AuthPrincipal,
+  access: 'read' | 'write',
+  dependencies: SetupDependencies,
+  providers: ManagedConnectionProviderRegistry,
+): Promise<NonNullable<ConnectorLandingPageInput['reusable']> | undefined> {
+  if (setup.origin.kind !== 'slack') return undefined;
+  const { workspaceId } = setup.origin;
+  const service = setupConnectionAccounts(dependencies, providers);
+  const signerName = async (membershipId: string) => {
+    const membership = await dependencies.identity.getMembership(membershipId);
+    const user = membership && await dependencies.identity.getUser(membership.userId);
+    return user?.displayName || undefined;
+  };
+  const list = async (ownerKind: 'member' | 'team') => {
+    try {
+      return (await service.listReusableSignIns({
+        principal, agentId: agent.id, workspaceId, toolkit: setup.target.provider, ownerKind, access, signerName,
+      })).map(({ sourceConnectionId, signerName: label, signedByYou, pages, complete }) =>
+        ({ sourceConnectionId, label: label ?? '', signedByYou, pages, complete }));
+    } catch {
+      return [];
+    }
+  };
+  const [member, team] = await Promise.all([list('member'), list('team')]);
+  return member.length || team.length ? { member, team } : undefined;
+}
+
+/** Add the setup's Agent to a sign-in it can reuse, chosen on the page, and finish the setup without the provider. */
+async function reuseSetupSignIn(
+  c: Context,
+  setup: ManagementSetupRecord,
+  agent: CustomAgentConfig,
+  principal: AuthPrincipal,
+  selection: NonNullable<ReturnType<typeof managedSetupSelection>>,
+  fields: Record<string, string>,
+  dependencies: SetupDependencies,
+  options: ManagementSetupRoutesOptions,
+): Promise<Response> {
+  if (setup.origin.kind !== 'slack') throw new ManagedAuthorizationError('invalid');
+  const service = setupConnectionAccounts(
+    dependencies,
+    (await managedFlowDependencies(dependencies, options)).providerContext.providers,
+  );
+  const pages = Object.entries(fields)
+    .filter(([key, value]) => key.startsWith('page:') && value === 'on')
+    .map(([key]) => key.slice('page:'.length));
+  let account: ConnectionAccount;
+  try {
+    ({ account } = await service.reuseSignIn({
+      principal,
+      agentId: agent.id,
+      workspaceId: setup.origin.workspaceId,
+      sourceConnectionId: fields.reuseSignInId!,
+      ownerKind: selection.ownerKind,
+      access: selection.accessLane,
+      capabilities: selection.scopes,
+      choice: fields.pageMode === 'only' ? { mode: 'only', pages } : { mode: 'all' },
+    }));
+  } catch (error) {
+    if (!(error instanceof ManagedConnectionConflictError) &&
+        !(error instanceof ManagedSignInGroupConflictError) &&
+        !(error instanceof ManagedResourceSelectionError)) throw error;
+    const message = error instanceof ManagedResourceSelectionError
+      ? `Chickpea could not add ${setup.target.targetLabel} with those pages. Reload this page and try again.`
+      : `That ${setup.target.targetLabel} sign-in changed. Reload this page and try again.`;
+    if (authorizationJsonRequest(c)) return c.json({ error: 'managed_connection_changed', message }, 409);
+    const page = await managedConnectionPageInput(c, setup, dependencies, options, principal);
+    return page
+      ? c.html(renderManagedConnectionSetupPage({ ...page, failureMessage: message }), 409)
+      : managedUnavailablePage(c);
+  }
+  try {
+    await finishSetup(c, setup, {
+      connector: setup.target.targetLabel,
+      connectionAccountId: account.id,
+      completedByUserId: principal.userId,
+      completedByMembershipId: principal.membershipId,
+      ownerKind: account.ownerKind,
+      accessLane: selection.accessLane,
+    }, dependencies, options, (options.now ?? Date.now)());
+  } catch (error) {
+    // The link finished elsewhere first; this Agent keeps no second Notion row from it.
+    await service.revoke({ principal, connectionAccountId: account.id }).catch(() => undefined);
+    throw error;
+  }
+  if (authorizationJsonRequest(c)) return c.json({ completed: true });
+  return c.redirect(`/setup/${encodeURIComponent(setup.setupOperationId)}`, 303);
+}
+
 async function reconnectAccount(
   setup: ManagementSetupRecord,
   config: ConfigStore,

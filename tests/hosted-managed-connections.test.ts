@@ -38,11 +38,11 @@ import {
 import {
   cancelManagedAuthorizationFlow,
   discardManagedAuthorizationAfterAuthorityLoss,
-  managedPrincipalRef,
   pollManagedAuthorizationFlow,
   startManagedAuthorizationFlow,
   type ManagedAuthorizationProviderContext,
 } from '../src/connections/managed-authorization-flow.ts';
+import { managedPrincipalRef } from '../src/connections/managed-principal.ts';
 import { resolveManagedAuthorizationProviderContext } from '../src/connections/managed-provider-context.ts';
 import {
   createManagedConnectionProviderRegistry,

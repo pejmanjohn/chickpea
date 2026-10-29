@@ -407,6 +407,7 @@ test('a demoted Team connection creator cannot manage the account through any Ag
         principalRef: 'chickpea:organization:organization_test',
         allowedCapabilities: ['analytics.reports.run'],
         accountRef: 'ca_unauthorized_replacement',
+        issuedAccessLane: 'write',
       }),
       forbidden,
     );
@@ -1296,6 +1297,7 @@ test('managed reconnect preserves the Chickpea account and deletes the previous 
       principalRef: MANAGED_POLICY.principalRef,
       allowedCapabilities: [...MANAGED_POLICY.allowedCapabilities],
       accountRef: 'ca_reconnected',
+      issuedAccessLane: 'write',
     });
 
     assert.equal(reconnected.id, original.id);
@@ -1360,6 +1362,7 @@ test('managed reconnect keeps a resource-incomplete account pending', async () =
       principalRef: 'chickpea-user-1',
       allowedCapabilities: ['ads.campaigns.report'],
       accountRef: 'ca_ads_reconnected',
+      issuedAccessLane: 'write',
     });
     assert.equal(reconnected.lifecycle, 'pending');
   } finally {
@@ -1411,6 +1414,7 @@ test('managed Agent bindings keep their original ceiling when reauthorization br
       expectedAllowedCapabilities: readCapabilities,
       allowedCapabilities: [...readCapabilities, 'gmail.drafts.create'],
       accountRef: MANAGED_POLICY.accountRef,
+      issuedAccessLane: 'write',
     });
 
     const [effective] = await resolveEffectiveConnectionAccounts({
@@ -3224,16 +3228,16 @@ test('a new managed account records who signed in and under which access lane', 
 
     assert.deepEqual(
       await signIn('agent_docs', 'notion', 'ca_notion_one', ['notion.content.search']),
-      { person: 'notion:ws-1:user-1', accessLane: 'read' },
+      { person: 'notion:ws-1:user-1', accessLane: 'read', signedBy: 'membership_alice' },
     );
     person = undefined;
     assert.deepEqual(
       await signIn('agent_mail', 'notion', 'ca_notion_two', ['notion.content.search', 'notion.pages.create']),
-      { person: 'member:membership_alice', accessLane: 'write' },
+      { person: 'member:membership_alice', accessLane: 'write', signedBy: 'membership_alice' },
     );
     assert.deepEqual(
       await signIn('agent_mail', 'gmail', 'ca_gmail', ['gmail.messages.search']),
-      { accessLane: 'read' },
+      { accessLane: 'read', signedBy: 'membership_alice' },
     );
     const recorded = logged.filter((message) => message.includes('sign_in_recorded'));
     assert.deepEqual(recorded.map((message) => JSON.parse(message)), [
@@ -3278,7 +3282,7 @@ test('signing in again records only the Notion person that sign-in named, fallin
         principal: principal('membership_bob'), agentId: 'agent_docs',
         connectionAccountId: account.id, expectedRevision: account.revision,
         adapterId: 'composio', toolkit: 'notion', principalRef: NOTION_SIGN_IN.principalRef,
-        allowedCapabilities: [...NOTION_SIGN_IN.allowedCapabilities], accountRef,
+        allowedCapabilities: [...NOTION_SIGN_IN.allowedCapabilities], accountRef, issuedAccessLane: 'write',
       });
       return account.policy.kind === 'managed' ? account.policy.signIn?.person : undefined;
     };
@@ -3410,7 +3414,7 @@ test('changing a shared sign-in from either Agent moves every member, revokes th
         connectionAccountId: initiating.id, expectedRevision: initiating.revision,
         adapterId: 'composio', toolkit: 'notion', principalRef: NOTION_SIGN_IN.principalRef,
         allowedCapabilities: initiating.policy.allowedCapabilities,
-        accountRef, providerGeneration: 2, providerLineage: 'b'.repeat(24),
+        accountRef, issuedAccessLane: 'write', providerGeneration: 2, providerLineage: 'b'.repeat(24),
       });
       assert.equal(reconnected.id, initiating.id);
       assert.deepEqual(calls.splice(0), [`validate:${accountRef}`, `revoke:${previousRef}`]);
@@ -3418,7 +3422,7 @@ test('changing a shared sign-in from either Agent moves every member, revokes th
       for (const account of [opsAfter, salesAfter]) {
         assert.equal(account.lifecycle, 'ready');
         assert.equal(account.policy.accountRef, accountRef);
-        assert.deepEqual(account.policy.signIn, { person: 'notion:ws-1:user-1', accessLane: 'write' });
+        assert.deepEqual(account.policy.signIn, { person: 'notion:ws-1:user-1', accessLane: 'write', signedBy: 'membership_bob' });
         assert.equal(account.policy.providerGeneration, 2);
       }
       assert.deepEqual(signInGroupPolicy(opsAfter.policy), signInGroupPolicy(salesAfter.policy));
