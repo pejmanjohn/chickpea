@@ -1,4 +1,5 @@
 import { connectionAccountOAuthRef } from '../config/api-oauth.ts';
+import { resolveConnectionAccountSecret } from '../config/connector-secrets.ts';
 import { matchesEgressPrefix } from '../config/egress.ts';
 import {
   classifyMcpError,
@@ -223,6 +224,12 @@ export async function saveManagedConnectionKey(
     throw new ManagementError('invalid_request', CONNECTION_CHANGED);
   }
   if (input.path !== undefined) assertPathInsideConnection(policy, input.path);
+  if (input.surface === 'slack' && await keySavedOnAnotherConnection(input, entry.account.id)) {
+    throw new ManagementError(
+      'invalid_request',
+      'Nothing was saved: this key is already saved on another of this Agent\'s connections, and a key pasted in chat fills one connection. Send a setup link with request_setup for this one.',
+    );
+  }
   const unchanged = async () =>
     (await memberApiConnection(input).catch(() => undefined))?.account.revision === entry.account.revision;
   const check = await checkConnection({
@@ -255,6 +262,26 @@ export async function saveManagedConnectionKey(
     },
   });
   return check;
+}
+
+/**
+ * Whether another of the Agent's API connections already holds `key`. One
+ * message can name the key's API and other URLs; this stops a second
+ * connection to one of those URLs from receiving the same pasted key.
+ */
+async function keySavedOnAnotherConnection(
+  input: Pick<SaveManagedConnectionKeyInput, 'agentId' | 'actor' | 'config' | 'settings' | 'env' | 'key'>,
+  connectionId: string,
+): Promise<boolean> {
+  const [accounts, bindings] = await Promise.all([
+    input.config.listConnectionAccounts(input.actor.workspaceId),
+    input.config.listAgentConnectionBindings(input.agentId),
+  ]);
+  for (const { account } of agentConnections(accounts, bindings, input.actor.actorMembershipId).api.values()) {
+    if (account.id === connectionId || account.policy.kind !== 'api') continue;
+    if (await resolveConnectionAccountSecret(account, input.env, input.settings) === input.key) return true;
+  }
+  return false;
 }
 
 /** The Agent's API connection with this account id, as the member manages it. */
