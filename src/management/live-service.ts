@@ -28,7 +28,11 @@ import { resolveManagedAuthorizationProviderContext } from '../connections/manag
 import { ConnectionAccountService } from '../connections/store.ts';
 import { platformRepositoryGrants } from '../config/agent-write-rules.ts';
 import { finishAgentSecretCleanup, stageAgentSecretCleanup } from '../config/agent-secret-cleanup.ts';
-import { agentDeletionWebsiteLogins, WebsiteLoginNotRemovableError } from '../browser/agent-website-logins.ts';
+import {
+  agentDeletionWebsiteLogins,
+  clearDeletedAgentWebsiteLogins,
+  WebsiteLoginNotRemovableError,
+} from '../browser/agent-website-logins.ts';
 import { websiteLoginDependencies } from '../browser/logins.ts';
 import { agentCredentialConfigurationBinding } from '../config/connection-credential-binding.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
@@ -365,7 +369,7 @@ export function createLiveWorkspaceManagementService(
       idempotencyKey,
     }) => {
       const principal = managementActorPrincipal(actor);
-      const websiteLoginIds = await agentDeletionWebsiteLogins({
+      const websiteLogins = await agentDeletionWebsiteLogins({
         principal,
         agent: await config.getAgent(agentId),
         config,
@@ -391,16 +395,26 @@ export function createLiveWorkspaceManagementService(
       });
       const cleanupScope = agentCredentialConfigurationBinding(expectedCredentialIncarnation);
       const agent = await config.getAgent(agentId);
-      await stageAgentSecretCleanup(agent, env, settings, cleanupScope, websiteLoginIds);
-      const deleted = config.deleteAgentWithMemory
-        ? await config.deleteAgentWithMemory(
-            agentId,
-            idempotencyKey,
-            expectedRevision,
-            expectedCredentialIncarnation,
-          )
-        : await config.deleteAgent(agentId, expectedRevision, expectedCredentialIncarnation);
+      await stageAgentSecretCleanup(agent, env, settings, cleanupScope, websiteLogins);
+      let deleted: Awaited<ReturnType<typeof config.deleteAgent>>;
+      try {
+        deleted = config.deleteAgentWithMemory
+          ? await config.deleteAgentWithMemory(
+              agentId,
+              idempotencyKey,
+              expectedRevision,
+              expectedCredentialIncarnation,
+            )
+          : await config.deleteAgent(agentId, expectedRevision, expectedCredentialIncarnation);
+      } catch (error) {
+        // An Agent that stays must not have this attempt's logins deleted later.
+        if (await config.getAgent(agentId).then(() => true, () => false)) {
+          await clearDeletedAgentWebsiteLogins(agentId, settings, cleanupScope).catch(() => undefined);
+        }
+        throw error;
+      }
       await finishAgentSecretCleanup(agentId, env, settings, cleanupScope, {
+        principal,
         config,
         deletion: () => websiteLoginDependencies(env),
       });

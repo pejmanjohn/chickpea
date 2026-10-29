@@ -485,6 +485,7 @@ import {
 } from '../config/types.ts';
 import {
   agentDeletionWebsiteLogins,
+  clearDeletedAgentWebsiteLogins,
   projectAgentWebsiteLogins,
   removeAgentWebsiteLogin,
   updateAgentWebsiteLogins,
@@ -492,6 +493,7 @@ import {
   WebsiteLoginGrantNotFoundError,
   WebsiteLoginNotRemovableError,
   WebsiteLoginsUnavailableError,
+  type AgentDeletionWebsiteLogins,
 } from '../browser/agent-website-logins.ts';
 import {
   createWebsiteLogin,
@@ -3287,6 +3289,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     requireAgentEdit(principal, agent);
     return agent;
   };
+  const agentRowGone = (c: Context, agentId: string): Promise<boolean> =>
+    store(c).getAgent(agentId).then(() => false, (error: unknown) => {
+      if (error instanceof UnknownAgentError) return true;
+      throw error;
+    });
   const agentEditFailureResponse = (c: Context, error: unknown): Response => {
     if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
     if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
@@ -3303,10 +3310,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       try {
         await requireCurrentAgentEdit(c, agentId, principal);
       } catch (error) {
-        // Deleting an Agent that is already gone finishes the cleanup its
-        // deletion staged, or finds none; the route answers either way.
-        const deleteRetry = c.req.method === 'DELETE' && c.req.path === match[0];
-        if (!(deleteRetry && error instanceof UnknownAgentError)) throw error;
+        // Deleting an Agent whose row is gone finishes the cleanup its
+        // deletion staged, or finds none; the route answers either way. A row
+        // of any other kind keeps the refusal.
+        const deleteRetry = c.req.method === 'DELETE' && c.req.path === match[0] &&
+          error instanceof UnknownAgentError && await agentRowGone(c, agentId);
+        if (!deleteRetry) throw error;
       }
     } else {
       await requireAdminUserAgent(c, agentId);
@@ -10352,7 +10361,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const configStore = store(c);
     const agentId = c.req.param('id');
     const cleanupScope = parsed.output.credentialConfigurationBinding;
-    const deletedAgentLogins = { config: configStore, deletion: () => websiteLoginWriteDependencies(c) };
+    const principal = principalByContext.get(c);
+    if (!principal) return c.json({ error: 'forbidden' }, 403);
+    const deletedAgentLogins = {
+      principal,
+      config: configStore,
+      deletion: () => websiteLoginWriteDependencies(c),
+    };
     let agent: CustomAgentConfig;
     try {
       agent = await configStore.getAgent(agentId);
@@ -10375,6 +10390,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
     }
 
+    // The gate checks these too; this route also runs for an Agent it found gone.
+    if (agent.kind !== 'user') return c.json({ error: 'not_found' }, 404);
+    if (!canEditAgent(principal, agent)) return c.json({ error: 'forbidden' }, 403);
     if (agent.revision !== parsed.output.expectedRevision ||
         agentCredentialConfigurationBinding(agent.credentialIncarnation) !== cleanupScope) {
       return c.json({ error: 'agent_revision_conflict' }, 409);
@@ -10396,11 +10414,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         roots: liveSnapshotRoots,
       }, 409);
     }
-    let websiteLoginIds: string[];
+    let websiteLogins: AgentDeletionWebsiteLogins;
     try {
-      const principal = principalByContext.get(c);
-      if (!principal) throw new AuthorizationError('principal_required');
-      websiteLoginIds = await agentDeletionWebsiteLogins({
+      websiteLogins = await agentDeletionWebsiteLogins({
         principal,
         agent,
         config: configStore,
@@ -10438,7 +10454,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         c.env as PlatformEnv | undefined,
         settingsStore,
         cleanupScope,
-        websiteLoginIds,
+        websiteLogins,
       );
     } catch (err) {
       return internalError(c, err);
@@ -10456,6 +10472,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch (err) {
       try {
         await configStore.getAgent(agentId);
+        // The Agent stays, so this attempt's logins must not be deleted later.
+        await clearDeletedAgentWebsiteLogins(agentId, settingsStore, cleanupScope).catch(() => undefined);
       } catch (inspectionError) {
         if (inspectionError instanceof UnknownAgentError) {
           // The delete committed but its response was lost. Continue using the

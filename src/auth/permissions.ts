@@ -79,7 +79,7 @@ export function canEditAgent(
  * account, a website login): Owners and Admins, or the owning member.
  */
 export function canManageOwnedResource(
-  principal: AuthPrincipal,
+  principal: Pick<AuthPrincipal, 'role' | 'membershipId'>,
   resource: { ownerKind: 'team' | 'member'; ownerMembershipId?: string | undefined },
 ): boolean {
   if (principal.role === 'owner' || principal.role === 'admin') return true;

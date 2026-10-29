@@ -1,6 +1,7 @@
 import {
   finishDeletedAgentWebsiteLogins,
   stageDeletedAgentWebsiteLogins,
+  type AgentDeletionWebsiteLogins,
   type DeletedAgentWebsiteLogins,
 } from '../browser/agent-website-logins.ts';
 import { apiOAuthSettingKeys } from './api-oauth.ts';
@@ -32,7 +33,7 @@ export async function stageAgentSecretCleanup(
   env: PlatformEnv | undefined,
   settings: SettingsStore,
   scope: string,
-  websiteLoginIds: readonly string[],
+  websiteLogins: AgentDeletionWebsiteLogins,
 ): Promise<void> {
   const secretKeys = new Set<string>();
   for (const server of agent.mcpServers) {
@@ -57,7 +58,7 @@ export async function stageAgentSecretCleanup(
     settings,
     scope,
   );
-  await stageDeletedAgentWebsiteLogins(agent.id, websiteLoginIds, settings, scope);
+  await stageDeletedAgentWebsiteLogins(agent.id, websiteLogins, settings, scope);
 }
 
 /** Delete what stageAgentSecretCleanup recorded; true when a marker was found. */
