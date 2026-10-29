@@ -187,7 +187,11 @@ import {
   type WorkspaceRecipePreview,
 } from './recipes.ts';
 import { matchesEgressPrefix } from '../config/egress.ts';
-import { connectionUrlPrefixes, type ConnectionCheckOutcome } from '../connections/connection-check.ts';
+import {
+  connectionUrlPrefixes,
+  type ApiConnectionScope,
+  type ConnectionCheckOutcome,
+} from '../connections/connection-check.ts';
 import type { ConnectionTestActor, McpConnectionTestResult, OpenMcpServer } from './discovery.ts';
 import type { ManagementStore } from './store.ts';
 import { changeSetAccessFits } from './change-set-presentation.ts';
@@ -260,6 +264,9 @@ import {
   type ManagementMcpClientRevocation,
   type ManagementWorkspaceSnapshot,
   type PrepareConnectorSetupInput,
+  type SaveConnectionKeyInput,
+  type SaveConnectionKeyResult,
+  type SavedConnectionKeyCheck,
   type PrepareConnectorSetupResult,
   type PrepareProviderSetupInput,
   type PrepareProviderSetupResult,
@@ -424,6 +431,22 @@ export interface WorkspaceManagementServiceInput {
     actor: ConnectionTestActor;
     path?: string;
   }) => Promise<ConnectionCheckOutcome>;
+  /**
+   * Checks a key against one API connection with one GET and, unless the
+   * service rejects it, saves it the way the setup page does. Never returns
+   * the key.
+   */
+  saveConnectionKey?: (input: {
+    agentId: string;
+    /** The connection account id. */
+    connectionId: string;
+    actor: ConnectionTestActor;
+    key: string;
+    path?: string;
+    /** The account revision whose hosts and paths the door checked the key may reach. */
+    expectedRevision: number;
+    surface: ManagementOrigin['kind'];
+  }) => Promise<SavedConnectionKeyCheck>;
   /** Lists an open MCP server's tools before a write saves it, as Admin's Test connection does. */
   discoverMcpServer?: (server: OpenMcpServer) => Promise<McpConnectionTestResult>;
   /** The website-login realm Admin reads and deletes from. */
@@ -1923,6 +1946,82 @@ export class WorkspaceManagementService {
       actor: { workspaceId, actorMembershipId: actor.membershipId },
       ...(input.path === undefined ? {} : { path: input.path }),
     });
+  }
+
+  /**
+   * Checks a key against one of an Agent's API connections and saves it, as
+   * the setup page does. It is a tool, not an operation, so the key never
+   * enters an operation record. From Slack the requester must have typed
+   * the key and every URL it goes to in their own current message, and a
+   * saved key is never replaced.
+   */
+  async saveConnectionKey(
+    context: ApplyWorkspaceChangesInput['context'],
+    input: SaveConnectionKeyInput,
+  ): Promise<SaveConnectionKeyResult> {
+    const actor = await this.requireLiveActor(context);
+    this.assertActingAgentScope(actor, {
+      scope: 'agent',
+      agentId: input.agentId,
+      requestedAction: 'save_connection_key',
+      target: { kind: 'agent', id: input.agentId },
+    });
+    const agent = await this.requireEditableAgent(actor, input.agentId);
+    if (agent.kind === 'system') {
+      throw new ManagementError(
+        'invalid_request',
+        `The ${agent.name} system Agent cannot hold connections. Save the key to the user Agent that has the connection.`,
+      );
+    }
+    const { connections } = await this.agentWithConnections(actor, agent);
+    const connectionId = resolveAgentConnectionId(connections, 'api', input.connectionId);
+    const entry = connectionId === undefined ? undefined : connections.api.get(connectionId);
+    if (!entry) {
+      throw new ManagementError(
+        'invalid_request',
+        resolveAgentConnectionId(connections, 'mcp', input.connectionId) === undefined
+          ? 'The API connection was not found.'
+          : 'save_connection_key saves keys for API connections only. For an MCP server, send a setup link with request_setup.',
+      );
+    }
+    const { account } = entry;
+    const { policy } = account;
+    if (policy.kind !== 'api' || policy.authMode !== 'credential') {
+      throw new ManagementError('invalid_request', 'This connection signs in with Google, so it has no key to save.');
+    }
+    if (!canManageOwnedResource(managementActorPrincipal(actor), account)) {
+      throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
+    }
+    const key = input.key.trim();
+    if (!key) throw new ManagementError('invalid_request', 'The key is empty.');
+    if (actor.origin.kind === 'slack') assertSlackConnectionKey(actor, policy, account.lifecycle, key);
+    if (!this.stores.saveConnectionKey) {
+      throw new ManagementError('invalid_request', 'Saving a connection key is unavailable.');
+    }
+    const [workspaceId] = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
+    if (!workspaceId) throw new ManagementError('invalid_request', 'The API connection was not found.');
+    const check = await this.stores.saveConnectionKey({
+      agentId: agent.id,
+      connectionId: account.id,
+      actor: { workspaceId, actorMembershipId: actor.membershipId },
+      key,
+      ...(input.path === undefined ? {} : { path: input.path }),
+      expectedRevision: account.revision,
+      surface: actor.origin.kind,
+    });
+    return {
+      agent: { id: agent.id, name: agent.name },
+      connection: {
+        id: account.id,
+        name: account.label,
+        sendsKeyTo: connectionUrlPrefixes(policy),
+        allowedMethods: [...policy.allowedMethods],
+      },
+      check,
+      instruction: actor.origin.kind === 'slack'
+        ? `${SAVED_KEY_INSTRUCTION} Because the person pasted the key in Slack, suggest they rotate it at the service and use the setup link next time.`
+        : SAVED_KEY_INSTRUCTION,
+    };
   }
 
   async inspectMemory(
@@ -8102,6 +8201,8 @@ function memoryMutation(memory: AgentMemory, inverse?: ManagementOperation): Imm
 
 const SETUP_LINK_ON_APPROVAL = 'The person gets this setup link with the receipt when they approve the change set. Tell them it follows their approval, and do not prepare it yourself.';
 const CHANGE_AFTER_APPROVAL = 'This change conflicts with the pending change set. Make it in a new request after the person approves that one.';
+const SAVED_KEY_INSTRUCTION = 'The key is saved and the connection is ready. Tell the person the connection name, where its requests go (sendsKeyTo), what it may do (allowedMethods), and what the check found: ok means a test request worked; not_permitted or path_not_found means the service accepted the key but refused or did not find the test path; unreachable or inconclusive means Chickpea could not confirm the key yet. Never repeat the key.';
+
 const SLACK_SETUP_APPROVAL_UNAVAILABLE = 'Replacing saved credentials needs an approval Slack cannot collect for a setup link. Ask the person to replace them from Admin.';
 
 /**
@@ -8556,6 +8657,52 @@ function requesterTypedUrls(requestText: string): URL[] {
       return [];
     }
   });
+}
+
+/** Characters a key can continue with, so a key found among them is only part of a longer token. */
+const KEY_CHARACTER = /[A-Za-z0-9_\-+/=]/;
+
+/** Whether `key` appears whole in the requester's text, exactly as typed. */
+function requesterTextContainsExactKey(requestText: string, key: string): boolean {
+  const text = requestText.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  for (let at = text.indexOf(key); at >= 0; at = text.indexOf(key, at + 1)) {
+    if (!KEY_CHARACTER.test(text[at - 1] ?? '') && !KEY_CHARACTER.test(text[at + key.length] ?? '')) return true;
+  }
+  return false;
+}
+
+/**
+ * From Slack a key is saved only when the requester typed it, and every URL
+ * it is sent to, in their own current message to this Agent, and only into
+ * a connection without a saved key: replacing one needs Admin.
+ */
+function assertSlackConnectionKey(
+  actor: LiveManagementActor,
+  policy: ApiConnectionScope,
+  lifecycle: ConnectionAccount['lifecycle'],
+  key: string,
+): void {
+  const requestText = requestAddressedHere(actor);
+  if (!requestText || !requesterTextContainsExactKey(requestText, key)) {
+    throw new ManagementError(
+      'invalid_request',
+      'Nothing was saved: save_connection_key takes only a key the requester typed in their own current message to this Agent. Send a setup link with request_setup instead, and never ask anyone to paste a key in chat.',
+    );
+  }
+  const typed = requesterTypedUrls(requestText);
+  const untyped = connectionUrlPrefixes(policy).filter((url) => !typedUrlsCover(typed, url));
+  if (untyped.length > 0) {
+    throw new ManagementError(
+      'invalid_request',
+      `Nothing was saved: this connection sends its key to ${untyped.join(', ')}, which the requester did not type in the same message as the key. Send a setup link with request_setup instead; its page shows where the key goes.`,
+    );
+  }
+  if (lifecycle === 'ready') {
+    throw new ManagementError(
+      'invalid_request',
+      'Nothing was saved: this connection already has a saved key, and only Admin can replace it from Slack. Ask the person to replace the key on the Agent\'s page in Admin.',
+    );
+  }
 }
 
 /** A typed URL covers `url` when it has the same origin and `url`'s path sits inside the typed path. */

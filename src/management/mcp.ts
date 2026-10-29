@@ -16,6 +16,7 @@ import {
   prepareProviderSetupZodSchema,
   discoverSlackChannelsZodSchema,
   testConnectionZodSchema,
+  saveConnectionKeyZodSchema,
   inspectMemoryZodSchema,
   inspectRoutinesZodSchema,
   exportRecipeZodSchema,
@@ -54,6 +55,7 @@ export const WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES = [
   'prepare_provider_setup',
   'discover_slack_channels',
   'test_connection',
+  'save_connection_key',
   'inspect_memory',
   'inspect_routines',
   'export_workspace_recipe',
@@ -171,6 +173,17 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'test_connection',
+    args,
+  )));
+
+  server.registerTool('save_connection_key', {
+    title: 'Save connection key',
+    description: workspaceManagementToolDescription('save_connection_key', 'mcp'),
+    inputSchema: saveConnectionKeyZodSchema,
+    annotations: WRITE,
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'save_connection_key',
     args,
   )));
 

@@ -11,6 +11,7 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'prepare_provider_setup',
   'discover_slack_channels',
   'test_connection',
+  'save_connection_key',
   'inspect_memory',
   'inspect_routines',
   'export_workspace_recipe',

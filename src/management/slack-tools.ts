@@ -31,6 +31,7 @@ import {
   prepareConnectorSetupValibotSchema,
   discoverSlackChannelsValibotSchema,
   testConnectionValibotSchema,
+  saveConnectionKeyValibotSchema,
   inspectMemoryValibotSchema,
   inspectRoutinesValibotSchema,
   exportRecipeValibotSchema,
@@ -169,6 +170,7 @@ const MUTATING_TOOLS = new Set<WorkspaceManagementToolName>([
   'prepare_connector_setup',
   'discover_slack_channels',
   'test_connection',
+  'save_connection_key',
   'revoke_setup_link',
   'import_skill',
   'manage_agent_skill',
@@ -641,6 +643,16 @@ export function useWorkspaceManagementSlackTools(
     async run({ data }) {
       return slackToolOutput(await invokeLiveSlackTool(
         signal, resolvePlatformEnv, 'test_connection', data, turnGuard,
+      ));
+    },
+  });
+  useTool({
+    name: 'save_connection_key',
+    description: workspaceManagementToolDescription('save_connection_key'),
+    input: saveConnectionKeyValibotSchema,
+    async run({ data }) {
+      return slackToolOutput(await invokeLiveSlackTool(
+        signal, resolvePlatformEnv, 'save_connection_key', data, turnGuard,
       ));
     },
   });

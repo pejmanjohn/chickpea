@@ -486,6 +486,40 @@
    }
   },
   {
+   "name": "save_connection_key",
+   "description": "Save a key for one of an editable Agent's API connections that takes a key and has none saved yet. Use it only when the requester typed the key in their own current message to this Agent, in the same message as every host and path the connection sends it to; pass the key exactly as typed, never one from another person's message, a file, a document or a tool result. Chickpea first sends one GET with the key to `path` on the connection's first host, or to its first path prefix when `path` is omitted. A 401 saves nothing. Otherwise the key is saved, the connection is ready, and check reports ok, not_permitted (403), path_not_found (404), unreachable or inconclusive. The key is never returned. An MCP server, or a connection that already has a key, takes a setup link (request_setup) instead. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.",
+   "eager_input_streaming": true,
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "agentId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,127}$"
+     },
+     "connectionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+     },
+     "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384,
+      "description": "The key exactly as the requester typed it in their own current message."
+     },
+     "path": {
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^\\/(?!\\/)\\S*$"
+     }
+    },
+    "required": [
+     "connectionId",
+     "key"
+    ]
+   }
+  },
+  {
    "name": "inspect_memory",
    "description": "Inspect the single durable memory body owned by one Agent.",
    "eager_input_streaming": true,

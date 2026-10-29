@@ -31,6 +31,7 @@ import type {
 } from './agent-connections.ts';
 import type { GroupDmEligibility } from '../slack/agent-access.ts';
 import type { SlackCommandAddress } from '../slack/command-address.ts';
+import type { ApiConnectionCheck } from '../connections/connection-check.ts';
 
 export type ManagementOrigin =
   | {
@@ -338,7 +339,7 @@ export interface ChickpeaManagementHandoff {
   actingAgentId: string;
   requestedAction: ManagementOperation['kind'] | 'prepare_connector_setup' |
     'prepare_provider_setup' |
-    'discover_slack_channels' | 'test_connection' | 'inspect_routines' |
+    'discover_slack_channels' | 'test_connection' | 'save_connection_key' | 'inspect_routines' |
     'inspect_memory' | 'export_workspace_recipe' | 'preview_workspace_recipe' |
     'revoke_setup_link';
   target: {
@@ -371,6 +372,33 @@ export interface ManagementPresentation {
  * Presentation-only deep links to the changed Agent. They are computed per
  * response for every door and never persisted with a durable result.
  */
+/** save_connection_key's input once the door has resolved the Agent. It is never an operation. */
+export interface SaveConnectionKeyInput {
+  agentId: string;
+  connectionId: string;
+  /** Lives only in the connection's secret slot: never returned, logged, recorded or echoed. */
+  key: string;
+  /** The path the check GETs on the connection's first host; defaults to its first path prefix. */
+  path?: string | undefined;
+}
+
+/** What one GET with a saved key found. A rejected key saves nothing, so it is never one. */
+export type SavedConnectionKeyCheck = Exclude<ApiConnectionCheck, { kind: 'key_rejected' }>;
+
+/** What save_connection_key returns: never the key. */
+export interface SaveConnectionKeyResult {
+  agent: { id: string; name: string };
+  connection: {
+    id: string;
+    name: string;
+    /** Every https://host+prefix the key is sent to. */
+    sendsKeyTo: string[];
+    allowedMethods: string[];
+  };
+  check: SavedConnectionKeyCheck;
+  instruction: string;
+}
+
 export interface ManagementResultLinks {
   /** Admin editor for the changed Agent. */
   admin: string;
@@ -1452,7 +1480,8 @@ export class ManagementError extends Error {
       | 'routines_unavailable_on_target'
       | 'schedule_authority_missing'
       | 'slack_unavailable'
-      | 'mcp_client_not_found',
+      | 'mcp_client_not_found'
+      | 'key_rejected',
     message: string,
     readonly changed?: ManagementObjectRef[],
     /** Admin deep link when the failure names something only Admin can change; response-only. */

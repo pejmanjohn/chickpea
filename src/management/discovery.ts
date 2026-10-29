@@ -19,6 +19,7 @@ import {
   connectionCheckUrl,
   connectionUrlPrefixes,
   mcpCheckFailure,
+  type ApiConnectionScope,
   type ConnectionCheckOptions,
   type ConnectionCheckOutcome,
 } from '../connections/connection-check.ts';
@@ -31,7 +32,10 @@ import {
   resolveEffectiveConnectionAccounts,
 } from '../connections/runtime.ts';
 import type { IdentityStore } from '../identity/types.ts';
-import { ManagementError } from './types.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
+import { agentConnections, connectionSetupBinding, type AgentConnectionEntry } from './agent-connections.ts';
+import { saveConnectionCredential } from './connection-credential.ts';
+import { ManagementError, type ManagementOrigin, type SavedConnectionKeyCheck } from './types.ts';
 
 /** The member testing a connection, in the workspace that owns its accounts. */
 export interface ConnectionTestActor {
@@ -107,15 +111,7 @@ export async function testManagedConnection(
     };
   }
   const { policy } = selected;
-  if (policy.kind === 'api' && input.path !== undefined) {
-    const url = connectionCheckUrl(policy, input.path);
-    if (url === undefined || !connectionUrlPrefixes(policy).some((prefix) => matchesEgressPrefix(url, prefix))) {
-      throw new ManagementError(
-        'invalid_request',
-        `path must be inside the connection on its first host: ${connectionUrlPrefixes(policy).join(', ')}.`,
-      );
-    }
-  }
+  if (policy.kind === 'api' && input.path !== undefined) assertPathInsideConnection(policy, input.path);
   const effective = async () => {
     if (!(await isActiveConnectionActor({ identity: input.identity, ...actor }))) {
       throw new Error('connection_changed');
@@ -189,6 +185,98 @@ export async function testManagedConnection(
     kind: 'mcp',
     server: { id: server.id, url: server.url, transport: server.transport, headers, authorizeRequest },
   }, { discoverMcp: (target) => discoverMcpTools(target, undefined, input.createGuardedFetch) });
+}
+
+interface SaveManagedConnectionKeyInput {
+  agentId: string;
+  /** The connection account id. */
+  connectionId: string;
+  actor: ConnectionTestActor;
+  key: string;
+  path?: string;
+  /** The account revision whose hosts and paths the caller checked the key may reach. */
+  expectedRevision: number;
+  surface: ManagementOrigin['kind'];
+  env?: PlatformEnv;
+  config: ConfigStore;
+  settings: SettingsStore;
+  productTelemetry?: ProductTelemetryCapture;
+  /** Test seam; production checks the key on the running target. */
+  connectionCheck?: ConnectionCheckOptions;
+}
+
+const CONNECTION_CHANGED = 'The connection changed while the key was being saved, so nothing was saved. Inspect the workspace again, then retry.';
+
+/**
+ * Checks a key against one of an Agent's API connections with one GET and,
+ * unless the service rejects the key, saves it the way the setup page does,
+ * so the account becomes ready. The check and the save are fenced on the
+ * account revision the caller checked.
+ */
+export async function saveManagedConnectionKey(
+  input: SaveManagedConnectionKeyInput,
+): Promise<SavedConnectionKeyCheck> {
+  const entry = await memberApiConnection(input);
+  const policy = entry?.account.policy;
+  if (!entry || entry.account.revision !== input.expectedRevision ||
+      policy?.kind !== 'api' || policy.authMode !== 'credential') {
+    throw new ManagementError('invalid_request', CONNECTION_CHANGED);
+  }
+  if (input.path !== undefined) assertPathInsideConnection(policy, input.path);
+  const unchanged = async () =>
+    (await memberApiConnection(input).catch(() => undefined))?.account.revision === entry.account.revision;
+  const check = await checkConnection({
+    kind: 'api',
+    connection: policy,
+    credential: input.key,
+    ...(input.path === undefined ? {} : { path: input.path }),
+    authorize: unchanged,
+  }, input.connectionCheck);
+  if (check.kind === 'key_rejected') {
+    throw new ManagementError(
+      'key_rejected',
+      `${new URL(check.url).host} rejected this key (HTTP 401), so nothing was saved. Tell the person the key did not work and send a setup link with request_setup for this connection, where they can enter a working key. Never ask them to paste a key in chat.`,
+    );
+  }
+  await saveConnectionCredential({
+    config: input.config,
+    settings: input.settings,
+    platformEnv: input.env,
+    productTelemetry: input.productTelemetry,
+  }, entry, input.key, {
+    surface: input.surface,
+    retired: async () => {
+      try {
+        const current = await memberApiConnection(input);
+        return !current || connectionSetupBinding(current) !== connectionSetupBinding(entry);
+      } catch {
+        return undefined;
+      }
+    },
+  });
+  return check;
+}
+
+/** The Agent's API connection with this account id, as the member manages it. */
+async function memberApiConnection(
+  input: Pick<SaveManagedConnectionKeyInput, 'agentId' | 'connectionId' | 'actor' | 'config'>,
+): Promise<AgentConnectionEntry | undefined> {
+  const [accounts, bindings] = await Promise.all([
+    input.config.listConnectionAccounts(input.actor.workspaceId),
+    input.config.listAgentConnectionBindings(input.agentId),
+  ]);
+  return [...agentConnections(accounts, bindings, input.actor.actorMembershipId).api.values()]
+    .find(({ account }) => account.id === input.connectionId);
+}
+
+function assertPathInsideConnection(policy: ApiConnectionScope, path: string): void {
+  const url = connectionCheckUrl(policy, path);
+  if (url === undefined || !connectionUrlPrefixes(policy).some((prefix) => matchesEgressPrefix(url, prefix))) {
+    throw new ManagementError(
+      'invalid_request',
+      `path must be inside the connection on its first host: ${connectionUrlPrefixes(policy).join(', ')}.`,
+    );
+  }
 }
 
 /** Lists an open server's tools exactly as Admin's Test connection does before it saves one. */

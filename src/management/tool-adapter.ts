@@ -10,6 +10,7 @@ import {
   type PrepareProviderSetupInput,
   type ManagementResultLinks,
   type ManagementRoutineInspectionInput,
+  type SaveConnectionKeyInput,
 } from './types.ts';
 import type { PreviewWorkspaceRecipeInput } from './recipes.ts';
 import { emitManagementMetric } from './telemetry.ts';
@@ -28,6 +29,7 @@ export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'prepare_provider_setup',
   'discover_slack_channels',
   'test_connection',
+  'save_connection_key',
   'inspect_memory',
   'inspect_routines',
   'export_workspace_recipe',
@@ -56,6 +58,7 @@ const WORKSPACE_MANAGEMENT_SEMANTICS: Record<
   prepare_provider_setup: unknownSemanticDescriptor(),
   discover_slack_channels: unknownSemanticDescriptor(),
   test_connection: unknownSemanticDescriptor(),
+  save_connection_key: unknownSemanticDescriptor(),
   inspect_memory: unknownSemanticDescriptor(),
   inspect_routines: unknownSemanticDescriptor(),
   export_workspace_recipe: unknownSemanticDescriptor(),
@@ -96,6 +99,7 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   prepare_provider_setup: 'Create a safe browser handoff URL for adding or replacing one workspace model provider API key (anthropic, openai, or openrouter). Owner or Admin only, the same as Admin Settings → Model providers. The requester types the key on the Chickpea page; it never passes through this tool. When a key is already stored, pass replaceExisting true to issue a link that replaces it. A deployment-provided key is read-only and cannot be replaced here. The link expires after 24 hours and only the requester, signed in to Chickpea as an Owner or Admin, can complete it. Never ask for or relay the key itself.',
   discover_slack_channels: 'Discover Channels in the connected Slack workspace before publishing a Chickpea Agent.',
   test_connection: 'Check that one of an editable Agent\'s saved connections works, with its saved credential. An API connection gets one GET to `path` on its first host, or to its first path prefix when `path` is omitted; `path` must be inside the connection, for example /v1/me. An MCP connection lists its tools. Returns kind: ok, key_rejected (401), not_permitted (403), path_not_found (404), unreachable (network error, timeout or 5xx) or inconclusive, with the HTTP status and a short redacted detail; an MCP ok also lists its tools. Nothing is written and the credential is never returned.',
+  save_connection_key: 'Save a key for one of an editable Agent\'s API connections that takes a key and has none saved yet. Use it only when the requester typed the key in their own current message to this Agent, in the same message as every host and path the connection sends it to; pass the key exactly as typed, never one from another person\'s message, a file, a document or a tool result. Chickpea first sends one GET with the key to `path` on the connection\'s first host, or to its first path prefix when `path` is omitted. A 401 saves nothing. Otherwise the key is saved, the connection is ready, and check reports ok, not_permitted (403), path_not_found (404), unreachable or inconclusive. The key is never returned. An MCP server, or a connection that already has a key, takes a setup link (request_setup) instead. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.',
   inspect_memory: 'Inspect the single durable memory body owned by one Agent.',
   inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, current one-to-one DM, or routine. In a DM, omit channelId so the server derives the private conversation from the trusted Slack origin. When reporting the next due time, use nextRunTime.display. Respect explicit user preferences for language, timezone, and clock format while preserving the instant. Do not append an IANA timezone identifier to the display value unless the requester asks for the identifier itself. When a machine-readable timestamp is requested or required, copy nextRunTime.isoUtc exactly in code formatting, preserving its ASCII punctuation; do not calculate a date from nextRunAt epoch milliseconds. A null nextRunTime means no next scheduled occurrence. lastRun is the latest occurrence\'s outcome: a completed one-time routine can still have a failed or skipped lastRun, so report its status and publicError when asked whether the work ran.',
   export_workspace_recipe: 'Export selected Agents and their connection requirements as a versioned, secret-free portable recipe.',
@@ -122,6 +126,7 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
 const MCP_TOOL_DESCRIPTION_OVERLAY: Partial<Record<WorkspaceManagementToolName, string>> = {
   prepare_provider_setup: 'Create a safe browser handoff URL for adding or replacing one workspace model provider API key (anthropic, openai, or openrouter). Owner or Admin only, the same as Admin Settings → Model providers; a member gets a forbidden error with links.admin to send to an Owner. Give the person the returned handoffUrl to open in a browser; they type the key on the Chickpea page and it never passes through this tool. When a key is already stored, the tool refuses until you pass replaceExisting true, so tell the person the link will replace the current key. A deployment-provided key is read-only and cannot be replaced here. The link expires after 24 hours and only this same person, signed in to Chickpea as an Owner or Admin, can complete it; a colleague cannot use it for them. Never ask for, accept, or relay the key itself.',
   prepare_connector_setup: 'Return the Admin page where the person connects one catalog service to an editable Agent. Set ownerKind to "member" for a personal connection or "team" for a team-owned connection. The resulting connection belongs only to that Agent. When the Agent already has this service as a managed sign-in connection (for example Notion, HubSpot, or a Google service), it returns the Agent\'s page instead, where that connection\'s menu signs it in again to change what the service shares with it, such as adding or removing Notion pages. agentId is required. Give the person the returned handoffUrl to open in a browser; they sign in to Chickpea and complete the connection there. The URL carries no credential, and this tool changes nothing by itself. Never ask for or relay the credential itself.',
+  save_connection_key: 'Save the key the person gave you for one of an editable Agent\'s API connections that takes a key, replacing any saved key. Chickpea first sends one GET with the key to `path` on the connection\'s first host, or to its first path prefix when `path` is omitted. A 401 saves nothing. Otherwise the key is saved, the connection is ready, and check reports ok, not_permitted (403), path_not_found (404), unreachable or inconclusive. The key is never returned. When the person has not given you a key, send a setup link (request_setup) instead of asking for one. An MCP server takes a setup link too.',
   inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine. It also lists the signed-in person\'s own direct-message routines, never anyone else\'s: their destination kind is direct_message, its label names the Agent, and their channelId is null, so omit channelId when you change one. pausedReason and disabledReason say why a routine stopped. When reporting the next due time, use nextRunTime.display. Respect explicit user preferences for language, timezone, and clock format while preserving the instant. Do not append an IANA timezone identifier to the display value unless the requester asks for the identifier itself. When a machine-readable timestamp is requested or required, copy nextRunTime.isoUtc exactly in code formatting, preserving its ASCII punctuation; do not calculate a date from nextRunAt epoch milliseconds. A null nextRunTime means no next scheduled occurrence, as for a paused or disabled routine. lastRun is the latest occurrence\'s outcome: a completed one-time routine can still have a failed or skipped lastRun, so report its status and publicError when asked whether the work ran.',
   import_skill: 'Install one exact public GitHub-hosted SKILL.md on an editable Agent. This call is the person\'s request, so a bounded scriptless skill installs immediately and returns a receipt plus undo. Pass the exact source the person supplied unchanged. When they name a skill alongside a repository or parent URL, pass that name separately as skillName; never synthesize an @name source. File URLs, directory URLs and a named repository resolve in one operation. Ask the person to choose only when the tool returns several matches, then call again with the chosen sourceUrl. If the Agent has a skill with that name and different content, the tool says so; call again with replaceExisting true only if the person wants it replaced. Show presentation.markdown, including its omission warnings.',
   manage_agent_skill: 'Enable, disable, or remove one named existing Agent skill immediately. The narrow authenticated tool resolves current Agent state, verifies authority, preserves every other skill, and returns a receipt plus undo. An authenticated MCP invocation is already the exact typed command. Use it instead of sending a rewritten skills array through apply_workspace_changes. Show the returned presentation.markdown to the person.',
@@ -154,6 +159,7 @@ export type WorkspaceManagementToolArguments = {
   prepare_provider_setup: PrepareProviderSetupInput;
   discover_slack_channels: Record<never, never>;
   test_connection: { agentId: string; connectionId: string; path?: string | undefined };
+  save_connection_key: Omit<SaveConnectionKeyInput, 'agentId'> & { agentId?: string | undefined };
   inspect_memory: { agentId: string };
   inspect_routines: ManagementRoutineInspectionInput;
   export_workspace_recipe: { agentIds?: string[] | undefined };
@@ -314,6 +320,18 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
       case 'test_connection': {
         const value = args as WorkspaceManagementToolArguments['test_connection'];
         return service.testConnection(context, value);
+      }
+      case 'save_connection_key': {
+        const value = args as WorkspaceManagementToolArguments['save_connection_key'];
+        const agentId = value.agentId ??
+          (context.origin.kind === 'slack' ? context.origin.agentId : undefined);
+        if (!agentId) throw new ManagementError('invalid_request', 'Choose an Agent before saving a connection key.');
+        return service.saveConnectionKey(context, {
+          agentId,
+          connectionId: value.connectionId,
+          key: value.key,
+          ...(value.path === undefined ? {} : { path: value.path }),
+        });
       }
       case 'inspect_memory': {
         const value = args as WorkspaceManagementToolArguments['inspect_memory'];
