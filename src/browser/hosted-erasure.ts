@@ -59,8 +59,10 @@ export async function censusBrowser(store: SettingsStore, now: number): Promise<
 
 /**
  * One pass of erasure. First every running session ends: those the lease
- * row holds and those the provider lists running under the installation's
- * metadata. Then every context is deleted: the ones website logins record
+ * row holds, the hand-off sessions queued with a deleted login, and those
+ * the provider lists running under the installation's metadata. A queued
+ * hand-off leaves the queue only once its session has ended. Then every
+ * context is deleted: the ones website logins record
  * (legacy catalog fields included), the queued ones, and every one the
  * provider lists on the installation's sessions, finished ones included,
  * which catches a context nothing recorded. Each goes through the wrapper's
@@ -87,6 +89,9 @@ export async function eraseBrowserPass(input: {
   const running = new Map<string, string | undefined>();
   for (const { sessionId, contextId } of (await readBrowserSessionUsage({ store, now: now() })).leases) {
     if (sessionId) running.set(sessionId, contextId);
+  }
+  for (const { handoffSessionId, contextId } of await pendingContextDeletions(store)) {
+    if (handoffSessionId) running.set(handoffSessionId, running.get(handoffSessionId) ?? contextId);
   }
   for (const { id, contextId } of await provider.installationSessions('RUNNING')) running.set(id, contextId ?? running.get(id));
   const stillRunning = new Set<string>();
@@ -153,8 +158,9 @@ export async function eraseBrowserPass(input: {
     settled.add(contextId);
     for (const loginId of recorded.get(contextId) ?? []) await forgetWebsiteLoginContext(store, loginId, contextId);
   }
-  // A queued hand-off session with no context ended above if it still ran.
-  await dropPendingContextDeletions(store, ({ contextId }) => contextId === undefined || settled.has(contextId));
+  await dropPendingContextDeletions(store, ({ contextId, handoffSessionId }) =>
+    (contextId === undefined || settled.has(contextId)) &&
+    (handoffSessionId === undefined || !stillRunning.has(handoffSessionId)));
   return { ended, deleted, alreadyGone, foreign, remaining, sessionsListed: listed.length };
 }
 

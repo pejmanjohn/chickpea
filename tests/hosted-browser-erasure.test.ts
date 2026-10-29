@@ -179,11 +179,47 @@ test('an id whose record does not show its owner stays in the store, counted rem
     sleep: async () => undefined,
   });
   assert.equal(pass.foreign, 0);
-  assert.equal(pass.remaining, 2);
+  assert.equal(pass.remaining, 3);
   assert.equal(pass.deleted, 0);
   assert.equal((await listWebsiteLogins(store))[0]!.contextId, 'ctx_nameless');
-  assert.match((await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!, /ctx_projectless/);
+  assert.match((await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!, /ctx_projectless.*sess_no_metadata/);
   assert.deepEqual(browserbase.requests().filter((request) => request.startsWith('DELETE')), []);
+  assert.equal(browserbase.sessions.get('sess_no_metadata')!.status, 'RUNNING');
+});
+
+test('erasure ends a queued hand-off session the provider does not list, and keeps its entry until that session has ended', async (t) => {
+  const { store } = installation(t);
+  await store.setSetting(PENDING_CONTEXT_DELETIONS_SETTING, JSON.stringify([
+    { handoffSessionId: 'sess_handoff', queuedAt: 1 },
+    { contextId: 'ctx_behind', handoffSessionId: 'sess_stuck', queuedAt: 2 },
+  ]));
+  const browserbase = fakeBrowserbase({
+    fail: ({ method, url }) => {
+      if (method === 'GET' && new URL(url).pathname === '/v1/sessions') return Response.json([]);
+      return method === 'POST' && url.endsWith('/v1/sessions/sess_stuck') ? Response.json({}) : undefined;
+    },
+  });
+  browserbase.contexts.set('ctx_behind', own('behind'));
+  browserbase.sessions.set('sess_handoff', { projectId: 'proj-platform', status: 'RUNNING', userMetadata: { installation: A } });
+  browserbase.sessions.set('sess_stuck', { projectId: 'proj-platform', status: 'RUNNING', contextId: 'ctx_behind', userMetadata: { installation: A } });
+  let clock = NOW;
+  const pass = () => eraseBrowserPass({
+    store,
+    provider: new HostedBrowserProvider({ access: { apiKey: 'bb_live_platform', projectId: 'proj-platform' }, installationId: A, store, fetch: browserbase.fetchImpl }),
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+  });
+  const first = await pass();
+  assert.equal(browserbase.sessions.get('sess_handoff')!.status, 'COMPLETED', 'ended though nothing lists it');
+  assert.deepEqual([first.deleted, first.remaining], [0, 2], 'the stuck session and the context it saves into wait');
+  assert.ok(browserbase.contexts.has('ctx_behind'));
+  assert.deepEqual(JSON.parse((await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!),
+    [{ contextId: 'ctx_behind', handoffSessionId: 'sess_stuck', queuedAt: 2 }]);
+
+  browserbase.sessions.get('sess_stuck')!.status = 'COMPLETED';
+  const second = await pass();
+  assert.deepEqual([second.deleted, second.remaining], [1, 0]);
+  assert.equal(await store.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), undefined);
 });
 
 test('erasure is refused for another installation and without the host browser port', async (t) => {
