@@ -890,6 +890,51 @@ test('catalog replacement requires management authority and rolls back failed wr
   }
 });
 
+test('replacing a catalog connection in place keeps its guide', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.createAgent({
+      id: 'agent_billing', name: 'Billing Guide', creatorMembershipId: 'membership_owner',
+      editPolicy: 'all_workspace_members', lifecycle: 'active', configurationGeneration: 1,
+      instructions: 'Help the team manage billing.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const policy = {
+      kind: 'mcp' as const, url: 'https://mcp.stripe.com/', transport: 'streamable-http' as const,
+      authMode: 'bearer' as const, headerNames: [], discoveredTools: [{ name: 'original_tool' }],
+      allowedTools: ['original_tool'], presetId: 'stripe',
+    };
+    const { account, binding } = await config.createAgentOwnedConnection({
+      account: {
+        id: 'connection_stripe', workspaceId: 'T_REPLACE', ownerKind: 'team',
+        createdByMembershipId: 'membership_owner', providerId: 'stripe', label: 'Stripe',
+        policy: { ...policy, guide: 'Refunds need the refunds tool.' },
+        secretRefId: 'secret_stripe', lifecycle: 'ready',
+      },
+      binding: {
+        agentId: 'agent_billing', connectionAccountId: 'connection_stripe', providerId: 'stripe',
+        allowedCapabilities: ['original_tool'], enabled: true,
+      },
+    });
+    const replaced = await replaceCatalogConnection({
+      config, settings, account, binding,
+      prepared: {
+        policy: { ...policy, discoveredTools: [{ name: 'replacement_tool' }], allowedTools: ['replacement_tool'] },
+        credential: 'replacement-token',
+        allowedCapabilities: ['replacement_tool'],
+      },
+    });
+    assert.deepEqual(replaced.policy, {
+      ...policy, discoveredTools: [{ name: 'replacement_tool' }], allowedTools: ['replacement_tool'],
+      guide: 'Refunds need the refunds tool.',
+    });
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
 test('a failed catalog replacement restores only the binding it wrote, so a later change stays', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');

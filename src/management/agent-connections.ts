@@ -37,6 +37,7 @@ export const MCP_CLIENT_FIELDS = [
   'toolPolicies',
   'oauthScope',
   'presetId',
+  'guide',
 ] as const satisfies readonly (keyof McpConnectionConfig)[];
 
 export const API_CLIENT_FIELDS = [
@@ -53,6 +54,7 @@ export const API_CLIENT_FIELDS = [
   'oauthScopes',
   'oauthAppType',
   'presetId',
+  'guide',
 ] as const satisfies readonly (keyof ApiConnectionConfig)[];
 
 const MCP_HEADER_POLICY_FIELDS = [
@@ -93,11 +95,19 @@ export interface ManagementConnectionStatus {
 }
 
 export function managementMcpConnection(connection: ManagementMcpConnection): ManagementMcpConnection {
-  return pickDefined(connection, MCP_CLIENT_FIELDS);
+  return withTrimmedGuide(pickDefined(connection, MCP_CLIENT_FIELDS));
 }
 
 export function managementApiConnection(connection: ManagementApiConnection): ManagementApiConnection {
-  return pickDefined(connection, API_CLIENT_FIELDS);
+  return withTrimmedGuide(pickDefined(connection, API_CLIENT_FIELDS));
+}
+
+/** Trims the guide of a picked copy in place, dropping a blank one. */
+function withTrimmedGuide<T extends { guide?: string }>(picked: T): T {
+  const guide = picked.guide?.trim();
+  if (guide) picked.guide = guide;
+  else delete picked.guide;
+  return picked;
 }
 
 /**
@@ -427,6 +437,7 @@ function mcpConnectionFromAccount(id: string, { account, binding }: AgentConnect
     ...(policy.oauthAttemptId ? { oauthAttemptId: policy.oauthAttemptId } : {}),
     ...(account.identity ? { identity: account.identity } : {}),
     ...(policy.presetId ? { presetId: policy.presetId } : {}),
+    ...(policy.guide ? { guide: policy.guide } : {}),
   };
 }
 
@@ -449,6 +460,7 @@ function apiConnectionFromAccount(id: string, { account, binding }: AgentConnect
     ...ACCOUNT_STATUS[lifecycle],
     ...(account.identity ? { identity: account.identity } : {}),
     ...(policy.presetId ? { presetId: policy.presetId } : {}),
+    ...(policy.guide ? { guide: policy.guide } : {}),
   };
 }
 
@@ -467,6 +479,7 @@ function mcpAccountPolicy(connection: McpConnectionConfig): ConnectionAccountMcp
     ...(connection.oauthScope ? { oauthScope: connection.oauthScope } : {}),
     ...(connection.oauthAttemptId ? { oauthAttemptId: connection.oauthAttemptId } : {}),
     ...(connection.presetId ? { presetId: connection.presetId } : {}),
+    ...(connection.guide ? { guide: connection.guide } : {}),
   };
 }
 
@@ -486,6 +499,7 @@ function apiAccountPolicy(connection: ApiConnectionConfig, kept?: AgentConnectio
     ...(connection.oauthAppType ? { oauthAppType: connection.oauthAppType } : {}),
     ...(attempt ? { oauthAttemptId: attempt } : {}),
     ...(connection.presetId ? { presetId: connection.presetId } : {}),
+    ...(connection.guide ? { guide: connection.guide } : {}),
   };
 }
 

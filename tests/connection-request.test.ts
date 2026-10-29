@@ -371,10 +371,11 @@ test('the tool mounts for any API connection with an actor, and narration names 
 });
 
 test('the Google Workspace skill teaches connection_request, not curl', () => {
-  const [google] = connectorSkillsForConnections([{
+  const [google] = connectorSkillsForConnections({ apiConnections: [{
+    id: 'connection_google',
     allowedHosts: ['www.googleapis.com'], pathPrefixes: ['/drive/v3'], allowedMethods: ['GET'],
     presetId: 'google-workspace', oauthScopes: ['https://www.googleapis.com/auth/drive.readonly'],
-  }]);
+  }] });
   assert.equal(google?.name, 'google-workspace');
   assert.doesNotMatch(google!.instructions, /\bcurl\b/);
   assert.match(google!.instructions, /`connection_request`/);

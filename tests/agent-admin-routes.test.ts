@@ -7561,6 +7561,61 @@ test('Admin refuses a key for OAuth, keyless, ready and disconnected accounts', 
   }
 });
 
+test('Admin stores a trimmed connection guide, refuses one holding a key, and keeps it when the key is saved', async () => {
+  const fixture = harness();
+  try {
+    await seedKeyAgent(fixture);
+    const create = (lane: 'api' | 'mcp', guide: string) => fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({
+          workspaceId: 'T_TEST', ownerKind: 'team', providerId: lane === 'api' ? 'billing' : 'tracker',
+          label: lane === 'api' ? 'Billing' : 'Tracker', allowedCapabilities: [],
+          [lane]: lane === 'api'
+            ? {
+                id: 'billing', displayName: 'Billing', allowedHosts: ['billing.example.test'], pathPrefixes: ['/v1'],
+                headerName: 'Authorization', headerValuePrefix: 'Bearer ', allowedMethods: ['GET'], enabled: true,
+                authMode: 'credential', guide,
+              }
+            : {
+                id: 'tracker', displayName: 'Tracker', url: 'https://mcp.tracker.example/mcp',
+                transport: 'streamable-http', authMode: 'bearer', headerNames: [], enabled: true,
+                lifecycleStatus: 'pending', statusText: '', discoveredTools: [], allowedTools: ['search'], guide,
+              },
+        }),
+      },
+    );
+
+    for (const lane of ['api', 'mcp'] as const) {
+      const keyLike = await create(lane, `Send ghp_${'0'.repeat(36)} as the token.`);
+      assert.equal(keyLike.status, 400, await keyLike.clone().text());
+    }
+    assert.deepEqual(await fixture.store.listConnectionAccounts('T_TEST'), [], 'a guide holding a key stores nothing');
+
+    const guide = 'List invoices with GET /v1/invoices?limit=100.\nDrafts stay private until sent.';
+    const created = await create('api', `\n  ${guide}  \n`);
+    assert.equal(created.status, 201, await created.clone().text());
+    const { account } = await created.json() as { account: ConnectionAccount };
+    assert.deepEqual((await storedAccount(fixture, account.id)).policy, { ...keyedApiPolicy, guide });
+
+    const keyed = await putAccountKey(fixture.app, account.id, account.revision, 'sk-live');
+    assert.equal(keyed.status, 200, await keyed.clone().text());
+    const saved = await storedAccount(fixture, account.id);
+    assert.equal(saved.lifecycle, 'ready');
+    assert.deepEqual(saved.policy, { ...keyedApiPolicy, guide }, 'saving the key keeps the guide');
+
+    const tracker = await create('mcp', 'Search by project key.');
+    assert.equal(tracker.status, 201, await tracker.clone().text());
+    const { account: mcpAccount } = await tracker.json() as { account: ConnectionAccount };
+    const mcpPolicy = (await storedAccount(fixture, mcpAccount.id)).policy;
+    assert.equal(mcpPolicy.kind === 'mcp' ? mcpPolicy.guide : undefined, 'Search by project key.');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('a Member keys their personal account but not a Team account', async () => {
   const member: AuthPrincipal = {
     ...keyOwner, userId: 'user_key_member', membershipId: 'membership_key_member', role: 'member',
