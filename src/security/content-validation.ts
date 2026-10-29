@@ -40,6 +40,12 @@ const CREDENTIAL_SIGNATURES: readonly (
   },
   { source: String.raw`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`, flags: '', markers: ['AKIA', 'ASIA'] },
   { source: String.raw`\bbb_(?:live|test)_[a-z0-9_-]{8,}`, flags: 'i', markers: ['bb_live_', 'bb_test_'] },
+  // HubSpot private app and service keys: `pat-<region>-<uuid>`, such as `pat-na1-…`.
+  {
+    source: String.raw`\bpat-[a-z]{2}\d{1,2}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`,
+    flags: 'i',
+    markers: ['pat-'],
+  },
   {
     source: String.raw`\b(?:CHICKPEA_(?:AUTH_SECRET|RECOVERY_TOKEN|CREDENTIAL_KEY_[A-Z0-9_]+)|TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|COMPOSIO_(?:API_KEY|WEBHOOK_SECRET)|GITHUB_TOKEN|BROWSERBASE_API_KEY)[ \t]*=[ \t]*[^\s]{8,}`,
     flags: 'i',
