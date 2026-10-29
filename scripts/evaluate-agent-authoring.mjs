@@ -1107,7 +1107,9 @@ async function runDeterministicSmoke(corpus) {
       fauxAssistantMessage([fauxToolCall('activate_skill', { name: 'agent-authoring' })], { stopReason: 'toolUse' }),
       connectKb([updateKb, kbSetup]),
       fauxAssistantMessage([
-        fauxToolCall('save_connection_key', { connectionId: 'hubspot_kb', key: contextKey }),
+        fauxToolCall('save_connection_key', {
+          connectionId: 'hubspot_kb', key: contextKey, path: '/cms/knowledge-base/2027-03-beta/articles',
+        }),
       ], { stopReason: 'toolUse' }),
       fauxAssistantMessage([
         { type: 'text', text: 'Connected HubSpot Knowledge Base.' },

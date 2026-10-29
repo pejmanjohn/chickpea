@@ -195,7 +195,7 @@ interface SaveManagedConnectionKeyInput {
   connectionId: string;
   actor: ConnectionTestActor;
   key: string;
-  path?: string;
+  path: string;
   /** The account revision whose hosts and paths the caller checked the key may reach. */
   expectedRevision: number;
   surface: ManagementOrigin['kind'];
@@ -273,7 +273,7 @@ export async function saveManagedConnectionKey(
       policy?.kind !== 'api' || policy.authMode !== 'credential') {
     throw new ManagementError('invalid_request', CONNECTION_CHANGED);
   }
-  if (input.path !== undefined) assertPathInsideConnection(policy, input.path);
+  assertPathInsideConnection(policy, input.path);
   if (input.surface === 'slack' && await keySavedOnAnotherConnection(input, entry.account.id)) {
     throw new ManagementError(
       'invalid_request',
@@ -286,7 +286,7 @@ export async function saveManagedConnectionKey(
     kind: 'api',
     connection: policy,
     credential: input.key,
-    ...(input.path === undefined ? {} : { path: input.path }),
+    path: input.path,
     authorize: unchanged,
   }, input.connectionCheck);
   if (check.kind !== 'ok') throw new ConnectionKeyRefusedError(check);

@@ -437,9 +437,9 @@ export interface WorkspaceManagementServiceInput {
     path?: string;
   }) => Promise<ConnectionCheckOutcome>;
   /**
-   * Checks a key against one API connection with one GET and, only when it
-   * answers 2xx, saves it the way the setup page does; any other answer
-   * throws ConnectionKeyRefusedError. Never returns the key.
+   * Checks a key against one API connection with one GET to `path` and, only
+   * when it answers 2xx, saves it the way the setup page does; any other
+   * answer throws ConnectionKeyRefusedError. Never returns the key.
    */
   saveConnectionKey?: (input: {
     agentId: string;
@@ -447,7 +447,7 @@ export interface WorkspaceManagementServiceInput {
     connectionId: string;
     actor: ConnectionTestActor;
     key: string;
-    path?: string;
+    path: string;
     /** The account revision whose hosts and paths the door checked the key may reach. */
     expectedRevision: number;
     surface: ManagementOrigin['kind'];
@@ -2012,7 +2012,7 @@ export class WorkspaceManagementService {
         connectionId: account.id,
         actor: { workspaceId, actorMembershipId: actor.membershipId },
         key,
-        ...(input.path === undefined ? {} : { path: input.path }),
+        path: input.path,
         expectedRevision: account.revision,
         surface: actor.origin.kind,
       });

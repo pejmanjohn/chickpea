@@ -282,7 +282,8 @@ test('Slack and the guide route a catalog gap to a custom connection and default
     assert.match(text, /request_setup/);
     assert.match(text, /pasted the key in their own current message, call `?save_connection_key`?/);
     assert.match(text, /rotate the key and use the setup link next time/);
-    assert.match(text, /Give that call a `?path`? set to a read endpoint inside the connection that requires the key/);
+    assert.match(text, /Give that call a `?path`? set to a read endpoint inside the connection that the key can read, such as a list endpoint, never the bare prefix/);
+    assert.match(text, /its refusal carries a setup link for the connection; give the (?:requester|person) that link/);
     assert.match(text, /never repeat a key/i);
   }
   assert.match(slack, /Never ask anyone to paste a key in chat/);

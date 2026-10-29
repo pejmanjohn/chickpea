@@ -400,7 +400,7 @@ export const saveConnectionKeyZodSchema = z.strictObject({
   agentId: zAgentId.optional(),
   connectionId: zId,
   key: z.string().min(1).max(CONNECTION_KEY_MAX_LENGTH).describe('The key the person gave you, unchanged.'),
-  path: z.string().max(2048).regex(CONNECTION_CHECK_PATH_PATTERN).optional(),
+  path: z.string().max(2048).regex(CONNECTION_CHECK_PATH_PATTERN),
 });
 export const inspectMemoryZodSchema = z.strictObject({ agentId: zAgentId });
 export const inspectRoutinesZodSchema = z.strictObject({
@@ -786,7 +786,7 @@ export const saveConnectionKeyValibotSchema = v.strictObject({
     v.maxLength(CONNECTION_KEY_MAX_LENGTH),
     v.description('The key exactly as the requester typed it in their own current message.'),
   ),
-  path: v.optional(v.pipe(v.string(), v.maxLength(2048), v.regex(CONNECTION_CHECK_PATH_PATTERN))),
+  path: v.pipe(v.string(), v.maxLength(2048), v.regex(CONNECTION_CHECK_PATH_PATTERN)),
 });
 export const inspectMemoryValibotSchema = v.strictObject({ agentId: vAgentId });
 export const inspectRoutinesValibotSchema = v.strictObject({

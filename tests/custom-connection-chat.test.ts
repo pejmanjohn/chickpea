@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import * as v from 'valibot';
+
 import { connectionAccountSecretSettingKey } from '../src/config/connector-secrets.ts';
 import type { SettingsStore } from '../src/config/settings-store.ts';
 import { ConnectionAccountService } from '../src/connections/store.ts';
@@ -12,6 +14,7 @@ import {
   invokeSlackWorkspaceManagementTool,
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
+import { saveConnectionKeyValibotSchema, saveConnectionKeyZodSchema } from '../src/management/schemas.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import {
   invokeWorkspaceManagementTool,
@@ -43,8 +46,9 @@ const KB_CONNECTION: ManagementApiConnection = {
   enabled: true,
   authMode: 'credential',
 };
-const SAVE_WITHOUT_PATH: WorkspaceManagementToolArguments['save_connection_key'] = { connectionId: 'hubspot_kb', key: KEY };
-const SAVE = { ...SAVE_WITHOUT_PATH, path: `${KB_PATH}/knowledge-bases` };
+const SAVE: WorkspaceManagementToolArguments['save_connection_key'] = {
+  connectionId: 'hubspot_kb', key: KEY, path: `${KB_PATH}/knowledge-bases`,
+};
 const PASTED = `here's our HubSpot service key ${KEY} for the Knowledge Base API at <${KB_URL}>, set it up so you can read and write articles`;
 
 /** Every value a store method was called with, serialized, so a test can look for the key in it. */
@@ -324,6 +328,16 @@ test('the MCP door adds a custom connection at once without typed URLs', async (
   } finally { f.close(); }
 });
 
+test('both doors refuse save_connection_key without a path before anything runs', () => {
+  const { path: _path, ...withoutPath } = SAVE;
+  const slack = v.safeParse(saveConnectionKeyValibotSchema, withoutPath);
+  assert.deepEqual(slack.success ? [] : slack.issues.map((issue) => issue.path?.map(({ key }) => key)), [['path']]);
+  const mcp = saveConnectionKeyZodSchema.safeParse({ ...withoutPath, agentId: 'agent_scribe' });
+  assert.deepEqual(mcp.success ? [] : mcp.error.issues.map((issue) => issue.path), [['path']]);
+  assert.ok(v.safeParse(saveConnectionKeyValibotSchema, SAVE).success);
+  assert.ok(saveConnectionKeyZodSchema.safeParse({ ...SAVE, agentId: 'agent_scribe' }).success);
+});
+
 test('save_connection_key refuses a key the requester did not type in this message, and sends nothing', async () => {
   const f = await fixture();
   try {
@@ -383,9 +397,9 @@ test('save_connection_key refuses a Google sign-in and an MCP server', async () 
       }],
     }))).disposition, 'applied');
     const text = `key ${KEY} for https://gmail.googleapis.com/gmail/v1/users/me and https://mcp.example.com/mcp`;
-    assert.match(refusal(await f.slack('save_connection_key', { connectionId: 'google', key: KEY }, text)).message,
+    assert.match(refusal(await f.slack('save_connection_key', { ...SAVE, connectionId: 'google' }, text)).message,
       /signs in with Google/);
-    assert.match(refusal(await f.slack('save_connection_key', { connectionId: 'example_mcp', key: KEY }, text)).message,
+    assert.match(refusal(await f.slack('save_connection_key', { ...SAVE, connectionId: 'example_mcp' }, text)).message,
       /API connections only/);
   } finally { f.close(); }
 });
@@ -521,8 +535,8 @@ test('a bogus key checked at a prefix that answers 404 saves nothing; a read pat
   try {
     await addKeyedConnection(f);
     const unchecked = await withConnectionNetwork(hubspot(OTHER_KEY), async (requests) => {
-      const response = await f.slack('save_connection_key', SAVE_WITHOUT_PATH, PASTED);
-      assert.deepEqual(requests.map(({ url }) => url), [KB_URL], 'the check GETs the bare prefix');
+      const response = await f.slack('save_connection_key', { ...SAVE, path: KB_PATH }, PASTED);
+      assert.deepEqual(requests.map(({ url }) => url), [KB_URL], 'the check GETs the path it was given');
       return response;
     });
     const error = refusal(unchecked);
@@ -536,7 +550,7 @@ test('a bogus key checked at a prefix that answers 404 saves nothing; a read pat
     assert.deepEqual(f.telemetry, [], 'the connection never went ready');
 
     const rejected = await withConnectionNetwork(hubspot(OTHER_KEY), async () =>
-      f.slack('save_connection_key', { ...SAVE_WITHOUT_PATH, path: `${KB_PATH}/articles` }, PASTED));
+      f.slack('save_connection_key', { ...SAVE, path: `${KB_PATH}/articles` }, PASTED));
     assert.equal(refusal(rejected).code, 'key_rejected');
     assert.equal(await f.savedKey(), undefined);
   } finally { f.close(); }
@@ -557,7 +571,7 @@ test('a 5xx, an unreadable answer or a failed request saves nothing either, over
       await assertConnectionSetup(f, setupLinkIn(error.message));
     }
     const viaMcp = refusal(await withConnectionNetwork(hubspot(OTHER_KEY), async () =>
-      f.mcp('save_connection_key', { ...SAVE_WITHOUT_PATH, agentId: f.agent.id })));
+      f.mcp('save_connection_key', { ...SAVE, path: KB_PATH, agentId: f.agent.id })));
     assert.equal(viaMcp.code, 'key_unconfirmed');
     await assertConnectionSetup(f, setupLinkIn(viaMcp.message));
     assert.doesNotMatch(viaMcp.message, /rotate/, 'over MCP the person gave the key to their own coding agent, not a chat');
@@ -687,7 +701,7 @@ test('one pasted key fills one connection, even when the message names a second 
     };
     assert.equal((await f.connectFromSlack(message, { apiConnections: [KB_CONNECTION, docsConnection] })).disposition, 'applied');
     await withConnectionNetwork(hubspot(KEY), async (requests) => {
-      assert.match(refusal(await f.slack('save_connection_key', { ...SAVE_WITHOUT_PATH, connectionId: 'docs_api' }, message)).message,
+      assert.match(refusal(await f.slack('save_connection_key', { ...SAVE, connectionId: 'docs_api', path: '/api/pages' }, message)).message,
         /already saved on another of this Agent's connections/);
       assert.equal(requests.length, 0, 'the key never reaches the second URL');
     });
@@ -731,6 +745,7 @@ test('save_connection_key refuses an empty key, a path outside the connection, a
         connectionId: account.id,
         actor: { workspaceId: f.workspaceId, actorMembershipId: f.admin.membership.id },
         key: KEY,
+        path: SAVE.path,
         expectedRevision: account.revision + 1,
         surface: 'slack',
         config: f.config,

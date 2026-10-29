@@ -378,8 +378,8 @@ export interface SaveConnectionKeyInput {
   connectionId: string;
   /** Lives only in the connection's secret slot: never returned, logged, recorded or echoed. */
   key: string;
-  /** The path the check GETs on the connection's first host; defaults to its first path prefix. */
-  path?: string | undefined;
+  /** A read endpoint inside the connection the check GETs on its first host. */
+  path: string;
 }
 
 /** What one GET with a saved key found. Only ok saves a key from chat. */

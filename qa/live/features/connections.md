@@ -23,7 +23,7 @@ Docs: `/agents/connect-a-service/`, `/agents/connections/`, `/agents/managed-con
 
 - Slack: ask the Agent to connect a service, or make a request that needs a personal account. The link page asks My connection or Team connection.
 - Admin: Agents → the Agent → Connections (In this Agent, Connect a new account, Custom connection). Settings → Connectors holds the managed project key and the Meta Ads app ID.
-- Slack: for a service the catalog lacks or does not fully cover, ask the Agent to set up a custom connection, giving its endpoint. The key goes through a setup link, or the person pastes it in that same message and the Agent saves it with `save_connection_key`.
+- Slack: for a service the catalog lacks or does not fully cover, ask the Agent to set up a custom connection, giving its endpoint. The key goes through a setup link, or the person pastes it in that same message and the Agent saves it with `save_connection_key`. A pasted key whose check gets no 2xx is not saved, and the Agent replies with a setup link for that connection.
 - MCP: `prepare_connector_setup` returns an Admin handoff locked to one Agent, connector and owner kind. `test_connection` checks one saved API or MCP connection with its saved credential, and `save_connection_key` checks and saves a key the person gave.
 
 ## How to drive it on a lane

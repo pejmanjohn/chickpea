@@ -204,6 +204,11 @@ test('supported coding clients share public PKCE registration and stateless MCP 
           ?.inputSchema?.required?.includes('ownerKind'),
         `${client.name} must require an explicit personal or Team connection owner`,
       );
+      assert.deepEqual(
+        listedTools.find(({ name }) => name === 'save_connection_key')?.inputSchema?.required?.toSorted(),
+        ['connectionId', 'key', 'path'],
+        `${client.name} must require a read path for a key's check`,
+      );
       const inspected = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
         name: 'inspect_workspace',
         arguments: {},
@@ -236,6 +241,15 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         arguments: { connector: 'Gmail', ownerKind: 'member' },
       });
       assert.equal((missingAgent.result as { isError?: boolean }).isError, true, client.name);
+
+      const missingPath = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
+        name: 'save_connection_key',
+        arguments: { agentId: agent.id, connectionId: 'statusboard', key: 'synthetic-key' },
+      });
+      const pathRefusal = missingPath.result as { isError?: boolean; content: Array<{ text: string }> };
+      assert.equal(pathRefusal.isError, true, client.name);
+      assert.match(pathRefusal.content[0]!.text, /^Input validation error: .*\bpath\b/, client.name);
+      assert.doesNotMatch(JSON.stringify(missingPath), /synthetic-key/, `${client.name} must not echo the key`);
 
       const operationSchema = await mcpCall(handler.fetch, client.protocol, 'resources/read', {
         uri: WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI,
