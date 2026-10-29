@@ -112,6 +112,7 @@ export class HostedBrowserProvider implements BrowserProvider {
     if (options.contextId) await this.checkContext(options.contextId);
     const timeoutSeconds = options.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
     const reservationId = crypto.randomUUID();
+    // A store that fails, or stays contended, admits nothing: the model sees the fixed text, never the store's.
     const admission = await admitBrowserSession({
       store: this.#store,
       policy,
@@ -119,6 +120,9 @@ export class HostedBrowserProvider implements BrowserProvider {
       ...(options.contextId ? { contextId: options.contextId } : {}),
       timeoutSeconds,
       now: this.#now(),
+    }).catch((): never => {
+      log('lease_admission_failed', {});
+      throw new HostedBrowserRefusal('unavailable');
     });
     if (admission !== 'admitted') throw new HostedBrowserRefusal(admission);
     let handle: BrowserSessionHandle;

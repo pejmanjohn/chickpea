@@ -7,6 +7,7 @@ import {
   HOSTED_BROWSER_CONTEXT_IN_USE_MESSAGE,
   HOSTED_BROWSER_HOURS_CAP_MESSAGE,
   HOSTED_BROWSER_RUNNING_LIMIT_MESSAGE,
+  HOSTED_BROWSER_UNAVAILABLE_MESSAGE,
 } from '../src/browser/messages.ts';
 import { HostedBrowserFailure, HostedBrowserRefusal } from '../src/browser/provider.ts';
 import {
@@ -163,6 +164,22 @@ test('each hosted refusal reaches the model as its own text, and nothing is crea
     await assert.rejects(provider().createSession({ contextId: 'ctx_1', timeoutSeconds: 660 }), (error: unknown) =>
       error instanceof HostedBrowserRefusal && error.message === text, name);
     assert.ok(!browserbase.requests().includes('POST /v1/sessions'), `${name}: no session is created`);
+  }
+});
+
+test('an admission the store cannot settle refuses with the unavailable text, and creates nothing', async (t) => {
+  for (const [name, applySettingsPatch] of [
+    ['contended', async () => false],
+    ['failing', async () => { throw new Error('store rpc said inst_a ctx_1 sess_1'); }],
+  ] as const) {
+    const { store, browserbase } = hostedSetup(t);
+    const broken: Pick<SettingsStore, 'getSettings' | 'applySettingsPatch'> = { getSettings: (keys) => store.getSettings(keys), applySettingsPatch };
+    const provider = new HostedBrowserProvider({
+      access: { apiKey: 'bb_live_platform', projectId: 'proj-platform' }, installationId: 'inst_a', store: broken, fetch: browserbase.fetchImpl,
+    });
+    await assert.rejects(provider.createSession({ timeoutSeconds: 660 }), (error: unknown) =>
+      error instanceof HostedBrowserRefusal && error.reason === 'unavailable' && error.message === HOSTED_BROWSER_UNAVAILABLE_MESSAGE, name);
+    assert.deepEqual(browserbase.requests(), [], `${name}: nothing reached the provider`);
   }
 });
 
