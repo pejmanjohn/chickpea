@@ -433,6 +433,28 @@ test('a key typed with its URLs is checked, saved and makes the connection ready
   } finally { f.close(); }
 });
 
+test('with no key in the message, the same call adds the connection and returns its setup link', async () => {
+  const f = await fixture();
+  try {
+    const call = await f.update({ apiConnections: [KB_CONNECTION] });
+    const response = await f.slack('apply_workspace_changes', {
+      ...call,
+      operations: [...call.operations, {
+        itemId: 'key',
+        kind: 'request_setup',
+        dependsOn: ['connect'],
+        target: { kind: 'api_connection', agentId: f.agent.id, connectionId: KB_CONNECTION.id },
+      }],
+    }, `set up the HubSpot Knowledge Base API at ${KB_URL} so you can read articles`);
+    assert.equal(response.ok, true, JSON.stringify(response));
+    const { outcomes } = (response as { result: ManagementApplyResult }).result;
+    assert.deepEqual(outcomes.map(({ itemId, disposition }) => [itemId, disposition]),
+      [['connect', 'applied'], ['key', 'setup_required']]);
+    assert.match(String((outcomes[1] as { setupUrl?: string }).setupUrl), /\/setup\//);
+    assert.equal((await f.account()).lifecycle, 'pending');
+  } finally { f.close(); }
+});
+
 test('a 403 still saves the key and reports what the service refused', async () => {
   const f = await fixture();
   try {
