@@ -1,6 +1,7 @@
 import { AuthorizationError, canManageOwnedResource, requireAgentEdit } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { AgentRevisionConflictError } from '../config/errors.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { CustomAgentConfig, WebsiteLoginGrant } from '../config/types.ts';
 import { deleteWebsiteLogin, listWebsiteLogins, type WebsiteLogin, type WebsiteLoginDependencies } from './logins.ts';
@@ -163,30 +164,69 @@ export async function agentDeletionWebsiteLogins(input: {
 }
 
 /**
- * After an Agent is deleted, delete the logins `agentDeletionWebsiteLogins`
- * found, unless an Agent was granted one meanwhile. Never throws, since the
- * Agent is gone either way: a failure is logged without content, and a login
- * that went is the queue's to finish.
+ * Durable inventory of the logins an Agent's deletion removes, staged beside
+ * the Agent's secret cleanup before the Agent is deleted, so a retry after a
+ * partial failure, or after a delete whose response was lost, finishes them.
+ * The marker holds login ids only.
  */
-export async function removeDeletedAgentWebsiteLogins(input: {
-  loginIds: readonly string[];
+function websiteLoginCleanupMarkerKey(agentId: string, scope: string): string {
+  if (!/^v1:[A-Za-z0-9_-]{43}$/.test(scope)) throw new Error('Invalid website login cleanup scope');
+  return `website-login-cleanup.${agentId}.${scope.slice(3)}`;
+}
+
+export async function stageDeletedAgentWebsiteLogins(
+  agentId: string,
+  loginIds: readonly string[],
+  settings: SettingsStore,
+  scope: string,
+): Promise<void> {
+  if (loginIds.length) await settings.mergeSettingStringSet(websiteLoginCleanupMarkerKey(agentId, scope), loginIds);
+}
+
+export interface DeletedAgentWebsiteLogins {
   config: Pick<ConfigStore, 'listAgents'>;
   deletion: WebsiteLoginDeletion;
-}): Promise<void> {
-  if (!input.loginIds.length) return;
-  try {
-    const deps = input.deletion();
-    if (!deps) return;
-    const held = await grantedLoginIds(input.config);
-    for (const loginId of input.loginIds) {
-      if (held.has(loginId)) continue;
-      await deleteWebsiteLogin(deps, loginId).catch(() => {
-        console.warn('[chickpea] A deleted Agent\'s website login could not be removed');
-      });
+}
+
+/**
+ * Delete the logins `stageDeletedAgentWebsiteLogins` recorded, except one an
+ * Agent was granted meanwhile. The marker goes last, so a store failure keeps
+ * the inventory for the retry; a provider failure is the deletion queue's to
+ * finish. True when a marker was found.
+ */
+export async function finishDeletedAgentWebsiteLogins(
+  agentId: string,
+  settings: SettingsStore,
+  scope: string,
+  logins: DeletedAgentWebsiteLogins,
+): Promise<boolean> {
+  const markerKey = websiteLoginCleanupMarkerKey(agentId, scope);
+  const raw = await settings.getSetting(markerKey);
+  if (raw === undefined) return false;
+  const loginIds = parseLoginIds(raw);
+  if (loginIds.length) {
+    const deps = logins.deletion();
+    if (!deps) throw new WebsiteLoginsUnavailableError();
+    const held = await grantedLoginIds(logins.config);
+    for (const loginId of loginIds) {
+      if (!held.has(loginId)) await deleteWebsiteLogin(deps, loginId);
     }
-  } catch {
-    console.warn('[chickpea] A deleted Agent\'s website logins could not be removed');
   }
+  await settings.deleteSetting(markerKey);
+  return true;
+}
+
+function parseLoginIds(raw: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('Invalid website login cleanup marker');
+  }
+  if (!Array.isArray(parsed) || !parsed.every((id) => typeof id === 'string')) {
+    throw new Error('Invalid website login cleanup marker');
+  }
+  return parsed;
 }
 
 /** Every login some Agent other than `exceptAgentId` is granted. */

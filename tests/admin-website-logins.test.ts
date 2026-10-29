@@ -399,22 +399,100 @@ test('a login another Agent still holds never blocks a member\'s Agent deletion'
   }
 });
 
-test('a login cleanup that fails never fails the Agent\'s deletion, and logs no content', async (t) => {
+async function deleteAgentBody(f: Fixture, agentId: string) {
+  const agent = await f.store.getAgent(agentId);
+  return {
+    expectedRevision: agent.revision,
+    credentialConfigurationBinding: agentCredentialConfigurationBinding(agent.credentialIncarnation),
+  };
+}
+
+test('a login cleanup that fails fails the deletion\'s response, and the retry finishes it without logging content', async (t) => {
   const f = fixture();
   try {
     await createAgent(f, 'agent_one');
     const own = await loginIdOf(await addLogin(f, 'admin', 'agent_one', teamLogin));
     await recordWebsiteLoginContext(f.settings, own, 'ctx_own');
-    f.settings.deleteEncryptedCredentialRevision = async () => { throw new Error(`realm unavailable for ${own}`); };
+    const body = await deleteAgentBody(f, 'agent_one');
+    const deleteRevision = f.settings.deleteEncryptedCredentialRevision.bind(f.settings);
+    f.settings.deleteEncryptedCredentialRevision = async () => { throw new Error('realm unavailable'); };
+    const error = t.mock.method(console, 'error', () => undefined);
     const warn = t.mock.method(console, 'warn', () => undefined);
 
-    assert.equal((await deleteAgent(f, 'agent_one')).status, 204);
+    const failed = await f.call('admin', '/admin/api/agents/agent_one', { method: 'DELETE', body });
+    assert.equal(failed.status, 500);
     await assert.rejects(f.store.getAgent('agent_one'));
     assert.deepEqual(await listWebsiteLogins(f.settings), [], 'the login went before its secret failed');
-    assert.ok(await f.settings.getSetting(PENDING_CONTEXT_DELETIONS_SETTING), 'its context is the queue\'s to finish');
-    const logged = JSON.stringify(warn.mock.calls.map((call) => call.arguments));
-    assert.match(logged, /website login could not be removed/);
+    assert.ok(await f.settings.getEncryptedCredentialRevision(`website_login.${own}`));
+
+    f.settings.deleteEncryptedCredentialRevision = deleteRevision;
+    const retried = await f.call('admin', '/admin/api/agents/agent_one', { method: 'DELETE', body });
+    assert.equal(retried.status, 204);
+    assert.equal(await f.settings.getEncryptedCredentialRevision(`website_login.${own}`), undefined);
+    assert.deepEqual(JSON.parse((await f.settings.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!)
+      .map(({ contextId }: { contextId: string }) => contextId), ['ctx_own']);
+    assert.equal((await f.call('admin', '/admin/api/agents/agent_one', { method: 'DELETE', body })).status, 404,
+      'the finished cleanup leaves no marker');
+    const logged = JSON.stringify([...error.mock.calls, ...warn.mock.calls].map((call) => call.arguments));
     assert.doesNotMatch(logged, new RegExp(`${own}|ctx_own|ops@example|billing`, 'i'));
+  } finally {
+    f.close();
+  }
+});
+
+test('a crash between the Agent\'s deletion and its login cleanup is finished by the retry', async (t) => {
+  const f = fixture();
+  try {
+    await createAgent(f, 'agent_one');
+    const own = await loginIdOf(await addLogin(f, 'admin', 'agent_one', teamLogin));
+    const body = await deleteAgentBody(f, 'agent_one');
+    let crashing = false;
+    const deleteAgentWithMemory = f.store.deleteAgentWithMemory.bind(f.store);
+    f.store.deleteAgentWithMemory = async (...args: Parameters<typeof deleteAgentWithMemory>) => {
+      const deleted = await deleteAgentWithMemory(...args);
+      crashing = true;
+      return deleted;
+    };
+    const listAgents = f.store.listAgents.bind(f.store);
+    f.store.listAgents = async () => {
+      if (crashing) throw new Error('state unavailable');
+      return listAgents();
+    };
+    t.mock.method(console, 'error', () => undefined);
+
+    assert.equal((await f.call('admin', '/admin/api/agents/agent_one', { method: 'DELETE', body })).status, 500);
+    await assert.rejects(f.store.getAgent('agent_one'));
+    assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id }) => id), [own], 'nothing was removed yet');
+
+    crashing = false;
+    assert.equal((await f.call('admin', '/admin/api/agents/agent_one', { method: 'DELETE', body })).status, 204);
+    assert.deepEqual(await listWebsiteLogins(f.settings), []);
+    assert.equal(await f.settings.getEncryptedCredentialRevision(`website_login.${own}`), undefined);
+  } finally {
+    f.close();
+  }
+});
+
+test('the retry leaves a login an Agent was granted after the deletion began', async (t) => {
+  const f = fixture();
+  try {
+    await createAgent(f, 'agent_one');
+    const own = await loginIdOf(await addLogin(f, 'admin', 'agent_one', teamLogin));
+    const body = await deleteAgentBody(f, 'agent_one');
+    const listAgents = f.store.listAgents.bind(f.store);
+    let calls = 0;
+    f.store.listAgents = async () => {
+      calls += 1;
+      if (calls === 2) throw new Error('state unavailable');
+      return listAgents();
+    };
+    t.mock.method(console, 'error', () => undefined);
+    assert.equal((await f.call('admin', '/admin/api/agents/agent_one', { method: 'DELETE', body })).status, 500);
+
+    assert.equal((await createAgentWithLogins(f, 'admin', 'agent_two', [{ loginId: own, level: 'check', enabled: true }])).status, 201);
+    assert.equal((await f.call('admin', '/admin/api/agents/agent_one', { method: 'DELETE', body })).status, 204);
+    assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id }) => id), [own]);
+    assert.equal((await readWebsiteLoginSecrets(f.deps, own))?.password, PASSWORD);
   } finally {
     f.close();
   }

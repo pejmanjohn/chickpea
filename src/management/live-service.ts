@@ -28,11 +28,7 @@ import { resolveManagedAuthorizationProviderContext } from '../connections/manag
 import { ConnectionAccountService } from '../connections/store.ts';
 import { platformRepositoryGrants } from '../config/agent-write-rules.ts';
 import { finishAgentSecretCleanup, stageAgentSecretCleanup } from '../config/agent-secret-cleanup.ts';
-import {
-  agentDeletionWebsiteLogins,
-  removeDeletedAgentWebsiteLogins,
-  WebsiteLoginNotRemovableError,
-} from '../browser/agent-website-logins.ts';
+import { agentDeletionWebsiteLogins, WebsiteLoginNotRemovableError } from '../browser/agent-website-logins.ts';
 import { websiteLoginDependencies } from '../browser/logins.ts';
 import { agentCredentialConfigurationBinding } from '../config/connection-credential-binding.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
@@ -395,7 +391,7 @@ export function createLiveWorkspaceManagementService(
       });
       const cleanupScope = agentCredentialConfigurationBinding(expectedCredentialIncarnation);
       const agent = await config.getAgent(agentId);
-      await stageAgentSecretCleanup(agent, env, settings, cleanupScope);
+      await stageAgentSecretCleanup(agent, env, settings, cleanupScope, websiteLoginIds);
       const deleted = config.deleteAgentWithMemory
         ? await config.deleteAgentWithMemory(
             agentId,
@@ -404,12 +400,10 @@ export function createLiveWorkspaceManagementService(
             expectedCredentialIncarnation,
           )
         : await config.deleteAgent(agentId, expectedRevision, expectedCredentialIncarnation);
-      await removeDeletedAgentWebsiteLogins({
-        loginIds: websiteLoginIds,
+      await finishAgentSecretCleanup(agentId, env, settings, cleanupScope, {
         config,
         deletion: () => websiteLoginDependencies(env),
       });
-      await finishAgentSecretCleanup(agentId, env, settings, cleanupScope);
       return deleted;
     },
     agentLiveThreadCount: async (agentId) =>

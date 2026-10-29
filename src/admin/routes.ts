@@ -487,7 +487,6 @@ import {
   agentDeletionWebsiteLogins,
   projectAgentWebsiteLogins,
   removeAgentWebsiteLogin,
-  removeDeletedAgentWebsiteLogins,
   updateAgentWebsiteLogins,
   websiteLoginView,
   WebsiteLoginGrantNotFoundError,
@@ -3301,7 +3300,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!match) return;
     const agentId = decodeURIComponent(match[1]!);
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
-      await requireCurrentAgentEdit(c, agentId, principal);
+      try {
+        await requireCurrentAgentEdit(c, agentId, principal);
+      } catch (error) {
+        // Deleting an Agent that is already gone finishes the cleanup its
+        // deletion staged, or finds none; the route answers either way.
+        const deleteRetry = c.req.method === 'DELETE' && c.req.path === match[0];
+        if (!(deleteRetry && error instanceof UnknownAgentError)) throw error;
+      }
     } else {
       await requireAdminUserAgent(c, agentId);
     }
@@ -10346,6 +10352,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const configStore = store(c);
     const agentId = c.req.param('id');
     const cleanupScope = parsed.output.credentialConfigurationBinding;
+    const deletedAgentLogins = { config: configStore, deletion: () => websiteLoginWriteDependencies(c) };
     let agent: CustomAgentConfig;
     try {
       agent = await configStore.getAgent(agentId);
@@ -10359,6 +10366,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           c.env as PlatformEnv | undefined,
           settings(c),
           cleanupScope,
+          deletedAgentLogins,
         )
           ? c.body(null, 204)
           : c.json({ error: 'not_found' }, 404);
@@ -10419,18 +10427,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }, 409);
       return internalError(c, error);
     }
-    const removeDeletedAgentLogins = () => removeDeletedAgentWebsiteLogins({
-      loginIds: websiteLoginIds,
-      config: configStore,
-      deletion: () => websiteLoginWriteDependencies(c),
-    });
     // Persist the cleanup inventory before deleting the Agent. The marker is
     // independent of the config row, so settings cleanup can be retried after a
     // partial failure or an ambiguous DO/RPC response where the delete committed
     // but the caller only observed an error.
     const settingsStore = settings(c);
     try {
-      await stageAgentSecretCleanup(agent, c.env as PlatformEnv | undefined, settingsStore, cleanupScope);
+      await stageAgentSecretCleanup(
+        agent,
+        c.env as PlatformEnv | undefined,
+        settingsStore,
+        cleanupScope,
+        websiteLoginIds,
+      );
     } catch (err) {
       return internalError(c, err);
     }
@@ -10451,9 +10460,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (inspectionError instanceof UnknownAgentError) {
           // The delete committed but its response was lost. Continue using the
           // durable marker rather than restoring secrets into an orphaned scope.
-          await removeDeletedAgentLogins();
           try {
-            await finishAgentSecretCleanup(agentId, c.env as PlatformEnv | undefined, settingsStore, cleanupScope);
+            await finishAgentSecretCleanup(
+              agentId,
+              c.env as PlatformEnv | undefined,
+              settingsStore,
+              cleanupScope,
+              deletedAgentLogins,
+            );
             return c.body(null, 204);
           } catch (cleanupError) {
             return internalError(c, cleanupError);
@@ -10473,9 +10487,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return internalError(c, err);
     }
 
-    await removeDeletedAgentLogins();
     try {
-      await finishAgentSecretCleanup(agentId, c.env as PlatformEnv | undefined, settingsStore, cleanupScope);
+      await finishAgentSecretCleanup(
+        agentId,
+        c.env as PlatformEnv | undefined,
+        settingsStore,
+        cleanupScope,
+        deletedAgentLogins,
+      );
       return c.body(null, 204);
     } catch (err) {
       return internalError(c, err);
