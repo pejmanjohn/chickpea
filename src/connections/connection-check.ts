@@ -190,6 +190,8 @@ function responseExcerpt(
   secrets: readonly string[],
 ): string | undefined {
   if (!/json|text\/plain/i.test(contentType ?? '')) return undefined;
+  // redactConnectionText leaves secrets under 8 characters in place.
+  if (secrets.some((secret) => secret.length > 0 && secret.length < 8)) return undefined;
   let text = new TextDecoder().decode(body.subarray(0, EXCERPT_WINDOW_BYTES));
   if (body.byteLength > EXCERPT_WINDOW_BYTES) {
     // A secret cut in half at the window's end would escape redaction.
