@@ -137,7 +137,7 @@ export async function maintainBrowserSessionLeases(env: PlatformEnv | undefined,
 }
 
 /** The leases held and the month's metered seconds, for a census. */
-export async function readBrowserSessionUsage(input: { store: LeaseStore; now: number }): Promise<{
+export async function readBrowserSessionUsage(input: { store: Pick<SettingsStore, 'getSettings'>; now: number }): Promise<{
   month: string;
   meteredSeconds: number;
   leases: BrowserSessionLease[];

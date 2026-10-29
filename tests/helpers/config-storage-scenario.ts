@@ -1,4 +1,5 @@
 import { listWebsiteLogins } from '../../src/browser/logins.ts';
+import { readBrowserSessionUsage } from '../../src/browser/session-lease.ts';
 import type { ConfigStoreLogic } from '../../src/config/store.ts';
 import type { SettingsStoreLogic } from '../../src/config/settings-store.ts';
 import type { SignInGroupPolicy } from '../../src/config/sign-in-group.ts';
@@ -761,6 +762,18 @@ function writeBrowser({ settings }: ConfigStorageStores): void {
   settings.setSetting('browser.monthlyUsage.2026-10', JSON.stringify({
     sessions: 2, seconds: 540, sessionIds: ['sess_scenario_first', 'sess_scenario_second'],
   }));
+  // A hosted installation's session leases and metered time.
+  settings.setSetting('browser.sessionLeases', JSON.stringify({
+    leases: {
+      '7c9e6679-7425-40de-944b-e07fc1f90ae7': {
+        startedAt: SCENARIO_NOW - 120_000, leaseUntil: SCENARIO_NOW + 540_000,
+        sessionId: 'sess_scenario_leased', contextId: 'ctx_scenario_billing',
+      },
+      '16fd2706-8baf-433b-82eb-8c7fada847da': { startedAt: SCENARIO_NOW - 30_000, leaseUntil: SCENARIO_NOW + 570_000 },
+    },
+    recentCreations: [SCENARIO_NOW - 30_000],
+  }));
+  settings.setSetting('browser.monthlyBrowserSeconds.2026-10', JSON.stringify({ seconds: 1_800 }));
 }
 
 function must(done: boolean, step: string): void {
@@ -1051,6 +1064,10 @@ export async function readConfigStorageScenario(kit: ConfigStorageKit, db: State
     websiteLogins: await listWebsiteLogins({
       getSetting: async (key) => settings.getSetting(key),
       getSettings: async (keys) => settings.getSettings(keys),
+    }),
+    browserSessionUsage: await readBrowserSessionUsage({
+      store: { getSettings: async (keys) => settings.getSettings(keys) },
+      now: SCENARIO_NOW,
     }),
   };
 }

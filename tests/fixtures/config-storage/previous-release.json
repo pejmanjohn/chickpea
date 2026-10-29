@@ -1,6 +1,6 @@
 {
   "release": "0.1.37",
-  "scenario": "5c26997cd365dd26675daebf96570f364d7d80ee6f2ff0e7c5161462385a25a5",
+  "scenario": "1f415c3646a5f0b09934beef3f466254a2bdcef185e06c3111a7055d241907cc",
   "ddl": [
     "CREATE TABLE app_settings (\n        key TEXT PRIMARY KEY,\n        value TEXT NOT NULL,\n        updated_at INTEGER NOT NULL\n      )",
     "CREATE TABLE config_meta (\n          key TEXT PRIMARY KEY,\n          value TEXT NOT NULL\n        )",
@@ -726,6 +726,11 @@
         "updated_at": 1792083600000
       },
       {
+        "key": "browser.monthlyBrowserSeconds.2026-10",
+        "value": "{\"seconds\":1800}",
+        "updated_at": 1792083600000
+      },
+      {
         "key": "browser.monthlyUsage.2026-10",
         "value": "{\"sessions\":2,\"seconds\":540,\"sessionIds\":[\"sess_scenario_first\",\"sess_scenario_second\"]}",
         "updated_at": 1792083600000
@@ -733,6 +738,11 @@
       {
         "key": "browser.pendingContextDeletions",
         "value": "[{\"contextId\":\"ctx_scenario_removed\",\"handoffSessionId\":\"sess_scenario_removed\",\"queuedAt\":1792080000000},{\"contextId\":\"ctx_scenario_unrecorded\",\"queuedAt\":1792080000000}]",
+        "updated_at": 1792083600000
+      },
+      {
+        "key": "browser.sessionLeases",
+        "value": "{\"leases\":{\"7c9e6679-7425-40de-944b-e07fc1f90ae7\":{\"startedAt\":1792083480000,\"leaseUntil\":1792084140000,\"sessionId\":\"sess_scenario_leased\",\"contextId\":\"ctx_scenario_billing\"},\"16fd2706-8baf-433b-82eb-8c7fada847da\":{\"startedAt\":1792083570000,\"leaseUntil\":1792084170000}},\"recentCreations\":[1792083570000]}",
         "updated_at": 1792083600000
       },
       {
@@ -1275,6 +1285,22 @@
         "websiteLogins": []
       }
     ],
+    "browserSessionUsage": {
+      "leases": [
+        {
+          "contextId": "ctx_scenario_billing",
+          "leaseUntil": 1792084140000,
+          "sessionId": "sess_scenario_leased",
+          "startedAt": 1792083480000
+        },
+        {
+          "leaseUntil": 1792084170000,
+          "startedAt": 1792083570000
+        }
+      ],
+      "meteredSeconds": 1800,
+      "month": "2026-10"
+    },
     "channelGrants": [
       {
         "agentId": "agent_scenario_researcher",
