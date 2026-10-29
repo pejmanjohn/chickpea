@@ -1,3 +1,4 @@
+import { validateMcpUrl } from '../config/mcp-url.ts';
 import { hasCredentialLikeContent, isRecord } from '../security/content-validation.ts';
 import type {
   ManagedCapabilityDefinition,
@@ -117,6 +118,7 @@ export const SEMANTIC_TARGET_FAMILIES = [
   'connection_setup',
   'agent_authoring',
   'artifact',
+  'web',
   'response',
   'unknown',
   'internal',
@@ -135,15 +137,24 @@ type SemanticLifecycleRole = 'work' | 'answer_generation' | 'internal_hidden';
 type SemanticTrustTier = 'managed_catalog' | 'built_in' | 'customer_configuration' | 'unknown';
 type SemanticEffectClass = ManagedEffectClass | 'none';
 
-type SemanticLabelKind = 'managed_connector' | 'custom_connection' | 'skill';
+/**
+ * The labels a web tool's own input may supply, each with the only check that
+ * admits it. Every other label is catalog copy or an admin-given name.
+ */
+const WEB_LABELS = {
+  web_host: isSafeWebHostLabel,
+} as const satisfies Record<string, (label: string) => boolean>;
+
+type WebLabelKind = keyof typeof WEB_LABELS;
+type SemanticLabelKind = 'managed_connector' | 'custom_connection' | 'skill' | WebLabelKind;
 
 interface SemanticLabelReference {
   readonly kind: SemanticLabelKind;
-  /** Catalog identity, or the configured connection id or skill name. */
+  /** Catalog identity, the configured connection id or skill name, or the web label itself. */
   readonly id: string;
   /**
-   * Catalog copy, or the name a workspace admin gave the connection or skill.
-   * Validated again before narration.
+   * Catalog copy, the name a workspace admin gave the connection or skill, or
+   * a web label that passed its check. Validated again before narration.
    */
   readonly label: string;
 }
@@ -322,6 +333,7 @@ const GENERIC_DESCRIPTORS = {
   connection_setup: descriptor('connect', 'connection_setup', 'the connection', 'reversible_write', 'built_in'),
   agent_authoring: descriptor('inspect', 'agent_authoring', 'Agent changes', 'read', 'customer_configuration'),
   artifact: descriptor('create', 'artifact', 'the artifact', 'reversible_write', 'built_in'),
+  web: descriptor('read', 'web', 'pages', 'read', 'built_in'),
   unknown: unknownSemanticDescriptor(),
 } as const satisfies Record<
   Exclude<SemanticTargetFamily, 'managed_connector' | 'response' | 'internal'>,
@@ -352,6 +364,33 @@ export function configuredSemanticDescriptor(
   const generic = genericSemanticDescriptor(family);
   if (!isSafeLabelId(id) || !isSafeConfiguredLabel(label)) return generic;
   return { ...generic, label: { kind: family, id, label } };
+}
+
+/** Room for a host in `Reading <host>…`. */
+const WEB_HOST_LABEL_LIMIT = ACTIVITY_STATUS_TEXT_LIMIT - 'Reading …'.length;
+
+/**
+ * Name the host a web read's input gives. It must be a public https host on
+ * the standard port, as the read itself requires; a bare http link becomes
+ * https, as the read does. The URL parser lowercases it and spells an
+ * international name in punycode. A host too long for the status keeps the
+ * rightmost labels that fit. Anything else keeps the generic web read.
+ */
+export function webPageSemanticDescriptor(url: unknown): SemanticActivityDescriptor {
+  const generic = genericSemanticDescriptor('web');
+  const parsed = typeof url === 'string' ? URL.parse(url.trim()) : null;
+  if (!parsed) return generic;
+  if (parsed.protocol === 'http:' && parsed.port === '') parsed.protocol = 'https:';
+  const checked = validateMcpUrl(parsed.href);
+  if (!checked.ok) return generic;
+  const { hostname, port } = new URL(checked.url);
+  if (port !== '') return generic;
+  const labels = hostname.split('.');
+  const host = labels.map((_, start) => labels.slice(start).join('.'))
+    .find((suffix) => suffix.includes('.') && suffix.length <= WEB_HOST_LABEL_LIMIT);
+  return host && isSafeWebHostLabel(host)
+    ? { ...generic, label: { kind: 'web_host', id: host, label: host } }
+    : generic;
 }
 
 export function unknownSemanticDescriptor(): SemanticActivityDescriptor {
@@ -517,6 +556,10 @@ export function isSemanticActivityDescriptor(value: unknown): value is SemanticA
   if (value.target === 'custom_connection' || value.target === 'skill') {
     return value.trust === 'customer_configuration' && kind === value.target &&
       isSafeLabelId(id) && isSafeConfiguredLabel(label);
+  }
+  if (value.target === 'web') {
+    return value.trust === 'built_in' && typeof kind === 'string' && Object.hasOwn(WEB_LABELS, kind) &&
+      id === label && WEB_LABELS[kind as WebLabelKind](label);
   }
   return false;
 }
@@ -712,6 +755,11 @@ function familyActivity(
       return settled
         ? activityStatus('reading', 'Reviewing', 'the artifact')
         : activityStatus('writing', 'Creating', 'an artifact');
+    case 'web': {
+      if (settled) return activityStatus('reading', 'Reviewing', 'the page');
+      const host = descriptorValue.label?.kind === 'web_host' ? descriptorValue.label.label : undefined;
+      return activityStatus('reading', 'Reading', host ?? 'a web page');
+    }
     default:
       return genericActivity(event);
   }
@@ -764,6 +812,17 @@ function isSafeManagedLabel(value: string): boolean {
 export function isSafeConfiguredLabel(value: string): boolean {
   return value.length <= 32 && value.trim() === value &&
     /^[\p{L}\p{N}][\p{L}\p{N} .'’+/-]*$/u.test(value) && !/\s{2}/.test(value) &&
+    !hasCredentialLikeContent(value);
+}
+
+/**
+ * A lowercase ASCII host of two or more letter-digit-hyphen labels, so it can
+ * carry no mention, broadcast, mrkdwn or control character, short enough for
+ * `Reading <host>…`, and never credential-shaped.
+ */
+function isSafeWebHostLabel(value: string): boolean {
+  return value.length <= WEB_HOST_LABEL_LIMIT &&
+    /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(value) &&
     !hasCredentialLikeContent(value);
 }
 

@@ -368,6 +368,7 @@ test('an unlisted tool makes a reply a task only through a connector family', ()
     connection_setup: false,
     agent_authoring: false,
     artifact: false,
+    web: false,
     response: false,
     unknown: false,
     internal: false,

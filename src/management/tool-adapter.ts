@@ -61,7 +61,7 @@ const WORKSPACE_MANAGEMENT_SEMANTICS: Record<
   discover_slack_channels: unknownSemanticDescriptor(),
   test_connection: unknownSemanticDescriptor(),
   save_connection_key: unknownSemanticDescriptor(),
-  read_public_doc: unknownSemanticDescriptor(),
+  read_public_doc: genericSemanticDescriptor('web'),
   inspect_memory: unknownSemanticDescriptor(),
   inspect_routines: unknownSemanticDescriptor(),
   export_workspace_recipe: unknownSemanticDescriptor(),
