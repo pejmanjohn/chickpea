@@ -421,7 +421,7 @@ test('server instructions stay under the client cap and link the deployment Admi
   assert.ok(withoutOrigin.includes('/admin'));
 });
 
-test('workspace management MCP publishes the version 3 server contract', () => {
+test('workspace management MCP publishes the version 4 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
     version: '4.1.0',

@@ -83,6 +83,18 @@ test('a key cut by the excerpt window is still redacted', async () => {
   });
 });
 
+test('a key too short to redact never reaches the detail', async () => {
+  const short = 'abc123';
+  await withConnectionNetwork(
+    () => Response.json({ message: `token ${short} is not valid` }, { status: 401 }),
+    async () => {
+      const outcome = await check({ credential: short });
+      assert.equal(outcome.kind, 'key_rejected');
+      assert.doesNotMatch(JSON.stringify(outcome), /abc123/);
+    },
+  );
+});
+
 test('a timeout and a network failure are unreachable', async () => {
   await withConnectionNetwork((_request, signal) => new Promise<Response>((_resolve, reject) => {
     signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
