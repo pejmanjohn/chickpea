@@ -27,7 +27,9 @@ import {
 } from './types.ts';
 
 const MAX_OPERATIONS = 25;
-const MAX_OPERATION_BYTES = 128 * 1024;
+/** One management request, serialized. Matches Admin's mutation body cap, so a knowledge-heavy Agent installs in one call on every door. */
+export const MAX_MANAGEMENT_REQUEST_BYTES = 1024 * 1024;
+const MAX_OPERATION_BYTES = MAX_MANAGEMENT_REQUEST_BYTES;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const FORBIDDEN_KEYS = new Set([
   'apikey',

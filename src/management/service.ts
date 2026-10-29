@@ -3072,7 +3072,7 @@ export class WorkspaceManagementService {
       ...(actor.origin.kind === 'slack' && actor.origin.publicDocRead ? { publicDocRead: true } : {}),
       changes,
       missingSetup,
-    }, meta.skillSourceUrl);
+    }, operations, meta.skillSourceUrl);
     const at = this.now();
     const proposal = await this.stores.management.putChangeSetProposal({
       proposalId,
@@ -8331,11 +8331,21 @@ function channelDestination(savedThread: boolean, channelLabel: string | undefin
   return `${savedThread ? 'Saved thread in' : 'New messages in'} ${channel}`;
 }
 
+/**
+ * One stored proposal row holds the operations and the preview together
+ * (management_change_set_proposals), and a Durable Object SQLite row is capped
+ * at 2 MB. 1.5 MiB leaves room for the result written on completion.
+ */
+const MAX_CHANGE_SET_PROPOSAL_BYTES = 1536 * 1024;
+
 function boundedChangeSetPreview(
   preview: ManagementChangeSetRecordPreview,
+  operations: readonly ManagementOperation[],
   skillSourceUrl: string | undefined,
 ): ManagementChangeSetRecordPreview {
-  if (Buffer.byteLength(JSON.stringify(preview), 'utf8') > 128 * 1024) {
+  const stored = Buffer.byteLength(JSON.stringify(operations), 'utf8')
+    + Buffer.byteLength(JSON.stringify(preview), 'utf8');
+  if (stored > MAX_CHANGE_SET_PROPOSAL_BYTES) {
     throw new ManagementError(
       'invalid_request',
       'The reviewed change diff is too large. Split it into smaller proposals.',
