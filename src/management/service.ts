@@ -75,6 +75,13 @@ import {
   type ParsedSkillSource,
   type SkillResolution,
 } from '../config/skill-import.ts';
+import {
+  resolveUploadedSkills,
+  SkillUploadError,
+  type SkillUploadResolution,
+  type UploadedSkillCandidate,
+  type UploadedSkillFile,
+} from '../config/skill-upload.ts';
 import { isValidRepositoryFullName } from '../config/github-app.ts';
 import { newAgentCredentialIncarnation } from '../config/connection-credential-binding.ts';
 import {
@@ -143,6 +150,7 @@ import { THREAD_TTL_MS } from '../slack/state-limits.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
+import { base64ToBytes } from '../security/base64url.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
@@ -256,6 +264,11 @@ import {
   type ManageAgentSkillInput,
   type ManageAgentSkillResult,
   type SkillActionReceiptMetadata,
+  type UploadedSkillReceipt,
+  type UploadSkillsApplication,
+  type UploadSkillsFile,
+  type UploadSkillsInput,
+  type UploadSkillsResult,
   type ManagementMemorySnapshot,
   type ManagementModelAccess,
   type ManagementModelProviderId,
@@ -949,6 +962,107 @@ export class WorkspaceManagementService {
       ...(outcome.links ? { links: outcome.links } : {}),
       import: metadata,
     };
+  }
+
+  /**
+   * Installs skills from uploaded files: the same reader as Admin upload, then
+   * the same direct-apply, revision, undo and audit path as import_skill.
+   */
+  async uploadSkills(input: UploadSkillsInput): Promise<UploadSkillsResult> {
+    const actor = await this.requireLiveActor(input.context);
+    // A Slack door needs what import_skill does there: proof from the
+    // requester's message, a turn-scoped key, and a proposal on an Agent's ask.
+    if (actor.origin.kind === 'slack') {
+      throw new ManagementError('invalid_request', 'Skill upload is not available in Slack. No change was made.');
+    }
+    const { agentId } = input;
+    if (!isAgentId(agentId)) {
+      throw new ManagementError('invalid_request', 'Choose a valid Agent for the skill upload.');
+    }
+    this.assertActingAgentScope(actor, {
+      scope: 'agent',
+      agentId,
+      requestedAction: 'update_agent',
+      target: { kind: 'agent', id: agentId },
+    });
+    const agent = await this.requireEditableAgent(actor, agentId);
+    const resolution = await readSkillUpload(input.files);
+    const replaceExisting = input.replaceExisting === true;
+    const operationId = skillUploadOperationId(actor, input);
+    const replay = await this.stores.management.getRequest(operationId);
+    if (replay) return await this.replaySkillUpload(actor, agent, replay, resolution, replaceExisting);
+
+    const plan = planSkillUpload(agent.skills, resolution, replaceExisting);
+    if (plan.added.length === 0 && plan.replaced.length === 0) {
+      return skillUploadResult(
+        plan,
+        agent.name,
+        { status: 'unchanged', undoAvailable: false },
+        await this.agentResultLinks(actor, agentId),
+      );
+    }
+    const itemId = 'skill-upload';
+    const applied = requireManagementApplyResult(await this.applyWorkspaceChanges({
+      context: input.context,
+      idempotencyKey: input.idempotencyKey,
+      operationId,
+      operations: [{
+        itemId,
+        kind: 'update_agent',
+        agentId,
+        expectedRevision: agent.revision,
+        patch: { skills: plan.skills },
+      }],
+      approvalBasis: 'explicit_requester_command',
+      trustedReversibleOperationIds: [itemId],
+      acknowledgementOwner: 'caller',
+    }));
+    const outcome = applied.outcomes.find((candidate) => candidate.itemId === itemId);
+    if (applied.status !== 'completed' || outcome?.disposition !== 'applied') {
+      throw new ManagementError(
+        'invalid_state',
+        `The skill upload did not complete (operation ${applied.operationId}). Inspect the Agent, then retry with a new idempotency key.`,
+      );
+    }
+    return skillUploadResult(plan, agent.name, {
+      status: 'updated',
+      operationId: applied.operationId,
+      activation: applied.activation,
+      undoAvailable: outcome.undoAvailable === true,
+    }, outcome.links);
+  }
+
+  /**
+   * The receipt is not stored: replanning the same files against the skills
+   * the undo record saved reproduces it, and must reproduce the stored write.
+   */
+  private async replaySkillUpload(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+    request: ManagementRequestRecord,
+    resolution: SkillUploadResolution,
+    replaceExisting: boolean,
+  ): Promise<UploadSkillsResult> {
+    const operation = request.operations[0];
+    const result = request.result;
+    const outcome = result?.outcomes.find(({ itemId }) => itemId === 'skill-upload');
+    const undo = await this.stores.management.getUndo(request.operationId);
+    const before = undo?.inverse.kind === 'update_agent' ? undo.inverse.patch.skills : undefined;
+    const plan = before ? planSkillUpload(before, resolution, replaceExisting) : undefined;
+    if (request.status !== 'completed' || result?.status !== 'completed' ||
+        outcome?.disposition !== 'applied' || operation?.kind !== 'update_agent' || !plan ||
+        canonicalJson(plan.skills) !== canonicalJson(operation.patch.skills)) {
+      throw new ManagementError(
+        'invalid_state',
+        `The skill upload receipt is unavailable (operation ${request.operationId}). Inspect the Agent before retrying.`,
+      );
+    }
+    return skillUploadResult(plan, agent.name, {
+      status: 'updated',
+      operationId: result.operationId,
+      activation: result.activation,
+      undoAvailable: outcome.undoAvailable === true && undo?.status === 'available',
+    }, await this.agentResultLinks(actor, agent.id));
   }
 
   async manageAgentSkill(
@@ -9148,6 +9262,145 @@ function skillImportOperationId(
     replaceExisting: input.replaceExisting === true,
   })).digest('hex').slice(0, 32);
   return `management_skill_import_${digest}`;
+}
+
+function skillUploadOperationId(
+  actor: LiveManagementActor,
+  input: UploadSkillsInput,
+): string {
+  const digest = createHash('sha256').update(canonicalJson({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    originKey: managementActorOriginKey(actor),
+    agentId: input.agentId,
+    idempotencyKey: input.idempotencyKey,
+    files: input.files,
+    replaceExisting: input.replaceExisting === true,
+  })).digest('hex').slice(0, 32);
+  return `management_skill_upload_${digest}`;
+}
+
+async function readSkillUpload(files: readonly UploadSkillsFile[]): Promise<SkillUploadResolution> {
+  const uploaded = files.map((file): UploadedSkillFile => {
+    if ('text' in file) return { name: file.name, bytes: new TextEncoder().encode(file.text) };
+    try {
+      return { name: file.name, bytes: base64ToBytes(file.base64) };
+    } catch {
+      throw new ManagementError('invalid_request', `${file.name} is not valid base64. No change was made.`);
+    }
+  });
+  try {
+    return await resolveUploadedSkills(uploaded);
+  } catch (error) {
+    if (!(error instanceof SkillUploadError)) throw error;
+    throw new ManagementError('invalid_request', `${error.message} No change was made.`);
+  }
+}
+
+type SkillUploadPlan = Pick<UploadSkillsResult, 'added' | 'replaced' | 'unchanged' | 'conflicts' | 'issues'> & {
+  skills: SkillConfig[];
+};
+
+function planSkillUpload(
+  current: readonly SkillConfig[],
+  resolution: SkillUploadResolution,
+  replaceExisting: boolean,
+): SkillUploadPlan {
+  const plan: SkillUploadPlan = {
+    skills: [...current], added: [], replaced: [], unchanged: [], conflicts: [], issues: resolution.issues,
+  };
+  for (const candidate of resolution.skills) {
+    const uploaded: SkillConfig = {
+      name: candidate.name,
+      description: candidate.description,
+      instructions: candidate.instructions,
+      enabled: true,
+    };
+    const index = plan.skills.findIndex(({ name }) => name === candidate.name);
+    const existing = plan.skills[index];
+    const disposition = !existing
+      ? 'added'
+      : existing.description === uploaded.description && existing.instructions === uploaded.instructions
+        ? 'unchanged'
+        : replaceExisting ? 'replaced' : 'conflicts';
+    plan[disposition].push(uploadedSkillReceipt(candidate));
+    if (disposition === 'added') plan.skills.push(uploaded);
+    if (disposition === 'replaced') plan.skills[index] = uploaded;
+  }
+  return plan;
+}
+
+function uploadedSkillReceipt({ name, path, inspection }: UploadedSkillCandidate): UploadedSkillReceipt {
+  const omittedPaths = [...inspection.scriptPaths, ...inspection.auxiliaryPaths, ...inspection.unknownPaths];
+  return {
+    name,
+    path,
+    ...(omittedPaths.length ? { omittedPaths } : {}),
+    ...(inspection.warnings.length ? { warnings: inspection.warnings } : {}),
+  };
+}
+
+function skillUploadResult(
+  plan: SkillUploadPlan,
+  agentName: string,
+  application: UploadSkillsApplication,
+  links: ManagementResultLinks | undefined,
+): UploadSkillsResult {
+  const { skills: _skills, ...receipt } = plan;
+  return {
+    ...application,
+    ...receipt,
+    ...(plan.conflicts.length
+      ? {
+          instruction: `${plan.conflicts.map(({ name }) => name).join(', ')} already ${plan.conflicts.length === 1 ? 'exists' : 'exist'} on the Agent with different content. If the person wants ${plan.conflicts.length === 1 ? 'it' : 'them'} replaced, call upload_skills again with the same files, replaceExisting true, and a new idempotencyKey.`,
+        }
+      : {}),
+    presentation: {
+      slack: formatSkillUploadReceipt(plan, agentName, application, escapeSlackControlCharacters),
+      markdown: formatSkillUploadReceipt(plan, agentName, application, plainPresentationText),
+    },
+    ...(links ? { links } : {}),
+  };
+}
+
+const SKILL_UPLOAD_ISSUES_SHOWN = 10;
+
+function formatSkillUploadReceipt(
+  plan: SkillUploadPlan,
+  agentName: string,
+  application: UploadSkillsApplication,
+  escape: PresentationEscape,
+): string {
+  const names = (skills: UploadedSkillReceipt[]) => skills.map(({ name }) => `\`${escape(name)}\``).join(', ');
+  const count = (skills: UploadedSkillReceipt[]) => `${skills.length} skill${skills.length === 1 ? '' : 's'}`;
+  const agent = escape(agentName);
+  const lines: string[] = [];
+  if (!plan.added.length && !plan.replaced.length && !plan.unchanged.length && !plan.conflicts.length) {
+    lines.push('No skills were found in the upload.');
+  }
+  if (plan.added.length) lines.push(`Added ${count(plan.added)} to ${agent}: ${names(plan.added)}.`);
+  if (plan.replaced.length) lines.push(`Replaced ${count(plan.replaced)} on ${agent}: ${names(plan.replaced)}.`);
+  if (plan.unchanged.length) lines.push(`Already installed with the same content: ${names(plan.unchanged)}.`);
+  if (plan.conflicts.length) {
+    lines.push(`Left unchanged because ${agent} already has a skill with the same name and different content: ${names(plan.conflicts)}.`);
+  }
+  for (const skill of [...plan.added, ...plan.replaced]) {
+    const notes = [
+      ...(skill.omittedPaths ? [`Only its instructions were installed; supporting files omitted: ${escape(describeSkillPaths(skill.omittedPaths))}.`] : []),
+      ...(skill.warnings ?? []).map(escape),
+    ];
+    if (notes.length) lines.push(`\`${escape(skill.name)}\`: ${notes.join(' ')}`);
+  }
+  for (const issue of plan.issues.slice(0, SKILL_UPLOAD_ISSUES_SHOWN)) {
+    lines.push(`Left out ${escape(issue.path)}: ${escape(issue.message)}`);
+  }
+  if (plan.issues.length > SKILL_UPLOAD_ISSUES_SHOWN) {
+    lines.push(`${plan.issues.length - SKILL_UPLOAD_ISSUES_SHOWN} more files were left out.`);
+  }
+  lines.push(application.status === 'updated'
+    ? `The skills are active from the next message.${application.undoAvailable ? ' You can undo this change.' : ''}`
+    : 'No changes were made.');
+  return lines.join('\n');
 }
 
 function skillActionOperationId(

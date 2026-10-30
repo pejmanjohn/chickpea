@@ -7,6 +7,7 @@ import {
 import {
   applyWorkspaceChangesZodSchema,
   importSkillZodSchema,
+  uploadSkillsZodSchema,
   manageAgentSkillZodSchema,
   confirmWorkspaceChangeZodSchema,
   getOperationZodSchema,
@@ -63,6 +64,7 @@ export const WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES = [
   'export_workspace_recipe',
   'preview_workspace_recipe',
   'import_skill',
+  'upload_skills',
   'manage_agent_skill',
   'apply_workspace_changes',
   'confirm_workspace_change',
@@ -252,6 +254,17 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'import_skill',
+    args,
+  )));
+
+  server.registerTool('upload_skills', {
+    title: 'Upload skill files',
+    description: workspaceManagementToolDescription('upload_skills', 'mcp'),
+    inputSchema: uploadSkillsZodSchema,
+    annotations: WRITE,
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'upload_skills',
     args,
   )));
 

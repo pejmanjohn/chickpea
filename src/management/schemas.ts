@@ -7,6 +7,7 @@ import { CONNECTION_GUIDE_MAX_LENGTH } from '../config/agent-write-rules.ts';
 import { MAX_MCP_OAUTH_SCOPE_LENGTH, MAX_MCP_TOOLS } from '../config/mcp-limits.ts';
 import { MODEL_EFFORTS } from '../config/model-effort.ts';
 import { MODEL_ROLES } from '../config/types.ts';
+import { MAX_UPLOAD_FILES } from '../config/skill-upload.ts';
 import {
   isValidRepositoryGrantShape,
   REPOSITORY_GRANT_SHAPE_MESSAGE,
@@ -358,6 +359,22 @@ export const importSkillZodSchema = z.strictObject({
   replaceExisting: z.boolean().optional(),
   idempotencyKey: zText(256),
   guideVersion: z.literal(AGENT_AUTHORING_GUIDE_VERSION),
+});
+const zUploadFileName = zText(255).describe('The file name, such as SKILL.md, notes.md or skills.zip. Its extension decides how the file is read.');
+export const uploadSkillsZodSchema = z.strictObject({
+  agentId: zAgentId,
+  files: z.array(z.union([
+    z.strictObject({
+      name: zUploadFileName,
+      text: z.string().min(1).describe('The exact text of a SKILL.md or other markdown file, unchanged.'),
+    }),
+    z.strictObject({
+      name: zUploadFileName,
+      base64: z.string().min(4).describe('The bytes of a .zip or .skill archive, base64-encoded.'),
+    }),
+  ])).min(1).max(MAX_UPLOAD_FILES),
+  replaceExisting: z.boolean().optional(),
+  idempotencyKey: zText(256),
 });
 export const manageAgentSkillZodSchema = z.strictObject({
   agentId: zAgentId,

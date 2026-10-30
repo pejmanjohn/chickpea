@@ -79,6 +79,7 @@ const MCP_TOOL_ANNOTATIONS = {
   export_workspace_recipe: READ,
   preview_workspace_recipe: READ,
   import_skill: WRITE,
+  upload_skills: WRITE,
   manage_agent_skill: WRITE,
   apply_workspace_changes: WRITE,
   confirm_workspace_change: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },

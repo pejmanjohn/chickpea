@@ -23,6 +23,7 @@ import type {
   RoutineState,
 } from '../routines/types.ts';
 import type { WebsiteLoginView } from '../browser/agent-website-logins.ts';
+import type { SkillUploadIssue } from '../config/skill-upload.ts';
 import type { AgentAuthoringReason } from './agent-authoring/index.ts';
 import type {
   ManagementApiConnection,
@@ -1350,6 +1351,48 @@ export type ImportSkillResult =
       };
     }
   | Extract<ProposeSkillImportResult, { status: 'selection_required' }>;
+
+/** One uploaded file: a markdown file's exact text, or an archive's bytes in base64. */
+export type UploadSkillsFile =
+  | { name: string; text: string }
+  | { name: string; base64: string };
+
+export interface UploadSkillsInput {
+  context: ManagementActorContext;
+  agentId: string;
+  files: UploadSkillsFile[];
+  /** Same meaning as import_skill's: replace same-name skills whose content differs. */
+  replaceExisting?: boolean;
+  idempotencyKey: string;
+}
+
+export interface UploadedSkillReceipt {
+  name: string;
+  /** Where the upload held it: "<file>" or "<archive>/<directory>". */
+  path: string;
+  /** Package files left out; only the instructions are installed. */
+  omittedPaths?: string[];
+  warnings?: string[];
+}
+
+export type UploadSkillsResult = {
+  added: UploadedSkillReceipt[];
+  replaced: UploadedSkillReceipt[];
+  /** Already on the Agent with the same name, description and instructions. */
+  unchanged: UploadedSkillReceipt[];
+  /** Same name, different content, and replaceExisting was not set; left as they are. */
+  conflicts: UploadedSkillReceipt[];
+  issues: SkillUploadIssue[];
+  /** How to replace the conflicts, when there are any. */
+  instruction?: string;
+  presentation: ManagementPresentation;
+  links?: ManagementResultLinks;
+} & UploadSkillsApplication;
+
+/** Whether the upload changed the Agent; only a change has an operation to undo. */
+export type UploadSkillsApplication =
+  | { status: 'updated'; operationId: string; activation: 'next_turn'; undoAvailable: boolean }
+  | { status: 'unchanged'; undoAvailable: false };
 
 export interface ConfirmWorkspaceChangeInput {
   context: ManagementActorContext;

@@ -108,7 +108,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'discover_slack_channels', 'test_connection', 'save_connection_key', 'try_connection',
     'inspect_memory', 'inspect_routines',
     'export_workspace_recipe', 'preview_workspace_recipe',
-    'import_skill', 'manage_agent_skill', 'propose_skill_import',
+    'import_skill', 'upload_skills', 'manage_agent_skill', 'propose_skill_import',
     'propose_workspace_changes', 'apply_workspace_changes', 'confirm_workspace_change',
     'undo_workspace_change', 'get_operation', 'revoke_setup_link',
     'list_mcp_clients', 'revoke_mcp_client',

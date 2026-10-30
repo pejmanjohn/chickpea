@@ -18,6 +18,7 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'export_workspace_recipe',
   'preview_workspace_recipe',
   'import_skill',
+  'upload_skills',
   'manage_agent_skill',
   'apply_workspace_changes',
   'confirm_workspace_change',
