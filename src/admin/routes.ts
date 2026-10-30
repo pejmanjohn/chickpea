@@ -16,6 +16,7 @@ import { Hono, type Context, type Next } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 import { actualBodyLimit } from '../security/request-body-limit.ts';
+import { base64ToBytes } from '../security/base64url.ts';
 import { applicationIdentity } from '../release/identity.ts';
 import { isQaTarget, validQaFleet } from '../config/qa-targets.ts';
 import { createUpdateChecker } from '../release/update-check.ts';
@@ -444,6 +445,7 @@ import { validEnabledRepositoryGrants } from '../sandbox/egress-handler.ts';
 import { probeSandboxContainer, sandboxBindingInstalled } from '../sandbox/select.ts';
 import { workspaceCheckpointsAvailable } from '../sandbox/workspace-checkpoints.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
+import { resolveUploadedSkills, SkillUploadError, type UploadedSkillFile } from '../config/skill-upload.ts';
 import { skillImportSourceSchema } from '../config/skill-provenance.ts';
 import { legacyAgentAdminRedirect } from './agent-url.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
@@ -1083,6 +1085,9 @@ const SLACK_RECOVERY_BROWSER_COOKIE = '__Secure-chickpea_slack_recovery_browser'
 const SLACK_RECOVERY_SESSION_COOKIE = '__Secure-chickpea_slack_recovery';
 const MANAGED_AUTHORIZATION_BROWSER_COOKIE = '__Secure-chickpea_managed_authorization';
 const MAX_ADMIN_MUTATION_BODY_BYTES = 1024 * 1024;
+const SKILL_UPLOAD_PATH = '/admin/api/skills/upload';
+// Base64 of the 8 MiB upload bound plus JSON framing.
+const MAX_SKILL_UPLOAD_BODY_BYTES = 12 * 1024 * 1024;
 
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
@@ -1455,6 +1460,12 @@ const deleteAgentSchema = v.strictObject({
 const agentAvatarUploadSchema = v.strictObject({
   contentType: v.picklist(['image/png', 'image/jpeg', 'image/webp']),
   base64: v.pipe(v.string(), v.minLength(4), v.maxLength(750_000)),
+});
+const skillUploadSchema = v.strictObject({
+  files: v.pipe(v.array(v.strictObject({
+    name: v.pipe(v.string(), v.minLength(1), v.maxLength(255)),
+    base64: v.string(),
+  })), v.minLength(1)),
 });
 
 const githubOrgSchema = v.pipe(
@@ -3275,6 +3286,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     maxSize: MAX_ADMIN_MUTATION_BODY_BYTES,
     onError: (c) => c.json({ error: 'request_too_large' }, 413),
   });
+  const skillUploadBodyLimit = actualBodyLimit({
+    maxSize: MAX_SKILL_UPLOAD_BODY_BYTES,
+    onError: (c) => c.json({ error: 'request_too_large' }, 413),
+  });
   const requireAdminUserAgent = async (
     c: Context,
     agentId: string,
@@ -3415,7 +3430,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           }
           const provenance = validateMutationProvenance(c.req.raw, principal, {
             canonicalOrigin: origin,
-            maxBodyBytes: MAX_ADMIN_MUTATION_BODY_BYTES,
+            maxBodyBytes: c.req.path === SKILL_UPLOAD_PATH ? MAX_SKILL_UPLOAD_BODY_BYTES : MAX_ADMIN_MUTATION_BODY_BYTES,
             requireJson: c.req.method !== 'DELETE',
           });
           if (!provenance.ok) {
@@ -4815,8 +4830,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const slackInstallationMutation =
       c.req.path === '/admin/api/slack-connection' ||
       c.req.path.startsWith('/admin/api/slack-connection/');
-    return slackInstallationMutation
-      ? slackInstallationAdminBodyLimit(c, next)
+    if (slackInstallationMutation) return slackInstallationAdminBodyLimit(c, next);
+    return c.req.path === SKILL_UPLOAD_PATH
+      ? skillUploadBodyLimit(c, next)
       : adminMutationBodyLimit(c, next);
   });
   app.use('/admin/api/*', async (c, next) => {
@@ -8456,6 +8472,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return c.json({ error: 'agent_exists' }, 409);
       }
       return internalError(c, err);
+    }
+  });
+
+  // Read uploaded skill files and archives into the same candidates as the
+  // resolve route. Read-only, like resolve: the picked skills save through the
+  // normal agent PATCH.
+  app.post(SKILL_UPLOAD_PATH, async (c) => {
+    const parsed = v.safeParse(skillUploadSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const files: UploadedSkillFile[] = [];
+    for (const file of parsed.output.files) {
+      try {
+        files.push({ name: file.name, bytes: base64ToBytes(file.base64) });
+      } catch {
+        return invalidRequest(c, `${file.name} is not valid base64.`);
+      }
+    }
+    try {
+      return c.json({ resolution: await resolveUploadedSkills(files) });
+    } catch (error) {
+      if (error instanceof SkillUploadError) return c.json({ error: error.code, message: error.message }, 413);
+      return internalError(c, error);
     }
   });
 
@@ -12801,7 +12839,7 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
   ) return 'connection.create_personal';
   if (c.req.path.startsWith('/admin/api/connections/')) return 'connection.create_team';
   if (
-    (c.req.method === 'POST' && c.req.path === '/admin/api/skills/resolve') ||
+    (c.req.method === 'POST' && ['/admin/api/skills/resolve', SKILL_UPLOAD_PATH].includes(c.req.path)) ||
     c.req.path === '/admin/api/agents' ||
     c.req.path.startsWith('/admin/api/agents/') ||
     (c.req.method === 'GET' && [
