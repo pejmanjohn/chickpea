@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CONNECT_CLIENTS, connectPrompt } from '../src/management/connect.ts';
+import { CONNECT_CLIENTS, claudeConnectorLink, connectPrompt } from '../src/management/connect.ts';
 import {
   MCP_CLIENT_IDS,
   cursorInstallLink,
@@ -56,17 +56,36 @@ test('every connect-guide client renders the guide\'s own snippet and sign-in se
   }
 });
 
-test('the two hosted clients take the bare MCP URL with where-to-paste directions', () => {
+test('the two hosted clients take the bare MCP URL and sign in with Slack', () => {
   const configs = new Map(mcpClientConfigs(ORIGIN).map((client) => [client.id, client]));
   for (const id of ['claude-ai', 'chatgpt']) {
     const client = configs.get(id)!;
     assert.equal(client.language, 'text', id);
     assert.equal(client.text, MCP_URL, id);
-    assert.match(client.note, /paste this URL and sign in with Slack\./, id);
-    assert.equal(client.deepLink, undefined, id);
+    assert.match(client.note, /sign in with Slack\./, id);
   }
-  assert.match(configs.get('claude-ai')!.note, /Customize → Connectors/);
   assert.match(configs.get('chatgpt')!.note, /Developer mode/);
+  assert.equal(configs.get('chatgpt')!.deepLink, undefined);
+});
+
+test('the Claude install link opens the pre-filled connector dialog for this deployment', () => {
+  const claude = mcpClientConfigs(ORIGIN).find((client) => client.id === 'claude-ai')!;
+  assert.deepEqual(claude.deepLink, {
+    href: 'https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=https%3A%2F%2Fchickpea.example.test%2Fmcp',
+    label: 'Add to Claude',
+  });
+  assert.equal(
+    claudeConnectorLink(MCP_URL, 'organization'),
+    'https://claude.ai/admin-settings/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=https%3A%2F%2Fchickpea.example.test%2Fmcp',
+  );
+  // One button per card, so the organization path is named in the note.
+  assert.match(claude.note, /Organization settings → Connectors/);
+
+  const local = mcpClientConfigs('http://127.0.0.1:8787').find((client) => client.id === 'claude-ai')!;
+  assert.equal(
+    local.deepLink?.href,
+    'https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=http%3A%2F%2F127.0.0.1%3A8787%2Fmcp',
+  );
 });
 
 test('the Cursor install link carries a base64 config for this deployment', () => {

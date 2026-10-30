@@ -132,7 +132,7 @@ test('the guide names every supported client and proves the connection before cl
     assert.ok(body.includes(`### ${client.title}`), `section for ${client.title}`);
     assert.ok(body.includes(client.snippet(`${ORIGIN}/mcp`)), `snippet for ${client.title}`);
   }
-  for (const title of ['Claude Code', 'Codex', 'Cursor', 'VS Code', 'Windsurf', 'Gemini CLI', 'Any other MCP client']) {
+  for (const title of ['Claude app', 'Claude Code', 'Codex', 'Cursor', 'VS Code', 'Windsurf', 'Gemini CLI', 'Any other MCP client']) {
     assert.ok(body.includes(title), title);
   }
   // The catch-all client's configuration is a plain remote-server JSON block.
@@ -147,6 +147,41 @@ test('the guide names every supported client and proves the connection before cl
   // letting the agent report a broken connection as a failure it caused.
   assert.ok(/404 at `\/mcp`/.test(body), '404-before-setup guidance');
   assert.ok(body.includes(`${ORIGIN}/admin`), 'points at Admin to finish setup');
+});
+
+const CLAUDE_LINK = 'https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=https%3A%2F%2Fchickpea.example.test%2Fmcp';
+const CLAUDE_ORGANIZATION_LINK = 'https://claude.ai/admin-settings/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=https%3A%2F%2Fchickpea.example.test%2Fmcp';
+
+test('the guide hands an agent inside the Claude app the pre-filled connector links', async () => {
+  const guide = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  const claudeApp = guide.slice(guide.indexOf('### Claude app'), guide.indexOf('### Every other client'));
+  assert.ok(guide.indexOf('### Claude app') > guide.indexOf('## 2. Add the server'), 'inside step 2');
+  assert.ok(claudeApp.includes(CLAUDE_LINK), 'personal link');
+  assert.ok(claudeApp.includes(CLAUDE_ORGANIZATION_LINK), 'organization link');
+  assert.ok(claudeApp.includes(`Check my Chickpea connection with step 5 of ${ORIGIN}/connect.md`), 'proof in a new conversation');
+  assert.ok(claudeApp.includes('Do not also run `claude mcp add`'), 'Claude Code keeps one copy of the server');
+  // Claude Code in a terminal still has its own command.
+  assert.ok(guide.includes(`claude mcp add --transport http --scope user chickpea ${ORIGIN}/mcp`));
+});
+
+test('the page offers Add to Claude with the same links', async () => {
+  const html = await (await connectMd(`${ORIGIN}/connect`)).text();
+  const attribute = (href: string) => href.replaceAll('&', '&amp;');
+  assert.ok(html.includes(`<a class="install" href="${attribute(CLAUDE_LINK)}" target="_blank" rel="noopener noreferrer">Add to Claude</a>`));
+  assert.ok(html.includes(`<a href="${attribute(CLAUDE_ORGANIZATION_LINK)}" target="_blank" rel="noopener noreferrer">`));
+});
+
+test('a hosted installation\'s Claude links carry its own origin', async () => {
+  const hosted = 'https://team-7.hosted.example';
+  const encoded = 'https%3A%2F%2Fteam-7.hosted.example%2Fmcp';
+  const env = { CHICKPEA_TENANCY: 'installation' };
+  const guide = await (await createConnectRoutes().request(`${hosted}/connect.md`, {}, env)).text();
+  const html = await (await createConnectRoutes().request(`${hosted}/connect`, {}, env)).text();
+  for (const body of [guide, html.replaceAll('&amp;', '&')]) {
+    assert.ok(body.includes(`https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=${encoded}`));
+    assert.ok(body.includes(`https://claude.ai/admin-settings/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=${encoded}`));
+    assert.ok(!body.includes('chickpea.example.test'));
+  }
 });
 
 test('the hosted guide names only the Admin settings its Admin shows; standalone names them all', async () => {

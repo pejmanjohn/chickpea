@@ -245,10 +245,11 @@ const MCP_CLIENTS_FIXTURE = {
     },
     {
       id: 'claude-ai',
-      title: 'claude.ai and Claude Desktop',
+      title: 'Claude (web, Desktop, Cowork)',
       language: 'text',
       text: `${MCP_ORIGIN}/mcp`,
-      note: 'Customize -> Connectors -> Add custom connector, then paste this URL and sign in with Slack.',
+      note: 'Add to Claude opens Claude\'s Add custom connector dialog with this URL filled in.',
+      deepLink: { href: 'https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=https%3A%2F%2Fchickpea.example%2Fmcp', label: 'Add to Claude' },
     },
   ],
 };
@@ -19573,7 +19574,7 @@ test('Coding agents settings gives every member the MCP setup copy for their cli
   );
   assert.match(harness.app.innerHTML, /claude mcp add --transport http chickpea https:\/\/chickpea\.example\/mcp/);
   assert.match(harness.app.innerHTML, /Run <code>\/mcp<\/code> inside Claude Code, choose <code>chickpea<\/code>/);
-  for (const title of ['Codex', 'Cursor', 'VS Code', 'claude.ai and Claude Desktop']) {
+  for (const title of ['Codex', 'Cursor', 'VS Code', 'Claude (web, Desktop, Cowork)']) {
     assert.ok(harness.app.innerHTML.includes(`>${title}</button>`));
   }
   assert.equal(harness.locationPath(), '/admin/settings/agents-clients');
@@ -19607,6 +19608,12 @@ test('MCP is a Settings rail entry and each client keeps its own install link', 
     harness.app.innerHTML,
     /href="https:\/\/vscode\.dev\/redirect\/mcp\/install\?name=chickpea&amp;config=eyJ1cmwifQ"[^>]*>Add to VS Code<\/a>/,
   );
+
+  click({ target: actionTarget({ 'data-action': 'mcp-client-pick', 'data-client': 'claude-ai' }) });
+  await flushAsync();
+  assert.ok(harness.app.innerHTML.includes(
+    '<a class="btn btn-primary" href="https://claude.ai/customize/connectors?modal=add-custom-connector&amp;connectorName=Chickpea&amp;connectorUrl=https%3A%2F%2Fchickpea.example%2Fmcp" target="_blank" rel="noopener noreferrer">Add to Claude</a>',
+  ));
 });
 
 test('a member deep-linked to an owner Settings page lands on Coding agents', async () => {

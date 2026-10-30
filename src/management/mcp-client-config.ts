@@ -5,8 +5,8 @@
  * `src/management/connect.ts` owns the facts: the snippet text, the sign-in
  * sentence, and the server name. This module reuses those verbatim so the
  * Settings page, `/connect.md`, and the CLI never drift, and adds the two
- * hosted clients (claude.ai/Claude Desktop and ChatGPT) that take a bare URL
- * rather than a configuration file, plus the one-click install links Cursor
+ * hosted clients (the Claude app and ChatGPT) that take a bare URL rather
+ * than a configuration file, plus the one-click install links Claude, Cursor,
  * and VS Code publish.
  *
  * Pure: no I/O, no store, no request. Everything here is derived from the
@@ -16,6 +16,7 @@
 import {
   CONNECT_CLIENTS,
   MCP_SERVER_NAME,
+  claudeConnectorLink,
   connectGuideUrl,
   connectMcpUrl,
   connectPrompt,
@@ -58,14 +59,14 @@ const TITLES: Record<McpClientId, string> = {
   vscode: 'VS Code',
   windsurf: 'Windsurf',
   'gemini-cli': 'Gemini CLI',
-  'claude-ai': 'claude.ai and Claude Desktop',
+  'claude-ai': 'Claude (web, Desktop, Cowork)',
   chatgpt: 'ChatGPT',
   json: 'JSON (any MCP client)',
 };
 
 /** Clients that take a URL in their own UI rather than a configuration file. */
 const HOSTED_NOTES: Record<'claude-ai' | 'chatgpt', string> = {
-  'claude-ai': 'Customize → Connectors → Add custom connector, then paste this URL and sign in with Slack.',
+  'claude-ai': 'Add to Claude opens Claude\'s Add custom connector dialog with this URL filled in. Click Add, then Connect, and sign in with Slack. On a Team or Enterprise plan, an Owner adds it once under Organization settings → Connectors, and each member clicks Connect. Claude Code signed in with the same claude.ai account gets it too, so skip `claude mcp add` there.',
   chatgpt: 'Settings → Connectors (Developer mode) → Create, then paste this URL and sign in with Slack.',
 };
 
@@ -104,13 +105,9 @@ export function mcpClientConfigs(origin: string): McpClientConfig[] {
   const url = connectMcpUrl(origin);
   return MCP_CLIENT_IDS.map((id) => {
     if (id === 'claude-ai' || id === 'chatgpt') {
-      return {
-        id,
-        title: TITLES[id],
-        language: 'text' as const,
-        text: url,
-        note: HOSTED_NOTES[id],
-      };
+      const config: McpClientConfig = { id, title: TITLES[id], language: 'text', text: url, note: HOSTED_NOTES[id] };
+      if (id === 'claude-ai') config.deepLink = { href: claudeConnectorLink(url), label: 'Add to Claude' };
+      return config;
     }
     const client = connectClient(id);
     const config: McpClientConfig = {
