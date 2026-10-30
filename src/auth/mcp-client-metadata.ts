@@ -29,8 +29,9 @@ const transports = new WeakMap<ClientMetadataFetch, TransportState>();
  * Better Auth is built per request, so the discovery, which caches documents
  * and budgets fetches per origin, is kept per transport for the isolate.
  * Storing a client the database does not hold yet first asks `admitNewClient`,
- * the same bound dynamic registration has on clients no one consented to; a
- * URL the plugin would refuse unfetched never asks.
+ * the same bound dynamic registration has on clients no one consented to. A
+ * URL the plugin would refuse unfetched is refused before the plugin runs, so
+ * it neither asks nor spends a fetch permit.
  *
  * A stored client's document is fetched again once its cached copy lapses.
  * When that fetch cannot reach the document, the stored client stands, so an
@@ -48,7 +49,10 @@ export function clientMetadataDiscovery(
     ...discovery,
     async resolve(ctx, clientId, existing) {
       if (!existing) {
-        if (validateClientIdUrl(clientId) === null && !(await admitNewClient())) {
+        // The plugin takes a fetch permit before it checks the URL.
+        const invalid = validateClientIdUrl(clientId);
+        if (invalid) throw new APIError('BAD_REQUEST', { error: 'invalid_client', error_description: invalid });
+        if (!(await admitNewClient())) {
           throw new APIError('TOO_MANY_REQUESTS', {
             error: 'temporarily_unavailable',
             error_description: 'Too many apps are waiting for sign-in approval. Try again later.',
@@ -67,8 +71,8 @@ export function clientMetadataDiscovery(
         unreachable.delete(clientId);
       } catch (error) {
         const failure = readFailure(error);
-        // The plugin declines to fetch again for a second after any failure,
-        // so a decline stands in for the last fetch's outcome.
+        // The plugin declines a fetch for a second after a failed one, or when
+        // its budget is spent; a decline stands in for the last fetch's outcome.
         if (failure !== 'unreachable' && !(failure === 'declined' && unreachable.has(clientId))) {
           unreachable.delete(clientId);
           throw error;
