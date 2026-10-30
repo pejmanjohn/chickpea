@@ -1935,7 +1935,8 @@ export class ManagementStoreLogic {
    */
   private removeStoredRequesterText(): void {
     this.db.run(
-      `UPDATE management_setup_operations
+      `-- contract: v0.1.38 stopped writing a requester message into a setup origin; remove it from older rows
+       UPDATE management_setup_operations
        SET origin_json = json_remove(origin_json, '$.requestText', '$.requestTextSource')
        WHERE origin_json LIKE '%"requestText%' AND json_valid(origin_json)`,
     );
