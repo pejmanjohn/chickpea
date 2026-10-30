@@ -9,6 +9,7 @@ import {
 } from './better-auth.ts';
 import { clientMetadataHost } from './mcp-client-metadata.ts';
 import {
+  isLoopbackHost,
   MCP_OFFLINE_SCOPE,
   MCP_WORKSPACE_SCOPE,
   validatePublicMcpClientRegistration,
@@ -83,7 +84,7 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
 
     auth ??= createBetterAuth({ ...input, baseURL });
     if (route === 'read' && url.pathname === '/api/auth/oauth2/authorize') {
-      const renewable = await withOfflineAccessForRenewableClient(request, auth);
+      const renewable = await withOfflineAccessForRenewableClient(withConsentOnLoopback(request), auth);
       if (renewable instanceof Response) return renewable;
       request = renewable;
     }
@@ -127,6 +128,22 @@ async function revocationResponse(response: Response): Promise<Response> {
   return typeof description === 'string' && UNUSABLE_TOKEN_DESCRIPTIONS.has(description)
     ? new Response(null, { status: 200, headers: { 'content-type': 'application/json' } })
     : response;
+}
+
+/**
+ * A native client's published client ID and a loopback redirect say nothing
+ * about which app on the machine is asking (RFC 8252 section 8.6), so a
+ * client known by its metadata document that redirects to loopback is asked
+ * for consent every time. Asking with prompt=none gets an error, not a code.
+ */
+function withConsentOnLoopback(request: Request): Request {
+  const url = new URL(request.url);
+  const clientId = url.searchParams.get('client_id');
+  const redirect = URL.parse(url.searchParams.get('redirect_uri') ?? '');
+  if (!clientId || !clientMetadataHost(clientId) || !redirect || !isLoopbackHost(redirect.hostname)) return request;
+  const prompts = new Set(url.searchParams.get('prompt')?.split(' ').filter(Boolean)).add('consent');
+  url.searchParams.set('prompt', [...prompts].join(' '));
+  return new Request(url, request);
 }
 
 interface RegisteredClient {

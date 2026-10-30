@@ -130,7 +130,7 @@ function validRedirectUri(value: string): boolean {
   }
 }
 
-function isLoopbackHost(hostname: string): boolean {
+export function isLoopbackHost(hostname: string): boolean {
   if (LOOPBACK_HOSTS.has(hostname)) return true;
   const octets = hostname.split('.');
   return octets.length === 4 && octets[0] === '127' && octets.every((octet) =>
