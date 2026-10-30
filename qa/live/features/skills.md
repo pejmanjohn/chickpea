@@ -5,7 +5,7 @@ Docs: `/agents/skills/`. Record areas: `skills`. Legacy contracts: LC-06.
 ## What it covers
 
 - A skill is a name, description, instructions and enabled flag on one Agent. Only enabled skills load, and a malformed one is skipped without ending the turn.
-- Sources: 20 suggested skills toggled in Admin, skills written in Admin, and imports from `owner/repo`, `owner/repo@skill`, a GitHub tree URL or a `skills.sh` link.
+- Sources: 20 suggested skills toggled in Admin, skills written in Admin, imports from `owner/repo`, `owner/repo@skill`, a GitHub tree URL or a `skills.sh` link, and Admin uploads of `SKILL.md` files, other markdown whose header has a name and description, and `.zip` or `.skill` archives.
 - A Slack import needs the exact source in the current message. One scriptless skill installs at once with a receipt saying it is active from the next message, with undo; several candidates are listed, and you post the chosen source URL in a new message.
 - A mutable branch is pinned to the inspected commit before anything is written. The commit, path and source URL are not stored, and there is no update check.
 - Same name with different content is never overwritten silently: only a new message `replace <name> from <source URL>` replaces it. Identical content reports already installed.
@@ -19,7 +19,7 @@ Docs: `/agents/skills/`. Record areas: `skills`. Legacy contracts: LC-06.
 ## How a person reaches it
 
 - Slack: hand the Agent the link, or ask it to enable, disable or remove a named skill.
-- Admin: Agents → the Agent → Skills (suggestions, New skill, Import from URL, then Find skills and Add selected).
+- Admin: Agents → the Agent → Skills (suggestions, New skill, Import from URL then Find skills, or Upload or a drop on Build your own; then Add N skills).
 - MCP: `import_skill` installs immediately and `manage_agent_skill` enables, disables or removes.
 
 ## How to drive it on a lane
