@@ -8977,7 +8977,7 @@ const SAVE_KEY_REFUSALS: Record<PastedKeyRefusal['reason'], (untyped: readonly s
 
 const TRY_KEY_REFUSALS: Record<PastedKeyRefusal['reason'], (untyped: readonly string[]) => string> = {
   key_not_typed: () => 'Nothing was sent: try_connection takes only a key the requester typed in their own current message to this Agent, or in the message that proposed this connection when they approved it in the last 30 minutes. Never use a key from someone else\'s message, and never ask anyone to paste a key in chat.',
-  urls_not_typed: (untyped) => `Nothing was sent: the key would go to ${untyped.join(', ')}, which the requester did not type in the same message as the key. To use a host from the docs, add the connection with update_agent so the person approves where the key goes, then try it with connectionId after they approve.`,
+  urls_not_typed: (untyped) => `Nothing was sent: the key would go to ${untyped.join(', ')}, which the requester did not type in the same message as the key. Narrow the draft to the hosts and paths they typed and try again. Only if the API lives outside them, add the connection with update_agent so the person approves where the key goes, then try it with connectionId after they approve.`,
 };
 
 /**

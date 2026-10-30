@@ -323,7 +323,7 @@ function evalTryConnection(data) {
     if (!key) return record(toolRefusal('Nothing was sent: this connection has no saved key yet.'));
   } else if (!pastedKeyAdmitted(key, scope.allowedHosts, connection?.id)) {
     return record(toolRefusal(currentRequesterMessage.includes(key)
-      ? `Nothing was sent: the key would go to https://${host}, which the requester did not type in the same message as the key. To use a host from the docs, add the connection with update_agent so the person approves where the key goes, then try it with connectionId after they approve.`
+      ? `Nothing was sent: the key would go to https://${host}, which the requester did not type in the same message as the key. Narrow the draft to the hosts and paths they typed and try again. Only if the API lives outside them, add the connection with update_agent so the person approves where the key goes, then try it with connectionId after they approve.`
       : 'Nothing was sent: try_connection takes only a key the requester typed in their own current message to this Agent, or in the message that proposed this connection when they approved it in the last 30 minutes.'));
   }
   tried = trialSetup({ ...scope, authShape: data.draft?.authShape }, data.path);
