@@ -196,6 +196,12 @@
     // resolution is the /admin/api/skills/resolve payload (null until "Find
     // skills" returns) and selected is a boolean[] parallel to resolution.skills.
     skillImport: null,
+    // Inline "Upload" panel, kept apart from skillImport so its GitHub source
+    // and browse state never leak in. null when closed; when open it is
+    // { fileCount, loading, error, resolution, selected } where resolution is
+    // the /admin/api/skills/upload payload. Editor, import and upload are
+    // never open together.
+    skillUpload: null,
     // Inline Connections (remote MCP server) editor on the profile edit page.
     // null when closed; when open it is a working copy of one connection plus
     // TRANSIENT secrets (bearerToken + headerValues) that live ONLY here and are
@@ -831,6 +837,7 @@
     state.skillEditor = null;
     resetSkillImportBrowseTransientState();
     state.skillImport = null;
+    state.skillUpload = null;
     clearCustomConnectionMode();
     state.connectorGallerySearch = "";
     state.connectionRemove = null;
@@ -5515,15 +5522,50 @@
     if (listAfter) listAfter.scrollTop = scrollTop;
   }
 
-  // The picker rows shown after "Find skills" resolves. resolution.skills is
-  // third-party content, so every field is esc()'d — a description could smuggle
-  // a script-closing tag or an onerror img.
+  // The candidate list both pickers share: GitHub import after "Find skills"
+  // and upload after the files are read. Candidates are third-party content,
+  // so every field is esc()'d; a description could smuggle a script-closing
+  // tag or an onerror img. prefix ("import" or "upload") names the actions.
+  function skillCandidateListHtml(panel, prefix) {
+    var skills = panel.resolution.skills || [];
+    var selected = panel.selected || [];
+    if (!skills.length) return '<p class="hint">No importable skills were found here.</p>';
+    var existing = ((state.profileDraft && state.profileDraft.skills) || []).map(function (skill) { return skill.name; });
+    return '<div class="import-list">' + skills.map(function (skill, index) {
+      var on = !!selected[index];
+      var badge = skill.hasScripts
+        ? '<span class="badge-src import-scripts">scripts omitted &middot; instructions only</span>'
+        : "";
+      var inspection = skill.inspection;
+      var omitted = inspection ? [].concat(inspection.scriptPaths || [], inspection.auxiliaryPaths || [], inspection.unknownPaths || []) : [];
+      var disclosure = omitted.length ? '<span class="import-desc">Instructions only. Omitted: ' + esc(omitted.slice(0, 6).join(', ')) + (omitted.length > 6 ? ', and ' + (omitted.length - 6) + ' more' : '') + '.</span>' : '';
+      if (inspection && inspection.warnings && inspection.warnings.length) disclosure += '<span class="import-desc">' + esc(inspection.warnings.join(' ')) + '</span>';
+      if (existing.indexOf(skill.name) >= 0) disclosure += '<span class="import-desc import-replaces">Replaces your existing skill</span>';
+      return '<label class="import-row' + (on ? " on" : "") + '">' +
+        '<span class="import-check' + (on ? " on" : "") + '"><input type="checkbox" data-action="' + prefix + '-row-toggle" data-index="' + index + '" ' + (on ? "checked" : "") + ' aria-label="Import ' + esc(skill.name) + '"></span>' +
+        '<span class="import-body"><span class="import-name">' + esc(skill.name) + badge + '</span>' +
+        '<span class="import-desc">' + esc(skill.description) + '</span>' + disclosure + '</span></label>';
+    }).join("") + '</div>';
+  }
+
+  function skillCandidateSelectAllHtml(panel, prefix) {
+    if (!(panel.resolution.skills || []).length) return "";
+    var allSelected = (panel.selected || []).every(function (on) { return on; });
+    return '<button type="button" class="link-btn" data-action="' + prefix + '-select-all">' + (allSelected ? "Clear all" : "Select all") + "</button>";
+  }
+
+  function skillCandidateActionsHtml(panel, prefix) {
+    var count = (panel.selected || []).filter(function (on) { return on; }).length;
+    var add = (panel.resolution.skills || []).length
+      ? '<button type="button" class="btn btn-primary btn-sm" data-action="' + prefix + '-add"' + (count ? "" : " disabled") + '>Add ' + count + ' skill' + (count === 1 ? "" : "s") + '</button>'
+      : "";
+    return '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="' + prefix + '-cancel">Cancel</button>' + add + '</div>';
+  }
+
   function skillImportPickerHtml(imp) {
     var resolution = imp.resolution;
-    var skills = resolution.skills || [];
-    var selected = imp.selected || [];
+    var count = (resolution.skills || []).length;
     var repo = esc(resolution.owner) + "/" + esc(resolution.repo);
-    var count = skills.length;
     var summary = "Found " + count + " skill" + (count === 1 ? "" : "s") + " in " + repo;
     var notes = "";
     if (resolution.capped) {
@@ -5535,30 +5577,6 @@
     if (resolution.issues && resolution.issues.length) {
       notes += '<span class="import-note">' + resolution.issues.slice(0, 6).map(function (issue) { return esc(issue.path + ': ' + issue.message); }).join(' ') + '</span>';
     }
-    var allSelected = count > 0 && selected.every(function (on) { return on; });
-    var rows = skills.map(function (skill, index) {
-      var on = !!selected[index];
-      var badge = skill.hasScripts
-        ? '<span class="badge-src import-scripts">scripts omitted &middot; instructions only</span>'
-        : "";
-      var inspection = skill.inspection;
-      var omitted = inspection ? [].concat(inspection.scriptPaths || [], inspection.auxiliaryPaths || [], inspection.unknownPaths || []) : [];
-      var disclosure = omitted.length ? '<span class="import-desc">Instructions only. Omitted: ' + esc(omitted.slice(0, 6).join(', ')) + (omitted.length > 6 ? ', and ' + (omitted.length - 6) + ' more' : '') + '.</span>' : '';
-      if (inspection && inspection.warnings && inspection.warnings.length) disclosure += '<span class="import-desc">' + esc(inspection.warnings.join(' ')) + '</span>';
-      return '<label class="import-row' + (on ? " on" : "") + '">' +
-        '<span class="import-check' + (on ? " on" : "") + '"><input type="checkbox" data-action="import-row-toggle" data-index="' + index + '" ' + (on ? "checked" : "") + ' aria-label="Import ' + esc(skill.name) + '"></span>' +
-        '<span class="import-body"><span class="import-name">' + esc(skill.name) + badge + '</span>' +
-        '<span class="import-desc">' + esc(skill.description) + '</span>' + disclosure + '</span></label>';
-    }).join("");
-    var listOrEmpty = count > 0
-      ? '<div class="import-list">' + rows + '</div>'
-      : '<p class="hint">No importable skills were found here.</p>';
-    var actions = '<div class="skill-form-actions">' +
-      '<button type="button" class="btn btn-ghost btn-sm" data-action="import-cancel">Cancel</button>' +
-      (count > 0 ? '<button type="button" class="btn btn-primary btn-sm" data-action="import-add">Add selected</button>' : "") + '</div>';
-    var selectAll = count > 0
-      ? '<button type="button" class="link-btn" data-action="import-select-all">' + (allSelected ? "Clear all" : "Select all") + "</button>"
-      : "";
     var source = resolution.source || null;
     var sourceDisclosure = "";
     if (source) {
@@ -5570,8 +5588,8 @@
         '<span>' + access + 'Selected instructions are copied into this Agent as a snapshot and may be sent to its configured model when the skill is used. Supporting files are excluded; instructions that need those files may be incomplete.</span>' +
         '<span>Importing does not grant the Agent access to the repository. Configure ongoing runtime access separately in the Repositories tab.</span></div>';
     }
-    return '<div class="import-summary"><span>' + summary + notes + '</span>' + selectAll + "</div>" +
-      sourceDisclosure + listOrEmpty + actions;
+    return '<div class="import-summary"><span>' + summary + notes + '</span>' + skillCandidateSelectAllHtml(imp, "import") + "</div>" +
+      sourceDisclosure + skillCandidateListHtml(imp, "import") + skillCandidateActionsHtml(imp, "import");
   }
 
   function skillImportPanelHtml(imp) {
@@ -5593,6 +5611,27 @@
     return '<div class="skill-form import-panel">' +
       (imp.error ? '<p class="field-error">' + esc(imp.error) + '</p>' : "") +
       skillImportPickerHtml(imp) + "</div>";
+  }
+
+  function skillUploadPanelHtml(upload) {
+    var files = upload.fileCount + " file" + (upload.fileCount === 1 ? "" : "s");
+    if (!upload.resolution) {
+      var status = upload.loading
+        ? '<p class="hint"><span class="spinner"></span> Reading ' + files + '&hellip;</p>'
+        : '<p class="field-error">' + esc(upload.error) + '</p>';
+      return '<div class="skill-form import-panel">' + status +
+        '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="upload-cancel">Cancel</button></div></div>';
+    }
+    var count = (upload.resolution.skills || []).length;
+    var summary = "Found " + count + " skill" + (count === 1 ? "" : "s") + " in " + files;
+    var issues = upload.resolution.issues || [];
+    var issueList = issues.length
+      ? '<div class="import-issues"><p class="field-label">Left out</p><ul>' +
+        issues.slice(0, 8).map(function (issue) { return '<li><span class="import-issue-path">' + esc(issue.path) + '</span> ' + esc(issue.message) + '</li>'; }).join("") +
+        (issues.length > 8 ? '<li>And ' + (issues.length - 8) + ' more.</li>' : "") + '</ul></div>'
+      : "";
+    return '<div class="skill-form import-panel"><div class="import-summary"><span>' + summary + '</span>' + skillCandidateSelectAllHtml(upload, "upload") + '</div>' +
+      skillCandidateListHtml(upload, "upload") + issueList + skillCandidateActionsHtml(upload, "upload") + '</div>';
   }
 
   function ownerMemoryMatches(ownerKind, workspaceId, ownerId) {
@@ -5737,7 +5776,7 @@
     // [hidden], so without the dot the user would never see what's in flight.
     var attention = {
       instructions: false,
-      skills: !!(state.skillEditor || state.skillImport),
+      skills: !!(state.skillEditor || state.skillImport || state.skillUpload),
       connections: !!(state.connectionEditor || state.apiConnectionEditor),
       repositories: !!(state.repositoryPicker || state.repositoryAddOpen),
       websites: !!state.websiteLoginDialog,
@@ -5816,6 +5855,7 @@
     var skills = draft.skills || [];
     var editor = state.skillEditor;
     var imp = state.skillImport;
+    var upload = state.skillUpload;
     var rows = skills.map(function (skill, index) {
       if (isSuggestedSkillSnapshot(skill)) return "";
       // The row's editor opens in place; hide the row that is being edited so the
@@ -5831,15 +5871,18 @@
     var list = rows ? '<section class="configured-skills"><h4>Your skills</h4><div class="skill-list">' + rows + '</div></section>' : "";
     // A new-skill editor (index === null) renders below the list, not in a row.
     var newForm = (editor && (editor.index === null || editor.index === undefined)) ? '<div class="skill-list">' + skillEditorFormHtml(editor) + '</div>' : "";
-    // The import panel takes the place of the action buttons while it is open,
-    // mirroring the inline skill editor. Only one of editor/import is ever open.
+    // The import and upload panels take the place of the action buttons while
+    // open, mirroring the inline skill editor.
     var importPanel = imp ? '<div class="skill-list">' + skillImportPanelHtml(imp) + '</div>' : "";
-    var addButtons = (editor || imp)
+    var uploadPanel = upload ? '<div class="skill-list">' + skillUploadPanelHtml(upload) + '</div>' : "";
+    var addButtons = (editor || imp || upload)
       ? ""
       : '<div class="skill-actions"><button type="button" class="btn btn-soft btn-sm i-lead" data-action="skill-new">' +
         '<svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"/></svg>New skill</button>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="import-skills">Import from URL</button></div>';
-    var build = '<div class="skill-build"><div class="skill-build-copy"><strong>Build your own</strong>Write a skill from scratch or import any public GitHub source.</div>' + addButtons + '</div>';
+        '<button type="button" class="btn btn-soft btn-sm" data-action="import-skills">Import from URL</button>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="skill-upload-open">Upload</button>' +
+        '<input id="skill-upload-input" type="file" multiple accept=".md,.markdown,.zip,.skill" hidden data-action="skill-upload-files"></div>';
+    var build = '<div class="skill-build"><div class="skill-build-copy"><strong>Build your own</strong>Write a skill from scratch, import a public GitHub source, or upload SKILL.md files and zips.</div>' + addButtons + '</div>';
 
     var activeCategory = SUGGESTED_SKILL_CATEGORIES.some(function (category) { return category.id === state.suggestedSkillCategory; })
       ? state.suggestedSkillCategory
@@ -5880,7 +5923,7 @@
       '<div class="suggested-catalog-head"><strong>' + esc(category.label) + '</strong><span class="suggested-catalog-summary">' + esc(category.id === "featured" ? (SUGGESTED_SKILL_CATEGORY_COUNTS.featured || 0) + " starting points from " + SUGGESTED_SKILLS.length + " available skills" : category.summary) + '</span></div>' +
       '<div class="suggested-skill-list" role="tabpanel">' + suggestedRows + '</div>' +
       '<p class="suggested-disclosure">' + icon("copy") + '<span>Turning a suggestion on copies its current instructions into this Agent as a snapshot. Turning it off removes that copied snapshot. No scripts, references, plugin behavior, or future updates come with it.</span></p></section>';
-    return build + newForm + importPanel + list + suggested;
+    return build + newForm + importPanel + uploadPanel + list + suggested;
   }
 
   /* ---- Connections (remote MCP servers) ---------------------------------- */
@@ -15341,13 +15384,20 @@
       openSkillImportRepositoryBrowser(importInstallationId, importAccount);
     }
     if (action === "import-browse-select") { selectSkillImportRepository(target.getAttribute("data-repo") || ""); }
-    if (action === "import-select-all" && state.skillImport && state.skillImport.resolution) {
-      var imp = state.skillImport;
-      var allOn = imp.selected.length > 0 && imp.selected.every(function (on) { return on; });
-      imp.selected = (imp.resolution.skills || []).map(function () { return !allOn; });
-      render();
+    if (action === "import-select-all" || action === "upload-select-all") {
+      var picker = skillPickerFor(action);
+      if (picker) {
+        var allOn = picker.selected.length > 0 && picker.selected.every(function (on) { return on; });
+        picker.selected = (picker.resolution.skills || []).map(function () { return !allOn; });
+        render();
+      }
     }
-    if (action === "import-add") { addSelectedSkills(); }
+    if (action === "import-add" || action === "upload-add") { addSelectedSkills(skillPickerFor(action)); }
+    if (action === "skill-upload-open") {
+      var uploadInput = document.getElementById("skill-upload-input");
+      if (uploadInput) { uploadInput.value = ""; uploadInput.click(); }
+    }
+    if (action === "upload-cancel") { state.skillUpload = null; render(); }
 
     // Connections (remote MCP servers) editor: open blank / open seeded / remove
     // (confirm) / test / save / cancel. Each open captures the current draft off
@@ -16038,14 +16088,17 @@
         render();
       }
     }
-    // Import picker per-row checkbox: flip the parallel selected[] flag and
-    // re-render so the row highlight + Select all/Clear all label stay in sync.
-    if (action === "import-row-toggle" && state.skillImport && state.skillImport.resolution) {
-      var importIndex = Number(target.getAttribute("data-index"));
-      var importSelected = state.skillImport.selected || [];
-      importSelected[importIndex] = target.checked;
-      state.skillImport.selected = importSelected;
-      render();
+    // Picker per-row checkbox: flip the parallel selected[] flag and re-render
+    // so the row highlight, Select all label and Add count stay in sync.
+    if (action === "import-row-toggle" || action === "upload-row-toggle") {
+      var rowPicker = skillPickerFor(action);
+      if (rowPicker) {
+        rowPicker.selected[Number(target.getAttribute("data-index"))] = target.checked;
+        render();
+      }
+    }
+    if (action === "skill-upload-files" && target.files && target.files.length) {
+      uploadSkillFiles(target.files);
     }
     // Connection card enable toggle: flip enabled on the row at data-index.
     if (action === "conn-toggle" && state.profileDraft) {
@@ -16107,6 +16160,37 @@
         !!target.checked
       );
     }
+  });
+
+  // Files dropped on the Skills tab's "Build your own" card upload the same way
+  // the Upload button does, while its buttons are showing.
+  function skillBuildCard(event) {
+    return event.target && event.target.closest ? event.target.closest(".skill-build") : null;
+  }
+  function skillDropAccepted(event) {
+    var types = event.dataTransfer && event.dataTransfer.types;
+    var draft = state.profileDraft;
+    return !!types && Array.prototype.indexOf.call(types, "Files") >= 0 &&
+      !!draft && draft.canEdit !== false && !state.skillEditor && !state.skillImport && !state.skillUpload;
+  }
+  // The card always keeps a drop from reaching the browser, which would
+  // otherwise open the dropped file in place of Admin.
+  document.addEventListener("dragover", function (event) {
+    var card = skillBuildCard(event);
+    if (!card) return;
+    event.preventDefault();
+    if (skillDropAccepted(event)) card.classList.add("is-drop-target");
+  });
+  document.addEventListener("dragleave", function (event) {
+    var card = skillBuildCard(event);
+    if (card && !card.contains(event.relatedTarget)) card.classList.remove("is-drop-target");
+  });
+  document.addEventListener("drop", function (event) {
+    var card = skillBuildCard(event);
+    if (!card) return;
+    card.classList.remove("is-drop-target");
+    event.preventDefault();
+    if (skillDropAccepted(event)) uploadSkillFiles(event.dataTransfer.files);
   });
 
   // Blur commits the inline title rename (same as Enter). focusout bubbles;
@@ -18064,15 +18148,19 @@
     });
   }
 
+  function skillPickerFor(action) {
+    var panel = action.indexOf("upload-") === 0 ? state.skillUpload : state.skillImport;
+    return panel && panel.resolution ? panel : null;
+  }
+
   // Merge the checked skills into the draft as { name, description, instructions,
-  // enabled: true }. DEDUPE by name: an imported skill replaces a same-named
+  // enabled: true }. DEDUPE by name: a picked skill replaces a same-named
   // existing one in place (duplicate names are a hard turn-killer). Then close
   // the panel, mark dirty, and re-render so they show as normal rows.
-  function addSelectedSkills() {
-    var imp = state.skillImport;
-    if (!imp || !imp.resolution || !state.profileDraft) return;
-    var picked = imp.resolution.skills || [];
-    var selected = imp.selected || [];
+  function addSelectedSkills(panel) {
+    if (!panel || !state.profileDraft) return;
+    var picked = panel.resolution.skills || [];
+    var selected = panel.selected || [];
     var skills = state.profileDraft.skills || [];
     picked.forEach(function (skill, index) {
       if (!selected[index]) return;
@@ -18087,8 +18175,49 @@
     });
     state.profileDraft.skills = skills;
     state.skillImport = null;
+    state.skillUpload = null;
     markProfileDirty();
     render();
+  }
+
+  var SKILL_UPLOAD_MAX_FILES = 50;
+  var SKILL_UPLOAD_MAX_BYTES = 8 * 1024 * 1024;
+
+  function uploadSkillFiles(fileList) {
+    var files = Array.prototype.slice.call(fileList || []);
+    if (!files.length || !state.profileDraft) return;
+    collectProfileDraft();
+    state.skillEditor = null;
+    resetSkillImportBrowseTransientState();
+    state.skillImport = null;
+    var upload = { fileCount: files.length, loading: false, error: "", resolution: null, selected: [] };
+    state.skillUpload = upload;
+    var totalBytes = files.reduce(function (sum, file) { return sum + file.size; }, 0);
+    if (files.length > SKILL_UPLOAD_MAX_FILES) upload.error = "Upload up to 50 files at a time.";
+    else if (totalBytes > SKILL_UPLOAD_MAX_BYTES) upload.error = "These files total " + (totalBytes / (1024 * 1024)).toFixed(1) + " MB. Upload up to 8 MB at a time.";
+    upload.loading = !upload.error;
+    render();
+    if (upload.error) return;
+    Promise.all(files.map(function (file) {
+      return file.arrayBuffer().then(function (buffer) {
+        return { name: file.name, base64: base64FromArrayBuffer(buffer) };
+      });
+    })).then(function (payload) {
+      return postJson("/admin/api/skills/upload", "POST", { files: payload });
+    }).then(function (body) {
+      if (state.skillUpload !== upload) return;
+      var resolution = body && body.resolution ? body.resolution : { skills: [], skipped: 0, issues: [] };
+      upload.loading = false;
+      upload.resolution = resolution;
+      upload.selected = (resolution.skills || []).map(function () { return true; });
+      render();
+    }).catch(function (error) {
+      if (state.skillUpload !== upload) return;
+      upload.loading = false;
+      upload.error = (error && error.serverMessage) ||
+        (error && error.message === "request_too_large" ? "Upload up to 8 MB at a time." : "Could not read these files. Try again.");
+      render();
+    });
   }
 
   // The four ways to leave the profile editor: the top-nav Profiles/Settings,
@@ -18122,6 +18251,7 @@
     state.skillEditor = null;
     resetSkillImportBrowseTransientState();
     state.skillImport = null;
+    state.skillUpload = null;
     clearCustomConnectionMode();
     state.connectorGallerySearch = "";
     state.connectionRemove = null;
@@ -18369,6 +18499,8 @@
         // page loaded. Reload accounts so its group says how to connect it.
         state.profileError = "Could not save this Agent.";
         loadGithubStatus().then(render);
+      } else if (error && error.payload && error.payload.error === "request_too_large") {
+        state.profileError = "This Agent is over the 1 MB save limit. Remove or shorten some skills, then save again.";
       } else {
         state.profileError = (error && (error.serverMessage || error.message)) || "Could not save this Agent.";
       }
@@ -18388,6 +18520,7 @@
     state.profileDescriptionEditing = null;
     state.skillEditor = null;
     state.skillImport = null;
+    state.skillUpload = null;
     clearCustomConnectionMode();
     state.connectorGallerySearch = "";
     state.connectionRemove = null;

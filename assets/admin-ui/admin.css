@@ -1193,6 +1193,7 @@ details[open].advanced summary::before {
 .skill-form .input, .skill-form .textarea { background: var(--bg); }
 .skill-form-actions { align-items: center; display: flex; gap: 8px; justify-content: flex-end; }
 .skill-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.skill-build > .skill-actions { flex-shrink: 0; }
 .skill-build {
   align-items: center;
   background: var(--well);
@@ -1202,6 +1203,7 @@ details[open].advanced summary::before {
   justify-content: space-between;
   padding: 14px 16px;
 }
+.skill-build.is-drop-target { background: var(--ember-tint); box-shadow: inset 0 0 0 2px var(--ember); }
 .skill-build-copy { color: var(--text-2); font-size: .75rem; line-height: 1.45; }
 .skill-build-copy strong { color: var(--text); display: block; font-size: .8125rem; margin-bottom: 2px; }
 .configured-skills { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
@@ -1341,6 +1343,10 @@ details[open].advanced summary::before {
 .import-name { align-items: center; color: var(--text); display: flex; flex-wrap: wrap; font-family: var(--mono); font-size: 0.78125rem; font-weight: 600; gap: 8px; overflow-wrap: anywhere; }
 .import-desc { color: var(--text-3); font-size: 0.78125rem; overflow-wrap: anywhere; }
 .badge-src.import-scripts { text-transform: none; letter-spacing: 0; }
+.import-desc.import-replaces { color: var(--text-2); font-weight: 600; }
+.import-issues { color: var(--text-3); font-size: 0.75rem; line-height: 1.45; }
+.import-issues ul { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 0; padding-left: 18px; }
+.import-issue-path { color: var(--text-2); font-family: var(--mono); overflow-wrap: anywhere; }
 
 /* ---- settings: model-provider rows + favorites ---- */
 .workspace-default-card { background: var(--well); border-radius: 18px; display: flex; flex-direction: column; gap: 15px; padding: 18px; }

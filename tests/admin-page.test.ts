@@ -618,6 +618,7 @@ function runAdminPageHarness(
     skillResolution?: Record<string, unknown>;
     skillResolveError?: { status: number; error: string; message?: string };
     skillResolveFetch?: (source: string) => Promise<FakeResponse>;
+    skillUploadResolution?: Record<string, unknown>;
     githubStatus?: GithubStatusFixture;
     /** Hosted per-account disconnect answers with this error instead of ending the account. */
     githubAccountDisconnectError?: { status: number; error: string };
@@ -781,6 +782,7 @@ function runAdminPageHarness(
   agentPostBodies: Array<Record<string, unknown>>;
   agentArchivePosts: Array<{ id: string; body: Record<string, unknown> }>;
   skillResolvePosts: Array<{ source: string }>;
+  skillUploadPosts: Array<Array<{ name: string; base64: string }>>;
   githubRepoCalls: string[];
   settingsGetCalls: string[];
   skillBrowseFocusCalls(): number;
@@ -1071,6 +1073,7 @@ function runAdminPageHarness(
   const agentPostBodies: Array<Record<string, unknown>> = [];
   const agentArchivePosts: Array<{ id: string; body: Record<string, unknown> }> = [];
   const skillResolvePosts: Array<{ source: string }> = [];
+  const skillUploadPosts: Array<Array<{ name: string; base64: string }>> = [];
   const githubRepoCalls: string[] = [];
   const settingsGetCalls: string[] = [];
   const mcpTestPosts: Array<Record<string, unknown>> = [];
@@ -2231,6 +2234,13 @@ function runAdminPageHarness(
       });
       return Promise.resolve(jsonResponse({ agent: existing }));
     }
+    if (path === '/admin/api/skills/upload' && method === 'POST') {
+      const body = JSON.parse(options?.body ?? '{}') as { files: Array<{ name: string; base64: string }> };
+      skillUploadPosts.push(body.files);
+      return Promise.resolve(jsonResponse({
+        resolution: harnessOptions.skillUploadResolution ?? { skills: [], skipped: 0, issues: [] },
+      }));
+    }
     if (path === '/admin/api/skills/resolve' && method === 'POST') {
       const body = JSON.parse(options?.body ?? '{}') as { source: string };
       skillResolvePosts.push({ source: body.source });
@@ -3209,6 +3219,7 @@ function runAdminPageHarness(
       },
       URL,
       URLSearchParams,
+      btoa,
       ...(options.now === undefined ? {} : { Date: fixedClock(options.now) }),
       navigator: options.clipboard === 'missing'
         ? {}
@@ -3323,6 +3334,7 @@ function runAdminPageHarness(
     agentPostBodies,
     agentArchivePosts,
     skillResolvePosts,
+    skillUploadPosts,
     githubRepoCalls,
     settingsGetCalls,
     skillBrowseFocusCalls: () => skillBrowseFocusCalls,
@@ -7219,6 +7231,168 @@ test('importing skills from a URL resolves a picker, adds the selected skill, an
       enabled: true,
     },
   ]);
+});
+
+function fakeUploadFile(name: string, content: string | Uint8Array, size?: number) {
+  const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : content;
+  return {
+    name,
+    size: size ?? bytes.byteLength,
+    arrayBuffer: () => Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)),
+  };
+}
+
+function fileInputTarget(files: unknown[]): FakeTarget & { files: unknown[] } {
+  return { ...actionTarget({ 'data-action': 'skill-upload-files' }), files };
+}
+
+const uploadAgent = {
+  id: 'agent_upload',
+  name: 'Upload Profile',
+  description: 'Upload profile',
+  instructions: 'Answer with uploaded skills.',
+  enabled: true,
+  model: 'local-stub/upload',
+  skills: [{ name: 'triage', description: 'Old triage.', instructions: 'Old body.', enabled: false }],
+};
+
+test('uploading skill files opens the shared picker, marks replacements, lists what was left out, and saves the picks', async () => {
+  const harness = runAdminPageHarness({
+    agents: [uploadAgent],
+    skillUploadResolution: {
+      skills: [
+        {
+          name: 'triage', description: 'Sort requests.', instructions: '# Triage\nSort them.',
+          path: 'skills.zip/skills/triage', hasScripts: false,
+          inspection: { complete: true, scriptPaths: [], auxiliaryPaths: [], unknownPaths: [], warnings: [] },
+        },
+        {
+          name: 'voice', description: 'House style.', instructions: 'Write plainly.',
+          path: 'skills.zip/skills/voice', hasScripts: true,
+          inspection: {
+            complete: true, scriptPaths: ['scripts/lint.py'], auxiliaryPaths: [], unknownPaths: [],
+            warnings: ['Instructions that depend on omitted files may be incomplete.'],
+          },
+        },
+      ],
+      skipped: 1,
+      issues: [{
+        path: 'README.md', code: 'not_a_skill',
+        message: 'Not a skill. To upload a markdown file as a skill, give it a YAML header with a name and a description.',
+      }],
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_upload' }) });
+
+  assert.match(harness.app.innerHTML, /Write a skill from scratch, import a public GitHub source, or upload SKILL\.md files and zips\./);
+  assert.match(harness.app.innerHTML, /data-action="skill-upload-open">Upload<\/button>/);
+  assert.match(harness.app.innerHTML, /<input id="skill-upload-input" type="file" multiple accept="\.md,\.markdown,\.zip,\.skill" hidden data-action="skill-upload-files">/);
+
+  const zipBytes = new Uint8Array([0x50, 0x4b, 0x05, 0x06, 0xff]);
+  change({ target: fileInputTarget([fakeUploadFile('skills.zip', zipBytes), fakeUploadFile('README.md', '# Notes')]) });
+  assert.match(harness.app.innerHTML, /Reading 2 files&hellip;/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="skill-upload-open"/);
+  await flushAsync();
+
+  assert.deepEqual(harness.skillUploadPosts, [[
+    { name: 'skills.zip', base64: Buffer.from(zipBytes).toString('base64') },
+    { name: 'README.md', base64: Buffer.from('# Notes').toString('base64') },
+  ]]);
+  const html = harness.app.innerHTML;
+  assert.match(html, /Found 2 skills in 2 files/);
+  assert.equal(html.match(/Replaces your existing skill/g)?.length, 1);
+  assert.match(html, /aria-label="Import triage"[^]*Replaces your existing skill[^]*aria-label="Import voice"/);
+  assert.match(html, /scripts omitted &middot; instructions only/);
+  assert.match(html, /Left out[^]*README\.md<\/span> Not a skill\. To upload a markdown file as a skill, give it a YAML header with a name and a description\./);
+  assert.match(html, /data-action="upload-add">Add 2 skills<\/button>/);
+
+  change({ target: checkboxTarget({ 'data-action': 'upload-row-toggle', 'data-index': '1' }, false) });
+  assert.match(harness.app.innerHTML, /data-action="upload-add">Add 1 skill<\/button>/);
+  click({ target: actionTarget({ 'data-action': 'upload-add' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="upload-add"/);
+  assert.match(harness.app.innerHTML, /data-action="skill-upload-open"/);
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.deepEqual(harness.agentPatchBodies[0]?.body.skills, [
+    { name: 'triage', description: 'Sort requests.', instructions: '# Triage\nSort them.', enabled: true },
+  ]);
+});
+
+test('files dropped on the Build your own card upload like the Upload button', async () => {
+  const harness = runAdminPageHarness({ agents: [uploadAgent] });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const dragover = harness.listeners.dragover;
+  const drop = harness.listeners.drop;
+  assert.ok(click && dragover && drop);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_upload' }) });
+
+  const classes = new Set<string>();
+  const card = {
+    ...actionTarget({}),
+    classList: { add: (name: string) => classes.add(name), remove: (name: string) => classes.delete(name) },
+  };
+  const target: FakeTarget = { ...actionTarget({}), closest: (selector) => (selector === '.skill-build' ? card : null) };
+  let prevented = 0;
+  const fileDrag = {
+    target,
+    dataTransfer: { types: ['Files'], files: [fakeUploadFile('SKILL.md', '---\nname: a\n---\n')] },
+    preventDefault: () => { prevented += 1; },
+  };
+  dragover(fileDrag);
+  assert.deepEqual([...classes], ['is-drop-target']);
+  drop(fileDrag);
+  assert.deepEqual([...classes], []);
+  assert.equal(prevented, 2);
+  await flushAsync();
+  assert.deepEqual(harness.skillUploadPosts.map((files) => files.map(({ name }) => name)), [['SKILL.md']]);
+  assert.match(harness.app.innerHTML, /Found 0 skills in 1 file/);
+
+  dragover(fileDrag);
+  drop(fileDrag);
+  assert.equal(prevented, 4, 'a drop while the panel is open never reaches the browser');
+  assert.deepEqual([...classes], [], 'an open upload panel does not light up for another drop');
+  await flushAsync();
+  assert.equal(harness.skillUploadPosts.length, 1, 'an open upload panel does not take another drop');
+});
+
+test('the upload refuses more than 50 files or 8 MB before sending anything', async () => {
+  const harness = runAdminPageHarness({ agents: [uploadAgent] });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_upload' }) });
+
+  change({ target: fileInputTarget(Array.from({ length: 51 }, (_, index) => fakeUploadFile(`s${index}.md`, '#'))) });
+  assert.match(harness.app.innerHTML, /Upload up to 50 files at a time\./);
+  click({ target: actionTarget({ 'data-action': 'upload-cancel' }) });
+
+  change({ target: fileInputTarget([fakeUploadFile('big.zip', '', 9 * 1024 * 1024)]) });
+  assert.match(harness.app.innerHTML, /These files total 9\.0 MB\. Upload up to 8 MB at a time\./);
+  await flushAsync();
+  assert.deepEqual(harness.skillUploadPosts, []);
+});
+
+test('a save over the 1 MB request limit tells the author to trim skills', async () => {
+  const harness = runAdminPageHarness({
+    agents: [uploadAgent],
+    agentWriteError: { status: 413, error: 'request_too_large' },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_upload' }) });
+  click({ target: actionTarget({ 'data-action': 'skill-remove', 'data-index': '0' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /This Agent is over the 1 MB save limit\. Remove or shorten some skills, then save again\./);
+  assert.doesNotMatch(harness.app.innerHTML, /request_too_large/);
 });
 
 test('imported skill provenance is visible and survives editing and saving its local copy', async () => {
