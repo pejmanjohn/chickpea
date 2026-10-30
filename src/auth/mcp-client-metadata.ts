@@ -17,6 +17,14 @@ const MAX_UNREACHABLE_CLIENTS = 1_000;
 let guardedFetch: ClientMetadataFetch | undefined;
 const transports = new WeakMap<ClientMetadataFetch, TransportState>();
 
+/** What a client first seen by its metadata document passes before it is stored, as a registration does. */
+interface NewClientGate {
+  /** The per-source registration limit: a response refusing the request, or undefined. */
+  throttle?: ((request: Request) => Promise<Response | undefined>) | undefined;
+  /** Whether the pending-client bound has room for one more. */
+  admitPending(): Promise<boolean>;
+}
+
 /**
  * Sign-in for a client whose `client_id` is the HTTPS URL of its Client ID
  * Metadata Document (MCP 2026-07-28), as Claude signs in. Better Auth fetches
@@ -28,10 +36,11 @@ const transports = new WeakMap<ClientMetadataFetch, TransportState>();
  *
  * Better Auth is built per request, so the discovery, which caches documents
  * and budgets fetches per origin, is kept per transport for the isolate.
- * Storing a client the database does not hold yet first asks `admitNewClient`,
- * the same bound dynamic registration has on clients no one consented to. A
- * URL the plugin would refuse unfetched is refused before the plugin runs, so
- * it neither asks nor spends a fetch permit.
+ * Storing a client the database does not hold yet first passes `gate`: the
+ * per-source limit and the bound on clients no one consented to that dynamic
+ * registration has. A stored client never does. A URL the plugin would refuse
+ * unfetched is refused before the gate and the plugin, so it spends neither a
+ * limit nor a fetch permit.
  *
  * A stored client's document is fetched again once its cached copy lapses.
  * When that fetch cannot reach the document, the stored client stands, so an
@@ -40,7 +49,7 @@ const transports = new WeakMap<ClientMetadataFetch, TransportState>();
  */
 export function clientMetadataDiscovery(
   fetchClientMetadataResource: ClientMetadataFetch | undefined,
-  admitNewClient: () => Promise<boolean>,
+  gate: NewClientGate,
 ): ClientDiscovery {
   const transport = fetchClientMetadataResource ??
     (guardedFetch ??= createMcpGuardedFetch({ followRedirects: false }));
@@ -52,7 +61,15 @@ export function clientMetadataDiscovery(
         // The plugin takes a fetch permit before it checks the URL.
         const invalid = validateClientIdUrl(clientId);
         if (invalid) throw new APIError('BAD_REQUEST', { error: 'invalid_client', error_description: invalid });
-        if (!(await admitNewClient())) {
+        const throttled = await gate.throttle?.(ctx.request ?? new Request(ctx.context.baseURL, { headers: ctx.headers ?? {} }));
+        if (throttled) {
+          const retryAfter = throttled.headers.get('retry-after');
+          throw new APIError('TOO_MANY_REQUESTS', {
+            error: 'temporarily_unavailable',
+            error_description: 'Too many new apps are signing in from here. Try again later.',
+          }, retryAfter ? { 'retry-after': retryAfter } : undefined);
+        }
+        if (!(await gate.admitPending())) {
           throw new APIError('TOO_MANY_REQUESTS', {
             error: 'temporarily_unavailable',
             error_description: 'Too many apps are waiting for sign-in approval. Try again later.',

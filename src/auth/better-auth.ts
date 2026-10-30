@@ -85,6 +85,14 @@ export interface CreateBetterAuthInput {
   mayIssueTokens?: (betterAuthUserId: string) => Promise<boolean>;
   /** Bounds both dynamic registrations and clients first seen by their metadata document. */
   mcpRegistrationPolicy?: Partial<McpRegistrationPolicy>;
+  /**
+   * The per-source limit on new MCP clients: a response refusing this
+   * request, or undefined to let it through. A dynamic registration and the
+   * first sign-in of a client known by its metadata document pass it; a
+   * stored client never does. Without one only the pending bound applies,
+   * which suits a route whose client ID comes from a query Chickpea signed.
+   */
+  throttleRegistration?: (request: Request) => Promise<Response | undefined>;
   /** Fetches client metadata documents; the guarded public-HTTPS transport by default. */
   fetchClientMetadataResource?: ClientMetadataFetch;
 }
@@ -277,8 +285,11 @@ function createOptions(
         clientRegistrationAllowedScopes: [],
         clientRegistrationRequirePKCE: true,
         extensions: [{
-          clientDiscovery: clientMetadataDiscovery(input.fetchClientMetadataResource, () =>
-            admitPendingMcpOAuthClient(input.backend, { ...DEFAULT_MCP_REGISTRATION_POLICY, ...input.mcpRegistrationPolicy })),
+          clientDiscovery: clientMetadataDiscovery(input.fetchClientMetadataResource, {
+            throttle: input.throttleRegistration,
+            admitPending: () =>
+              admitPendingMcpOAuthClient(input.backend, { ...DEFAULT_MCP_REGISTRATION_POLICY, ...input.mcpRegistrationPolicy }),
+          }),
         }],
         ...(input.mayIssueTokens ? { customTokenResponseFields: tokenIssuanceGate(input.mayIssueTokens) } : {}),
       }) as unknown as BetterAuthPlugin,

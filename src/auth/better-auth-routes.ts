@@ -66,6 +66,8 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
     }
 
     if (route === 'registration') {
+      const throttled = await input.throttleRegistration?.(request);
+      if (throttled) return throttled;
       const validation = await validateRegistrationRequest(request);
       if (typeof validation === 'string') {
         emitManagementMetric('oauth.dcr', { stage: 'validation', outcome: 'denied', reason: validation });
@@ -163,7 +165,7 @@ async function withOfflineAccessForRenewableClient(
       .then(() => undefined, (error: unknown) => error);
     if (refusal !== undefined && !isAPIError(refusal)) throw refusal;
     if (refusal && refusal.status !== 'UNAUTHORIZED') {
-      return Response.json(refusal.body, { status: refusal.statusCode });
+      return Response.json(refusal.body, { status: refusal.statusCode, headers: refusal.headers });
     }
     client = await stored();
   }
