@@ -22,18 +22,20 @@
 - Copies kept by Chickpea Cloud's "Help improve Chickpea" setting exist so the
   Chickpea team can read real conversations and improve Chickpea. When a
   hosted bug or behavior question involves a workspace with the setting on,
-  read its copies with the Cloud repo's `ops review list|get` and a
-  `--reason`. AI tools may read them, including Claude and Codex sessions on
-  personal plans, when the account does not train on the data (training
-  off, or zero data retention).
+  read its copies by the Cloud repo's runbook R26: `npm run ops -- review
+  list|get`, each with `--target` and a real `--reason`; `get` also takes
+  `--key` and `--out`. AI tools may read them, including Claude and Codex
+  sessions on personal plans, when the account's terms or settings keep the
+  provider from training on them (training off, or zero data retention).
 - Copies are never used to train AI models, and never sold or shared for
   anyone else's use.
 - No copy content, verbatim or lightly edited, goes into the repository,
   tests, fixtures, evals, docs, marketing, issue trackers, or shared chat
   channels. Discussing it with the maintainer in the working session is fine.
   Rewrite a reproduction with synthetic content that keeps only the structure
-  (message shape, tool sequence, error class). Keep decrypted copies under
-  `~/.chickpea` and delete them when the investigation ends.
+  (message shape, tool sequence, error class). Counts, error classes, and
+  timings may leave the store. Keep decrypted copies under
+  `~/.chickpea/hosted-ops/` and delete them when the investigation ends.
 
 ## Development and delivery
 
