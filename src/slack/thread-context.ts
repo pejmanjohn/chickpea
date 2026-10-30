@@ -2,6 +2,7 @@ import type { ThreadImageRecord } from './thread-images.ts';
 import type { SlackPublicContextEntry } from '../config/types.ts';
 import type { NormalizedSlackTurn, SlackContextMode } from './types.ts';
 import { isLaterCoAddressedTurn } from './agent-asks.ts';
+import type { FoldedMessage } from './follow-ups.ts';
 import { isSlackContextMessageSubtype } from './message-subtypes.ts';
 import {
   boundedDisplayName, slackFileSummaries, slackMessageText, type SlackFileSummary,
@@ -330,34 +331,47 @@ export function atOrBeforeSlackWatermark(timestamp: string, watermark: string | 
 }
 
 /**
- * The newest row a turn may read: its trigger, so a reply never sees what
- * came after the message it answers. Two kinds of turn read to the end of
- * the thread instead: an Agent answering a person's message after the
- * Agents it mentioned before it (their replies are newer than that message),
- * and an ask, which also answers every ask that joined it while it waited.
+ * The newest row a turn may read: its trigger, or the newest follow-up the
+ * turn took with it, so a reply never sees what came after the messages it
+ * answers. Two kinds of turn read to the end of the thread instead: an Agent
+ * answering a person's message after the Agents it mentioned before it (their
+ * replies are newer than that message), and an ask, which also answers every
+ * ask that joined it while it waited.
  */
 export function slackContextWatermark(
   turn: Pick<NormalizedSlackTurn, 'messageTs' | 'coAddressed' | 'agentAsk'>,
+  followUps: readonly Pick<FoldedMessage, 'messageTs'>[] = [],
 ): string | undefined {
-  return turn.agentAsk || isLaterCoAddressedTurn(turn) ? undefined : turn.messageTs;
+  if (turn.agentAsk || isLaterCoAddressedTurn(turn)) return undefined;
+  return followUps.at(-1)?.messageTs ?? turn.messageTs;
 }
 
+/**
+ * Mark the trigger row (adding it when a read missed it) and the follow-ups
+ * the turn took, so the context shows none of them: the current request
+ * shows them, once.
+ */
 export function ensureTriggerMessage(
   messages: SlackContextMessage[],
   turn: NormalizedSlackTurn,
   /** The trigger row's files, when a read saw that row; the turn names none. */
   triggerFiles?: SlackFileSummary[],
+  followUps: readonly Pick<FoldedMessage, 'messageTs'>[] = [],
 ): SlackContextMessage[] {
+  const followUpTs = new Set(followUps.map((message) => message.messageTs));
   const triggerIndex = messages.findIndex((message) => message.ts === turn.messageTs);
   if (triggerIndex >= 0) {
     return messages.map((message, index) => ({
       ...message,
-      isTrigger: index === triggerIndex,
+      isTrigger: index === triggerIndex || followUpTs.has(message.ts),
     }));
   }
 
   const trigger = triggerMessage(turn);
-  return orderMessages([...messages, triggerFiles?.length ? { ...trigger, files: triggerFiles } : trigger]);
+  return orderMessages([
+    ...messages.map((message) => followUpTs.has(message.ts) ? { ...message, isTrigger: true } : message),
+    triggerFiles?.length ? { ...trigger, files: triggerFiles } : trigger,
+  ]);
 }
 
 /** The `userId` a context row carries for a message an Agent wrote. */

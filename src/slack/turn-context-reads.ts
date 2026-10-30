@@ -4,6 +4,7 @@ import type { SlackStateStore } from './claim-store.ts';
 import { seedSlackThreadRecord } from './public-context.ts';
 import { createSlackReadGate } from './read-budget.ts';
 import { currentMessageOnlyContext, type SlackTurnContext } from './thread-context.ts';
+import type { FoldedMessage } from './follow-ups.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import { hydrateSlackContextViaWebClient } from './web-client-context.ts';
 import type { SlackPublicContextEntry, SlackPublicContextEntryInput } from '../config/types.ts';
@@ -47,6 +48,8 @@ export async function hydrateTurnSlackContext(input: {
   pacedReads?: boolean;
   maxMessages?: number;
   maxPages?: number;
+  /** The follow-ups the turn took (see hydrateSlackContextViaWebClient). */
+  followUps?: readonly FoldedMessage[];
 }): Promise<SlackTurnContext> {
   const { client, turn } = input;
   const gated = input.sharedAppReads;
@@ -73,6 +76,7 @@ export async function hydrateTurnSlackContext(input: {
     ...(threadRecord ? { threadRecord } : {}),
     ...(input.maxMessages !== undefined ? { maxMessages: input.maxMessages } : {}),
     ...(input.maxPages !== undefined ? { maxPages: input.maxPages } : {}),
+    ...(input.followUps?.length ? { followUps: input.followUps } : {}),
   });
   if (input.record?.seedSlackPublicContext && turn.contextMode === 'thread') {
     try {

@@ -245,6 +245,50 @@ test('a capped forward scan omits its stale segment and recovers retained recent
   } finally { store.close(); }
 });
 
+test('a turn with follow-ups reads through the newest of them and shows each once, in the request', async () => {
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
+  const turn = threadTurn({ messageTs: '1100.000000', text: 'Draft the launch email.' });
+  const followUps = [
+    { turnJobId: 'second', userId: 'U_HUMAN', messageTs: '1110.000000', text: 'Keep it short.' },
+    { turnJobId: 'third', userId: 'U_HUMAN', messageTs: '1120.000000', text: 'Address it to the beta list.' },
+  ];
+  const rows = [
+    { user: 'U_LEAD', text: 'Launch is Thursday.', ts: '1000.0000', thread_ts: '1000.0000' },
+    { user: 'U_HUMAN', text: 'Draft the launch email.', ts: '1100.000000', thread_ts: '1000.0000' },
+    { user: 'U_HUMAN', text: 'Keep it short.', ts: '1110.000000', thread_ts: '1000.0000' },
+    { user: 'U_HUMAN', text: 'Address it to the beta list.', ts: '1120.000000', thread_ts: '1000.0000' },
+    { user: 'U_LEAD', text: 'AFTER_THE_REQUEST', ts: '1130.000000', thread_ts: '1000.0000' },
+  ];
+  try {
+    const base = { workspaceId: 'T1', channelId: 'C1', rootTs: turn.threadTs, role: 'human' as const };
+    for (const row of rows.slice(1)) await store.putSlackPublicContext({ ...base, messageTs: row.ts, text: row.text });
+    const hydrated = await hydrateSlackContextViaWebClient(
+      fakeClientWithReplyPages([{ messages: rows }]) as never, turn, { followUps },
+    );
+    assert.deepEqual(
+      hydrated.messages.filter((message) => message.isTrigger).map((message) => message.ts),
+      ['1100.000000', '1110.000000', '1120.000000'],
+    );
+    const assembled = await assembleRetainedSlackContext(hydrated, turn, { store, agentId: 'agent_support', followUps });
+    const prompt = assembleSlackPrompt(turn, assembled, { followUps });
+    for (const text of ['Draft the launch email.', 'Keep it short.', 'Address it to the beta list.']) {
+      assert.equal(prompt.split(text).length - 1, 1, `${text} appears once`);
+    }
+    assert.match(prompt, /Launch is Thursday\./);
+    assert.doesNotMatch(prompt, /AFTER_THE_REQUEST/);
+    assert.ok(
+      prompt.indexOf('Address it to the beta list.') > prompt.indexOf('Current Slack request, sent as 3 messages'),
+      'the follow-ups are in the request block',
+    );
+    const unfolded = assembleSlackPrompt(turn, await assembleRetainedSlackContext(
+      await hydrateSlackContextViaWebClient(fakeClientWithReplyPages([{ messages: rows }]) as never, turn),
+      turn,
+      { store, agentId: 'agent_support' },
+    ));
+    assert.doesNotMatch(unfolded, /Keep it short|AFTER_THE_REQUEST/, 'without follow-ups the trigger is the watermark');
+  } finally { store.close(); }
+});
+
 test('retained edits supersede stale copies, exclude future revisions, and deletion removes context', async () => {
   const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const turn = threadTurn();
