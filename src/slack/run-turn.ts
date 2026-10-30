@@ -497,6 +497,7 @@ export async function runTurn(
     ...(options.runId ? { runId: options.runId } : {}),
     ...(options.runAttempt === undefined ? {} : { attempt: options.runAttempt }),
   });
+  tracker.markFolded(followUps.length);
   const { onDelivered, onDeferredTerminal } = options;
   let stopped = false;
   try {

@@ -277,6 +277,24 @@ test('a declined claim leaves the single-message prompt exactly as it was', asyn
   }
 });
 
+test('the turn_latency record counts the follow-ups, content-free', async () => {
+  const h = await harness(threadTurn());
+  const info = console.info;
+  const records: Array<Record<string, unknown>> = [];
+  console.info = (record: unknown) => {
+    if (record && typeof record === 'object') records.push(record as Record<string, unknown>);
+  };
+  try {
+    await promptOf(h, { claimFold: folding([]), turnLatency: { lane: 'cloudflare', executor: 'runner' } });
+  } finally {
+    console.info = info;
+    h.close();
+  }
+  const latency = records.filter((record) => record.event === 'turn_latency');
+  assert.equal(latency.length, 1);
+  assert.equal(latency[0]?.folded, 2);
+});
+
 test('a replay never claims follow-ups', async () => {
   const h = await harness(threadTurn());
   try {
