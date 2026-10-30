@@ -82,9 +82,9 @@ const MAX_INSTRUCTIONS = 100_000;
 const MAX_REPOSITORY_METADATA_BYTES = 64 * 1024;
 const MAX_REPOSITORY_TREE_BYTES = 16 * 1024 * 1024;
 const MAX_GITHUB_DIRECTORY_PAGE_BYTES = 4 * 1024 * 1024;
-const MAX_SKILL_DOCUMENT_BYTES = 512 * 1024;
+export const MAX_SKILL_DOCUMENT_BYTES = 512 * 1024;
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const SKIP_DIR_RE = /(^|\/)(tests?|node_modules|\.git|dist|build|__pycache__|fixtures)(\/|$)/;
+export const SKIP_DIR_RE = /(^|\/)(tests?|node_modules|\.git|dist|build|__pycache__|fixtures)(\/|$)/;
 const MAX_PACKAGE_ENTRIES = 2000;
 const MAX_PACKAGE_DEPTH = 8;
 const REPOSITORY_NOT_FOUND =
@@ -204,16 +204,25 @@ export function parseFrontmatter(markdown: string): {
   };
 }
 
-function readSkillDocument(markdown: string, directory: string) {
+/** `fallbackName` names the skill when its header has no `name`, as a skill directory does. */
+export function readSkillDocument(markdown: string, fallbackName: string) {
   const front = parseFrontmatter(markdown);
-  const name = sanitizeSkillName(front.name || basename(directory));
+  const name = sanitizeSkillName(front.name || fallbackName);
   const description = (front.description || '').trim();
   const instructions = front.body;
-  if (!name || !description || !instructions.trim()) throw new SkillImportError('invalid_document', 'SKILL.md needs a valid name, description and nonempty instruction body.');
-  if (description.length > MAX_DESCRIPTION || instructions.length > MAX_INSTRUCTIONS) {
-    throw new SkillImportError('document_too_large', `SKILL.md has ${description.length} description characters (limit ${MAX_DESCRIPTION}) and ${instructions.length} instruction characters (limit ${MAX_INSTRUCTIONS}). No content was shortened.`);
+  if (!name) throw new SkillImportError('invalid_document', 'SKILL.md needs a name in its YAML header.');
+  if (!description || !instructions.trim()) throw new SkillImportError('invalid_document', 'SKILL.md needs a valid name, description and nonempty instruction body.');
+  if (description.length > MAX_DESCRIPTION) {
+    throw new SkillImportError('document_too_large', `The description is ${formatCount(description.length)} characters, ${formatCount(description.length - MAX_DESCRIPTION)} over the ${formatCount(MAX_DESCRIPTION)} limit. No content was shortened.`);
+  }
+  if (instructions.length > MAX_INSTRUCTIONS) {
+    throw new SkillImportError('document_too_large', `The instructions are ${formatCount(instructions.length)} characters, ${formatCount(instructions.length - MAX_INSTRUCTIONS)} over the ${formatCount(MAX_INSTRUCTIONS)} limit. No content was shortened.`);
   }
   return { name, description, instructions, warnings: front.warnings ?? [] };
+}
+
+function formatCount(value: number): string {
+  return value.toLocaleString('en-US');
 }
 
 /**
@@ -358,7 +367,7 @@ export async function resolveSkillSource(
       'GitHub skill document is too large to import safely.',
     );
     let document: ReturnType<typeof readSkillDocument>;
-    try { document = readSkillDocument(md, entry.dir); }
+    try { document = readSkillDocument(md, basename(entry.dir)); }
     catch (error) {
       if (!(error instanceof SkillImportError) || total === 1 || (parsed.skillFilter && !searchingDeclaredNames) || parsed.exactDocument) throw error;
       issues.push({ path: entry.path, code: error.code, message: error.message });
@@ -487,7 +496,7 @@ async function resolveExactPublicSkillFromGithubPage(
     MAX_SKILL_DOCUMENT_BYTES,
     'GitHub skill document is too large to import safely.',
   );
-  const { name, description, instructions, warnings } = readSkillDocument(markdown, skillPath);
+  const { name, description, instructions, warnings } = readSkillDocument(markdown, basename(skillPath));
   inspection.warnings.push(...warnings);
   return exactPublicSkillResolution({ ...parsed, ref: resolvedRef }, [{
     name,
