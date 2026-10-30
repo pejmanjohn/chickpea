@@ -24,6 +24,7 @@ You do not need the CLI to connect a coding agent. Admin **Settings → MCP** on
 | `chickpea call <url> <tool> [--args '<json>' \| --args-file <file>]` | saved | Calls any tool and prints its `{ ok, result \| error }` envelope as JSON. Exit 1 when `ok` is false. |
 | `chickpea recipe export <url> [--agents id,id]` | saved | Writes a secret-free portable recipe to stdout. |
 | `chickpea recipe preview <url> <recipe.json>` | saved | Compares a recipe with the live workspace and prints the operations to apply. |
+| `chickpea skills upload <url> <agent-id> <file...> [--replace]` | saved | Installs skills on an Agent from `SKILL.md` and other markdown files and `.zip` or `.skill` archives, keeping its other skills. A same-name skill with different content is left as it is unless you pass `--replace`. |
 
 Global flags: `--json` for machine output on stdout, `--quiet` to silence progress notes on stderr, `--help`, `--version`.
 
@@ -81,6 +82,8 @@ $ npx chickpea-cli recipe export https://chickpea.example.com --agents agent_sup
 $ npx chickpea-cli recipe preview https://chickpea.example.com recipe.json
 ```
 
+`skills upload` reads each file from disk and sends it to the `upload_skills` tool: markdown as text and archives as base64, so the file content never passes through a model. It splits the files across calls so each call stays under the deployment's 1 MB request cap, and refuses a single file larger than that; upload that file in Admin (the Agent's Skills tab, Upload) instead. Find the Agent id with `chickpea workspace inspect <url>`.
+
 A recipe preview returns typed operations. Apply them with `chickpea call <url> apply_workspace_changes --args-file ops.json`, where the file wraps them as `{ "idempotencyKey": "...", "operations": [...] }`. The [workspace management runbook](https://github.com/pejmanjohn/chickpea/blob/main/docs/runbooks/workspace-management-mcp.md) describes every tool, which changes ask for confirmation, and what the setup links do.
 
 ## How sign-in works
@@ -119,6 +122,7 @@ Every error is `chickpea: <CODE>: <message>. <hint>.` on stderr with exit code 1
 | `SESSION_EXPIRED` | The refresh token was revoked or the membership ended. Run `chickpea login`. |
 | `AUTHORIZATION_DENIED`, `LOGIN_TIMEOUT`, `STATE_MISMATCH` | The browser step did not complete. Retry `chickpea login`. |
 | `TOOL_<code>` | A tool answered `ok: false`; the envelope is still printed with `--json`. |
+| `FILE_TOO_LARGE` | `skills upload` was given a file larger than one call can carry. Upload it in Admin. |
 | `UNSUPPORTED_FLAG` | A credential-shaped flag was passed. |
 
 ## Development
