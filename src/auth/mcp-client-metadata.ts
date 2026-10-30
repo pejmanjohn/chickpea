@@ -14,6 +14,8 @@ interface TransportState {
 }
 
 const MAX_UNREACHABLE_CLIENTS = 1_000;
+/** How long after its document last answered a stored client may stand in for it. */
+const STORED_CLIENT_STAND_IN_MS = 24 * 60 * 60_000;
 let guardedFetch: ClientMetadataFetch | undefined;
 const transports = new WeakMap<ClientMetadataFetch, TransportState>();
 
@@ -43,9 +45,10 @@ interface NewClientGate {
  * limit nor a fetch permit.
  *
  * A stored client's document is fetched again once its cached copy lapses.
- * When that fetch cannot reach the document, the stored client stands, so an
- * outage at the client's host does not sign its users out. A document that
- * answers still replaces the stored client, or refuses it.
+ * When that fetch cannot reach the document, the stored client stands for up
+ * to a day after the document last answered, so an outage at the client's
+ * host does not sign its users out. A document that answers still replaces
+ * the stored client, or refuses it.
  */
 export function clientMetadataDiscovery(
   fetchClientMetadataResource: ClientMetadataFetch | undefined,
@@ -95,6 +98,11 @@ export function clientMetadataDiscovery(
           throw error;
         }
         remember(unreachable, clientId);
+        // The plugin rewrites updatedAt each time the document answers, changed or not.
+        if (Date.now() - (existing.updatedAt?.getTime() ?? 0) > STORED_CLIENT_STAND_IN_MS) {
+          ctx.context.logger.warn(`Client metadata document unreachable for over a day; refusing the stored client: ${clientId}`);
+          throw error;
+        }
         ctx.context.logger.warn(`Client metadata document unreachable; using the stored client: ${clientId}`);
         client = existing;
       }
@@ -134,8 +142,8 @@ function remember(unreachable: Set<string>, clientId: string): void {
   unreachable.add(clientId);
 }
 
-/** The plugin's refusals that say nothing about the document: no answer, a 5xx, or no fetch at all. */
-const UNREACHABLE_DOCUMENT = /^(?:Failed to fetch metadata document|Metadata document fetch timed out|Metadata document fetch returned HTTP 5\d\d$)/;
+/** The plugin's refusals after a fetch the document did not answer: no response, a 429, or a 5xx. */
+const UNREACHABLE_DOCUMENT = /^(?:Failed to fetch metadata document|Metadata document fetch timed out|Metadata document fetch returned HTTP (?:429|5\d\d)$)/;
 
 function readFailure(error: unknown): 'unreachable' | 'declined' | undefined {
   if (!isAPIError(error)) return undefined;
