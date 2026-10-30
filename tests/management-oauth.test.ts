@@ -17,7 +17,7 @@ import {
   InMemoryMcpOAuthContinuationStore,
 } from '../src/auth/mcp-oauth-continuation.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
-import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
+import { advertisePublicClientsOnly, createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
 import {
   createMcpConsentRedirectResponse,
   createMcpAuthenticatedRequestHandler,
@@ -77,6 +77,8 @@ test('Better Auth publishes MCP discovery and registers only public clients', as
       assert.deepEqual(metadata.code_challenge_methods_supported, ['S256']);
       assert.deepEqual(metadata.scopes_supported, MCP_OAUTH_SCOPES);
       assert.deepEqual(metadata.token_endpoint_auth_methods_supported, ['none'], path);
+      assert.equal(metadata.token_endpoint_auth_signing_alg_values_supported, undefined,
+        `${path}: signing algorithms apply only to JWT client authentication, which is not offered`);
     }
     assert.equal(
       (await handler(new Request(`${origin}/api/auth/.well-known/openid-configuration`))).status,
@@ -171,6 +173,29 @@ test('a refused MCP registration reports why in its metric', async (t) => {
   } finally {
     backend.close();
   }
+});
+
+test('the public metadata rewrite drops body-derived headers and JWT-only fields', async () => {
+  const upstream = Response.json({
+    issuer: 'https://chickpea.example/api/auth',
+    token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post', 'private_key_jwt'],
+    token_endpoint_auth_signing_alg_values_supported: ['RS256', 'ES256'],
+    revocation_endpoint_auth_methods_supported: ['client_secret_basic'],
+  }, { headers: { 'cache-control': 'public, max-age=15', 'content-length': '999' } });
+
+  const rewritten = await advertisePublicClientsOnly(upstream);
+  const body = await rewritten.text();
+  assert.equal(rewritten.status, 200);
+  assert.equal(rewritten.headers.get('cache-control'), 'public, max-age=15');
+  assert.equal(rewritten.headers.get('content-length'), null, 'a copied length would describe the longer upstream body');
+  assert.deepEqual(JSON.parse(body), {
+    issuer: 'https://chickpea.example/api/auth',
+    token_endpoint_auth_methods_supported: ['none'],
+    revocation_endpoint_auth_methods_supported: ['client_secret_basic'],
+  });
+
+  const failed = Response.json({ error: 'server_error' }, { status: 500 });
+  assert.equal(await advertisePublicClientsOnly(failed), failed);
 });
 
 test('public MCP registration accepts only bounded public PKCE clients', () => {
