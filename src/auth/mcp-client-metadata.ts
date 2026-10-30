@@ -4,6 +4,7 @@ import { APIError, isAPIError } from 'better-auth/api';
 import { createMcpGuardedFetch } from '../config/mcp-url.ts';
 
 type ClientDiscovery = ReturnType<typeof createCimdClientDiscovery>;
+type Client = NonNullable<Awaited<ReturnType<ClientDiscovery['resolve']>>>;
 export type ClientMetadataFetch = CimdOptions['fetchClientMetadataResource'];
 
 /** One transport's discovery, and the stored clients whose last fetch could not reach their document. */
@@ -22,7 +23,8 @@ const transports = new WeakMap<ClientMetadataFetch, TransportState>();
  * the document over `fetchClientMetadataResource`, by default the MCP
  * connection guard: public HTTPS hosts only, every DNS answer checked and
  * pinned on Node, no redirect followed. The plugin adds a 5-second timeout, a
- * 5 KB JSON-only body and the MCP profile's required fields.
+ * 5 KB JSON-only body and the MCP profile's required fields. A document client
+ * must be public, as a registered one must; a refused new one is not kept.
  *
  * Better Auth is built per request, so the discovery, which caches documents
  * and budgets fetches per origin, is kept per transport for the isolate.
@@ -52,26 +54,48 @@ export function clientMetadataDiscovery(
             error_description: 'Too many apps are waiting for sign-in approval. Try again later.',
           });
         }
-        return discovery.resolve(ctx, clientId, null);
+        const created = await discovery.resolve(ctx, clientId, null);
+        if (created && !isPublicClient(created)) {
+          await ctx.context.adapter.delete({ model: 'oauthClient', where: [{ field: 'clientId', value: clientId }] });
+          throw notPublicClient();
+        }
+        return created;
       }
+      let client: Client | null;
       try {
-        const client = await discovery.resolve(ctx, clientId, existing);
+        client = await discovery.resolve(ctx, clientId, existing);
         unreachable.delete(clientId);
-        return client;
       } catch (error) {
         const failure = readFailure(error);
         // The plugin declines to fetch again for a second after any failure,
         // so a decline stands in for the last fetch's outcome.
-        if (failure === 'unreachable' || (failure === 'declined' && unreachable.has(clientId))) {
-          remember(unreachable, clientId);
-          ctx.context.logger.warn(`Client metadata document unreachable; using the stored client: ${clientId}`);
-          return existing;
+        if (failure !== 'unreachable' && !(failure === 'declined' && unreachable.has(clientId))) {
+          unreachable.delete(clientId);
+          throw error;
         }
-        unreachable.delete(clientId);
-        throw error;
+        remember(unreachable, clientId);
+        ctx.context.logger.warn(`Client metadata document unreachable; using the stored client: ${clientId}`);
+        client = existing;
       }
+      if (client && !isPublicClient(client)) throw notPublicClient();
+      return client;
     },
   };
+}
+
+/**
+ * Dynamic registration accepts public clients only (validatePublicMcpClientRegistration);
+ * a document client meets the same rule, so no client assertion or key fetch ever serves one.
+ */
+function isPublicClient(client: Client): boolean {
+  return client.tokenEndpointAuthMethod === 'none' && !client.jwks && !client.jwksUri;
+}
+
+function notPublicClient(): APIError {
+  return new APIError('BAD_REQUEST', {
+    error: 'invalid_client',
+    error_description: 'metadata document must describe a public client: token_endpoint_auth_method "none", no jwks or jwks_uri',
+  });
 }
 
 function createState(transport: ClientMetadataFetch): TransportState {

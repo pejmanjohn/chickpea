@@ -121,7 +121,7 @@ export const SQLITE_ORGANIZATION_ERASURE = {
 
 const SQLITE_PENDING_MCP_CLIENTS = `pending AS (
   SELECT c.clientId, c.createdAt FROM oauthClient AS c
-  WHERE c.tokenEndpointAuthMethod = 'none' AND c.userId IS NULL
+  WHERE (c.tokenEndpointAuthMethod = 'none' OR c.clientDiscoveryId IS NOT NULL) AND c.userId IS NULL
     AND NOT EXISTS (SELECT 1 FROM oauthConsent AS t WHERE t.clientId = c.clientId)
     AND NOT EXISTS (SELECT 1 FROM oauthAccessToken AS t WHERE t.clientId = c.clientId)
     AND NOT EXISTS (SELECT 1 FROM oauthRefreshToken AS t WHERE t.clientId = c.clientId)
@@ -341,7 +341,8 @@ export interface BetterAuthDatabaseBackend {
    */
   eraseOrganization(slug: string): Promise<BetterAuthOrganizationErasure>;
   /**
-   * Deletes the public, ownerless MCP clients that no one has consented to:
+   * Deletes the ownerless MCP clients that no one has consented to, public
+   * registrations and every client known by its metadata document alike:
    * every one registered before `expiredBefore`, then the oldest registered
    * before `evictableBefore` until `keep` remain. A client with a consent or
    * token is in use and stays. Answers how many such clients remain. The cap
