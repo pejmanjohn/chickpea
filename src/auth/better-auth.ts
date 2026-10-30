@@ -89,6 +89,12 @@ export interface CreateBetterAuthInput {
   fetchClientMetadataResource?: ClientMetadataFetch;
 }
 
+/** Better Auth's public client read, which the `mcp()` plugin cast hides from `auth.api`'s type. */
+export interface PublicOAuthClientApi {
+  getOAuthClientPublic(input: { query: { client_id: string }; headers: Headers }):
+    Promise<{ client_name?: unknown } | null | undefined>;
+}
+
 export function createBetterAuth(input: CreateBetterAuthInput) {
   const baseURL = requireSupportedOrigin(input.baseURL);
   const internalMarker = Object.freeze({});

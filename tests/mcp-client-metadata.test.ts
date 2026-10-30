@@ -9,7 +9,7 @@ import { createBetterAuthPublicHandler, type BetterAuthPublicHandlerInput } from
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import type { ClientMetadataFetch } from '../src/auth/mcp-client-metadata.ts';
 import { mountMcpOAuthBrowserRoutes, renderMcpConsentPage } from '../src/auth/mcp-oauth-routes.ts';
-import { CLAUDE_DOCUMENTS, metadataDocumentServer } from './helpers/client-metadata-documents.ts';
+import { CLAUDE_DOCUMENTS, metadataDocumentServer, type ServedDocument } from './helpers/client-metadata-documents.ts';
 
 const ORIGIN = 'https://chickpea.example.test';
 const RESOURCE = `${ORIGIN}/mcp`;
@@ -71,19 +71,19 @@ async function fixture(t: TestContext, options: {
     assert.equal(consent.status, 200, await consent.clone().text());
     return new URL((await consent.json() as { url: string }).url);
   }
-  function exchange(clientId: string, redirectUri: string, code: string, codeVerifier = verifier) {
-    return handler(new Request(`${ORIGIN}/api/auth/oauth2/token`, {
-      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code', client_id: clientId, code, code_verifier: codeVerifier,
-        redirect_uri: redirectUri, resource: RESOURCE,
-      }),
-    }));
-  }
+  const token = (body: Record<string, string>) => handler(new Request(`${ORIGIN}/api/auth/oauth2/token`, {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ ...body, resource: RESOURCE }),
+  }));
+  const exchange = (clientId: string, redirectUri: string, code: string, codeVerifier = verifier) => token({
+    grant_type: 'authorization_code', client_id: clientId, code, code_verifier: codeVerifier, redirect_uri: redirectUri,
+  });
+  const refresh = (clientId: string, refreshToken: string) =>
+    token({ grant_type: 'refresh_token', client_id: clientId, refresh_token: refreshToken });
   const clients = () => (backend.database.prepare(
     'SELECT clientId, clientDiscoveryId, userId, clientSecret, tokenEndpointAuthMethod, name FROM oauthClient ORDER BY createdAt, clientId',
   ).all() as Record<string, unknown>[]).map((row) => ({ ...row }));
-  return { backend, handler, browser, cookie, authorize, approve, exchange, clients };
+  return { backend, handler, browser, cookie, authorize, approve, exchange, refresh, clients };
 }
 
 const claudeHost = () => metadataDocumentServer({
@@ -214,20 +214,74 @@ test('a metadata document is refused unless it names its own URL, lists the redi
   assert.deepEqual(f.clients().map((client) => client.clientId), [CLAUDE], 'no refused document stores a client');
 });
 
-test('a metadata document URL must be public HTTPS before anything is fetched', async (t) => {
+test('a metadata document URL must be public HTTPS before anything is fetched or pruned', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const host = metadataDocumentServer({});
   const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  const prune = t.mock.method(f.backend, 'prunePendingMcpOAuthClients');
   for (const clientId of [
     'http://claude.ai/oauth/mcp-oauth-client-metadata',
     'https://127.0.0.1/client', 'https://[::1]/client', 'https://localhost/client',
     'https://10.0.0.5/client', 'https://169.254.169.254/latest/meta-data',
+    'https://claude.ai', 'https://claude.ai/oauth/../client',
   ]) {
-    const response = await f.authorize(clientId, CLAUDE_CALLBACK, { signedIn: false });
-    assert.ok(response.status === 400 || response.headers.get('location')?.startsWith(`${ORIGIN}/api/auth/error?`), clientId);
-    assert.notEqual(new URL(response.headers.get('location') ?? '/', ORIGIN).pathname, '/auth/mcp/login', clientId);
+    for (const signedIn of [false, true]) {
+      t.mock.timers.tick(1_000);
+      const response = await f.authorize(clientId, CLAUDE_CALLBACK, { signedIn });
+      assert.ok(response.status === 400 || response.headers.get('location')?.startsWith(`${ORIGIN}/api/auth/error?`), clientId);
+      assert.ok(!['/auth/mcp/login', '/auth/mcp/consent'].includes(new URL(response.headers.get('location') ?? '/', ORIGIN).pathname), clientId);
+    }
   }
   assert.deepEqual(host.requests, []);
+  assert.equal(prune.mock.callCount(), 0, 'a URL refused unfetched costs no pending-client write');
   assert.deepEqual(f.clients(), []);
+});
+
+test('a stored client keeps renewing while its document cannot be reached; a document that answers still replaces or refuses it', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const served: Record<string, ServedDocument> = { [CLAUDE]: CLAUDE_DOCUMENTS.claude.body };
+  const host = metadataDocumentServer(served);
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  const authorization = await f.authorize(CLAUDE, CLAUDE_CALLBACK);
+  const callback = await f.approve(authorization.headers.get('location')!);
+  let refreshToken = (await (await f.exchange(CLAUDE, CLAUDE_CALLBACK, callback.searchParams.get('code')!)).json() as
+    { refresh_token: string }).refresh_token;
+  const renew = async () => {
+    const response = await f.refresh(CLAUDE, refreshToken);
+    if (response.ok) refreshToken = (await response.clone().json() as { refresh_token: string }).refresh_token;
+    return response;
+  };
+  const staleCache = () => t.mock.timers.tick(6 * 60_000);
+
+  const outages: Array<[string, ServedDocument]> = [
+    ['a failed connection', () => { throw new TypeError('fetch failed'); }],
+    ['a 503', { body: 'Service Unavailable', status: 503, headers: { 'content-type': 'text/plain' } }],
+  ];
+  for (const [outage, answer] of outages) {
+    served[CLAUDE] = answer;
+    staleCache();
+    assert.equal((await renew()).status, 200, `${outage}: the stored client renews`);
+    t.mock.timers.tick(100);
+    assert.equal((await renew()).status, 200, `${outage}: again inside the plugin's one-second pause`);
+  }
+
+  served[CLAUDE] = lookalike(CLAUDE, { client_name: 'Claude (renamed)', client_uri: 'https://claude.ai' });
+  staleCache();
+  assert.equal((await renew()).status, 200);
+  assert.equal(f.clients()[0]?.name, 'Claude (renamed)', 'a document that answers replaces the stored client');
+
+  for (const [refusal, answer] of [
+    ['a document gone', { body: 'Not Found', status: 404, headers: { 'content-type': 'text/plain' } }],
+    ['a document naming another URL', lookalike('https://claude.ai/oauth/another')],
+  ] as Array<[string, ServedDocument]>) {
+    served[CLAUDE] = answer;
+    staleCache();
+    const refused = await renew();
+    assert.equal(refused.status, 400, refusal);
+    assert.equal((await refused.json() as { error: string }).error, 'invalid_client', refusal);
+    t.mock.timers.tick(100);
+    assert.notEqual((await renew()).status, 200, `${refusal}: the one-second pause does not bring the stored client back`);
+  }
 });
 
 test('the default transport is the MCP egress guard: an internal host is refused without a request', async (t) => {

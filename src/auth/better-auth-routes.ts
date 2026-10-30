@@ -5,6 +5,7 @@ import {
   createBetterAuth,
   requireSupportedOrigin,
   type CreateBetterAuthInput,
+  type PublicOAuthClientApi,
 } from './better-auth.ts';
 import { clientMetadataHost } from './mcp-client-metadata.ts';
 import {
@@ -157,10 +158,8 @@ async function withOfflineAccessForRenewableClient(
     // answers here, since asking again within a second is refused for pacing.
     // Signed out, this read needs a session; the authorization resumed after
     // sign-in finds the client.
-    const api = auth.api as unknown as {
-      getOAuthClientPublic(input: { query: { client_id: string }; headers: Headers }): Promise<unknown>;
-    };
-    const refusal = await api.getOAuthClientPublic({ query: { client_id: clientId }, headers: request.headers })
+    const refusal = await (auth.api as unknown as PublicOAuthClientApi)
+      .getOAuthClientPublic({ query: { client_id: clientId }, headers: request.headers })
       .then(() => undefined, (error: unknown) => error);
     if (refusal !== undefined && !isAPIError(refusal)) throw refusal;
     if (refusal && refusal.status !== 'UNAUTHORIZED') {

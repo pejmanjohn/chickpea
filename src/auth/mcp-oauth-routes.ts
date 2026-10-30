@@ -9,7 +9,7 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { IdentityStore, OrganizationRole } from '../identity/types.ts';
-import { BETTER_AUTH_BASE_PATH, createBetterAuth } from './better-auth.ts';
+import { BETTER_AUTH_BASE_PATH, createBetterAuth, type PublicOAuthClientApi } from './better-auth.ts';
 import { BetterAuthDirectory } from './better-auth-principal.ts';
 import { createBetterAuthPublicHandler } from './better-auth-routes.ts';
 import {
@@ -528,13 +528,7 @@ export async function lookupMcpClientName(
   if (!clientId) return undefined;
   try {
     const auth = createBetterAuth(environment);
-    const api = auth.api as unknown as {
-      getOAuthClientPublic(input: {
-        query: { client_id: string };
-        headers: Headers;
-      }): Promise<{ client_name?: unknown } | null | undefined>;
-    };
-    const client = await api.getOAuthClientPublic({ query: { client_id: clientId }, headers });
+    const client = await (auth.api as unknown as PublicOAuthClientApi).getOAuthClientPublic({ query: { client_id: clientId }, headers });
     return typeof client?.client_name === 'string' ? client.client_name : undefined;
   } catch {
     return undefined;
