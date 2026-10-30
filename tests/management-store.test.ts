@@ -403,6 +403,61 @@ test('proposal schema migration drops single-write proposals, reactivates change
   }
 });
 
+test('store install removes the requester message that setup records kept before v0.1.38', () => {
+  const db = openStateDb(':memory:');
+  try {
+    new ManagementStoreLogic(db);
+    const PASTED_KEY = 'synthetic-pasted-key-7f3a';
+    const kept = {
+      kind: 'slack', workspaceId: 'T_SYNTH', channelId: 'D_SYNTH', threadTs: '1800000000.000100',
+      messageTs: '1800000000.000200', eventId: 'Ev_SYNTH', conversationKind: 'im', agentId: 'agent_synth',
+      publicDocRead: true,
+    };
+    const written: Record<string, string> = {
+      setup_typed: JSON.stringify({ ...kept, requestText: `use this key ${PASTED_KEY}` }),
+      setup_clicked: JSON.stringify({ ...kept, requestText: 'Approve', requestTextSource: 'click' }),
+      setup_source_only: JSON.stringify({ ...kept, requestTextSource: 'click' }),
+      setup_without_message: JSON.stringify(kept),
+      setup_mcp: JSON.stringify({ kind: 'mcp', clientId: 'client_synth' }),
+      setup_malformed: `{"kind":"slack","requestText":"${PASTED_KEY}"`,
+    };
+    for (const [id, origin] of Object.entries(written)) {
+      db.run(
+        `INSERT INTO management_setup_operations (
+          setup_operation_id, organization_id, actor_user_id, actor_membership_id, origin_json,
+          action, target_json, scopes_json, status, expires_at, created_at, updated_at
+        ) VALUES (?, 'org_1', 'user_1', 'member_1', ?, 'catalog_connection', '{}', '[]', 'pending', ?, ?, ?)`,
+        id, origin, NOW + 60_000, NOW, NOW,
+      );
+    }
+    const rows = () => Object.fromEntries(db.all(
+      'SELECT setup_operation_id, origin_json, updated_at FROM management_setup_operations',
+    ).map((row) => [String(row.setup_operation_id), { origin: String(row.origin_json), updatedAt: row.updated_at }]));
+
+    const store = new ManagementStoreLogic(db);
+    const scrubbed = rows();
+    for (const id of ['setup_typed', 'setup_clicked', 'setup_source_only']) {
+      assert.deepEqual(JSON.parse(scrubbed[id]!.origin), kept, `${id} keeps every other origin field`);
+    }
+    for (const id of ['setup_without_message', 'setup_mcp', 'setup_malformed']) {
+      assert.equal(scrubbed[id]!.origin, written[id], `${id} is untouched`);
+    }
+    assert.deepEqual(Object.values(scrubbed).map(({ updatedAt }) => updatedAt), Object.values(written).map(() => NOW),
+      'the scrub does not postpone retention');
+    const read = store.getSetup('setup_typed')!;
+    assert.equal(read.origin.kind, 'slack');
+    if (read.origin.kind === 'slack') {
+      // @ts-expect-error A stored setup origin has no requester message, so no reader can depend on one.
+      assert.equal(read.origin.requestText, undefined);
+    }
+
+    new ManagementStoreLogic(db);
+    assert.deepEqual(rows(), scrubbed, 'a second install changes nothing');
+  } finally {
+    db.close();
+  }
+});
+
 test('management request reservations are retry-stable and digest-bound', async () => {
   const store = new SqliteManagementStore(':memory:');
   try {

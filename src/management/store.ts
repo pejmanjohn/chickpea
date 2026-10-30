@@ -1838,6 +1838,7 @@ export class ManagementStoreLogic {
       )`,
     );
     this.ensureSetupColumns();
+    this.removeStoredRequesterText();
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS management_setup_state_idx
        ON management_setup_operations (status, expires_at)`,
@@ -1925,6 +1926,19 @@ export class ManagementStoreLogic {
     for (const [name, definition] of additions) {
       addColumnIfMissing(this.db, 'management_setup_operations', name, definition);
     }
+  }
+
+  /**
+   * Releases before v0.1.38 stored the requester's Slack message in a setup
+   * origin, and it can hold a pasted key. A malformed row is left alone so it
+   * cannot fail the whole install.
+   */
+  private removeStoredRequesterText(): void {
+    this.db.run(
+      `UPDATE management_setup_operations
+       SET origin_json = json_remove(origin_json, '$.requestText', '$.requestTextSource')
+       WHERE origin_json LIKE '%"requestText%' AND json_valid(origin_json)`,
+    );
   }
 
   private ensureChangeSetProposalColumns(): void {
