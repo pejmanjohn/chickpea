@@ -178,46 +178,58 @@ test('public MCP registration accepts only bounded public PKCE clients', () => {
     assert.equal(validatePublicMcpClientRegistration(registration).ok, true, name);
   }
 
-  for (const [name, input] of Object.entries({
+  const denials: Record<string, { input: Record<string, unknown>; code: string }> = {
     unknownApplicationType: {
-      ...REAL_MCP_CLIENT_REGISTRATIONS['claude.ai'],
-      application_type: 'browser',
+      input: { ...REAL_MCP_CLIENT_REGISTRATIONS['claude.ai'], application_type: 'browser' },
+      code: 'unsupported_application_type',
     },
     confidential: {
-      application_type: 'web',
-      client_name: 'Secret client',
-      grant_types: ['authorization_code'],
-      redirect_uris: ['https://client.example/callback'],
-      response_types: ['code'],
-      token_endpoint_auth_method: 'client_secret_post',
+      input: {
+        application_type: 'web',
+        client_name: 'Secret client',
+        grant_types: ['authorization_code'],
+        redirect_uris: ['https://client.example/callback'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'client_secret_post',
+      },
+      code: 'public_clients_only',
     },
     wildcard: {
-      application_type: 'web',
-      client_name: 'Wildcard client',
-      grant_types: ['authorization_code'],
-      redirect_uris: ['https://*.example/callback'],
-      response_types: ['code'],
-      token_endpoint_auth_method: 'none',
+      input: {
+        application_type: 'web',
+        client_name: 'Wildcard client',
+        grant_types: ['authorization_code'],
+        redirect_uris: ['https://*.example/callback'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      },
+      code: 'invalid_redirect_uri',
     },
     insecureRemote: {
-      application_type: 'web',
-      client_name: 'Remote HTTP client',
-      grant_types: ['authorization_code'],
-      redirect_uris: ['http://client.example/callback'],
-      response_types: ['code'],
-      token_endpoint_auth_method: 'none',
+      input: {
+        application_type: 'web',
+        client_name: 'Remote HTTP client',
+        grant_types: ['authorization_code'],
+        redirect_uris: ['http://client.example/callback'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      },
+      code: 'invalid_redirect_uri',
     },
     implicit: {
-      application_type: 'web',
-      client_name: 'Implicit client',
-      grant_types: ['implicit'],
-      redirect_uris: ['https://client.example/callback'],
-      response_types: ['token'],
-      token_endpoint_auth_method: 'none',
+      input: {
+        application_type: 'web',
+        client_name: 'Implicit client',
+        grant_types: ['implicit'],
+        redirect_uris: ['https://client.example/callback'],
+        response_types: ['token'],
+        token_endpoint_auth_method: 'none',
+      },
+      code: 'unsupported_grant_type',
     },
-  })) {
-    const result = validatePublicMcpClientRegistration(input);
-    assert.equal(result.ok, false, name);
+  };
+  for (const [name, { input, code }] of Object.entries(denials)) {
+    assert.deepEqual(validatePublicMcpClientRegistration(input), { ok: false, code }, name);
   }
 });
 
