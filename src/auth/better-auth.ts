@@ -1,7 +1,6 @@
 import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin } from 'better-auth';
 import { APIError, createAuthEndpoint, createAuthMiddleware } from 'better-auth/api';
 import { setSessionCookie } from 'better-auth/cookies';
-import { createLocalAccountIssuer } from 'better-auth/db';
 import { getOrgAdapter, jwt, organization } from 'better-auth/plugins';
 import { mcp } from '@better-auth/mcp';
 
@@ -132,6 +131,19 @@ export function createBetterAuthOptions(input: CreateBetterAuthInput): BetterAut
   return createOptions({ ...input, baseURL }, Object.freeze({}));
 }
 
+/**
+ * Better Auth 1.7.0 to 1.7.2 keyed an account by `issuer`; 1.7.3 returned to
+ * `providerId` and stopped writing it. Chickpea's databases keep the column,
+ * NOT NULL under a unique index, so Chickpea writes the value 1.7.1 wrote for
+ * its one provider, and an older release still reads every row.
+ */
+const ACCOUNT_ISSUER_FIELD = {
+  type: 'string',
+  required: true,
+  input: false,
+  defaultValue: `local:${BETTER_AUTH_SLACK_PROVIDER_ID}`,
+} as const;
+
 const JWT_OPTIONS = {
   jwks: {
     keyPairConfig: { alg: 'EdDSA', crv: 'Ed25519' },
@@ -157,6 +169,7 @@ function createOptions(
       disableSignUp: true,
     },
     account: {
+      additionalFields: { issuer: ACCOUNT_ISSUER_FIELD },
       accountLinking: {
         enabled: false,
         disableImplicitLinking: true,
@@ -213,7 +226,13 @@ function createOptions(
     },
     rateLimit: { enabled: false },
     advanced: {
-      database: { generateId: 'uuid', ...(input.backend.nativeJoins ? { joins: true } : {}) },
+      database: {
+        generateId: 'uuid',
+        ...(input.backend.nativeJoins ? { joins: true } : {}),
+        // Chickpea builds Better Auth per request, and the check reads every
+        // table's shape again each time. Reviewed migrations own the schema.
+        validateSchema: false,
+      },
       ipAddress: { ipAddressHeaders: ['cf-connecting-ip', 'x-forwarded-for'] },
       useSecureCookies: secureCookies,
     },
@@ -289,7 +308,7 @@ function createPrivateSessionPlugin(
           }
 
           const account = await ctx.context.internalAdapter.findAccountByKey({
-            issuer: createLocalAccountIssuer(BETTER_AUTH_SLACK_PROVIDER_ID),
+            providerId: BETTER_AUTH_SLACK_PROVIDER_ID,
             accountId: slackAccountId(admission.slackTeamId, admission.slackUserId),
           });
           const user = await ctx.context.internalAdapter.findUserById(admission.betterAuthUserId);
@@ -321,9 +340,9 @@ async function reconcileSlackIdentity(
   input: ReconcileSlackIdentityInput,
 ): Promise<ReconciledSlackIdentity> {
   const accountId = slackAccountId(input.slackTeamId, input.slackUserId);
-  const issuer = createLocalAccountIssuer(BETTER_AUTH_SLACK_PROVIDER_ID);
+  const accountKey = { providerId: BETTER_AUTH_SLACK_PROVIDER_ID, accountId };
   const context = await auth.$context;
-  let account = await context.internalAdapter.findAccountByKey({ issuer, accountId });
+  let account = await context.internalAdapter.findAccountByKey(accountKey);
   let user = account
     ? await context.internalAdapter.findUserById(account.userId)
     : null;
@@ -349,14 +368,9 @@ async function reconcileSlackIdentity(
     }
 
     try {
-      account = await context.internalAdapter.createAccount({
-        accountId,
-        issuer,
-        providerId: BETTER_AUTH_SLACK_PROVIDER_ID,
-        userId: user.id,
-      });
+      account = await context.internalAdapter.createAccount({ ...accountKey, userId: user.id });
     } catch (error) {
-      const winner = await context.internalAdapter.findAccountByKey({ issuer, accountId });
+      const winner = await context.internalAdapter.findAccountByKey(accountKey);
       if (!input.expectedUserId) await context.internalAdapter.deleteUser(user.id).catch(() => {});
       if (!winner) throw error;
       if (input.expectedUserId && winner.userId !== input.expectedUserId) {

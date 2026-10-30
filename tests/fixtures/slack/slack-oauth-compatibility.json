@@ -3,7 +3,7 @@
   "evidenceTest": "tests/better-auth-private-seam-contract.test.ts",
   "betterAuth": {
     "package": "better-auth",
-    "version": "1.7.1",
+    "version": "1.7.14",
     "localContract": {
       "reconciliation": "verified-local",
       "sessionIssuance": "verified-local",
@@ -12,33 +12,33 @@
     "sourcePins": [
       {
         "path": "package.json",
-        "sha256": "d4da1b89925564605ca6540a4f5030aab18de043322ca0b51f08b9ec52b1e092"
+        "sha256": "6344f0db298ea523cf47f01d3cb3c7c8cc6be0ad411d5527c7552855adca7b4d"
       },
       {
         "path": "dist/api/index.mjs",
-        "sha256": "4913065fe270292704f4e2874a207c2396845e4b15dadd1623aae9d734e4e0ef"
+        "sha256": "003f03e19c5ecd5ff96eb73b1b09e75ad216e973c36f50f74d1b7290d9e1453c"
       },
       {
         "path": "dist/context/create-context.mjs",
-        "sha256": "579065017c5601dedac6ad95666835307b279e8f8ae45311d74d4e336f032d7c"
+        "sha256": "40fbd6e63efb25e4888a3bc79c546ea5b5b8778f307949be35766b5083b68eda"
       },
       {
         "path": "dist/cookies/index.mjs",
-        "sha256": "945bbb0bd0d77240bc74315c58f5ca74a62165ef605e30dfb336b34c0120665a"
+        "sha256": "5ad5e090a5727dea121a5da660c12c8a1392d33b74a9fb10a8f8493620d5ab06"
       },
       {
         "path": "dist/db/internal-adapter.mjs",
-        "sha256": "69e3e9b76d7b310fd53c7ef0a276ab2727a97ae8df57aea8a493d673cbaf75bd"
+        "sha256": "fa87e623936f8b91ddd9a9036ab7e524dde02f1c93f6620e01e0a00923965ca1"
       },
       {
         "path": "dist/plugins/organization/adapter.mjs",
-        "sha256": "28b913fb01f464dbe08644a60798040afae483cdbfe0e4a4a89676c203dd02e3"
+        "sha256": "f7e0f30591e77cf67e56dec4675e3899b59ac2de72a29d4948dad39032ff9d78"
       }
     ],
     "localSourcePins": [
       {
         "path": "src/auth/better-auth.ts",
-        "sha256": "a9b7305dd5969a6d93a7af719089d37c2636a898a7a76e14cbad1ee736a79fb2"
+        "sha256": "45688e59a4cda1b87566000e63dbc35781832b59bcdcb0db94703086c8ff2a67"
       },
       {
         "path": "src/auth/better-auth-routes.ts",
@@ -46,7 +46,7 @@
       },
       {
         "path": "scripts/generate-better-auth-bootstrap.ts",
-        "sha256": "6c955b2ca941d612acace1986ab08b29d9f357f802e611ff70651297badf5a81"
+        "sha256": "80ac459e9445c72de6d0043acf8258c9b638504d24245e8d25a68728873a39bc"
       }
     ]
   },

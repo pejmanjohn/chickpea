@@ -9,13 +9,15 @@ import {
 } from '../scripts/generate-better-auth-bootstrap.ts';
 
 const PRIOR_SCHEMA = new URL('./fixtures/better-auth/1.6.26/0001_better_auth.sql', import.meta.url);
-const CURRENT_SCHEMA = new URL('./fixtures/better-auth/1.7.1/0001_better_auth.sql', import.meta.url);
+const REVIEWED_SCHEMA = new URL('./fixtures/better-auth/1.7.1/0001_better_auth.sql', import.meta.url);
+const CURRENT_SCHEMA = new URL('./fixtures/better-auth/1.7.14/0001_better_auth.sql', import.meta.url);
 const FORWARD_MIGRATION = new URL('../migrations/better-auth/0002_mcp_oauth.sql', import.meta.url);
-const POSTGRES_SCHEMA = new URL('./fixtures/better-auth/1.7.1/postgres/0001_better_auth.sql', import.meta.url);
+const REVIEWED_POSTGRES_SCHEMA = new URL('./fixtures/better-auth/1.7.1/postgres/0001_better_auth.sql', import.meta.url);
+const POSTGRES_SCHEMA = new URL('./fixtures/better-auth/1.7.14/postgres/0001_better_auth.sql', import.meta.url);
 const POSTGRES_BASE_MIGRATION = new URL('../migrations/better-auth-postgres/0001_better_auth.sql', import.meta.url);
 
-test('Better Auth 1.7.1 fresh schema stays pinned to the configured plugins', async () => {
-  assert.equal(PINNED_BETTER_AUTH_VERSION, '1.7.1');
+test('Better Auth 1.7.14 fresh schema stays pinned to the configured plugins', async () => {
+  assert.equal(PINNED_BETTER_AUTH_VERSION, '1.7.14');
   const generated = await generateBetterAuthBootstrapSql();
   assert.equal(generated, await readFile(CURRENT_SCHEMA, 'utf8'));
   for (const required of [
@@ -35,16 +37,15 @@ test('Better Auth 1.7.1 fresh schema stays pinned to the configured plugins', as
 test('the PostgreSQL fresh schema is generated from the same options and keeps Chickpea invariants', async () => {
   const generated = await generateBetterAuthBootstrapSql('postgres');
   assert.equal(generated, await readFile(POSTGRES_SCHEMA, 'utf8'));
-  // The first PostgreSQL migration is the reviewed 1.7.1 generation; later
-  // Better Auth versions add a forward migration and a new fresh fixture.
-  assert.equal(await readFile(POSTGRES_BASE_MIGRATION, 'utf8'), generated);
+  // The first PostgreSQL migration is the reviewed 1.7.1 generation.
+  assert.equal(await readFile(POSTGRES_BASE_MIGRATION, 'utf8'), await readFile(REVIEWED_POSTGRES_SCHEMA, 'utf8'));
   for (const required of [
     /create table "user" \("id" uuid default pg_catalog\.gen_random_uuid\(\) not null primary key/,
     /"absoluteExpiresAt" timestamptz default CURRENT_TIMESTAMP not null/,
     /"issuer" text not null/,
     /create table "oauthConsent"/,
     /create table "oauthRefreshToken"/,
-    /create unique index "account_issuer_accountId_uidx" on "account" \("issuer", "accountId"\)/,
+    /CREATE UNIQUE INDEX "account_issuer_accountId_uidx" ON "account" \("issuer", "accountId"\)/,
     /create unique index "oauthClientResource_clientId_resourceId_uidx"/,
     /CREATE UNIQUE INDEX "account_providerId_accountId_uidx" ON "account" \("providerId", "accountId"\)/,
     /CREATE UNIQUE INDEX "member_organizationId_userId_uidx" ON "member" \("organizationId", "userId"\)/,
@@ -52,6 +53,13 @@ test('the PostgreSQL fresh schema is generated from the same options and keeps C
     /"created_at" bigint NOT NULL/,
   ]) {
     assert.match(generated, required);
+  }
+});
+
+test('Better Auth 1.7.14 needs no migration: it generates the reviewed 1.7.1 tables, columns and indexes', async () => {
+  for (const [reviewed, current] of [[REVIEWED_SCHEMA, CURRENT_SCHEMA], [REVIEWED_POSTGRES_SCHEMA, POSTGRES_SCHEMA]]) {
+    const [before, after] = await Promise.all([readFile(reviewed!, 'utf8'), readFile(current!, 'utf8')]);
+    assert.deepEqual(schemaStatements(after), schemaStatements(before), current!.pathname);
   }
 });
 
@@ -119,4 +127,30 @@ function tableShape(database: DatabaseSync, table: string): Array<{
     notnull: Number(row.notnull),
     pk: Number(row.pk),
   })).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+/** Each statement lowercased, without comments, with a table's columns in name order. */
+function schemaStatements(sql: string): string[] {
+  return sql.replace(/--[^\n]*/g, '').split(';').map((statement) => statement.replace(/\s+/g, ' ').trim().toLowerCase())
+    .filter(Boolean)
+    .map((statement) => {
+      const table = /^(create table "[^"]+") \((.*)\)$/.exec(statement);
+      return table ? `${table[1]} (${topLevelParts(table[2]!).sort().join(', ')})` : statement;
+    })
+    .sort();
+}
+
+function topLevelParts(list: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < list.length; index++) {
+    if (list[index] === '(') depth++;
+    else if (list[index] === ')') depth--;
+    else if (list[index] === ',' && depth === 0) {
+      parts.push(list.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  return [...parts, list.slice(start).trim()];
 }
