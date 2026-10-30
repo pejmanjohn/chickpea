@@ -48,7 +48,7 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '4.1.0',
+  version: '4.2.0',
 } as const;
 /** The coding-agent door has no propose tools: it acts with the person's Admin authority. */
 export const WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES = [
