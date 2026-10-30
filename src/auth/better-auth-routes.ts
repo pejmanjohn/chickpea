@@ -132,7 +132,7 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
       });
     }
     if (url.pathname.endsWith('/oauth2/revoke')) return await revocationResponse(response);
-    return AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname) ? await publicClientMetadata(response) : response;
+    return AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname) ? await advertisePublicClientsOnly(response) : response;
   };
 }
 
@@ -201,14 +201,19 @@ async function validateRegistrationRequest(request: Request): Promise<Request | 
 /**
  * Better Auth lists every confidential method it can verify and has no option
  * to narrow the list, and claude.ai registers with client_secret_post whenever
- * it is listed. Registration here accepts public clients only.
+ * it is listed. Registration here accepts public clients only, so the signing
+ * algorithms, which serve JWT client authentication alone, go as well. The
+ * headers carry over without the length of the longer upstream body.
  */
-async function publicClientMetadata(response: Response): Promise<Response> {
+export async function advertisePublicClientsOnly(response: Response): Promise<Response> {
   if (!response.ok) return response;
   const metadata = await response.json() as Record<string, unknown>;
+  delete metadata.token_endpoint_auth_signing_alg_values_supported;
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
   return Response.json(
     { ...metadata, token_endpoint_auth_methods_supported: ['none'] },
-    { status: response.status, headers: response.headers },
+    { status: response.status, headers },
   );
 }
 
