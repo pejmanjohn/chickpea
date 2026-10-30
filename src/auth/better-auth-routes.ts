@@ -9,6 +9,7 @@ import {
   MCP_OFFLINE_SCOPE,
   MCP_WORKSPACE_SCOPE,
   validatePublicMcpClientRegistration,
+  type McpClientRegistrationDenial,
 } from './mcp-oauth.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
@@ -33,6 +34,11 @@ const PUBLIC_ROUTES = new Map<string, PublicRoute>([
   ['POST /api/auth/oauth2/token', 'protocol-mutation'],
   ['POST /api/auth/sign-out', 'browser-mutation'],
 ] as const);
+
+const AUTHORIZATION_SERVER_METADATA_PATHS = new Set([
+  '/.well-known/oauth-authorization-server/api/auth',
+  '/api/auth/.well-known/oauth-authorization-server',
+]);
 
 export interface BetterAuthPublicHandlerInput {
   backend: BetterAuthDatabaseBackend;
@@ -81,13 +87,10 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
 
     if (route === 'registration') {
       const validation = await validateRegistrationRequest(request);
-      if (validation instanceof Response) {
-        emitManagementMetric('oauth.dcr', {
-          stage: 'validation',
-          outcome: 'denied',
-          reason: `http_${validation.status}`,
-        });
-        return validation;
+      if (typeof validation === 'string') {
+        emitManagementMetric('oauth.dcr', { stage: 'validation', outcome: 'denied', reason: validation });
+        const tooLarge = validation === 'request_too_large' || validation === 'client_metadata_too_large';
+        return Response.json({ error: validation }, { status: tooLarge ? 413 : 400 });
       }
       request = validation;
       const { maxPendingClients, pendingClientRetentionMs, consentWindowMs, now } = registrationPolicy;
@@ -128,7 +131,8 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
         reason: `http_${response.status}`,
       });
     }
-    return url.pathname.endsWith('/oauth2/revoke') ? await revocationResponse(response) : response;
+    if (url.pathname.endsWith('/oauth2/revoke')) return await revocationResponse(response);
+    return AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname) ? await publicClientMetadata(response) : response;
   };
 }
 
@@ -178,30 +182,34 @@ function registeredForRenewal(client: RegisteredClient): boolean {
   return Boolean(client.grantTypes?.includes('refresh_token') && client.scopes?.includes(MCP_OFFLINE_SCOPE));
 }
 
-async function validateRegistrationRequest(request: Request): Promise<Request | Response> {
+async function validateRegistrationRequest(request: Request): Promise<Request | McpClientRegistrationDenial> {
   let body: unknown;
-  let bytes: Uint8Array;
   try {
     const bounded = await readBoundedRequestBody(request, MAX_AUTH_BODY_BYTES);
-    if (!bounded.ok) {
-      return Response.json(
-        { error: bounded.reason === 'body_too_large' ? 'request_too_large' : 'invalid_client_metadata' },
-        { status: bounded.reason === 'body_too_large' ? 413 : 400 },
-      );
-    }
-    bytes = bounded.body ?? new Uint8Array();
-    body = JSON.parse(new TextDecoder().decode(bytes));
+    if (!bounded.ok) return bounded.reason === 'body_too_large' ? 'request_too_large' : 'invalid_client_metadata';
+    body = JSON.parse(new TextDecoder().decode(bounded.body ?? new Uint8Array()));
   } catch {
-    return Response.json({ error: 'invalid_client_metadata' }, { status: 400 });
+    return 'invalid_client_metadata';
   }
   const validation = validatePublicMcpClientRegistration(body);
-  if (!validation.ok) {
-    const status = validation.code === 'client_metadata_too_large' ? 413 : 400;
-    return Response.json({ error: validation.code }, { status });
-  }
+  if (!validation.ok) return validation.code;
   // Do not tee a validation clone: Node 22.19 can cancel the original unread
   // stream when the clone is collected. Hand Better Auth its own bounded body.
-  return requestWithBufferedBody(request, bytes);
+  return requestWithBufferedBody(request, new TextEncoder().encode(JSON.stringify(validation.registration)));
+}
+
+/**
+ * Better Auth lists every confidential method it can verify and has no option
+ * to narrow the list, and claude.ai registers with client_secret_post whenever
+ * it is listed. Registration here accepts public clients only.
+ */
+async function publicClientMetadata(response: Response): Promise<Response> {
+  if (!response.ok) return response;
+  const metadata = await response.json() as Record<string, unknown>;
+  return Response.json(
+    { ...metadata, token_endpoint_auth_methods_supported: ['none'] },
+    { status: response.status, headers: response.headers },
+  );
 }
 
 function validatePublicMutation(request: Request, canonicalOrigin: string): Response | null {

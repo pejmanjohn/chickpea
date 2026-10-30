@@ -7,9 +7,24 @@ const MAX_MCP_DCR_BODY_BYTES = 16 * 1024;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const ALLOWED_GRANTS = new Set(['authorization_code', 'refresh_token']);
 
+/** Each error that registration validation refuses a client's metadata with. */
+export const MCP_CLIENT_REGISTRATION_DENIALS = [
+  'client_metadata_too_large',
+  'invalid_client_metadata',
+  'invalid_client_name',
+  'invalid_redirect_uri',
+  'invalid_scope',
+  'public_clients_only',
+  'request_too_large',
+  'unsupported_application_type',
+  'unsupported_grant_type',
+  'unsupported_response_type',
+] as const;
+export type McpClientRegistrationDenial = typeof MCP_CLIENT_REGISTRATION_DENIALS[number];
+
 type McpClientRegistrationValidation =
-  | { ok: true }
-  | { ok: false; code: string };
+  | { ok: true; registration: Record<string, unknown> }
+  | { ok: false; code: McpClientRegistrationDenial };
 
 export function mcpResourceForOrigin(origin: string): string {
   let parsed: URL;
@@ -51,7 +66,8 @@ export function validatePublicMcpClientRegistration(
   if (input.token_endpoint_auth_method !== 'none') {
     return denied('public_clients_only');
   }
-  if (input.application_type !== 'native' && input.application_type !== 'web') {
+  if (input.application_type !== undefined &&
+      input.application_type !== 'native' && input.application_type !== 'web') {
     return denied('unsupported_application_type');
   }
   if (typeof input.client_name !== 'string' || !input.client_name.trim() ||
@@ -85,10 +101,15 @@ export function validatePublicMcpClientRegistration(
       input.token_endpoint_auth_signing_alg !== undefined) {
     return denied('public_clients_only');
   }
-  return { ok: true };
+  // application_type is OpenID Connect registration, not RFC 7591, so MCP
+  // clients may omit it. Better Auth would then assume web and refuse a
+  // loopback redirect. Infer it as the MCP TypeScript SDK does.
+  const applicationType = input.application_type ??
+    (redirects.some((redirect) => isLoopbackHost(new URL(redirect).hostname)) ? 'native' : 'web');
+  return { ok: true, registration: { ...input, application_type: applicationType } };
 }
 
-function denied(code: string): McpClientRegistrationValidation {
+function denied(code: McpClientRegistrationDenial): McpClientRegistrationValidation {
   return { ok: false, code };
 }
 
