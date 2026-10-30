@@ -67,7 +67,7 @@ data, and explain that problem rather than telling the user to wait indefinitely
 
 Some releases add Durable Object migrations; v0.1.27 adds two, on every
 installation: `v10` for coding workers and `v11` for per-thread Slack turn
-runners. v0.1.28 through v0.1.38 add none; an update from v0.1.26 or
+runners. v0.1.28 through v0.1.39 add none; an update from v0.1.26 or
 earlier straight to any of them still applies `v10` and `v11`. Once the deploy applies them,
 Cloudflare refuses `wrangler rollback` and dashboard rollbacks to any version
 from before that release. Recovery from a bad update then means deploying a newer or fixed
@@ -151,6 +151,19 @@ failed replies on v0.1.33 until you update again. Prefer deploying a fixed
 release forward to rolling back across v0.1.34.
 
 ## 3. Deploy to the same Worker
+
+v0.1.39 lets an Agent's author upload `SKILL.md` files and `.zip` or `.skill`
+archives on the Agent's Skills tab in Admin. It lets the Claude app (claude.ai,
+Claude Desktop, Cowork) and other MCP clients that do not send
+`application_type` sign in to Chickpea's MCP server, and it adds an **Add to
+Claude** link to **Settings → Coding agents** and the `/connect` page. Agents
+read Slack text attachments of up to 64,000 characters each and 128,000 per
+message, up from 32,000 and 48,000; on the shared Chickpea Slack app, the
+gateway still refuses a text file over about 25 KB. On its first start
+v0.1.39 removes the requester's Slack message that releases before v0.1.38
+kept in setup records, because that message can hold a pasted key. Updating
+needs no other step. There is no rollback path: recovery means deploying a
+fixed release forward.
 
 v0.1.38 lets an Agent search the web and read public pages the person links,
 lets a coding agent send a management request of up to 1 MiB (so an Agent
