@@ -96,11 +96,16 @@ export function slackRunReviewConversation(
   context: SlackTurnContext | undefined,
 ): RunReviewConversation {
   const messages = context?.messages ?? [];
-  const trigger = messages.find((message) => message.isTrigger);
+  // A turn that read follow-ups marks each as a trigger row: its request is all of them, oldest first.
+  const triggers = messages.filter((message) => message.isTrigger);
   const notes = (files: readonly { name: string; sizeBytes?: number }[] | undefined) =>
     (files ?? []).map((file) => ({ name: file.name, ...(file.sizeBytes === undefined ? {} : { size: file.sizeBytes }) }));
   return {
-    trigger: { author: turn.userId, text: trigger?.text ?? turn.text, files: notes(trigger?.files) },
+    trigger: {
+      author: turn.userId,
+      text: triggers.length > 0 ? triggers.map((message) => message.text).join('\n\n') : turn.text,
+      files: notes(triggers.flatMap((message) => message.files ?? [])),
+    },
     context: messages.filter((message) => !message.isTrigger).map((message) => {
       const role = message.role ?? 'human';
       return {
