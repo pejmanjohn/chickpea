@@ -389,6 +389,80 @@ test('a stored client keeps renewing while its document cannot be reached; a doc
   }
 });
 
+test('a stored client stands in for an unreachable document for a day after its last good fetch, and no longer', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const served: Record<string, ServedDocument> = { [CLAUDE]: CLAUDE_DOCUMENTS.claude.body };
+  const f = await fixture(t, { fetchClientMetadataResource: metadataDocumentServer(served).fetch });
+  let refreshToken = await claudeSignIn(f);
+  const renew = async () => {
+    const response = await f.refresh(CLAUDE, refreshToken);
+    if (response.ok) refreshToken = (await response.clone().json() as { refresh_token: string }).refresh_token;
+    return response;
+  };
+
+  served[CLAUDE] = { body: 'Too Many Requests', status: 429, headers: { 'content-type': 'text/plain' } };
+  t.mock.timers.tick(6 * 60_000);
+  assert.equal((await renew()).status, 200, 'a 429 from the document host is a failure to reach it');
+  served[CLAUDE] = { body: 'Service Unavailable', status: 503, headers: { 'content-type': 'text/plain' } };
+  t.mock.timers.tick(24 * 60 * 60_000 - 7 * 60_000);
+  assert.equal((await renew()).status, 200, 'a minute short of a day after the last good fetch');
+  t.mock.timers.tick(2 * 60_000);
+  const refused = await renew();
+  assert.equal(refused.status, 400, 'a minute past it');
+  assert.deepEqual(await refused.json(), { error: 'invalid_client', error_description: 'Metadata document fetch returned HTTP 503' });
+
+  served[CLAUDE] = CLAUDE_DOCUMENTS.claude.body;
+  t.mock.timers.tick(2_000);
+  assert.equal((await renew()).status, 200, 'a document that answers again restarts the day');
+  served[CLAUDE] = () => { throw new TypeError('fetch failed'); };
+  t.mock.timers.tick(24 * 60 * 60_000 - 60_000);
+  assert.equal((await renew()).status, 200);
+});
+
+test('a spent fetch budget refuses a stored client unless its last fetch could not reach the document', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const served: Record<string, ServedDocument> = { [CLAUDE]: CLAUDE_DOCUMENTS.claude.body };
+  const host = metadataDocumentServer(served);
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  let refreshToken = await claudeSignIn(f);
+  const renew = async () => {
+    const response = await f.refresh(CLAUDE, refreshToken);
+    if (response.ok) refreshToken = (await response.clone().json() as { refresh_token: string }).refresh_token;
+    return response;
+  };
+  let strangers = 0;
+  const spendFetchBudget = async () => {
+    // 120 fetches a minute per isolate and 30 per origin, so four origins of unknown documents.
+    for (let attempt = 0; attempt <= 120; attempt++, strangers++) {
+      const response = await f.authorize(`https://s${strangers % 4}.evil.example/client-${strangers}`, CLAUDE_CALLBACK, { signedIn: false });
+      if (response.status === 429) return;
+      assert.equal(response.status, 400);
+    }
+    assert.fail('the budget was not spent');
+  };
+  const busy = { error: 'temporarily_unavailable', error_description: 'global metadata fetch rate limit exceeded' };
+
+  t.mock.timers.tick(6 * 60_000);
+  await spendFetchBudget();
+  const declined = await renew();
+  assert.equal(declined.status, 429, 'nothing known against the document, but nothing fetched either');
+  assert.deepEqual(await declined.json(), busy);
+
+  t.mock.timers.tick(61_000);
+  served[CLAUDE] = { body: 'Service Unavailable', status: 503, headers: { 'content-type': 'text/plain' } };
+  assert.equal((await renew()).status, 200);
+  await spendFetchBudget();
+  const fetched = host.requests.length;
+  assert.equal((await renew()).status, 200, 'after a fetch that could not reach the document, a spent budget stands in for it');
+  assert.equal(host.requests.length, fetched);
+
+  t.mock.timers.tick(24 * 60 * 60_000);
+  await spendFetchBudget();
+  const stale = await renew();
+  assert.equal(stale.status, 429, 'but only for a day after the last good fetch');
+  assert.deepEqual(await stale.json(), busy);
+});
+
 test('the default transport is the MCP egress guard: an internal host is refused without a request', async (t) => {
   const internal = 'https://chickpea.internal/client';
   const platformFetch = t.mock.method(globalThis, 'fetch', async () =>
