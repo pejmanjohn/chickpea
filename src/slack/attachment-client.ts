@@ -1,7 +1,9 @@
 import type { GatewayAttachmentClient, GatewayAttachmentRead } from './gateway/client.ts';
 import { createGatewayDeploymentClient } from './gateway/runtime.ts';
+import { MAX_SLACK_ATTACHMENT_BYTES } from './attachment-normalization.ts';
 import { resolveSlackCredentials, readStoredSlackTeamInfo } from './credentials.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
+import { readBoundedBytes } from '../http/bounded-body.ts';
 
 const OFFICE_TYPES = new Set(['doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx']);
 class AttachmentReadError extends Error {
@@ -31,7 +33,7 @@ export async function readDirectSlackAttachment(input: {
   signal?: AbortSignal; fetch?: typeof fetch;
 }): Promise<GatewayAttachmentRead> {
   if (!/^F[A-Z0-9_]+$/.test(input.fileId)) throw new AttachmentReadError('invalid_file_id');
-  if (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > 8 * 1024 * 1024) {
+  if (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > MAX_SLACK_ATTACHMENT_BYTES) {
     throw new AttachmentReadError('invalid_max_bytes');
   }
   const signal = input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000);
@@ -52,7 +54,15 @@ export async function readDirectSlackAttachment(input: {
     await metadata.body?.cancel();
     throw new AttachmentReadError('invalid_file_metadata');
   }
-  const metadataBytes = await boundedBytes(metadata, 256 * 1024);
+  // files.info inlines a text file's content as plain text, HTML, and
+  // syntax-highlighted HTML: about 42 response bytes per file byte (a
+  // 39,902-byte markdown file returned 1,665,332). Node's fetch also asks for
+  // compression and decodes the body while Content-Length counts encoded bytes.
+  const metadataBytes = await readBoundedBytes(metadata, {
+    maxBytes: MAX_SLACK_ATTACHMENT_BYTES,
+    checkContentLength: false,
+    onOversize: () => new AttachmentReadError('attachment_byte_limit_exceeded', 413),
+  });
   const info = record(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(metadataBytes)));
   if (info.ok !== true) throw new AttachmentReadError(typeof info.error === 'string' && /^[a-z0-9_]{1,80}$/.test(info.error) ? info.error : 'attachment_unavailable');
   const file = record(info.file);
