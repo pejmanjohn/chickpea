@@ -67,7 +67,7 @@ data, and explain that problem rather than telling the user to wait indefinitely
 
 Some releases add Durable Object migrations; v0.1.27 adds two, on every
 installation: `v10` for coding workers and `v11` for per-thread Slack turn
-runners. v0.1.28 through v0.1.37 add none; an update from v0.1.26 or
+runners. v0.1.28 through v0.1.38 add none; an update from v0.1.26 or
 earlier straight to any of them still applies `v10` and `v11`. Once the deploy applies them,
 Cloudflare refuses `wrangler rollback` and dashboard rollbacks to any version
 from before that release. Recovery from a bad update then means deploying a newer or fixed
@@ -151,6 +151,16 @@ failed replies on v0.1.33 until you update again. Prefer deploying a fixed
 release forward to rolling back across v0.1.34.
 
 ## 3. Deploy to the same Worker
+
+v0.1.38 lets an Agent search the web and read public pages the person links,
+lets a coding agent send a management request of up to 1 MiB (so an Agent
+with many large skills installs in one call), and lets a person set up a
+custom API connection from chat with a pasted key. Web search needs an
+`EXA_API_KEY` Worker secret; without it, Agents still read linked pages.
+`release.json`'s `configuration` digest changes because the configuration
+store now declares its stored shapes in `src/config/storage-contract.json`;
+the store itself has no schema change. Updating needs no other step. There is
+no rollback path: recovery means deploying a fixed release forward.
 
 v0.1.37 lets a coding agent connected to Chickpea's MCP server do what the
 signed-in person can do in Admin. It asks the person first only where Admin
