@@ -72,6 +72,11 @@ export type ManagementOrigin =
       sessionId: string;
     };
 
+/** A setup record's origin, without the turn-only approval stamp and requester message. */
+export type StoredManagementOrigin =
+  | Exclude<ManagementOrigin, { kind: 'slack' }>
+  | Omit<Extract<ManagementOrigin, { kind: 'slack' }>, 'requestText' | 'requestTextSource' | 'approvedProposalId'>;
+
 /** Trusted adapter context. It is never part of a model-selected operation. */
 export interface ManagementActorContext {
   userId: string;
@@ -640,7 +645,7 @@ export interface ManagementSetupRecord {
   organizationId: string;
   actorUserId: string;
   actorMembershipId: string;
-  origin: ManagementOrigin;
+  origin: StoredManagementOrigin;
   action: ManagementSetupAction;
   target: ManagementSetupTarget;
   scopes: string[];
