@@ -1123,6 +1123,12 @@ test('a long search query is shortened with an ellipsis to fit the 50-character 
   assert.ok(slackStatusText(status).length <= 50);
 });
 
+test('a long activity object is cut at a character, never inside one', () => {
+  const status = activityStatus('checking', 'Checking', `${'x'.repeat(38)}😀 Launch board`);
+  assert.equal(status.text, `Checking ${'x'.repeat(38)}……`, 'a cut through an emoji leaves no half of it behind');
+  assert.equal(slackStatusText(status), status.text);
+});
+
 test('a search query that fails validation shows the generic search status', () => {
   const token = ['xoxb', '0000000000', '000000000000'].join('-');
   const rejected: Array<[unknown, string]> = [

@@ -430,10 +430,7 @@ export function webSearchSemanticDescriptor(query?: unknown): SemanticActivityDe
       .replace(/\s+/g, ' ')
       .trim(),
   );
-  // The cut is in UTF-16 units; a high surrogate it leaves behind is not text.
-  const label = plain.length <= WEB_QUERY_LABEL_LIMIT
-    ? plain
-    : `${plain.slice(0, WEB_QUERY_LABEL_LIMIT - 1).replace(/[\uD800-\uDBFF]$/, '').trimEnd()}…`;
+  const label = truncate(plain, WEB_QUERY_LABEL_LIMIT);
   return isSafeWebQueryLabel(label)
     ? { ...generic, label: { kind: 'web_query', id: label, label } }
     : generic;
@@ -961,7 +958,8 @@ function isActivityKind(value: unknown): value is ActivityKind {
 
 function truncate(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
-  return `${value.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+  // The cut is in UTF-16 units; a high surrogate it leaves behind is not text.
+  return `${value.slice(0, Math.max(1, maxLength - 1)).replace(/[\uD800-\uDBFF]$/, '').trimEnd()}…`;
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {

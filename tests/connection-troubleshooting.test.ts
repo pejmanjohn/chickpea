@@ -345,6 +345,24 @@ test('draft mode refuses a key or host the requester did not type, a click, a ke
   } finally { f.close(); }
 });
 
+test('a draft wider than the typed path is told to narrow first, and the narrowed draft is sent', async () => {
+  const f = await fixture();
+  try {
+    await withConnectionNetwork(statusboard, async (requests) => {
+      const typedIncidents = `connect Statusboard at https://api.statusboard.example${INCIDENTS}, the key is ${KEY}`;
+      assert.equal(refusal(await f.slack('try_connection', { draft: DRAFT, key: KEY, path: INCIDENTS }, typedIncidents)).message,
+        'Nothing was sent: the key would go to https://api.statusboard.example/v2, which the requester did not type in the same message as the key. ' +
+        'Narrow the draft to the hosts and paths they typed and try again. Only if the API lives outside them, add the connection with ' +
+        'update_agent so the person approves where the key goes, then try it with connectionId after they approve.');
+      assert.deepEqual(requests, [], 'the wider draft sent nothing');
+      const narrowed = ok<TryConnectionResult>(await f.slack('try_connection', {
+        draft: { ...DRAFT, pathPrefixes: [INCIDENTS] }, key: KEY, path: INCIDENTS,
+      }, typedIncidents));
+      assert.equal(narrowed.check.kind, 'ok', 'the draft narrowed to the typed path is sent');
+    });
+  } finally { f.close(); }
+});
+
 test('basic_username sends the key as a Basic username, and save_connection_key can save it that way', async () => {
   const f = await fixture();
   try {
