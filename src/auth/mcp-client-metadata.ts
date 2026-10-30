@@ -152,11 +152,14 @@ function readFailure(error: unknown): 'unreachable' | 'declined' | undefined {
   return typeof description === 'string' && UNREACHABLE_DOCUMENT.test(description) ? 'unreachable' : undefined;
 }
 
-/** The host that published a client's metadata document, or undefined when its client ID is not a document URL. */
+/**
+ * The host, with any non-default port, that published a client's metadata
+ * document, or undefined when its client ID is not a document URL.
+ */
 export function clientMetadataHost(clientId: string): string | undefined {
   try {
     const url = new URL(clientId);
-    return url.protocol === 'https:' ? url.hostname : undefined;
+    return url.protocol === 'https:' ? url.host : undefined;
   } catch {
     return undefined;
   }
