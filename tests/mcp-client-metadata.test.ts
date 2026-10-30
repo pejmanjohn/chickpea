@@ -110,6 +110,15 @@ const claudeHost = () => metadataDocumentServer({
   [CLAUDE_CODE]: CLAUDE_DOCUMENTS.claudeCode.body,
 });
 
+/** Claude's refresh token after a signed-in sign-in and consent. */
+async function claudeSignIn(f: Awaited<ReturnType<typeof fixture>>): Promise<string> {
+  const authorization = await f.authorize(CLAUDE, CLAUDE_CALLBACK);
+  const callback = await f.approve(authorization.headers.get('location')!);
+  const exchanged = await f.exchange(CLAUDE, CLAUDE_CALLBACK, callback.searchParams.get('code')!);
+  assert.equal(exchanged.status, 200, await exchanged.clone().text());
+  return (await exchanged.json() as { refresh_token: string }).refresh_token;
+}
+
 test('the authorization server advertises client ID metadata documents to public clients', async (t) => {
   const f = await fixture(t);
   for (const path of ['/.well-known/oauth-authorization-server/api/auth', '/api/auth/.well-known/oauth-authorization-server']) {
@@ -307,6 +316,25 @@ test('a metadata document URL must be public HTTPS before anything is fetched or
   assert.deepEqual(host.requests, []);
   assert.equal(prune.mock.callCount(), 0, 'a URL refused unfetched costs no pending-client write');
   assert.deepEqual(f.clients(), []);
+});
+
+test('a client ID refused unfetched spends none of the fetch budget', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const host = claudeHost();
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  const refreshToken = await claudeSignIn(f);
+  t.mock.timers.tick(6 * 60_000);
+  for (let attempt = 0; attempt < 150; attempt++) {
+    const response = await f.authorize(`https://10.0.0.${1 + attempt % 4}/client-${attempt}`, CLAUDE_CALLBACK, { signedIn: false });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: 'invalid_client', error_description: 'client_id URL must not target a private or reserved address',
+    });
+  }
+  const fetched = host.requests.length;
+  assert.equal((await f.refresh(CLAUDE, refreshToken)).status, 200);
+  assert.equal((await f.authorize(CLAUDE_CODE, 'http://localhost:53682/callback', { signedIn: false })).status, 302);
+  assert.deepEqual(host.requests.slice(fetched), [CLAUDE, CLAUDE_CODE], 'each fetches its document: the budget is untouched');
 });
 
 test('a stored client keeps renewing while its document cannot be reached; a document that answers still replaces or refuses it', async (t) => {
