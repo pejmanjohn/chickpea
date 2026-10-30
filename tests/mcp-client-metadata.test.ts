@@ -77,11 +77,14 @@ async function fixture(t: TestContext, options: {
   const cookie = session.headers.get('set-cookie')!.split(';', 1)[0]!;
 
   const verifier = randomBytes(32).toString('base64url');
-  function authorize(clientId: string, redirectUri: string, { signedIn = true, headers = {} as Record<string, string> } = {}) {
+  function authorize(clientId: string, redirectUri: string, {
+    signedIn = true, headers = {} as Record<string, string>, prompt = undefined as string | undefined,
+  } = {}) {
     const query = new URLSearchParams({
       response_type: 'code', client_id: clientId, redirect_uri: redirectUri,
       scope: 'chickpea:workspace', state: 'client-state', resource: RESOURCE,
       code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
+      ...(prompt ? { prompt } : {}),
     });
     return handler(new Request(`${ORIGIN}/api/auth/oauth2/authorize?${query}`, {
       headers: { ...headers, ...(signedIn ? { cookie } : {}) },
@@ -206,6 +209,31 @@ test('Claude Code signs in on a loopback port its document lists without one, an
   const exchanged = await f.exchange(CLAUDE_CODE, redirect, callback.searchParams.get('code')!);
   assert.equal(exchanged.status, 200, await exchanged.clone().text());
   assert.equal(typeof (await exchanged.json() as Record<string, unknown>).refresh_token, 'string');
+});
+
+test('a metadata-document client on a loopback redirect asks for consent every time; one on HTTPS asks once', async (t) => {
+  const f = await fixture(t, { fetchClientMetadataResource: claudeHost().fetch });
+  const first = await f.authorize(CLAUDE_CODE, 'http://localhost:53682/callback');
+  await f.approve(first.headers.get('location')!);
+
+  // RFC 8252 8.6: any local app can claim Claude Code's published client ID and a port of its own.
+  const otherPort = await f.authorize(CLAUDE_CODE, 'http://localhost:4444/callback');
+  assert.equal(otherPort.status, 302);
+  const consent = new URL(otherPort.headers.get('location')!, ORIGIN);
+  assert.equal(consent.pathname, '/auth/mcp/consent');
+  const callback = await f.approve(consent.toString());
+  assert.equal(`${callback.origin}${callback.pathname}`, 'http://localhost:4444/callback');
+  assert.ok(callback.searchParams.get('code'));
+  const samePort = await f.authorize(CLAUDE_CODE, 'http://localhost:4444/callback');
+  assert.equal(new URL(samePort.headers.get('location')!, ORIGIN).pathname, '/auth/mcp/consent', 'every time, on any port');
+  const silent = await f.authorize(CLAUDE_CODE, 'http://localhost:4444/callback', { prompt: 'none' });
+  assert.equal(new URL(silent.headers.get('location') ?? '/', ORIGIN).searchParams.get('code'), null, 'prompt=none gets no code');
+
+  const claude = await f.authorize(CLAUDE, CLAUDE_CALLBACK);
+  await f.approve(claude.headers.get('location')!);
+  const again = new URL((await f.authorize(CLAUDE, CLAUDE_CALLBACK)).headers.get('location')!, ORIGIN);
+  assert.equal(`${again.origin}${again.pathname}`, CLAUDE_CALLBACK, 'a client on its own HTTPS redirect is not asked twice');
+  assert.ok(again.searchParams.get('code'));
 });
 
 test('a metadata document is refused unless it names its own URL, lists the redirect, and comes back small JSON at once', async (t) => {
