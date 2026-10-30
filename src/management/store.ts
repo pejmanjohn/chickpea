@@ -42,6 +42,7 @@ import {
   type RevokeManagementSetupInput,
   type ReserveManagementRequestInput,
   type SettlePrivateChannelSetupIntentInput,
+  type StoredManagementOrigin,
   isRoutineOperation,
 } from './types.ts';
 
@@ -2095,7 +2096,7 @@ function changeSetProposalFromRow(
  * so no stored record keeps them: the message can hold a key the person
  * pasted.
  */
-function storedOrigin(origin: ManagementOrigin): ManagementOrigin {
+function storedOrigin(origin: ManagementOrigin): StoredManagementOrigin {
   if (origin.kind !== 'slack') return origin;
   const {
     approvedProposalId: _approval,
