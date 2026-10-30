@@ -26,7 +26,7 @@ You do not need the CLI to connect a coding agent. Admin **Settings → MCP** on
 | `chickpea recipe preview <url> <recipe.json>` | saved | Compares a recipe with the live workspace and prints the operations to apply. |
 | `chickpea skills upload <url> <agent-id> <file...> [--replace]` | saved | Installs skills on an Agent from `SKILL.md` and other markdown files and `.zip` or `.skill` archives, keeping its other skills. A same-name skill with different content is left as it is unless you pass `--replace`. |
 
-Global flags: `--json` for machine output on stdout, `--quiet` to silence progress notes on stderr, `--help`, `--version`.
+Global flags: `--json` for machine output on stdout (`skills upload` prints one envelope per call, as an array), `--quiet` to silence progress notes on stderr, `--help`, `--version`.
 
 `<url>` is the deployment origin, for example `https://chickpea.example.com`. A pasted MCP URL ending in `/mcp` is accepted. Plain HTTP is allowed only for loopback development.
 

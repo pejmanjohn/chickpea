@@ -76,6 +76,7 @@ import {
   type SkillResolution,
 } from '../config/skill-import.ts';
 import {
+  MAX_UPLOAD_CANDIDATES,
   resolveUploadedSkills,
   SkillUploadError,
   type SkillUploadResolution,
@@ -993,6 +994,9 @@ export class WorkspaceManagementService {
     if (replay) return await this.replaySkillUpload(actor, agent, replay, resolution, replaceExisting);
 
     const plan = planSkillUpload(agent.skills, resolution, replaceExisting);
+    if (plan.skills.length > MAX_UPLOAD_CANDIDATES) {
+      throw new ManagementError('invalid_request', `${agent.name} would have ${plan.skills.length} skills; an Agent holds at most ${MAX_UPLOAD_CANDIDATES}. Remove some first, or upload fewer. No change was made.`);
+    }
     if (plan.added.length === 0 && plan.replaced.length === 0) {
       return skillUploadResult(
         plan,
@@ -9282,9 +9286,12 @@ function skillUploadOperationId(
 
 async function readSkillUpload(files: readonly UploadSkillsFile[]): Promise<SkillUploadResolution> {
   const uploaded = files.map((file): UploadedSkillFile => {
-    if ('text' in file) return { name: file.name, bytes: new TextEncoder().encode(file.text) };
+    if ((file.text === undefined) === (file.base64 === undefined)) {
+      throw new ManagementError('invalid_request', `${file.name} must carry text or base64, not both. No change was made.`);
+    }
+    if (file.text !== undefined) return { name: file.name, bytes: new TextEncoder().encode(file.text) };
     try {
-      return { name: file.name, bytes: base64ToBytes(file.base64) };
+      return { name: file.name, bytes: base64ToBytes(file.base64!) };
     } catch {
       throw new ManagementError('invalid_request', `${file.name} is not valid base64. No change was made.`);
     }
@@ -9323,7 +9330,10 @@ function planSkillUpload(
       : existing.description === uploaded.description && existing.instructions === uploaded.instructions
         ? 'unchanged'
         : replaceExisting ? 'replaced' : 'conflicts';
-    plan[disposition].push(uploadedSkillReceipt(candidate));
+    plan[disposition].push({
+      ...uploadedSkillReceipt(candidate),
+      ...(disposition === 'unchanged' && existing?.enabled === false ? { disabled: true as const } : {}),
+    });
     if (disposition === 'added') plan.skills.push(uploaded);
     if (disposition === 'replaced') plan.skills[index] = uploaded;
   }
@@ -9381,6 +9391,8 @@ function formatSkillUploadReceipt(
   if (plan.added.length) lines.push(`Added ${count(plan.added)} to ${agent}: ${names(plan.added)}.`);
   if (plan.replaced.length) lines.push(`Replaced ${count(plan.replaced)} on ${agent}: ${names(plan.replaced)}.`);
   if (plan.unchanged.length) lines.push(`Already installed with the same content: ${names(plan.unchanged)}.`);
+  const off = plan.unchanged.filter(({ disabled }) => disabled);
+  if (off.length) lines.push(`Still turned off: ${names(off)}. Turn ${off.length === 1 ? 'it' : 'them'} on in Admin to use ${off.length === 1 ? 'it' : 'them'}.`);
   if (plan.conflicts.length) {
     lines.push(`Left unchanged because ${agent} already has a skill with the same name and different content: ${names(plan.conflicts)}.`);
   }

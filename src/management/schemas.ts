@@ -363,16 +363,13 @@ export const importSkillZodSchema = z.strictObject({
 const zUploadFileName = zText(255).describe('The file name, such as SKILL.md, notes.md or skills.zip. Its extension decides how the file is read.');
 export const uploadSkillsZodSchema = z.strictObject({
   agentId: zAgentId,
-  files: z.array(z.union([
-    z.strictObject({
-      name: zUploadFileName,
-      text: z.string().min(1).describe('The exact text of a SKILL.md or other markdown file, unchanged.'),
-    }),
-    z.strictObject({
-      name: zUploadFileName,
-      base64: z.string().min(4).describe('The bytes of a .zip or .skill archive, base64-encoded.'),
-    }),
-  ])).min(1).max(MAX_UPLOAD_FILES),
+  // One flat item, not a union: MCP clients handle a bare anyOf poorly.
+  files: z.array(z.strictObject({
+    name: zUploadFileName,
+    text: z.string().min(1).optional().describe('The exact text of a SKILL.md or other markdown file, unchanged. Send text or base64, not both.'),
+    base64: z.string().min(4).optional().describe('The bytes of a .zip or .skill archive, base64-encoded.'),
+  }).refine((file) => (file.text === undefined) !== (file.base64 === undefined), 'Send text or base64, not both.'))
+    .min(1).max(MAX_UPLOAD_FILES),
   replaceExisting: z.boolean().optional(),
   idempotencyKey: zText(256),
 });

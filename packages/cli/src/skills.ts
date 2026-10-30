@@ -28,7 +28,7 @@ export function skillUploadBatches(
     if (bytes > MAX_CALL_FILE_BYTES) {
       throw new CliError(
         'FILE_TOO_LARGE',
-        `${file.name} needs ${(bytes / (1024 * 1024)).toFixed(1)} MB in one call; a call carries at most 1 MB`,
+        `${file.name} is ${Math.ceil(bytes / 1024)} KB once encoded, over the ${Math.floor(MAX_CALL_FILE_BYTES / 1024)} KB one call carries`,
         `Upload it in Admin instead: open ${adminUrl}, then Skills, then Upload.`,
       );
     }

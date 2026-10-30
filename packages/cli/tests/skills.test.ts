@@ -94,7 +94,7 @@ test('a single file over the request cap or an unsupported file is refused befor
   const calls = deployment.toolCalls.length;
   const huge = await upload([fixture('huge.zip', new Uint8Array(800 * 1024)), fixture('SKILL.md', '# Fine\n')]);
   assert.equal(huge.code, 1);
-  assert.match(huge.stderr, /^chickpea: FILE_TOO_LARGE: huge\.zip needs 1\.0 MB in one call; a call carries at most 1 MB/);
+  assert.match(huge.stderr, /^chickpea: FILE_TOO_LARGE: huge\.zip is \d+ KB once encoded, over the \d+ KB one call carries/);
   assert.ok(huge.stderr.includes(`Upload it in Admin instead: open ${deployment.url}/admin/agents/agent_support, then Skills, then Upload.`), huge.stderr);
 
   const text = await upload([fixture('notes.txt', 'plain')]);

@@ -118,6 +118,7 @@ test('identical skills are unchanged and different same-name skills wait for rep
     assert.equal(again.status, 'unchanged');
     assert.equal(again.undoAvailable, false);
     assert.deepEqual(names(again.unchanged), ['alpha', 'beta', 'gamma', 'triage']);
+    assert.match(again.presentation.markdown, /Still turned off: `triage`\. Turn it on in Admin to use it\./);
     assert.match(again.presentation.markdown, /No changes were made\.$/);
     assert.deepEqual(await f.config.getAgent(agent.id), installed, 'nothing was written, and triage stays disabled');
 
@@ -180,6 +181,8 @@ test('upload_skills keeps edit authority, refuses bad input whole, and has no Sl
       origin: { kind: 'mcp', clientId: 'upload-member' },
     };
     const files = uploadFiles();
+    const fullSkills = Array.from({ length: 100 }, (_, index) => ({ ...KEPT[0]!, name: `full-${index}` }));
+    const full = await createFixtureAgent(f, 'agent_full', { skills: fullSkills });
     const refusals = [
       await call(f, { agentId: agent.id, files, idempotencyKey: 'member' }, memberContext),
       await call(f, { agentId: agent.id, files: [{ name: 'skills.zip', base64: '%%%' }], idempotencyKey: 'bad-base64' }),
@@ -189,14 +192,19 @@ test('upload_skills keeps edit authority, refuses bad input whole, and has no Sl
         idempotencyKey: 'too-many',
       }),
       await call(f, { agentId: agent.id, files, idempotencyKey: 'slack' }, ownerSlackDmContext(f)),
+      await call(f, { agentId: agent.id, files: [{ name: 'empty.md' }], idempotencyKey: 'neither' }),
+      await call(f, { agentId: full.id, files: [{ name: 'SKILL.md', text: skillMarkdown('alpha', 'First skill.') }], idempotencyKey: 'over-cap' }),
     ];
     assert.deepEqual(refusals.map((response) => response.ok ? 'ok' : `${response.error.code}: ${response.error.message}`), [
       'forbidden: The Agent is not available to this member.',
       'invalid_request: skills.zip is not valid base64. No change was made.',
       'invalid_request: Upload up to 50 files at a time. No change was made.',
       'invalid_request: Skill upload is not available in Slack. No change was made.',
+      'invalid_request: empty.md must carry text or base64, not both. No change was made.',
+      `invalid_request: ${full.name} would have 101 skills; an Agent holds at most 100. Remove some first, or upload fewer. No change was made.`,
     ]);
     assert.deepEqual((await f.config.getAgent(agent.id)).skills, KEPT);
+    assert.deepEqual((await f.config.getAgent(full.id)).skills, fullSkills);
   }));
 
 test('the MCP door lists upload_skills and installs an archive sent as base64', () =>
@@ -220,6 +228,9 @@ test('the MCP door lists upload_skills and installs an archive sent as base64', 
     };
     const tool = listed.tools.find(({ name }) => name === 'upload_skills');
     assert.deepEqual(tool?.inputSchema.required?.toSorted(), ['agentId', 'files', 'idempotencyKey']);
+    const item = (tool?.inputSchema as { properties: { files: { items: Record<string, unknown> } } }).properties.files.items;
+    assert.equal(item.anyOf ?? item.oneOf, undefined, 'a file is one flat object, not a union clients must pick from');
+    assert.deepEqual(item.required, ['name']);
 
     const called = await mcpCall(handler.fetch, 'tools/call', {
       name: 'upload_skills',

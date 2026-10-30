@@ -1353,9 +1353,11 @@ export type ImportSkillResult =
   | Extract<ProposeSkillImportResult, { status: 'selection_required' }>;
 
 /** One uploaded file: a markdown file's exact text, or an archive's bytes in base64. */
-export type UploadSkillsFile =
-  | { name: string; text: string }
-  | { name: string; base64: string };
+export interface UploadSkillsFile {
+  name: string;
+  text?: string | undefined;
+  base64?: string | undefined;
+}
 
 export interface UploadSkillsInput {
   context: ManagementActorContext;
@@ -1373,6 +1375,8 @@ export interface UploadedSkillReceipt {
   /** Package files left out; only the instructions are installed. */
   omittedPaths?: string[];
   warnings?: string[];
+  /** An unchanged skill the person had turned off; the upload leaves it off. */
+  disabled?: true;
 }
 
 export type UploadSkillsResult = {
