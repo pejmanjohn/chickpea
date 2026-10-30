@@ -59,14 +59,14 @@ const TITLES: Record<McpClientId, string> = {
   vscode: 'VS Code',
   windsurf: 'Windsurf',
   'gemini-cli': 'Gemini CLI',
-  'claude-ai': 'Claude (web, Desktop, Cowork)',
+  'claude-ai': 'Claude app (web, Desktop, Cowork)',
   chatgpt: 'ChatGPT',
   json: 'JSON (any MCP client)',
 };
 
 /** Clients that take a URL in their own UI rather than a configuration file. */
 const HOSTED_NOTES: Record<'claude-ai' | 'chatgpt', string> = {
-  'claude-ai': 'Add to Claude opens Claude\'s Add custom connector dialog with this URL filled in. Click Add, then Connect, and sign in with Slack. On a Team or Enterprise plan, an Owner adds it once under Organization settings → Connectors, and each member clicks Connect. Claude Code signed in with the same claude.ai account gets it too, so skip `claude mcp add` there.',
+  'claude-ai': 'Add to Claude opens Claude\'s Add custom connector dialog with this URL filled in. Click Add, then Connect, and sign in with Slack. Claude Code signed in with the same claude.ai account gets it too. On a Team or Enterprise plan, an Owner adds it once under Organization settings → Connectors, and each member clicks Connect.',
   chatgpt: 'Settings → Connectors (Developer mode) → Create, then paste this URL and sign in with Slack.',
 };
 

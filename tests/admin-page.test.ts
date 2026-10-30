@@ -245,7 +245,7 @@ const MCP_CLIENTS_FIXTURE = {
     },
     {
       id: 'claude-ai',
-      title: 'Claude (web, Desktop, Cowork)',
+      title: 'Claude app (web, Desktop, Cowork)',
       language: 'text',
       text: `${MCP_ORIGIN}/mcp`,
       note: 'Add to Claude opens Claude\'s Add custom connector dialog with this URL filled in.',
@@ -19574,7 +19574,7 @@ test('Coding agents settings gives every member the MCP setup copy for their cli
   );
   assert.match(harness.app.innerHTML, /claude mcp add --transport http chickpea https:\/\/chickpea\.example\/mcp/);
   assert.match(harness.app.innerHTML, /Run <code>\/mcp<\/code> inside Claude Code, choose <code>chickpea<\/code>/);
-  for (const title of ['Codex', 'Cursor', 'VS Code', 'Claude (web, Desktop, Cowork)']) {
+  for (const title of ['Codex', 'Cursor', 'VS Code', 'Claude app (web, Desktop, Cowork)']) {
     assert.ok(harness.app.innerHTML.includes(`>${title}</button>`));
   }
   assert.equal(harness.locationPath(), '/admin/settings/agents-clients');

@@ -225,16 +225,16 @@ export function connectMarkdown(origin: string, env?: Record<string, unknown>): 
     '',
     '### Claude app',
     '',
-    'Inside the Claude app you cannot add the server yourself. The person adds Chickpea as a Claude connector:',
+    'Inside the Claude app, the person adds Chickpea as a Claude connector. Do not write a configuration file or run `claude mcp add`.',
     '',
-    `1. Give them this link. It opens Claude's Add custom connector dialog with Chickpea filled in: ${claudeConnectorLink(url)}`,
-    `2. On a Claude Team or Enterprise plan, only an Owner can add connectors. An Owner uses this link instead to add Chickpea for the whole organization: ${claudeConnectorLink(url, 'organization')} A member asks an Owner to do that, then finds Chickpea under Customize → Connectors.`,
-    '3. Ask them to click Add, then Connect, sign in with Slack, and click Allow.',
-    `4. Ask them to start a new conversation, which loads the connector, and paste \`Check my Chickpea connection with step 5 of ${connectGuideUrl(origin)}\`. Steps 3 and 4 of this guide do not apply here.`,
-    '',
-    'Claude Code in a terminal that is signed in with the same claude.ai account gets the connector too, listed in `/mcp` as `claude.ai Chickpea`. If your tools already include Chickpea\'s, skip to step 5. Do not also run `claude mcp add`, because a server at the same URL replaces the connector and needs its own sign-in.',
+    `- Give them this link. It opens Claude's Add custom connector dialog with Chickpea filled in: ${claudeConnectorLink(url)}`,
+    `- On a Claude Team or Enterprise plan, only an Owner can add connectors. An Owner uses this link instead to add Chickpea for the whole organization: ${claudeConnectorLink(url, 'organization')} A member asks an Owner to do that, then finds Chickpea under Customize → Connectors.`,
+    '- Ask them to click Add, then Connect, sign in with Slack, and click Allow.',
+    '- Ask them to start a new conversation, which loads the connector, and paste `Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.` That call is the step 5 proof. Steps 3 and 4 do not apply here.',
     '',
     '### Every other client',
+    '',
+    'If you are Claude Code and `/mcp` already lists `claude.ai Chickpea`, the person added Chickpea in the Claude app and your session has it. Skip to step 5. Do not run `claude mcp add`, because a server at the same URL replaces the connector and needs its own sign-in.',
     '',
     `Use the server name \`${MCP_SERVER_NAME}\` unless it is already taken, and keep every other server the person has configured. Write the configuration for your client:`,
     '',
@@ -350,12 +350,12 @@ export function connectPageHtml(origin: string, nonce: string): string {
 <p>Paste this into Claude Code, Codex, Cursor, or any coding agent that supports MCP. It reads the guide at that address and connects itself.</p>
 ${snippetHtml('prompt', connectPrompt(origin))}
 <h2>Or add it yourself</h2>
-<p class="meta">Claude on the web, Claude Desktop, or Cowork</p>
+<p class="meta">Claude app (web, Desktop, Cowork)</p>
 <a class="install" href="${escapeHtml(claudeConnectorLink(url))}" target="_blank" rel="noopener noreferrer">Add to Claude</a>
 <p class="meta">Claude opens its Add custom connector dialog with Chickpea filled in. Click Add, then Connect, and sign in with Slack. On a Claude Team or Enterprise plan, an Owner <a href="${escapeHtml(claudeConnectorLink(url, 'organization'))}" target="_blank" rel="noopener noreferrer">adds it for the whole organization</a>, and each member clicks Connect.</p>
 <p class="meta">Claude Code</p>
 ${snippetHtml('claude-code', claude.snippet(url))}
-<p class="meta">Already added Chickpea in Claude? Claude Code signed in with the same claude.ai account has it too, so skip this command.</p>
+<p class="meta">Already added Chickpea in Claude? Claude Code signed in with the same claude.ai account gets it in its next session, so skip this command.</p>
 <p class="meta">Codex</p>
 ${snippetHtml('codex', codex.snippet(url))}
 <p class="meta">${escapeHtml(codex.login)}</p>

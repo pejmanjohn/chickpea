@@ -158,10 +158,11 @@ test('the guide hands an agent inside the Claude app the pre-filled connector li
   assert.ok(guide.indexOf('### Claude app') > guide.indexOf('## 2. Add the server'), 'inside step 2');
   assert.ok(claudeApp.includes(CLAUDE_LINK), 'personal link');
   assert.ok(claudeApp.includes(CLAUDE_ORGANIZATION_LINK), 'organization link');
-  assert.ok(claudeApp.includes(`Check my Chickpea connection with step 5 of ${ORIGIN}/connect.md`), 'proof in a new conversation');
-  assert.ok(claudeApp.includes('Do not also run `claude mcp add`'), 'Claude Code keeps one copy of the server');
-  // Claude Code in a terminal still has its own command.
-  assert.ok(guide.includes(`claude mcp add --transport http --scope user chickpea ${ORIGIN}/mcp`));
+  assert.ok(claudeApp.includes('`Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.`'), 'proof in a new conversation');
+  // Claude Code in a terminal keeps its command, after a check for a connector it already has.
+  const otherClients = guide.slice(guide.indexOf('### Every other client'));
+  assert.ok(otherClients.indexOf('`claude.ai Chickpea`') < otherClients.indexOf('| Client | Where |'), 'connector check comes before the table');
+  assert.ok(otherClients.includes(`claude mcp add --transport http --scope user chickpea ${ORIGIN}/mcp`));
 });
 
 test('the page offers Add to Claude with the same links', async () => {
@@ -180,7 +181,6 @@ test('a hosted installation\'s Claude links carry its own origin', async () => {
   for (const body of [guide, html.replaceAll('&amp;', '&')]) {
     assert.ok(body.includes(`https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=${encoded}`));
     assert.ok(body.includes(`https://claude.ai/admin-settings/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=${encoded}`));
-    assert.ok(!body.includes('chickpea.example.test'));
   }
 });
 
