@@ -111,6 +111,7 @@ export interface TurnExecutionPorts {
     | 'markDelivered'
     | 'markError'
     | 'finishStop'
+    | 'fold'
   >>;
   /** Slack claims and the per-thread active-work flag. */
   slack: AsyncCapable<Pick<
@@ -209,16 +210,17 @@ export async function executeTurnJob(
   ports: TurnExecutionPorts,
   options: TurnExecutionOptions,
 ): Promise<boolean> {
-  // A row a stop holds waits, without spending an attempt, for the stopped
-  // ending that drops or releases it. A stopped row with no Flue receipt must
-  // never dispatch, because abort() does not cover a later dispatch: it takes
-  // the stopped ending at once (KTD3), with no model call.
-  const stopGate = turnJobGate(job);
-  if (stopGate === 'hold') {
+  // A row a stop holds, or one an earlier run took as a follow-up, waits,
+  // without spending an attempt, for that run's ending to settle or release
+  // it. A stopped row with no Flue receipt must never dispatch, because
+  // abort() does not cover a later dispatch: it takes the stopped ending at
+  // once (KTD3), with no model call.
+  const gate = turnJobGate(job);
+  if (gate === 'hold') {
     options.onRetry(TURN_STOP_HOLD_RETRY_MS);
     return false;
   }
-  const stoppedBeforeDispatch = stopGate === 'stopped_before_dispatch';
+  const stoppedBeforeDispatch = gate === 'stopped_before_dispatch';
   if (!job.turn.interactionIntent && job.progress.interactionIntent) {
     job.turn.interactionIntent = job.progress.interactionIntent;
   }
@@ -506,6 +508,7 @@ export async function executeTurnJob(
       },
       getBoundRuntimePlan: (...args) => ports.turnJobs.getBoundRuntimePlan(...args),
       getThreadContinuation: (...args) => ports.turnJobs.getThreadContinuation(...args),
+      claimFold: (request) => ports.turnJobs.fold(request),
       flueDispatch,
       presentationState,
       progressiveAttributionProven: true,

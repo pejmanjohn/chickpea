@@ -2854,3 +2854,148 @@ test('a malformed stop notice is refused and never persisted', async () => {
     assert.equal(jobs.stopMarker('x'), undefined);
   } finally { db.close(); }
 });
+
+// ── follow-ups (steering A) ─────────────────────────────────────────────
+
+const FOLD_THREAD_TS = '1800000500.000100';
+const FOLD_UID = 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+
+function foldJob(id: string, suffix: string) {
+  const job = turnJob(id);
+  return {
+    ...job,
+    turn: {
+      ...job.turn, userId: 'U_PERSON', text: `Message ${suffix}`, threadTs: FOLD_THREAD_TS,
+      messageTs: `1800000500.000${suffix}`, source: 'implicit_thread_reply' as const,
+    },
+    assignment: { ...job.assignment, model: 'local-stub/fold', runtimeContract: 'chickpea-v1' as const, ownerIncarnation: 1 },
+  };
+}
+
+/**
+ * A runner over the real state store's turn rows: the real executor and the
+ * runner's turn port, with `runTurn` scripted as one dispatch per run that
+ * first claims its follow-ups through the executor's forwarded store method.
+ */
+function foldRunnerHarness(
+  db: ReturnType<typeof openStateDb>,
+  ids: Array<[string, string]>,
+  script: {
+    /** The run's Flue submission settles failed: the turn ends with its failure final. */
+    fail?: (id: string) => boolean;
+    /** Inside the head's run, after its dispatch. */
+    whileRunning?: (id: string, store: TurnJobStoreLogic) => void;
+  } = {},
+) {
+  let clock = NOW;
+  const store = new TurnJobStoreLogic(db, () => clock);
+  for (const [id, suffix] of ids) {
+    store.enqueue(foldJob(id, suffix));
+    store.assignRunner(id);
+    store.confirmRunner(id);
+    clock += 1;
+  }
+  const jobs = new ThreadRunnerJobStore(db);
+  for (const [id] of ids) jobs.admit({ id, threadKey: 'fold-thread', payload: {} }, NOW);
+  const runs: string[] = [];
+  const turns = {
+    view: async (id: string) => store.runnerView(id),
+    begin: async (id: string) => ({ view: store.runnerView(id), settings: {} }),
+    markDelivered: async (id: string) => { store.markDelivered(id); },
+    markError: async (id: string) => { store.markError(id); },
+  };
+  const port = runnerTurnJobsPort(store as unknown as TurnExecutionPorts['turnJobs'], jobs, () => Date.now());
+  const ports = {
+    env: {},
+    turnJobs: port,
+    slack: { setActiveWork: async () => {}, release: async () => {}, markCodingActiveWork: async () => {} },
+    config: {},
+    presentationState: {},
+    telemetry: { capture() {} },
+    resolveInstallation: async () => ({
+      workspaceId: 'T_TEST',
+      client: {
+        conversations: { info: async () => ({ ok: true, channel: { id: 'C_TEST', is_member: true } }) },
+        chat: { postEphemeral: async () => ({ ok: true }), postMessage: async () => ({ ok: true }) },
+        reactions: { remove: async () => ({ ok: true }) },
+      },
+    }),
+    sandboxes: () => [],
+    runTurn: async (
+      turn: PendingTurnJob['turn'],
+      assignment: PendingTurnJob['assignment'],
+      _env: unknown,
+      options: RunTurnOptions,
+    ) => {
+      const id = options.turnId!;
+      const claim = await options.claimFold!({ phase: 'start', headId: id });
+      runs.push(`${id}:${claim.messages.map((message) => message.turnJobId).join(',')}`);
+      await options.onRuntimePlan!(compileRuntimePlanV2({ turn, assignment, instructions: 'Help.', memoryEpoch: 1 }));
+      await options.flueDispatch!.prepare('Do the work', { generation: id });
+      await options.flueDispatch!.recordReceipt({
+        submissionId: `sub_${id}`, acceptedAt: new Date(NOW).toISOString(), uid: FOLD_UID,
+      });
+      script.whileRunning?.(id, store);
+      if (options.stopEnding && store.runnerView(id).job?.stop?.role === 'stopped') {
+        await options.flueDispatch!.recordSettlement({ outcome: 'aborted', settledAt: NOW, failureKind: 'agent' });
+        await options.stopEnding.finish();
+        await options.onDelivered?.('stopped');
+        return;
+      }
+      const failed = script.fail?.(id) === true;
+      await options.flueDispatch!.recordSettlement(failed
+        ? { outcome: 'failed', settledAt: NOW, failureKind: 'provider' }
+        : {
+            outcome: 'completed', settledAt: NOW,
+            result: {
+              text: 'Done.', requestedModel: null, returnedModel: null, reportedUsage: null,
+              usageCompleteness: 'not_reported',
+            },
+          });
+      await options.onDelivered?.(failed ? 'failed' : 'succeeded');
+    },
+  } as unknown as TurnExecutionPorts;
+  const deps: ThreadRunnerLoopDeps = {
+    jobs,
+    turns,
+    execute: (job, control, onRetry, threadKey) => executeTurnJob(job, ports, {
+      latency: { lane: 'cloudflare', executor: 'runner' },
+      observationRoute: { executor: 'runner', runnerKey: threadKey },
+      control,
+      onRetry,
+    }),
+    clearActiveWork: async () => {},
+    armBackstop: async () => {},
+    carried: new Map(),
+    failures: { count: 0 },
+    budgetMs: 1_000,
+    hardCapMs: 5_000,
+    recheckMs: 2,
+    sink: { info() {} },
+  };
+  return { store, jobs, runs, deps };
+}
+
+test('a burst runs once: the first turn takes the follow-ups, which settle without running', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const h = foldRunnerHarness(db, [['head', '101'], ['m1', '102'], ['m2', '103']]);
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.runs, ['head:m1,m2'], 'one run, one dispatch');
+    for (const id of ['head', 'm1', 'm2']) assert.equal(h.store.runnerView(id).status, 'done', id);
+    assert.deepEqual(h.jobs.status().jobs, { done: 3 });
+  } finally { db.close(); }
+});
+
+test('a head that fails releases its follow-ups, which then run once as one turn', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const h = foldRunnerHarness(db, [['head', '101'], ['m1', '102'], ['m2', '103']], {
+      fail: (id) => id === 'head',
+    });
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.runs, ['head:m1,m2', 'm1:m2']);
+    for (const id of ['head', 'm1', 'm2']) assert.equal(h.store.runnerView(id).status, 'done', id);
+    assert.deepEqual(h.jobs.status().jobs, { done: 3 });
+  } finally { db.close(); }
+});

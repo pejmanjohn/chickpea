@@ -22,6 +22,8 @@ import type {
 import type {
   FrozenRuntimePlanDecision,
   SlackThreadContinuation,
+  TurnFoldClaim,
+  TurnFoldRequest,
   TurnStopNotice,
 } from './turn-job-types.ts';
 import type { RunnerTurnJobView } from './turn-jobs.ts';
@@ -64,6 +66,8 @@ export interface ThreadRunnerTurnOps {
     instanceId: string;
     beforeMessageTs: string;
   }, SlackThreadContinuation | null];
+  /** Claim a head's follow-ups (TurnJobStoreLogic.fold); a replay returns the same rows. */
+  fold: [{ request: TurnFoldRequest }, TurnFoldClaim];
   recordUsagePersistence: [{ id: string; event: UsagePersistenceEvent }, TurnProgress | null];
   recordInteractionIntent: [{ id: string; intent: SlackInteractionIntent }, TurnProgress | null];
   markDelivered: [{ id: string }, null];

@@ -44,6 +44,7 @@ import type {
   ThreadRunnerTurnResult,
 } from '../slack/thread-runner-rpc.ts';
 import type { TurnExecutionPorts } from '../slack/turn-executor.ts';
+import type { TurnFoldRequest } from '../slack/turn-job-types.ts';
 
 type RunnerTurnJobsPort = TurnExecutionPorts['turnJobs'];
 import type {
@@ -2389,6 +2390,10 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
       instanceId,
       beforeMessageTs,
     }));
+  }
+
+  fold(request: TurnFoldRequest) {
+    return this.op({ kind: 'fold', request });
   }
 
   async recordUsagePersistence(id: string, event: UsagePersistenceEvent) {

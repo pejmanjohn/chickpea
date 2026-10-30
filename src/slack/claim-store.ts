@@ -20,6 +20,8 @@ import {
 } from './turn-jobs.ts';
 import type {
   TurnDirectThreadQuery,
+  TurnFoldClaim,
+  TurnFoldRequest,
   TurnJob,
   TurnMidRunReceipt,
   TurnSteeringDecision,
@@ -234,6 +236,8 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   steerTurn?(request: TurnSteeringRequest, enqueue?: TurnJob): Promise<TurnSteeringDecision>;
   /** The stopped ending: drop (or, on a completion race, release) the rows the stop holds. */
   finishTurnStop?(headId: string, outcome: 'dropped' | 'released'): Promise<TurnStopFinish | undefined>;
+  /** Claim a head's follow-ups (TurnJobStoreLogic.fold); a replay returns the same rows. */
+  foldTurn?(request: TurnFoldRequest): Promise<TurnFoldClaim>;
   /**
    * The sender's threads of one DM channel whose run is undelivered (stop
    * thread keys, at most two), for a top-level stop or check-in in a DM.

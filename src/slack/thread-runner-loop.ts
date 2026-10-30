@@ -444,8 +444,9 @@ async function runOne(
     deps.jobs.settle(local.id, 'released', now());
     return true;
   }
-  // A row a stop holds never runs: it waits, holding its thread, for the
-  // stopped ending to drop it (the row then reads settled) or release it.
+  // A row a stop holds, or one an earlier run took as a follow-up, never
+  // runs: it waits, holding its thread, for that run's ending to settle it
+  // (the row then reads settled) or release it.
   if (turnJobGate(view.job) === 'hold') {
     deps.jobs.settle(local.id, 'admitted', now(), now() + TURN_STOP_HOLD_RETRY_MS);
     return false;
@@ -723,6 +724,7 @@ export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
     freezeRuntimePlan: (...args) => storeCall(() => remote.freezeRuntimePlan(...args)),
     getBoundRuntimePlan: (...args) => storeCall(() => remote.getBoundRuntimePlan(...args)),
     getThreadContinuation: (...args) => storeCall(() => remote.getThreadContinuation(...args)),
+    fold: (...args) => storeCall(() => remote.fold(...args)),
     recordUsagePersistence: (...args) => storeCall(() => remote.recordUsagePersistence(...args)),
     recordInteractionIntent: (...args) => storeCall(() => remote.recordInteractionIntent(...args)),
     recordSlackInteractionProgress: (...args) =>

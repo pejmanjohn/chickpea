@@ -34,6 +34,7 @@ export function localSlackStateStore(input: {
     steerTurn: async (request, enqueue) => turnJobs.steer(request, enqueue),
     finishTurnStop: async (headId, outcome) =>
       slack.finishTurnStop(headId, outcome, turnJobs, work, presentations),
+    foldTurn: async (request) => turnJobs.fold(request),
     runningDirectThreads: async (query) => turnJobs.runningDirectThreadKeys(query),
     // This process's executor (the Node relay, or the state store's alarm)
     // registers its turns' status here, so their run facts live here too.

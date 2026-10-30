@@ -473,16 +473,17 @@ function createNodeThreadDrain(
       const current = await turnJobView?.(listed.id);
       if (current && current.status !== 'pending') return true;
       const job = current?.job ?? listed;
-      // A row a stop holds waits, without spending an attempt, for the
-      // stopped ending that drops or releases it. A stopped row with no Flue
-      // receipt must never dispatch: it takes the stopped ending at once
-      // (KTD3), with no model call. As in executeTurnJob.
-      const stopGate = turnJobGate(job);
-      if (stopGate === 'hold') {
+      // A row a stop holds, or one an earlier run took as a follow-up, waits,
+      // without spending an attempt, for that run's ending to settle or
+      // release it. A stopped row with no Flue receipt must never dispatch:
+      // it takes the stopped ending at once (KTD3), with no model call. As in
+      // executeTurnJob.
+      const gate = turnJobGate(job);
+      if (gate === 'hold') {
         if (!options.state) scheduleNodeTurnRelayRetry(env, TURN_STOP_HOLD_RETRY_MS);
         return false;
       }
-      const stoppedBeforeDispatch = stopGate === 'stopped_before_dispatch';
+      const stoppedBeforeDispatch = gate === 'stopped_before_dispatch';
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
         job.turn.interactionIntent = job.progress.interactionIntent;
       }
@@ -685,6 +686,7 @@ function createNodeThreadDrain(
           ...(state.getThreadContinuation
             ? { getThreadContinuation: state.getThreadContinuation.bind(state) }
             : {}),
+          ...(state.foldTurn ? { claimFold: state.foldTurn.bind(state) } : {}),
           flueDispatch,
           ...(presentationState
             ? { presentationState, progressiveAttributionProven: true }
