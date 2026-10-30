@@ -44,6 +44,7 @@ const clientAssertion = (clientId: string, jti: string) => {
 async function fixture(t: TestContext, options: {
   fetchClientMetadataResource?: ClientMetadataFetch;
   mcpRegistrationPolicy?: BetterAuthPublicHandlerInput['mcpRegistrationPolicy'];
+  throttleRegistration?: BetterAuthPublicHandlerInput['throttleRegistration'];
 } = {}) {
   const backend = new NodeBetterAuthBackend(':memory:');
   t.after(() => backend.close());
@@ -54,7 +55,9 @@ async function fixture(t: TestContext, options: {
   };
   const auth = createBetterAuth({ ...environment, privateSeam: { async resolveAdmissionOperation() { return admission; } } });
   const handler = createBetterAuthPublicHandler({
-    ...environment, ...(options.mcpRegistrationPolicy ? { mcpRegistrationPolicy: options.mcpRegistrationPolicy } : {}),
+    ...environment,
+    ...(options.mcpRegistrationPolicy ? { mcpRegistrationPolicy: options.mcpRegistrationPolicy } : {}),
+    ...(options.throttleRegistration ? { throttleRegistration: options.throttleRegistration } : {}),
   });
   const browser = new Hono();
   mountMcpOAuthBrowserRoutes(browser, async () => environment);
@@ -74,13 +77,15 @@ async function fixture(t: TestContext, options: {
   const cookie = session.headers.get('set-cookie')!.split(';', 1)[0]!;
 
   const verifier = randomBytes(32).toString('base64url');
-  function authorize(clientId: string, redirectUri: string, { signedIn = true } = {}) {
+  function authorize(clientId: string, redirectUri: string, { signedIn = true, headers = {} as Record<string, string> } = {}) {
     const query = new URLSearchParams({
       response_type: 'code', client_id: clientId, redirect_uri: redirectUri,
       scope: 'chickpea:workspace', state: 'client-state', resource: RESOURCE,
       code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
     });
-    return handler(new Request(`${ORIGIN}/api/auth/oauth2/authorize?${query}`, { headers: signedIn ? { cookie } : {} }));
+    return handler(new Request(`${ORIGIN}/api/auth/oauth2/authorize?${query}`, {
+      headers: { ...headers, ...(signedIn ? { cookie } : {}) },
+    }));
   }
   async function approve(consentLocation: string) {
     const consent = await handler(new Request(`${ORIGIN}/api/auth/oauth2/consent`, {
@@ -428,6 +433,60 @@ test('first sign-ins by metadata document share the pending-client bound with dy
   assert.equal((await f.authorize(strangers[2]!, CLAUDE_CALLBACK, { signedIn: false })).status, 302,
     'past the consent window the oldest pending client makes room');
   assert.deepEqual(f.clients().map((client) => client.clientId), [CLAUDE, strangers[1], strangers[2]]);
+});
+
+test('a first sign-in by metadata document passes the registration throttle; a stored client never does', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const host = claudeHost();
+  const sources: Array<string | null> = [];
+  let refuse = false;
+  const f = await fixture(t, {
+    fetchClientMetadataResource: host.fetch,
+    async throttleRegistration(request) {
+      sources.push(request.headers.get('cf-connecting-ip'));
+      return refuse
+        ? Response.json({ error: 'registration_rate_limited' }, { status: 429, headers: { 'retry-after': '120' } })
+        : undefined;
+    },
+  });
+  const first = await f.authorize(CLAUDE, CLAUDE_CALLBACK, { headers: { 'cf-connecting-ip': '203.0.113.7' } });
+  const callback = await f.approve(first.headers.get('location')!);
+  const exchanged = await f.exchange(CLAUDE, CLAUDE_CALLBACK, callback.searchParams.get('code')!);
+  const { refresh_token: refreshToken } = await exchanged.json() as { refresh_token: string };
+  assert.deepEqual(sources, ['203.0.113.7'], 'one throttle check, for the request that stores the client');
+
+  refuse = true;
+  const prune = t.mock.method(f.backend, 'prunePendingMcpOAuthClients');
+  for (const signedIn of [false, true]) {
+    t.mock.timers.tick(1_000);
+    const refused = await f.authorize(CLAUDE_CODE, 'http://localhost:53682/callback', {
+      signedIn, headers: { 'cf-connecting-ip': '203.0.113.9' },
+    });
+    assert.equal(refused.status, 429);
+    assert.equal(refused.headers.get('retry-after'), '120');
+    assert.deepEqual(await refused.json(), {
+      error: 'temporarily_unavailable', error_description: 'Too many new apps are signing in from here. Try again later.',
+    });
+  }
+  assert.deepEqual(sources, ['203.0.113.7', '203.0.113.9', '203.0.113.9']);
+  assert.equal(prune.mock.callCount(), 0, 'a throttled sign-in writes nothing');
+  assert.ok(!host.requests.includes(CLAUDE_CODE), 'and fetches nothing');
+
+  assert.equal((await f.authorize(CLAUDE, CLAUDE_CALLBACK)).status, 302);
+  t.mock.timers.tick(6 * 60_000);
+  assert.equal((await f.refresh(CLAUDE, refreshToken)).status, 200);
+  assert.equal(sources.length, 3, 'a stored client is never throttled');
+  assert.deepEqual(f.clients().map((client) => client.clientId), [CLAUDE]);
+
+  const registration = await f.handler(new Request(`${ORIGIN}/api/auth/oauth2/register`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.9' },
+    body: JSON.stringify({
+      application_type: 'native', client_name: 'Registered', grant_types: ['authorization_code'],
+      redirect_uris: ['http://127.0.0.1:47321/callback'], response_types: ['code'], token_endpoint_auth_method: 'none',
+    }),
+  }));
+  assert.equal(registration.status, 429, 'dynamic registration passes the same throttle');
+  assert.deepEqual(await registration.json(), { error: 'registration_rate_limited' });
 });
 
 test('consent names the domain only for a client known by its metadata document', () => {

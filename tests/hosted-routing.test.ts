@@ -653,6 +653,33 @@ test('the host\'s registration throttle and client cap reach Core\'s registratio
   });
   assert.equal(throttled.status, 429);
   assert.deepEqual(await throttled.json(), { error: 'registration_rate_limited' });
+
+  const claude = CLAUDE_DOCUMENTS.claude.url;
+  const documents = metadataDocumentServer({ [claude]: CLAUDE_DOCUMENTS.claude.body });
+  hosted.routing.environment.fetchClientMetadataResource = documents.fetch;
+  let checks = 0;
+  const authorize = (refuse: boolean) => serveHostedSharedAuth(
+    new Request(`${ORIGIN}/api/auth/oauth2/authorize?${new URLSearchParams({
+      response_type: 'code', client_id: claude, redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+      scope: 'chickpea:workspace', state: 's', code_challenge_method: 'S256',
+      code_challenge: createHash('sha256').update('verifier').digest('base64url'),
+    })}`),
+    {
+      ...hosted.routing,
+      mcpRegistrationPolicy: { maxPendingClients: 10 },
+      async throttleRegistration() {
+        checks++;
+        return refuse ? Response.json({ error: 'registration_rate_limited' }, { status: 429 }) : undefined;
+      },
+    },
+  ) as Promise<Response>;
+  const refused = await authorize(true);
+  assert.equal(refused.status, 429, 'a first sign-in by metadata document passes the host\'s throttle');
+  assert.equal((await refused.json() as { error: string }).error, 'temporarily_unavailable');
+  assert.deepEqual(documents.requests, []);
+  assert.equal((await authorize(false)).status, 302);
+  assert.equal((await authorize(true)).status, 302, 'a stored client never does');
+  assert.equal(checks, 2);
 });
 
 test('under installation tenancy Core\'s own app leaves the shared auth routes to the host', async () => {
