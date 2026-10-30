@@ -20,6 +20,7 @@ import {
 } from './turn-jobs.ts';
 import type {
   TurnDirectThreadQuery,
+  TurnEndedRow,
   TurnFoldClaim,
   TurnFoldRequest,
   TurnJob,
@@ -386,6 +387,16 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
  * `ctx.storage.sql`. Methods are synchronous — both backends execute SQL
  * synchronously — and the async public interface wraps them.
  */
+/** How the Run of a turn that never ran settles. */
+interface UnranRunEnding {
+  terminalDisposition: 'cancelled' | 'superseded';
+  safeFailureCode: string;
+}
+
+const STOPPED_RUN: UnranRunEnding = { terminalDisposition: 'cancelled', safeFailureCode: 'run_stopped' };
+/** A follow-up an earlier turn answered. */
+const FOLDED_RUN: UnranRunEnding = { terminalDisposition: 'superseded', safeFailureCode: 'run_folded' };
+
 export class SlackStateLogic {
   private turnJobsAvailable = false;
 
@@ -605,36 +616,63 @@ export class SlackStateLogic {
   ): TurnStopFinish | undefined {
     const finished = turnJobs.finishStop(headId, outcome);
     if (finished?.outcome !== 'dropped') return finished;
-    const settleRun = (runId: string, prepared = false) => {
-      try {
-        const run = work.getRun(runId as RunId);
-        const settlement = {
-          runId: runId as RunId,
-          terminalDisposition: 'cancelled' as const,
-          safeFailureCode: 'run_stopped',
-          settledAt: this.now(),
-        };
-        if (run?.status === 'admitted' || run?.status === 'queued') {
-          work.settleUnstartedRun(settlement);
-        } else if (prepared && (run?.status === 'input_ready' || run?.status === 'executing')) {
-          work.settleInterruptedRun(settlement);
-        }
-      } catch {
-        console.warn('[chickpea] a stopped turn kept an unsettled Run');
-      }
-    };
     const head = turnJobs.runnerView(headId).job;
-    if (head?.runId && !head.dispatchReceipt) settleRun(head.runId, true);
-    for (const row of finished.rows) {
+    if (head?.runId && !head.dispatchReceipt) this.settleUnranRun(work, head.runId, STOPPED_RUN, true);
+    this.closeUnranRows(finished.rows, STOPPED_RUN, work, presentations);
+    return finished;
+  }
+
+  /**
+   * A delivered turn (TurnJobStoreLogic.markDelivered), then the records of
+   * the follow-ups that ended with it, which never run: each Run settles
+   * `superseded` and each admitted presentation closes with no Slack effect,
+   * as the stopped ending closes the rows it drops. A repeat settles
+   * whatever is left.
+   */
+  endTurn(
+    headId: string,
+    turnJobs: TurnJobStoreLogic,
+    work: WorkStoreLogic,
+    presentations: SlackRunPresentationStoreLogic,
+  ): void {
+    turnJobs.markDelivered(headId);
+    this.closeUnranRows(turnJobs.settledFoldMembers(headId), FOLDED_RUN, work, presentations);
+  }
+
+  /**
+   * Rows that ended without a turn of their own: their Runs settle and their
+   * presentations close, one at a time and best effort, after the rows
+   * themselves ended, so bookkeeping never undoes that ending.
+   */
+  private closeUnranRows(
+    rows: readonly TurnEndedRow[],
+    ending: UnranRunEnding,
+    work: WorkStoreLogic,
+    presentations: SlackRunPresentationStoreLogic,
+  ): void {
+    for (const row of rows) {
       if (!row.runId) continue;
-      settleRun(row.runId);
+      this.settleUnranRun(work, row.runId, ending);
       try {
         presentations.settleUnstarted(row.runId);
       } catch {
-        console.warn('[chickpea] a dropped turn kept an admitted presentation');
+        console.warn('[chickpea] a turn that never ran kept an admitted presentation');
       }
     }
-    return finished;
+  }
+
+  private settleUnranRun(work: WorkStoreLogic, runId: string, ending: UnranRunEnding, prepared = false): void {
+    try {
+      const run = work.getRun(runId as RunId);
+      const settlement = { runId: runId as RunId, ...ending, settledAt: this.now() };
+      if (run?.status === 'admitted' || run?.status === 'queued') {
+        work.settleUnstartedRun(settlement);
+      } else if (prepared && (run?.status === 'input_ready' || run?.status === 'executing')) {
+        work.settleInterruptedRun(settlement);
+      }
+    } catch {
+      console.warn('[chickpea] a turn that never ran kept an unsettled Run');
+    }
   }
 
   private purgeExpired(): void {

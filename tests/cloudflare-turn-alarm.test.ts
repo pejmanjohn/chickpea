@@ -546,6 +546,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
         record.activeWork.push([key, active]);
       },
       isCodingActiveWork: (key: string) => key === 'coding',
+      endTurn: (id: string, turnJobs: { markDelivered(id: string): void }) => turnJobs.markDelivered(id),
     },
     gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
     presentations: { get: (runId: string) => ({ runId, projectionVersion: 3 }) },

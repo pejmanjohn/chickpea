@@ -769,7 +769,7 @@ export function stopNoteFacts(input: {
   return {
     facts: {
       stopperUserId: finished.record.stopperUserId,
-      unread: (finished.outcome === 'dropped' ? finished.count : 0) + (input.beforeDispatch ? 1 : 0),
+      unread: (finished.outcome === 'dropped' ? finished.count - finished.read : 0) + (input.beforeDispatch ? 1 : 0),
       pullRequests,
       windingDown,
     },

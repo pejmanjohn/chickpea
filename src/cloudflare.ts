@@ -3011,7 +3011,7 @@ function applyThreadRunnerTurnOp(
     case 'recordInteractionIntent':
       return turnJobs.recordInteractionIntent(op.id, op.intent) ?? null;
     case 'markDelivered':
-      turnJobs.markDelivered(op.id);
+      stores.slack.endTurn(op.id, turnJobs, stores.work, stores.presentations);
       return null;
     case 'markError':
       turnJobs.markError(op.id);
@@ -3139,7 +3139,9 @@ async function drainCloudflareManagementReceipts(
         } finally {
           if (isAgentCreatedWelcome(deliveredRecord.receipt) &&
               deliveredRecord.receipt.turnJobId) {
-            stores.turnJobs.markDelivered(deliveredRecord.receipt.turnJobId);
+            stores.slack.endTurn(
+              deliveredRecord.receipt.turnJobId, stores.turnJobs, stores.work, stores.presentations,
+            );
           }
         }
       },
@@ -3464,9 +3466,10 @@ function localManagementRuntime(
 
 /**
  * The alarm executor's turn-row port: the state store's own rows, except
- * that the stopped ending also settles the dropped turns' Runs and
- * presentations, as slackTurnStopFinish does. Spelled out like
- * runnerTurnJobsPort, so the one method that differs is visible.
+ * that a delivery and the stopped ending also settle the Runs and
+ * presentations of the turns that ended without running, as the runner's
+ * `markDelivered` and slackTurnStopFinish do. Spelled out like
+ * runnerTurnJobsPort, so the methods that differ are visible.
  */
 function alarmTurnJobsPort(stores: TagStateStores): TurnExecutionPorts['turnJobs'] {
   const rows = stores.turnJobs;
@@ -3485,7 +3488,7 @@ function alarmTurnJobsPort(stores: TagStateStores): TurnExecutionPorts['turnJobs
     recordUsagePersistence: (...args) => rows.recordUsagePersistence(...args),
     recordInteractionIntent: (...args) => rows.recordInteractionIntent(...args),
     recordSlackInteractionProgress: (...args) => rows.recordSlackInteractionProgress(...args),
-    markDelivered: (...args) => rows.markDelivered(...args),
+    markDelivered: (id) => stores.slack.endTurn(id, rows, stores.work, stores.presentations),
     markError: (...args) => rows.markError(...args),
     finishStop: (headId, outcome) =>
       stores.slack.finishTurnStop(headId, outcome, rows, stores.work, stores.presentations),

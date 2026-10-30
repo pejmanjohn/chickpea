@@ -532,7 +532,7 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
       rows.calls.push(`finishStop:${id}:${outcome}`);
       const stop = rows.rows.get(id)?.stop;
       if (stop?.role !== 'stopped') return undefined;
-      return { outcome, count: 0, rows: [], record: { ...stop, ending: { outcome, count: 0, at: NOW } } };
+      return { outcome, count: 0, read: 0, rows: [], record: { ...stop, ending: { outcome, count: 0, at: NOW } } };
     },
   } as unknown as TurnExecutionPorts['turnJobs'], jobs, () => Date.now(), stops);
   const ports = {
@@ -2770,7 +2770,7 @@ test("the runner alarm record counts turns a stopped ending dropped, once howeve
     const rows = fakeRows([]);
     const h = runnerHarness(db, rows);
     const finish = {
-      outcome: 'dropped' as const, count: 2, rows: [], record: { ...STOP_RECORD, ending: { outcome: 'dropped' as const, count: 2, at: NOW } },
+      outcome: 'dropped' as const, count: 2, read: 0, rows: [], record: { ...STOP_RECORD, ending: { outcome: 'dropped' as const, count: 2, at: NOW } },
     };
     const port = runnerTurnJobsPort({
       finishStop: async () => finish,
@@ -2898,6 +2898,7 @@ function foldRunnerHarness(
   const jobs = new ThreadRunnerJobStore(db);
   for (const [id] of ids) jobs.admit({ id, threadKey: 'fold-thread', payload: {} }, NOW);
   const runs: string[] = [];
+  const unread: number[] = [];
   const turns = {
     view: async (id: string) => store.runnerView(id),
     begin: async (id: string) => ({ view: store.runnerView(id), settings: {} }),
@@ -2938,7 +2939,7 @@ function foldRunnerHarness(
       script.whileRunning?.(id, store);
       if (options.stopEnding && store.runnerView(id).job?.stop?.role === 'stopped') {
         await options.flueDispatch!.recordSettlement({ outcome: 'aborted', settledAt: NOW, failureKind: 'agent' });
-        await options.stopEnding.finish();
+        unread.push((await options.stopEnding.finish())!.unread);
         await options.onDelivered?.('stopped');
         return;
       }
@@ -2973,7 +2974,7 @@ function foldRunnerHarness(
     recheckMs: 2,
     sink: { info() {} },
   };
-  return { store, jobs, runs, deps };
+  return { store, jobs, runs, unread, deps };
 }
 
 test('a burst runs once: the first turn takes the follow-ups, which settle without running', async () => {
@@ -2995,6 +2996,26 @@ test('a head that fails releases its follow-ups, which then run once as one turn
     });
     await runThreadRunnerAlarm(h.deps);
     assert.deepEqual(h.runs, ['head:m1,m2', 'm1:m2']);
+    for (const id of ['head', 'm1', 'm2']) assert.equal(h.store.runnerView(id).status, 'done', id);
+    assert.deepEqual(h.jobs.status().jobs, { done: 3 });
+  } finally { db.close(); }
+});
+
+test('a stop during a run with follow-ups drops them with it; the stop note counts none unread', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const h = foldRunnerHarness(db, [['head', '101'], ['m1', '102'], ['m2', '103']], {
+      whileRunning: (id, store) => {
+        const head = store.runnerView(id).job!;
+        assert.equal(store.steer({
+          kind: 'stop', threadKey: turnStopThreadKey(head.turn, head.assignment), source: 'typed',
+          stopperUserId: 'U_PERSON', cutoffTs: '1800000500.000110',
+        }).outcome, 'stopped');
+      },
+    });
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.runs, ['head:m1,m2'], 'the follow-ups never run');
+    assert.deepEqual(h.unread, [0], 'the stopped run had read both');
     for (const id of ['head', 'm1', 'm2']) assert.equal(h.store.runnerView(id).status, 'done', id);
     assert.deepEqual(h.jobs.status().jobs, { done: 3 });
   } finally { db.close(); }

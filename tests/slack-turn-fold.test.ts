@@ -17,6 +17,12 @@ import {
 } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { SlackStateLogic, slackSessionGenerationFromTimestamp } from '../src/slack/claim-store.ts';
+import { localSlackStateStore } from '../src/slack/local-state-store.ts';
+import { SlackRunPresentationStoreLogic, type SlackRunPresentationV3 } from '../src/slack/run-presentations.ts';
+import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
+import { WorkStoreLogic } from '../src/work/store.ts';
+import type { RunId } from '../src/work/types.ts';
 
 /**
  * Follow-ups (steering A): the same person's plain messages queued behind a
@@ -534,6 +540,119 @@ test('a late fold needs the head\'s own dispatched instance and stops after thre
     assert.throws(() => s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 4, take: true }));
   } finally {
     s.db.close();
+  }
+});
+
+// ── the follow-ups' canonical records ────────────────────────────────
+
+/** One state store with every owner of a canonical Slack admission. */
+function canonicalStore() {
+  const s = store();
+  const now = () => s.clock.now;
+  return {
+    ...s,
+    slack: new SlackStateLogic(s.db, now),
+    work: new WorkStoreLogic(s.db, { now }),
+    presentations: new SlackRunPresentationStoreLogic(s.db, now),
+  };
+}
+
+type CanonicalStore = ReturnType<typeof canonicalStore>;
+
+/** Admit a turn as Slack admission does: claims, Work Run, TurnJob and an admitted V3 presentation. */
+function admitCanonical(c: CanonicalStore, queued: TurnJob): RunId {
+  const admission = prepareSlackShadowAdmission({
+    turn: queued.turn, assignment: queued.assignment, sourceVisibility: 'public', admittedAt: c.clock.now,
+  });
+  const sessionGeneration = slackSessionGenerationFromTimestamp(queued.turn.messageTs);
+  const result = c.slack.admitCanonical({
+    evtKey: queued.evtKey,
+    msgKey: queued.msgKey,
+    threadKey: THREAD,
+    admission,
+    turnJob: { ...queued, runId: admission.run.id, executionAuthority: admission.run.executionAuthority },
+    presentation: {
+      schemaVersion: 3,
+      root: { workspaceId: 'T_FOLD', channelId: 'C_FOLD', threadTs: THREAD_TS, requesterUserId: queued.turn.userId },
+      owner: { kind: 'chickpea' },
+      sessionGeneration,
+      currentActivity: {
+        kind: 'preparing', action: 'Preparing', object: 'your request', generation: sessionGeneration, sequence: 1,
+        operation: { operationId: `activity_${queued.id}`, certainty: 'pending' },
+      },
+    },
+  }, c.work, c.turns, c.presentations);
+  assert.equal(result.claimed, true);
+  c.clock.now += 1;
+  return admission.run.id;
+}
+
+function canonicalBurst() {
+  const c = canonicalStore();
+  const head = job('head', '101');
+  const runs = {
+    head: admitCanonical(c, head),
+    second: admitCanonical(c, job('second', '102')),
+    third: admitCanonical(c, job('third', '103')),
+  };
+  claimed(c.turns, 'head');
+  dispatch(c.turns, head);
+  return { ...c, runs };
+}
+
+test('a delivered turn settles its follow-ups\' Runs superseded and closes their presentations, once', () => {
+  const c = canonicalBurst();
+  try {
+    c.turns.recordFlueSettlement('head', COMPLETED);
+    c.slack.endTurn('head', c.turns, c.work, c.presentations);
+    for (const id of ['second', 'third'] as const) {
+      const run = c.work.getRun(c.runs[id]);
+      assert.equal(run?.status, 'settled', id);
+      assert.equal(run?.terminalDisposition, 'superseded', `${id} was answered by the head's run`);
+      assert.equal(c.work.listRunExecutions(c.runs[id]).length, 0, `${id} never executed`);
+      const presentation = c.presentations.get(c.runs[id]) as SlackRunPresentationV3;
+      assert.equal(presentation.lifecyclePhase, 'settled');
+      assert.equal(presentation.repairRequired, false);
+    }
+    assert.equal(c.work.getRun(c.runs.head)?.status, 'admitted', 'the head\'s own lifecycle settles its Run');
+    const settled = (['second', 'third'] as const).map((id) => c.work.getRun(c.runs[id]));
+    c.clock.now += 60_000;
+    c.slack.endTurn('head', c.turns, c.work, c.presentations);
+    assert.deepEqual((['second', 'third'] as const).map((id) => c.work.getRun(c.runs[id])), settled);
+    assert.equal(c.work.listAuditEvents(c.runs.second, 50)
+      .filter((event) => event.eventType === 'work.run_settled_without_delivery').length, 1);
+  } finally {
+    c.db.close();
+  }
+});
+
+test('the Node state store settles the follow-ups\' records when it marks their head delivered', async () => {
+  const c = canonicalBurst();
+  try {
+    c.turns.recordFlueSettlement('head', COMPLETED);
+    const state = localSlackStateStore({
+      slack: c.slack, work: c.work, turnJobs: c.turns, presentations: c.presentations,
+    });
+    await state.markTurnDelivered!('head');
+    for (const id of ['second', 'third'] as const) {
+      assert.equal(c.work.getRun(c.runs[id])?.terminalDisposition, 'superseded', id);
+    }
+  } finally {
+    c.db.close();
+  }
+});
+
+test('follow-ups a failed run released keep their Runs and presentations, to run as ordinary turns', () => {
+  const c = canonicalBurst();
+  try {
+    c.turns.recordFlueSettlement('head', FAILED);
+    c.slack.endTurn('head', c.turns, c.work, c.presentations);
+    for (const id of ['second', 'third'] as const) {
+      assert.equal(c.work.getRun(c.runs[id])?.status, 'admitted', id);
+      assert.equal((c.presentations.get(c.runs[id]) as SlackRunPresentationV3).lifecyclePhase, 'admitted', id);
+    }
+  } finally {
+    c.db.close();
   }
 });
 

@@ -15,7 +15,7 @@ import type { SlackInteractionProgress, SlackInteractionProgressPatch } from '..
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import type { SlackInteractionIntent } from '../src/slack/interaction-intent.ts';
-import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
+import { repairSlackInteractionProgress, runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import {
   executeTurnJob,
@@ -504,6 +504,7 @@ function stopExecutor(turns: TurnJobStoreLogic, script: (options: RunTurnOptions
       markDelivered: traced('markDelivered'),
       markError: traced('markError'),
       finishStop: traced('finishStop'),
+      fold: traced('fold'),
     },
     slack: {
       setActiveWork: () => undefined,
@@ -610,6 +611,45 @@ test('a dropped row whose 👀 removal fails keeps its receipt pending for the r
     assert.equal(turns.getProgress('unread_2')?.slackInteraction?.acknowledgment?.cleanup, 'done');
     assert.deepEqual(turns.listPendingSlackInteractionCleanups().map(({ id }) => id), ['unread_1'],
       'the delivered row is left to the durable cleanup');
+  } finally { db.close(); }
+});
+
+test('a follow-up keeps its 👀 while the run that took it works; after that run delivers, the sweep removes exactly it', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const head = job('head', '1800000000.000101', false);
+    turns.enqueue(head);
+    turns.enqueue(job('follow_1', '1800000000.000102'));
+    turns.enqueue(job('follow_2', '1800000000.000103'));
+    const h = stopExecutor(turns, async (options) => {
+      const claim = await options.claimFold!({ phase: 'start', headId: 'head' });
+      assert.deepEqual(claim.messages.map((message) => message.turnJobId), ['follow_1', 'follow_2']);
+      dispatch(turns, head);
+      assert.deepEqual(h.reactions.log, [], 'kept while the run works');
+      turns.recordFlueSettlement('head', {
+        outcome: 'completed', settledAt: NOW,
+        result: {
+          text: 'Done.', requestedModel: null, returnedModel: null, reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        },
+      });
+      await options.onDelivered?.('succeeded');
+    });
+    for (const ts of ['1800000000.000102', '1800000000.000103']) h.reactions.react(BOT, ts, 'eyes');
+    h.reactions.react('U_MEMBER', '1800000000.000103', 'eyes');
+    assert.equal(await executeTurnJob(pendingOf(turns, 'head'), h.ports, h.options), true);
+
+    const due = turns.listPendingSlackInteractionCleanups();
+    assert.deepEqual(due.map(({ id }) => id), ['follow_1', 'follow_2'], 'left to the cleanup sweep');
+    const client = (await h.ports.resolveInstallation('T_MID')).client;
+    for (const row of due) {
+      await repairSlackInteractionProgress(row.turn, row.assignment, row.progress.slackInteraction!, client,
+        (patch) => { turns.recordSlackInteractionProgress(row.id, patch); });
+    }
+    assert.deepEqual(h.reactions.log, ['remove 1800000000.000102:eyes', 'remove 1800000000.000103:eyes']);
+    assert.deepEqual(h.reactions.on('1800000000.000103'), ['U_MEMBER'], 'the person\'s 👀 stays');
+    assert.deepEqual(turns.listPendingSlackInteractionCleanups(), []);
   } finally { db.close(); }
 });
 

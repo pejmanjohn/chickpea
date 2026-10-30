@@ -78,7 +78,7 @@ export function localSlackStateStore(input: {
     listPendingSlackInteractionCleanups: async () =>
       turnJobs.listPendingSlackInteractionCleanups(MAX_TURN_DRAIN_BATCH),
     hasPendingSlackInteractionCleanup: async () => turnJobs.hasPendingSlackInteractionCleanup(),
-    markTurnDelivered: async (id) => turnJobs.markDelivered(id),
+    markTurnDelivered: async (id) => slack.endTurn(id, turnJobs, work, presentations),
     markTurnError: async (id) => turnJobs.markError(id),
     markTurnRecoveryRequired: async (id, reason) => turnJobs.markRecoveryRequired(id, reason),
     listTurnRecoveryRequired: async (limit = 50) => turnJobs.listRecoveryRequired(limit),

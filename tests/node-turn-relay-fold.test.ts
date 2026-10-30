@@ -120,7 +120,7 @@ async function admit(state: SlackStateStore, thread: SlackThread, queued: TurnJo
     },
   });
   assert.equal(admitted.claimed, true);
-  return admitted;
+  return admission.run.id;
 }
 
 type Script = (options: RunTurnOptions, turn: NormalizedSlackTurn) => Promise<void>;
@@ -207,14 +207,16 @@ async function statusOf(state: SlackStateStore, id: string) {
   return (await state.turnJobView!(id)).status;
 }
 
-test('a burst on Node runs once: the first turn takes the follow-ups, which settle without running', async () => {
+test('a burst on Node runs once: the follow-ups settle without running, their records close, and their 👀 go', async () => {
   const h = relayHarness();
   const thread = slackThread('1800000700.000100');
   try {
     const head = thread.job('nf1_head', '101');
     await admit(h.state, thread, head);
-    await admit(h.state, thread, thread.job('nf1_m1', '102'), true);
-    await admit(h.state, thread, thread.job('nf1_m2', '103'), true);
+    const memberRuns = [
+      await admit(h.state, thread, thread.job('nf1_m1', '102'), true),
+      await admit(h.state, thread, thread.job('nf1_m2', '103'), true),
+    ];
     const taken: string[][] = [];
     h.scripts.set(head.id, async (options, turn) => {
       taken.push(await runClaiming(options, turn, 'completed'));
@@ -224,6 +226,13 @@ test('a burst on Node runs once: the first turn takes the follow-ups, which sett
     assert.deepEqual(h.runs, [head.id], 'one run');
     assert.deepEqual(taken, [['nf1_m1', 'nf1_m2']]);
     for (const id of [head.id, 'nf1_m1', 'nf1_m2']) assert.equal(await statusOf(h.state, id), 'done', id);
+    for (const runId of memberRuns) {
+      const presentation = await h.state.getRunPresentation!(runId);
+      assert.equal(presentation?.schemaVersion === 3 && presentation.lifecyclePhase, 'settled');
+    }
+    await h.wake();
+    assert.deepEqual(h.reactions, [`remove ${thread.ts('102')}:eyes`, `remove ${thread.ts('103')}:eyes`]);
+    assert.deepEqual(await h.state.listPendingSlackInteractionCleanups!(), []);
   } finally { h.close(); }
 });
 
