@@ -40,6 +40,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { holdUntilResponseEnds } from '../src/http/response-lifetime.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { REAL_MCP_CLIENT_REGISTRATIONS } from './helpers/mcp-client-registrations.ts';
 import { startPostgresTestCluster, type PostgresTestClusterStart } from './helpers/postgres-cluster.ts';
 
 const ORIGIN = 'https://hosted.example';
@@ -590,6 +591,7 @@ test('discovery, JWKS and the MCP sign-in continuation are served before any ins
   const authorizationServer = await (await shared('/.well-known/oauth-authorization-server/api/auth')).json() as Record<string, unknown>;
   assert.equal(authorizationServer.issuer, `${ORIGIN}/api/auth`);
   assert.equal(authorizationServer.token_endpoint, `${ORIGIN}/api/auth/oauth2/token`);
+  assert.deepEqual(authorizationServer.token_endpoint_auth_methods_supported, ['none']);
   const resource = await (await shared('/.well-known/oauth-protected-resource/mcp')).json() as Record<string, unknown>;
   assert.equal(resource.resource, RESOURCE);
   const jwks = await (await shared('/api/auth/jwks')).json() as { keys: unknown[] };
@@ -597,16 +599,15 @@ test('discovery, JWKS and the MCP sign-in continuation are served before any ins
   assert.equal((await shared('/api/auth/organization/list')).status, 404, 'only the public Better Auth routes answer');
 
   // An MCP client without a session is sent to sign in and back to its authorization.
+  const claudeAi = REAL_MCP_CLIENT_REGISTRATIONS['claude.ai'];
   const registered = await shared('/api/auth/oauth2/register', {
     method: 'POST', headers: { 'content-type': 'application/json', origin: ORIGIN },
-    body: JSON.stringify({
-      application_type: 'native', client_name: 'Hosted client', grant_types: ['authorization_code', 'refresh_token'],
-      redirect_uris: [REDIRECT], response_types: ['code'], token_endpoint_auth_method: 'none',
-    }),
+    body: JSON.stringify(claudeAi),
   });
+  assert.equal(registered.status, 201, await registered.clone().text());
   const { client_id: clientId } = await registered.json() as { client_id: string };
   const query = new URLSearchParams({
-    response_type: 'code', client_id: clientId, redirect_uri: REDIRECT, scope: RENEWABLE_SCOPE, state: 's',
+    response_type: 'code', client_id: clientId, redirect_uri: claudeAi.redirect_uris[0], scope: RENEWABLE_SCOPE, state: 's',
     resource: RESOURCE, code_challenge: createHash('sha256').update('v'.repeat(64)).digest('base64url'),
     code_challenge_method: 'S256',
   });

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { FlueObservation } from '@flue/runtime';
+import { MCP_CLIENT_REGISTRATION_DENIALS } from '../auth/mcp-oauth.ts';
 import type { ManagementOperation } from './types.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
 
@@ -133,6 +134,7 @@ const REASON_TOKENS = new Set([
   'handle_collision', 'name_collision', 'invalid_handle', 'channel_membership_required',
   'private_channel_invite_required', 'rate_limited', 'user_group_create_ambiguous',
   'slack_unavailable', 'slack_operation_failed',
+  ...MCP_CLIENT_REGISTRATION_DENIALS,
 ]);
 
 interface ManagementTelemetrySink {

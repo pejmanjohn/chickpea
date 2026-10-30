@@ -629,6 +629,23 @@ for (const [style, expected] of [['|', 'First line.\nSecond line.\n'], ['>-', 'F
   });
 }
 
+test('a plain description containing ": " reads as text, as Claude Code reads it', () => {
+  const front = parseFrontmatter('---\r\nname: foo\r\ndescription: Use when: a rep asks "why?" \\ or C:\\path: anything.\r\n---\r\nBody.\r\n');
+  assert.equal(front.description, 'Use when: a rep asks "why?" \\ or C:\\path: anything.');
+  assert.equal(front.body, 'Body.\r\n');
+});
+
+for (const header of [
+  'name: foo\ndescription: &a Use when: x.\nmetadata: *a',
+  'name: foo\ndescription: !unsafe Use when: x.',
+  'name: foo\ndescription: Use when: x.\ndescription: Again: y.',
+]) {
+  test(`the colon fallback still rejects: ${header.split('\n')[1]}`, () => {
+    assert.throws(() => parseFrontmatter(`---\n${header}\n---\nBody.`),
+      (error: unknown) => error instanceof SkillImportError && error.code === 'invalid_document');
+  });
+}
+
 for (const [description, body, code] of [
   ['Foo.', '  \n', 'invalid_document'],
   ['Foo.', 'x'.repeat(100_001), 'document_too_large'],

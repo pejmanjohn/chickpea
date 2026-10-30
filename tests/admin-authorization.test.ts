@@ -15,6 +15,7 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
+import { buildZip, skillMarkdown } from './helpers/zip.ts';
 
 function principal(role: AuthPrincipal['role']): AuthPrincipal {
   return {
@@ -335,6 +336,67 @@ test('Members can resolve public skills without gaining shared GitHub App access
 
   const unauthenticated = await app.request('http://localhost/admin/api/skills/resolve', {
     method: 'POST', body: JSON.stringify({ source: 'acme/public-skills' }),
+  });
+  assert.equal(unauthenticated.status, 401);
+});
+
+test('Members can upload skill files; the upload route alone accepts bodies past 1 MiB', async () => {
+  const app = createAdminRoutes(testAdminAuthority('member-token', undefined, undefined, principal('member')));
+  const post = (path: string, body: string, token = 'member-token') => app.request(`http://localhost${path}`, {
+    method: 'POST',
+    headers: testAdminHeaders(token, {
+      'content-type': 'application/json',
+      'content-length': String(Buffer.byteLength(body)),
+    }),
+    body,
+  });
+  const upload = (files: Array<{ name: string; bytes: Uint8Array | string }>) => post('/admin/api/skills/upload', JSON.stringify({
+    files: files.map(({ name, bytes }) => ({ name, base64: Buffer.from(bytes).toString('base64') })),
+  }));
+
+  const archive = buildZip([{ path: 'skills/triage/SKILL.md', content: skillMarkdown('triage', 'Sort requests.') }]);
+  const accepted = await upload([{ name: 'skills.zip', bytes: archive }, { name: 'README.md', bytes: '# No header' }]);
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(await accepted.json(), {
+    resolution: {
+      skills: [{
+        name: 'triage',
+        description: 'Sort requests.',
+        instructions: '# Steps\nDo the work.\n',
+        path: 'skills.zip/skills/triage',
+        hasScripts: false,
+        inspection: { complete: true, scriptPaths: [], auxiliaryPaths: [], unknownPaths: [], warnings: [] },
+      }],
+      skipped: 1,
+      issues: [{
+        path: 'README.md',
+        code: 'not_a_skill',
+        message: 'Not a skill. To upload a markdown file as a skill, give it a YAML header with a name and a description.',
+      }],
+    },
+  });
+
+  // About 2.7 MiB of JSON: over every other Admin mutation's 1 MiB, under upload's 12 MiB.
+  const filler = new Uint8Array(2 * 1024 * 1024);
+  assert.equal((await upload([{ name: 'filler.bin', bytes: filler }])).status, 200);
+  const resolveBody = JSON.stringify({ source: 'acme/skills', padding: 'x'.repeat(2 * 1024 * 1024) });
+  const resolveTooLarge = await post('/admin/api/skills/resolve', resolveBody);
+  assert.equal(resolveTooLarge.status, 413);
+  assert.deepEqual(await resolveTooLarge.json(), { error: 'request_too_large' });
+
+  const overCap = await upload([{ name: 'big.zip', bytes: new Uint8Array(9 * 1024 * 1024) }]);
+  assert.equal(overCap.status, 413);
+  assert.deepEqual(await overCap.json(), { error: 'request_too_large' });
+
+  const tooMany = await upload(Array.from({ length: 51 }, (_, index) => ({ name: `s${index}.md`, bytes: '#' })));
+  assert.equal(tooMany.status, 413);
+  assert.deepEqual(await tooMany.json(), { error: 'too_many_files', message: 'Upload up to 50 files at a time.' });
+
+  assert.equal((await post('/admin/api/skills/upload', '{"files":')).status, 400);
+  assert.equal((await post('/admin/api/skills/upload', JSON.stringify({ files: [{ name: 'a.md', base64: '!!' }] }))).status, 400);
+
+  const unauthenticated = await app.request('http://localhost/admin/api/skills/upload', {
+    method: 'POST', body: JSON.stringify({ files: [] }),
   });
   assert.equal(unauthenticated.status, 401);
 });
