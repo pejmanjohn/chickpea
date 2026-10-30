@@ -510,9 +510,9 @@ in, plus the exact snippet for every client:
 
 - **Settings → MCP** in Admin (`https://<your Chickpea>/admin/settings/agents-clients`).
   The Coding agents page lists Claude Code, Codex, Cursor, VS Code, Windsurf,
-  Gemini CLI, claude.ai and Claude Desktop, ChatGPT, and a generic JSON block,
-  each with a Copy button, plus one-click **Add to Cursor** and **Add to VS
-  Code**. Every member can open it.
+  Gemini CLI, the Claude app, ChatGPT, and a generic JSON block, each with a
+  Copy button, plus one-click **Add to Claude**, **Add to Cursor**, and **Add
+  to VS Code**. Every member can open it.
 - **`https://<your Chickpea>/connect`**, a public page on your deployment, for
   anyone who is not signed in to Admin yet. It works before Slack setup is
   finished, although `/mcp` answers 404 until setup completes.
