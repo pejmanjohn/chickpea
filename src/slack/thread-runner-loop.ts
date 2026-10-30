@@ -687,7 +687,9 @@ function unavailable(error: unknown): unknown {
  * receipt and settlement are also told to `observer` (the runner's stops),
  * and a stopped ending is kept for the alarm record's dropped-turn count.
  */
-export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
+export function runnerTurnJobsPort<
+  P extends TurnExecutionPorts['turnJobs'] & Required<Pick<TurnExecutionPorts['turnJobs'], 'fold'>>,
+>(
   remote: P,
   jobs: ThreadRunnerJobStore,
   now: () => number = Date.now,

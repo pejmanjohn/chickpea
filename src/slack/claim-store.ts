@@ -379,14 +379,6 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
 // thread's config snapshot is bounded to the same horizon (see snapshot-store):
 // past it, an implicit reply is no longer admitted, so the snapshot is dead.
 
-/**
- * Target-neutral claims + thread-registry logic over the StateDb
- * mini-interface: the single source of the tables, TTL purges, and the
- * INSERT OR IGNORE claim semantics. The Node backend runs it over
- * `node:sqlite`; the Cloudflare Durable Object runs the same class over
- * `ctx.storage.sql`. Methods are synchronous — both backends execute SQL
- * synchronously — and the async public interface wraps them.
- */
 /** How the Run of a turn that never ran settles. */
 interface UnranRunEnding {
   terminalDisposition: 'cancelled' | 'superseded';
@@ -397,6 +389,14 @@ const STOPPED_RUN: UnranRunEnding = { terminalDisposition: 'cancelled', safeFail
 /** A follow-up an earlier turn answered. */
 const FOLDED_RUN: UnranRunEnding = { terminalDisposition: 'superseded', safeFailureCode: 'run_folded' };
 
+/**
+ * Target-neutral claims + thread-registry logic over the StateDb
+ * mini-interface: the single source of the tables, TTL purges, and the
+ * INSERT OR IGNORE claim semantics. The Node backend runs it over
+ * `node:sqlite`; the Cloudflare Durable Object runs the same class over
+ * `ctx.storage.sql`. Methods are synchronous — both backends execute SQL
+ * synchronously — and the async public interface wraps them.
+ */
 export class SlackStateLogic {
   private turnJobsAvailable = false;
 

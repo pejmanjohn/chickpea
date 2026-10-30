@@ -75,6 +75,9 @@ import { NOW, turnJob } from './fixtures/state-db/maintenance.ts';
 
 const threadOf = (job: PendingTurnJob) => job.turn.threadTs;
 
+/** The state store's turn rows as a runner's port reaches them. */
+type RunnerRemote = Parameters<typeof runnerTurnJobsPort>[0];
+
 /** The state store's workspace budgets, over one presentation store. */
 function sharedBudgets(store: SlackRunPresentationStoreLogic) {
   return {
@@ -534,7 +537,7 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
       if (stop?.role !== 'stopped') return undefined;
       return { outcome, count: 0, read: 0, rows: [], record: { ...stop, ending: { outcome, count: 0, at: NOW } } };
     },
-  } as unknown as TurnExecutionPorts['turnJobs'], jobs, () => Date.now(), stops);
+  } as unknown as RunnerRemote, jobs, () => Date.now(), stops);
   const ports = {
     env: {},
     turnJobs: port,
@@ -1442,7 +1445,7 @@ test('a store that stays unreachable mid-turn is retried, never answered with a 
     const port = runnerTurnJobsPort({
       recordAttempt: async (_id: string, value: number) => { attempts.push(value); },
       recordFlueSettlement: async () => { throw new StateStoreDisconnectedError(new Error('reset')); },
-    } as unknown as TurnExecutionPorts['turnJobs'], jobs);
+    } as unknown as RunnerRemote, jobs);
     const finals: string[] = [];
     const retries: Array<number | undefined> = [];
     const settled = await executeTurnJob({
@@ -1490,7 +1493,7 @@ test('a store that stays unreachable mid-turn is retried, never answered with a 
       turnJobs: runnerTurnJobsPort({
         recordAttempt: async (_id: string, value: number) => { lateAttempts.push(value); },
         recordFlueSettlement: async () => { throw new StateStoreDisconnectedError(new Error('reset')); },
-      } as unknown as TurnExecutionPorts['turnJobs'], jobs),
+      } as unknown as RunnerRemote, jobs),
       slack: { setActiveWork: async () => {}, release: async () => {}, markCodingActiveWork: async () => {} },
       config: {},
       presentationState: {},
@@ -2774,7 +2777,7 @@ test("the runner alarm record counts turns a stopped ending dropped, once howeve
     };
     const port = runnerTurnJobsPort({
       finishStop: async () => finish,
-    } as unknown as TurnExecutionPorts['turnJobs'], h.jobs);
+    } as unknown as RunnerRemote, h.jobs);
     assert.deepEqual(await port.finishStop('head', 'dropped'), finish);
     await port.finishStop('head', 'dropped');
     const first = await runThreadRunnerAlarm(h.deps);
@@ -2885,6 +2888,8 @@ function foldRunnerHarness(
     fail?: (id: string) => boolean;
     /** Inside the head's run, after its dispatch. */
     whileRunning?: (id: string, store: TurnJobStoreLogic) => void;
+    /** The executor's port has no fold, as on the alarm executor. */
+    withoutFold?: boolean;
   } = {},
 ) {
   let clock = NOW;
@@ -2905,10 +2910,11 @@ function foldRunnerHarness(
     markDelivered: async (id: string) => { store.markDelivered(id); },
     markError: async (id: string) => { store.markError(id); },
   };
-  const port = runnerTurnJobsPort(store as unknown as TurnExecutionPorts['turnJobs'], jobs, () => Date.now());
+  const runnerPort = runnerTurnJobsPort(store as unknown as RunnerRemote, jobs, () => Date.now());
+  const { fold: _fold, ...withoutFold } = runnerPort;
   const ports = {
     env: {},
-    turnJobs: port,
+    turnJobs: script.withoutFold ? withoutFold : runnerPort,
     slack: { setActiveWork: async () => {}, release: async () => {}, markCodingActiveWork: async () => {} },
     config: {},
     presentationState: {},
@@ -2929,7 +2935,9 @@ function foldRunnerHarness(
       options: RunTurnOptions,
     ) => {
       const id = options.turnId!;
-      const claim = await options.claimFold!({ phase: 'start', headId: id });
+      const claim = options.claimFold
+        ? await options.claimFold({ phase: 'start', headId: id })
+        : { messages: [] };
       runs.push(`${id}:${claim.messages.map((message) => message.turnJobId).join(',')}`);
       await options.onRuntimePlan!(compileRuntimePlanV2({ turn, assignment, instructions: 'Help.', memoryEpoch: 1 }));
       await options.flueDispatch!.prepare('Do the work', { generation: id });
@@ -3018,5 +3026,14 @@ test('a stop during a run with follow-ups drops them with it; the stop note coun
     assert.deepEqual(h.unread, [0], 'the stopped run had read both');
     for (const id of ['head', 'm1', 'm2']) assert.equal(h.store.runnerView(id).status, 'done', id);
     assert.deepEqual(h.jobs.status().jobs, { done: 3 });
+  } finally { db.close(); }
+});
+
+test('an executor port without fold, as on the alarm executor, runs each message as its own turn', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const h = foldRunnerHarness(db, [['head', '101'], ['m1', '102'], ['m2', '103']], { withoutFold: true });
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.runs, ['head:', 'm1:', 'm2:']);
   } finally { db.close(); }
 });

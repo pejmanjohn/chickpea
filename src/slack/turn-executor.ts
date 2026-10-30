@@ -111,8 +111,7 @@ export interface TurnExecutionPorts {
     | 'markDelivered'
     | 'markError'
     | 'finishStop'
-    | 'fold'
-  >>;
+  >> & Partial<AsyncCapable<Pick<TurnJobStoreLogic, 'fold'>>>;
   /** Slack claims and the per-thread active-work flag. */
   slack: AsyncCapable<Pick<
     SlackStateLogic,
@@ -508,7 +507,10 @@ export async function executeTurnJob(
       },
       getBoundRuntimePlan: (...args) => ports.turnJobs.getBoundRuntimePlan(...args),
       getThreadContinuation: (...args) => ports.turnJobs.getThreadContinuation(...args),
-      claimFold: (request) => ports.turnJobs.fold(request),
+      // Only an executor that reads each row again before running it may
+      // fold: the alarm executor runs rows it listed earlier, so a follow-up
+      // its own head took could run again.
+      ...(ports.turnJobs.fold ? { claimFold: (request) => ports.turnJobs.fold!(request) } : {}),
       flueDispatch,
       presentationState,
       progressiveAttributionProven: true,

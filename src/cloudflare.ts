@@ -3484,7 +3484,6 @@ function alarmTurnJobsPort(stores: TagStateStores): TurnExecutionPorts['turnJobs
     freezeRuntimePlan: (...args) => rows.freezeRuntimePlan(...args),
     getBoundRuntimePlan: (...args) => rows.getBoundRuntimePlan(...args),
     getThreadContinuation: (...args) => rows.getThreadContinuation(...args),
-    fold: (...args) => rows.fold(...args),
     recordUsagePersistence: (...args) => rows.recordUsagePersistence(...args),
     recordInteractionIntent: (...args) => rows.recordInteractionIntent(...args),
     recordSlackInteractionProgress: (...args) => rows.recordSlackInteractionProgress(...args),
