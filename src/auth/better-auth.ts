@@ -4,7 +4,13 @@ import { setSessionCookie } from 'better-auth/cookies';
 import { getOrgAdapter, jwt, organization } from 'better-auth/plugins';
 import { mcp } from '@better-auth/mcp';
 
-import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
+import {
+  admitPendingMcpOAuthClient,
+  DEFAULT_MCP_REGISTRATION_POLICY,
+  type BetterAuthDatabaseBackend,
+  type McpRegistrationPolicy,
+} from './better-auth-backend.ts';
+import { clientMetadataDiscovery, type ClientMetadataFetch } from './mcp-client-metadata.ts';
 import {
   MCP_OAUTH_SCOPES,
   mcpResourceForOrigin,
@@ -77,6 +83,10 @@ export interface CreateBetterAuthInput {
    * still check.
    */
   mayIssueTokens?: (betterAuthUserId: string) => Promise<boolean>;
+  /** Bounds both dynamic registrations and clients first seen by their metadata document. */
+  mcpRegistrationPolicy?: Partial<McpRegistrationPolicy>;
+  /** Fetches client metadata documents; the guarded public-HTTPS transport by default. */
+  fetchClientMetadataResource?: ClientMetadataFetch;
 }
 
 export function createBetterAuth(input: CreateBetterAuthInput) {
@@ -260,6 +270,10 @@ function createOptions(
         clientRegistrationDefaultScopes: [...MCP_OAUTH_SCOPES],
         clientRegistrationAllowedScopes: [],
         clientRegistrationRequirePKCE: true,
+        extensions: [{
+          clientDiscovery: clientMetadataDiscovery(input.fetchClientMetadataResource, () =>
+            admitPendingMcpOAuthClient(input.backend, { ...DEFAULT_MCP_REGISTRATION_POLICY, ...input.mcpRegistrationPolicy })),
+        }],
         ...(input.mayIssueTokens ? { customTokenResponseFields: tokenIssuanceGate(input.mayIssueTokens) } : {}),
       }) as unknown as BetterAuthPlugin,
       createPrivateSessionPlugin(input.privateSeam, internalMarker),

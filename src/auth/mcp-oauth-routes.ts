@@ -21,6 +21,7 @@ import {
   MCP_WORKSPACE_SCOPE,
   mcpResourceForOrigin,
 } from './mcp-oauth.ts';
+import { clientMetadataHost } from './mcp-client-metadata.ts';
 import { BetterAuthMcpOAuthContinuationStore } from './mcp-oauth-continuation.ts';
 import { hostedLoginFence, type HostedLoginFence } from './hosted-login.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
@@ -260,11 +261,11 @@ async function showMcpConsent(c: Context, environment: BetterAuthEnvironment): P
   if (!await verifySignedOAuthQuery(query, environment.secret)) {
     return invalidBrowserRequest();
   }
-  const clientName = await lookupMcpClientName(
-    environment, query.get('client_id') ?? '', c.req.raw.headers,
-  );
+  const clientId = query.get('client_id') ?? '';
+  const clientName = await lookupMcpClientName(environment, clientId, c.req.raw.headers);
+  const clientHost = clientMetadataHost(clientId);
   const scope = query.get('scope') ?? MCP_WORKSPACE_SCOPE;
-  return new Response(renderMcpConsentPage({ clientName, scope, oauthQuery: query.toString() }), {
+  return new Response(renderMcpConsentPage({ clientName, clientHost, scope, oauthQuery: query.toString() }), {
     status: 200,
     headers: browserHeaders('text/html; charset=utf-8'),
   });
@@ -556,6 +557,8 @@ export function displayMcpClientName(name: string | undefined): string | undefin
 
 export function renderMcpConsentPage(input: {
   clientName?: string | undefined;
+  /** The host of the client's metadata document URL: the one identity the app cannot choose. */
+  clientHost?: string | undefined;
   scope: string;
   oauthQuery: string;
 }): string {
@@ -563,6 +566,7 @@ export function renderMcpConsentPage(input: {
   const app = name
     ? `${escapeHtml(name)} <span class="note">(name provided by the app)</span>`
     : 'An unnamed app';
+  const domain = input.clientHost ? `<dt>Domain</dt><dd>${escapeHtml(input.clientHost)}</dd>` : '';
   const permission = input.scope.split(/\s+/).filter(Boolean).map((scope) => {
     if (scope === MCP_WORKSPACE_SCOPE) return 'Manage this Chickpea workspace';
     if (scope === MCP_OFFLINE_SCOPE) return 'stay signed in';
@@ -570,7 +574,7 @@ export function renderMcpConsentPage(input: {
   }).join(' and ');
   return brandPage('Authorize Chickpea', `      <h1>Allow workspace management?</h1>
       <p>A coding agent is asking to manage this Chickpea workspace as you. It signs in as you and can only do what you can do.</p>
-      <dl><dt>App</dt><dd>${app}</dd><dt>Permission</dt><dd>${escapeHtml(permission)}</dd></dl>
+      <dl><dt>App</dt><dd>${app}</dd>${domain}<dt>Permission</dt><dd>${escapeHtml(permission)}</dd></dl>
       <form method="post" action="/auth/mcp/consent">
         <input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">
         <button type="submit" name="decision" value="allow">Allow</button>
