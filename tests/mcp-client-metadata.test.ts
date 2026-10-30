@@ -591,6 +591,17 @@ test('a first sign-in by metadata document passes the registration throttle; a s
   assert.deepEqual(await registration.json(), { error: 'registration_rate_limited' });
 });
 
+test('consent names the port of a document served on a non-default one', async (t) => {
+  const url = 'https://evil.example:8443/client';
+  const f = await fixture(t, { fetchClientMetadataResource: metadataDocumentServer({ [url]: lookalike(url) }).fetch });
+  const consent = new URL((await f.authorize(url, CLAUDE_CALLBACK)).headers.get('location')!, ORIGIN);
+  assert.equal(consent.pathname, '/auth/mcp/consent');
+  const page = await (await f.browser.request(`${ORIGIN}${consent.pathname}${consent.search}`, {
+    headers: { cookie: f.cookie },
+  })).text();
+  assert.ok(page.includes('<dt>Domain</dt><dd>evil.example:8443</dd>'));
+});
+
 test('consent names the domain only for a client known by its metadata document', () => {
   const html = renderMcpConsentPage({
     clientName: 'Claude', clientHost: 'evil.example', scope: 'chickpea:workspace', oauthQuery: 'sig=test',
