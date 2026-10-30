@@ -143,7 +143,7 @@ test('an entry that inflates past its declared size is refused, so a lying heade
 });
 
 test('total markdown read per upload stops at 16 MB', async () => {
-  const header = '---\nname: doc-NN\ndescription: Fills the budget.\n---\n';
+  const header = '---\ndescription: Fills the budget.\n---\n';
   const entries = Array.from({ length: 33 }, (_, index) => ({
     path: `doc-${index}/SKILL.md`,
     content: header + 'w'.repeat(512 * 1024 - header.length),
@@ -188,12 +188,13 @@ test('an unreadable markdown entry is one issue; the rest of its archive still r
   ]);
 });
 
-test('an upload offers at most 100 skills', async () => {
-  const entries = Array.from({ length: 101 }, (_, index) => ({
+test('an upload offers at most 100 skills and reports the cap once', async () => {
+  const entries = Array.from({ length: 103 }, (_, index) => ({
     path: `s${index}/SKILL.md`, content: skillMarkdown(`s${index}`, 'One of many.'),
   }));
   const resolution = await resolveUploadedSkills([file('many.zip', buildZip(entries))]);
   assert.equal(resolution.skills.length, 100);
+  assert.equal(resolution.skipped, 3);
   assert.deepEqual(codes(resolution.issues), ['many.zip/s100 too_many_skills']);
 });
 

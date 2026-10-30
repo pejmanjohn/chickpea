@@ -5872,7 +5872,7 @@
     // A new-skill editor (index === null) renders below the list, not in a row.
     var newForm = (editor && (editor.index === null || editor.index === undefined)) ? '<div class="skill-list">' + skillEditorFormHtml(editor) + '</div>' : "";
     // The import and upload panels take the place of the action buttons while
-    // open, mirroring the inline skill editor. Only one of the three is open.
+    // open, mirroring the inline skill editor.
     var importPanel = imp ? '<div class="skill-list">' + skillImportPanelHtml(imp) + '</div>' : "";
     var uploadPanel = upload ? '<div class="skill-list">' + skillUploadPanelHtml(upload) + '</div>' : "";
     var addButtons = (editor || imp || upload)
@@ -16173,11 +16173,13 @@
     return !!types && Array.prototype.indexOf.call(types, "Files") >= 0 &&
       !!draft && draft.canEdit !== false && !state.skillEditor && !state.skillImport && !state.skillUpload;
   }
+  // The card always keeps a drop from reaching the browser, which would
+  // otherwise open the dropped file in place of Admin.
   document.addEventListener("dragover", function (event) {
     var card = skillBuildCard(event);
-    if (!card || !skillDropAccepted(event)) return;
+    if (!card) return;
     event.preventDefault();
-    card.classList.add("is-drop-target");
+    if (skillDropAccepted(event)) card.classList.add("is-drop-target");
   });
   document.addEventListener("dragleave", function (event) {
     var card = skillBuildCard(event);
@@ -16187,9 +16189,8 @@
     var card = skillBuildCard(event);
     if (!card) return;
     card.classList.remove("is-drop-target");
-    if (!skillDropAccepted(event)) return;
     event.preventDefault();
-    uploadSkillFiles(event.dataTransfer.files);
+    if (skillDropAccepted(event)) uploadSkillFiles(event.dataTransfer.files);
   });
 
   // Blur commits the inline title rename (same as Enter). focusout bubbles;
@@ -18198,7 +18199,7 @@
     render();
     if (upload.error) return;
     Promise.all(files.map(function (file) {
-      return Promise.resolve(file.arrayBuffer()).then(function (buffer) {
+      return file.arrayBuffer().then(function (buffer) {
         return { name: file.name, base64: base64FromArrayBuffer(buffer) };
       });
     })).then(function (payload) {

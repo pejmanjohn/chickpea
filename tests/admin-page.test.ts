@@ -7354,7 +7354,11 @@ test('files dropped on the Build your own card upload like the Upload button', a
   assert.match(harness.app.innerHTML, /Found 0 skills in 1 file/);
 
   dragover(fileDrag);
-  assert.equal(prevented, 2, 'an open upload panel does not take another drop');
+  drop(fileDrag);
+  assert.equal(prevented, 4, 'a drop while the panel is open never reaches the browser');
+  assert.deepEqual([...classes], [], 'an open upload panel does not light up for another drop');
+  await flushAsync();
+  assert.equal(harness.skillUploadPosts.length, 1, 'an open upload panel does not take another drop');
 });
 
 test('the upload refuses more than 50 files or 8 MB before sending anything', async () => {

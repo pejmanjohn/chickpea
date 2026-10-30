@@ -93,7 +93,9 @@ export async function resolveUploadedSkills(
     const directory = isSkillFile ? dirname(entry.innerPath) : '';
     const path = isSkillFile && entry.archive ? [entry.archive, directory].filter(Boolean).join('/') : entry.path;
     if (skills.length >= MAX_UPLOAD_CANDIDATES) {
-      skip(path, 'too_many_skills', `Only the first ${MAX_UPLOAD_CANDIDATES} skills in an upload are listed.`);
+      if (!issues.some(({ code }) => code === 'too_many_skills')) {
+        skip(path, 'too_many_skills', `Only the first ${MAX_UPLOAD_CANDIDATES} skills in an upload are listed.`);
+      } else skipped += 1;
       continue;
     }
     let document: ReturnType<typeof readSkillDocument>;
@@ -143,8 +145,9 @@ function hasSkillHeader(markdown: string): boolean {
   try {
     const front = parseFrontmatter(markdown);
     return Boolean(front.name?.trim() && front.description?.trim());
-  } catch {
-    return false;
+  } catch (error) {
+    if (error instanceof SkillImportError) return false;
+    throw error;
   }
 }
 
