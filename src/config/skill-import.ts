@@ -167,6 +167,20 @@ function stripGitSuffix(repo: string): string {
   return repo.replace(/\.git$/, '');
 }
 
+function parseYamlHeader(source: string): unknown {
+  const document = parseDocument(source, { schema: 'core', uniqueKeys: true, strict: true });
+  if (document.errors.length || document.warnings.length) throw new Error('Unsupported YAML');
+  return document.toJS({ maxAliasCount: 0 });
+}
+
+// Claude Code loads `description: Use when: …`, which strict YAML rejects, by
+// quoting top-level plain values that contain ": " and parsing again. Skills
+// written for it should import here too.
+function quoteColonValues(header: string): string {
+  return header.replace(/^([A-Za-z0-9_-]+):[ \t]+(\S.*?)[ \t]*$/gm, (line, key: string, value: string) =>
+    value.includes(': ') && !/^["'|>[{&*!]/.test(value) ? `${key}: ${JSON.stringify(value)}` : line);
+}
+
 /** Parse only the YAML header; preserve the markdown procedure byte for byte. */
 export function parseFrontmatter(markdown: string): {
   name?: string;
@@ -182,11 +196,13 @@ export function parseFrontmatter(markdown: string): {
   if (match[1]!.length > 16_384) throw new SkillImportError('document_too_large', 'SKILL.md frontmatter exceeds 16384 characters.');
   let fields: unknown;
   try {
-    const document = parseDocument(match[1]!, { schema: 'core', uniqueKeys: true, strict: true });
-    if (document.errors.length || document.warnings.length) throw new Error('Unsupported YAML');
-    fields = document.toJS({ maxAliasCount: 0 });
+    fields = parseYamlHeader(match[1]!);
   } catch {
-    throw new SkillImportError('invalid_document', 'SKILL.md has invalid or unsupported YAML frontmatter (aliases and custom tags are not supported).');
+    try {
+      fields = parseYamlHeader(quoteColonValues(match[1]!));
+    } catch {
+      throw new SkillImportError('invalid_document', 'SKILL.md has a YAML header that could not be read. Check its syntax; aliases and custom tags are not supported.');
+    }
   }
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) throw new SkillImportError('invalid_document', 'SKILL.md frontmatter must be a mapping.');
   const header = fields as Record<string, unknown>;
