@@ -140,6 +140,22 @@ export function betterAuthBackendContract(contract: BetterAuthBackendContract): 
     assert.equal((await f.refresh(inUse)).status, 200, 'the client someone consented to stays');
   });
 
+  it('a client known by its metadata document is pending until someone consents, whatever its authentication', async (f) => {
+    // Stored before Chickpea refused key-authenticated documents.
+    await f.storeClient({
+      clientId: 'https://evil.example/client', clientDiscoveryId: 'cimd', tokenEndpointAuthMethod: 'private_key_jwt',
+      jwksUri: 'https://evil.example/jwks', redirectUris: [REDIRECT], createdAt: new Date(), updatedAt: new Date(),
+    });
+    const earlier = new Date(Date.now() - 60_000);
+    const later = new Date(Date.now() + 60_000);
+    const prune = (expiredBefore: Date, evictableBefore: Date) =>
+      f.backend.prunePendingMcpOAuthClients({ expiredBefore, evictableBefore, keep: 0 });
+    assert.equal(await prune(earlier, earlier), 1, 'it counts toward the bound');
+    assert.equal(await f.count('oauthClient'), 1);
+    assert.equal(await prune(later, later), 0, 'and expires');
+    assert.equal(await f.count('oauthClient'), 0);
+  });
+
   it('an OAuth continuation is consumed once and an expired one is refused', async (f) => {
     const now = Date.now();
     await f.backend.putMcpOAuthContinuation({
@@ -338,6 +354,8 @@ interface Fixture extends BetterAuthBackendSubject {
   /** A dynamically registered MCP client's renewable grant, through consent. */
   grant(cookie: string, options: { resource: boolean }): Promise<Grant>;
   refresh(grant: Grant): Promise<Response>;
+  /** Writes an OAuth client row directly, as an older release may have. */
+  storeClient(data: Record<string, unknown>): Promise<void>;
 }
 
 async function openFixture(t: TestContext, contract: BetterAuthBackendContract): Promise<Fixture | undefined> {
@@ -407,6 +425,9 @@ async function openFixture(t: TestContext, contract: BetterAuthBackendContract):
       grant_type: 'refresh_token', client_id: grant.clientId,
       refresh_token: grant.refreshToken, ...(grant.resource ? { resource: grant.resource } : {}),
     }),
+    async storeClient(data) {
+      await (await auth.$context).adapter.create({ model: 'oauthClient', data });
+    },
   };
 }
 

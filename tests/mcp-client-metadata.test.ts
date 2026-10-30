@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { test, type TestContext } from 'node:test';
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose';
 import { Hono } from 'hono';
@@ -21,6 +21,25 @@ const RENEWABLE_SCOPE = 'chickpea:workspace offline_access';
 /** A valid document at `url` that copies Claude's name and redirect. */
 const lookalike = (url: string, fields: Record<string, unknown> = {}) =>
   JSON.stringify({ ...JSON.parse(CLAUDE_DOCUMENTS.claude.body), client_id: url, client_uri: undefined, ...fields });
+
+const PUBLIC_CLIENTS_ONLY = {
+  error: 'invalid_client',
+  error_description: 'metadata document must describe a public client: token_endpoint_auth_method "none", no jwks or jwks_uri',
+};
+
+const signingKeys = () => {
+  const jwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
+  return { keys: [{ ...jwk, alg: 'EdDSA', use: 'sig', kid: 'k1' }] };
+};
+
+/** A client assertion naming `clientId`, signed by no key it publishes. */
+const clientAssertion = (clientId: string, jti: string) => {
+  const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const claims = {
+    iss: clientId, sub: clientId, aud: `${ORIGIN}/api/auth/oauth2/token`, exp: Math.floor(Date.now() / 1_000) + 60, jti,
+  };
+  return `${part({ alg: 'EdDSA', kid: 'unknown' })}.${part(claims)}.AAAA`;
+};
 
 async function fixture(t: TestContext, options: {
   fetchClientMetadataResource?: ClientMetadataFetch;
@@ -83,7 +102,7 @@ async function fixture(t: TestContext, options: {
   const clients = () => (backend.database.prepare(
     'SELECT clientId, clientDiscoveryId, userId, clientSecret, tokenEndpointAuthMethod, name FROM oauthClient ORDER BY createdAt, clientId',
   ).all() as Record<string, unknown>[]).map((row) => ({ ...row }));
-  return { backend, handler, browser, cookie, authorize, approve, exchange, refresh, clients };
+  return { backend, handler, browser, cookie, authorize, approve, token, exchange, refresh, clients };
 }
 
 const claudeHost = () => metadataDocumentServer({
@@ -212,6 +231,59 @@ test('a metadata document is refused unless it names its own URL, lists the redi
   assert.equal(location.searchParams.get('error'), 'invalid_redirect');
   assert.equal(location.searchParams.get('code'), null);
   assert.deepEqual(f.clients().map((client) => client.clientId), [CLAUDE], 'no refused document stores a client');
+});
+
+test('a metadata document must describe a public client, as dynamic registration requires', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const keys = signingKeys();
+  const documents: Record<string, Record<string, unknown>> = {
+    'https://evil.example/signed': { token_endpoint_auth_method: 'private_key_jwt', jwks: keys },
+    'https://evil.example/signed-by-uri': { token_endpoint_auth_method: 'private_key_jwt', jwks_uri: 'https://evil.example/jwks' },
+    'https://evil.example/public-with-keys': { jwks: keys },
+  };
+  const host = metadataDocumentServer({
+    ...Object.fromEntries(Object.entries(documents).map(([url, fields]) => [url, lookalike(url, fields)])),
+    'https://evil.example/jwks': JSON.stringify(keys),
+  });
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  for (const clientId of Object.keys(documents)) {
+    for (const signedIn of [false, true]) {
+      t.mock.timers.tick(1_000);
+      const response = await f.authorize(clientId, CLAUDE_CALLBACK, { signedIn });
+      assert.equal(response.status, 400, `${clientId} signed ${signedIn ? 'in' : 'out'}`);
+      assert.deepEqual(await response.json(), PUBLIC_CLIENTS_ONLY, clientId);
+    }
+  }
+  assert.deepEqual(f.clients(), [], 'a refused document leaves no client behind');
+  assert.ok(!host.requests.includes('https://evil.example/jwks'));
+});
+
+test('a stored client whose document turns to key authentication is refused before any key is fetched', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const jwksUri = 'https://claude.ai/oauth/jwks';
+  const served: Record<string, ServedDocument> = { [CLAUDE]: CLAUDE_DOCUMENTS.claude.body, [jwksUri]: JSON.stringify(signingKeys()) };
+  const host = metadataDocumentServer(served);
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  const authorization = await f.authorize(CLAUDE, CLAUDE_CALLBACK);
+  const callback = await f.approve(authorization.headers.get('location')!);
+  const exchanged = await f.exchange(CLAUDE, CLAUDE_CALLBACK, callback.searchParams.get('code')!);
+  const { refresh_token: refreshToken } = await exchanged.json() as { refresh_token: string };
+
+  served[CLAUDE] = lookalike(CLAUDE, { client_uri: 'https://claude.ai', token_endpoint_auth_method: 'private_key_jwt', jwks_uri: jwksUri });
+  t.mock.timers.tick(6 * 60_000);
+  const renewed = await f.refresh(CLAUDE, refreshToken);
+  assert.equal(renewed.status, 400);
+  assert.deepEqual(await renewed.json(), PUBLIC_CLIENTS_ONLY);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const asserted = await f.token({
+      grant_type: 'authorization_code', code: 'unused', code_verifier: 'v'.repeat(43), redirect_uri: CLAUDE_CALLBACK,
+      client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+      client_assertion: clientAssertion(CLAUDE, `attempt-${attempt}`),
+    });
+    assert.equal(asserted.status, 400);
+    assert.deepEqual(await asserted.json(), PUBLIC_CLIENTS_ONLY);
+  }
+  assert.ok(!host.requests.includes(jwksUri), 'no key is fetched for a client Chickpea refuses');
 });
 
 test('a metadata document URL must be public HTTPS before anything is fetched or pruned', async (t) => {
