@@ -8,6 +8,7 @@ import type { SlackArtifactReceipt } from './artifact-receipts.ts';
 import type { SlackAgentCreationTerminalIntent } from './agent-creation-terminal.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import type { CodingWorkerUsageRecord } from './coding-worker-run.ts';
+import type { FoldedMessage } from './follow-ups.ts';
 
 interface FlueDispatchEnvelopeBase {
   agentName: 'chickpea-slack-v2';
@@ -212,6 +213,52 @@ export interface TurnStopMemberRecordV1 {
 }
 
 /**
+ * Fold record on a follow-up row (`turn_jobs.fold_json`, additive: an older
+ * release ignores the column): the head row whose run took this message.
+ * `absorbed` holds the row back while its head is open; the head's delivery
+ * settles a received member (`settled`, under the existing `done` status).
+ * `released` is never written: a member whose head ended any other way reads
+ * as released and runs as an ordinary turn again (see effectiveFold).
+ */
+export interface TurnFoldMemberRecordV1 {
+  schemaVersion: 1;
+  role: 'absorbed' | 'settled' | 'released';
+  headId: string;
+  /** 0: taken when the head's turn started; k ≥ 1: the head's k-th late fold. */
+  cycle: number;
+  /** The model's input holds the message: cycle 0 at once, a late fold once a later claim confirms it. */
+  received: boolean;
+  at: number;
+}
+
+/**
+ * Claim a head's follow-ups. `start`: before the head's dispatch, cycle 0;
+ * a repeat returns the same rows. `finish`: in the head's would-stop phase on
+ * Flue instance `instanceId`; `received` late folds were appended (this call
+ * confirms them), and with `take` it claims the next cycle or returns the
+ * rows already stamped for it.
+ */
+export type TurnFoldRequest =
+  | { phase: 'start'; headId: string }
+  | { phase: 'finish'; headId: string; instanceId: string; received: number; take: boolean };
+
+export interface TurnFoldClaim {
+  /** This claim's members, oldest first; empty when none was eligible. */
+  messages: FoldedMessage[];
+  /** The person's words over the head and its members through this cycle (foldedRequestText). */
+  requesterText: string;
+}
+
+/** A row that ended without a turn of its own, with what its records still owe. */
+export interface TurnEndedRow {
+  id: string;
+  runId?: string;
+  messageTs?: string;
+  /** The row's 👀 Chickpea added and has not removed yet (KTD9). */
+  receipt?: TurnMidRunReceipt;
+}
+
+/**
  * A matched stop or check-in (or a plain message) for one Slack thread,
  * decided against the thread's undelivered rows in one state-store
  * transaction (KTD1). `threadKey` is `turnStopThreadKey`: the conversation
@@ -281,14 +328,10 @@ export type TurnSteeringDecision =
 export interface TurnStopFinish {
   outcome: 'dropped' | 'released';
   count: number;
+  /** Of those rows, the follow-ups the stopped run had already read (its dispatched fold members). */
+  read: number;
   /** Content-free coordinates of those rows, to finalize their records and receipts. */
-  rows: Array<{
-    id: string;
-    runId?: string;
-    messageTs?: string;
-    /** The row's 👀 Chickpea added and has not removed yet (KTD9). */
-    receipt?: TurnMidRunReceipt;
-  }>;
+  rows: TurnEndedRow[];
   record: TurnStopHeadRecordV1;
 }
 

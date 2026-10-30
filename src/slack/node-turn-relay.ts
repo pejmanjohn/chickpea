@@ -65,7 +65,7 @@ import {
   isTurnJobStopRefusal,
   MAX_POST_DISPATCH_ATTEMPTS,
   TURN_STOP_HOLD_RETRY_MS,
-  turnJobStopGate,
+  turnJobGate,
 } from './turn-jobs.ts';
 import { slackPresentationStatePort } from './presentation-state-port.ts';
 import { recordDeliveredSlackAgentMessage } from './public-context.ts';
@@ -477,7 +477,7 @@ function createNodeThreadDrain(
       // stopped ending that drops or releases it. A stopped row with no Flue
       // receipt must never dispatch: it takes the stopped ending at once
       // (KTD3), with no model call. As in executeTurnJob.
-      const stopGate = turnJobStopGate(job);
+      const stopGate = turnJobGate(job);
       if (stopGate === 'hold') {
         if (!options.state) scheduleNodeTurnRelayRetry(env, TURN_STOP_HOLD_RETRY_MS);
         return false;

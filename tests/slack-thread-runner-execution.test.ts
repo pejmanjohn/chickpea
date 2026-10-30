@@ -55,7 +55,7 @@ import { executeTurnJob, type TurnExecutionPorts } from '../src/slack/turn-execu
 import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import {
   TurnJobStoreLogic,
-  turnJobStopGate,
+  turnJobGate,
   turnStopThreadKey,
   type PendingTurnJob,
   type RunnerTurnJobView,
@@ -2102,7 +2102,7 @@ test('a stop before dispatch never calls abort(); the alarm hands the stopped ro
     const gates: string[] = [];
     const execute = h.deps.execute;
     h.deps.execute = (job, ...rest) => {
-      gates.push(`${job.id}:${turnJobStopGate(job)}`);
+      gates.push(`${job.id}:${turnJobGate(job)}`);
       return execute(job, ...rest);
     };
     // Admitted here, never dispatched: the stop transaction stamped its row.

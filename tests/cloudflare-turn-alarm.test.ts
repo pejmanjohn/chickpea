@@ -19,7 +19,7 @@ import {
   isTurnJobStopRefusal,
   TURN_STOP_HOLD_RETRY_MS,
   TurnJobStoreLogic,
-  turnJobStopGate,
+  turnJobGate,
   turnStopThreadKey,
 } from '../src/slack/turn-jobs.ts';
 import {
@@ -39,7 +39,7 @@ import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
 import { givenUpRecoveryText } from '../src/usage/run-settlement.ts';
 
 // What the transplanted turn executor imports for stop records.
-const stopGlobals = { isTurnJobStopRefusal, TURN_STOP_HOLD_RETRY_MS, turnJobStopGate };
+const stopGlobals = { isTurnJobStopRefusal, TURN_STOP_HOLD_RETRY_MS, turnJobGate };
 
 // Execute the production RPC methods and alarm helper, not a copy of their
 // scheduling logic. The complete Worker is also exercised by verify:cf-smoke;

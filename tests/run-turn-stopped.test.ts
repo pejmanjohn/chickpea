@@ -28,7 +28,7 @@ import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import {
   MAX_POST_DISPATCH_ATTEMPTS,
   TurnJobStoreLogic,
-  turnJobStopGate,
+  turnJobGate,
   turnStopThreadKey,
   type PendingTurnJob,
 } from '../src/slack/turn-jobs.ts';
@@ -1094,7 +1094,7 @@ test('a stop refused at dispatch after the Run prepared its execution ends with 
       },
     }), (error: unknown) => error instanceof AgentPromptFailure && error.retryable);
     assert.equal((await h.work.getRun(h.runId))?.status, 'executing');
-    assert.equal(turnJobStopGate(turns.runnerView(headId).job!), 'stopped_before_dispatch');
+    assert.equal(turnJobGate(turns.runnerView(headId).job!), 'stopped_before_dispatch');
     // Attempt 2: the stopped ending, which drops through the state store's stop ending.
     const slack = new SlackStateLogic(db);
     const outcomes: Array<string | undefined> = [];

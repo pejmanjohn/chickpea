@@ -65,7 +65,7 @@ import {
   MAX_TURN_ATTEMPTS,
   replayTextForTurnProgress,
   TURN_STOP_HOLD_RETRY_MS,
-  turnJobStopGate,
+  turnJobGate,
   type PendingTurnJob,
   type TurnJobStoreLogic,
 } from './turn-jobs.ts';
@@ -213,7 +213,7 @@ export async function executeTurnJob(
   // ending that drops or releases it. A stopped row with no Flue receipt must
   // never dispatch, because abort() does not cover a later dispatch: it takes
   // the stopped ending at once (KTD3), with no model call.
-  const stopGate = turnJobStopGate(job);
+  const stopGate = turnJobGate(job);
   if (stopGate === 'hold') {
     options.onRetry(TURN_STOP_HOLD_RETRY_MS);
     return false;

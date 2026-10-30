@@ -32,7 +32,7 @@ import type { RunnerTurnBegin } from './thread-runner-rpc.ts';
 import type { TurnExecutionPorts } from './turn-executor.ts';
 import {
   TURN_STOP_HOLD_RETRY_MS,
-  turnJobStopGate,
+  turnJobGate,
   type PendingTurnJob,
   type RunnerTurnJobView,
 } from './turn-jobs.ts';
@@ -446,7 +446,7 @@ async function runOne(
   }
   // A row a stop holds never runs: it waits, holding its thread, for the
   // stopped ending to drop it (the row then reads settled) or release it.
-  if (turnJobStopGate(view.job) === 'hold') {
+  if (turnJobGate(view.job) === 'hold') {
     deps.jobs.settle(local.id, 'admitted', now(), now() + TURN_STOP_HOLD_RETRY_MS);
     return false;
   }
