@@ -19,6 +19,7 @@ import { validateBrowserMutationProvenance } from '../auth/request-provenance.ts
 import { AuthService } from '../auth/service.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { actualBodyLimit } from '../security/request-body-limit.ts';
+// Setup origins never come from a forwarded header.
 import { strictRequestOrigin as requestOrigin } from '../http/request-origin.ts';
 import { AgentConnectionCredentialConflictError, ManagedSignInGroupConflictError } from '../config/errors.ts';
 

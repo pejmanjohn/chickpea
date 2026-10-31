@@ -433,8 +433,8 @@ export function renderManagedSignInReturnPage(nonce: string): string {
       <main class="flow-shell waiting-shell" aria-labelledby="flow-title">
         ${brandHeader()}
         <section class="flow-content centered">
-          <h1 id="flow-title">Return to Chickpea Admin</h1>
-          <p class="lead">You're done in this tab. Your Chickpea Admin tab shows the result.</p>
+          <h1 id="flow-title">You're done here</h1>
+          <p class="lead">Go back to your Chickpea Admin tab to see the result.</p>
           <p class="small-copy">You can close this tab.</p>
         </section>
       </main>

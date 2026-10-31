@@ -2263,6 +2263,8 @@ async function authorize(
     method: 'POST',
     headers: {
       origin: 'http://localhost',
+      // Setup never builds its origin from a forwarded header.
+      'x-forwarded-host': 'forwarded.example',
       cookie,
       'content-type': 'application/x-www-form-urlencoded',
       accept: 'application/json',

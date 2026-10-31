@@ -120,8 +120,8 @@ test('the managed sign-in return page closes its tab and reads the same whatever
     .replace(/<style>[\s\S]*?<\/style>/g, '')
     .replace(/<script[\s\S]*?<\/script>/g, '')
     .replace(/<[^>]+>/g, ' ');
-  assert.match(text, /Return to Chickpea Admin/);
-  assert.match(text, /Your Chickpea Admin tab shows the result\./);
+  assert.match(text, /You're done here/);
+  assert.match(text, /Go back to your Chickpea Admin tab to see the result\./);
   assert.match(text, /You can close this tab\./);
   assert.doesNotMatch(text, /\b(?:connected|updated|ready|success)\b/i,
     'the person may have declined, so the page claims no outcome');
