@@ -30,6 +30,7 @@ import {
   type SlackRunPresentationV3,
 } from '../src/slack/run-presentations.ts';
 import { editTurnJobId, type SlackMessageEdit } from '../src/slack/edits.ts';
+import { turnRequestTs } from '../src/slack/thread-context.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { WorkStoreLogic } from '../src/work/store.ts';
 import { opaqueTurnRef } from '../src/observability/runtime-latency.ts';
@@ -1696,6 +1697,65 @@ test('a plan freeze that decides start roles again moves an edit row with its me
     freeze(c.turns, head, 'shared');
     assert.deepEqual([teammate.id, editRowId(teammate, '150')].map((id) => view(c.turns, id).job!.fold?.role),
       ['absorbed', 'absorbed']);
+  } finally {
+    c.db.close();
+  }
+});
+
+// ── edits: identity and counts ────────────────────────────────────────
+
+test('an edit running on its own reads through its edit, so the Agent\'s earlier reply is in reach', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101');
+    enqueueAll(c, [head]);
+    dispatch(c.turns, head);
+    const plan = c.turns.getFrozenRuntimePlan(head.id)!;
+    c.turns.pinAgentBinding({
+      continuityKey: plan.runtimePlan.conversation.continuityKey, instanceId: plan.instanceId, uid: UID, updatedAt: NOW,
+    });
+    admitEdit(c, editOf(head, '150', 'v2'));
+    c.turns.recordFlueSettlement(head.id, COMPLETED);
+    c.slack.endTurn(head.id, c.turns, c.work, c.presentations);
+    const edit = view(c.turns, editRowId(head, '150')).job!;
+    assert.equal(c.turns.readThrough(edit.id), '1800000000.000150', 'not the message\'s own ts, before the reply');
+    assert.equal(
+      c.turns.getThreadContinuation(plan.runtimePlan.conversation.continuityKey, plan.instanceId, turnRequestTs(edit.turn))?.messageTs,
+      head.turn.messageTs,
+      'the edit continues the transcript of the turn that answered its message',
+    );
+    assert.equal(
+      c.turns.getThreadContinuation(plan.runtimePlan.conversation.continuityKey, plan.instanceId, edit.turn.messageTs),
+      undefined,
+      'looked up by the message\'s ts, that turn is not found',
+    );
+  } finally {
+    c.db.close();
+  }
+});
+
+test('a stop drops a waiting edit with the held messages, and its note counts only messages', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101', { text: 'v1' });
+    const member = posted('102');
+    admitCanonical(c, head);
+    admitCanonical(c, member);
+    claimed(c.turns, head.id);
+    dispatch(c.turns, head);
+    // The answer is streaming: nothing takes the edit.
+    admitEdit(c, editOf(head, '150', 'v2'));
+    const stopped = c.turns.steer({
+      kind: 'stop', threadKey: THREAD, source: 'typed', stopperUserId: 'U_PERSON', cutoffTs: '1800000000.000160',
+    });
+    assert.equal(stopped.outcome === 'stopped' && stopped.stop.held, 1, 'the edit is no held message');
+    const finished = c.slack.finishTurnStop(head.id, 'dropped', c.turns, c.work, c.presentations)!;
+    assert.deepEqual({ count: finished.count, read: finished.read }, { count: 1, read: 1 },
+      'the stop note never asks the person to send an edit again');
+    assert.equal(view(c.turns, editRowId(head, '150')).status, 'done', 'a stopped run\'s edit never runs');
+    const editRun = finished.rows.find((row) => row.id === editRowId(head, '150'))?.runId;
+    assert.ok(editRun);
+    assert.equal(c.work.getRun(editRun as RunId)?.terminalDisposition, 'cancelled');
   } finally {
     c.db.close();
   }

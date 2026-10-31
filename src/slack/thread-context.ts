@@ -341,7 +341,22 @@ export function turnRequestTs(turn: Pick<NormalizedSlackTurn, 'messageTs' | 'edi
 }
 
 /**
- * The newest row a turn may read: its trigger, or the newest follow-up the
+ * When the newest part of a request was sent: the turn's request time or its
+ * newest follow-up's, whichever is later. An edit head's members can be
+ * older than the edit, so the last member is not always the newest.
+ */
+export function newestRequestTs(
+  turn: Pick<NormalizedSlackTurn, 'messageTs' | 'edit'>,
+  followUps: readonly Pick<FoldedMessage, 'messageTs'>[] = [],
+): string {
+  return followUps.reduce(
+    (newest, { messageTs }) => compareSlackTs(messageTs, newest) > 0 ? messageTs : newest,
+    turnRequestTs(turn),
+  );
+}
+
+/**
+ * The newest row a turn may read: its request, or the newest follow-up the
  * turn took with it, so a reply never sees what came after the messages it
  * answers. Two kinds of turn read to the end of the thread instead: an Agent
  * answering a person's message after the Agents it mentioned before it (their
@@ -349,11 +364,11 @@ export function turnRequestTs(turn: Pick<NormalizedSlackTurn, 'messageTs' | 'edi
  * ask that joined it while it waited.
  */
 export function slackContextWatermark(
-  turn: Pick<NormalizedSlackTurn, 'messageTs' | 'coAddressed' | 'agentAsk'>,
+  turn: Pick<NormalizedSlackTurn, 'messageTs' | 'edit' | 'coAddressed' | 'agentAsk'>,
   followUps: readonly Pick<FoldedMessage, 'messageTs'>[] = [],
 ): string | undefined {
   if (turn.agentAsk || isLaterCoAddressedTurn(turn)) return undefined;
-  return followUps.at(-1)?.messageTs ?? turn.messageTs;
+  return newestRequestTs(turn, followUps);
 }
 
 /**

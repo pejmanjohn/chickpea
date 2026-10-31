@@ -67,6 +67,9 @@ test('the latest Agent turn is read per Channel thread, or across a whole DM, an
     assert.equal(turns.latestAgentTurnMessageTs(thread), '100.2', 'other threads, Agents and Channels do not count');
     insert('later', 'T1:C1:100.1', '100.5', 'agent_desk', 8);
     assert.equal(turns.latestAgentTurnMessageTs(thread), '100.5');
+    insert('edit:C1:100.2:100.6', 'T1:C1:100.1', '100.2', 'agent_desk', 8);
+    assert.equal(turns.latestAgentTurnMessageTs(thread), '100.5',
+      'an edit of an older message is no new turn, so a typed approval still matches the latest one');
 
     insert('dm_first', 'T1:D1:300.1', '300.1', 'agent_desk', 9);
     insert('dm_second', 'T1:D1:400.1', '400.1', 'agent_desk', 10);

@@ -190,7 +190,7 @@ export interface TurnStopHeadRecordV1 {
 
 export interface TurnStopEndingV1 {
   outcome: 'dropped' | 'released';
-  /** Rows the ending dropped or released. */
+  /** Messages the ending dropped or released; an edit row is no message. */
   count: number;
   at: number;
 }
@@ -328,7 +328,7 @@ export interface TurnStopResult {
   executor: 'alarm' | 'runner';
   agentId: string;
   record: TurnStopHeadRecordV1;
-  /** Rows the stop holds now, late arrivals included. */
+  /** Messages the stop holds now, late arrivals included; an edit row is no message. */
   held: number;
   /** The head row's frozen Flue admission, when its dispatch started. */
   dispatchEnvelope?: FlueDispatchEnvelopeV1;
@@ -353,8 +353,9 @@ export type TurnSteeringDecision =
 /** What the stopped ending (or a completion race) did with the held rows. */
 export interface TurnStopFinish {
   outcome: 'dropped' | 'released';
+  /** Messages the ending dropped or released; an edit row is no message. */
   count: number;
-  /** Of those rows, the follow-ups the stopped run had already read (its dispatched fold members). */
+  /** Of those messages, the follow-ups the stopped run had already read (its dispatched fold members). */
   read: number;
   /** Content-free coordinates of those rows, to finalize their records and receipts. */
   rows: TurnEndedRow[];

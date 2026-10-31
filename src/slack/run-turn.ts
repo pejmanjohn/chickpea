@@ -110,7 +110,7 @@ import {
   withCreditedBack,
   type SlackFailureKind,
 } from '../usage/run-settlement.ts';
-import { currentMessageOnlyContext, type SlackTurnContext } from './thread-context.ts';
+import { currentMessageOnlyContext, turnRequestTs, type SlackTurnContext } from './thread-context.ts';
 import {
   runReviewError,
   slackRunReviewConversation,
@@ -2825,7 +2825,7 @@ async function readThreadContinuation(
     return await options.getThreadContinuation(
       decision.runtimePlan.conversation.continuityKey,
       decision.instanceId,
-      turn.messageTs,
+      turnRequestTs(turn),
     );
   } catch {
     console.warn('[chickpea] thread continuation read failed; sending the full bounded context');
@@ -2882,7 +2882,7 @@ export async function freezeRuntimePlanForTurn(input: {
       : undefined,
     input.turn.actorMembershipId
       ? input.getBoundRuntimePlan?.(
-          opaqueId('agent', slackAgentContinuityKey(input.turn, input.assignment)), input.turn.messageTs,
+          opaqueId('agent', slackAgentContinuityKey(input.turn, input.assignment)), turnRequestTs(input.turn),
           input.turn.actorMembershipId, input.assignment.agentId,
         )
       : undefined,

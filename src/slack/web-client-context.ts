@@ -13,6 +13,7 @@ import {
   currentMessageOnlyContext,
   DEFAULT_MAX_MESSAGES,
   ensureTriggerMessage,
+  newestRequestTs,
   orderMessages,
   partitionSlackContext,
   toContextMessage,
@@ -658,7 +659,7 @@ export function assembleSlackPrompt(
     parts.push('', options.continuityNote);
   }
   const followUps = options.followUps ?? [];
-  const currentTime = slackLocalContextTime(followUps.at(-1)?.messageTs ?? turn.messageTs, contextTimezone);
+  const currentTime = slackLocalContextTime(newestRequestTs(turn, followUps), contextTimezone);
   if (currentTime) {
     parts.push(
       '',

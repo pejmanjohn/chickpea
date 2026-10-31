@@ -82,7 +82,14 @@ import {
   readFoldClaim,
   type ClaimedFoldRow,
 } from './follow-ups.ts';
-import { EDIT_TURN_JOB_ID_SQL, editTurnJobIdRange, isEditTurn, type MessageVersionRow } from './edits.ts';
+import {
+  EDIT_TURN_JOB_ID_SQL,
+  editTurnJobIdRange,
+  isEditTurn,
+  isEditTurnJobId,
+  type MessageVersionRow,
+} from './edits.ts';
+import { turnRequestTs } from './thread-context.ts';
 
 /**
  * Durable queue of Slack turns for the Cloudflare turn-relay (see state-rpc.ts
@@ -814,7 +821,7 @@ export class TurnJobStoreLogic {
       executor: rowExecutor(row),
       agentId: job.assignment.agentId,
       record,
-      held: this.stopMembers(row.thread_key ?? undefined, headId, 'held').length,
+      held: messageRows(this.stopMembers(row.thread_key ?? undefined, headId, 'held')).length,
       ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
       ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
     };
@@ -910,13 +917,13 @@ export class TurnJobStoreLogic {
   }
 
   /**
-   * Of the rows a stop ended, the follow-ups its stopped run had read: the
-   * head's members, once the head dispatched with them in its prompt.
+   * Of the messages a stop ended, the follow-ups its stopped run had read:
+   * the head's members, once the head dispatched with them in its prompt.
    */
   private readByStoppedRun(headId: string, rows: readonly TurnEndedRow[]): number {
     const head = this.db.get('SELECT dispatch_started_at FROM turn_jobs WHERE id = ?', headId);
     if (head?.dispatch_started_at === null || head?.dispatch_started_at === undefined) return 0;
-    return rows.filter((row) => {
+    return messageRows(rows).filter((row) => {
       const record = parseTurnFoldRecord(
         this.db.get('SELECT fold_json FROM turn_jobs WHERE id = ?', row.id)?.fold_json,
       );
@@ -995,9 +1002,10 @@ export class TurnJobStoreLogic {
         this.db.run('UPDATE turn_jobs SET stop_json = ? WHERE id = ?', member, row.id);
       }
     }
-    const ended: TurnStopHeadRecordV1 = { ...record, ending: { outcome, count: rows.length, at } };
+    const count = messageRows(rows).length;
+    const ended: TurnStopHeadRecordV1 = { ...record, ending: { outcome, count, at } };
     this.db.run('UPDATE turn_jobs SET stop_json = ? WHERE id = ?', JSON.stringify(ended), headId);
-    return { outcome, count: rows.length, read: this.readByStoppedRun(headId, rows), rows, record: ended };
+    return { outcome, count, read: this.readByStoppedRun(headId, rows), rows, record: ended };
   }
 
   /**
@@ -1281,18 +1289,23 @@ export class TurnJobStoreLogic {
   }
 
   /**
-   * The newest message a head's run has read: its own, or the newest
-   * follow-up its model input holds (`received`). Undefined for a row the
-   * store does not hold.
+   * The newest message a head's run has read: its own request (an edit
+   * head's reads to its edit, the Agent's reply before it included), or the
+   * newest follow-up its model input holds (`received`). Undefined for a row
+   * the store does not hold.
    */
   readThrough(headId: string): string | undefined {
     validateBoundedString(headId, 'TurnJob id', 256);
-    const row = this.db.get(
-      `SELECT thread_key, json_extract(turn_json, '$.messageTs') AS message_ts FROM turn_jobs WHERE id = ?`,
-      headId,
-    );
-    if (typeof row?.thread_key !== 'string' || typeof row.message_ts !== 'string') return undefined;
-    return this.newestRead(row.thread_key, headId, row.message_ts);
+    const row = this.db.get('SELECT thread_key, turn_json FROM turn_jobs WHERE id = ?', headId);
+    if (typeof row?.thread_key !== 'string') return undefined;
+    let turn: NormalizedSlackTurn;
+    try {
+      turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
+    } catch {
+      return undefined;
+    }
+    if (typeof turn?.messageTs !== 'string') return undefined;
+    return this.newestRead(row.thread_key, headId, turnRequestTs(turn));
   }
 
   private newestRead(threadKey: string, headId: string, headTs: string): string {
@@ -1847,7 +1860,8 @@ export class TurnJobStoreLogic {
   /**
    * The message that started the latest turn this Agent was given in one
    * conversation, while its row is retained. A row an older release left
-   * without a thread key is not found.
+   * without a thread key is not found, and an edit row is an older
+   * message's later version, never a new turn.
    */
   latestAgentTurnMessageTs(input: SlackLatestAgentTurnQuery): string | undefined {
     for (const part of [input.workspaceId, input.channelId]) {
@@ -1860,6 +1874,7 @@ export class TurnJobStoreLogic {
       ? this.db.get(
           `SELECT message_ts AS messageTs FROM turn_jobs
            WHERE thread_key >= ? AND thread_key < ? AND json_extract(assignment_json, '$.agent.id') = ?
+             AND NOT ${EDIT_TURN_JOB_ID_SQL}
            ORDER BY enqueued_at DESC, rowid DESC LIMIT 1`,
           `${conversation}:`,
           `${conversation};`,
@@ -1868,6 +1883,7 @@ export class TurnJobStoreLogic {
       : this.db.get(
           `SELECT message_ts AS messageTs FROM turn_jobs
            WHERE thread_key = ? AND json_extract(assignment_json, '$.agent.id') = ?
+             AND NOT ${EDIT_TURN_JOB_ID_SQL}
            ORDER BY enqueued_at DESC, rowid DESC LIMIT 1`,
           `${conversation}:${validateBoundedString(input.threadTs, 'Thread timestamp', 128)}`,
           input.agentId,
@@ -3286,6 +3302,11 @@ function validateFoldRequest(request: TurnFoldRequest): void {
     throw new Error('Fold cycle count is invalid.');
   }
   if (typeof request.take !== 'boolean') throw new Error('Fold take flag is invalid.');
+}
+
+/** The rows that are messages: an edit row is a later version of one, never a message of its own. */
+function messageRows<T extends { id: string }>(rows: readonly T[]): T[] {
+  return rows.filter((row) => !isEditTurnJobId(row.id));
 }
 
 /** A row's coordinates and the 👀 Chickpea added to its message and still owes removing (KTD9). */
