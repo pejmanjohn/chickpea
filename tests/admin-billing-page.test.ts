@@ -181,7 +181,10 @@ async function harness(options: {
     await next();
   });
   billingApi.route('/admin/api', createBillingAdminApi({
-    agentNames: async () => new Map([['agent_chickpea', 'Chickpea'], ['agent_research', 'Research']]),
+    agentNames: async () => new Map([
+      ['agent_chickpea', 'Chickpea'], ['agent_research', 'Research'],
+      ...(options.agents ?? []).map((agent) => { const { id, name } = agent as { id: string; name: string }; return [id, name] as [string, string]; }),
+    ]),
     personNames: async () => new Map([['membership_maya', 'Maya Chen']]),
     ownKeyFacts: async () => ({ ...ownKey, savedKeys }),
     choseChickpeaModels: async () => undefined,
@@ -833,6 +836,27 @@ test('usage this period shows a bar per Agent, scaled to the largest, with its a
   const noPeriod = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...PLAN_NO_PERIOD, use: { byAgent: [], byPerson: [] } } })).html();
   assert.match(noPeriod, /id="plan-use-heading">Usage<\/h2><\/div>/);
   assertShows(noPeriod, 'No usage yet.');
+});
+
+test('a long usage list opens on the six largest rows, with a button for the rest', async () => {
+  const named = (count: number) => Array.from({ length: count }, (_, index) => ({ id: `agent_${index}`, name: `Agent ${index}` }));
+  const summary = (agents: { id: string }[]) => ({ ...TEAM_PLAN, use: { byAgent: agents.map((agent, index) => ({ id: agent.id, usageMicros: usd(40 - index) })), byPerson: [] } });
+  const names = (html: string) => [...html.matchAll(/<span class="plan-use-name">(.*?)<\/span>/g)].map((match) => match[1]);
+
+  const nine = named(9);
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: summary(nine), agents: nine });
+  assert.deepEqual(names(page.html()), ['Agent 0', 'Agent 1', 'Agent 2', 'Agent 3', 'Agent 4', 'Agent 5']);
+  assert.match(page.html(), /data-action="billing-use-all" aria-expanded="false">Show all 9<\/button>/);
+  await page.click({ 'data-action': 'billing-use-all' });
+  assert.equal(names(page.html()).length, 9);
+  assert.match(page.html(), /data-action="billing-use-all" aria-expanded="true">Show fewer<\/button>/);
+  await page.click({ 'data-action': 'billing-use-all' });
+  assert.equal(names(page.html()).length, 6);
+
+  const seven = named(7);
+  const whole = (await harness({ path: '/admin/plan', billingOffered: true, summary: summary(seven), agents: seven })).html();
+  assert.equal(names(whole).length, 7, 'one row past six shows whole');
+  assert.doesNotMatch(whole, /billing-use-all/);
 });
 
 test('how usage works compares the two ways to pay, marks yours, and says what counts as a task', async () => {

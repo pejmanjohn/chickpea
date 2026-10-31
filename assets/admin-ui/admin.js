@@ -145,6 +145,7 @@
     // The plan size each plan card shows, by card, until the page reopens.
     billingSelection: {},
     billingUseBy: "agent",
+    billingUseAll: false,
     planReturnSwitchFailed: false,
     teamError: "",
     teamBusy: "",
@@ -2511,6 +2512,7 @@
     state.billingSelection = {};
     state.billingFundingConfirm = false;
     state.billingUseBy = "agent";
+    state.billingUseAll = false;
     render();
     loadBilling();
   }
@@ -2943,6 +2945,10 @@
     return '<span class="plan-use-avatar is-letter" aria-hidden="true">' + esc((Array.from(row.name)[0] || "").toUpperCase()) + '</span>';
   }
 
+  // A workspace can have dozens of Agents, so the list opens on the largest
+  // few. One row past that shows whole rather than behind a button.
+  var BILLING_USE_ROWS = 6;
+
   // A host whose ledger records no person sends no person rows, so the
   // toggle shows only when there are some.
   function billingUseHtml(billing) {
@@ -2956,11 +2962,16 @@
         '<button type="button" data-action="billing-use-by" data-by="agent" aria-pressed="' + !byPerson + '">By Agent</button>' +
         '<button type="button" data-action="billing-use-by" data-by="person" aria-pressed="' + byPerson + '">By person</button></div>'
       : '';
+    var folds = rows.length > BILLING_USE_ROWS + 1;
+    var folded = folds && !state.billingUseAll;
+    var more = folds
+      ? '<button type="button" class="btn btn-ghost btn-sm plan-use-more" data-action="billing-use-all" aria-expanded="' + !folded + '">' + (folded ? 'Show all ' + rows.length : 'Show fewer') + '</button>'
+      : '';
     var body = rows.length
-      ? '<ul class="plan-use">' + rows.map(function (row) {
+      ? '<ul class="plan-use">' + (folded ? rows.slice(0, BILLING_USE_ROWS) : rows).map(function (row) {
         return '<li class="plan-use-row">' + billingUseAvatarHtml(row, byPerson) + '<span class="plan-use-name">' + esc(row.name || "Other") + '</span>' +
           '<span class="plan-use-track" aria-hidden="true"><span style="width: ' + row.bar + '%"></span></span><span class="plan-use-amount">' + esc(row.used) + '</span></li>';
-      }).join("") + '</ul>'
+      }).join("") + '</ul>' + more
       : '<p class="plan-use-empty">' + (period ? 'No usage yet this period.' : 'No usage yet.') + '</p>';
     return '<section class="plan-section" aria-labelledby="plan-use-heading"><div class="plan-section-head"><div><h2 class="section-title" id="plan-use-heading">' +
       (period ? 'Usage this period' : 'Usage') + '</h2>' + (period ? '<p class="hint">Since ' + esc(period.start) + '.</p>' : '') + '</div>' + toggle + '</div>' + body + '</section>';
@@ -15005,7 +15016,8 @@
       render();
       focusAction("billing-switch-funding");
     }
-    if (action === "billing-use-by") { state.billingUseBy = target.getAttribute("data-by") === "person" ? "person" : "agent"; render(); }
+    if (action === "billing-use-by") { state.billingUseBy = target.getAttribute("data-by") === "person" ? "person" : "agent"; state.billingUseAll = false; render(); }
+    if (action === "billing-use-all") { state.billingUseAll = !state.billingUseAll; render(); }
     if (action === "billing-funding-confirm") switchFunding();
     if (action === "onboarding-platform-retry" && !state.onboardingBusy) { state.onboardingError = ""; render(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }

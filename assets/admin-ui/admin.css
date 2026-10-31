@@ -3409,6 +3409,7 @@ button.capability-pill { cursor: pointer; }
 .plan-use-track { background: var(--well); border-radius: 999px; height: 10px; overflow: hidden; }
 .plan-use-track > span { background: var(--ember); border-radius: 999px; display: block; height: 100%; min-width: 4px; }
 .plan-use-amount { color: var(--text); font-size: .875rem; font-variant-numeric: tabular-nums; font-weight: 700; text-align: right; white-space: nowrap; }
+.plan-use-more { align-self: flex-start; }
 .plan-use-empty { background: var(--well); border-radius: 14px; color: var(--text-2); font-size: .875rem; margin: 0; padding: 18px; }
 
 /* how usage works */
