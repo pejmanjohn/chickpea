@@ -312,10 +312,11 @@ for one; it never posts them on its own.
   restarted run never answers the same message twice, and the stop note
   counts the replies that posted.
 
-The Agent is told this with each message it reads after a tool step, and the
-tool is offered only to runs that can read messages mid-run. Only the thread
-runner and the Node relay read messages mid-run, so only they post these
-replies.
+The Agent is told this with each message it reads after a tool step. The tool
+is offered on every Slack turn, among the tools every turn shares, so the
+prompt cache holds; a run that read no message mid-run is refused every reply.
+Only the thread runner and the Node relay read messages mid-run, so only they
+post these replies.
 
 ## Node installations
 
