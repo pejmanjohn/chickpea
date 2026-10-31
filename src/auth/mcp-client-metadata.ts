@@ -1,11 +1,12 @@
 import { createCimdClientDiscovery, validateClientIdUrl, type CimdOptions } from '@better-auth/cimd';
-import { APIError, isAPIError } from 'better-auth/api';
+import { APIError, getSessionFromCtx, isAPIError } from 'better-auth/api';
 
 import { createMcpGuardedFetch, validateMcpUrl } from '../config/mcp-url.ts';
 import type { McpRegistrationThrottle } from './better-auth-backend.ts';
 import { isLoopbackHost, validRedirectUri } from './mcp-oauth.ts';
 
 type ClientDiscovery = ReturnType<typeof createCimdClientDiscovery>;
+type ResolveContext = Parameters<ClientDiscovery['resolve']>[0];
 type Client = NonNullable<Awaited<ReturnType<ClientDiscovery['resolve']>>>;
 export type ClientMetadataFetch = CimdOptions['fetchClientMetadataResource'];
 
@@ -35,7 +36,10 @@ interface TransportState {
 }
 
 const MAX_UNREACHABLE_CLIENTS = 1_000;
+/** How long after its document last answered a stored client stands in for a document it cannot reach. */
 const STORED_CLIENT_STAND_IN_MS = 24 * 60 * 60_000;
+/** How long after its document last answered a stored client stands in while the fetch budget is spent. */
+const SPENT_BUDGET_STAND_IN_MS = 60 * 60_000;
 let guardedFetch: ClientMetadataFetch | undefined;
 const transports = new WeakMap<ClientMetadataFetch, TransportState>();
 
@@ -68,10 +72,11 @@ interface NewClientGate {
  * A stored client's document is fetched again once its cached copy lapses.
  * When that fetch cannot reach the document, the stored client stands for up
  * to a day after the document last answered, so an outage at the client's
- * host does not sign its users out. A client someone consented to also stands
- * in when the fetch budget is spent, so strangers who spend it cannot sign its
- * users out. A document that answers still replaces the stored client, or
- * refuses it.
+ * host does not sign its users out. While the fetch budget is spent, a stored
+ * client stands in for an hour after its document last answered, and only
+ * for a person who has consented to it, so strangers who spend the budget
+ * cannot sign that person out. A document that answers still replaces the
+ * stored client, or refuses it.
  */
 export function clientMetadataDiscovery(
   fetchClientMetadataResource: ClientMetadataFetch | undefined,
@@ -100,33 +105,38 @@ export function clientMetadataDiscovery(
         }
         return created;
       }
-      const consented = Boolean(await ctx.context.adapter.findOne({
+      const consentedByAnyone = Boolean(await ctx.context.adapter.findOne({
         model: 'oauthConsent', where: [{ field: 'clientId', value: clientId }],
       }));
-      if (!consented) await assertSourceAdmitted(gate, source);
+      if (!consentedByAnyone) await assertSourceAdmitted(gate, source);
       let client: Client | null;
       try {
         client = await discovery.resolve(ctx, clientId, existing);
         unreachable.delete(clientId);
       } catch (error) {
         const failure = readFailure(error);
+        // The plugin rewrites updatedAt each time the document answers, changed or not.
+        const sinceAnswered = Date.now() - (existing.updatedAt?.getTime() ?? 0);
         // The plugin pauses a client's fetches for a second after a failed one
         // and declines every fetch once its budget is spent; either decline
-        // stands in for the last fetch's outcome. A spent budget also lets a
-        // client someone consented to stand in. A pause after a refused fetch
-        // never does.
+        // stands in for the last fetch's outcome. A spent budget alone lets the
+        // stored client stand in for a person who consented to it. A pause
+        // after a refused fetch never does.
         const lastFetchUnreachable = failure === 'unreachable' || (failure !== undefined && unreachable.has(clientId));
-        if (!lastFetchUnreachable && !(failure === 'budget' && consented)) {
+        const spentBudgetStandIn = !lastFetchUnreachable && failure === 'budget' &&
+          sinceAnswered <= SPENT_BUDGET_STAND_IN_MS && await requesterConsented(ctx, clientId);
+        if (!lastFetchUnreachable && !spentBudgetStandIn) {
           unreachable.delete(clientId);
           throw error;
         }
-        if (lastFetchUnreachable) remember(unreachable, clientId);
-        const why = lastFetchUnreachable ? 'unreachable' : 'not fetched, the fetch budget is spent';
-        // The plugin rewrites updatedAt each time the document answers, changed or not.
-        if (Date.now() - (existing.updatedAt?.getTime() ?? 0) > STORED_CLIENT_STAND_IN_MS) {
-          ctx.context.logger.warn(`Client metadata document ${why} over a day after it last answered; refusing the stored client: ${clientId}`);
-          throw error;
+        if (lastFetchUnreachable) {
+          remember(unreachable, clientId);
+          if (sinceAnswered > STORED_CLIENT_STAND_IN_MS) {
+            ctx.context.logger.warn(`Client metadata document unreachable for over a day; refusing the stored client: ${clientId}`);
+            throw error;
+          }
         }
+        const why = lastFetchUnreachable ? 'unreachable' : 'not fetched, the fetch budget is spent';
         ctx.context.logger.warn(`Client metadata document ${why}; using the stored client: ${clientId}`);
         client = existing;
       }
@@ -135,6 +145,42 @@ export function clientMetadataDiscovery(
       return client;
     },
   };
+}
+
+/**
+ * Whether the person this request acts for has consented to the client: the
+ * owner of the refresh token or code at the token endpoint, otherwise the
+ * signed-in person. A request that acts for no known person has not.
+ */
+async function requesterConsented(ctx: ResolveContext, clientId: string): Promise<boolean> {
+  const userId = await requestingUserId(ctx);
+  return userId !== undefined && Boolean(await ctx.context.adapter.findOne({
+    model: 'oauthConsent', where: [{ field: 'clientId', value: clientId }, { field: 'userId', value: userId }],
+  }));
+}
+
+async function requestingUserId(ctx: ResolveContext): Promise<string | undefined> {
+  const body = (ctx.body ?? {}) as Record<string, unknown>;
+  if (body.grant_type === 'refresh_token' && typeof body.refresh_token === 'string') {
+    const token = await ctx.context.adapter.findOne<{ userId?: string | null }>({
+      model: 'oauthRefreshToken', where: [{ field: 'token', value: await storedTokenDigest(body.refresh_token) }],
+    });
+    return token?.userId ?? undefined;
+  }
+  if (body.grant_type === 'authorization_code' && typeof body.code === 'string') {
+    const verification = await ctx.context.internalAdapter.findVerificationValue(await storedTokenDigest(body.code));
+    const value: unknown = verification ? JSON.parse(verification.value) : undefined;
+    const userId = value && typeof value === 'object' && 'userId' in value ? value.userId : undefined;
+    return typeof userId === 'string' ? userId : undefined;
+  }
+  if (body.grant_type !== undefined) return undefined;
+  return (await getSessionFromCtx(ctx))?.user.id;
+}
+
+/** How the OAuth provider stores a refresh token or code by default: SHA-256, base64url without padding. */
+async function storedTokenDigest(token: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
+  return btoa(String.fromCharCode(...digest)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
 }
 
 async function assertSourceAdmitted(gate: NewClientGate, request: Request): Promise<void> {
