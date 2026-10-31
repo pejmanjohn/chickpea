@@ -2,7 +2,7 @@ import type { AgentDispatchResult } from '../slack/flue-dispatch.ts';
 import type { CodingWorkerUsageRecord } from '../slack/coding-worker-run.ts';
 import { slackTurnSurface } from '../slack/thread-key.ts';
 import { slackTimestampMs } from '../slack/timestamp.ts';
-import type { NormalizedSlackTurn } from '../slack/types.ts';
+import { validSlackTs, type NormalizedSlackTurn } from '../slack/types.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { usageInstallationId } from './model-requests.ts';
 import type { AgentModelAttribution, ResolvedAssignment } from '../config/types.ts';
@@ -67,6 +67,10 @@ export class InteractiveUsageRecorder {
     this.runExecutionId = options.runExecutionId;
     const requested = splitModelSpecifier(options.requestedModel);
     const direct = slackTurnSurface(options.turn) === 'direct';
+    // A UI answer's ts is its receipt time, not a message; its surface's thread is one.
+    const sourceMessageTs = options.turn.uiResponse
+      ? options.turn.threadTs
+      : options.turn.reactionTargetTs ?? options.turn.messageTs;
     this.admission = {
       operationId: options.operationId,
       operationKind: 'interactive_turn',
@@ -80,6 +84,10 @@ export class InteractiveUsageRecorder {
       channelId: options.turn.channelId,
       channelLabel: direct ? null : (options.assignment.channelLabel ?? options.turn.channelId),
       conversationKind: direct ? 'direct_message' : 'named_channel',
+      ...(validSlackTs(sourceMessageTs) ? {
+        slackMessageTs: sourceMessageTs,
+        ...(validSlackTs(options.turn.threadTs) ? { slackThreadTs: options.turn.threadTs } : {}),
+      } : {}),
       requesterMembershipId: options.turn.actorMembershipId ?? null,
       executionPrincipalId: options.assignment.agentId,
       ...modelPolicyUsage(options.assignment.modelAttribution),

@@ -22,6 +22,7 @@ import {
   hasDisallowedControlCharacter,
 } from '../security/content-validation.ts';
 import type { AgentModelSource } from '../config/types.ts';
+import { validSlackTs } from '../slack/types.ts';
 import {
   MODEL_REQUEST_PURPOSES,
   type ModelRequestFundingSource,
@@ -62,6 +63,8 @@ export function normalizeAdmitUsageOperation(input: AdmitUsageOperationInput): A
     channelId: optionalId(input.channelId, 'channel ID'),
     channelLabel,
     conversationKind,
+    slackMessageTs: optionalSlackTs(input.slackMessageTs ?? null),
+    slackThreadTs: optionalSlackTs(input.slackThreadTs ?? null),
     routineId: optionalId(input.routineId ?? null, 'routine ID'),
     routineLabel: optionalLabel(input.routineLabel ?? null, 'routine label'),
     routineRunId: optionalId(input.routineRunId ?? null, 'routine run ID'),
@@ -355,6 +358,12 @@ function opaqueId(value: unknown, label: string, query = false): string {
 
 function optionalId(value: unknown, label: string): string | null {
   return value === null || value === undefined ? null : opaqueId(value, label);
+}
+
+function optionalSlackTs(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (!validSlackTs(value)) invalid('Slack message timestamp is invalid.');
+  return value;
 }
 
 function optionalModelSource(value: unknown): AgentModelSource | null {

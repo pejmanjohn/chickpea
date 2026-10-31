@@ -79,6 +79,8 @@ interface OperationRow {
   channel_id: string | null;
   channel_label: string | null;
   conversation_kind: UsageOperation['conversationKind'];
+  slack_message_ts: string | null;
+  slack_thread_ts: string | null;
   routine_id: string | null;
   routine_label: string | null;
   routine_run_id: string | null;
@@ -208,6 +210,7 @@ const OPERATION_COLUMNS = `
   installation_id, workspace_id, profile_id, profile_label, channel_id,
   channel_label, conversation_kind, routine_id, routine_label, routine_run_id,
   requester_membership_id, execution_principal_id, model_source,
+  slack_message_ts, slack_thread_ts,
   workspace_default_revision, catalog_revision,
   requested_provider, requested_model, credential_ref_id, credential_version,
   coverage, telemetry_schema_version, created_at, updated_at`;
@@ -251,7 +254,7 @@ export class UsageStoreLogic {
       const recordedAt = this.now();
       this.db.run(
         `INSERT INTO usage_operations (${OPERATION_COLUMNS}) VALUES (
-          ?, ?, ?, ?, 'admitted', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, 'admitted', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
           'aggregate_only', ?, ?, ?
         )`,
         input.operationId,
@@ -272,6 +275,8 @@ export class UsageStoreLogic {
         input.requesterMembershipId ?? null,
         input.executionPrincipalId ?? null,
         input.modelSource ?? null,
+        input.slackMessageTs ?? null,
+        input.slackThreadTs ?? null,
         input.workspaceDefaultRevision ?? null,
         input.catalogRevision ?? null,
         input.requestedProvider,
@@ -1251,6 +1256,8 @@ export class UsageStoreLogic {
         routine_id TEXT,
         routine_label TEXT,
         routine_run_id TEXT,
+        slack_message_ts TEXT,
+        slack_thread_ts TEXT,
         requester_membership_id TEXT,
         execution_principal_id TEXT,
         model_source TEXT,
@@ -1466,6 +1473,8 @@ export class UsageStoreLogic {
       ['model_source', 'TEXT'],
       ['workspace_default_revision', 'INTEGER'],
       ['catalog_revision', 'TEXT'],
+      ['slack_message_ts', 'TEXT'],
+      ['slack_thread_ts', 'TEXT'],
     ] as const) {
       addColumnIfMissing(this.db, 'usage_operations', name, definition);
     }
@@ -1643,6 +1652,8 @@ function mapOperation(row: OperationRow): UsageOperation {
     channelId: row.channel_id,
     channelLabel: row.channel_label,
     conversationKind: row.conversation_kind,
+    slackMessageTs: row.slack_message_ts,
+    slackThreadTs: row.slack_thread_ts,
     routineId: row.routine_id,
     routineLabel: row.routine_label,
     routineRunId: row.routine_run_id,
@@ -1786,6 +1797,9 @@ function sameAdmission(operation: UsageOperation, input: AdmitUsageOperationInpu
     operation.channelId === input.channelId &&
     operation.channelLabel === input.channelLabel &&
     operation.conversationKind === input.conversationKind &&
+    // Rows admitted before these columns existed hold null; a replay may add them.
+    (operation.slackMessageTs === null || operation.slackMessageTs === (input.slackMessageTs ?? null)) &&
+    (operation.slackThreadTs === null || operation.slackThreadTs === (input.slackThreadTs ?? null)) &&
     operation.routineId === (input.routineId ?? null) &&
     operation.routineLabel === (input.routineLabel ?? null) &&
     operation.routineRunId === (input.routineRunId ?? null) &&

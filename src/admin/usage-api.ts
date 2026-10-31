@@ -9,6 +9,7 @@ import type {
   UsageGroupBy,
   UsageOperationKind,
   UsageOperationStatus,
+  UsageOperation,
   UsageOperationDetail,
   UsageQuery,
   UsageStore,
@@ -24,7 +25,21 @@ interface UsageAdminApiOptions {
    * renamed Slack Channel reads the same everywhere in Admin.
    */
   channelLabels?: (c: Context) => Promise<ReadonlyMap<string, string>>;
+  /** The message a delivered routine run posted. */
+  routineMessage?: (c: Context, routineRunId: string) => Promise<Omit<SlackMessage, 'workspaceId'> | undefined>;
+  /** Slack's own permalink, which carries the workspace domain and the thread. */
+  slackPermalink?: (c: Context, message: SlackMessage) => Promise<string | undefined>;
 }
+
+export interface SlackMessage {
+  workspaceId: string;
+  channelId: string;
+  messageTs: string;
+  threadTs?: string;
+}
+
+// Turns admitted before `slackMessageTs` existed carry the message ts in their ID.
+const TURN_OPERATION_ID = /^msg:([A-Z0-9]+):(\d{1,12}\.\d{1,9})(?::ask-[^:]+)?$/;
 
 export function channelLabelKey(workspaceId: string, channelId: string): string {
   return `${workspaceId}\u0000${channelId}`;
@@ -146,11 +161,12 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
       const visibility = await usageRunVisibility(options.work?.(c), page.items);
       const channelLabels = await currentChannelLabels(options, c, page.items, visibility);
       return c.json({
-        items: page.items.map((detail) => usageDetailProjection(
+        items: await Promise.all(page.items.map(async (detail) => usageDetailProjection(
           detail,
           visibility.get(detail.operation.runId ?? '') ?? false,
           channelLabels,
-        )),
+          await hasSlackMessage(options, c, detail),
+        ))),
         nextCursor: page.nextCursor ? encodeCursor(page.nextCursor) : null,
       });
     } catch (error) {
@@ -171,7 +187,22 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
         detail,
         visibility.get(detail.operation.runId ?? '') ?? false,
         channelLabels,
+        await hasSlackMessage(options, c, detail),
       ));
+    } catch (error) {
+      return usageError(c, error);
+    }
+  });
+
+  app.get('/usage/operations/:operationId/slack-message', async (c) => {
+    try {
+      const detail = await options.store(c).getOperation(c.req.param('operationId'));
+      const message = detail && !privateRoutineUsage(detail)
+        ? await slackMessage(options, c, detail.operation)
+        : undefined;
+      if (!message) return c.json({ error: 'slack_message_not_found' }, 404);
+      const permalink = await options.slackPermalink?.(c, message).catch(() => undefined);
+      return c.redirect(slackMessageUrl(permalink, message), 302);
     } catch (error) {
       return usageError(c, error);
     }
@@ -195,8 +226,75 @@ function usageDetailProjection(
   detail: UsageOperationDetail,
   publicLabels: boolean,
   channelLabels: ReadonlyMap<string, string>,
+  linked: boolean,
 ): Record<string, unknown> {
-  return publicLabels ? publicUsageDetail(detail, channelLabels) : redactedUsageDetail(detail);
+  const slackMessagePath = linked
+    ? `/admin/api/usage/operations/${encodeURIComponent(detail.operation.operationId)}/slack-message`
+    : null;
+  return publicLabels
+    ? publicUsageDetail(detail, channelLabels, slackMessagePath)
+    : redactedUsageDetail(detail, slackMessagePath);
+}
+
+async function hasSlackMessage(
+  options: UsageAdminApiOptions,
+  c: Context,
+  detail: UsageOperationDetail,
+): Promise<boolean> {
+  if (privateRoutineUsage(detail)) return false;
+  try {
+    return (await slackMessage(options, c, detail.operation)) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+async function slackMessage(
+  options: UsageAdminApiOptions,
+  c: Context,
+  operation: UsageOperation,
+): Promise<SlackMessage | undefined> {
+  const { workspaceId, channelId } = operation;
+  if (!workspaceId) return undefined;
+  if (operation.operationKind === 'routine_run') {
+    const posted = operation.routineRunId
+      ? await options.routineMessage?.(c, operation.routineRunId)
+      : undefined;
+    return posted ? { workspaceId, ...posted } : undefined;
+  }
+  if (operation.operationKind !== 'interactive_turn' || !channelId) return undefined;
+  if (operation.slackMessageTs) {
+    return {
+      workspaceId,
+      channelId,
+      messageTs: operation.slackMessageTs,
+      ...(operation.slackThreadTs ? { threadTs: operation.slackThreadTs } : {}),
+    };
+  }
+  const messageTs = earlierTurnMessageTs(operation.operationId, channelId);
+  return messageTs ? { workspaceId, channelId, messageTs } : undefined;
+}
+
+function earlierTurnMessageTs(operationId: string, channelId: string): string | null {
+  const match = TURN_OPERATION_ID.exec(operationId);
+  return match?.[1] === channelId ? match[2]! : null;
+}
+
+function slackMessageUrl(permalink: string | undefined, message: SlackMessage): string {
+  if (permalink) {
+    try {
+      const url = new URL(permalink);
+      if (url.protocol === 'https:' && url.hostname.endsWith('.slack.com')) return url.toString();
+    } catch {
+      // Fall through to the link built from the stored coordinate.
+    }
+  }
+  const channel = encodeURIComponent(message.channelId);
+  const link = `https://slack.com/archives/${channel}/p${message.messageTs.replace('.', '')}`;
+  // A reply's link opens its thread only when it names the thread root.
+  return message.threadTs && message.threadTs !== message.messageTs
+    ? `${link}?thread_ts=${message.threadTs}&cid=${channel}`
+    : link;
 }
 
 async function currentChannelLabels(
@@ -226,23 +324,30 @@ function privateRoutineUsage(detail: UsageOperationDetail): boolean {
 function publicUsageDetail(
   detail: UsageOperationDetail,
   channelLabels: ReadonlyMap<string, string>,
+  slackMessagePath: string | null,
 ): Record<string, unknown> {
   return {
     projection: 'public',
-    operation: publicUsageOperation(detail, channelLabels),
+    operation: publicUsageOperation(detail, channelLabels, slackMessagePath),
     measurements: detail.measurements,
   };
 }
 
-function redactedUsageDetail(detail: UsageOperationDetail): Record<string, unknown> {
+function redactedUsageDetail(
+  detail: UsageOperationDetail,
+  slackMessagePath: string | null,
+): Record<string, unknown> {
   return {
     projection: 'redacted',
-    operation: redactedUsageOperation(detail),
+    operation: redactedUsageOperation(detail, slackMessagePath),
     measurements: detail.measurements,
   };
 }
 
-function usageOperationBase(detail: UsageOperationDetail): Record<string, unknown> {
+function usageOperationBase(
+  detail: UsageOperationDetail,
+  slackMessagePath: string | null,
+): Record<string, unknown> {
   const operation = detail.operation;
   return {
     operationId: operation.operationId,
@@ -259,6 +364,7 @@ function usageOperationBase(detail: UsageOperationDetail): Record<string, unknow
     conversationKind: operation.conversationKind,
     routineId: operation.routineId,
     routineRunId: operation.routineRunId,
+    slackMessagePath,
     requestedProvider: operation.requestedProvider,
     requestedModel: operation.requestedModel,
     credentialRefId: operation.credentialRefId,
@@ -273,22 +379,26 @@ function usageOperationBase(detail: UsageOperationDetail): Record<string, unknow
 function publicUsageOperation(
   detail: UsageOperationDetail,
   channelLabels: ReadonlyMap<string, string>,
+  slackMessagePath: string | null,
 ): Record<string, unknown> {
   const operation = detail.operation;
   const currentChannelLabel = operation.conversationKind === 'named_channel' && operation.workspaceId && operation.channelId
     ? channelLabels.get(channelLabelKey(operation.workspaceId, operation.channelId))
     : undefined;
   return {
-    ...usageOperationBase(detail),
+    ...usageOperationBase(detail, slackMessagePath),
     agentLabel: operation.agentLabel,
     channelLabel: currentChannelLabel ?? operation.channelLabel,
     routineLabel: detail.operation.routineLabel,
   };
 }
 
-function redactedUsageOperation(detail: UsageOperationDetail): Record<string, unknown> {
+function redactedUsageOperation(
+  detail: UsageOperationDetail,
+  slackMessagePath: string | null,
+): Record<string, unknown> {
   return {
-    ...usageOperationBase(detail),
+    ...usageOperationBase(detail, slackMessagePath),
     agentLabel: null,
     channelLabel: null,
     routineLabel: null,

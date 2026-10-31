@@ -4,7 +4,8 @@ import { test } from 'node:test';
 import type { ResolvedAssignment } from '../../src/config/types.ts';
 import type { AgentDispatchResult } from '../../src/slack/flue-dispatch.ts';
 import type { NormalizedSlackTurn } from '../../src/slack/types.ts';
-import { SqliteUsageStore } from '../../src/usage/store.ts';
+import { openStateDb } from '../../src/state/node-state-db.ts';
+import { SqliteUsageStore, UsageStoreLogic } from '../../src/usage/store.ts';
 import {
   InteractiveUsageRecorder,
   type UsagePersistenceEvent,
@@ -561,5 +562,152 @@ test('a stopped run is recorded interrupted with no reported usage, never failed
     assert.equal(detail?.measurements[0]?.totalTokens, null);
   } finally {
     store.close();
+  }
+});
+
+test('an interactive turn records the Slack message it answers; a reaction or a UI answer records a real message', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const record = async (operationId: string, slackTurn: NormalizedSlackTurn) => {
+      const recorder = new InteractiveUsageRecorder({
+        turn: slackTurn,
+        assignment,
+        requestedModel: assignment.model!,
+        operationId,
+        executionId: `exec:${operationId}:1`,
+        store,
+        processEnv: { CHICKPEA_INSTALLATION_ID: 'installation_usage' },
+      });
+      await recorder.admit();
+      const operation = (await store.getOperation(operationId))?.operation;
+      return [operation?.slackMessageTs, operation?.slackThreadTs];
+    };
+
+    assert.deepEqual(await record('msg:C_USAGE:1000.0001', turn), ['1000.0001', '1000.0001']);
+    assert.deepEqual(
+      await record('msg:C_USAGE:1000.0004', { ...turn, messageTs: '1000.0004' }),
+      ['1000.0004', '1000.0001'],
+      'a thread reply keeps its thread root',
+    );
+    assert.deepEqual(
+      await record('msg:C_USAGE:1000.0009', {
+        ...turn,
+        source: 'reaction_added',
+        messageTs: '1000.0009',
+        threadTs: '1000.0002',
+        reactionTargetTs: '1000.0002',
+      }),
+      ['1000.0002', '1000.0002'],
+    );
+    assert.deepEqual(
+      await record('msg:C_USAGE:1000.0010', {
+        ...turn,
+        source: 'reaction_added',
+        messageTs: '1000.0010',
+        threadTs: '1000.0002',
+        reactionTargetTs: '1000.0006',
+      }),
+      ['1000.0006', '1000.0002'],
+      'a reaction on a reply keeps the reply and its thread root',
+    );
+    assert.deepEqual(
+      await record('msg:C_USAGE:1000.0007', {
+        ...turn,
+        messageTs: '1000.0007',
+        threadTs: '1000.0003',
+        uiResponse: { surfaceId: 'surface_usage', namespace: 'ui', kind: 'choice', choice: 0 },
+      }),
+      ['1000.0003', '1000.0003'],
+      'a UI answer\'s ts is its receipt time, so the row links to the surface\'s thread',
+    );
+    assert.deepEqual(
+      await record('oauthresume:usage', { ...turn, messageTs: 'resumed' }),
+      [null, null],
+      'a turn without a Slack timestamp is still admitted, with no message to link',
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('a usage row admitted before the Slack message columns existed accepts a replay that carries them', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const admission = {
+      operationId: 'msg:C_USAGE:1000.0001',
+      operationKind: 'interactive_turn' as const,
+      sourceId: 'msg:C_USAGE:1000.0001',
+      startedAt: 1_000_000,
+      installationId: 'installation_usage',
+      workspaceId: 'T_USAGE',
+      agentId: 'agent_usage',
+      agentLabel: 'Usage profile',
+      channelId: 'C_USAGE',
+      channelLabel: 'usage-lab',
+      conversationKind: 'named_channel' as const,
+      requestedProvider: 'openai',
+      requestedModel: 'gpt-4.1-mini',
+      credentialRefId: null,
+      credentialVersion: null,
+    };
+    await store.admitOperation(admission);
+    const replayed = await store.admitOperation({ ...admission, slackMessageTs: '1000.0001', slackThreadTs: '1000.0001' });
+    assert.deepEqual([replayed.slackMessageTs, replayed.slackThreadTs], [null, null], 'a replay does not rewrite the admitted row');
+
+    await store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0002', sourceId: 'msg:C_USAGE:1000.0002', slackMessageTs: '1000.0002' });
+    await assert.rejects(
+      store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0002', sourceId: 'msg:C_USAGE:1000.0002', slackMessageTs: '1000.0003' }),
+      /different work/,
+    );
+    await store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0004', sourceId: 'msg:C_USAGE:1000.0004', slackMessageTs: '1000.0004' });
+    const threaded = await store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0004', sourceId: 'msg:C_USAGE:1000.0004', slackMessageTs: '1000.0004', slackThreadTs: '1000.0001' });
+    assert.deepEqual([threaded.slackMessageTs, threaded.slackThreadTs], ['1000.0004', null], 'a row stored before the thread column accepts a replay that adds it');
+    await store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0005', sourceId: 'msg:C_USAGE:1000.0005', slackMessageTs: '1000.0005', slackThreadTs: '1000.0001' });
+    await assert.rejects(
+      store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0005', sourceId: 'msg:C_USAGE:1000.0005', slackMessageTs: '1000.0005', slackThreadTs: '1000.0002' }),
+      /different work/,
+    );
+    await assert.rejects(
+      store.admitOperation({ ...admission, operationId: 'op_bad_ts', sourceId: 'op_bad_ts', slackMessageTs: 'not-a-ts' }),
+      /Slack message timestamp is invalid/,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('an existing usage database gains the Slack message columns, and its old rows read with none', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const original = new UsageStoreLogic(db);
+    original.admitOperation({
+      operationId: 'msg:C_USAGE:1000.0001',
+      operationKind: 'interactive_turn',
+      sourceId: 'msg:C_USAGE:1000.0001',
+      startedAt: 1_000_000,
+      installationId: 'installation_usage',
+      workspaceId: 'T_USAGE',
+      agentId: 'agent_usage',
+      agentLabel: 'Usage profile',
+      channelId: 'C_USAGE',
+      channelLabel: 'usage-lab',
+      conversationKind: 'named_channel',
+      requestedProvider: 'openai',
+      requestedModel: 'gpt-4.1-mini',
+      credentialRefId: null,
+      credentialVersion: null,
+    });
+    db.exec('ALTER TABLE usage_operations DROP COLUMN slack_message_ts');
+    db.exec('ALTER TABLE usage_operations DROP COLUMN slack_thread_ts');
+
+    const upgraded = new UsageStoreLogic(db);
+    for (const name of ['slack_message_ts', 'slack_thread_ts']) {
+      const column = db.all('PRAGMA table_info(usage_operations)').find((row) => row.name === name);
+      assert.deepEqual([column?.type, column?.notnull, column?.dflt_value], ['TEXT', 0, null], `${name} added nullable, with no default`);
+    }
+    const operation = upgraded.getOperation('msg:C_USAGE:1000.0001')?.operation;
+    assert.deepEqual([operation?.slackMessageTs, operation?.slackThreadTs], [null, null]);
+  } finally {
+    db.close();
   }
 });

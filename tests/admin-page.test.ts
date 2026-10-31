@@ -705,6 +705,7 @@ function runAdminPageHarness(
     usageAgentLabel?: string | null;
     usageAgentId?: string;
     usageRoutineId?: string;
+    usageSlackMessagePath?: string;
     usageClassifierOnly?: boolean;
     usageNextCursor?: string | null;
     usageCatalogs?: Array<Record<string, unknown>>;
@@ -1633,6 +1634,7 @@ function runAdminPageHarness(
         : options.usageAgentLabel,
       channelId: 'D_PRIVATE', channelLabel: null,
       conversationKind: 'direct_message', routineId: null, routineLabel: null, routineRunId: null,
+      slackMessagePath: options.usageSlackMessagePath ?? null,
       requestedProvider: 'openai', requestedModel: 'gpt-4.1-mini', credentialRefId: 'cred_openai_environment', credentialVersion: 1,
       coverage: 'aggregate_only', telemetrySchemaVersion: 1, createdAt: usageNow - 60_000, updatedAt: usageNow - 55_000,
       ...(options.usageRoutineId
@@ -17491,6 +17493,33 @@ test('Usage shows concise spend, expanded token columns, and non-interactive act
   assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
   assert.match(html, /Release &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(html, /authorization: Bearer|apiKey|clientSecret/i);
+});
+
+test('a Usage activity title opens its Slack message only through the Usage API', async () => {
+  const linked = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    usageSlackMessagePath: '/admin/api/usage/operations/op_usage_fixture/slack-message',
+  });
+  await flushAsync();
+  assert.match(
+    linked.app.innerHTML,
+    /<strong class="usage-work-label"><a class="usage-work-link" href="\/admin\/api\/usage\/operations\/op_usage_fixture\/slack-message" target="_blank" rel="noopener noreferrer" title="Open in Slack">Direct message<\/a><\/strong>/,
+  );
+
+  const outside = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    usageSlackMessagePath: 'https://example.com/archives/D_PRIVATE/p1',
+  });
+  await flushAsync();
+  assert.match(outside.app.innerHTML, /<strong class="usage-work-label">Direct message<\/strong>/);
+  assert.doesNotMatch(outside.app.innerHTML, /usage-work-link|example\.com/);
+
+  const unlinked = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage' });
+  await flushAsync();
+  assert.match(unlinked.app.innerHTML, /<strong class="usage-work-label">Direct message<\/strong>/);
+  assert.doesNotMatch(unlinked.app.innerHTML, /usage-work-link/);
 });
 
 test('the stale pricing notice counts only the price version each model uses now', async () => {

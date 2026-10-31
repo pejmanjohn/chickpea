@@ -2432,7 +2432,11 @@
       var output = usageOperationTokens(detail, "outputTokens");
       var total = usageOperationTokens(detail, "totalTokens");
       var agentLabel = operation.agentLabel || usageAgentName(operation.agentId) || "Unknown";
-      return '<tr><td><strong class="usage-work-label">' + esc(usageWorkLabel(operation)) + '</strong><div class="hint">' + esc(new Date(operation.startedAt).toLocaleString()) + '</div></td>' +
+      var label = esc(usageWorkLabel(operation));
+      if (typeof operation.slackMessagePath === "string" && operation.slackMessagePath.indexOf("/admin/api/usage/operations/") === 0) {
+        label = '<a class="usage-work-link" href="' + esc(operation.slackMessagePath) + '" target="_blank" rel="noopener noreferrer" title="Open in Slack">' + label + '</a>';
+      }
+      return '<tr><td><strong class="usage-work-label">' + label + '</strong><div class="hint">' + esc(new Date(operation.startedAt).toLocaleString()) + '</div></td>' +
         '<td>' + esc(agentLabel) + '</td><td>' + esc(usageOperationProvider(detail)) + '</td><td>' + esc(usageOperationModel(detail)) + '</td>' +
         '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageTokenTotalHtml(input, cached, output, total) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';
     }).join("");
