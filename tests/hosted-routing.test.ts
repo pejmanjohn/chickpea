@@ -655,12 +655,16 @@ test('the host\'s registration throttle and client cap reach Core\'s registratio
   assert.deepEqual(await throttled.json(), { error: 'registration_rate_limited' });
 
   const claude = CLAUDE_DOCUMENTS.claude.url;
-  const documents = metadataDocumentServer({ [claude]: CLAUDE_DOCUMENTS.claude.body });
+  const other = 'https://claude.ai/oauth/other-client-metadata';
+  const documents = metadataDocumentServer({
+    [claude]: CLAUDE_DOCUMENTS.claude.body,
+    [other]: CLAUDE_DOCUMENTS.claude.body.replace(claude, other),
+  });
   hosted.routing.environment.fetchClientMetadataResource = documents.fetch;
   let checks = 0;
-  const authorize = (refuse: boolean) => serveHostedSharedAuth(
+  const authorize = (refuse: boolean, clientId: string = claude) => serveHostedSharedAuth(
     new Request(`${ORIGIN}/api/auth/oauth2/authorize?${new URLSearchParams({
-      response_type: 'code', client_id: claude, redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+      response_type: 'code', client_id: clientId, redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
       scope: 'chickpea:workspace', state: 's', code_challenge_method: 'S256',
       code_challenge: createHash('sha256').update('verifier').digest('base64url'),
     })}`),
@@ -680,6 +684,14 @@ test('the host\'s registration throttle and client cap reach Core\'s registratio
   assert.equal((await authorize(false)).status, 302);
   assert.equal((await authorize(true)).status, 302, 'a stored client never does');
   assert.equal(checks, 2);
+
+  const unknown = await authorize(false, other);
+  assert.equal(new URL(unknown.headers.get('location') ?? '/', ORIGIN).searchParams.get('error'), 'invalid_client',
+    'only Claude\'s two documents are accepted');
+  assert.deepEqual(documents.requests, [claude]);
+  assert.equal(checks, 2);
+  const rows = await hosted.backend.pool.query('SELECT 1 FROM "oauthClient" WHERE "clientId" = $1', [other]);
+  assert.equal(rows.rowCount, 0);
 });
 
 test('under installation tenancy Core\'s own app leaves the shared auth routes to the host', async () => {
