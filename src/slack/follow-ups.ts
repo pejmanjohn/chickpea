@@ -6,19 +6,35 @@ import { formatSlackContextRows, SLACK_CONTEXT_CONTINUATION_MARKER } from './con
 import type { NormalizedSlackTurn } from './types.ts';
 
 /**
- * Follow-ups: messages the head turn's requester sent after it in the same
- * thread, queued behind it, that its run takes as part of one request and
- * answers in one reply. The state store decides which rows join
+ * Follow-ups: messages people sent after the head turn in the same thread,
+ * queued behind it, that its run takes as part of one request and answers in
+ * one reply. A teammate's message in a run that uses the requester's own
+ * connections is taken as information only: the run reads it, and it gets
+ * its own turn afterwards. The state store decides which rows join
  * (TurnJobStoreLogic.fold); this module holds the rules and words both sides
  * share.
  */
 
-/** One queued message from the head's requester that the head's run took. */
+/** One queued message that the head's run took. */
 export interface FoldedMessage {
   turnJobId: string;
   userId: string;
   messageTs: string;
   text: string;
+  /** The run reads it but does not answer it (see foldedInformationOnly). */
+  informationOnly?: true;
+}
+
+/**
+ * Whether the head's run takes a message as information only: a teammate's,
+ * while the run may use the requester's own connections.
+ */
+export function foldedInformationOnly(
+  senderId: string,
+  requesterId: string,
+  usesPersonalAccess: boolean,
+): boolean {
+  return senderId !== requesterId && usesPersonalAccess;
 }
 
 /** Rows one claim may take, oldest first. */
@@ -55,15 +71,17 @@ export function foldableTurn(turn: NormalizedSlackTurn): boolean {
 }
 
 /**
- * The person's own words for a fold group, oldest first, one message per
+ * The requester's own words for a fold group, oldest first, one message per
  * paragraph: what the classifier, connection selection and the typed-text
- * checks read, so a link or a request sent in a follow-up counts as typed.
+ * checks read, so a link or a request sent in a follow-up counts as typed. A
+ * teammate's words never choose the requester's connections.
  */
 export function foldedRequestText(
-  headText: string,
-  members: readonly Pick<FoldedMessage, 'text'>[],
+  head: Pick<FoldedMessage, 'userId' | 'text'>,
+  members: readonly Pick<FoldedMessage, 'userId' | 'text'>[],
 ): string {
-  return [headText, ...members.map((member) => member.text)].join('\n\n').slice(0, MAX_FOLDED_TEXT_CHARS);
+  return [head, ...members.filter((member) => member.userId === head.userId)]
+    .map((message) => message.text).join('\n\n').slice(0, MAX_FOLDED_TEXT_CHARS);
 }
 
 /** A fold group's messages in the row format of the prompt's Slack context. */

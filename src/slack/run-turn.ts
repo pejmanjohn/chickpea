@@ -534,7 +534,7 @@ async function runTurnAttempt(
 ): Promise<void> {
   // The person's words across the request's messages, for every reader that
   // weighs what was asked rather than which message asked it.
-  const requestText = followUps.length > 0 ? foldedRequestText(turn.text, followUps) : turn.text;
+  const requestText = followUps.length > 0 ? foldedRequestText(turn, followUps) : turn.text;
   const turnWorkspaceId = effectiveTurnSlackInstallationId(turn);
   const installationContext = options.installationContext ?? (
     options.client

@@ -9,6 +9,7 @@ import {
   isRuntimePlanInstanceId,
   parseRuntimePlanV2,
   runtimePlanInstanceIdMatches,
+  runtimePlanUsesPersonalAccess,
   type AdmittedRuntimePlanData,
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
@@ -69,6 +70,7 @@ import { parseTurnEnvelope, type TurnEnvelopeV1 } from '../agents/turn-envelope.
 import { emitTurnFold } from '../observability/runtime-latency.ts';
 import {
   foldableTurn,
+  foldedInformationOnly,
   foldedRequestText,
   MAX_FOLD_CYCLES,
   MAX_FOLDED_MESSAGES,
@@ -157,7 +159,12 @@ export function turnJobGate(
 ): 'run' | 'hold' | 'stopped_before_dispatch' | 'stopped' {
   if (job.stop?.role === 'held') return 'hold';
   if (job.stop?.role === 'stopped') return job.dispatchReceipt ? 'stopped' : 'stopped_before_dispatch';
-  return job.fold?.role === 'absorbed' ? 'hold' : 'run';
+  return holdsFold(job.fold) ? 'hold' : 'run';
+}
+
+/** A fold record that holds its row while the head's run is open. */
+function holdsFold(record: TurnFoldMemberRecordV1 | undefined): boolean {
+  return record?.role === 'absorbed' || record?.role === 'informed';
 }
 
 /** The turn row an OAuth continuation resumes as (idempotent per continuation). */
@@ -229,8 +236,9 @@ export interface PendingTurnJob {
    */
   stop?: TurnStopRecordV1;
   /**
-   * The row's fold record (see turnJobGate): `absorbed` while the open run of
-   * its head holds it, read as `released` once that head ended otherwise.
+   * The row's fold record (see turnJobGate): `absorbed` or `informed` while
+   * the open run of its head holds it, read as `released` once that head
+   * ended without settling it.
    */
   fold?: TurnFoldMemberRecordV1;
   /**
@@ -1012,11 +1020,13 @@ export class TurnJobStoreLogic {
    * Claim the head's follow-ups (see TurnFoldRequest), in one transaction
    * with every stop: a stop and a fold can never interleave. The members are
    * the contiguous run of the head's runner queue after it (or after its
-   * earlier members) that the head's requester typed as plain messages; the
-   * first row that does not qualify ends it, so no one else's reply is ever
-   * reordered behind a later message. A head with a stop, or in a thread with
-   * an unfinished stop, takes none. Rows already stamped for the claim's
-   * cycle are returned again, so every retry and replay converges.
+   * earlier members) that people typed to the same Agent as plain messages;
+   * the first row that does not qualify ends it, so no other reply is ever
+   * reordered behind a later message. A teammate's message is `informed`
+   * while the head's run may use the requester's own connections (see
+   * headUsesPersonalAccess). A head with a stop, or in a thread with an
+   * unfinished stop, takes none. Rows already stamped for the claim's cycle
+   * are returned again, so every retry and replay converges.
    */
   fold(request: TurnFoldRequest): TurnFoldClaim {
     validateFoldRequest(request);
@@ -1047,7 +1057,7 @@ export class TurnJobStoreLogic {
     let confirmed = 0;
     if (request.phase === 'finish') {
       for (const { record, message } of this.foldMembers(threadKey, request.headId)) {
-        if (record.cycle < 1 || record.cycle > request.received || record.received) continue;
+        if (record.cycle < 1 || record.cycle > request.received || record.received || !holdsFold(record)) continue;
         this.writeFoldRecord(message.turnJobId, { ...record, received: true });
         confirmed += 1;
       }
@@ -1057,7 +1067,7 @@ export class TurnJobStoreLogic {
       claim: {
         messages,
         requesterText: foldedRequestText(
-          headTurn.text,
+          headTurn,
           this.foldMembers(threadKey, request.headId)
             .filter(({ record }) => record.cycle <= cycle).map(({ message }) => message),
         ),
@@ -1074,7 +1084,7 @@ export class TurnJobStoreLogic {
     const open = Number(head.delivered) === 0 && head.status === 'pending' &&
       head.execution_authority === 'legacy' &&
       (headStop === undefined || headStop.role === 'released') &&
-      headFold?.role !== 'absorbed' &&
+      !holdsFold(headFold) &&
       !this.unfinishedStopHead(threadKey) &&
       foldableTurn(headTurn) &&
       (request.phase === 'start'
@@ -1082,6 +1092,7 @@ export class TurnJobStoreLogic {
         : dispatched && head.agent_instance_id === request.instanceId);
     if (!open || cycle > MAX_FOLD_CYCLES) return claim([]);
     const runnerKey = runnerKeyOf({ turn: headTurn, assignment: headAssignment });
+    const usesPersonalAccess = this.headUsesPersonalAccess(request.headId);
     const taken: FoldedMessage[] = [];
     let lastTs = headTurn.messageTs;
     let chars = 0;
@@ -1106,13 +1117,12 @@ export class TurnJobStoreLogic {
       }
       if (runnerKeyOf({ turn, assignment }) !== runnerKey) continue;
       const fold = this.effectiveFold(parseTurnFoldRecord(row.fold_json));
-      if (fold?.role === 'absorbed' && fold.headId === request.headId) {
+      if (holdsFold(fold) && fold?.headId === request.headId) {
         lastTs = turn.messageTs;
         continue;
       }
       const stop = row.stop_json ? this.effectiveStop(parseTurnStopRecord(row.stop_json)) : undefined;
-      const eligible = turn.userId === headTurn.userId &&
-        assignment.agentId === headAssignment.agentId &&
+      const eligible = assignment.agentId === headAssignment.agentId &&
         foldableTurn(turn) &&
         Number(row.attempts) === 0 &&
         (row.dispatch_started_at === null || row.dispatch_started_at === undefined) &&
@@ -1121,10 +1131,19 @@ export class TurnJobStoreLogic {
         validSlackTs(turn.messageTs) && compareSlackTs(turn.messageTs, lastTs) > 0;
       if (!eligible || taken.length >= MAX_FOLDED_MESSAGES) break;
       if (taken.length > 0 && chars + turn.text.length > MAX_FOLDED_TEXT_CHARS) break;
+      const informed = foldedInformationOnly(turn.userId, headTurn.userId, usesPersonalAccess);
       this.writeFoldRecord(String(row.id), {
-        schemaVersion: 1, role: 'absorbed', headId: request.headId, cycle, received: cycle === 0, at: this.now(),
+        schemaVersion: 1,
+        role: informed ? 'informed' : 'absorbed',
+        headId: request.headId,
+        cycle,
+        received: cycle === 0,
+        at: this.now(),
       });
-      taken.push({ turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text });
+      taken.push({
+        turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text,
+        ...(informed ? { informationOnly: true as const } : {}),
+      });
       lastTs = turn.messageTs;
       chars += turn.text.length;
     }
@@ -1154,9 +1173,44 @@ export class TurnJobStoreLogic {
       }
       return [{
         record,
-        message: { turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text },
+        message: {
+          turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text,
+          ...(record.role === 'informed' ? { informationOnly: true as const } : {}),
+        },
       }];
     });
+  }
+
+  /**
+   * Whether the head's run may use the requester's own connections: so its
+   * frozen plan says, and so it reads until a plan is frozen.
+   */
+  private headUsesPersonalAccess(headId: string): boolean {
+    const row = this.db.get('SELECT runtime_plan_json FROM turn_jobs WHERE id = ?', headId);
+    if (!row?.runtime_plan_json) return true;
+    try {
+      return runtimePlanUsesPersonalAccess(JSON.parse(String(row.runtime_plan_json)) as RuntimePlanV2);
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * The head's plan froze: decide its start members again, which a claim
+   * before the freeze took as information only when a teammate sent them.
+   * Plain statements: the freeze's transaction holds them.
+   */
+  private decideStartFoldRoles(headId: string, usesPersonalAccess: boolean): void {
+    const head = this.db.get(
+      `SELECT thread_key, json_extract(turn_json, '$.userId') AS user_id FROM turn_jobs WHERE id = ?`,
+      headId,
+    );
+    if (typeof head?.thread_key !== 'string' || typeof head.user_id !== 'string') return;
+    for (const { record, message } of this.foldMembers(head.thread_key, headId)) {
+      if (record.cycle !== 0 || !holdsFold(record)) continue;
+      const role = foldedInformationOnly(message.userId, head.user_id, usesPersonalAccess) ? 'informed' : 'absorbed';
+      if (role !== record.role) this.writeFoldRecord(message.turnJobId, { ...record, role });
+    }
   }
 
   private writeFoldRecord(id: string, record: TurnFoldMemberRecordV1): void {
@@ -1164,13 +1218,14 @@ export class TurnJobStoreLogic {
   }
 
   /**
-   * An absorbed member is held only while its head is open; once the head
-   * ended any other way than settling it (a failure, a recovery, a delivery
-   * by an older release, a discard), it reads as released and runs as an
-   * ordinary turn, so no message is ever stranded.
+   * An absorbed or informed member is held only while its head is open; once
+   * the head ended any other way than settling it (a failure, a recovery, a
+   * delivery by an older release, a discard, and any ending for an informed
+   * member), it reads as released and runs as an ordinary turn, so no
+   * message is ever stranded.
    */
   private effectiveFold(record: TurnFoldMemberRecordV1 | undefined): TurnFoldMemberRecordV1 | undefined {
-    if (record?.role !== 'absorbed') return record;
+    if (!record || !holdsFold(record)) return record;
     const head = this.db.get('SELECT delivered, status FROM turn_jobs WHERE id = ?', record.headId);
     const holding = head !== undefined && Number(head.delivered) === 0 && head.status !== 'recovery_required';
     return holding ? record : { ...record, role: 'released' };
@@ -1180,9 +1235,9 @@ export class TurnJobStoreLogic {
    * The head delivered: each member its run read ends with it (delivered,
    * `done`, its fold record `settled`), but only when Flue settled that run
    * completed, since only then did the reply answer it. Unread members, and
-   * every member of a run that failed or was stopped, read as released.
-   * Plain statements, run before the head's own tombstone, so a repeat
-   * converges. A settled member keeps its 👀 owed: the interaction cleanup
+   * every member of a run that failed or was stopped, read as released, as
+   * does an informed member, which the reply did not answer. Plain
+   * statements, run before the head's own tombstone, so a repeat converges. A settled member keeps its 👀 owed: the interaction cleanup
    * sweeps remove it like a delivered turn's.
    */
   private settleFoldMembers(headId: string): void {
@@ -1689,6 +1744,7 @@ export class TurnJobStoreLogic {
         if (winner) return winner;
         throw new Error('TurnJob is unavailable for RuntimePlanV2 freeze.');
       }
+      this.decideStartFoldRoles(id, runtimePlanUsesPersonalAccess(plan));
       return { runtimePlan: plan, instanceId };
     });
   }
@@ -1837,7 +1893,7 @@ export class TurnJobStoreLogic {
       const records = this.db.get('SELECT stop_json, fold_json, thread_key FROM turn_jobs WHERE id = ?', id);
       const stop = this.effectiveStop(parseTurnStopRecord(records?.stop_json));
       if (stop?.role === 'stopped' || stop?.role === 'held') throw new TurnJobStopRefusal();
-      if (this.effectiveFold(parseTurnFoldRecord(records?.fold_json))?.role === 'absorbed') {
+      if (holdsFold(this.effectiveFold(parseTurnFoldRecord(records?.fold_json)))) {
         throw new TurnJobStopRefusal();
       }
       const decision = this.getFrozenRuntimePlan(id);
@@ -1871,7 +1927,7 @@ export class TurnJobStoreLogic {
         : [];
       const requesterText = personText === undefined || members.length === 0
         ? personText
-        : foldedRequestText(personText, members);
+        : foldedRequestText({ userId: turn.userId, text: personText }, members);
       const requesterTextSource = personRequestTextSource(turn);
       const envelope: FlueDispatchEnvelopeV1 = {
         schemaVersion: 2,
@@ -2964,7 +3020,7 @@ function parseTurnFoldRecord(raw: unknown): TurnFoldMemberRecordV1 | undefined {
   try {
     const value = JSON.parse(raw) as Record<string, unknown>;
     if (!value || typeof value !== 'object' || value.schemaVersion !== 1 ||
-        (value.role !== 'absorbed' && value.role !== 'settled') ||
+        (value.role !== 'absorbed' && value.role !== 'informed' && value.role !== 'settled') ||
         typeof value.headId !== 'string' || typeof value.received !== 'boolean' ||
         !Number.isSafeInteger(value.cycle) || Number(value.cycle) < 0 ||
         !Number.isSafeInteger(value.at)) return undefined;

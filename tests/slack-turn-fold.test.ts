@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
+import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import {
   foldableTurn,
   foldedRequestText,
@@ -86,10 +87,37 @@ function enqueueAll(s: ReturnType<typeof store>, jobs: TurnJob[]): void {
   }
 }
 
-function dispatch(turns: TurnJobStoreLogic, queued: TurnJob): void {
+/** The requester's own CRM account, bound to the Agent: a run granted it uses personal access. */
+const PERSONAL_CONNECTION: EffectiveConnectionAccount = {
+  account: {
+    id: 'crm_mine', workspaceId: 'T_FOLD', revision: 1, ownerKind: 'member', ownerMembershipId: 'mem_person',
+    createdByMembershipId: 'mem_person', providerId: 'crm', label: 'CRM',
+    policy: {
+      kind: 'api', allowedHosts: ['api.example.com'], pathPrefixes: ['/v1'], headerName: 'authorization',
+      headerValuePrefix: 'Bearer ', allowedMethods: ['GET'], authMode: 'credential',
+    },
+    secretRefId: 'secret_crm', lifecycle: 'ready', createdAt: 1, updatedAt: 1,
+  },
+  binding: {
+    agentId: 'agent_fold', connectionAccountId: 'crm_mine', providerId: 'crm',
+    allowedCapabilities: ['GET'], enabled: true, createdAt: 1, updatedAt: 1,
+  },
+  policy: {
+    kind: 'api', allowedHosts: ['api.example.com'], pathPrefixes: ['/v1'], headerName: 'authorization',
+    headerValuePrefix: 'Bearer ', allowedMethods: ['GET'], authMode: 'credential',
+  },
+  scope: 'personal',
+};
+
+function freeze(turns: TurnJobStoreLogic, queued: TurnJob, access: 'shared' | 'personal' = 'shared'): void {
   turns.freezeRuntimePlan(queued.id, compileRuntimePlanV2({
     turn: queued.turn, assignment: queued.assignment, instructions: 'Help.', memoryEpoch: 1,
+    ...(access === 'personal' ? { effectiveConnections: [PERSONAL_CONNECTION] } : {}),
   }));
+}
+
+function dispatch(turns: TurnJobStoreLogic, queued: TurnJob, access: 'shared' | 'personal' = 'shared'): void {
+  freeze(turns, queued, access);
   turns.prepareFlueDispatch(queued.id, 'Do the work', { generation: queued.id });
   turns.recordFlueReceipt(queued.id, {
     submissionId: `sub_${queued.id}`, acceptedAt: '2026-10-30T12:00:00.000Z', uid: UID,
@@ -172,9 +200,8 @@ test('a head that dispatched before any claim takes nothing at its start', () =>
   }
 });
 
-test('the run of follow-ups ends at another person\'s message, a command, or a message with files', () => {
+test('the run of follow-ups ends at a command or a message with files', () => {
   for (const [label, breaker] of [
-    ['another person', { userId: 'U_OTHER' }],
     ['a memory command', { text: '!memory list' }],
     ['a routine command', { text: '!routines' }],
     ['files', { attachments: [{ fileId: 'F1', name: 'a.txt', mimetype: 'text/plain', size: 3 }] }],
@@ -192,6 +219,114 @@ test('the run of follow-ups ends at another person\'s message, a command, or a m
     } finally {
       s.db.close();
     }
+  }
+});
+
+// ── teammates' messages ───────────────────────────────────────────────
+
+test('a teammate\'s message folds in when the head\'s run uses only the Agent\'s shared connections', () => {
+  const s = store();
+  try {
+    const head = job('head', '101');
+    enqueueAll(s, [head, job('teammate', '102', { userId: 'U_TEAMMATE' }), job('own', '103')]);
+    const claim = s.turns.fold({ phase: 'start', headId: 'head' });
+    assert.deepEqual(claim.messages.map((message) => message.turnJobId), ['teammate', 'own']);
+    assert.equal(claim.requesterText, 'Message 1800000000.000101\n\nMessage 1800000000.000103', 'only the requester\'s words');
+    // Until the head's plan says otherwise, a teammate's message is information only.
+    assert.equal(view(s.turns, 'teammate').job!.fold?.role, 'informed');
+    assert.equal(view(s.turns, 'own').job!.fold?.role, 'absorbed');
+    dispatch(s.turns, head);
+    assert.equal(view(s.turns, 'teammate').job!.fold?.role, 'absorbed');
+    assert.deepEqual(
+      s.turns.fold({ phase: 'start', headId: 'head' }).messages.map((message) => message.informationOnly),
+      [undefined, undefined],
+    );
+    s.turns.recordFlueSettlement('head', COMPLETED);
+    s.turns.markDelivered('head');
+    assert.deepEqual(s.turns.settledFoldMembers('head').map((row) => row.id), ['teammate', 'own']);
+  } finally {
+    s.db.close();
+  }
+});
+
+test('in a run with the requester\'s own connections a teammate\'s message is information only, then runs as its own turn', () => {
+  const s = store();
+  try {
+    const head = job('head', '101');
+    enqueueAll(s, [
+      head,
+      {
+        ...job('teammate', '102', { userId: 'U_TEAMMATE' }),
+        midRunReceipt: { channelId: 'C_FOLD', messageTs: '1800000000.000102', name: 'eyes' },
+      },
+      job('own', '103'),
+    ]);
+    claimed(s.turns, 'head');
+    dispatch(s.turns, head, 'personal');
+    assert.deepEqual(s.turns.fold({ phase: 'start', headId: 'head' }).messages.map((message) => message.informationOnly), [true, undefined]);
+    const held = view(s.turns, 'teammate').job!;
+    assert.deepEqual(held.fold, {
+      schemaVersion: 1, role: 'informed', headId: 'head', cycle: 0, received: true, at: NOW + 3,
+    });
+    assert.equal(turnJobGate(held), 'hold', 'it waits while the head runs');
+    assert.throws(() => s.turns.prepareFlueDispatch('teammate', 'x', { generation: 'teammate' }), isTurnJobStopRefusal);
+
+    s.turns.recordFlueSettlement('head', COMPLETED);
+    s.turns.markDelivered('head');
+    assert.deepEqual(s.turns.settledFoldMembers('head').map((row) => row.id), ['own']);
+    const released = view(s.turns, 'teammate');
+    assert.equal(released.status, 'pending');
+    assert.equal(released.cleanupPending, undefined, 'its 👀 stays for its own turn');
+    assert.equal(released.job!.fold?.role, 'released');
+    assert.equal(turnJobGate(released.job!), 'run');
+    // Its own turn takes nothing of the head's and dispatches like any turn.
+    assert.deepEqual(claimed(s.turns, 'teammate'), []);
+    dispatch(s.turns, job('teammate', '102', { userId: 'U_TEAMMATE' }));
+  } finally {
+    s.db.close();
+  }
+});
+
+test('a late fold decides a teammate\'s message from the head\'s frozen plan', () => {
+  for (const access of ['shared', 'personal'] as const) {
+    const s = store();
+    try {
+      const head = job('head', '101');
+      enqueueAll(s, [head]);
+      dispatch(s.turns, head, access);
+      const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
+      enqueueAll(s, [job('teammate', '102', { userId: 'U_TEAMMATE' })]);
+      const late = s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 0, take: true });
+      assert.deepEqual(late.messages.map((message) => message.informationOnly), [access === 'personal' || undefined], access);
+      assert.equal(late.requesterText, 'Message 1800000000.000101', access);
+      s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 1, take: false });
+      s.turns.recordFlueSettlement('head', COMPLETED);
+      s.turns.markDelivered('head');
+      assert.equal(view(s.turns, 'teammate').status, access === 'personal' ? 'pending' : 'done', access);
+    } finally {
+      s.db.close();
+    }
+  }
+});
+
+test('a stop drops a teammate\'s information-only message with the rest, counting it read once the run had it', () => {
+  const s = store();
+  try {
+    const head = job('head', '101');
+    enqueueAll(s, [head, job('teammate', '102', { userId: 'U_TEAMMATE' })]);
+    claimed(s.turns, 'head');
+    dispatch(s.turns, head, 'personal');
+    const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
+    enqueueAll(s, [job('late', '103', { userId: 'U_TEAMMATE' })]);
+    s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 0, take: true });
+    s.turns.steer({
+      kind: 'stop', threadKey: THREAD, source: 'typed', stopperUserId: 'U_PERSON', cutoffTs: '1800000000.000110',
+    });
+    const finished = s.turns.finishStop('head', 'dropped');
+    assert.equal(finished?.count, 2);
+    assert.equal(finished?.read, 1, 'the late message was never confirmed read');
+  } finally {
+    s.db.close();
   }
 });
 
@@ -249,7 +384,11 @@ test('one claim takes at most eight messages and 40,000 characters, its first me
       job('next', '103', { text: 'and this too, please' }),
     ]);
     assert.deepEqual(claimed(big.turns, 'head'), ['long']);
-    assert.equal(foldedRequestText('head', [{ text: long }, { text: 'more text' }]).length, MAX_FOLDED_TEXT_CHARS);
+    const me = 'U_PERSON';
+    assert.equal(
+      foldedRequestText({ userId: me, text: 'head' }, [{ userId: me, text: long }, { userId: me, text: 'more text' }]).length,
+      MAX_FOLDED_TEXT_CHARS,
+    );
   } finally {
     big.db.close();
   }
@@ -773,6 +912,9 @@ test('rows written before the fold column existed decode with no fold record', (
     const old = reopened.runnerView('old').job!;
     assert.equal(old.fold, undefined);
     assert.equal(turnJobGate(old), 'run');
+    const before = { schemaVersion: 1, role: 'absorbed', headId: 'gone', cycle: 0, received: true, at: NOW };
+    db.run('UPDATE turn_jobs SET fold_json = ? WHERE id = ?', JSON.stringify(before), 'old');
+    assert.deepEqual(reopened.runnerView('old').job!.fold, { ...before, role: 'released' }, 'a record from before C1 reads as it did');
     db.run('UPDATE turn_jobs SET fold_json = ? WHERE id = ?', '{"schemaVersion":2,"role":"absorbed"}', 'old');
     assert.equal(reopened.runnerView('old').job!.fold, undefined, 'a record this release cannot read is none');
   } finally {
