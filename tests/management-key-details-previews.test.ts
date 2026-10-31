@@ -51,7 +51,12 @@ function skillEdit(before: Partial<typeof BASE_SKILL>, after: Partial<typeof BAS
 }
 
 const KEY_DETAILS =
-  /^((?:[•-] .*\n)*)(?:(?:And (\d+) more changes?|(\d+) changes? not listed|(Only spacing or line breaks change))\. )?Approval applies the full (\w+)\.$/gm;
+  /^((?:[•-] .*\n)*)(?:(?:And (\d+) more changes?|(Only spacing or line breaks change))\. )?Approval applies the full (\w+)\.$/gm;
+
+/** What a person reads: Slack shows `&amp;`, `&lt;` and `&gt;` as the characters. */
+function visible(text: string): string {
+  return text.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
+}
 
 interface KeyDetails {
   text: string;
@@ -65,22 +70,27 @@ function keyDetails(text: string): KeyDetails[] {
   return Array.from(text.matchAll(KEY_DETAILS), (match) => ({
     text: match[0],
     listed: match[1]!.split('\n').filter(Boolean),
-    unlisted: Number(match[2] ?? match[3] ?? 0),
-    spacingOnly: match[4] !== undefined,
-    noun: match[5]!,
+    unlisted: Number(match[2] ?? 0),
+    spacingOnly: match[3] !== undefined,
+    noun: match[4]!,
   }));
 }
 
-/** The one key-details block for `noun` fits the budget, and lists or counts every change. */
+/**
+ * The one key-details block for `noun` fits the budget, lists the first
+ * change, and lists or counts every change.
+ */
 function assertAccounted(text: string, noun: string, before: string, after: string): KeyDetails {
   const blocks = keyDetails(text).filter((block) => block.noun === noun);
   assert.equal(blocks.length, 1, text);
   const block = blocks[0]!;
-  assert.ok(block.text.length <= KEY_DETAILS_CHARACTER_BUDGET, `${block.text.length} characters\n${block.text}`);
+  const length = visible(block.text).length;
+  assert.ok(length <= KEY_DETAILS_CHARACTER_BUDGET, `${length} characters\n${block.text}`);
   const changes = summarizeTextChange(before, after);
   if (changes.length === 0) {
     assert.ok(block.spacingOnly, block.text);
   } else {
+    assert.ok(block.listed.length > 0, block.text);
     assert.equal(block.listed.length + block.unlisted, changes.length, 'every change is listed or counted');
   }
   return block;
@@ -89,9 +99,7 @@ function assertAccounted(text: string, noun: string, before: string, after: stri
 /** The Slack and Markdown previews say the same thing once bold, bullets and escaping are set aside. */
 function assertSameFacts(preview: ManagementChangeSetPreview): void {
   const body = (text: string) => text.split('\n').slice(1, -1).join('\n');
-  const slack = body(formatSlackChangeSetProposal(preview))
-    .replace(/^• /gm, '- ')
-    .replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
+  const slack = visible(body(formatSlackChangeSetProposal(preview)).replace(/^• /gm, '- '));
   const markdown = body(formatMarkdownChangeSetProposal(preview)).replaceAll('**', '*');
   assert.equal(markdown, slack);
 }
@@ -274,7 +282,7 @@ test('Agent instructions, memory and a schedule task show key details by their o
     noun: 'memory',
     before: memory,
     after: editedMemory,
-    bullet: '• Changes wording to: “…prefers primary sources and preprints.”',
+    bullet: '• Changes wording to: “- Topic 7: prefers primary sources and preprints.”',
   }, {
     preview: singleChange({
       itemId: 'routine',
@@ -354,7 +362,7 @@ test('new connections lead a preview that many long skill edits push past the Sl
   assert.equal(changeSetAccessFits(preview, SLACK_PRESENTATION_DIALECT), true);
 });
 
-test('Slack escaping can list fewer changes, never more than the budget', () => {
+test('Slack escaping changes neither which changes are listed nor what a person reads', () => {
   const line = (index: number) =>
     `- <${index}> & <a> & <b> & <c> & <d> & <e> & <f> & <g> & <h> & <i> & <j> & <k> & <l> & <m>`;
   const before = ['## R&D <ops> & <infra> & <tools>', ...Array.from({ length: 9 }, (_, index) => line(index))].join('\n');
@@ -363,13 +371,21 @@ test('Slack escaping can list fewer changes, never more than the budget', () => 
 
   const slack = assertAccounted(formatSlackChangeSetProposal(preview), 'instructions', before, after);
   const markdown = assertAccounted(formatMarkdownChangeSetProposal(preview), 'instructions', before, after);
-  assert.ok(slack.listed.length < markdown.listed.length, `${slack.listed.length} vs ${markdown.listed.length}`);
+  assert.equal(slack.listed.length, markdown.listed.length);
   assert.match(slack.text, /^• Under “R&amp;D &lt;ops&gt; &amp; &lt;infra&gt; &amp; &lt;tools&gt;”, adds: “…/);
+  assertSameFacts(preview);
+});
 
-  const wide = `## ${'&'.repeat(40)}\n${Array.from({ length: 6 }, (_, index) => `${index}${'&'.repeat(200)}`).join('\n')}`;
-  const unlisted = assertAccounted(
-    formatSlackChangeSetProposal(skillEdit({ instructions: wide }, { instructions: wide.replace(`3${'&'.repeat(200)}`, `3${'&'.repeat(199)}<`) })),
-    'instructions', wide, wide.replace(`3${'&'.repeat(200)}`, `3${'&'.repeat(199)}<`),
-  );
-  assert.equal(unlisted.text, '1 change not listed. Approval applies the full instructions.');
+test('the longest possible bullet still leaves the first change listed within the budget', () => {
+  const heading = '🧾'.repeat(60);
+  const word = '😀'.repeat(200);
+  const text = (last: string) =>
+    [`## ${heading}`, ...Array.from({ length: 8 }, (_, index) => `${index} ${word} ${word}`), last].join('\n');
+  const before = text(`${word} ${word}`);
+  const after = text(`${word}x ${word}`);
+
+  for (const format of [formatSlackChangeSetProposal, formatMarkdownChangeSetProposal]) {
+    const block = assertAccounted(format(skillEdit({ instructions: before }, { instructions: after })), 'instructions', before, after);
+    assert.equal(block.listed.length, 1);
+  }
 });

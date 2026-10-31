@@ -1086,9 +1086,10 @@ const SHORT_TEXT_MAX_CHARACTERS = 400;
 /** Changes a long text edit lists before counting the rest. */
 const LISTED_TEXT_CHANGE_LIMIT = 3;
 /**
- * Most characters one long text edit's key details take, bullets and closing
- * line, after escaping. Fixed for every surface: the preview stays short on
- * purpose instead of filling what the surface allows.
+ * Most characters a person reads in one long text edit's key details, bullets
+ * and closing line. Fixed for every surface: the preview stays short on
+ * purpose instead of filling what the surface allows. The longest possible
+ * bullet fits with room to spare, so the first change is always listed.
  */
 export const KEY_DETAILS_CHARACTER_BUDGET = 640;
 
@@ -1130,7 +1131,8 @@ function isShortText(value: string | undefined): boolean {
 /**
  * Where a long text changes, one bullet per change in document order while
  * they fit the budget, then a count of the rest. Every change is listed or
- * counted.
+ * counted. The budget measures text before escaping, so every surface lists
+ * the same changes.
  */
 function formatKeyDetails(
   before: string,
@@ -1141,17 +1143,21 @@ function formatKeyDetails(
   const applies = `Approval applies the full ${noun}.`;
   const changes = summarizeTextChange(before, after);
   if (changes.length === 0) return `Only spacing or line breaks change. ${applies}`;
-  const bullets = changes.slice(0, LISTED_TEXT_CHANGE_LIMIT)
-    .map((change) => `${dialect.bullet} ${describeTextChange(change, dialect)}`);
-  const block = (listed: number) => {
+  const block = (listed: number, escape: ChangeSetPresentationDialect['escape']) => {
     const rest = changes.length - listed;
-    const word = rest === 1 ? 'change' : 'changes';
-    const count = rest === 0 ? '' : listed === 0 ? `${rest} ${word} not listed. ` : `And ${rest} more ${word}. `;
-    return [...bullets.slice(0, listed), `${count}${applies}`].join('\n');
+    return [
+      ...changes.slice(0, listed)
+        .map((change) => `${dialect.bullet} ${describeTextChange(change, { ...dialect, escape })}`),
+      `${rest === 0 ? '' : `And ${rest} more ${rest === 1 ? 'change' : 'changes'}. `}${applies}`,
+    ].join('\n');
   };
-  let listed = 0;
-  while (listed < bullets.length && block(listed + 1).length <= KEY_DETAILS_CHARACTER_BUDGET) listed += 1;
-  return block(listed);
+  const shown = (text: string) => text;
+  let listed = 1;
+  while (
+    listed < Math.min(changes.length, LISTED_TEXT_CHANGE_LIMIT) &&
+    block(listed + 1, shown).length <= KEY_DETAILS_CHARACTER_BUDGET
+  ) listed += 1;
+  return block(listed, dialect.escape);
 }
 
 const TEXT_CHANGE_VERBS = { adds: 'adds', removes: 'removes', changes: 'changes wording to' } as const;
