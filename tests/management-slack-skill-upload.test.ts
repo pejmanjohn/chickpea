@@ -327,7 +327,7 @@ test('a same-name skill is replaced only when the person\'s message asks, and un
     assert.deepEqual(names(result.replaced), ['alpha']);
     assert.deepEqual(result.conflicts, []);
     assert.equal(result.presentation.slack,
-      'Replaced 1 skill on Sprout: `alpha`.\nThe skills are active from the next message. You can undo this change.');
+      'Replaced 1 skill on Sprout: `alpha`.\nThe skill is active from the next message. You can undo this change.');
     assert.deepEqual((await f.config.getAgent(agent.id)).skills, [
       KEPT[0],
       { name: 'alpha', description: 'Alpha from Slack.', instructions: '# Alpha\nThe uploaded steps.\n', enabled: true },
@@ -370,7 +370,7 @@ for (const [label, judge] of [
       'Added 1 skill to Sprout: `beta-notes`.',
       'Left unchanged because Sprout already has a skill with the same name and different content: `alpha`.',
       'To replace it, send the files again in a message that asks to replace it.',
-      'The skills are active from the next message. You can undo this change.',
+      'The skill is active from the next message. You can undo this change.',
     ].join('\n'));
     assert.deepEqual((await f.config.getAgent(agent.id)).skills.find(({ name }) => name === 'alpha'), KEPT[1]);
   } finally {
@@ -541,7 +541,7 @@ test('files Slack cannot give become left-out issues, and an older gateway point
       'Left out Attachment 1: Not a skill file. Upload SKILL.md files, other markdown files, or .zip and .skill archives.',
       'Left out Attachment 3: This file is not a readable zip archive.',
       'Left out Attachment 4: This Slack connection cannot read skill files yet. Upload it on the Agent\'s Skills tab in Admin.',
-      'The skills are active from the next message. You can undo this change.',
+      'The skill is active from the next message. You can undo this change.',
     ].join('\n'));
     assert.equal((await f.config.getAgent(agent.id)).skills.length, KEPT.length + 1);
   } finally {
