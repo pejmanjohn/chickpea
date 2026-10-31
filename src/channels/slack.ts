@@ -67,6 +67,7 @@ import {
   type TurnJob,
 } from '../config/state-rpc.ts';
 import type {
+  AgentThreadRoute,
   CustomAgentConfig,
   ResolvedAssignment,
   WorkspaceInstallation,
@@ -1926,7 +1927,12 @@ export async function processSlackFrontDeskHandoff(
   });
 }
 
-/** The person's message admitted again for `agentId`, as a takeover of Chickpea's root DM thread. */
+/**
+ * The person's message admitted again for `agentId`, as a takeover of
+ * Chickpea's root DM thread. It ends admitted, or refused with the thread
+ * still Chickpea's: routing moves the thread before admission can fail, so a
+ * takeover that admitted nothing gives the thread back.
+ */
 async function admitFrontDeskTakeover(input: {
   origin: FrontDeskOrigin;
   fromAgentId: string;
@@ -1938,6 +1944,8 @@ async function admitFrontDeskTakeover(input: {
   enqueueTurn?: SlackEventExecution['enqueueTurn'];
 }): Promise<FrontDeskAdmissionOutcome> {
   const turn = frontDeskTakeoverTurn(input.origin, { fromAgentId: input.fromAgentId, via: input.via });
+  const config = (input.execution?.stores ?? resolveStores(input.platformEnv)).config;
+  const before = await config.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs);
   const admission: SlackFrontDeskAdmission = {
     kind: 'takeover',
     turn,
@@ -1962,7 +1970,39 @@ async function admitFrontDeskTakeover(input: {
       channel_type: 'im',
     },
   }, input.platformEnv, input.execution, admission);
+  if (before && (admission.outcome === 'refused' || admission.outcome === 'failed')) {
+    await giveBackFrontDeskThread(config, turn, before, input.agentId).catch((err: unknown) => {
+      console.warn('[chickpea] front desk thread was not given back:', sanitizeError(err));
+    });
+  }
   return admission.outcome;
+}
+
+/**
+ * Return the thread to its owner before the takeover when the takeover moved
+ * it to `agentId` from this message and admitted nothing. A route changed
+ * since by anyone else is left alone.
+ */
+async function giveBackFrontDeskThread(
+  config: Pick<ConfigStore, 'getAgentThreadRoute' | 'putAgentThreadRoute'>,
+  turn: NormalizedSlackTurn,
+  before: AgentThreadRoute,
+  agentId: string,
+): Promise<void> {
+  if (before.agentId === agentId) return;
+  const after = await config.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs);
+  if (
+    !after || after.agentId !== agentId || after.ownerIncarnation !== before.ownerIncarnation + 1 ||
+    after.handoff?.transferMessageTs !== turn.messageTs || after.handoff.previousAgentId !== before.agentId
+  ) return;
+  await config.putAgentThreadRoute({
+    workspaceId: turn.workspaceId,
+    channelId: turn.channelId,
+    threadTs: turn.threadTs,
+    agentId: before.agentId,
+    agentGeneration: before.agentGeneration,
+    ownerIncarnation: after.ownerIncarnation + 1,
+  }, after.revision);
 }
 
 /** The bot client of a direct installation, for a host post outside any turn. */
@@ -3459,6 +3499,10 @@ async function processSlackEvent(
       if (await state.claim(msgKey)) return true;
       await state.release(evtKey);
     }
+    if (ask?.kind === 'takeover') {
+      ask.outcome = 'duplicate';
+      return false;
+    }
     logTurnAlreadyAdmitted(assignment.agentId, execution);
     await resumeCoAddressedTurns({ payload, turn, platformEnv, execution, state, msgKey });
     return false;
@@ -3828,7 +3872,9 @@ async function processSlackEvent(
   // its TurnJob; it never takes the legacy claim path that could not.
   if (ui && !(admissionTruth.eligible && modelReadyForCanonicalAdmission)) return;
   // An ask is admitted canonically or not at all: its limit is counted there.
-  if (ask && !(admissionTruth.eligible && modelReadyForCanonicalAdmission)) {
+  // A takeover has no limit and has already moved the thread, so it goes on
+  // as a mention of its Agent would.
+  if (ask?.kind === 'ask' && !(admissionTruth.eligible && modelReadyForCanonicalAdmission)) {
     console.info('[chickpea] host-addressed turn not admitted: not_eligible');
     return;
   }

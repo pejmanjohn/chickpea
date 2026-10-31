@@ -305,6 +305,65 @@ test('a hand-off to an Agent the person can no longer use is refused, and Chickp
   });
 });
 
+test('a hand-off to an Agent whose model cannot resolve is admitted as a mention of it would be', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { stores, jobs, posts } = lane;
+    await processGatewaySlackEnvelope(directMessage('Ev1', ROOT, 'Check order 4821 on the portal.'),
+      undefined, lane.gateway, { stores, enqueueTurn: lane.enqueueTurn });
+    const chickpea = jobs[0]!;
+    const support = await stores.config.getAgent('agent_support');
+    await stores.config.updateAgent('agent_support', { model: 'openai/gpt-not-in-any-catalog' }, support.revision);
+    const dispatch = () => processSlackFrontDeskHandoff({
+      turn: chickpea.turn, fromAgentId: CHICKPEA_AGENT_ID, agentId: 'agent_support', agentName: 'Support Desk',
+    }, undefined, { stores, gatewayClient: lane.gateway, enqueueTurn: lane.enqueueTurn });
+    await dispatch();
+    assert.equal(jobs.length, 2, 'admitted, to deliver the sanitized provider failure');
+    const takeover = jobs[1]!;
+    assert.equal(takeover.id, `msg:D1:${ROOT}:handoff`);
+    assert.equal(takeover.assignment.agentId, 'agent_support');
+    assert.equal(takeover.runId, undefined, 'on the legacy lane, as a mention with no ready model is');
+    assert.deepEqual(posts, [], 'no failure line for a takeover that went through');
+    assert.equal((await stores.config.getAgentThreadRoute('T1', 'D1', ROOT))?.agentId, 'agent_support');
+    // The same hand-off again finds the legacy claim taken: a duplicate, not a refusal.
+    await dispatch();
+    assert.equal(jobs.length, 2);
+    assert.deepEqual(posts, []);
+  });
+});
+
+test('a hand-off that keeps failing after it moved the thread gives the thread back to Chickpea', async (t) => {
+  await withFrontDeskLane(async (lane) => {
+    const { stores, jobs, posts } = lane;
+    await processGatewaySlackEnvelope(directMessage('Ev1', ROOT, 'Check order 4821 on the portal.'),
+      undefined, lane.gateway, { stores, enqueueTurn: lane.enqueueTurn });
+    const chickpea = jobs[0]!;
+    const unavailable = async () => ({ ok: false as const, error: { code: 'unavailable', message: 'state store unavailable' } });
+    const dispatch = (enqueueTurn: FrontDeskLane['enqueueTurn']) => processSlackFrontDeskHandoff({
+      turn: chickpea.turn, fromAgentId: CHICKPEA_AGENT_ID, agentId: 'agent_support', agentName: 'Support Desk',
+    }, undefined, { stores, gatewayClient: lane.gateway, enqueueTurn });
+    // Its retries back off on timers; run them out without waiting.
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const pending = dispatch(unavailable as never);
+    let settled = false;
+    void pending.finally(() => { settled = true; });
+    while (!settled) {
+      await new Promise((resolve) => setImmediate(resolve));
+      t.mock.timers.tick(5_000);
+    }
+    await pending;
+    t.mock.timers.reset();
+    assert.equal(jobs.length, 1, 'nothing is admitted');
+    assert.deepEqual(posts.map(({ text }) => text), [frontDeskFailureLine('Support Desk')]);
+    const route = await stores.config.getAgentThreadRoute('T1', 'D1', ROOT);
+    assert.equal(route?.agentId, CHICKPEA_AGENT_ID, 'the failure line is true: the thread is still Chickpea\'s');
+
+    // A later hand-off is a fresh takeover, not a retry of the one that failed.
+    await dispatch(lane.enqueueTurn);
+    assert.equal(jobs.at(-1)?.assignment.agentId, 'agent_support');
+    assert.equal((await stores.config.getAgentThreadRoute('T1', 'D1', ROOT))?.agentId, 'agent_support');
+  });
+});
+
 test('the takeover seed hands over only Chickpea\'s own root DM thread', async () => {
   await withFrontDeskLane(async (lane) => {
     const { stores, gateway, jobs, enqueueTurn } = lane;
