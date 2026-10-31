@@ -17,10 +17,12 @@ import { isProviderKeyId, type ProviderKeyId } from '../config/provider-keys.ts'
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
 import { invalidRequest, noStore, readJson } from './api-support.ts';
+import { formatTasks } from './billing-tasks.ts';
 
 export const PLAN_PATH = '/admin/plan';
 
 const MAX_BILLING_BODY_BYTES = 512;
+const MICROS_PER_CENT = 10_000;
 const rateCardKey = v.pipe(v.string(), v.regex(/^[a-z][a-z0-9_]{0,63}$/));
 const checkoutSchema = v.strictObject({ kind: v.picklist(['plan', 'extra_usage']), key: rateCardKey });
 const fundingSchema = v.strictObject({ funding: v.picklist(['platform', 'own_key']) });
@@ -54,27 +56,55 @@ interface OwnerFacts {
 interface NamedUse {
   name: string | null;
   used: string;
+  /** The row's share of the largest row, 0 to 100, for its bar. */
+  bar: number;
 }
 
-/** What everyone sees. Amounts are formatted dollars; dates are formatted UTC days, "Nov 7" or "Oct 7, 2027". */
+/** Use by one Agent, with its ID for its avatar; null for the gathered row. */
+interface AgentUse extends NamedUse {
+  id: string | null;
+}
+
+/**
+ * What everyone sees. Amounts are formatted dollars; dates are formatted UTC
+ * days, "Nov 7" or "Oct 7, 2027"; task counts read "400" when exact and
+ * "about 250" when they assume a typical task.
+ */
 interface BillingStatus {
   funding: BillingFunding;
-  planName: string | null;
-  /** Null without a plan period, which a plan can lack until its next subscription event. */
-  meter: { used: string; included: string; percent: number; onPacePercent: number | null; resets: string } | null;
+  /** `included` is null for a plan no longer on sale; `tasks` also when a task draws nothing. */
+  plan: { key: string; name: string; price: string; included: string | null; tasks: string | null } | null;
+  /** Null when the plan renews unchanged, or there is no plan. */
+  pendingChange: { kind: 'ends'; on: string } | { kind: 'plan'; planName: string; on: string } | null;
+  /** Null without a plan period, which a plan can lack until its next subscription event. Task counts are for an own key only, and null when a task draws nothing. */
+  meter: {
+    used: string; included: string; percent: number; onPacePercent: number | null; resets: string;
+    tasksUsed: string | null; tasksIncluded: string | null;
+  } | null;
   /** Null when nothing carried over. */
-  rollover: string | null;
+  rollover: { remaining: string; until: string } | null;
   extraUsage: { remaining: string; frozen: boolean; until: string } | null;
-  trial: { remaining: string; until: string } | null;
-  ownKeyWithoutPlan: { minimumPrice: string } | null;
+  trial: { remaining: string; granted: string; used: string; percent: number; until: string } | null;
+  ownKeyWithoutPlan: { minimumPrice: string; minimumTasks: string | null } | null;
+  /** What the workspace can spend now, and the tasks it covers; null for an own key without a plan. `tasksLeft` is null when a task draws nothing. */
+  balance: { left: string; tasksLeft: string | null; exhausted: boolean } | null;
+  /** The flat usage a task draws, "30¢". */
+  taskFee: string;
 }
 
-/** Whether an Owner can switch funding from the page, and what is missing when not. */
-export type FundingSwitch =
-  | { to: 'platform' }
-  | { to: 'own_key'; ready: true; agentsWithoutKey: string[] }
-  | { to: 'own_key'; ready: false; needs: 'plan'; minimumPlan: { key: string; price: string } }
-  | { to: 'own_key'; ready: false; needs: 'key'; provider: ProviderKeyId | null };
+/**
+ * What paying with the installation's own key needs, whatever the funding is
+ * now: a plan at or above the lowest one for it, then a key for the default
+ * model's provider. `provider` names that provider, null when no default model
+ * is chosen. Agents pinned to a provider with no saved key would stop replying.
+ */
+export interface OwnKeySetup {
+  planReady: boolean;
+  minimumPlan: { key: string; price: string };
+  key:
+    | { ready: true; provider: ProviderKeyId | null; agentsWithoutKey: string[] }
+    | { ready: false; provider: ProviderKeyId | null };
+}
 
 /**
  * What the Plan page shows. Only an Owner can buy, change the plan, or switch
@@ -83,16 +113,22 @@ export type FundingSwitch =
 export type BillingView =
   | ({ manage: false } & BillingStatus)
   | ({ manage: true } & BillingStatus & {
-    plan: { key: string; name: string; price: string; included: string | null } | null;
     period: { start: string; end: string } | null;
-    /** Null when the plan renews unchanged, or there is no plan. */
-    pendingChange: { kind: 'ends'; on: string } | { kind: 'plan'; planName: string; on: string } | null;
-    use: { byAgent: NamedUse[]; byPerson: NamedUse[] };
+    use: { byAgent: AgentUse[]; byPerson: NamedUse[] };
     offers: {
-      plans: { key: string; name: string; price: string; included: string; ownKeyMinimum: boolean; ownKeyEligible: boolean }[];
+      plans: {
+        key: string; name: string; price: string; included: string; ownKeyMinimum: boolean; ownKeyEligible: boolean;
+        /** Tasks the plan covers each month; `ownKey` is null for a plan an own key cannot choose, both when a task draws nothing. */
+        tasks: { platform: string | null; ownKey: string | null };
+      }[];
       extraUsage: { key: string; price: string; usage: string; validMonths: number }[];
+      /** How much more usage than its price every plan includes, in percent. */
+      bonusPercent: number;
+      /** The flat usage a chat reply draws: "$0" for none, or "30¢". */
+      chatReplyFee: string;
+      rolloverMonths: number;
     };
-    switchFunding: FundingSwitch;
+    ownKey: OwnKeySetup;
   });
 
 /**
@@ -122,12 +158,9 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
     if (!parsed.success) return invalidRequest(c);
     if (parsed.output.funding === 'own_key') {
       const [summary, ownKey] = await Promise.all([port.summary(installationId), options.ownKeyFacts(c)]);
-      const next = fundingSwitch(summary, ownKeyMinimumPlan(summary), ownKey);
-      if (next.to === 'own_key' && !next.ready) {
-        return next.needs === 'plan'
-          ? c.json({ error: 'own_key_plan_required' }, 409)
-          : c.json({ error: 'own_key_missing', provider: next.provider }, 409);
-      }
+      const setup = ownKeySetup(summary, ownKeyMinimumPlan(summary), ownKey);
+      if (summary.funding === 'platform' && !setup.planReady) return c.json({ error: 'own_key_plan_required' }, 409);
+      if (summary.funding === 'platform' && !setup.key.ready) return c.json({ error: 'own_key_missing', provider: setup.key.provider }, 409);
     }
     await port.chooseFunding(installationId, parsed.output.funding);
     if (parsed.output.funding === 'platform') await options.choseChickpeaModels(c);
@@ -150,66 +183,116 @@ function billingView(summary: BillingSummary, owner: OwnerFacts | null): Billing
   const minimum = ownKeyMinimumPlan(summary);
   const status = billingStatus(summary, minimum);
   if (!owner) return { manage: false, ...status };
-  const planOffer = summary.plan && summary.offers.plans.find((offer) => offer.key === summary.plan?.key);
-  const pending = summary.plan && summary.pendingChange;
+  const { offers } = summary;
   return {
     manage: true,
     ...status,
-    plan: summary.plan && {
-      key: summary.plan.key,
-      name: summary.plan.name,
-      price: formatPriceCents(summary.plan.priceCents),
-      included: planOffer ? formatUsageDollars(planOffer.includedMicros) : null,
-    },
     period: summary.period && { start: SHORT_DATE.format(summary.period.start), end: SHORT_DATE.format(summary.period.end) },
-    pendingChange: pending?.kind === 'ends' ? { kind: 'ends', on: SHORT_DATE.format(pending.at) }
-      : pending?.kind === 'plan' ? { kind: 'plan', planName: pending.plan.name, on: SHORT_DATE.format(pending.at) }
-      : null,
     use: {
       byAgent: namedUse(summary.use.byAgent, owner.agentNames),
-      byPerson: namedUse(summary.use.byPerson, owner.personNames),
+      byPerson: namedUse(summary.use.byPerson, owner.personNames).map(({ id: _id, ...row }) => row),
     },
     offers: {
-      plans: summary.offers.plans.map((offer) => ({
+      plans: offers.plans.map((offer) => ({
         key: offer.key,
         name: offer.name,
         price: formatPriceCents(offer.priceCents),
         included: formatUsageDollars(offer.includedMicros),
         ownKeyMinimum: offer.key === minimum.key,
         ownKeyEligible: offer.ownKeyEligible,
+        tasks: {
+          platform: formatTasks(offer.includedMicros, 'platform', offers),
+          ownKey: offer.ownKeyEligible ? formatTasks(offer.includedMicros, 'own_key', offers) : null,
+        },
       })),
-      extraUsage: summary.offers.extraUsage.map((offer) => ({
+      extraUsage: offers.extraUsage.map((offer) => ({
         key: offer.key,
         price: formatPriceCents(offer.priceCents),
         usage: formatUsageDollars(offer.usageMicros),
         validMonths: offer.validMonths,
       })),
+      bonusPercent: bonusPercent(offers.plans),
+      chatReplyFee: formatFee(offers.chatReplyFeeMicros),
+      rolloverMonths: offers.rolloverMonths,
     },
-    switchFunding: fundingSwitch(summary, minimum, owner.ownKey),
+    ownKey: ownKeySetup(summary, minimum, owner.ownKey),
   };
 }
 
 function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStatus {
-  const { planUsage, period, rollover, extraUsage, trial } = summary;
+  const { funding, offers, planUsage, period, rollover, extraUsage, trial } = summary;
+  const planOffer = summary.plan && offers.plans.find((offer) => offer.key === summary.plan?.key);
+  const pending = summary.plan && summary.pendingChange;
+  const ownKeyTasks = (micros: UsageMicros) => funding === 'own_key' ? formatTasks(micros, 'own_key', offers) : null;
+  const trialUsed = Math.max(0, (trial?.grantedMicros ?? 0) - (trial?.remainingMicros ?? 0)) as UsageMicros;
   return {
-    funding: summary.funding,
-    planName: summary.plan?.name ?? null,
+    funding,
+    plan: summary.plan && {
+      key: summary.plan.key,
+      name: summary.plan.name,
+      price: formatPriceCents(summary.plan.priceCents),
+      included: planOffer ? formatUsageDollars(planOffer.includedMicros) : null,
+      tasks: planOffer ? formatTasks(planOffer.includedMicros, funding, offers) : null,
+    },
+    pendingChange: pending?.kind === 'ends' ? { kind: 'ends', on: SHORT_DATE.format(pending.at) }
+      : pending?.kind === 'plan' ? { kind: 'plan', planName: pending.plan.name, on: SHORT_DATE.format(pending.at) }
+      : null,
     meter: planUsage && period && {
       used: formatUsageDollars(planUsage.usedMicros, 'down'),
       included: formatUsageDollars(planUsage.includedMicros),
       percent: usagePercent(planUsage.usedMicros, planUsage.includedMicros),
       onPacePercent: planUsage.onPacePercent,
       resets: SHORT_DATE.format(period.end),
+      tasksUsed: ownKeyTasks(planUsage.usedMicros),
+      tasksIncluded: ownKeyTasks(planUsage.includedMicros),
     },
-    rollover: rollover && rollover.remainingMicros > 0 ? formatUsageDollars(rollover.remainingMicros) : null,
+    rollover: rollover && rollover.remainingMicros > 0
+      ? { remaining: formatUsageDollars(rollover.remainingMicros), until: SHORT_DATE.format(rollover.expiresAt) }
+      : null,
     extraUsage: extraUsage && extraUsage.remainingMicros > 0
       ? { remaining: formatUsageDollars(extraUsage.remainingMicros), frozen: extraUsage.frozen, until: LONG_DATE.format(extraUsage.expiresAt) }
       : null,
-    trial: trial && { remaining: formatUsageDollars(trial.remainingMicros), until: SHORT_DATE.format(trial.expiresAt) },
-    ownKeyWithoutPlan: summary.funding === 'own_key' && summary.plan === null
-      ? { minimumPrice: formatPriceCents(minimum.priceCents) }
+    trial: trial && {
+      remaining: formatUsageDollars(trial.remainingMicros),
+      granted: formatUsageDollars(trial.grantedMicros),
+      used: formatUsageDollars(trialUsed, 'down'),
+      percent: usagePercent(trialUsed, trial.grantedMicros),
+      until: SHORT_DATE.format(trial.expiresAt),
+    },
+    ownKeyWithoutPlan: funding === 'own_key' && summary.plan === null
+      ? { minimumPrice: formatPriceCents(minimum.priceCents), minimumTasks: formatTasks(minimum.includedMicros, 'own_key', offers) }
       : null,
+    balance: funding === 'own_key' && summary.plan === null ? null : balance(summary, planOffer),
+    taskFee: formatFee(offers.taskFeeMicros),
   };
+}
+
+/**
+ * What the workspace can spend now, as the host counts it: what is left of
+ * the plan's usage, what carried over, extra usage a plan unfreezes, and any
+ * trial usage, less what the workspace owes. A plan with no meter yet counts
+ * its whole usage.
+ */
+function balance(summary: BillingSummary, planOffer: PlanOffer | null | undefined): NonNullable<BillingStatus['balance']> {
+  const { planUsage, rollover, extraUsage, trial } = summary;
+  const plan = !summary.plan ? 0
+    : planUsage ? Math.max(0, planUsage.includedMicros - planUsage.usedMicros)
+    : planOffer?.includedMicros ?? 0;
+  const spendable = plan + (rollover?.remainingMicros ?? 0) + (extraUsage && !extraUsage.frozen ? extraUsage.remainingMicros : 0) +
+    (trial?.remainingMicros ?? 0) - summary.debtMicros;
+  const left = Math.max(0, spendable) as UsageMicros;
+  return { left: formatUsageDollars(left, 'down'), tasksLeft: formatTasks(left, summary.funding, summary.offers), exhausted: left === 0 };
+}
+
+/** The bonus every plan includes over its price, in whole percent; the smallest, so no plan promises more than it gives. */
+function bonusPercent(plans: readonly PlanOffer[]): number {
+  const bonuses = plans.map((offer) => Math.floor(offer.includedMicros * 100 / (offer.priceCents * MICROS_PER_CENT)) - 100);
+  return Math.max(0, Math.min(...bonuses));
+}
+
+/** A fee under a dollar in cents, "30¢"; none as "$0". */
+function formatFee(micros: UsageMicros): string {
+  return micros > 0 && micros < 100 * MICROS_PER_CENT ? `${Math.round(micros / MICROS_PER_CENT)}¢` : formatUsageDollars(micros);
 }
 
 /** The port answered inconsistent data when the lowest plan for an own key is not on sale; `withBilling` makes that a 503. */
@@ -219,31 +302,23 @@ function ownKeyMinimumPlan(summary: BillingSummary): PlanOffer {
   return minimum;
 }
 
-/** An own key needs a plan at or above the minimum first, then a key for the default model's provider. */
-function fundingSwitch(summary: BillingSummary, minimum: PlanOffer, ownKey: OwnKeyFacts): FundingSwitch {
-  if (summary.funding === 'own_key') return { to: 'platform' };
-  if (!summary.plan || summary.plan.priceCents < minimum.priceCents) {
-    return { to: 'own_key', ready: false, needs: 'plan', minimumPlan: { key: minimum.key, price: formatPriceCents(minimum.priceCents) } };
-  }
-  return ownKeyReadiness(ownKey);
-}
-
-/**
- * Not ready without a key for the default model's provider, which `provider`
- * names (null when no default model is chosen and no key is saved). Agents
- * pinned to a provider with no saved key would stop replying.
- */
-function ownKeyReadiness(facts: OwnKeyFacts): FundingSwitch {
-  const provider = keyProvider(facts.defaultModel);
+/** An own key needs a plan at or above the minimum, and a key for the default model's provider. */
+function ownKeySetup(summary: BillingSummary, minimum: PlanOffer, facts: OwnKeyFacts): OwnKeySetup {
+  const provider = keyProvider(facts.defaultModel) ?? null;
   const keyed = provider ? facts.savedKeys.has(provider) : facts.savedKeys.size > 0;
-  if (!keyed) return { to: 'own_key', ready: false, needs: 'key', provider: provider ?? null };
   return {
-    to: 'own_key',
-    ready: true,
-    agentsWithoutKey: facts.agents.flatMap((agent) => {
-      const pinned = keyProvider(agent.model);
-      return pinned && !facts.savedKeys.has(pinned) ? [agent.name] : [];
-    }),
+    planReady: summary.plan !== null && summary.plan.priceCents >= minimum.priceCents,
+    minimumPlan: { key: minimum.key, price: formatPriceCents(minimum.priceCents) },
+    key: keyed
+      ? {
+        ready: true,
+        provider,
+        agentsWithoutKey: facts.agents.flatMap((agent) => {
+          const pinned = keyProvider(agent.model);
+          return pinned && !facts.savedKeys.has(pinned) ? [agent.name] : [];
+        }),
+      }
+      : { ready: false, provider },
   };
 }
 
@@ -291,17 +366,24 @@ function redirect(c: Context, target: { url: string }): Response {
   return c.json({ url: target.url });
 }
 
-function namedUse(use: readonly UsageRow[], names: ReadonlyMap<string, string>): NamedUse[] {
-  const named: { name: string; micros: number }[] = [];
+/** Named rows, largest first, then one row gathering the rest; each bar is its share of the largest row. */
+function namedUse(use: readonly UsageRow[], names: ReadonlyMap<string, string>): AgentUse[] {
+  const named: { id: string | null; name: string | null; micros: number }[] = [];
   let unnamed = 0;
   for (const row of use) {
     const name = row.id === null ? undefined : names.get(row.id);
     if (name === undefined) unnamed += row.usageMicros;
-    else named.push({ name, micros: row.usageMicros });
+    else named.push({ id: row.id, name, micros: row.usageMicros });
   }
   named.sort((left, right) => right.micros - left.micros);
-  const rows = unnamed > 0 ? [...named, { name: null, micros: unnamed }] : named;
-  return rows.map((row) => ({ name: row.name, used: formatUsageDollars(row.micros as UsageMicros) }));
+  const rows = unnamed > 0 ? [...named, { id: null, name: null, micros: unnamed }] : named;
+  const largest = Math.max(0, ...rows.map((row) => row.micros));
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    used: formatUsageDollars(row.micros as UsageMicros),
+    bar: largest > 0 ? Math.round(row.micros * 100 / largest) : 0,
+  }));
 }
 
 // UTC, so a date reads the same here as in Chickpea's Slack messages about the plan.
