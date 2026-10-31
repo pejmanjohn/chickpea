@@ -9,7 +9,12 @@ import {
   hasDisallowedControlCharacter,
 } from '../security/content-validation.ts';
 import type { FlueDispatchReceiptV1, FlueObservationTarget } from './turn-job-types.ts';
-import { activityStatus, type ActivityStatus } from '../activity/status.ts';
+import {
+  activityStatus,
+  isSafeTypedActivityStatus,
+  type ActivityStatus,
+} from '../activity/status.ts';
+import { emitSemanticActivityTelemetry, semanticTelemetryForStatus } from '../activity/telemetry.ts';
 import {
   appendSlackReplyFooter,
   canonicalSlackReplyText,
@@ -330,7 +335,20 @@ export class SlackAgentViewPresentation {
   ): Promise<PreparedSlackActivityWrite | undefined> {
     let presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3) return undefined;
-    if (!(await this.ownsLatestThreadGeneration(presentation))) return undefined;
+    if (!(await this.ownsLatestThreadGeneration(presentation))) {
+      const surface = presentation.activityProjection.surface === 'unselected'
+        ? preferredSurface
+        : presentation.activityProjection.surface;
+      emitSemanticActivityTelemetry({
+        event: 'activity.transport',
+        surface: surface === 'message' ? 'legacy_message' : 'assistant_status',
+        outcome: 'fenced',
+        ...(isSafeTypedActivityStatus(update)
+          ? semanticTelemetryForStatus(update)
+          : { family: 'unknown', phase: 'working' }),
+      });
+      return undefined;
+    }
     if (presentation.activityProjection.surface === 'assistant_status' &&
         presentation.activityProjection.state === 'unavailable') return undefined;
     // A V3 presentation admitted without an initial activity has the custom

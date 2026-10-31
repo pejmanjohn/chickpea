@@ -107,8 +107,13 @@ async function writeStatus(view: SlackAgentViewPresentation, object: string) {
   return write;
 }
 
-test('a running turn keeps its status behind a queued turn and yields once that turn starts', async () => {
+test('a running turn keeps its status behind a queued turn and yields once that turn starts', async (t) => {
+  const info = t.mock.method(console, 'info', () => {});
+  const fencedEvents = () => info.mock.calls
+    .map((call) => String(call.arguments[0]))
+    .filter((line) => line.includes('"outcome":"fenced"'));
   for (const start of ['native_indicator', 'admission_status'] as const) {
+    info.mock.resetCalls();
     const h = harness();
     try {
       h.admit('run_running', G);
@@ -118,6 +123,7 @@ test('a running turn keeps its status behind a queued turn and yields once that 
       h.admit('run_queued', G + 1);
       assert.ok(await writeStatus(running, 'the web'),
         'a turn that only queued has shown nothing, so it does not fence the running turn');
+      assert.deepEqual(fencedEvents(), []);
 
       if (start === 'native_indicator') {
         assert.equal(await h.view('run_queued').beginAgentSessionProcessing(), true);
@@ -126,6 +132,14 @@ test('a running turn keeps its status behind a queued turn and yields once that 
       }
       assert.equal(await writeStatus(running, 'the docs'), undefined,
         `${start}: a started newer turn owns the thread status`);
+      assert.deepEqual(fencedEvents().map((line) => JSON.parse(line.slice(line.indexOf('{')))), [{
+        schemaVersion: 1,
+        event: 'activity.transport',
+        surface: 'assistant_status',
+        outcome: 'fenced',
+        family: 'unknown',
+        phase: 'working',
+      }], 'the refusal is visible in the Worker log, without content');
     } finally {
       h.db.close();
     }

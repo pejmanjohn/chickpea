@@ -25,7 +25,9 @@ type SemanticActivityTransportOutcome =
   | 'acknowledged'
   | 'rejected'
   | 'ambiguous'
-  | 'latched_off';
+  | 'latched_off'
+  /** Refused before Slack: a newer turn that started owns the thread's status. */
+  | 'fenced';
 
 type SemanticActivityClearOutcome =
   | 'acknowledged'
@@ -107,7 +109,7 @@ const QUEUE_DISPOSITIONS = new Set<SemanticActivityQueueDisposition>([
   'terminal_dropped', 'throttled', 'relay_failed',
 ]);
 const TRANSPORT_OUTCOMES = new Set<SemanticActivityTransportOutcome>([
-  'acknowledged', 'rejected', 'ambiguous', 'latched_off',
+  'acknowledged', 'rejected', 'ambiguous', 'latched_off', 'fenced',
 ]);
 const CLEAR_OUTCOMES = new Set<SemanticActivityClearOutcome>([
   'acknowledged', 'rejected', 'ambiguous', 'skipped',
