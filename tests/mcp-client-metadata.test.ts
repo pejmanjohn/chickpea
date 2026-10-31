@@ -113,6 +113,20 @@ async function fixture(t: TestContext, options: {
     method: 'POST', headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin' },
   }));
   const cookie = session.headers.get('set-cookie')!.split(';', 1)[0]!;
+  /** Another member of the fixture's workspace, signed in; returns their session cookie. */
+  async function signInMember(slackUserId: string) {
+    const member = await auth.chickpea.reconcileSlackIdentity({
+      slackTeamId: 'T12345678', slackUserId, displayName: slackUserId, organization: { name: 'Fixture', slug: 'fixture' },
+    });
+    admission = {
+      operationId: slackUserId, status: 'active', chickpeaRole: 'member', slackTeamId: 'T12345678', slackUserId,
+      betterAuthUserId: member.userId, betterAuthOrganizationId: member.organizationId, betterAuthMembershipId: member.membershipId,
+    };
+    const issued = await auth.chickpea.issueSession(slackUserId, new Request(`${ORIGIN}/oauth/finalize`, {
+      method: 'POST', headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin' },
+    }));
+    return issued.headers.get('set-cookie')!.split(';', 1)[0]!;
+  }
 
   const verifier = randomBytes(32).toString('base64url');
   function authorize(clientId: string, redirectUri: string, {
@@ -131,9 +145,9 @@ async function fixture(t: TestContext, options: {
       })
       : new Request(`${ORIGIN}/api/auth/oauth2/authorize?${query}`, { headers: sent }));
   }
-  async function approve(consentLocation: string) {
+  async function approve(consentLocation: string, as = cookie) {
     const consent = await handler(new Request(`${ORIGIN}/api/auth/oauth2/consent`, {
-      method: 'POST', headers: { 'content-type': 'application/json', cookie, origin: ORIGIN },
+      method: 'POST', headers: { 'content-type': 'application/json', cookie: as, origin: ORIGIN },
       body: JSON.stringify({ accept: true, oauth_query: new URL(consentLocation, ORIGIN).search.slice(1) }),
     }));
     assert.equal(consent.status, 200, await consent.clone().text());
@@ -151,7 +165,7 @@ async function fixture(t: TestContext, options: {
   const clients = () => (backend.database.prepare(
     'SELECT clientId, clientDiscoveryId, userId, clientSecret, tokenEndpointAuthMethod, name FROM oauthClient ORDER BY createdAt, clientId',
   ).all() as Record<string, unknown>[]).map((row) => ({ ...row }));
-  return { backend, handler, browser, cookie, authorize, approve, token, exchange, refresh, clients };
+  return { backend, handler, browser, cookie, userId: person.userId, signInMember, authorize, approve, token, exchange, refresh, clients };
 }
 
 const claudeHost = () => metadataDocumentServer({
@@ -686,7 +700,7 @@ const uncachedStrangers = () => Object.fromEntries(UNCACHED_STRANGERS.map((url) 
   [url, { body: documentAt(url), headers: { 'cache-control': 'no-store' } }]));
 const BUSY = { error: 'temporarily_unavailable', error_description: 'global metadata fetch rate limit exceeded' };
 
-test('strangers who spend the fetch budget cannot sign out a client someone consented to, for a day after its document last answered', async (t) => {
+test('while strangers keep the fetch budget spent, a consented client stands in for an hour after its document last answered', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const host = metadataDocumentServer({ [CLAUDE]: CLAUDE_DOCUMENTS.claude.body, ...uncachedStrangers() });
   const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
@@ -697,17 +711,52 @@ test('strangers who spend the fetch budget cannot sign out a client someone cons
     return response;
   };
 
-  t.mock.timers.tick(6 * 60_000);
+  t.mock.timers.tick(59 * 60_000);
   await spendFetchBudget(f, UNCACHED_STRANGERS);
   const fetched = host.requests.length;
-  assert.equal((await renew()).status, 200, 'the stored client stands in for its document');
+  assert.equal((await renew()).status, 200, 'at 59 minutes the stored client stands in for its document');
   assert.equal(host.requests.length, fetched);
 
-  t.mock.timers.tick(24 * 60 * 60_000);
+  t.mock.timers.tick(2 * 60_000);
   await spendFetchBudget(f, UNCACHED_STRANGERS);
-  const stale = await renew();
-  assert.equal(stale.status, 429, 'but only for a day after its document last answered');
-  assert.deepEqual(await stale.json(), BUSY);
+  const late = await renew();
+  assert.equal(late.status, 429, 'at 61 minutes it is refused');
+  assert.deepEqual(await late.json(), BUSY);
+});
+
+test('on a spent fetch budget a stored client stands in only for a person who consented to it', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const host = metadataDocumentServer({ [CLAUDE]: CLAUDE_DOCUMENTS.claude.body, ...uncachedStrangers() });
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  let refreshToken = await claudeRefreshToken(f);
+  const renew = async () => {
+    const response = await f.refresh(CLAUDE, refreshToken);
+    if (response.ok) refreshToken = (await response.clone().json() as { refresh_token: string }).refresh_token;
+    return response;
+  };
+  const consenting = await f.signInMember('U22222222');
+  await f.approve((await f.authorize(CLAUDE, CLAUDE_CALLBACK, { signedIn: false, headers: { cookie: consenting } })).headers.get('location')!, consenting);
+  const newcomer = await f.signInMember('U33333333');
+  const signIn = (cookie: string) => f.authorize(CLAUDE, CLAUDE_CALLBACK, { signedIn: false, headers: { cookie } });
+
+  t.mock.timers.tick(6 * 60_000);
+  await spendFetchBudget(f, UNCACHED_STRANGERS);
+  const consent = await signIn(consenting);
+  assert.equal(consent.status, 302, 'a signed-in person who consented gets the stored client');
+  const callback = await f.approve(consent.headers.get('location')!, consenting);
+  const exchanged = await f.exchange(CLAUDE, CLAUDE_CALLBACK, callback.searchParams.get('code')!);
+  assert.equal(exchanged.status, 200, 'and so does the code they were given');
+  const refused = await signIn(newcomer);
+  assert.equal(refused.status, 429, 'one who never consented does not, though others have');
+  assert.deepEqual(await refused.json(), BUSY);
+  const signedOut = await f.authorize(CLAUDE, CLAUDE_CALLBACK, { signedIn: false });
+  assert.equal(signedOut.status, 429, 'nor does a request for no known person');
+
+  assert.equal((await renew()).status, 200, 'the refresh token\'s owner consented');
+  f.backend.database.prepare('DELETE FROM oauthConsent WHERE userId = ?').run(f.userId);
+  const orphaned = await renew();
+  assert.equal(orphaned.status, 429, 'without the owner\'s own consent, another person\'s does not count');
+  assert.deepEqual(await orphaned.json(), BUSY);
 });
 
 test('a spent fetch budget refuses a client no one consented to unless its last fetch could not reach its document', async (t) => {
@@ -723,6 +772,9 @@ test('a spent fetch budget refuses a client no one consented to unless its last 
   const declined = await signIn();
   assert.equal(declined.status, 429, 'nothing known against the document, but nothing fetched either');
   assert.deepEqual(await declined.json(), BUSY);
+  const signedIn = await f.authorize(STRANGER, STRANGER_CALLBACK);
+  assert.equal(signedIn.status, 429, 'signed in too: no one has consented to it');
+  assert.deepEqual(await signedIn.json(), BUSY);
 
   t.mock.timers.tick(61_000);
   served[STRANGER] = { body: 'Service Unavailable', status: 503, headers: { 'content-type': 'text/plain' } };

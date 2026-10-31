@@ -102,10 +102,11 @@ test('Claude\'s and an unlisted app\'s metadata documents resolve under workerd 
     const internal = await authorize(origin, 'https://10.0.0.5/oauth/client.json');
     assert.equal(new URL(internal.location ?? '/', origin).searchParams.get('error'), 'invalid_client', internal.body);
     assert.equal(documents.requests.length, 3, 'a private address is refused before any fetch');
-    assert.deepEqual(await (await fetch(`${origin}/test/clients`)).json(), [
-      { clientId: CLAUDE, clientDiscoveryId: 'cimd', name: 'Claude' },
+    const clients = await (await fetch(`${origin}/test/clients`)).json() as Array<{ clientId: string }>;
+    assert.deepEqual(clients.sort((a, b) => a.clientId.localeCompare(b.clientId)), [
       { clientId: STRANGER, clientDiscoveryId: 'cimd', name: 'Example App' },
-    ]);
+      { clientId: CLAUDE, clientDiscoveryId: 'cimd', name: 'Claude' },
+    ], 'one row per app');
   } finally {
     if (worker) await stopWorker(worker);
     await new Promise<void>((resolve) => documents.server.close(() => resolve()));
