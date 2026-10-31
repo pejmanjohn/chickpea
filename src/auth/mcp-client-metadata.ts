@@ -15,27 +15,34 @@ export type ClientMetadataFetch = CimdOptions['fetchClientMetadataResource'];
  * Better Auth's client ID rules (HTTPS, an explicit path, no credentials,
  * dot segment or fragment, no private or reserved host), the MCP egress
  * guard's (no internal or bare hostname), a DNS name for the consent page to
- * show rather than an IP address, and written as URL parsing writes it, so
- * one document has one client ID and no control character reaches a log.
+ * show rather than an IP address, written as URL parsing writes it with no
+ * trailing dot, so one document has one client ID and no control character
+ * reaches a log, and off Chickpea's own origin, which it would fetch itself.
  * Any other client ID is an unknown client, before any throttle, fetch
  * permit, write or fetch.
  */
-export function isClientMetadataDocumentUrl(clientId: string): boolean {
+export function isClientMetadataDocumentUrl(clientId: string, ownOrigin: string): boolean {
   if (validateClientIdUrl(clientId) !== null || !validateMcpUrl(clientId).ok) return false;
   const url = new URL(clientId);
-  return url.href === clientId && !IP_ADDRESS_HOST.test(url.hostname);
+  return url.href === clientId && !url.hostname.endsWith('.') && !IP_ADDRESS_HOST.test(url.hostname) &&
+    url.origin !== new URL(ownOrigin).origin;
 }
 
 // URL parsing writes every IPv4 form as dotted decimal and brackets IPv6.
 const IP_ADDRESS_HOST = /^(?:\[.*\]|[\d.]+)$/;
 
-/** One transport's discovery, and the stored clients whose last fetch could not reach their document. */
+/**
+ * One transport's discovery, the stored clients whose last fetch could not
+ * reach their document, and those whose document last answered by refusing
+ * them, which nothing lets stand in until it answers well again.
+ */
 interface TransportState {
   discovery: ClientDiscovery;
   unreachable: Set<string>;
+  refused: Set<string>;
 }
 
-const MAX_UNREACHABLE_CLIENTS = 1_000;
+const MAX_REMEMBERED_CLIENTS = 1_000;
 /** How long after its document last answered a stored client stands in for a document it cannot reach. */
 const STORED_CLIENT_STAND_IN_MS = 24 * 60 * 60_000;
 /** How long after its document last answered a stored client stands in while the fetch budget is spent. */
@@ -81,18 +88,19 @@ interface NewClientGate {
 export function clientMetadataDiscovery(
   fetchClientMetadataResource: ClientMetadataFetch | undefined,
   gate: NewClientGate,
+  ownOrigin: string,
 ): ClientDiscovery {
   const transport = fetchClientMetadataResource ??
     (guardedFetch ??= createMcpGuardedFetch({ followRedirects: false }));
-  const { discovery, unreachable } = transports.get(transport) ?? createState(transport);
+  const { discovery, unreachable, refused } = transports.get(transport) ?? createState(transport);
   return {
     ...discovery,
-    matches: isClientMetadataDocumentUrl,
+    matches: (clientId) => isClientMetadataDocumentUrl(clientId, ownOrigin),
     async resolve(ctx, clientId, existing) {
       // Better Auth asks `matches` first; asking again keeps the throttle, the
       // pending bound and the plugin's fetch permit behind the URL check
       // whatever order it calls in.
-      if (!isClientMetadataDocumentUrl(clientId)) return null;
+      if (!isClientMetadataDocumentUrl(clientId, ownOrigin)) return null;
       const source = ctx.request ?? new Request(ctx.context.baseURL, { headers: ctx.headers ?? {} });
       if (!existing) {
         await assertSourceAdmitted(gate, source);
@@ -113,19 +121,24 @@ export function clientMetadataDiscovery(
       try {
         client = await discovery.resolve(ctx, clientId, existing);
         unreachable.delete(clientId);
+        refused.delete(clientId);
       } catch (error) {
         const failure = readFailure(error);
+        if (failure === 'refused') {
+          unreachable.delete(clientId);
+          remember(refused, clientId);
+        }
+        if (failure === 'refused' || refused.has(clientId)) throw error;
         // The plugin rewrites updatedAt each time the document answers, changed or not.
         const sinceAnswered = Date.now() - (existing.updatedAt?.getTime() ?? 0);
-        // The plugin pauses a client's fetches for a second after a failed one
-        // and declines every fetch once its budget is spent; either decline
-        // stands in for the last fetch's outcome. A spent budget alone lets the
-        // stored client stand in for a person who consented to it. A pause
-        // after a refused fetch never does.
-        const lastFetchUnreachable = failure === 'unreachable' || (failure !== undefined && unreachable.has(clientId));
-        const spentBudgetStandIn = !lastFetchUnreachable && failure === 'budget' &&
+        // The plugin declines a fetch for a second after a failed one, or when
+        // its budget is spent; a decline stands in for the last fetch's
+        // outcome. Otherwise a decline lets the stored client stand in, for an
+        // hour, only for a person who consented to it.
+        const lastFetchUnreachable = failure === 'unreachable' || (failure === 'declined' && unreachable.has(clientId));
+        const declinedStandIn = !lastFetchUnreachable && failure === 'declined' &&
           sinceAnswered <= SPENT_BUDGET_STAND_IN_MS && await requesterConsented(ctx, clientId);
-        if (!lastFetchUnreachable && !spentBudgetStandIn) {
+        if (!lastFetchUnreachable && !declinedStandIn) {
           unreachable.delete(clientId);
           throw error;
         }
@@ -177,7 +190,11 @@ async function requestingUserId(ctx: ResolveContext): Promise<string | undefined
   return (await getSessionFromCtx(ctx))?.user.id;
 }
 
-/** How the OAuth provider stores a refresh token or code by default: SHA-256, base64url without padding. */
+/**
+ * How the OAuth provider stores a refresh token or code by default: SHA-256,
+ * base64url without padding. Chickpea sets no `storeTokens`, token prefix or
+ * `formatRefreshToken`; with one, this finds no one, and nothing stands in.
+ */
 async function storedTokenDigest(token: string): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
   return btoa(String.fromCharCode(...digest)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
@@ -232,26 +249,31 @@ function createState(transport: ClientMetadataFetch): TransportState {
   const state = {
     discovery: createCimdClientDiscovery({ fetchClientMetadataResource: transport, metadataProfile: 'mcp-2026-07-28' }),
     unreachable: new Set<string>(),
+    refused: new Set<string>(),
   };
   transports.set(transport, state);
   return state;
 }
 
-function remember(unreachable: Set<string>, clientId: string): void {
-  unreachable.delete(clientId);
-  if (unreachable.size >= MAX_UNREACHABLE_CLIENTS) unreachable.delete(unreachable.values().next().value!);
-  unreachable.add(clientId);
+function remember(clients: Set<string>, clientId: string): void {
+  clients.delete(clientId);
+  if (clients.size >= MAX_REMEMBERED_CLIENTS) clients.delete(clients.values().next().value!);
+  clients.add(clientId);
 }
 
 const UNREACHABLE_DOCUMENT = /^(?:Failed to fetch metadata document|Metadata document fetch timed out|Metadata document fetch returned HTTP (?:429|5\d\d)$)/;
-const PAUSED_CLIENT = 'metadata document fetch is within the per-client minimum interval';
 
-/** Why the plugin did not resolve a stored client: its fetch could not reach the document, it paused this client after a failed fetch, or its budget is spent. */
-function readFailure(error: unknown): 'unreachable' | 'paused' | 'budget' | undefined {
+/**
+ * Why the plugin did not resolve a stored client: its fetch could not reach
+ * the document, the document answered by refusing the client, or the plugin
+ * declined to fetch, for its pause after a failed fetch or a spent budget.
+ */
+function readFailure(error: unknown): 'unreachable' | 'refused' | 'declined' | undefined {
   if (!isAPIError(error)) return undefined;
+  if (error.status === 'TOO_MANY_REQUESTS') return 'declined';
   const description = (error.body as { error_description?: unknown } | undefined)?.error_description;
-  if (error.status === 'TOO_MANY_REQUESTS') return description === PAUSED_CLIENT ? 'paused' : 'budget';
-  return typeof description === 'string' && UNREACHABLE_DOCUMENT.test(description) ? 'unreachable' : undefined;
+  if (typeof description === 'string' && UNREACHABLE_DOCUMENT.test(description)) return 'unreachable';
+  return error.status === 'BAD_REQUEST' ? 'refused' : undefined;
 }
 
 /**

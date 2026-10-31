@@ -83,7 +83,7 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
     auth ??= createBetterAuth({ ...input, baseURL });
     if (url.pathname === '/api/auth/oauth2/authorize') {
       const documentClient = input.clientMetadataDocuments === true &&
-        isClientMetadataDocumentUrl(url.searchParams.get('client_id') ?? '');
+        isClientMetadataDocumentUrl(url.searchParams.get('client_id') ?? '', baseURL);
       if (documentClient) request = withConsent(request);
       const renewable = await withOfflineAccessForRenewableClient(request, auth, documentClient);
       if (renewable instanceof Response) return renewable;
