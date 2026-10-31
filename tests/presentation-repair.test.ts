@@ -595,7 +595,9 @@ test('newer thread generation supersedes shared repair but preserves exact messa
       sessionGeneration: 150, sessionCertainty: 'failed',
       activitySurface: 'message', cleanupFailed: true,
     });
-    createV3(store, 'run_repair_new_owner', sharedRoot, 200);
+    advance(store, createV3(store, 'run_repair_new_owner', sharedRoot, 200), {
+      kind: 'select_activity_projection', surface: 'assistant_status',
+    });
     const calls: string[] = [];
 
     const result = await drainSlackPresentationRepairs({

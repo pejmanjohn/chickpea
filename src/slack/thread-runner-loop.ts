@@ -829,7 +829,8 @@ export function runnerPresentationState(input: {
       ...(input.sharedSlackReads ? { sharedSlackReads: input.sharedSlackReads } : {}),
       // The shared store sees every presentation of this Slack thread,
       // including ones other executors own; generations never change, and a
-      // newer one appears only with a new message, so a brief cache is safe.
+      // newer one counts only once its turn starts, which for a turn this
+      // runner runs `local` reads uncached, so a brief cache is safe.
       getLatestThreadSessionGeneration: async (root) => {
         const key = `${root.workspaceId}:${root.channelId}:${root.threadTs}`;
         let cached = generations.get(key);

@@ -247,8 +247,9 @@ async function prepareReceipt(
 function applyPresentationMutation(
   h: ReturnType<typeof harness>,
   mutation: SlackPresentationMutation,
+  runId = h.runId,
 ): void {
-  const current = h.store.get(h.runId);
+  const current = h.store.get(runId);
   assert.ok(current);
   const result = h.store.transition({
     runId: current.runId,
@@ -1292,6 +1293,11 @@ test('a newer durable thread generation fences stale native activity across isol
         },
       },
     });
+    applyPresentationMutation(h, {
+      kind: 'set_agent_session_desired',
+      desired: 'processing',
+      operationId: 'session_newer_thread_generation_1',
+    }, 'run_newer_thread_generation');
 
     assert.equal(await h.presentation.beginActivity({
       kind: 'checking',
@@ -1451,6 +1457,11 @@ test('terminal cleanup is fenced when a newer durable generation owns the thread
       owner: { kind: 'chickpea' },
       sessionGeneration: 1785700100000200,
     });
+    applyPresentationMutation(h, {
+      kind: 'set_agent_session_desired',
+      desired: 'processing',
+      operationId: 'session_cleanup_newer_generation_1',
+    }, 'run_cleanup_newer_generation');
 
     assert.deepEqual(await h.presentation.prepareActivityCleanup(), { kind: 'fenced' });
   } finally {
