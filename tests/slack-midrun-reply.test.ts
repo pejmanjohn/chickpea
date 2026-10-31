@@ -7,9 +7,10 @@ import { SlackAgentViewPresentation } from '../src/slack/agent-view-presentation
 import {
   followUpSignalBody, MID_RUN_REPLY_GUIDANCE, SLACK_REPLY_IN_THREAD_TOOL_NAME, type FoldedMessage,
 } from '../src/slack/follow-ups.ts';
+import { SLACK_MENTION_BREAK } from '../src/slack/message-format.ts';
 import {
   capMidRunReplyText, createMidRunReplyHandler, createSlackMidRunReplyTool, MAX_MIDRUN_REPLY_CHARS,
-  MIDRUN_REPLY_SPACING_MS,
+  MIDRUN_REPLY_SPACING_MS, parseMidRunReplyRequest,
   type MidRunReadMessage, type MidRunReplyOutcome, type MidRunReplyRequest,
 } from '../src/slack/midrun-reply.ts';
 import { localSlackPresentationStatePort } from '../src/slack/presentation-state-port.ts';
@@ -159,6 +160,28 @@ test('an Agent with its own Slack app replies with no persona override', async (
   } finally {
     h.db.close();
   }
+});
+
+test('a reply carries no live broadcast or user-group mention, and names no teammate Agent live', async () => {
+  const h = host();
+  try {
+    await h.reply(FIRST, 'Heads up <!here> <!channel> <!subteam^S_OPS|@ops> @channel @atlas-helper, <@U_HEAD> asked.');
+    const [block] = h.posted[0]!.blocks as { text: string }[];
+    const b = SLACK_MENTION_BREAK;
+    assert.equal(block!.text, `Heads up @${b}here @${b}channel @${b}ops @${b}channel @atlas-helper, <@U_HEAD> asked.`,
+      'the final reply\'s canonical text: broadcasts and user groups inert, a person\'s mention kept');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('the runner accepts only a request the tool could have sent', () => {
+  const capped = capMidRunReplyText('word '.repeat(200)).text;
+  assert.deepEqual(parseMidRunReplyRequest({ messageTs: FIRST, text: capped }), { messageTs: FIRST, text: capped });
+  for (const bad of [
+    undefined, 'text', { messageTs: FIRST }, { messageTs: 'not-a-ts', text: 'Hi.' }, { messageTs: FIRST, text: '   ' },
+    { messageTs: FIRST, text: 'x'.repeat(MAX_MIDRUN_REPLY_CHARS + 1) },
+  ]) assert.equal(parseMidRunReplyRequest(bad), undefined, JSON.stringify(bad));
 });
 
 test('one reply per message, at most three, at least 20 seconds apart', async () => {
