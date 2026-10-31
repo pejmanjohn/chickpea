@@ -138,10 +138,20 @@ function readLines(text: string): TextLine[] {
 function readHeading(line: string): Heading | undefined {
   const atx = ATX_HEADING.exec(line);
   const bold = atx ? undefined : BOLD_HEADING.exec(line);
-  const text = (atx?.[2] ?? bold?.[1] ?? bold?.[2])
-    ?.replace(/^[*_]+|[*_]+$/g, '').replace(/:$/, '').trim();
+  const marked = atx?.[2] ?? bold?.[1] ?? bold?.[2];
+  const text = marked === undefined ? undefined : trimEmphasis(marked).replace(/:$/, '').trim();
   if (!text) return undefined;
   return { text, level: atx ? atx[1]!.length : BOLD_HEADING_LEVEL };
+}
+
+/** A loop, not `/[*_]+$/`, which backtracks quadratically on a long run of markers. */
+function trimEmphasis(text: string): string {
+  const marker = (character: string | undefined) => character === '*' || character === '_';
+  let start = 0;
+  let end = text.length;
+  while (start < end && marker(text[start])) start += 1;
+  while (end > start && marker(text[end - 1])) end -= 1;
+  return text.slice(start, end);
 }
 
 /**
@@ -231,13 +241,16 @@ function placeOf(lines: readonly TextLine[], line: number, atStart: boolean, atE
 }
 
 /**
- * Tokens [from, to) changed. The quote opens a few words before the change
- * and drops that lead-in before it would push the first changed word out.
+ * Tokens [from, to) changed. A side short enough is quoted whole, so a short
+ * line keeps the words that say which one it is. Otherwise the quote opens a
+ * few words before the change and drops that lead-in before it would push the
+ * first changed word out.
  */
 function excerpt(side: readonly Token[], from: number, to: number): Excerpt {
   const shown = side.map((token) => token.shown);
   const width = (start: number, end: number) => shown.slice(start, end).join(' ').length;
   const words = countWords(side.slice(from, to));
+  if (width(0, side.length) <= QUOTE_MAX_CHARACTERS) return { quote: shown.join(' '), words, quotedWhole: true };
   let start = Math.max(0, from - QUOTE_CONTEXT_WORDS);
   while (start < from && width(start, from + 1) > QUOTE_MAX_CHARACTERS) start += 1;
   const lead = start > 0 ? '…' : '';

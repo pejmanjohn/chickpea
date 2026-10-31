@@ -172,3 +172,11 @@ test('quotes and headings stay short, and a word longer than a quote is cut', ()
   assert.ok(changes[0]?.kind === 'text' && changes[0].place.kind === 'heading' &&
     changes[0].place.heading === 'A heading far longer than any preview…');
 });
+
+test('a heading that is a long run of emphasis markers reads in linear time', () => {
+  const heading = `# x${'*'.repeat(100_000)}x`;
+  const started = performance.now();
+  const [change] = summarizeTextChange(`${heading}\nOld line.`, `${heading}\nNew line.`);
+  assert.ok(performance.now() - started < 1_000, 'a backtracking trim takes seconds here');
+  assert.equal(change?.kind === 'text' ? change.place.kind : undefined, 'heading');
+});
