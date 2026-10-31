@@ -1,6 +1,6 @@
 {
   "name": "chickpea-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Official command-line client for a self-hosted Chickpea deployment: health checks, MCP client configuration, OAuth sign-in, and scripted workspace management.",
   "license": "Apache-2.0",
   "homepage": "https://chickpea.co",

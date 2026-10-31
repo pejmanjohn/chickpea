@@ -79,6 +79,7 @@ const MCP_TOOL_ANNOTATIONS = {
   export_workspace_recipe: READ,
   preview_workspace_recipe: READ,
   import_skill: WRITE,
+  upload_skills: WRITE,
   manage_agent_skill: WRITE,
   apply_workspace_changes: WRITE,
   confirm_workspace_change: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
@@ -437,7 +438,7 @@ test('server instructions stay under the client cap and link the deployment Admi
 test('workspace management MCP publishes the version 4 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '4.1.0',
+    version: '4.2.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });

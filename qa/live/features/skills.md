@@ -20,7 +20,8 @@ Docs: `/agents/skills/`. Record areas: `skills`. Legacy contracts: LC-06.
 
 - Slack: hand the Agent the link, or ask it to enable, disable or remove a named skill.
 - Admin: Agents → the Agent → Skills (suggestions, New skill, Import from URL then Find skills, or Upload or a drop on Build your own; then Add N skills).
-- MCP: `import_skill` installs immediately and `manage_agent_skill` enables, disables or removes.
+- MCP: `import_skill` installs immediately, `upload_skills` installs from markdown text or a base64 archive, and `manage_agent_skill` enables, disables or removes.
+- CLI: `chickpea-cli skills upload <origin> <agentId> <file...>` sends files from disk to `upload_skills`.
 
 ## How to drive it on a lane
 
