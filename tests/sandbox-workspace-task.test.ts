@@ -53,7 +53,11 @@ import {
 import {
   MAX_WORKSPACE_TASKS_PER_RESPONSE,
   WORKSPACE_TASK_TIMEOUT_MS,
+  MAX_WORKSPACE_TASK_PAUSES,
   createProgressRelay,
+  createWorkspaceTaskFinishCheck,
+  createWorkspaceTaskResumeTool,
+  createWorkspaceTaskSteerTool,
   createWorkspaceTaskTool,
   pullRequestLinks,
   workerBranch,
@@ -213,6 +217,8 @@ interface Harness {
   steps: Map<string, unknown>;
   state: WorkspaceTaskResponseState;
   milestones: WorkspaceMilestoneRecord[];
+  /** What the next read of the task's settlement says. */
+  settled: () => boolean;
 }
 
 const PR_7 = { number: 7, url: 'https://github.com/acme/app/pull/7', repository: 'acme/app', branch: 'fix-test' };
@@ -268,8 +274,11 @@ function workspace(calls: string[], options: { broken?: boolean; capped?: boolea
   });
 }
 
+/** When the fake worker accepts a task: now, so a wait has its whole deadline left. */
+const ACCEPTED_AT = new Date().toISOString();
+
 function receipt(submissionId = 'sub-1'): DispatchReceipt {
-  return { submissionId, acceptedAt: '2026-09-24T00:00:00.000Z', uid: 'uid-1' };
+  return { submissionId, acceptedAt: ACCEPTED_AT, uid: 'uid-1' };
 }
 
 function harness(): Harness {
@@ -283,6 +292,7 @@ function harness(): Harness {
     steps: new Map(),
     state: emptyWorkspaceTaskResponseState(),
     milestones: [],
+    settled: () => false,
   };
 }
 
@@ -326,21 +336,17 @@ function resetEgress(opens: typeof PR_7 | undefined = PR_7) {
   nextDispatchOpens = opens;
 }
 
-function taskTool(
+type TaskExtra = Partial<Pick<WorkspaceTaskToolOptions,
+  'taskTimeoutMs' | 'onMilestone' | 'resolve' | 'onWorkerUsage' | 'now' | 'taskRecords' | 'prepareWorker' |
+  'pendingMessages' | 'turnStopped' | 'messageCheckMs'>>;
+
+function taskOptions(
   h: Harness,
   target: WorkspaceSession | undefined,
   observe: CodingWorkerClient['observe'],
-  extra: {
-    taskTimeoutMs?: number;
-    onMilestone?: (record: WorkspaceMilestoneRecord) => void;
-    resolve?: WorkspaceTaskToolOptions['resolve'];
-    onWorkerUsage?: (record: CodingWorkerUsageRecord) => void;
-    now?: () => number;
-    taskRecords?: CodingTaskRecordStore;
-    prepareWorker?: NonNullable<WorkspaceTaskToolOptions['prepareWorker']>;
-  } = {},
-) {
-  return createWorkspaceTaskTool({
+  extra: TaskExtra = {},
+): WorkspaceTaskToolOptions {
+  return {
     resolve: async (name) => (name === DEFAULT_WORKSPACE_NAME ? target : undefined),
     binding: (workspaceId) => codingWorkerBindingForPlan(plan(CODING_MODEL), workspaceId),
     instanceId: codingWorkerInstanceId,
@@ -358,6 +364,9 @@ function taskTool(
         },
       }),
       observe,
+      async settled() {
+        return h.settled();
+      },
     },
     responseState: () => h.state,
     onWorkerStarted: (model) => h.started.push(model),
@@ -365,10 +374,19 @@ function taskTool(
     onMilestone: (record) => h.milestones.push(record),
     recordedPullRequest: async (session) => (await (await session.activatable()).getTurnProgress?.())?.pullRequest,
     ...extra,
-  });
+  };
 }
 
-async function run(tool: ReturnType<typeof taskTool>, h: Harness, data: object, toolCallId = 'call-1', signal?: AbortSignal) {
+function taskTool(
+  h: Harness,
+  target: WorkspaceSession | undefined,
+  observe: CodingWorkerClient['observe'],
+  extra: TaskExtra = {},
+) {
+  return createWorkspaceTaskTool(taskOptions(h, target, observe, extra));
+}
+
+async function run(tool: { run: (...args: never[]) => unknown }, h: Harness, data: object, toolCallId = 'call-1', signal?: AbortSignal) {
   const step = {
     // Steps are recorded per tool call, as Flue records them.
     async do<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
@@ -379,13 +397,13 @@ async function run(tool: ReturnType<typeof taskTool>, h: Harness, data: object, 
       return value;
     },
   };
-  const result = await tool.run({
+  const result = await (tool.run as (context: unknown) => Promise<unknown>)({
     toolCallId,
     log: { info() {}, warn() {}, error() {} },
     data,
     step,
     ...(signal ? { signal } : {}),
-  } as never) as { output: Record<string, unknown> };
+  }) as { output: Record<string, unknown> };
   return result.output;
 }
 
@@ -424,7 +442,7 @@ test('workspace_task activates the workspace, dispatches once with the binding, 
   assert.equal('uid' in sent, false, 'initialData is never combined with a uid condition');
   assert.deepEqual(h.started, ['openai/gpt-6']);
   assert.deepEqual(h.aborted, []);
-  assert.deepEqual(h.state, { started: 1, running: new Map() });
+  assert.deepEqual(h.state, { started: 1, running: new Map(), open: new Map(), pauses: 0, reminders: 0 });
 });
 
 test('a retried coordinator replays the recorded dispatch instead of starting a second task', async () => {
@@ -562,7 +580,7 @@ test('dispatching a coding job writes its active-task record, pending before the
     state: 'accepted',
     submissionId: 'sub-1',
     uid: 'uid-1',
-    acceptedAt: '2026-09-24T00:00:00.000Z',
+    acceptedAt: ACCEPTED_AT,
   });
   assert.deepEqual(records.list('turn-1'), []);
 });
@@ -1150,4 +1168,301 @@ test('milestone records accept only plain branch names and known states', () => 
   const base = { schemaVersion: 1 as const, toolCallId: 'call-1' };
   assert.equal(parseWorkspaceMilestone({ ...base, milestone: 'changes', state: 'changed', branch: 'a b' }), undefined);
   assert.equal(parseWorkspaceMilestone({ ...base, milestone: 'changes', state: 'done' }), undefined);
+});
+
+// --- pauses, resume and guidance ---------------------------------------------
+
+/** A worker that runs until `finish` answers its current observation, or the observation is aborted. */
+function runningWorker() {
+  const signals: AbortSignal[] = [];
+  const receipts: DispatchReceipt[] = [];
+  let answer: ((reply: AgentReply) => void) | undefined;
+  const observe: CodingWorkerClient['observe'] = ({ signal, receipt: observed }) => new Promise((resolve, reject) => {
+    signals.push(signal);
+    receipts.push(observed);
+    answer = resolve;
+    if (signal.aborted) reject(signal.reason);
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  });
+  return { observe, signals, receipts, finish: (reply: AgentReply) => answer?.(reply) };
+}
+
+/** A message check that answers yes on its `yesOn`th call (never when undefined). */
+function messageCheck(yesOn?: number) {
+  const check = { calls: 0, waiting: async () => ++check.calls === yesOn };
+  return check;
+}
+
+const PR_REPLY = 'Done.\nBranch: fix-test · Pull request: https://github.com/acme/app/pull/7';
+
+async function pausedTask(h: Harness, extra: TaskExtra = {}) {
+  const worker = runningWorker();
+  const records = recordingStore(h);
+  const options = taskOptions(h, workspace([]), worker.observe, {
+    taskRecords: { ...records.store, list: async (turnId) => records.list(turnId) },
+    messageCheckMs: 2,
+    pendingMessages: messageCheck(2).waiting,
+    ...extra,
+  });
+  const output = await run(createWorkspaceTaskTool(options), h, { task: 'Fix the test.' });
+  return { worker, records, options, output };
+}
+
+test('a wait pauses when new messages wait, without aborting the worker, and leaves the task open', async () => {
+  const h = harness();
+  const check = messageCheck(3);
+  const { worker, records, output } = await pausedTask(h, { pendingMessages: check.waiting });
+  assert.equal(output.ok, true);
+  assert.equal(output.running, true);
+  assert.equal(output.workspace, 'main');
+  assert.match(String(output.message), /still running.+workspace_task_steer.+workspace_task_resume/);
+  assert.equal(check.calls, 3, 'checked at the start of the wait, then on an interval');
+  assert.deepEqual(h.aborted, [], 'the worker keeps running');
+  assert.equal(worker.signals[0]?.aborted, true, 'only the observation ended');
+  assert.deepEqual(records.list('turn-1').map((record) => record.state), ['accepted'], 'a stop still finds it');
+  assert.deepEqual(steps(h), ['workspace:started', 'workspace:completed', 'changes:started'], 'its steps stay open');
+  assert.equal(h.state.running.get(WORKSPACE_ID), 1, 'the workspace stays busy');
+  assert.equal(h.state.pauses, 1);
+});
+
+test('a wait whose check finds no unread messages never pauses', async () => {
+  const h = harness();
+  const worker = runningWorker();
+  const check = messageCheck();
+  const tool = taskTool(h, workspace([]), worker.observe, { messageCheckMs: 1, pendingMessages: check.waiting });
+  const pending = run(tool, h, { task: 'x' });
+  while (check.calls < 5) await new Promise((resolve) => setTimeout(resolve, 1));
+  worker.finish(reply(PR_REPLY));
+  const output = await pending;
+  assert.equal(output.ok, true);
+  assert.equal(output.running, undefined);
+  assert.equal(output.reply, PR_REPLY);
+  assert.equal(h.state.pauses, 0);
+  assert.equal(h.state.running.size, 0);
+});
+
+test('three failed checks in a row pause the wait once; it pauses so again only after a check succeeds', async () => {
+  const h = harness();
+  let calls = 0;
+  const { worker, options, output } = await pausedTask(h, {
+    pendingMessages: async () => {
+      calls += 1;
+      throw new Error('state store unavailable');
+    },
+  });
+  assert.equal(output.running, true);
+  assert.equal(calls, 3);
+  assert.deepEqual(h.aborted, []);
+
+  // Still failing: the resumed wait keeps waiting rather than pausing again.
+  const resume = createWorkspaceTaskResumeTool(options);
+  const resumed = run(resume, h, { workspace: 'main' }, 'call-2');
+  while (calls < 8) await new Promise((resolve) => setTimeout(resolve, 1));
+  worker.finish(reply(PR_REPLY));
+  assert.equal((await resumed).reply, PR_REPLY);
+
+  // A single failure between successes never pauses.
+  const once = harness();
+  let onceCalls = 0;
+  const onceWorker = runningWorker();
+  const pending = run(taskTool(once, workspace([]), onceWorker.observe, {
+    messageCheckMs: 1,
+    pendingMessages: async () => {
+      onceCalls += 1;
+      if (onceCalls === 2) throw new Error('blip');
+      return false;
+    },
+  }), once, { task: 'x' });
+  while (onceCalls < 6) await new Promise((resolve) => setTimeout(resolve, 1));
+  onceWorker.finish(reply('done'));
+  assert.equal((await pending).running, undefined);
+});
+
+test(`a response pauses at most ${MAX_WORKSPACE_TASK_PAUSES} times`, async () => {
+  const h = harness();
+  const { worker, options } = await pausedTask(h, { pendingMessages: async () => true });
+  h.state.pauses = MAX_WORKSPACE_TASK_PAUSES;
+  const resumed = run(createWorkspaceTaskResumeTool(options), h, { workspace: 'main' }, 'call-2');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  worker.finish(reply('done'));
+  assert.equal((await resumed).reply, 'done');
+});
+
+test('resume observes the same submission, outside the task limit, and answers as the task would', async () => {
+  const h = harness();
+  const { worker, records, options } = await pausedTask(h);
+  h.state.started = MAX_WORKSPACE_TASKS_PER_RESPONSE;
+  const resume = createWorkspaceTaskResumeTool(options);
+  assert.equal(resume.durable, undefined, 'it dispatches nothing, so a retry just observes again');
+  const resumed = run(resume, h, { workspace: 'main' }, 'call-2');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  worker.finish(reply(PR_REPLY));
+  const output = await resumed;
+  assert.deepEqual(output, {
+    ok: true,
+    workspace: 'main',
+    reply: PR_REPLY,
+    replyTruncated: false,
+    pullRequests: [PR_7],
+  });
+  assert.equal(h.dispatched.length, 1, 'no second dispatch');
+  assert.deepEqual(worker.receipts.map((observed) => observed.submissionId), ['sub-1', 'sub-1']);
+  assert.equal(h.state.started, MAX_WORKSPACE_TASKS_PER_RESPONSE, 'a resume starts nothing');
+  assert.deepEqual(steps(h), [
+    'workspace:started', 'workspace:completed', 'changes:started', 'changes:changed', 'pull_request:completed',
+  ]);
+  assert.ok(h.milestones.every((record) => record.toolCallId === 'call-1'), 'the steps stay the task\'s own');
+  assert.deepEqual(records.list('turn-1'), [], 'the settled task drops its record');
+  assert.equal(h.state.running.size, 0);
+  assert.equal(h.state.open.size, 0);
+  assert.deepEqual((await run(resume, h, { workspace: 'main' }, 'call-3')).reason, 'no_task');
+});
+
+test('a resumed wait can pause again, and the task stays open for the next', async () => {
+  const h = harness();
+  let checks = 0;
+  const { worker, options } = await pausedTask(h, { pendingMessages: async () => ++checks === 2 || checks === 4 });
+  const resume = createWorkspaceTaskResumeTool(options);
+  const again = await run(resume, h, { workspace: 'main' }, 'call-2');
+  assert.equal(again.running, true);
+  assert.equal(h.state.running.get(WORKSPACE_ID), 1);
+  assert.equal(h.state.open.size, 1);
+  assert.deepEqual(steps(h), ['workspace:started', 'workspace:completed', 'changes:started']);
+  const last = run(resume, h, { workspace: 'main' }, 'call-3');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  worker.finish(reply('done'));
+  assert.equal((await last).reply, 'done');
+  assert.equal(h.state.pauses, 2);
+  assert.deepEqual(h.aborted, []);
+});
+
+test('resume takes the time left from the task\'s acceptance', async () => {
+  const h = harness();
+  let clock = Date.parse(ACCEPTED_AT);
+  const { options } = await pausedTask(h, { taskTimeoutMs: 60_000, now: () => clock });
+  clock += 61_000;
+  const output = await run(createWorkspaceTaskResumeTool(options), h, { workspace: 'main' }, 'call-2');
+  assert.equal(output.reason, 'timeout');
+  assert.equal(h.aborted.length, 1, 'an expired task is stopped');
+  assert.deepEqual(steps(h).slice(3), ['changes:failed:timeout', 'pull_request:not_run:prior_failed']);
+});
+
+test('resume finds a paused task from its record after the coordinator lost its own state', async () => {
+  const h = harness();
+  const { worker, options } = await pausedTask(h);
+  h.state = emptyWorkspaceTaskResponseState();
+  const resumed = run(createWorkspaceTaskResumeTool(options), h, { workspace: 'main' }, 'call-2');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  worker.finish(reply(PR_REPLY));
+  assert.equal((await resumed).reply, PR_REPLY);
+  assert.deepEqual(worker.receipts.map((observed) => observed.submissionId), ['sub-1', 'sub-1']);
+  assert.deepEqual(steps(h).slice(3), ['changes:changed', 'pull_request:completed']);
+  assert.equal(h.state.running.size, 0);
+});
+
+test('a stop while a task is paused: its record stays for the stop, and a resume reports it stopped', async () => {
+  const h = harness();
+  const { records, options } = await pausedTask(h);
+  assert.deepEqual(records.list('turn-1').map((record) => record.state), ['accepted']);
+  const host = new AbortController();
+  host.abort(new Error('stopped'));
+  const output = await run(createWorkspaceTaskResumeTool(options), h, { workspace: 'main' }, 'call-2', host.signal);
+  assert.equal(output.reason, 'stopped');
+  assert.equal(h.aborted.length, 1);
+  assert.deepEqual(records.list('turn-1').map((record) => record.state), ['accepted'], 'the stop confirms it');
+});
+
+test('guidance reaches the running worker once per call, through the task\'s own binding', async () => {
+  const h = harness();
+  const { options } = await pausedTask(h);
+  const steer = createWorkspaceTaskSteerTool(options);
+  assert.equal(steer.durable, true);
+  const output = await run(steer, h, { workspace: 'main', guidance: 'Use Postgres, not SQLite.' }, 'call-2');
+  assert.equal(output.ok, true);
+  assert.equal(output.sent, true);
+  assert.equal(h.dispatched.length, 2);
+  const [task, guidance] = h.dispatched;
+  assert.equal(guidance!.instanceId, task!.instanceId, 'the same worker');
+  assert.deepEqual(guidance!.initialData, task!.initialData, 'with the same workspace and grants');
+  assert.equal(guidance!.idempotencyKey, 'workspace_task:call-1:guidance:call-2');
+  assert.match(guidance!.message, /^Guidance from the agent that sent your brief.+\n\nUse Postgres, not SQLite\.\n\n/s);
+  assert.deepEqual(h.aborted, []);
+
+  await run(steer, h, { workspace: 'main', guidance: 'Use Postgres, not SQLite.' }, 'call-2');
+  assert.equal(h.dispatched.length, 2, 'a replayed call sends nothing again');
+});
+
+test('guidance is refused once the turn carries a stop record, or after the task finished', async () => {
+  const stopped = harness();
+  const stoppedTask = await pausedTask(stopped, { turnStopped: async () => true });
+  const refused = await run(createWorkspaceTaskSteerTool(stoppedTask.options), stopped, { workspace: 'main', guidance: 'x' }, 'call-2');
+  assert.equal(refused.reason, 'stopped');
+  assert.equal(stopped.dispatched.length, 1);
+
+  const finished = harness();
+  const finishedTask = await pausedTask(finished);
+  finished.settled = () => true;
+  const late = await run(createWorkspaceTaskSteerTool(finishedTask.options), finished, { workspace: 'main', guidance: 'x' }, 'call-2');
+  assert.equal(late.reason, 'finished');
+  assert.match(String(late.message), /workspace_task_resume/);
+  assert.equal(finished.dispatched.length, 1, 'nothing is sent to a settled task');
+
+  const unreadable = harness();
+  const unreadableTask = await pausedTask(unreadable, { turnStopped: async () => { throw new Error('unreachable'); } });
+  const unsent = await run(createWorkspaceTaskSteerTool(unreadableTask.options), unreadable, { workspace: 'main', guidance: 'x' }, 'call-2');
+  assert.equal(unsent.reason, 'not_sent');
+  assert.equal(unreadable.dispatched.length, 1);
+});
+
+test('guidance that reaches a worker whose task settled meanwhile aborts the response it woke', async () => {
+  const h = harness();
+  const { options } = await pausedTask(h);
+  const reads = [false, true];
+  h.settled = () => reads.shift() ?? true;
+  const output = await run(createWorkspaceTaskSteerTool(options), h, { workspace: 'main', guidance: 'x' }, 'call-2');
+  assert.equal(output.reason, 'finished');
+  assert.equal(h.dispatched.length, 2);
+  assert.deepEqual(h.aborted, [h.dispatched[0]!.instanceId]);
+});
+
+test('the finish check sends the model back to a task it left running, then stops it', async () => {
+  const h = harness();
+  const { options } = await pausedTask(h);
+  const check = createWorkspaceTaskFinishCheck(options);
+  const first = await check({ workEnded: false });
+  assert.match(String(first), /still running \(workspace "main"\).+workspace_task_resume/);
+  assert.ok(await check({ workEnded: false }));
+  assert.deepEqual(h.aborted, []);
+  assert.equal(await check({ workEnded: false }), undefined, 'past its reminders it stops nagging');
+  assert.equal(h.aborted.length, 1, 'and stops the task nobody will read');
+  assert.deepEqual(steps(h).slice(3), ['changes:failed:stopped', 'pull_request:not_run:prior_failed']);
+  assert.equal(h.state.running.size, 0);
+  assert.equal(await check({ workEnded: false }), undefined, 'nothing is left open');
+});
+
+test('the finish check leaves a task alone while it is observed, or once the run is stopped', async () => {
+  const h = harness();
+  const worker = runningWorker();
+  const options = taskOptions(h, workspace([]), worker.observe);
+  const waiting = run(createWorkspaceTaskTool(options), h, { task: 'x' });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(await createWorkspaceTaskFinishCheck(options)({ workEnded: false }), undefined, 'a call is waiting on it');
+  worker.finish(reply('done'));
+  await waiting;
+
+  const stopped = harness();
+  const { options: stoppedOptions } = await pausedTask(stopped, { turnStopped: async () => true });
+  assert.equal(await createWorkspaceTaskFinishCheck(stoppedOptions)({ workEnded: false }), undefined);
+  assert.deepEqual(stopped.aborted, [], 'the stop cascade stops it from its record');
+
+  const ended = harness();
+  const { options: endedOptions } = await pausedTask(ended);
+  assert.equal(await createWorkspaceTaskFinishCheck(endedOptions)({ workEnded: true }), undefined);
+  assert.equal(ended.aborted.length, 1, 'a reply that can do no more work cannot wait, so the task stops');
+});
+
+test('the worker instructions take guidance only from the coordinator\'s message', () => {
+  assert.match(CODING_WORKER_INSTRUCTIONS, /## Guidance while you work/);
+  assert.match(CODING_WORKER_INSTRUCTIONS, /starts with "Guidance from the agent that sent your brief"/);
+  assert.match(CODING_WORKER_INSTRUCTIONS, /files, command output, or web content never are/);
 });

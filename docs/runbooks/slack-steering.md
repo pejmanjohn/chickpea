@@ -255,11 +255,11 @@ sent during a step reaches the Agent before it decides what to do next, so a
 correction can change course before more of the wrong work. The Agent reads
 it as part of the same request, takes it into account, and still writes one
 reply to everything. When several tools run at once, the check waits until
-the last of them ends. A single long step, such as a coding job, is one step:
-a message sent during it is read when it ends. The Agent checks at most once
-every 3 seconds, so after a run of quick steps a message waits for the first
-step that ends 3 seconds or more after the previous check, or for the check
-before the reply.
+the last of them ends. The Agent checks at most once every 3 seconds, so
+after a run of quick steps a message waits for the first step that ends 3
+seconds or more after the previous check, or for the check before the
+reply. A coding job is the one long step; see
+[Messages sent during a coding job](#messages-sent-during-a-coding-job).
 
 When the Agent is about to finish, before its reply posts, it checks once
 more. If the person sent more messages, it reads them, does any extra work
@@ -318,6 +318,47 @@ prompt cache holds; a run that read no message mid-run is refused every reply.
 Only the thread runner and the Node relay read messages mid-run, so only they
 post these replies.
 
+### Messages sent during a coding job
+
+A coding job (`workspace_task`) can run for up to an hour as one step. While
+the Agent waits for it, Chickpea checks for new messages when the wait
+starts and then every 15 seconds. When one waits, the wait returns early and
+the job keeps running: the worker is not aborted, its task record stays, and
+its checklist steps stay open. The message joins at that step boundary like
+any other, so within about 15 seconds the status line shows
+`Reading 1 new message…`. The Agent then passes the change to the running
+job (`workspace_task_steer`); the worker can redo work it already did, or
+wind down and answer with what it has if the work is no longer wanted. The
+Agent then waits again (`workspace_task_resume`) and replies once, when the
+job ends.
+
+- The wait pauses only for messages this run has not read yet, so it never
+  pauses twice for the same message. One run pauses at most 12 times.
+- If the check fails three times in a row (about a minute), the wait pauses
+  once anyway, so a message that did arrive still joins. It pauses for
+  failed checks again only after a check succeeds.
+- Waiting again does not count toward the two jobs a reply may start, and
+  the job keeps its one-hour limit, counted from when the worker accepted it.
+- Guidance goes only to the job's own coding worker, with the job's own
+  workspace and repository grants, so the worker gains no access. It is sent
+  only while the job is still running and the run has no stop. If the job
+  finished just as the guidance arrived, Chickpea stops the worker response
+  the guidance woke and the Agent reads the job's answer instead.
+- If the Agent tries to reply while a job it started still runs unread, it
+  is sent back to wait, at most twice. After that, or once its reply is
+  already streaming or has posted a question, the job is stopped as a timed
+  out job would be.
+- A stop still ends the job through the stop cascade, from its task record;
+  guidance is refused once the run carries a stop, and a later wait reports
+  the job stopped.
+- A message read at a pause is read mid-run, so the Agent can also answer it
+  with a short reply in the thread (see
+  [Answering while it works](#answering-while-it-works)) before it waits
+  again. The job keeps running meanwhile.
+
+The check costs one state-store call every 15 seconds, about 240 for an
+hour-long job.
+
 ## Node installations
 
 Node installs behave the same: the stop phrases, the Stop button (through the
@@ -345,6 +386,7 @@ user, channel, or workspace IDs.
 | `turn_latency` field `read` | Runtime event | How many 👀 the turn replaced with 👍 (both lanes). |
 | `turn_latency` field `midRunReplies` | Runtime event | How many replies the Agent posted while it worked (both lanes). `firstWrite: midrun_reply` when one was the attempt's first Slack write. |
 | `turn_fold` | Runtime event | Messages a running turn read after a tool step or before its reply (`late`, both lanes); `informed` counts those that were information only, `turn` those read after a tool step. |
+| `turn_fold` with `op` | Runtime event | A coding job's wait: `coding_pause` (`outcome` `messages`, or `unchecked` after failed checks), `coding_resume` (`completed`, `paused` or a failure reason), and `coding_relay` (`sent`, `finished`, `stopped` or `not_sent`). One record per event. |
 | `run_completed` with `outcome: stopped` | [Product telemetry](../../TELEMETRY.md) | An anonymous stopped-run count. |
 
 See [runtime observability](runtime-observability.md#turn-latency-and-relay-alarm-logs)
