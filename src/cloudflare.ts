@@ -198,6 +198,7 @@ import {
   workspaceWarmWindowMs,
 } from './sandbox/warm-window.ts';
 import type { SlackCanonicalAdmissionInput } from './slack/claim-store.ts';
+import type { SlackMessageEdit } from './slack/edits.ts';
 import {
   SlackPresentationStateError,
 } from './slack/run-presentations.ts';
@@ -1700,6 +1701,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       await this.offerCreatedStop(result.value.steered);
     }
     return result;
+  }
+
+  async slackTurnAdmitEdit(edit: SlackMessageEdit) {
+    return this.call((stores) =>
+      stores.slack.admitEdit(edit, stores.work, stores.turnJobs, stores.presentations));
   }
 
   async uiSurfaceExecute(request: UiSurfaceRpcRequest) {

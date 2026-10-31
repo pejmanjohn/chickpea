@@ -333,6 +333,14 @@ export function atOrBeforeSlackWatermark(timestamp: string, watermark: string | 
 }
 
 /**
+ * When the person made this turn's request: an edit row's save time, else
+ * its message's ts. Never for anything that names the message itself.
+ */
+export function turnRequestTs(turn: Pick<NormalizedSlackTurn, 'messageTs' | 'edit'>): string {
+  return turn.edit?.editedTs ?? turn.messageTs;
+}
+
+/**
  * The newest row a turn may read: its trigger, or the newest follow-up the
  * turn took with it, so a reply never sees what came after the messages it
  * answers. Two kinds of turn read to the end of the thread instead: an Agent

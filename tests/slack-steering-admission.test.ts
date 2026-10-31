@@ -45,6 +45,19 @@ interface Harness {
     threadTs?: string;
     eventId?: string;
   }): Promise<void>;
+  /** Slack's `message_changed` for a message `deliver` posted; resolves with the delivery's outcome. */
+  edit(change: {
+    ts: string;
+    previousText: string;
+    text: string;
+    /** `message.edited.ts`; absent for a link preview or a reply count. */
+    editedTs?: string;
+    user?: string;
+    threadTs?: string;
+    eventId?: string;
+    /** Fields of an app-authored message. */
+    app?: Record<string, unknown>;
+  }): Promise<'accepted' | 'rejected'>;
   pending(): Promise<Awaited<ReturnType<NonNullable<AppStores['slackState']['listPendingTurns']>>>>;
 }
 
@@ -148,12 +161,42 @@ async function withHarness(
       });
     }
     const jobs: TurnJob[] = [];
+    const execution = {
+      stores,
+      // As the state store's gateway drain does: write the row (a canonical
+      // admission already did, and this is then a no-op).
+      enqueueTurn: async (job: TurnJob) => {
+        jobs.push(job);
+        await stores.slackState.enqueueTurn!(job);
+        return { ok: true as const, value: null };
+      },
+    };
     await run({
       stores,
       ownerMembershipId: owner.membership.id,
       jobs,
       posts,
       reactions,
+      async edit(change) {
+        const message = {
+          type: 'message' as const, channel: 'C1', user: change.user ?? 'U1', ts: change.ts,
+          ...(change.threadTs ? { thread_ts: change.threadTs } : {}),
+        };
+        return processGatewaySlackEnvelope({
+          workspaceId: 'T1',
+          eventId: change.eventId ?? `EvEdit${(change.editedTs ?? change.ts).replace('.', '')}`,
+          eventTime: Math.floor(Number(change.editedTs ?? change.ts)),
+          event: {
+            type: 'message', subtype: 'message_changed', channel: 'C1', channel_type: 'channel',
+            ts: change.editedTs ?? change.ts,
+            message: {
+              ...message, text: change.text, ...change.app,
+              ...(change.editedTs ? { edited: { ts: change.editedTs, user: message.user } } : {}),
+            },
+            previous_message: { ...message, text: change.previousText },
+          },
+        }, undefined, gateway, execution);
+      },
       async deliver(message) {
         const channelId = message.channel ?? 'C1';
         const direct = channelId.startsWith('D');
@@ -170,16 +213,7 @@ async function withHarness(
             text: message.text,
             ...(message.threadTs ? { thread_ts: message.threadTs } : {}),
           },
-        }, undefined, gateway, {
-          stores,
-          // As the state store's gateway drain does: write the row (a canonical
-          // admission already did, and this is then a no-op).
-          enqueueTurn: async (job) => {
-            jobs.push(job);
-            await stores.slackState.enqueueTurn!(job);
-            return { ok: true, value: null };
-          },
-        }), 'accepted');
+        }, undefined, gateway, execution), 'accepted');
       },
       async pending() {
         return stores.slackState.listPendingTurns!();
@@ -1115,4 +1149,101 @@ test('the running DM thread lookup keys only the sender\'s undelivered runs in t
   } finally {
     state.close();
   }
+});
+
+// ── edits (a person's edit of a message whose turn is queued or running) ──
+
+const EDITED_TS = '1800000005.000000';
+const EDIT_ID = `edit:C1:${ROOT_TS}:${EDITED_TS}`;
+const ROOT_TEXT = `${OPS} Investigate the flaky build.`;
+const EDITED_TEXT = `${OPS} Investigate the flaky deploy.`;
+
+async function publicRootText(harness: Harness) {
+  const rows = await harness.stores.config.listSlackPublicContext('T1', 'C1', ROOT_TS);
+  const root = rows.find((row) => row.messageTs === ROOT_TS);
+  return root && { text: root.text, contentVersionTs: root.contentVersionTs };
+}
+
+test('an edit of the running message is queued as a row of its own and handed to the relay; the public record takes the new text', async () => {
+  await withHarness(async (harness) => {
+    await startRun(harness);
+    assert.equal(await harness.edit({ ts: ROOT_TS, previousText: ROOT_TEXT, text: EDITED_TEXT, editedTs: EDITED_TS }), 'accepted');
+
+    assert.deepEqual(harness.jobs.map(({ id }) => id), [ROOT_ID, EDIT_ID], 'the edit is armed like a new turn');
+    const edit = (await harness.pending()).find(({ id }) => id === EDIT_ID);
+    assert.equal(edit?.turn.text, EDITED_TEXT);
+    assert.deepEqual(edit?.turn.edit, { editedTs: EDITED_TS, previousText: ROOT_TEXT });
+    assert.equal(edit?.assignment.agentId, 'agent_ops');
+    assert.ok(edit?.runId && edit.runId !== harness.jobs[0]?.runId, 'a Run of its own');
+    assert.deepEqual(harness.reactions, [], 'an edit gets no reaction of its own');
+    assert.deepEqual(harness.posts, []);
+    assert.deepEqual(await publicRootText(harness), { text: EDITED_TEXT, contentVersionTs: EDITED_TS });
+
+    // Slack redelivers the same edit: still one row.
+    await harness.edit({ ts: ROOT_TS, previousText: ROOT_TEXT, text: EDITED_TEXT, editedTs: EDITED_TS });
+    assert.deepEqual((await harness.pending()).map(({ id }) => id), [ROOT_ID, EDIT_ID]);
+  });
+});
+
+test('an edit that steers nothing queues nothing, and the public record still takes a real edit', async () => {
+  await withHarness(async (harness) => {
+    await startRun(harness);
+    const quiet = [
+      { ts: ROOT_TS, previousText: ROOT_TEXT, text: ROOT_TEXT, eventId: 'EvPreview' },
+      { ts: ROOT_TS, previousText: ROOT_TEXT, text: EDITED_TEXT, eventId: 'EvNoEditedMark' },
+      { ts: ROOT_TS, previousText: ROOT_TEXT, text: EDITED_TEXT, editedTs: EDITED_TS, app: { bot_id: 'BBOT' } },
+      { ts: ROOT_TS, previousText: ROOT_TEXT, text: EDITED_TEXT, editedTs: EDITED_TS, app: { bot_profile: { app_id: 'A1' } } },
+      { ts: '1800000002.000100', threadTs: ROOT_TS, user: 'U2', previousText: 'lunch?', text: 'lunch at 1?', editedTs: EDITED_TS },
+    ];
+    for (const change of quiet) assert.equal(await harness.edit(change), 'accepted');
+    assert.deepEqual(harness.jobs.map(({ id }) => id), [ROOT_ID]);
+    assert.deepEqual((await harness.pending()).map(({ id }) => id), [ROOT_ID]);
+
+    await harness.stores.slackState.markTurnDelivered!(ROOT_ID);
+    await harness.edit({ ts: ROOT_TS, previousText: ROOT_TEXT, text: EDITED_TEXT, editedTs: EDITED_TS });
+    assert.deepEqual(harness.jobs.map(({ id }) => id), [ROOT_ID], 'its answer is done: nothing to steer');
+    assert.deepEqual(await harness.pending(), []);
+    assert.deepEqual(await publicRootText(harness), { text: EDITED_TEXT, contentVersionTs: EDITED_TS });
+  });
+});
+
+test('an edit the store fails to admit fails its delivery, and the inbox retry queues it once', async () => {
+  await withHarness(async (harness) => {
+    await startRun(harness);
+    const admit = harness.stores.slackState.admitEdit!.bind(harness.stores.slackState);
+    let fail = true;
+    harness.stores.slackState.admitEdit = async (edit) => {
+      if (fail) {
+        fail = false;
+        throw new Error('state store unavailable');
+      }
+      return admit(edit);
+    };
+    const change = { ts: ROOT_TS, previousText: ROOT_TEXT, text: EDITED_TEXT, editedTs: EDITED_TS };
+    await assert.rejects(harness.edit(change), (error: unknown) =>
+      error instanceof Error && error.name === 'SlackDurableEnqueueError');
+    assert.deepEqual((await harness.pending()).map(({ id }) => id), [ROOT_ID]);
+    assert.equal(await harness.edit(change), 'accepted');
+    assert.equal(await harness.edit(change), 'accepted');
+    assert.deepEqual((await harness.pending()).map(({ id }) => id), [ROOT_ID, EDIT_ID]);
+  });
+});
+
+test('the Node path admits an edit the same way', async () => {
+  await stopNodeTurnRelay();
+  await withHarness(async (harness) => {
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true, value: { userAgent: 'Cloudflare-Workers' },
+    });
+    await startRun(harness);
+    Reflect.deleteProperty(globalThis, 'navigator');
+    assert.equal(await harness.edit({ ts: ROOT_TS, previousText: ROOT_TEXT, text: EDITED_TEXT, editedTs: EDITED_TS }), 'accepted');
+    assert.deepEqual(harness.jobs.map(({ id }) => id), [ROOT_ID], 'Node wakes its own relay instead');
+    assert.deepEqual((await harness.pending()).map(({ id }) => id), [ROOT_ID, EDIT_ID]);
+    assert.equal(await harness.edit({
+      ts: ROOT_TS, previousText: ROOT_TEXT, text: `${OPS} Investigate it again.`, editedTs: '1800000006.000000', app: { bot_id: 'BBOT' },
+    }), 'accepted');
+    assert.deepEqual((await harness.pending()).map(({ id }) => id), [ROOT_ID, EDIT_ID],
+      'Node\'s gateway does not filter Chickpea\'s own updates; the parse does');
+  }, { target: 'node' });
 });

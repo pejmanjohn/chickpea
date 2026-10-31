@@ -66,6 +66,8 @@ import {
   THREAD_TTL_MS,
 } from './state-limits.ts';
 import { slackTimestampUnits } from './thread-context.ts';
+import { decideEdit, editTurnJobId, type SlackEditRefusal, type SlackMessageEdit } from './edits.ts';
+import { prepareSlackShadowAdmission } from './work-admission.ts';
 import { SqliteGatewayInboxStore } from './gateway/node-inbox-store.ts';
 import {
   UiSurfaceStoreLogic,
@@ -179,6 +181,15 @@ export function selectSlackPresentationOwner(input: {
   };
 }
 
+/**
+ * An edit's admission (SlackStateLogic.admitEdit): its row, written now or
+ * by an earlier delivery of the same edit and still undelivered, or why it
+ * steers nothing.
+ */
+export type SlackEditAdmission =
+  | { outcome: 'admitted' | 'already_admitted'; job: TurnJob }
+  | { outcome: 'refused'; reason: SlackEditRefusal };
+
 export type SlackCanonicalAdmissionResult =
   | { claimed: false }
   /** `midRunReceipt`: the TurnJob was written with its `midRun` receipt. */
@@ -227,6 +238,8 @@ export interface SlackThreadRegistry {
 /** The combined claims + thread-registry surface the Slack channel consumes. */
 export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   admitCanonical(input: SlackCanonicalAdmissionInput): Promise<SlackCanonicalAdmissionResult>;
+  /** Admit a person's edit of a message whose turn is queued or running (SlackStateLogic.admitEdit). */
+  admitEdit?(edit: SlackMessageEdit): Promise<SlackEditAdmission>;
   /** Node fallback when Slack truth cannot authorize a canonical Work/Run. */
   enqueueTurn?(job: TurnJob): Promise<boolean>;
   /**
@@ -594,6 +607,89 @@ export class SlackStateLogic {
       }
       return { claimed: true, admission, ...(receiptWritten ? { midRunReceipt: true as const } : {}) };
     });
+  }
+
+  /**
+   * A person's edit of a message whose turn is queued or running, in one
+   * transaction: decide it against the message's stored versions
+   * (decideEdit), then claim it, give it a Run and a presentation copied
+   * from its message's, and queue its row. It writes only its own row and
+   * claims, so it shares no write with a fold. A redelivery of an admitted
+   * edit, through any app, reports that row while it is undelivered.
+   */
+  admitEdit(
+    edit: SlackMessageEdit,
+    work: WorkStoreLogic,
+    turnJobs: TurnJobStoreLogic,
+    presentations: SlackRunPresentationStoreLogic,
+  ): SlackEditAdmission {
+    return this.db.transaction((): SlackEditAdmission => {
+      const id = editTurnJobId(edit.channelId, edit.messageTs, edit.editedTs);
+      const refused = (reason: SlackEditRefusal): SlackEditAdmission => {
+        const view = turnJobs.runnerView(id);
+        return view.status === 'pending' && view.job
+          ? { outcome: 'already_admitted', job: view.job }
+          : { outcome: 'refused', reason };
+      };
+      const decision = decideEdit(turnJobs.editVersions(edit.channelId, edit.messageTs), edit);
+      if (decision.kind === 'refuse') return refused(decision.reason);
+      const { job } = decision;
+      if (!this.claim(job.evtKey)) return refused('stale');
+      if (!this.claim(job.msgKey)) {
+        this.release(job.evtKey);
+        return refused('stale');
+      }
+      const runId = decision.laneRunId === undefined
+        ? undefined
+        : this.admitEditRun(job, {
+            runId: decision.laneRunId,
+            sessionGeneration: slackSessionGenerationFromTimestamp(edit.editedTs),
+          }, work, presentations);
+      const admitted: TurnJob = { ...job, ...(runId ? { runId } : {}) };
+      turnJobs.enqueueInTransaction(admitted);
+      return { outcome: 'admitted', job: admitted };
+    });
+  }
+
+  /**
+   * The edit's own Run and presentation, in its message's binding and with
+   * its message's root and sender, so a reply it posts on its own comes from
+   * the same sender and is metered like any turn. Undefined when the
+   * message's Run is gone.
+   */
+  private admitEditRun(
+    job: Omit<TurnJob, 'runId'>,
+    lane: { runId: string; sessionGeneration: number },
+    work: WorkStoreLogic,
+    presentations: SlackRunPresentationStoreLogic,
+  ): string | undefined {
+    const run = work.getRun(lane.runId as RunId);
+    const binding = run ? work.getBinding(run.bindingId) : undefined;
+    if (!binding || binding.sourceVisibility === 'unknown') return undefined;
+    const admission = work.admitShadowRunInTransaction(prepareSlackShadowAdmission({
+      turn: job.turn,
+      assignment: job.assignment,
+      sourceVisibility: binding.sourceVisibility,
+      admittedAt: this.now(),
+      executionAuthority: 'legacy',
+    }));
+    const original = presentations.get(lane.runId);
+    if (original?.schemaVersion === 3) {
+      const intent = job.turn.interactionIntent;
+      presentations.createInTransaction({
+        schemaVersion: 3,
+        runId: admission.run.id,
+        turnJobId: job.id,
+        bindingId: admission.binding.id,
+        workBindingGeneration: admission.binding.generation,
+        runFencingToken: admission.run.fencingToken,
+        root: original.root,
+        owner: original.owner,
+        sessionGeneration: lane.sessionGeneration,
+        ...(intent?.disposition === 'work' ? { taskLabels: intent.checklist } : {}),
+      });
+    }
+    return admission.run.id;
   }
 
   /**

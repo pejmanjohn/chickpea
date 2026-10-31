@@ -153,7 +153,7 @@ import {
   slackThreadKey,
   slackTurnSurface,
 } from '../slack/thread-key.ts';
-import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
+import { normalizeSlackTurn, parseSlackMessageEdit } from '../slack/turn-normalization.ts';
 import {
   registerNodeAgentAskDispatcher,
   wakeNodeTurnRelay,
@@ -174,8 +174,10 @@ import {
 import {
   selectSlackPresentationOwner,
   slackSessionGenerationFromTimestamp,
+  type SlackEditAdmission,
   type SlackStateStore,
 } from '../slack/claim-store.ts';
+import type { SlackMessageEdit } from '../slack/edits.ts';
 import {
   postSteeringReply,
   readSteeringRunFacts,
@@ -2664,6 +2666,47 @@ async function completePrivateChannelSetupAction(
   await execution.client.chat.postEphemeral({ channel: action.channelId, user: action.userId, text });
 }
 
+/**
+ * Admit a person's edit of a message whose turn is queued or running, then
+ * drive its row like any admitted turn. Repeatable: an edit already admitted
+ * is driven again, which converges after a failed wake. No reaction: the
+ * message's 👀 and 👍 stay its own row's.
+ */
+async function steerWithSlackEdit(input: {
+  edit: SlackMessageEdit;
+  state: SlackStateStore;
+  execution: SlackEventExecution | undefined;
+  platformEnv: PlatformEnv | undefined;
+}): Promise<void> {
+  const { execution, platformEnv } = input;
+  let admitted: SlackEditAdmission | undefined;
+  try {
+    admitted = await input.state.admitEdit?.(input.edit);
+  } catch (err) {
+    console.error('[chickpea] edit admission failed:', sanitizeError(err));
+    if (isCloudflareTarget() || execution?.durableIngress) {
+      throw new SlackDurableEnqueueError('Edit admission failed.');
+    }
+    return;
+  }
+  if (!admitted || admitted.outcome === 'refused') return;
+  if (isCloudflareTarget()) {
+    const enqueued = await (execution?.enqueueTurn
+      ? execution.enqueueTurn(admitted.job)
+      : tagStateStub(platformEnv).enqueueTurn(admitted.job));
+    if (!enqueued.ok) throw new SlackDurableEnqueueError(enqueued.error.message);
+    return;
+  }
+  const wake = wakeNodeTurnRelay(platformEnv).catch((err) => {
+    console.error('[chickpea] node turn wake failed:', sanitizeError(err));
+  });
+  if (execution?.durableIngress) {
+    void wake;
+    return;
+  }
+  await wake;
+}
+
 async function processSlackEvent(
   payload: SlackEventFixture,
   platformEnv: PlatformEnv | undefined,
@@ -2679,6 +2722,9 @@ async function processSlackEvent(
   if (!installation || installation.health === 'revoked') return;
   if (execution && !execution.agentApp && installation.transportMode !== 'gateway') return;
   if (!execution && installation.transportMode !== 'direct') return;
+  // An edit steers its message's turn, then the public record below takes the new text too.
+  const edit = ask ? undefined : parseSlackMessageEdit(payload);
+  if (edit) await steerWithSlackEdit({ edit, state: stores.slackState, execution, platformEnv });
   if (
     !ask &&
     installation.runtimeContract === 'chickpea-v1' &&

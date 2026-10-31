@@ -30,6 +30,7 @@ export function localSlackStateStore(input: {
       slack.setActiveWork(key, generation, active),
     admitCanonical: async (admission: SlackCanonicalAdmissionInput) =>
       slack.admitCanonical(admission, work, turnJobs, presentations, uiSurfaces),
+    admitEdit: async (edit) => slack.admitEdit(edit, work, turnJobs, presentations),
     enqueueTurn: async (job) => turnJobs.enqueue(job),
     steerTurn: async (request, enqueue) => turnJobs.steer(request, enqueue),
     finishTurnStop: async (headId, outcome) =>

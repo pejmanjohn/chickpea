@@ -93,7 +93,9 @@ import type {
 import type {
   SlackCanonicalAdmissionInput,
   SlackCanonicalAdmissionResult,
+  SlackEditAdmission,
 } from '../slack/claim-store.ts';
+import type { SlackMessageEdit } from '../slack/edits.ts';
 import type {
   FlueDispatchEnvelopeV1,
   FlueDispatchReceiptV1,
@@ -557,6 +559,8 @@ export interface TagStateRpc {
   admitSlackTurn(
     input: SlackCanonicalAdmissionInput,
   ): Promise<StateRpcResult<SlackCanonicalAdmissionResult>>;
+  /** A person's edit of a message whose turn is queued or running (SlackStateLogic.admitEdit). */
+  slackTurnAdmitEdit(edit: SlackMessageEdit): Promise<StateRpcResult<SlackEditAdmission>>;
   slackAgentBindingPin(
     input: SlackAgentBinding,
     expected?: SlackAgentBindingExpectation,

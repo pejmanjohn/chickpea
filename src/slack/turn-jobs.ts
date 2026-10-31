@@ -81,6 +81,7 @@ import {
   MAX_TURN_FOLD_CYCLES,
   type FoldedMessage,
 } from './follow-ups.ts';
+import { editTurnJobIdRange, type MessageVersionRow } from './edits.ts';
 
 /**
  * Durable queue of Slack turns for the Cloudflare turn-relay (see state-rpc.ts
@@ -1707,6 +1708,38 @@ export class TurnJobStoreLogic {
       runId,
     ) as unknown as TurnJobRow | undefined;
     return row ? this.decodeRow(row) : undefined;
+  }
+
+  /**
+   * The stored versions of one message, by primary key only: its own row
+   * and its edit rows, delivered ones included while retained, so a late or
+   * repeated edit is recognised after its turn ended. A row this release
+   * cannot read is left out. Plain reads: edit admission's transaction holds
+   * them.
+   */
+  editVersions(channelId: string, messageTs: string): MessageVersionRow[] {
+    const edits = editTurnJobIdRange(channelId, messageTs);
+    return this.db.all(
+      `SELECT id, turn_json, assignment_json, run_id, execution_authority, delivered, status
+       FROM turn_jobs WHERE id = ? OR (id >= ? AND id < ?)
+       ORDER BY enqueued_at, rowid`,
+      `msg:${channelId}:${messageTs}`,
+      edits.from,
+      edits.to,
+    ).flatMap((row) => {
+      try {
+        return [{
+          id: String(row.id),
+          turn: JSON.parse(String(row.turn_json)) as NormalizedSlackTurn,
+          assignment: JSON.parse(String(row.assignment_json)) as ResolvedAssignment,
+          ...(typeof row.run_id === 'string' ? { runId: row.run_id } : {}),
+          executionAuthority: row.execution_authority as RunExecutionAuthority,
+          live: Number(row.delivered) === 0 && row.status !== 'recovery_required',
+        }];
+      } catch {
+        return [];
+      }
+    });
   }
 
   /**

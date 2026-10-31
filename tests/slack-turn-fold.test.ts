@@ -23,7 +23,12 @@ import { openStateDb } from '../src/state/node-state-db.ts';
 import type { StateDb } from '../src/state/state-db.ts';
 import { SlackStateLogic, slackSessionGenerationFromTimestamp } from '../src/slack/claim-store.ts';
 import { localSlackStateStore } from '../src/slack/local-state-store.ts';
-import { SlackRunPresentationStoreLogic, type SlackRunPresentationV3 } from '../src/slack/run-presentations.ts';
+import {
+  SlackRunPresentationStoreLogic,
+  type SlackPresentationOwner,
+  type SlackRunPresentationV3,
+} from '../src/slack/run-presentations.ts';
+import { editTurnJobId, type SlackMessageEdit } from '../src/slack/edits.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { WorkStoreLogic } from '../src/work/store.ts';
 import { opaqueTurnRef } from '../src/observability/runtime-latency.ts';
@@ -1038,7 +1043,11 @@ function canonicalStore() {
 type CanonicalStore = ReturnType<typeof canonicalStore>;
 
 /** Admit a turn as Slack admission does: claims, Work Run, TurnJob and an admitted V3 presentation. */
-function admitCanonical(c: CanonicalStore, queued: TurnJob): RunId {
+function admitCanonical(
+  c: CanonicalStore,
+  queued: TurnJob,
+  owner: SlackPresentationOwner = { kind: 'chickpea' },
+): RunId {
   const admission = prepareSlackShadowAdmission({
     turn: queued.turn, assignment: queued.assignment, sourceVisibility: 'public', admittedAt: c.clock.now,
   });
@@ -1052,7 +1061,7 @@ function admitCanonical(c: CanonicalStore, queued: TurnJob): RunId {
     presentation: {
       schemaVersion: 3,
       root: { workspaceId: 'T_FOLD', channelId: 'C_FOLD', threadTs: THREAD_TS, requesterUserId: queued.turn.userId },
-      owner: { kind: 'chickpea' },
+      owner,
       sessionGeneration,
       currentActivity: {
         kind: 'preparing', action: 'Preparing', object: 'your request', generation: sessionGeneration, sequence: 1,
@@ -1205,6 +1214,176 @@ test('follow-ups a failed run released keep their Runs and presentations, to run
       assert.equal(c.work.getRun(c.runs[id])?.status, 'admitted', id);
       assert.equal((c.presentations.get(c.runs[id]) as SlackRunPresentationV3).lifecyclePhase, 'admitted', id);
     }
+  } finally {
+    c.db.close();
+  }
+});
+
+// ── edits: admission ──────────────────────────────────────────────────
+
+/** A message's own row, keyed as Slack admission keys it. */
+function posted(
+  suffix: string,
+  overrides: Partial<NormalizedSlackTurn> = {},
+  assigned: Partial<ResolvedAssignment> = {},
+): TurnJob {
+  const id = `msg:C_FOLD:1800000000.000${suffix}`;
+  return { ...job(id, suffix, overrides, assigned), evtKey: `evt:Ev_${suffix}`, msgKey: id };
+}
+
+/** The author's edit of `target`, saved at `.000<saved>`. */
+function editOf(target: TurnJob, saved: string, text: string, overrides: Partial<SlackMessageEdit> = {}): SlackMessageEdit {
+  return {
+    workspaceId: 'T_FOLD', channelId: 'C_FOLD', messageTs: target.turn.messageTs,
+    editedTs: `1800000000.000${saved}`, userId: target.turn.userId, text, eventId: `EvEdit${saved}`,
+    ...overrides,
+  };
+}
+
+function admitEdit(c: CanonicalStore, edit: SlackMessageEdit) {
+  const admitted = c.slack.admitEdit(edit, c.work, c.turns, c.presentations);
+  c.clock.now += 1;
+  return admitted;
+}
+
+/** What an admission wrote: rows, claims and Runs, so a refusal can be shown to write none. */
+function written(c: CanonicalStore) {
+  return {
+    rows: c.db.all('SELECT id FROM turn_jobs ORDER BY id').map((row) => String(row.id)),
+    claims: c.db.all('SELECT key FROM slack_claims ORDER BY key').map((row) => String(row.key)),
+    runs: Number(c.db.get('SELECT COUNT(*) AS count FROM runs')?.count),
+  };
+}
+
+test('an edit of a message with no queued or running turn steers nothing and writes nothing', () => {
+  const c = canonicalStore();
+  try {
+    const answered = posted('101');
+    admitCanonical(c, answered);
+    dispatch(c.turns, answered);
+    c.turns.recordFlueSettlement(answered.id, COMPLETED);
+    c.slack.endTurn(answered.id, c.turns, c.work, c.presentations);
+    const before = written(c);
+    assert.deepEqual(admitEdit(c, editOf(answered, '201', 'deploy to staging')),
+      { outcome: 'refused', reason: 'no_live_turn' }, 'its answer is done');
+    assert.deepEqual(admitEdit(c, editOf(posted('102'), '202', 'deploy to staging')),
+      { outcome: 'refused', reason: 'no_live_turn' }, 'never addressed to the Agent');
+    assert.deepEqual(written(c), before);
+  } finally {
+    c.db.close();
+  }
+});
+
+test('an edit never re-decides a turn admission judged from the old text', () => {
+  const head = posted('101');
+  for (const [label, target] of [
+    ['files', posted('102', { attachments: [{ fileId: 'F1' }] })],
+    ['a memory command', posted('102', { text: '!memory list' })],
+    ['a co-addressed message', posted('102', {
+      coAddressed: { agents: [{ agentId: 'agent_fold', name: 'Fold', handle: 'fold' }], position: 0 },
+    })],
+    ['an approval', posted('102', { managementApprovalProposalId: 'prop_1', text: 'approve' })],
+    ['a ledger turn', { ...posted('102'), executionAuthority: 'ledger' as const }],
+  ] as Array<[string, TurnJob]>) {
+    const c = canonicalStore();
+    try {
+      enqueueAll(c, [head, target]);
+      assert.deepEqual(admitEdit(c, editOf(target, '201', 'no, cancel it')),
+        { outcome: 'refused', reason: 'not_foldable' }, label);
+    } finally {
+      c.db.close();
+    }
+  }
+  for (const [label, text] of [['a command', '!memory forget everything'], ['blank text', '   ']] as const) {
+    const c = canonicalStore();
+    try {
+      admitCanonical(c, head);
+      assert.deepEqual(admitEdit(c, editOf(head, '201', text)), { outcome: 'refused', reason: 'not_foldable' }, label);
+    } finally {
+      c.db.close();
+    }
+  }
+});
+
+test('an edit is the author\'s alone', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101');
+    admitCanonical(c, head);
+    assert.deepEqual(admitEdit(c, editOf(head, '201', 'deploy to staging', { userId: 'U_TEAMMATE' })),
+      { outcome: 'refused', reason: 'not_author' });
+  } finally {
+    c.db.close();
+  }
+});
+
+test('an admitted edit is a row of its own: the message\'s turn and Agent, the new text, its own Run, the same sender', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101', { text: 'deploy to prod' });
+    const owner: SlackPresentationOwner = { kind: 'agent_app', agentName: 'Fold' };
+    const headRun = admitCanonical(c, head, owner);
+    const admitted = admitEdit(c, editOf(head, '201', 'deploy to staging, <@U_OTHER_AGENT> stop'));
+    assert.equal(admitted.outcome, 'admitted');
+    if (admitted.outcome !== 'admitted') return;
+    const id = editTurnJobId('C_FOLD', head.turn.messageTs, '1800000000.000201');
+    assert.equal(admitted.job.id, id);
+    const row = view(c.turns, id).job!;
+    assert.deepEqual(row.turn, {
+      ...head.turn, text: 'deploy to staging, <@U_OTHER_AGENT> stop', eventId: 'EvEdit201',
+      edit: { editedTs: '1800000000.000201', previousText: 'deploy to prod' },
+    });
+    assert.equal(row.assignment.agentId, 'agent_fold', 'an edit never routes to another Agent');
+    assert.equal(row.stop, undefined, 'an edit is never a stop');
+    assert.equal(view(c.turns, head.id).job!.stop, undefined);
+    assert.equal(row.progress.slackInteraction, undefined, 'no reaction of its own');
+    assert.ok(row.runId && row.runId !== headRun, 'a Run of its own');
+    const presentation = c.presentations.get(row.runId!) as SlackRunPresentationV3;
+    const original = c.presentations.get(headRun) as SlackRunPresentationV3;
+    assert.deepEqual(presentation.owner, owner, 'it replies as its message\'s sender');
+    assert.deepEqual(presentation.root, original.root);
+    assert.equal(presentation.turnJobId, id);
+  } finally {
+    c.db.close();
+  }
+});
+
+test('a channel root\'s edit reads the thread its reply went to when it runs on its own', () => {
+  const c = canonicalStore();
+  try {
+    const root = posted('101', { contextMode: 'channel_history', threadTs: '1800000000.000101', source: 'app_mention' });
+    admitCanonical(c, root);
+    const admitted = admitEdit(c, editOf(root, '201', 'deploy to staging'));
+    assert.equal(admitted.outcome === 'admitted' && admitted.job.turn.contextMode, 'thread');
+  } finally {
+    c.db.close();
+  }
+});
+
+test('an edit is admitted once, however often Slack delivers it, and only a newer version steers', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101', { text: 'v1' });
+    admitCanonical(c, head);
+    const v2 = editOf(head, '200', 'v2');
+    const first = admitEdit(c, v2);
+    assert.equal(first.outcome, 'admitted');
+    const once = written(c);
+    for (const [label, delivery] of [
+      ['a redelivery', v2],
+      ['another app\'s delivery of the same edit', { ...v2, eventId: 'EvEditOtherApp' }],
+    ] as const) {
+      const again = admitEdit(c, delivery);
+      assert.equal(again.outcome, 'already_admitted', label);
+      assert.equal(again.outcome === 'already_admitted' && again.job.id, first.outcome === 'admitted' && first.job.id, label);
+      assert.deepEqual(written(c), once, `${label}: one row, one Run`);
+    }
+    assert.deepEqual(admitEdit(c, editOf(head, '150', 'v1.5')), { outcome: 'refused', reason: 'stale' },
+      'an older edit delivered late never puts older text back');
+    assert.deepEqual(admitEdit(c, editOf(head, '300', 'v2')), { outcome: 'refused', reason: 'unchanged' },
+      'saving without a change steers nothing');
+    const v3 = admitEdit(c, editOf(head, '300', 'v3'));
+    assert.equal(v3.outcome === 'admitted' && v3.job.turn.edit?.previousText, 'v2', 'the newest version came before it');
   } finally {
     c.db.close();
   }
