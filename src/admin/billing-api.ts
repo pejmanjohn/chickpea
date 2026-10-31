@@ -72,11 +72,11 @@ interface AgentUse extends NamedUse {
  */
 interface BillingStatus {
   funding: BillingFunding;
-  /** `included` and `tasks` are null for a plan no longer on sale. */
+  /** `included` is null for a plan no longer on sale; `tasks` also when a task draws nothing. */
   plan: { key: string; name: string; price: string; included: string | null; tasks: string | null } | null;
   /** Null when the plan renews unchanged, or there is no plan. */
   pendingChange: { kind: 'ends'; on: string } | { kind: 'plan'; planName: string; on: string } | null;
-  /** Null without a plan period, which a plan can lack until its next subscription event. Task counts are for an own key only. */
+  /** Null without a plan period, which a plan can lack until its next subscription event. Task counts are for an own key only, and null when a task draws nothing. */
   meter: {
     used: string; included: string; percent: number; onPacePercent: number | null; resets: string;
     tasksUsed: string | null; tasksIncluded: string | null;
@@ -85,9 +85,9 @@ interface BillingStatus {
   rollover: { remaining: string; until: string } | null;
   extraUsage: { remaining: string; frozen: boolean; until: string } | null;
   trial: { remaining: string; granted: string; used: string; percent: number; until: string } | null;
-  ownKeyWithoutPlan: { minimumPrice: string; minimumTasks: string } | null;
-  /** What the workspace can spend now, and the tasks it covers; null for an own key without a plan. */
-  balance: { left: string; tasksLeft: string; exhausted: boolean } | null;
+  ownKeyWithoutPlan: { minimumPrice: string; minimumTasks: string | null } | null;
+  /** What the workspace can spend now, and the tasks it covers; null for an own key without a plan. `tasksLeft` is null when a task draws nothing. */
+  balance: { left: string; tasksLeft: string | null; exhausted: boolean } | null;
   /** The flat usage a task draws, "30¢". */
   taskFee: string;
 }
@@ -118,8 +118,8 @@ export type BillingView =
     offers: {
       plans: {
         key: string; name: string; price: string; included: string; ownKeyMinimum: boolean; ownKeyEligible: boolean;
-        /** Tasks the plan covers each month; `ownKey` is null for a plan an own key cannot choose. */
-        tasks: { platform: string; ownKey: string | null };
+        /** Tasks the plan covers each month; `ownKey` is null for a plan an own key cannot choose, both when a task draws nothing. */
+        tasks: { platform: string | null; ownKey: string | null };
       }[];
       extraUsage: { key: string; price: string; usage: string; validMonths: number }[];
       /** How much more usage than its price every plan includes, in percent. */

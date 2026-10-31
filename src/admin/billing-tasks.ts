@@ -25,17 +25,13 @@ function roughly(tasks: number): number {
  * usage pays only the task fee, so the count is exact: "400". With models
  * included usage also pays each task's tokens, so the count assumes a typical
  * task and reads as an estimate: "about 250", or "under 10" for a little.
+ * Null when a task draws nothing, so there is no count to give.
  */
-export function formatTasks(usage: UsageMicros, funding: BillingFunding, rates: TaskRates): string {
-  const fee = cents(rates.taskFeeMicros);
-  if (funding === 'own_key') return TASKS.format(Math.floor(Math.max(0, cents(usage)) / perTask(fee)));
-  const estimate = Math.max(0, cents(usage)) / perTask(fee + cents(rates.typicalTaskMicros));
-  if (estimate === 0) return '0';
-  return estimate < 10 ? 'under 10' : `about ${TASKS.format(roughly(estimate))}`;
-}
-
-/** A host that charges nothing a task sent a rate card Admin cannot count tasks with; `withBilling` makes that a 503. */
-function perTask(centsPerTask: number): number {
-  if (centsPerTask <= 0) throw new Error('The billing summary prices a task at nothing.');
-  return centsPerTask;
+export function formatTasks(usage: UsageMicros, funding: BillingFunding, rates: TaskRates): string | null {
+  const perTask = cents(rates.taskFeeMicros) + (funding === 'own_key' ? 0 : cents(rates.typicalTaskMicros));
+  if (perTask <= 0) return null;
+  const tasks = Math.max(0, cents(usage)) / perTask;
+  if (funding === 'own_key') return TASKS.format(Math.floor(tasks));
+  if (tasks === 0) return '0';
+  return tasks < 10 ? 'under 10' : `about ${TASKS.format(roughly(tasks))}`;
 }

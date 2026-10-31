@@ -411,6 +411,19 @@ test('on an own key, the status counts exact tasks left and the meter counts tas
   assertHides(status, 'About');
 });
 
+test('a rate card whose tasks draw nothing shows what is left in dollars and sizes without task counts, instead of no page', async () => {
+  const free = { ...OFFERS, taskFeeMicros: usd(0) };
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...OWN_KEY_PLUS, offers: free } })).html();
+  const status = hero(html);
+  assertShows(status, 'This month $83.40 left Renews Nov 7 · Your provider bills tokens');
+  assertShows(status, '$36.60 of $120 plan usage On pace for 64% by Nov 7');
+  assertHides(status, 'tasks');
+  assert.deepEqual(cardLevels(html, 'own_key').options, ['$100 a month', '$200 a month', '$300 a month', '$500 a month']);
+  assert.equal(cardLevels(html, 'platform').options[2], '$100 a month · about 800 tasks', 'with models included a typical task still costs its tokens');
+  const noPlan = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...OWN_KEY_NO_PLAN, offers: free } })).html());
+  assertShows(noPlan, 'Your Agents can still chat. With your own API key, plans start at $100 a month.');
+});
+
 test('used up, the meter turns red, Add usage turns primary, and the alert says what is paused and when it starts again', async () => {
   const cases: Array<[string, BillingSummary, boolean, string]> = [
     ['models included', STARTER_USED_UP, true,

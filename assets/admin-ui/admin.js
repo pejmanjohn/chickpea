@@ -2701,6 +2701,12 @@
     return 'Your Agents are paused. ' + who + ' to keep them working now' + renews + '.';
   }
 
+  // "About 375 tasks", or nothing once the usage is gone or when a task draws
+  // nothing, so there is no count.
+  function billingTasksLeft(balance, out) {
+    return out || !balance.tasksLeft ? '' : billingSentence(esc(balance.tasksLeft)) + ' tasks';
+  }
+
   function billingAlertHtml(text) {
     return '<p class="plan-hero-alert" role="status"><span class="plan-hero-alert-mark" aria-hidden="true">!</span><span>' + text + '</span></p>';
   }
@@ -2714,7 +2720,8 @@
         ? '<div class="plan-hero-actions">' + billingButtonHtml("billing-choose-plan", "Choose the " + esc(minimum.minimumPrice) + " plan", billing.ownKey.minimumPlan.key, "plan:hero", "btn-primary", ' data-at="hero"') + '</div>'
         : '';
       return '<section class="plan-hero is-muted" aria-label="Your plan"><span class="section-eyebrow">No plan</span><p class="plan-hero-headline">Tasks are paused</p>' +
-        '<p class="plan-hero-text">Your Agents can still chat. With your own API key, plans start at ' + esc(minimum.minimumPrice) + ' a month, which covers ' + esc(minimum.minimumTasks) + ' tasks.</p>' +
+        '<p class="plan-hero-text">Your Agents can still chat. With your own API key, plans start at ' + esc(minimum.minimumPrice) + ' a month' +
+        (minimum.minimumTasks ? ', which covers ' + esc(minimum.minimumTasks) + ' tasks' : '') + '.</p>' +
         choose + billingErrorHtml("plan:hero") + billingChipsHtml(billing) + '</section>';
     }
     if (!billing.plan && !billing.trial) {
@@ -2727,16 +2734,16 @@
       var trial = billing.trial;
       eyebrow = 'Free trial';
       big = '<b>' + esc(balance.left) + '</b> left';
-      sub = billingSubHtml([out ? '' : billingSentence(esc(balance.tasksLeft)) + ' tasks', 'Ends ' + esc(trial.until)]);
+      sub = billingSubHtml([billingTasksLeft(balance, out), 'Ends ' + esc(trial.until)]);
       meter = billingMeterHtml("Trial usage", trial.percent, null, out, '<b>' + esc(trial.used) + '</b> of ' + esc(trial.granted) + ' used', out ? 'Used up' : 'No card needed');
       if (out) alert = billingAlertHtml('Your trial&rsquo;s usage is used up. Choose a plan to keep your Agents working.');
     } else if (!billing.meter) {
       var plan = billing.plan;
       eyebrow = 'Each month';
       big = !plan.included ? '<b>' + esc(plan.price) + '</b> a month'
-        : own ? '<b>' + esc(plan.tasks) + '</b> tasks a month' : '<b>' + esc(plan.included) + '</b> of usage a month';
+        : own && plan.tasks ? '<b>' + esc(plan.tasks) + '</b> tasks a month' : '<b>' + esc(plan.included) + '</b> of usage a month';
       sub = billingSubHtml([
-        !plan.included ? '' : own ? esc(plan.included) + ' of usage a month' : billingSentence(esc(plan.tasks)) + ' tasks',
+        !plan.included || !plan.tasks ? '' : own ? esc(plan.included) + ' of usage a month' : billingSentence(esc(plan.tasks)) + ' tasks',
         billingPeriodEndText(billing),
         own ? 'Your provider bills tokens' : ''
       ]);
@@ -2744,13 +2751,13 @@
       var used = billing.meter;
       var note = used.percent >= 100 ? 'Used up' : used.onPacePercent == null ? '' : 'On pace for ' + used.onPacePercent + '% by ' + esc(used.resets);
       eyebrow = 'This month';
-      if (own) {
+      if (own && balance.tasksLeft) {
         big = '<b>' + esc(balance.tasksLeft) + '</b> tasks left';
         sub = billingSubHtml([esc(balance.left) + ' of usage left', billingPeriodEndText(billing), 'Your provider bills tokens']);
         meter = billingMeterHtml("Plan tasks", used.percent, used.onPacePercent, out, '<b>' + esc(used.tasksUsed) + '</b> of ' + esc(used.tasksIncluded) + ' tasks used', note);
       } else {
         big = '<b>' + esc(balance.left) + '</b> left';
-        sub = billingSubHtml([out ? '' : billingSentence(esc(balance.tasksLeft)) + ' tasks', billingPeriodEndText(billing)]);
+        sub = billingSubHtml([billingTasksLeft(balance, out), billingPeriodEndText(billing), own ? 'Your provider bills tokens' : '']);
         meter = billingMeterHtml("Plan usage", used.percent, used.onPacePercent, out, '<b>' + esc(used.used) + '</b> of ' + esc(used.included) + ' plan usage', note);
       }
     }
@@ -2774,6 +2781,12 @@
       levelLabel: "Plan size with your own API key"
     }
   };
+
+  // "$100 a month · 400 tasks", or the price alone when a task draws nothing.
+  function billingPlanTasks(plan, card) {
+    var tasks = card === "own_key" ? plan.tasks.ownKey : plan.tasks.platform;
+    return esc(plan.price) + ' a month' + (tasks ? ' &middot; ' + esc(tasks) + ' tasks' : '');
+  }
 
   function planCardPlans(billing, card) {
     return card === "own_key" ? billing.offers.plans.filter(function (plan) { return plan.ownKeyEligible; }) : billing.offers.plans;
@@ -2896,8 +2909,7 @@
     var step = planCardStep(billing, card, selected);
     var tag = planCardTag(billing, card);
     var options = planCardPlans(billing, card).map(function (plan) {
-      return '<option value="' + esc(plan.key) + '"' + (plan.key === selected.key ? ' selected' : '') + '>' + esc(plan.price) + ' a month &middot; ' +
-        esc(card === "own_key" ? plan.tasks.ownKey : plan.tasks.platform) + ' tasks</option>';
+      return '<option value="' + esc(plan.key) + '"' + (plan.key === selected.key ? ' selected' : '') + '>' + billingPlanTasks(plan, card) + '</option>';
     }).join("");
     var details = card === "platform" || (billing.funding === "own_key" && billing.plan)
       ? planCardChecksHtml(billing, card)

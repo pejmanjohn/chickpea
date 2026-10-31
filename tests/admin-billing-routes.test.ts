@@ -227,7 +227,21 @@ test('task counts are exact on an own key, and with models included are a typica
   assert.deepEqual([44.99, 45, 224.99, 225].map((dollars) => formatTasks(usd(dollars), 'platform', rates)), ['about 90', 'about 100', 'about 475', 'about 500']);
   assert.deepEqual([0, 0.44, 0.45, 4.49].map((dollars) => formatTasks(usd(dollars), 'platform', rates)), ['0', 'under 10', 'under 10', 'under 10']);
   assert.equal(formatTasks(usd(0.29), 'own_key', rates), '0');
-  assert.throws(() => formatTasks(usd(10), 'own_key', { ...rates, taskFeeMicros: usd(0) }), /prices a task at nothing/);
+  assert.equal(formatTasks(usd(10), 'own_key', { ...rates, taskFeeMicros: usd(0) }), null, 'no fee, no count on an own key');
+  assert.equal(formatTasks(usd(10), 'platform', { ...rates, taskFeeMicros: usd(0) }), 'about 60', 'a typical task still costs tokens');
+  assert.equal(formatTasks(usd(10), 'platform', { ...rates, taskFeeMicros: usd(0), typicalTaskMicros: usd(0) }), null);
+});
+
+test('a rate card whose tasks draw nothing still reads, with no task counts', async (t) => {
+  const summary: BillingSummary = { ...TEAM_PLAN, funding: 'own_key', offers: { ...OFFERS, taskFeeMicros: usd(0) } };
+  const response = await admin(t, { port: fakePort(summary).port })('/admin/api/billing');
+  assert.equal(response.status, 200);
+  const view = await response.json() as { balance: unknown; meter: Record<string, unknown>; plan: Record<string, unknown>; offers: { plans: { tasks: unknown }[] } };
+  assert.deepEqual(view.balance, { left: '$172', tasksLeft: null, exhausted: false });
+  assert.deepEqual([view.meter.tasksUsed, view.meter.tasksIncluded, view.plan.tasks], [null, null, null]);
+  assert.deepEqual(view.offers.plans.map((plan) => plan.tasks.ownKey), [null, null, null, null, null, null]);
+  assert.equal(view.offers.plans[2]!.tasks.platform, 'about 800', 'with models included a typical task still costs its tokens');
+  assert.deepEqual((await status(t, { ...OWN_KEY_NO_PLAN, offers: summary.offers })).ownKeyWithoutPlan, { minimumPrice: '$100', minimumTasks: null });
 });
 
 test('fees under a dollar read in cents, none as $0, and the bonus is the smallest any plan gives', async (t) => {
