@@ -6,6 +6,7 @@ Docs: `/agents/skills/`. Record areas: `skills`. Legacy contracts: LC-06.
 
 - A skill is a name, description, instructions and enabled flag on one Agent. Only enabled skills load, and a malformed one is skipped without ending the turn.
 - Sources: 20 suggested skills toggled in Admin, skills written in Admin, imports from `owner/repo`, `owner/repo@skill`, a GitHub tree URL or a `skills.sh` link, and Admin uploads of `SKILL.md` files, other markdown whose header has a name and description, and `.zip` or `.skill` archives.
+- A Slack upload installs SKILL.md, `.zip` and `.skill` files attached to the person's own message to the Agent, at most four per message. Same-name skills are replaced, the receipt lists what changed and offers undo, and files Slack cannot give are listed as left out.
 - A Slack import needs the exact source in the current message. One scriptless skill installs at once with a receipt saying it is active from the next message, with undo; several candidates are listed, and you post the chosen source URL in a new message.
 - A mutable branch is pinned to the inspected commit before anything is written. The commit, path and source URL are not stored, and there is no update check.
 - Same name with different content is never overwritten silently: only a new message `replace <name> from <source URL>` replaces it. Identical content reports already installed.
@@ -18,7 +19,7 @@ Docs: `/agents/skills/`. Record areas: `skills`. Legacy contracts: LC-06.
 
 ## How a person reaches it
 
-- Slack: hand the Agent the link, or ask it to enable, disable or remove a named skill.
+- Slack: hand the Agent the link, attach skill files and ask it to add them, or ask it to enable, disable or remove a named skill.
 - Admin: Agents → the Agent → Skills (suggestions, New skill, Import from URL then Find skills, or Upload or a drop on Build your own; then Add N skills).
 - MCP: `import_skill` installs immediately, `upload_skills` installs from markdown text or a base64 archive, and `manage_agent_skill` enables, disables or removes.
 - CLI: `chickpea-cli skills upload <origin> <agentId> <file...>` sends files from disk to `upload_skills`.
@@ -29,6 +30,7 @@ Docs: `/agents/skills/`. Record areas: `skills`. Legacy contracts: LC-06.
 - Install from a fresh thread. In a new message, ask something whose answer depends on the skill and include the run marker.
 - Remove the exact skill by name and confirm in a fresh thread that the behaviour has ended.
 - Cross-Agent denial: from Agent A, ask to disable or remove a skill on Agent B, then read Agent B's Skills tab.
+- Slack upload: attach synthetic files to one message addressed only to the Agent (a large SKILL.md, two SKILL.md files, or a zip of skill folders with `__MACOSX` entries) and ask it to add them. Read the receipt, the Skills tab, then reply `undo` and read the tab again. On a gateway lane this needs a shared gateway that accepts `accept`.
 - Case shape: `case-add --area skills --proof slack --proof admin` (or `--proof mcp`) and `--max-wait-ms 120000`.
 - Cleanup: remove run-owned skills and archive the disposable Agent (registered with `--kind agent --ownership owned --cleanup-preset archived-agent`). On the fixtures Agent, restore the exact skill list with `--ownership restore`.
 
@@ -41,6 +43,7 @@ Docs: `/agents/skills/`. Record areas: `skills`. Legacy contracts: LC-06.
 - Mutable refs, packaged scripts, several candidates, silent same-name replacement and cross-Agent changes all fail the case.
 - Cross-Agent denial must not reveal Agent B's skills or swap in a same-named skill on Agent A.
 - "Install" or "remove" inside ordinary prose must change nothing; only an exact single-target command does.
+- Slack labels a `.skill` upload `binary`, `application/octet-stream`, and a `.markdown` upload a `text/plain` snippet served as `application/force-download`; the readers decide archives by name and zip signature.
 - The activity status reads "Using a skill…" then "Reviewing skill results…", never names the skill, and must clear when the reply lands.
 - A large repository hits the 40-directory cap. Narrow it with `owner/repo@skill` or a directory URL.
 - To switch off a connector skill, save a disabled Agent skill with the same name. Removing that row brings the built-in skill back.

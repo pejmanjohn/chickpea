@@ -158,6 +158,11 @@ export const AGENT_AUTHORING_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonly [fr
     'consequential follow-on content has one visible proposal; and any approval refers to the exact change that will be applied.',
     'a destructive change waits for the person\'s confirmation; and any confirmation refers to the exact change that will be applied.',
   ],
+  // Slack reads attached files itself; the MCP door's upload_skills sentence is in the import_skill paragraph above.
+  [
+    '\n\nWhen the person\'s current message has SKILL.md, `.zip` or `.skill` files attached and asks to add them as skills, call `upload_skills`. It reads the attached files itself, installs their instructions on this Agent or another Agent the person names, replaces a same-name skill in place, and returns a receipt with undo. Show its `presentation.slack` verbatim. Never copy an attached file\'s text into a skill or a proposal yourself.',
+    '',
+  ],
 ];
 
 /** Same contract as the guide substitutions, for the packaged skill-creation procedure. */
@@ -189,6 +194,10 @@ export const AGENT_SKILL_CREATION_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonl
   [
     'Only the person\'s approval may activate the frozen proposal. If the proposal becomes stale or permissions change, do not recreate the content silently; inspect again and propose a new revision.',
     'If the Agent changed since you inspected it or permissions change, do not recreate the content silently; inspect again and draft a new revision.',
+  ],
+  [
+    '\n\nWhen the person attaches SKILL.md, `.zip` or `.skill` files to the current message and asks to add them, call `upload_skills` instead of rewriting them; it installs them as uploaded and returns a receipt with undo.',
+    '',
   ],
 ];
 
