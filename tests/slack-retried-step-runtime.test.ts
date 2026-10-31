@@ -73,7 +73,8 @@ const work = (step: number) =>
   fauxAssistantMessage([fauxText(`Working on step ${step}.`), fauxToolCall('work', { step })], { stopReason: 'toolUse' });
 const providerError = () => fauxAssistantMessage('', { stopReason: 'error', errorMessage: '503 service unavailable' });
 
-test('a retried provider error mid-response still delivers only the final step', { timeout: 30_000 }, async () => {
+/** Run one response through the real Flue and return what Slack would post. */
+async function deliveredReply(responses: FauxResponseStep[]) {
   const faux = fauxProvider({ models: [{ id: 'retried-step' }], tokensPerSecond: 100_000 });
   const runtime = await start({
     agents: [{ agent: RetryProbe, name: CHICKPEA_SLACK_AGENT_NAME }],
@@ -87,7 +88,6 @@ test('a retried provider error mid-response still delivers only the final step',
     else info(...args);
   };
   try {
-    const responses: FauxResponseStep[] = [work(1), providerError(), work(2), fauxAssistantMessage('Done.')];
     faux.setResponses(responses);
     const chunks: ConversationStreamChunk[] = [];
     const result = await promptSlackThreadAgent({
@@ -95,15 +95,33 @@ test('a retried provider error mid-response still delivers only the final step',
       message: 'Draft the launch note.', turnId: 'head', conversationKey: envelope.instanceId,
       requestedModel: MODEL, onConversationChunk: (chunk) => { chunks.push(chunk); },
     });
-
-    assert.equal(faux.state.callCount, 4, 'the failed call was retried once');
-    const resets = chunks.filter((chunk) => chunk.type === 'conversation-reset').length;
-    assert.ok(resets > 1, 'Flue replaced a later step start with a conversation reset');
-    assert.equal(result.text, 'Done.');
-    assert.deepEqual(recoveries, [], 'no interrupted answer was recovered');
+    return {
+      text: result.text,
+      callCount: faux.state.callCount,
+      resets: chunks.filter((chunk) => chunk.type === 'conversation-reset').length,
+      recoveries,
+    };
   } finally {
     console.info = info;
     close();
     await runtime.stop();
   }
+}
+
+test('a retried provider error mid-response still delivers only the final step', { timeout: 30_000 }, async () => {
+  const reply = await deliveredReply([work(1), providerError(), work(2), fauxAssistantMessage('Done.')]);
+  assert.equal(reply.callCount, 4, 'the failed call was retried once');
+  assert.ok(reply.resets > 1, 'Flue replaced a later step start with a conversation reset');
+  assert.equal(reply.text, 'Done.');
+  assert.deepEqual(reply.recoveries, [], 'no interrupted answer was recovered');
+});
+
+test('a provider error on the first step of the response is retried the same way', { timeout: 30_000 }, async () => {
+  // The errored first step owns the response's message id; every later step
+  // streams under it after a reset.
+  const reply = await deliveredReply([providerError(), work(1), fauxAssistantMessage('Done.')]);
+  assert.equal(reply.callCount, 3, 'the failed call was retried once');
+  assert.ok(reply.resets > 1, 'Flue replaced a later step start with a conversation reset');
+  assert.equal(reply.text, 'Done.');
+  assert.deepEqual(reply.recoveries, []);
 });
