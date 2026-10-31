@@ -297,10 +297,11 @@ starts and then every 15 seconds. When one waits, the wait returns early and
 the job keeps running: the worker is not aborted, its task record stays, and
 its checklist steps stay open. The message joins at that step boundary like
 any other, so within about 15 seconds the status line shows
-`Reading 1 new message…`. The Agent then either passes the change to the
-running job (`workspace_task_steer`), or says the job cannot take it and
-offers to stop it and start again. Either way it waits again
-(`workspace_task_resume`) and replies once, when the job ends.
+`Reading 1 new message…`. The Agent then passes the change to the running
+job (`workspace_task_steer`); the worker can redo work it already did, or
+wind down and answer with what it has if the work is no longer wanted. The
+Agent then waits again (`workspace_task_resume`) and replies once, when the
+job ends.
 
 - The wait pauses only for messages this run has not read yet, so it never
   pauses twice for the same message. One run pauses at most 12 times.

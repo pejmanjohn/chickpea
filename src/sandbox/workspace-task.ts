@@ -277,7 +277,7 @@ const NOT_SENT_MESSAGE =
   'The guidance could not be passed to the coding task. Call workspace_task_resume to wait for its answer, then say what the task did not take into account.';
 
 function pauseMessage(workspace: string): string {
-  return `The coding task in the "${workspace}" workspace is still running. This is a pause so you can read new messages from the thread; take them into account. To pass a change to the running task, call workspace_task_steer with this workspace and the change written as a complete instruction. If the task cannot take the change, say so and offer to stop it and start again with the change. Then call workspace_task_resume with this workspace to wait for its answer. Do not start the task again, and do not reply before its answer.`;
+  return `The coding task in the "${workspace}" workspace is still running. This is a pause so you can read new messages from the thread; take them into account. To pass a change to the running task, call workspace_task_steer with this workspace and the change written as a complete instruction; the worker can redo work it already did, or wind down and answer with what it has if the work is no longer wanted. Then call workspace_task_resume with this workspace to wait for its answer. Do not start the task again, and do not reply before its answer.`;
 }
 
 function noTaskMessage(workspace: string): string {
