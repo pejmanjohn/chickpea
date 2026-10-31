@@ -19,6 +19,7 @@ import { validateBrowserMutationProvenance } from '../auth/request-provenance.ts
 import { AuthService } from '../auth/service.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { actualBodyLimit } from '../security/request-body-limit.ts';
+import { strictRequestOrigin as requestOrigin } from '../http/request-origin.ts';
 import { AgentConnectionCredentialConflictError, ManagedSignInGroupConflictError } from '../config/errors.ts';
 
 import {
@@ -3216,16 +3217,6 @@ function sameOriginFormMutation(c: Context): boolean {
     requireJson: false,
     allowOpaqueOriginFormNavigation: true,
   }).ok;
-}
-
-// Deliberately narrower than admin's requestOrigin: setup origins feed CSRF
-// comparisons and externally registered OAuth/GitHub callback URLs, so only
-// the pinned public URL or the request URL itself may define them — never
-// forwarded headers.
-function requestOrigin(c: Context): string {
-  const pinned = process.env.SLACK_TAG_PUBLIC_URL?.trim();
-  if (pinned) return new URL(pinned).origin;
-  return new URL(c.req.url).origin;
 }
 
 function setupIdFromContext(c: Context): string | undefined {

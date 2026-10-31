@@ -82,6 +82,52 @@ test('both public connect routes serve cacheable, sniff-proof documents', async 
   assert.notEqual(againNonce, nonce);
 });
 
+test('the managed sign-in return page closes its tab and reads the same whatever the provider appends', async () => {
+  const plain = await connectMd(`${ORIGIN}/managed-connections/return`);
+  const injected = await connectMd(
+    `${ORIGIN}/managed-connections/return?status=success&connected_account_id=ca_injected` +
+      '&appName=%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E&error=%3Cimg%20src%3Dx%3E',
+  );
+  for (const page of [plain, injected]) {
+    assert.equal(page.status, 200, 'served with no session or cookie');
+    assert.equal(page.headers.get('content-type'), 'text/html; charset=UTF-8');
+    assert.equal(page.headers.get('cache-control'), 'no-store');
+    assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(page.headers.get('x-frame-options'), 'DENY');
+    assert.equal(page.headers.get('cross-origin-opener-policy'), null,
+      'no opener policy that could switch the tab out of its script-opened context');
+  }
+
+  const policy = injected.headers.get('content-security-policy') ?? '';
+  assert.match(policy, /default-src 'none'/);
+  assert.match(policy, /frame-ancestors 'none'/);
+  assert.match(policy, /form-action 'none'/);
+  const nonce = /script-src 'nonce-([^']+)'/.exec(policy)?.[1];
+  assert.ok(nonce, policy);
+  const html = await injected.text();
+  assert.ok(html.includes(`<script nonce="${nonce}">window.close();</script>`), 'the close attempt runs under the header nonce');
+
+  const plainNonce = /script-src 'nonce-([^']+)'/.exec(plain.headers.get('content-security-policy') ?? '')?.[1];
+  assert.ok(plainNonce);
+  assert.equal(html.replaceAll(nonce, 'N'), (await plain.text()).replaceAll(plainNonce, 'N'),
+    'nothing from the query reaches the page');
+  for (const marker of ['ca_injected', 'alert(1)', '<img']) {
+    assert.ok(!html.includes(marker), marker);
+  }
+
+  const text = html
+    .replace(/<style>[\s\S]*?<\/style>/g, '')
+    .replace(/<script[\s\S]*?<\/script>/g, '')
+    .replace(/<[^>]+>/g, ' ');
+  assert.match(text, /Return to Chickpea Admin/);
+  assert.match(text, /Your Chickpea Admin tab shows the result\./);
+  assert.match(text, /You can close this tab\./);
+  assert.doesNotMatch(text, /\b(?:connected|updated|ready|success)\b/i,
+    'the person may have declined, so the page claims no outcome');
+  for (const word of DIAGNOSTIC_WORDS) assert.ok(!text.toLowerCase().includes(word), word);
+});
+
 test('rendered URLs follow the origin the request actually arrived on', async () => {
   const direct = await (await connectMd(`${ORIGIN}/connect.md`)).text();
   assert.ok(direct.includes(`${ORIGIN}/mcp`), 'MCP endpoint');
