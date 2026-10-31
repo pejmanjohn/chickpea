@@ -1151,7 +1151,7 @@ export class TurnJobStoreLogic {
         received: cycle === 0,
         at: this.now(),
       });
-      if (cycle === 0 && !informed) this.oweReadReceipt(String(row.id));
+      if (cycle === 0 && !informationOnly) this.oweReadReceipt(String(row.id));
       taken.push({
         turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text,
         ...(informationOnly ? { informationOnly: true as const } : {}),
