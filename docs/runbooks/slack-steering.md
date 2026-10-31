@@ -6,7 +6,7 @@ or a group of messages does to durable state, the logs an operator reads,
 rollback, and turning on Slack's Stop button for the shared Chickpea app.
 
 This release covers stopping, check-ins, the status line, a 👀 on messages
-posted during a run, and follow-ups: when people's messages queue in a
+posted during a run that becomes 👍 once the Agent reads them, and follow-ups: when people's messages queue in a
 thread, the turn that starts next reads them all and replies once, and a
 message sent while the Agent works reaches it after its current tool step, or
 at the latest before its reply posts.
@@ -81,8 +81,8 @@ Slack Connect user gets no stop-specific reply.
    and waits for the coding worker to confirm (up to about 14 seconds). A
    stop that reaches a turn that never started ends it before it dispatches.
 4. **Ending.** The stopped ending drops the held turns and counts them.
-   Their Runs settle `cancelled` and Chickpea removes its 👀 from their
-   messages. The thread gets one stop note, the Agent Session moves to
+   Their Runs settle `cancelled` and Chickpea removes its 👀 (or 👍) from
+   their messages. The thread gets one stop note, the Agent Session moves to
    `active`, and the status line clears. The next turn in the thread carries
    a line telling the Agent who stopped the previous run, so it does not
    resume that work unless asked.
@@ -178,6 +178,17 @@ works](#messages-sent-while-the-agent-works)) or waits for the current run to
 end. A stop that drops the message removes its 👀 at once. Chickpea only ever
 removes a 👀 it recorded adding.
 
+Once a turn reads the message, Chickpea replaces the 👀 with 👍. A queued
+message that starts the next turn, or that turn takes as a follow-up, gets 👍
+when the turn starts, as soon as its plan says which messages it answers. An
+information-only message keeps its 👀 until its own turn starts. A message
+that joins the running reply, after a tool step or before the reply, keeps its
+👀 until the reply posts. When the reply posts,
+Chickpea removes the 👍 or the 👀, whichever the message has, as it removed
+the 👀 before. If Slack fails partway through the swap, the removal takes off
+both. Only the thread runner and the Node relay swap; the emergency alarm
+executor (`SLACK_TAG_TURN_EXECUTOR=alarm`) keeps the 👀.
+
 ### Follow-ups
 
 When a turn starts, it takes the messages people sent right after it, which
@@ -201,8 +212,9 @@ The rest wait and form the next group.
 
 A follow-up never runs on its own:
 
-- When the reply posts, each follow-up's Run settles `superseded`, and the
-  interaction cleanup removes its 👀 within seconds.
+- When the reply posts, each follow-up's Run settles `superseded`, and
+  Chickpea removes its 👍 right then, before the thread's next turn starts.
+  If Slack fails that removal, the interaction cleanup retries it.
 - If the turn fails, or is held for recovery instead of answered, its
   follow-ups are released. The first of them runs next and takes the others
   with it, so no message is lost.
@@ -240,8 +252,11 @@ sent during a step reaches the Agent before it decides what to do next, so a
 correction can change course before more of the wrong work. The Agent reads
 it as part of the same request, takes it into account, and still writes one
 reply to everything. When several tools run at once, the check waits until
-the last of them ends. A coding job is the one long step; see the next
-section.
+the last of them ends. The Agent checks at most once every 3 seconds, so
+after a run of quick steps a message waits for the first step that ends 3
+seconds or more after the previous check, or for the check before the
+reply. A coding job is the one long step; see
+[Messages sent during a coding job](#messages-sent-during-a-coding-job).
 
 When the Agent is about to finish, before its reply posts, it checks once
 more. If the person sent more messages, it reads them, does any extra work
@@ -253,14 +268,19 @@ them (only the new ones count).
 The same rules as for follow-ups decide which messages join and which are
 information only, and a message that joins ends the same way: its 👀 goes
 when the reply posts (an information-only message keeps it for its own
-turn), it is released if the run fails, and a stop drops it. In addition:
+turn), it is released if the run fails, and a stop drops it. Messages that
+joined late lose their reaction when the reply posts, even when the thread's
+next turn starts at once, so a message the reply answered never shows 👀
+while that next turn runs. In addition:
 
 - The Agent takes new messages at most 12 times after tool steps in one run,
   and at most three times before its reply. A message that arrives after
   that waits for the run to end.
 - Once the Agent starts streaming its answer into Slack, or has posted a
   question (buttons or a form) that ends its reply, nothing more joins that
-  run. A message sent after that waits for the run to end.
+  run. A message sent after that waits for the run to end. A message sent
+  while the Agent composes a question runs as its own turn after the question
+  posts and, like any later reply in the thread, closes that question.
 - While the Agent's file delivery for the reply is unchecked, or after it
   needed a correction in this run, nothing joins.
 - If Chickpea cannot reach its state store for a check, the Agent carries on
@@ -328,6 +348,7 @@ user, channel, or workspace IDs.
 | `turn_latency` with `outcome: stopped` | Runtime event | A stopped run's ending (both lanes). |
 | `thread_runner_alarm` field `dropped` | Runtime event, Cloudflare runners | Turns that stopped runs' endings dropped since the runner's previous record. |
 | `turn_latency` field `folded` | Runtime event | How many follow-ups the turn read with its own message (both lanes); `foldedInformed` counts those that were information only. |
+| `turn_latency` field `read` | Runtime event | How many 👀 the turn replaced with 👍 (both lanes). |
 | `turn_fold` | Runtime event | Messages a running turn read after a tool step or before its reply (`late`, both lanes); `informed` counts those that were information only, `turn` those read after a tool step. |
 | `turn_fold` with `op` | Runtime event | A coding job's wait: `coding_pause` (`outcome` `messages`, or `unchecked` after failed checks), `coding_resume` (`completed`, `paused` or a failure reason), and `coding_relay` (`sent`, `finished`, `stopped` or `not_sent`). One record per event. |
 | `run_completed` with `outcome: stopped` | [Product telemetry](../../TELEMETRY.md) | An anonymous stopped-run count. |
@@ -462,8 +483,8 @@ The live journeys:
 - Two messages posted during a run are not acted on after a stop, and the note
   says two messages were not read.
 - Two messages posted while a run works: once it ends, the next turn shows
-  `Reading 2 messages…` and one reply answers both; each message's 👀 goes
-  when that reply posts.
+  `Reading 2 messages…`, each message's 👀 becomes 👍, and one reply answers
+  both; each 👍 goes when that reply posts.
 - A request, then a correction about 10 seconds later while the Agent works:
   the status line shows `Reading 1 new message…`, one reply honors the
   correction, and the correction's 👀 goes when that reply posts.

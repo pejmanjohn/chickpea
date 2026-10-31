@@ -50,6 +50,13 @@ export const MAX_FOLD_CYCLES = 3;
  * their own, so a long run cannot keep taking on new work.
  */
 export const MAX_TURN_FOLD_CYCLES = 12;
+/**
+ * The least time between two tool-boundary checks of one response. A state
+ * store call costs about 100 ms at the median, so a burst of quick tool
+ * steps checks once. A message the skipped boundaries would have read waits
+ * for the first boundary past the interval, or the would-stop check.
+ */
+export const TOOL_BOUNDARY_PULL_INTERVAL_MS = 3_000;
 
 const FOLDABLE_SOURCES: ReadonlySet<NormalizedSlackTurn['source']> = new Set([
   'app_mention',

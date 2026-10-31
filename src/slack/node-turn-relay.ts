@@ -45,7 +45,7 @@ import {
 import { slackAgentThreadKey } from './thread-key.ts';
 import { receiveAlarmExecutorStop, StopAbortFence } from './runner-stops.ts';
 import {
-  removeDroppedReceipts,
+  removeEndedReceipts,
   stopNoteFacts,
   stopRefusedDispatch,
   tellStopperAlreadyFinished,
@@ -641,7 +641,7 @@ function createNodeThreadDrain(
                 return undefined;
               }
               if (finished.outcome === 'dropped' && slackClient) {
-                await removeDroppedReceipts(finished.rows, slackClient, (id, patch) =>
+                await removeEndedReceipts(finished.rows, slackClient, (id, patch) =>
                   recordSlackInteractionProgress(id, patch));
               }
               return stopNoteFacts({
@@ -686,7 +686,14 @@ function createNodeThreadDrain(
           ...(state.getThreadContinuation
             ? { getThreadContinuation: state.getThreadContinuation.bind(state) }
             : {}),
-          ...(state.foldTurn ? { claimFold: state.foldTurn.bind(state) } : {}),
+          ...(state.foldTurn
+            ? {
+                claimFold: state.foldTurn.bind(state),
+                recordFollowUpProgress: async (id, patch) => {
+                  await recordSlackInteractionProgress(id, patch);
+                },
+              }
+            : {}),
           flueDispatch,
           ...(presentationState
             ? { presentationState, progressiveAttributionProven: true }
@@ -715,9 +722,11 @@ function createNodeThreadDrain(
           onDelivered: async (outcome) => {
             // A stop that reached a run which finished first (R22).
             const raced = outcome !== 'stopped' && await stopKnown();
-            await markTurnDelivered(job.id);
+            const settled = await markTurnDelivered(job.id);
             terminalDelivered = true;
             if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+            // The follow-ups this reply answered, before the thread's next turn.
+            if (slackClient) await removeEndedReceipts(settled, slackClient, recordSlackInteractionProgress);
             if (outcome) {
               productTelemetry?.capture({
                 event: 'run_completed',

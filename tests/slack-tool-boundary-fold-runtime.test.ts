@@ -24,7 +24,9 @@ import { promptSlackThreadAgent, type SlackFlueDispatchState } from '../src/slac
 import {
   slackToolBoundaryFoldInterceptor, useSlackFollowUpFold, type LateFoldRequest,
 } from '../src/slack/follow-up-fold.ts';
-import { followUpSignalMessages, MAX_TURN_FOLD_CYCLES } from '../src/slack/follow-ups.ts';
+import {
+  followUpSignalMessages, MAX_TURN_FOLD_CYCLES, TOOL_BOUNDARY_PULL_INTERVAL_MS,
+} from '../src/slack/follow-ups.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../src/slack/presentation-intent.ts';
 import { registerSlackStatusTurn } from '../src/slack/status-registry.ts';
 import { SLACK_ASK_USER_TOOL_NAME } from '../src/slack/ui/presentation-tools.ts';
@@ -71,6 +73,12 @@ let requests: ModelRequest[] = [];
 /** Runs at the start of `work` step `step`, before its delay. */
 let onTool: (step: number) => Promise<void> | void = () => {};
 let toolDelayMs: (step: number) => number = () => 0;
+/** How far `performance.now()` runs ahead of real time, so a test crosses the check interval without waiting. */
+let elapsedMs = 0;
+/** The next tool boundary comes past the check interval (TOOL_BOUNDARY_PULL_INTERVAL_MS). */
+function pastInterval(): void {
+  elapsedMs += TOOL_BOUNDARY_PULL_INTERVAL_MS;
+}
 
 function PullProbe({ id }: AgentProps) {
   useModel(MODEL);
@@ -226,6 +234,8 @@ test('messages sent while the Agent runs tools reach the model after that tool b
     },
     dispose() {},
   });
+  const realNow = performance.now.bind(performance);
+  t.mock.method(performance, 'now', () => realNow() + elapsedMs);
   const runtime = await start({
     agents: [{ agent: PullProbe, name: CHICKPEA_SLACK_AGENT_NAME }],
     providers: [faux.provider],
@@ -272,7 +282,10 @@ test('messages sent while the Agent runs tools reach the model after that tool b
     await t.test('a message sent during the first batch is in the very next model request', async () => {
       scenario = openScenario();
       try {
-        onTool = arrivesInTool(1);
+        onTool = (step) => {
+          pastInterval();
+          arrivesInTool(1)(step);
+        };
         toolDelayMs = () => 20;
         const { result, statuses, review } = await run([
           work(1), work(2), work(3), answer('A launch note that mentions the pricing change.'),
@@ -319,6 +332,7 @@ test('messages sent while the Agent runs tools reach the model after that tool b
       try {
         toolDelayMs = (step) => step === 2 ? 120 : 0;
         onTool = async (step) => {
+          if (step === 3) pastInterval();
           if (step !== 2) return;
           await sleep(40);
           scenario.arrive('late', LATE);
@@ -330,6 +344,25 @@ test('messages sent while the Agent runs tools reach the model after that tool b
           { phase: 'turn', received: 1, take: true },
           { phase: 'finish', received: 1, take: true },
         ], 'one call for the two-call batch');
+      } finally {
+        scenario.close();
+      }
+    });
+
+    await t.test('tool-boundary checks start at most once per interval, the first boundary always checking', async () => {
+      scenario = openScenario();
+      try {
+        onTool = (step) => {
+          if (step === 2) scenario.arrive('late', LATE);
+          if (step === 4) pastInterval();
+        };
+        await run([work(1), work(2), work(3), work(4), answer('Done.')]);
+        assert.deepEqual(calls(), [
+          { phase: 'turn', received: 0, take: true },
+          { phase: 'turn', received: 0, take: true },
+          { phase: 'finish', received: 1, take: true },
+        ], 'one call for the three quick batches, the next once the interval passed');
+        assert.deepEqual(lateSeen(), [0, 0, 0, 0, 1], 'the message sent during batch 2 is read after batch 4');
       } finally {
         scenario.close();
       }
@@ -411,7 +444,10 @@ test('messages sent while the Agent runs tools reach the model after that tool b
       scenario = openScenario();
       try {
         const batches = MAX_TURN_FOLD_CYCLES + 1;
-        onTool = (step) => scenario.arrive(`late_${step}`, `Addition ${step}.`);
+        onTool = (step) => {
+          pastInterval();
+          scenario.arrive(`late_${step}`, `Addition ${step}.`);
+        };
         await run([
           ...Array.from({ length: batches }, (_, index) => work(index + 1)), answer('Draft.'), answer('Done.'),
         ]);

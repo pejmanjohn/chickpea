@@ -1,10 +1,10 @@
 import {
   MAX_UPLOAD_BYTES,
+  NOT_A_ZIP_ARCHIVE,
   UNSUPPORTED_FILE,
   type SkillUploadIssue,
   type UploadedSkillFile,
 } from '../config/skill-upload.ts';
-import { NOT_A_ZIP_ARCHIVE } from '../config/zip-reader.ts';
 import { AttachmentReadError } from '../slack/attachment-client.ts';
 import type { GatewayAttachmentClient } from '../slack/gateway/client.ts';
 import { SlackTransportError } from '../slack/transport/types.ts';

@@ -69,7 +69,10 @@ function fakePorts(script: RunTurnScript, installation?: (workspaceId: string, a
     turnJobs: {
       recordAttempt: record('recordAttempt'),
       markRecoveryRequired: record('markRecoveryRequired'),
-      markDelivered: record('markDelivered'),
+      markDelivered: (...args: unknown[]) => {
+        record('markDelivered')(...args);
+        return [];
+      },
       markError: record('markError'),
       recordInteractionIntent: record('recordInteractionIntent'),
     },
