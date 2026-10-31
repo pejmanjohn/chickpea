@@ -732,6 +732,8 @@ class TerminalStepText {
   } | undefined;
   /** A completed step that Flue's recovery asked the model to continue. */
   private interrupted: { conversationId: string; messageId: string; parts: string[] } | undefined;
+  /** A reset followed the completed step: its message's next content starts a later step. */
+  private resetAfterStep = false;
   private position: { batch: number; index: number } | undefined;
   constructor(
     private readonly submissionId: string,
@@ -749,9 +751,17 @@ class TerminalStepText {
         (chunk.position.batch === prior.batch && chunk.position.index <= prior.index))) return;
     this.position = chunk.position;
     if (chunk.type === 'conversation-reset') {
-      // A folded snapshot has no assistant-step boundaries. Do not guess.
-      this.step = undefined;
-      this.interrupted = undefined;
+      // Flue sends a snapshot in place of `message-started` for every step
+      // after a retried provider error, and between steps for a compaction.
+      // A folded snapshot has no assistant-step boundaries, but a step seen
+      // completing is one. A reset mid-step (a read that opens on a snapshot)
+      // proves none. Do not guess.
+      if (this.step?.completed && chunk.conversationId === this.step.conversationId) {
+        this.resetAfterStep = true;
+      } else {
+        this.step = undefined;
+        this.interrupted = undefined;
+      }
     } else if (chunk.type === 'message-appended') {
       // Flue's stream recovery appends hidden advisory signals right after the
       // interrupted step ("continue from the durable partial"). They are the
@@ -772,19 +782,13 @@ class TerminalStepText {
         this.interrupted = undefined;
       }
     } else if (chunk.type === 'message-started' && chunk.submissionId === this.submissionId) {
-      const interrupted = this.interrupted;
-      this.interrupted = undefined;
-      this.step = {
-        conversationId: chunk.conversationId,
-        messageId: chunk.messageId,
-        text: '',
-        completed: false,
-        continues: interrupted && interrupted.conversationId === chunk.conversationId &&
-            interrupted.messageId === chunk.messageId
-          ? interrupted.parts : [],
-      };
+      this.startStep(chunk.conversationId, chunk.messageId);
     } else if (this.step && chunk.conversationId === this.step.conversationId &&
         'messageId' in chunk && chunk.messageId === this.step.messageId) {
+      if (this.resetAfterStep && (chunk.type === 'message-delta' || chunk.type === 'tool-input' ||
+          chunk.type === 'message-completed')) {
+        this.startStep(chunk.conversationId, chunk.messageId);
+      }
       if (chunk.type === 'message-delta' && chunk.kind === 'text' && !this.step.completed) {
         this.step.text += chunk.delta;
         if (this.step.text.length > 128 * 1024) this.step = undefined;
@@ -792,6 +796,21 @@ class TerminalStepText {
         this.step.completed = true;
       }
     }
+  }
+
+  private startStep(conversationId: string, messageId: string): void {
+    const interrupted = this.interrupted;
+    this.interrupted = undefined;
+    this.resetAfterStep = false;
+    this.step = {
+      conversationId,
+      messageId,
+      text: '',
+      completed: false,
+      continues: interrupted && interrupted.conversationId === conversationId &&
+          interrupted.messageId === messageId
+        ? interrupted.parts : [],
+    };
   }
 
   resolve(folded: string): string {
