@@ -155,13 +155,16 @@ release forward to rolling back across v0.1.34.
 v0.1.40 lets a person install skills by attaching `SKILL.md` files or `.zip`
 and `.skill` archives to a Slack message, and lets a coding agent upload skill
 files over MCP (`upload_skills`) or with `chickpea skills upload`. Agents list
-the files inside an attached zip, read files inside it, and read any earlier
-file in the thread with `read_slack_file`. A message sent while an Agent is
-working now reaches it at its next step, including during a coding job: its
-👀 turns to 👍 once the Agent reads it, and a question gets an answer in the
-thread. On its first start the configuration store adds a nullable column for
-thread file references, so `release.json`'s `configuration` digest changes.
-Updating needs no other step. There is no rollback path: recovery means
+the files inside an attached zip, read files inside it, and read an earlier
+file in the thread with `read_slack_file`. On the shared Chickpea Slack app, a
+file attached to a thread before this update has no handle. A message sent
+while an Agent is working now reaches it at its next step, including during a
+coding job, and the Agent can answer a question in the thread before its final
+reply. A message that waits for the Agent's next turn keeps 👀 until that turn
+reads it, then shows 👍 until the reply posts. On its first start the
+configuration store adds a nullable column for thread file references, and the
+storage contract records it, so `release.json`'s `configuration` digest
+changes. Updating needs no other step. There is no rollback path: recovery means
 deploying a fixed release forward.
 
 v0.1.39 lets an Agent's author upload `SKILL.md` files and `.zip` or `.skill`
