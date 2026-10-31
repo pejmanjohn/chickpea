@@ -131,6 +131,7 @@ export function clientMetadataDiscovery(
         if (failure === undefined) {
           unreachable.delete(clientId);
           remember(refused, clientId);
+          ctx.context.logger.warn(`Client metadata lookup failed; nothing stands in until its document answers: ${clientId}`);
         }
         if (refused.has(clientId)) throw error;
         // The plugin rewrites updatedAt each time the document answers, changed or not.
