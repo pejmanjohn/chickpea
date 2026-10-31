@@ -4146,10 +4146,12 @@ test('both connector catalogs name what a provider\'s own sign-in lets a person 
 
 test('reconnecting a ready Notion account from Admin keeps the connection and refreshes its pages', async () => {
   const revoked: string[] = [];
+  const returnUrls: (string | undefined)[] = [];
   const provider: ManagedConnectionProvider = {
     id: 'composio',
     availability: () => ({ status: 'ready', missingConfiguration: [] }),
-    async authorize() {
+    async authorize({ returnUrl }) {
+      returnUrls.push(returnUrl);
       return {
         authorizationUrl: new URL('https://connect.composio.dev/link/lk_notion_pages'),
         authorizationRef: 'ca_notion_after',
@@ -4201,11 +4203,14 @@ test('reconnecting a ready Notion account from Admin keeps the connection and re
     const started = await fixture.app.request(
       'https://chickpea.example/admin/api/agents/agent_support/connections/managed/start',
       {
-        method: 'POST', headers: auth(),
+        // A forwarded host never names the page a provider sends the tab to.
+        method: 'POST', headers: { ...auth(), 'x-forwarded-host': 'forwarded.example' },
         body: JSON.stringify({ workspaceId: 'T_TEST', connectionAccountId: account.id }),
       },
     );
     assert.equal(started.status, 200, await started.clone().text());
+    assert.deepEqual(returnUrls, ['https://chickpea.example/managed-connections/return'],
+      'the provider returns the sign-in tab to a Chickpea page on the request origin');
     const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
     assert.ok(cookie);
     const polled = await fixture.app.request(
