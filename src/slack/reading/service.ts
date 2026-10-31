@@ -162,9 +162,12 @@ export class SlackReadingService {
     const slackCursor = decodeCursor(input.cursor, 'channel', target.channelId, undefined);
     const oldest = input.oldest !== undefined ? slackTimestamp(input.oldest) : undefined;
     let latest = input.latest !== undefined ? slackTimestamp(input.latest) : undefined;
-    // This conversation's messages newer than any this turn read are queued requests of their own.
+    // This conversation's newer messages are queued requests of their own. A
+    // DM's follow-ups are its history, so a turn that took some reads through
+    // them; in a channel or group DM they are thread replies, and the history
+    // after the trigger holds other requests this turn never answered.
     if (conversation.current) {
-      const readThrough = await this.readThrough();
+      const readThrough = conversation.kind === 'dm' ? await this.readThrough() : this.options.authority.current.messageTs;
       if (latest === undefined || !atOrBeforeSlackWatermark(latest, readThrough)) latest = readThrough;
     }
     const limit = this.pageLimit(input.limit);

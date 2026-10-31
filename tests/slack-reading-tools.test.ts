@@ -283,11 +283,12 @@ test('a turn that took follow-ups reads them, and only newer messages wait; a tu
     { user: REQUESTER, ts: '1013.000100', thread_ts: CURRENT.threadTs, text: 'UNREAD' },
     { user: 'U0OTHER', ts: '1020.000100', thread_ts: CURRENT.threadTs, text: 'NEWER' },
   ] });
-  const reading = (readThrough?: () => Promise<string | undefined>) => {
+  const reading = (readThrough?: () => Promise<string | undefined>, current = facts({ id: CURRENT.channelId })) => {
     const client = slackClient({ replies });
     clearSlackContextNameCache();
     const reader = new SlackReadingService({
-      client: client as never, gate: gate(), authority: ports(), self: { botUserId: 'U0BOT' },
+      client: client as never, gate: gate(), self: { botUserId: 'U0BOT' },
+      authority: ports({ conversations: { [CURRENT.channelId]: current } }),
       ...(readThrough ? { readThrough } : {}),
     });
     return {
@@ -308,8 +309,16 @@ test('a turn that took follow-ups reads them, and only newer messages wait; a tu
     ['root', 'what is this?', 'it started at noon', 'only in prod']);
   assert.equal(result.newerMessagesWaiting, 2);
   assert.doesNotMatch(JSON.stringify(result), /UNREAD|NEWER/);
-  assert.equal(await followed.channel(), '1012.000100');
-  assert.equal(asked.length, 2, 'one store read per call');
+  assert.equal(asked.length, 1, 'one store read per call');
+  // A channel's follow-ups are thread replies: its history after the trigger
+  // holds requests this turn never answered, possibly someone else's.
+  assert.equal(await followed.channel(), CURRENT.messageTs);
+  assert.equal(asked.length, 1, 'a channel read never asks the store');
+  // A DM's follow-ups are its history.
+  const dm = reading(async () => '1012.000100', facts({ id: CURRENT.channelId, im: true }));
+  assert.equal(await dm.channel(), '1012.000100');
+  const groupDm = reading(async () => '1012.000100', facts({ id: CURRENT.channelId, mpim: true, private: true }));
+  assert.equal(await groupDm.channel(), CURRENT.messageTs);
 
   const before = reading();
   const expected = JSON.stringify(await before.thread());
@@ -322,6 +331,8 @@ test('a turn that took follow-ups reads them, and only newer messages wait; a tu
     const unchanged = reading(readThrough);
     assert.equal(JSON.stringify(await unchanged.thread()), expected, name);
     assert.equal(await unchanged.channel(), CURRENT.messageTs, name);
+    const unchangedDm = reading(readThrough, facts({ id: CURRENT.channelId, im: true }));
+    assert.equal(await unchangedDm.channel(), CURRENT.messageTs, `${name} in a DM`);
   }
 });
 
