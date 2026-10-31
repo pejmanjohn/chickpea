@@ -170,11 +170,15 @@ import {
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
   failAgentWelcomeDelivery,
+  type SetupWakeRequest,
 } from './receipts.ts';
+import { setupWakeAgent, setupWakeNote, type SetupWakeCompletion } from './setup-wake.ts';
+import { admitSetupWake } from '../channels/slack.ts';
 import type { ManagementStore } from './store.ts';
 import {
   ManagementError,
   type ManagementSetupRecord,
+  type ManagementSetupWake,
 } from './types.ts';
 import { emitManagementMetric } from './telemetry.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -212,6 +216,8 @@ interface ManagementSetupRoutesOptions {
   randomCapability?: () => string;
   validateProviderKey?: typeof validateProviderApiKey;
   deliverReceipt?: typeof deliverManagementReceiptToSlack;
+  /** Test seam for waking the Agent that asked for a finished setup; production admits it in Slack. */
+  wakeAgent?: (request: SetupWakeRequest) => Promise<'queued' | 'refused'>;
   managedConnectionProviders?: ManagedConnectionProviderRegistry;
   managedConnectorCatalog?: ManagedConnectorCatalog;
   /** Test seams for native connector setup without live provider traffic. */
@@ -2560,12 +2566,15 @@ async function finishSetup(
     completedByMembershipId?: string;
     ownerKind?: 'member' | 'team';
     accessLane?: 'read' | 'write';
+    check?: ApiConnectionCheck['kind'];
   },
   dependencies: SetupDependencies,
   options: ManagementSetupRoutesOptions,
   at: number,
 ): Promise<void> {
   const browserSessionDigest = digest(setupSession(c, setup.setupOperationId)!);
+  // A wake that cannot be built leaves the notice; it never fails the setup.
+  const wake = await setupWakeFor(setup, result, dependencies).catch(() => undefined);
   const connectionReceipt = ['managed_connection', 'catalog_connection'].includes(setup.action) &&
       setup.target.agentId
     ? await dependencies.config.getAgent(setup.target.agentId).then((agent) => {
@@ -2603,6 +2612,7 @@ async function finishSetup(
     initiator,
     at,
     ...(connectionReceipt ?? {}),
+    ...(wake ? { wake } : {}),
   });
   emitManagementMetric('setup.lifecycle', {
     action: setup.action,
@@ -2631,6 +2641,7 @@ async function finishSetup(
       dependencies.management,
     ),
     onTerminalFailure: (record) => failAgentWelcomeDelivery(record, presentation, work),
+    wake: options.wakeAgent ?? ((request) => admitSetupWake(request, dependencies.platformEnv)),
     deliver: (record) => (options.deliverReceipt ?? deliverManagementReceiptToSlack)(record, {
       identity: dependencies.identity,
       ...(dependencies.platformEnv ? { env: dependencies.platformEnv } : {}),
@@ -2644,6 +2655,55 @@ async function finishSetup(
     }),
     now: () => at,
   }).catch(() => undefined);
+}
+
+/**
+ * The wake a finished setup queues for the Agent that asked for it, as the
+ * person who finished it, or undefined when it posts its notice instead
+ * (setupWakeAgent). That person must be a member of the setup's Slack
+ * workspace; their access to the Agent there is checked when the wake is
+ * admitted.
+ */
+async function setupWakeFor(
+  setup: ManagementSetupRecord,
+  result: Parameters<typeof finishSetup>[2],
+  dependencies: SetupDependencies,
+): Promise<ManagementSetupWake | undefined> {
+  const agent = setupWakeAgent(setup);
+  if (!agent || setup.origin.kind !== 'slack') return undefined;
+  const person = await dependencies.identity.getUser(result.completedByUserId ?? setup.actorUserId);
+  if (!person || person.slackTeamId !== setup.origin.workspaceId) return undefined;
+  const keyed = setup.action === 'api_credential' || setup.action === 'mcp_credentials';
+  // An MCP key is saved only once the server answered with it.
+  const check = setup.action === 'mcp_credentials' ? 'ok' : result.check;
+  const completion: SetupWakeCompletion = keyed
+    ? { kind: 'key', ...(check ? { check } : {}) }
+    : { kind: 'sign_in', ...await signInAccess(setup, result, dependencies) };
+  return {
+    agentId: agent.agentId,
+    slackUserId: person.slackUserId,
+    ...(setup.origin.conversationKind ? { conversationKind: setup.origin.conversationKind } : {}),
+    note: setupWakeNote({
+      person: person.displayName ?? 'The person',
+      connector: result.connector ?? setup.target.targetLabel,
+      completion,
+      connectorTools: setup.action !== 'api_credential' && setup.action !== 'api_oauth',
+    }),
+  };
+}
+
+/** The access a sign-in granted: the managed lane, or what an API connection's methods allow. */
+async function signInAccess(
+  setup: ManagementSetupRecord,
+  result: Parameters<typeof finishSetup>[2],
+  dependencies: SetupDependencies,
+): Promise<{ access?: 'read' | 'write' }> {
+  const lane = result.accessLane ?? setup.target.accessLane;
+  if (lane) return { access: lane };
+  if (setup.action !== 'api_oauth') return {};
+  const policy = (await setupConnectionEntry(setup, dependencies).catch(() => undefined))?.account.policy;
+  if (policy?.kind !== 'api') return {};
+  return { access: policy.allowedMethods.every((method) => method === 'GET' || method === 'HEAD') ? 'read' : 'write' };
 }
 
 async function verifyMcpConnection(

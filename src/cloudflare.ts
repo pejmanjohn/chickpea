@@ -304,6 +304,7 @@ import {
   processGatewayViewSubmission,
   processGatewaySlackEnvelope,
   processSlackAgentAsks,
+  admitSetupWake,
 } from './channels/slack.ts';
 import {
   SlackGatewaySession,
@@ -349,6 +350,7 @@ import {
   failAgentWelcomeTurn,
   isAgentCreatedWelcome,
   reconcileScheduleActionReceipts,
+  type SetupWakeRequest,
 } from './management/receipts.ts';
 import {
   ManagementError,
@@ -3145,6 +3147,7 @@ async function drainCloudflareManagementReceipts(
       (turnJobId) => stores.turnJobs.markError(turnJobId),
       work,
     ),
+    wake: (request) => localSetupWake(stores, env, request),
     deliver: (record) => deliverManagementReceiptToSlack(record, {
       identity: stores.identity as unknown as IdentityStore,
       resolveInstallation,
@@ -3390,6 +3393,33 @@ function localAgentAskDispatcher(
       enqueueTurn: localTurnEnqueue(stores),
     });
   };
+}
+
+/**
+ * A setup's wake admitted by this state store's own receipt drain, against
+ * its local stores and queue, as its Agent asks are.
+ */
+async function localSetupWake(
+  stores: TagStateStores,
+  platformEnv: PlatformEnv,
+  request: SetupWakeRequest,
+): Promise<'queued' | 'refused'> {
+  const appStores = localGatewayAppStores(stores);
+  let gatewayClient: GatewayDeploymentClient | undefined;
+  try {
+    gatewayClient = localGatewayDeploymentClient(appStores, platformEnv, createPlatformProductTelemetry({
+      env: platformEnv,
+      settings: appStores.settings,
+      config: appStores.config,
+    }));
+  } catch {
+    // A direct installation needs no gateway client.
+  }
+  return admitSetupWake(request, platformEnv, {
+    stores: appStores,
+    ...(gatewayClient ? { gatewayClient } : {}),
+    enqueueTurn: localTurnEnqueue(stores),
+  });
 }
 
 /** The gateway client of a turn admitted inside this state store, on its own stores. */

@@ -148,7 +148,8 @@ export async function resolveTypedSlackManagementApproval(input: {
   judge: (reply: { text: string; change: string }) => Promise<SlackManagementApproval>;
 }): Promise<TypedSlackManagementApproval | undefined> {
   const { turn } = input;
-  if (turn.agentAsk || turn.uiResponse || isLaterCoAddressedTurn(turn) || turn.source === 'reaction_added') {
+  if (turn.agentAsk || turn.uiResponse || turn.setupWake || isLaterCoAddressedTurn(turn) ||
+      turn.source === 'reaction_added') {
     return undefined;
   }
   const proposal = await resolveHostSlackManagementProposal(input);

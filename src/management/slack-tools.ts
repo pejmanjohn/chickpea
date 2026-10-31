@@ -43,7 +43,7 @@ import {
 } from './schemas.ts';
 import {
   slackManagementOrigin,
-  startedByAgentAsk,
+  startedWithoutPerson,
   WorkspaceManagementService,
 } from './service.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
@@ -83,6 +83,7 @@ import {
 import { parseAdmittedSlackListIds } from '../slack/lists/admission.ts';
 import { parseAttachmentFileIds } from '../slack/attachment-file-ids.ts';
 import { parseThreadFileIds } from '../slack/thread-files.ts';
+import { isRequesterTextSource, type RequesterTextSource } from '../slack/requester-text-source.ts';
 
 const SIGNAL_ATTRIBUTE_KEYS = [
   'workspaceId',
@@ -163,8 +164,8 @@ export interface SlackManagementSignal {
   threadFileIds?: readonly string[];
   /** Trusted current Slack message body, carried outside model-selected tool input. */
   requesterText?: string;
-  /** The host wrote requesterText to describe the person's click or form answer. */
-  requesterTextSource?: 'click';
+  /** The host wrote requesterText: a click or form answer, or a setup note. */
+  requesterTextSource?: RequesterTextSource;
   /** Verified Slack profile timezone, supplied by the host. */
   requesterTimezone?: string;
   /**
@@ -1008,7 +1009,7 @@ export function parseSlackManagementSignal(
     return undefined;
   }
   const requesterTextSource = delivery.attributes.requesterTextSource;
-  if (requesterTextSource !== undefined && requesterTextSource !== 'click') return undefined;
+  if (requesterTextSource !== undefined && !isRequesterTextSource(requesterTextSource)) return undefined;
   if (
     values.workspaceId !== plan.conversation.workspaceId ||
     values.channelId !== plan.conversation.channelId ||
@@ -1074,12 +1075,12 @@ export async function invokeSlackWorkspaceManagementTool<
   }, input.name, input.args);
   return withApprovalInstruction(
     result,
-    startedByAgentAsk({ origin: slackManagementOrigin(input.signal) }),
+    startedWithoutPerson({ origin: slackManagementOrigin(input.signal) }),
   );
 }
 
 const PERSON_APPROVES = 'Send presentation.slack verbatim and say what it would change. Only the person can apply it, by pressing Approve or saying in their own words that they approve it; you cannot apply it yourself.';
-const PERSON_APPROVAL_INSTRUCTION = `Nothing was applied. Another Agent's ask started this turn, so the person who started the exchange approves these changes. ${PERSON_APPROVES}`;
+const PERSON_APPROVAL_INSTRUCTION = `Nothing was applied. Another Agent's ask or Chickpea's setup note started this turn, not a message from the person, so the person approves these changes. ${PERSON_APPROVES}`;
 const CHANGE_SET_APPROVAL_INSTRUCTION = `The changes in presentation.slack need the person's approval and were not applied. ${PERSON_APPROVES}`;
 
 /**

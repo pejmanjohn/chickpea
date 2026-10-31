@@ -407,6 +407,18 @@ export function agentContextUserId(agentId: string | undefined): string {
 }
 
 function triggerMessage(turn: NormalizedSlackTurn): SlackContextMessage {
+  // A setup's wake is Chickpea's note, posted nowhere in Slack.
+  if (turn.setupWake) {
+    return {
+      userId: 'Chickpea',
+      text: turn.text,
+      ts: turn.messageTs,
+      isTrigger: true,
+      role: 'app',
+      authorName: 'Chickpea',
+      rootTs: turn.threadTs,
+    };
+  }
   // An ask's trigger is the asking Agent's message, not the person's.
   const ask = turn.agentAsk;
   return {

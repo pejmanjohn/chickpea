@@ -157,6 +157,7 @@ import {
 import { normalizeSlackTurn, parseSlackMessageEdit } from '../slack/turn-normalization.ts';
 import {
   registerNodeAgentAskDispatcher,
+  registerNodeSetupWakeAdmitter,
   wakeNodeTurnRelay,
 } from '../slack/node-turn-relay.ts';
 import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
@@ -258,6 +259,7 @@ import {
 import type { AuthPrincipal } from '../auth/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
 import { resolveTypedSlackManagementApproval } from '../management/slack-approval.ts';
+import type { ManagementSetupWake } from '../management/types.ts';
 import { admitSlackBrowserActionReply } from '../slack/browser-action-admission.ts';
 import {
   authorizeUiResponse,
@@ -1583,6 +1585,7 @@ export async function processGatewaySlackEnvelope(
 
 // The Node relay runs turns in this process and admits their asks here.
 registerNodeAgentAskDispatcher(processSlackAgentAsks);
+registerNodeSetupWakeAdmitter(admitSetupWake);
 
 /**
  * A turn the host addressed to an Agent: an ask, or one of the later Agents
@@ -1593,6 +1596,8 @@ interface SlackAgentAskAdmission {
   /** Built by the host: from the asking Agent's delivered message, or from the person's. */
   turn: NormalizedSlackTurn;
   targetAgentId: string;
+  /** The turn's claim key and job id, when the message and Agent alone do not name it (a setup's wake). */
+  messageKey?: string;
   /**
    * The queue of the host that admits the ask, when that host runs inside
    * the state store: it must never enqueue through its own stub.
@@ -1752,6 +1757,104 @@ export async function processSlackAgentAsks(
     };
     await admitHostAddressedTurn(payload, platformEnv, execution, admission);
   }
+}
+
+/** The turn job a setup's wake is queued as: one per setup, whatever the retries. */
+export function setupWakeTurnJobId(channelId: string, setupOperationId: string): string {
+  return `msg:${channelId}:setup-wake:${setupOperationId}`;
+}
+
+/**
+ * Wake the Agent that asked for a connection setup, in the Slack thread it
+ * asked from, now that the person finished it: one turn, as that person,
+ * whose text is Chickpea's note. It is admitted like an ask, so the person's
+ * current access and the Agent's routing decide it afresh, it gets its own
+ * Run and is metered like a reply, and no human-only command can come from
+ * it. Its time is the host's, not a Slack message's. `queued` once its turn
+ * is in the thread's queue, on a retry too; `refused` when it was not
+ * admitted, and the setup's notice posts instead.
+ */
+export async function admitSetupWake(
+  request: {
+    setupOperationId: string;
+    workspaceId: string;
+    channelId: string;
+    threadTs: string;
+    wake: ManagementSetupWake;
+    notice: string;
+  },
+  platformEnv?: PlatformEnv,
+  provided?: {
+    stores?: AppStores;
+    gatewayClient?: GatewayDeploymentClient;
+    enqueueTurn?: SlackEventExecution['enqueueTurn'];
+  },
+): Promise<'queued' | 'refused'> {
+  const stores = provided?.stores ?? resolveStores(platformEnv);
+  const { wake } = request;
+  const installation = await stores.config.getWorkspaceInstallation(request.workspaceId);
+  if (
+    !installation || installation.health === 'revoked' ||
+    installation.runtimeContract !== 'chickpea-v1'
+  ) return 'refused';
+  let execution: SlackEventExecution | undefined;
+  if (installation.transportMode === 'gateway') {
+    if (!installation.gatewayBindingId || !installation.appId || !installation.botUserId) return 'refused';
+    const gateway = provided?.gatewayClient ?? createGatewayDeploymentClient(platformEnv);
+    const binding = await gateway.loadBinding();
+    if (
+      !binding || binding.bindingId !== installation.gatewayBindingId ||
+      binding.workspaceId !== request.workspaceId || binding.appId !== installation.appId ||
+      binding.botUserId !== installation.botUserId
+    ) return 'refused';
+    execution = {
+      transport: createGatewaySlackTransport(gateway),
+      client: createGatewaySlackWebClient(gateway),
+      botUserId: installation.botUserId,
+      stores,
+      ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
+    };
+  }
+  const messageKey = setupWakeTurnJobId(request.channelId, request.setupOperationId);
+  const messageTs = receiptSlackTs();
+  const turn: NormalizedSlackTurn = {
+    workspaceId: request.workspaceId,
+    channelId: request.channelId,
+    eventId: `setup-wake:${request.setupOperationId}`,
+    text: wake.note,
+    userId: wake.slackUserId,
+    messageTs,
+    threadTs: request.threadTs,
+    source: 'agent_mention',
+    contextMode: 'thread',
+    ...(wake.conversationKind ? { channelType: wake.conversationKind } : {}),
+    setupWake: { setupOperationId: request.setupOperationId, notice: request.notice },
+  };
+  const payload: SlackEventFixture = {
+    token: '',
+    team_id: request.workspaceId,
+    api_app_id: installation.appId ?? '',
+    event_id: turn.eventId,
+    event_time: Math.floor(Number(messageTs)),
+    type: 'event_callback',
+    event: {
+      type: 'message',
+      channel: request.channelId,
+      ts: messageTs,
+      thread_ts: request.threadTs,
+      user: wake.slackUserId,
+      text: wake.note,
+      ...(turn.channelType ? { channel_type: turn.channelType } : {}),
+    },
+  };
+  await admitHostAddressedTurn(payload, platformEnv, execution, {
+    turn,
+    targetAgentId: wake.agentId,
+    messageKey,
+    ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
+  });
+  const view = await stores.slackState.turnJobView?.(messageKey);
+  return view !== undefined && view.status !== 'missing' ? 'queued' : 'refused';
 }
 
 /**
@@ -2800,7 +2903,7 @@ async function processSlackEvent(
   // Several Agents can answer one message (asked by a reply, or mentioned
   // together by a person): each Agent's turn on it is its own.
   const msgKey = ask
-    ? askMessageKey(turn.channelId, turn.messageTs, ask.targetAgentId)
+    ? ask.messageKey ?? askMessageKey(turn.channelId, turn.messageTs, ask.targetAgentId)
     : `msg:${turn.channelId}:${turn.messageTs}`;
 
   let assignment: ResolvedAssignment;
@@ -3350,8 +3453,9 @@ async function processSlackEvent(
   // The thread's own Agent, handed a teammate's answer, replies or stays
   // silent: it never opens a checklist or reacts instead.
   const handedBack = isHandedBackTurn(turn, assignment);
-  if (handedBack) turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
-  if (!ui && !deterministicCommand && !browserActionAnswered && !candidateTurn && !handedBack) {
+  // A setup's wake has no Slack message to react to: it always replies.
+  if (handedBack || turn.setupWake) turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
+  if (!ui && !deterministicCommand && !browserActionAnswered && !candidateTurn && !handedBack && !turn.setupWake) {
     const immediateIntent = resolveImmediateSlackInteractionIntent({
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,

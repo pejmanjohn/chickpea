@@ -266,6 +266,20 @@ export interface NormalizedSlackTurn {
    * only a row whose id is editTurnJobId(...) carries it.
    */
   edit?: SlackTurnEdit;
+  /**
+   * Set only by host admission of a finished connection setup: Chickpea
+   * wakes the Agent that asked for it, in that thread, as the person who
+   * finished it. `text` is Chickpea's note, never the person's words, and
+   * `messageTs` is the host's own time for the wake, not a Slack message.
+   * Slack text can never supply it.
+   */
+  setupWake?: SlackSetupWake;
+}
+
+export interface SlackSetupWake {
+  setupOperationId: string;
+  /** The notice the setup would have posted, shown if the wake fails before it replies. */
+  notice: string;
 }
 
 export interface SlackTurnEdit {

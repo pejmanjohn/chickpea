@@ -375,8 +375,9 @@ test('the initiating member claims one authenticated browser and completes an ex
     assert.equal(setup?.browserSessionDigest, undefined);
     assert.equal(setup?.receipt?.connector, 'Gmail');
     assert.equal(delivered.length, 1);
-    assert.match(delivered[0]!, /has been connected to Gmail connector/);
-    assert.match(delivered[0]!, /Customer Research/);
+    assert.match(delivered[0]!, /^✅ Gmail( \([^)]*\))? is now connected to Customer Research\.$/);
+    assert.doesNotMatch(delivered[0]!, new RegExp(setupId), 'the notice carries no receipt ID');
+    assert.doesNotMatch(delivered[0]!, /Scopes|Receipt|Initiated by/);
     assert.doesNotMatch(delivered[0]!, new RegExp(credential));
     assert.equal((await management.getOutboxForOperation(setupId))?.status, 'delivered');
 

@@ -33,6 +33,7 @@ import type {
 import type { GroupDmEligibility } from '../slack/agent-access.ts';
 import type { SlackCommandAddress } from '../slack/command-address.ts';
 import type { ApiConnectionCheck, ConnectionAuthShape } from '../connections/connection-check.ts';
+import type { RequesterTextSource } from '../slack/requester-text-source.ts';
 
 export type { ConnectionAuthShape };
 
@@ -48,8 +49,8 @@ export type ManagementOrigin =
       eventId?: string;
       /** Trusted current requester text from the Slack delivery, never model-authored. */
       requestText?: string;
-      /** The host wrote requestText to describe the person's click or form answer; they did not type it. */
-      requestTextSource?: 'click';
+      /** The host wrote requestText (a click or form answer, or a setup note); the person did not type it. */
+      requestTextSource?: RequesterTextSource;
       /**
        * Set only by the Slack host when it resolved the person's typed
        * approval or Approve click to this proposal for the current turn.
@@ -773,6 +774,8 @@ export type ManagementReceiptDestination =
       workspaceId: string;
       channelId: string;
       threadTs: string;
+      /** Wake this Agent in the thread instead of posting the receipt, when it can run. */
+      wake?: ManagementSetupWake;
     }
   | {
       kind: 'initiator_dm';
@@ -796,6 +799,16 @@ type ManagementReceiptOutboxStatus =
   | 'delivering'
   | 'delivered'
   | 'failed';
+
+/** A finished connection setup's turn for the Agent that asked for it (src/management/setup-wake.ts). */
+export interface ManagementSetupWake {
+  agentId: string;
+  /** The Slack member who finished the setup: the wake runs as them. */
+  slackUserId: string;
+  conversationKind?: 'channel' | 'im' | 'mpim';
+  /** Chickpea's note that starts the turn. Never a key, a token or an ID. */
+  note: string;
+}
 
 export interface ManagementReceiptOutboxRecord {
   outboxId: string;
@@ -1135,6 +1148,8 @@ export interface PrepareConnectorSetupResult {
   setupOperationId?: string;
   /** The existing connection this handoff reconnects in place, keeping its bindings and Agent grants. */
   reconnect?: { connectionId: string; label: string };
+  /** What to tell the person about the link, when finishing it wakes this Agent. */
+  instruction?: string;
 }
 
 export type ManagedProviderKeyId = 'anthropic' | 'openai' | 'openrouter';

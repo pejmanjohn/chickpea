@@ -649,8 +649,9 @@ async function runTurnAttempt(
   // An ask's text is the asking Agent's message: only a person's message can
   // be a memory or schedule command. Admission refuses those for an ask too
   // (typedByPerson in processSlackEvent); this is the runtime's own gate. A
-  // message that mentioned several Agents is one command, for the first.
-  const typedByPerson = !turn.agentAsk && !isLaterCoAddressedTurn(turn);
+  // message that mentioned several Agents is one command, for the first. A
+  // setup's wake is Chickpea's note.
+  const typedByPerson = !turn.agentAsk && !turn.setupWake && !isLaterCoAddressedTurn(turn);
   // The thread's own Agent, handed a teammate's answer: it may end the turn
   // silently, so its reply never streams before it is known.
   const handedBack = isHandedBackTurn(turn, assignment);
@@ -2166,10 +2167,12 @@ async function runTurnAttempt(
           ),
         ));
         await statusTurn.prepareFinal();
+        // A setup's wake that fails before it replies still tells the person the setup finished.
+        const shownText = turn.setupWake ? `${turn.setupWake.notice}\n\n${failureText}` : failureText;
         // A plain_text final drops its text when it carries blocks; this text has no markdown syntax.
         await (components
-          ? presenter.deliverFinal(failureText, 'markdown', 'error', { components })
-          : presenter.deliverFinal(failureText, 'plain_text', 'error'));
+          ? presenter.deliverFinal(shownText, 'markdown', 'error', { components })
+          : presenter.deliverFinal(shownText, 'plain_text', 'error'));
         await finishStatus('failure');
         await finishDelivery('failed');
         return;

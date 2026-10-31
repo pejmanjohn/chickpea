@@ -67,8 +67,8 @@ export class InteractiveUsageRecorder {
     this.runExecutionId = options.runExecutionId;
     const requested = splitModelSpecifier(options.requestedModel);
     const direct = slackTurnSurface(options.turn) === 'direct';
-    // A UI answer's ts is its receipt time, not a message; its surface's thread is one.
-    const sourceMessageTs = options.turn.uiResponse
+    // A UI answer's or a setup wake's ts is the host's time, not a message; the thread is one.
+    const sourceMessageTs = options.turn.uiResponse || options.turn.setupWake
       ? options.turn.threadTs
       : options.turn.reactionTargetTs ?? options.turn.messageTs;
     this.admission = {
