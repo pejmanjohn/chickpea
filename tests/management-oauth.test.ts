@@ -17,7 +17,7 @@ import {
   InMemoryMcpOAuthContinuationStore,
 } from '../src/auth/mcp-oauth-continuation.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
-import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
+import { advertisePublicClientsOnly, createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
 import {
   createMcpConsentRedirectResponse,
   createMcpAuthenticatedRequestHandler,
@@ -26,6 +26,7 @@ import {
   displayMcpClientName,
 } from '../src/auth/mcp-oauth-routes.ts';
 import { validateBrowserMutationProvenance } from '../src/auth/request-provenance.ts';
+import { REAL_MCP_CLIENT_REGISTRATIONS } from './helpers/mcp-client-registrations.ts';
 
 test('MCP OAuth binds one workspace scope to the canonical protected resource', () => {
   assert.equal(MCP_WORKSPACE_SCOPE, 'chickpea:workspace');
@@ -61,31 +62,33 @@ test('Better Auth publishes MCP discovery and registers only public clients', as
       scopes_supported: [MCP_WORKSPACE_SCOPE],
     });
 
-    const authorization = await handler(new Request(
-      `${origin}/.well-known/oauth-authorization-server/api/auth`,
-    ));
-    assert.equal(authorization.status, 200);
-    const metadata = await authorization.json() as Record<string, unknown>;
-    assert.equal(metadata.issuer, `${origin}/api/auth`);
-    assert.equal(metadata.authorization_endpoint, `${origin}/api/auth/oauth2/authorize`);
-    assert.equal(metadata.token_endpoint, `${origin}/api/auth/oauth2/token`);
-    assert.equal(metadata.registration_endpoint, `${origin}/api/auth/oauth2/register`);
-    assert.equal(metadata.revocation_endpoint, `${origin}/api/auth/oauth2/revoke`);
-    assert.deepEqual(metadata.code_challenge_methods_supported, ['S256']);
-    assert.deepEqual(metadata.scopes_supported, MCP_OAUTH_SCOPES);
+    for (const path of [
+      '/.well-known/oauth-authorization-server/api/auth',
+      '/api/auth/.well-known/oauth-authorization-server',
+    ]) {
+      const authorization = await handler(new Request(`${origin}${path}`));
+      assert.equal(authorization.status, 200, path);
+      const metadata = await authorization.json() as Record<string, unknown>;
+      assert.equal(metadata.issuer, `${origin}/api/auth`);
+      assert.equal(metadata.authorization_endpoint, `${origin}/api/auth/oauth2/authorize`);
+      assert.equal(metadata.token_endpoint, `${origin}/api/auth/oauth2/token`);
+      assert.equal(metadata.registration_endpoint, `${origin}/api/auth/oauth2/register`);
+      assert.equal(metadata.revocation_endpoint, `${origin}/api/auth/oauth2/revoke`);
+      assert.deepEqual(metadata.code_challenge_methods_supported, ['S256']);
+      assert.deepEqual(metadata.scopes_supported, MCP_OAUTH_SCOPES);
+      assert.deepEqual(metadata.token_endpoint_auth_methods_supported, ['none'], path);
+      assert.equal(metadata.token_endpoint_auth_signing_alg_values_supported, undefined,
+        `${path}: signing algorithms apply only to JWT client authentication, which is not offered`);
+    }
+    assert.equal(
+      (await handler(new Request(`${origin}/api/auth/.well-known/openid-configuration`))).status,
+      404,
+      'Chickpea serves no OpenID metadata to advertise other methods',
+    );
 
-    const registration = {
-      application_type: 'native',
-      client_name: 'Codex',
-      grant_types: ['authorization_code', 'refresh_token'],
-      redirect_uris: ['http://127.0.0.1:47321/callback'],
-      response_types: ['code'],
-      scope: MCP_WORKSPACE_SCOPE,
-      token_endpoint_auth_method: 'none',
-    };
     const registered = await handler(jsonProtocolRequest(
       `${origin}/api/auth/oauth2/register`,
-      registration,
+      REAL_MCP_CLIENT_REGISTRATIONS['Codex CLI'],
     ));
     assert.equal(registered.status, 201, await registered.clone().text());
     const client = await registered.json() as Record<string, unknown>;
@@ -95,7 +98,7 @@ test('Better Auth publishes MCP discovery and registers only public clients', as
 
     const confidential = await handler(jsonProtocolRequest(
       `${origin}/api/auth/oauth2/register`,
-      { ...registration, token_endpoint_auth_method: 'client_secret_post' },
+      { ...REAL_MCP_CLIENT_REGISTRATIONS['claude.ai'], token_endpoint_auth_method: 'client_secret_post' },
     ));
     assert.equal(confidential.status, 400);
     assert.deepEqual(await confidential.json(), { error: 'public_clients_only' });
@@ -104,54 +107,154 @@ test('Better Auth publishes MCP discovery and registers only public clients', as
   }
 });
 
-test('public MCP registration accepts only bounded public PKCE clients', () => {
-  const accepted = validatePublicMcpClientRegistration({
-    application_type: 'native',
-    client_name: 'Codex',
-    grant_types: ['authorization_code', 'refresh_token'],
-    redirect_uris: ['http://127.0.0.1:47321/callback'],
-    response_types: ['code'],
-    scope: MCP_WORKSPACE_SCOPE,
-    token_endpoint_auth_method: 'none',
-  });
-  assert.equal(accepted.ok, true);
+test('real MCP clients register and reach Chickpea sign-in', async () => {
+  const origin = 'https://chickpea.example';
+  const backend = new NodeBetterAuthBackend(':memory:');
+  try {
+    const handler = createBetterAuthPublicHandler({
+      backend,
+      baseURL: origin,
+      secret: Buffer.alloc(32, 29).toString('base64url'),
+    });
+    const expectedApplicationType: Record<string, 'native' | 'web'> = {
+      'Claude Code': 'native',
+      'Codex CLI': 'native',
+      'MCP Inspector': 'native',
+      'claude.ai': 'web',
+    };
+    for (const [name, registration] of Object.entries(REAL_MCP_CLIENT_REGISTRATIONS)) {
+      const registered = await handler(jsonProtocolRequest(`${origin}/api/auth/oauth2/register`, registration));
+      assert.equal(registered.status, 201, `${name}: ${await registered.clone().text()}`);
+      const client = await registered.json() as { client_id: string; application_type?: string };
+      assert.equal(client.application_type, expectedApplicationType[name], name);
 
-  for (const [name, input] of Object.entries({
+      const authorize = await handler(new Request(`${origin}/api/auth/oauth2/authorize?${new URLSearchParams({
+        response_type: 'code',
+        client_id: client.client_id,
+        redirect_uri: registration.redirect_uris[0],
+        scope: MCP_WORKSPACE_SCOPE,
+        state: 'client-state',
+        resource: `${origin}/mcp`,
+        code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+        code_challenge_method: 'S256',
+      })}`));
+      assert.equal(authorize.status, 302, `${name}: ${await authorize.clone().text()}`);
+      assert.equal(new URL(authorize.headers.get('location')!, origin).pathname, '/auth/mcp/login', name);
+    }
+  } finally {
+    backend.close();
+  }
+});
+
+test('a refused MCP registration reports why in its metric', async (t) => {
+  const origin = 'https://chickpea.example';
+  const backend = new NodeBetterAuthBackend(':memory:');
+  const metrics: unknown[] = [];
+  t.mock.method(console, 'info', (record: unknown) => metrics.push(record));
+  try {
+    const handler = createBetterAuthPublicHandler({
+      backend,
+      baseURL: origin,
+      secret: Buffer.alloc(32, 31).toString('base64url'),
+    });
+    const refused = await handler(jsonProtocolRequest(`${origin}/api/auth/oauth2/register`, {
+      ...REAL_MCP_CLIENT_REGISTRATIONS['claude.ai'],
+      application_type: 'browser',
+    }));
+    assert.equal(refused.status, 400);
+    assert.deepEqual(await refused.json(), { error: 'unsupported_application_type' });
+    assert.deepEqual(metrics, [{
+      component: 'management',
+      event: 'oauth.dcr',
+      stage: 'validation',
+      outcome: 'denied',
+      reason: 'unsupported_application_type',
+    }]);
+  } finally {
+    backend.close();
+  }
+});
+
+test('the public metadata rewrite drops body-derived headers and JWT-only fields', async () => {
+  const upstream = Response.json({
+    issuer: 'https://chickpea.example/api/auth',
+    token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post', 'private_key_jwt'],
+    token_endpoint_auth_signing_alg_values_supported: ['RS256', 'ES256'],
+    revocation_endpoint_auth_methods_supported: ['client_secret_basic'],
+  }, { headers: { 'cache-control': 'public, max-age=15', 'content-length': '999' } });
+
+  const rewritten = await advertisePublicClientsOnly(upstream);
+  const body = await rewritten.text();
+  assert.equal(rewritten.status, 200);
+  assert.equal(rewritten.headers.get('cache-control'), 'public, max-age=15');
+  assert.equal(rewritten.headers.get('content-length'), null, 'a copied length would describe the longer upstream body');
+  assert.deepEqual(JSON.parse(body), {
+    issuer: 'https://chickpea.example/api/auth',
+    token_endpoint_auth_methods_supported: ['none'],
+    revocation_endpoint_auth_methods_supported: ['client_secret_basic'],
+  });
+
+  const failed = Response.json({ error: 'server_error' }, { status: 500 });
+  assert.equal(await advertisePublicClientsOnly(failed), failed);
+});
+
+test('public MCP registration accepts only bounded public PKCE clients', () => {
+  for (const [name, registration] of Object.entries(REAL_MCP_CLIENT_REGISTRATIONS)) {
+    assert.equal(validatePublicMcpClientRegistration(registration).ok, true, name);
+  }
+
+  const denials: Record<string, { input: Record<string, unknown>; code: string }> = {
+    unknownApplicationType: {
+      input: { ...REAL_MCP_CLIENT_REGISTRATIONS['claude.ai'], application_type: 'browser' },
+      code: 'unsupported_application_type',
+    },
     confidential: {
-      application_type: 'web',
-      client_name: 'Secret client',
-      grant_types: ['authorization_code'],
-      redirect_uris: ['https://client.example/callback'],
-      response_types: ['code'],
-      token_endpoint_auth_method: 'client_secret_post',
+      input: {
+        application_type: 'web',
+        client_name: 'Secret client',
+        grant_types: ['authorization_code'],
+        redirect_uris: ['https://client.example/callback'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'client_secret_post',
+      },
+      code: 'public_clients_only',
     },
     wildcard: {
-      application_type: 'web',
-      client_name: 'Wildcard client',
-      grant_types: ['authorization_code'],
-      redirect_uris: ['https://*.example/callback'],
-      response_types: ['code'],
-      token_endpoint_auth_method: 'none',
+      input: {
+        application_type: 'web',
+        client_name: 'Wildcard client',
+        grant_types: ['authorization_code'],
+        redirect_uris: ['https://*.example/callback'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      },
+      code: 'invalid_redirect_uri',
     },
     insecureRemote: {
-      application_type: 'web',
-      client_name: 'Remote HTTP client',
-      grant_types: ['authorization_code'],
-      redirect_uris: ['http://client.example/callback'],
-      response_types: ['code'],
-      token_endpoint_auth_method: 'none',
+      input: {
+        application_type: 'web',
+        client_name: 'Remote HTTP client',
+        grant_types: ['authorization_code'],
+        redirect_uris: ['http://client.example/callback'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      },
+      code: 'invalid_redirect_uri',
     },
     implicit: {
-      application_type: 'web',
-      client_name: 'Implicit client',
-      grant_types: ['implicit'],
-      redirect_uris: ['https://client.example/callback'],
-      response_types: ['token'],
-      token_endpoint_auth_method: 'none',
+      input: {
+        application_type: 'web',
+        client_name: 'Implicit client',
+        grant_types: ['implicit'],
+        redirect_uris: ['https://client.example/callback'],
+        response_types: ['token'],
+        token_endpoint_auth_method: 'none',
+      },
+      code: 'unsupported_grant_type',
     },
-  })) {
-    const result = validatePublicMcpClientRegistration(input);
-    assert.equal(result.ok, false, name);
+  };
+  for (const [name, { input, code }] of Object.entries(denials)) {
+    assert.deepEqual(validatePublicMcpClientRegistration(input), { ok: false, code }, name);
   }
 });
 

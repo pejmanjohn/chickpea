@@ -36,6 +36,7 @@ import {
   type WorkspaceManagementPromptName,
 } from '../src/management/prompts.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { REAL_MCP_CLIENT_REGISTRATIONS } from './helpers/mcp-client-registrations.ts';
 
 const DEPLOYMENT_BASE_URL = 'https://chickpea-team.example.test/';
 
@@ -78,6 +79,7 @@ const MCP_TOOL_ANNOTATIONS = {
   export_workspace_recipe: READ,
   preview_workspace_recipe: READ,
   import_skill: WRITE,
+  upload_skills: WRITE,
   manage_agent_skill: WRITE,
   apply_workspace_changes: WRITE,
   confirm_workspace_change: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
@@ -89,9 +91,9 @@ const MCP_TOOL_ANNOTATIONS = {
 };
 
 const CLIENTS = [
-  { name: 'Codex CLI/Desktop', protocol: '2025-11-25', redirect: 'http://127.0.0.1:47321/callback' },
-  { name: 'Claude Code', protocol: '2025-11-25', redirect: 'http://localhost:49321/callback' },
-  { name: 'MCP Inspector', protocol: '2026-07-28', redirect: 'https://inspector.example/callback' },
+  { name: 'Codex CLI/Desktop', protocol: '2025-11-25', registration: REAL_MCP_CLIENT_REGISTRATIONS['Codex CLI'] },
+  { name: 'Claude Code', protocol: '2025-11-25', registration: REAL_MCP_CLIENT_REGISTRATIONS['Claude Code'] },
+  { name: 'MCP Inspector', protocol: '2026-07-28', registration: REAL_MCP_CLIENT_REGISTRATIONS['MCP Inspector'] },
 ] as const;
 
 test('supported coding clients share public PKCE registration and stateless MCP discovery', async () => {
@@ -129,15 +131,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
     );
 
     for (const client of CLIENTS) {
-      assert.equal(validatePublicMcpClientRegistration({
-        application_type: client.redirect.startsWith('http://') ? 'native' : 'web',
-        client_name: client.name,
-        grant_types: ['authorization_code', 'refresh_token'],
-        redirect_uris: [client.redirect],
-        response_types: ['code'],
-        scope: 'chickpea:workspace offline_access',
-        token_endpoint_auth_method: 'none',
-      }).ok, true, client.name);
+      assert.equal(validatePublicMcpClientRegistration(client.registration).ok, true, client.name);
 
       if (client.protocol !== '2026-07-28') {
         const initialized = await mcpCall(handler.fetch, client.protocol, 'initialize', {
@@ -444,7 +438,7 @@ test('server instructions stay under the client cap and link the deployment Admi
 test('workspace management MCP publishes the version 4 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '4.1.0',
+    version: '4.2.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });

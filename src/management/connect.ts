@@ -107,7 +107,7 @@ export const CONNECT_CLIENTS: readonly ConnectClient[] = Object.freeze([
     where: 'the client\'s MCP server configuration',
     language: 'json',
     snippet: (url) => CONFIG_JSON(url, { type: 'http' }),
-    login: 'Use the client\'s remote or custom server sign-in; it discovers OAuth from the server. claude.ai and Claude Desktop: Customize → Connectors → Add custom connector, paste the URL. ChatGPT: Developer mode, custom connector by URL.',
+    login: 'Use the client\'s remote or custom server sign-in; it discovers OAuth from the server. ChatGPT: Developer mode, custom connector by URL.',
     restart: 'Follow the client\'s own instructions for loading a new server.',
   },
 ]);
@@ -137,6 +137,21 @@ export function connectMcpUrl(origin: string): string {
 
 export function connectGuideUrl(origin: string): string {
   return `${origin}${CONNECT_MARKDOWN_PATH}`;
+}
+
+const CLAUDE_CONNECTOR_PAGES = {
+  personal: 'https://claude.ai/customize/connectors',
+  // Only a Claude Team or Enterprise Owner can open this one.
+  organization: 'https://claude.ai/admin-settings/connectors',
+} as const;
+
+/**
+ * Claude's published install link: it opens the Add custom connector dialog
+ * with the name and URL filled in, and the person confirms. A connector added
+ * there reaches every Claude surface on that account, Claude Code included.
+ */
+export function claudeConnectorLink(url: string, page: keyof typeof CLAUDE_CONNECTOR_PAGES = 'personal'): string {
+  return `${CLAUDE_CONNECTOR_PAGES[page]}?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=${encodeURIComponent(url)}`;
 }
 
 /** The one line a person pastes into their coding agent. */
@@ -204,9 +219,22 @@ export function connectMarkdown(origin: string, env?: Record<string, unknown>): 
     '',
     '## 1. Detect which client you are running in',
     '',
-    'You are one of: Claude Code, Codex, Cursor, VS Code, Windsurf, Gemini CLI, or another MCP client. Use what you know about your own harness. If you genuinely cannot tell, ask the person once, then continue.',
+    'You are one of: the Claude app (claude.ai, Claude Desktop, Cowork, or the Desktop Code tab), Claude Code in a terminal, Codex, Cursor, VS Code, Windsurf, Gemini CLI, or another MCP client. Use what you know about your own harness. If you genuinely cannot tell, ask the person once, then continue.',
     '',
     '## 2. Add the server',
+    '',
+    '### Claude app',
+    '',
+    'Inside the Claude app, the person adds Chickpea as a Claude connector. Do not write a configuration file or run `claude mcp add`.',
+    '',
+    `- Give them this link. It opens Claude's Add custom connector dialog with Chickpea filled in: ${claudeConnectorLink(url)}`,
+    `- On a Claude Team or Enterprise plan, only an Owner can add connectors. An Owner uses this link instead to add Chickpea for the whole organization: ${claudeConnectorLink(url, 'organization')} A member asks an Owner to do that, then finds Chickpea under Customize → Connectors.`,
+    '- Ask them to click Add, then Connect, sign in with Slack, and click Allow.',
+    '- Ask them to start a new conversation, which loads the connector, and paste `Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.` That call is the step 5 proof. Steps 3 and 4 do not apply here.',
+    '',
+    '### Every other client',
+    '',
+    'If you are Claude Code and `/mcp` already lists `claude.ai Chickpea`, the person added Chickpea in the Claude app and your session has it. Skip to step 5. Do not run `claude mcp add`, because a server at the same URL replaces the connector and needs its own sign-in.',
     '',
     `Use the server name \`${MCP_SERVER_NAME}\` unless it is already taken, and keep every other server the person has configured. Write the configuration for your client:`,
     '',
@@ -267,8 +295,9 @@ h2{font-size:17px;margin:30px 0 8px}
 p{margin:0 0 12px;color:var(--text-2)}
 .snippet{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:start;background:var(--well);border:1px solid var(--line);border-radius:12px;padding:12px 12px 12px 14px;margin:8px 0 14px}
 .snippet pre{margin:0;white-space:pre-wrap;word-break:break-word;font:14px/1.5 "JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;color:var(--text)}
-button.copy{font:inherit;font-weight:700;font-size:14px;padding:8px 14px;border:0;border-radius:9px;background:var(--gold);color:#3b3220;cursor:pointer;box-shadow:0 2px 0 var(--gold-press)}
-button.copy:active{transform:translateY(1px);box-shadow:0 1px 0 var(--gold-press)}
+button.copy,a.install{font:inherit;font-weight:700;font-size:14px;padding:8px 14px;border:0;border-radius:9px;background:var(--gold);color:#3b3220;cursor:pointer;box-shadow:0 2px 0 var(--gold-press)}
+button.copy:active,a.install:active{transform:translateY(1px);box-shadow:0 1px 0 var(--gold-press)}
+a.install{display:inline-block;text-decoration:none;margin:4px 0 12px}
 button.copy[data-done]{background:var(--ok);color:#fff;box-shadow:none}
 .meta{font-size:14px}
 a{color:var(--gold-deep)}
@@ -295,7 +324,8 @@ function snippetHtml(id: string, text: string): string {
 
 /**
  * The human-facing page. Shows the one-line prompt with a copy button, the
- * direct commands for Claude Code and Codex, and a link to Admin Settings.
+ * Add to Claude link, the direct commands for Claude Code and Codex, and a
+ * link to Admin Settings.
  * No diagnostics: nothing here depends on workspace state.
  */
 export function connectPageHtml(origin: string, nonce: string): string {
@@ -320,14 +350,18 @@ export function connectPageHtml(origin: string, nonce: string): string {
 <p>Paste this into Claude Code, Codex, Cursor, or any coding agent that supports MCP. It reads the guide at that address and connects itself.</p>
 ${snippetHtml('prompt', connectPrompt(origin))}
 <h2>Or add it yourself</h2>
+<p class="meta">Claude app (web, Desktop, Cowork)</p>
+<a class="install" href="${escapeHtml(claudeConnectorLink(url))}" target="_blank" rel="noopener noreferrer">Add to Claude</a>
+<p class="meta">Claude opens its Add custom connector dialog with Chickpea filled in. Click Add, then Connect, and sign in with Slack. On a Claude Team or Enterprise plan, an Owner <a href="${escapeHtml(claudeConnectorLink(url, 'organization'))}" target="_blank" rel="noopener noreferrer">adds it for the whole organization</a>, and each member clicks Connect.</p>
 <p class="meta">Claude Code</p>
 ${snippetHtml('claude-code', claude.snippet(url))}
+<p class="meta">Already added Chickpea in Claude? Claude Code signed in with the same claude.ai account gets it in its next session, so skip this command.</p>
 <p class="meta">Codex</p>
 ${snippetHtml('codex', codex.snippet(url))}
 <p class="meta">${escapeHtml(codex.login)}</p>
 <p class="meta">Any MCP client: add a remote server at <code>${escapeHtml(url)}</code>. Sign-in uses your Slack account; there is no API key or token to paste. Full instructions for Cursor, VS Code, Windsurf, and Gemini CLI are in <a href="${escapeHtml(guideUrl)}">the guide</a>.</p>
 <h2>Then</h2>
-<p>Ask your coding agent what Agents it can manage, or tell it what your first teammate should do. Signed in to Admin? <a href="${ADMIN_CODING_AGENTS_PATH}">Settings → MCP</a> has every client's snippet and one-click install for Cursor and VS Code. Model providers, GitHub, and other workspace settings stay in <a href="${ADMIN_SETTINGS_PATH}">Admin Settings</a>.</p>
+<p>Ask your coding agent what Agents it can manage, or tell it what your first teammate should do. Signed in to Admin? <a href="${ADMIN_CODING_AGENTS_PATH}">Settings → MCP</a> has every client's snippet and one-click install for Claude, Cursor, and VS Code. Model providers, GitHub, and other workspace settings stay in <a href="${ADMIN_SETTINGS_PATH}">Admin Settings</a>.</p>
 </div>
 </main>
 <script nonce="${nonce}">${COPY_SCRIPT}</script>

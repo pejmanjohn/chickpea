@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { FlueObservation } from '@flue/runtime';
+import { MCP_CLIENT_REGISTRATION_DENIALS } from '../auth/mcp-oauth.ts';
 import type { ManagementOperation } from './types.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
 
@@ -107,7 +108,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'discover_slack_channels', 'test_connection', 'save_connection_key', 'try_connection',
     'inspect_memory', 'inspect_routines',
     'export_workspace_recipe', 'preview_workspace_recipe',
-    'import_skill', 'manage_agent_skill', 'propose_skill_import',
+    'import_skill', 'upload_skills', 'manage_agent_skill', 'propose_skill_import',
     'propose_workspace_changes', 'apply_workspace_changes', 'confirm_workspace_change',
     'undo_workspace_change', 'get_operation', 'revoke_setup_link',
     'list_mcp_clients', 'revoke_mcp_client',
@@ -133,6 +134,7 @@ const REASON_TOKENS = new Set([
   'handle_collision', 'name_collision', 'invalid_handle', 'channel_membership_required',
   'private_channel_invite_required', 'rate_limited', 'user_group_create_ambiguous',
   'slack_unavailable', 'slack_operation_failed',
+  ...MCP_CLIENT_REGISTRATION_DENIALS,
 ]);
 
 interface ManagementTelemetrySink {

@@ -384,6 +384,7 @@ npx chickpea-cli login https://chickpea.example.com         # browser sign-in, t
 npx chickpea-cli workspace inspect https://chickpea.example.com
 npx chickpea-cli call https://chickpea.example.com <tool> --args '{...}'
 npx chickpea-cli recipe export https://chickpea.example.com > recipe.json
+npx chickpea-cli skills upload https://chickpea.example.com agent_support skills.zip
 ```
 
 The CLI never takes a token or key as an argument, never confirms a proposal on its own, and sends no telemetry. Node 24.x, minimum 24.22.1.
@@ -510,9 +511,9 @@ in, plus the exact snippet for every client:
 
 - **Settings → MCP** in Admin (`https://<your Chickpea>/admin/settings/agents-clients`).
   The Coding agents page lists Claude Code, Codex, Cursor, VS Code, Windsurf,
-  Gemini CLI, claude.ai and Claude Desktop, ChatGPT, and a generic JSON block,
-  each with a Copy button, plus one-click **Add to Cursor** and **Add to VS
-  Code**. Every member can open it.
+  Gemini CLI, the Claude app, ChatGPT, and a generic JSON block, each with a
+  Copy button, plus one-click **Add to Claude**, **Add to Cursor**, and **Add
+  to VS Code**. Every member can open it.
 - **`https://<your Chickpea>/connect`**, a public page on your deployment, for
   anyone who is not signed in to Admin yet. It works before Slack setup is
   finished, although `/mcp` answers 404 until setup completes.
@@ -687,7 +688,7 @@ use the [release checklist](docs/runbooks/releasing.md).
 <details>
 <summary><strong>Attachment limits</strong></summary>
 
-Per turn: 4 files, 8 MiB each, 12 MiB total, 100 PDF pages, 32,000 characters per file and 48,000 total. Images use Slack's bounded thumbnails when available. Anything over a limit, or without a safe conversion, gets a file-specific next action instead of a quiet partial read. Slack installations predating the `files:read` scope must reconnect once.
+Per turn: 4 files, 8 MiB each, 12 MiB total, 100 PDF pages, 64,000 characters per file and 128,000 total. Images use Slack's bounded thumbnails when available. Anything over a limit, or without a safe conversion, gets a file-specific next action instead of a quiet partial read. Slack installations predating the `files:read` scope must reconnect once.
 
 </details>
 

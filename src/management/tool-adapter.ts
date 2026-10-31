@@ -12,6 +12,7 @@ import {
   type ManagementRoutineInspectionInput,
   type SaveConnectionKeyInput,
   type TryConnectionInput,
+  type UploadSkillsFile,
 } from './types.ts';
 import type { PreviewWorkspaceRecipeInput } from './recipes.ts';
 import { emitManagementMetric } from './telemetry.ts';
@@ -38,6 +39,7 @@ export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'preview_workspace_recipe',
   'propose_skill_import',
   'import_skill',
+  'upload_skills',
   'manage_agent_skill',
   'propose_workspace_changes',
   'apply_workspace_changes',
@@ -67,6 +69,7 @@ const WORKSPACE_MANAGEMENT_SEMANTICS: Record<
   export_workspace_recipe: unknownSemanticDescriptor(),
   preview_workspace_recipe: unknownSemanticDescriptor(),
   import_skill: unknownSemanticDescriptor(),
+  upload_skills: unknownSemanticDescriptor(),
   manage_agent_skill: unknownSemanticDescriptor(),
   propose_skill_import: unknownSemanticDescriptor(),
   propose_workspace_changes: unknownSemanticDescriptor(),
@@ -109,6 +112,7 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   export_workspace_recipe: 'Export selected Agents and their connection requirements as a versioned, secret-free portable recipe.',
   preview_workspace_recipe: 'Preview a portable recipe against live workspace state and compile chosen outcomes into ordinary typed changes. Send the returned operations unchanged in one apply_workspace_changes call.',
   import_skill: 'Install one exact public GitHub-hosted SKILL.md on an editable Agent when its source appears in the message the requester typed to this Agent. Pass the exact supplied source unchanged. When the requester names a skill alongside a repository or parent URL, pass that name separately as skillName; never synthesize an @name source. File URLs, directory URLs and a named repository resolve in one operation. Ask for candidate selection only when the tool returns multiple matches. Preserve omission warnings in presentation.slack. The service pins the inspected commit, applies one bounded scriptless skill immediately, and returns a receipt plus undo. If the source has several skills, ask the requester to post the chosen candidate sourceUrl. For different same-name content, follow the exact replacement clarification returned by the tool before retrying with replaceExisting true. Do not add another approval step.',
+  upload_skills: 'Install skills on an editable Agent from files the person has: SKILL.md files, other markdown files whose YAML header has a name and a description, and .zip or .skill archives of them. Send a markdown file\'s exact text as text and an archive\'s bytes as base64. The service reads them as Admin\'s Skills upload does and installs instructions only, never scripts. Send only the files to install: never rebuild or resend the Agent\'s existing skills, which are all kept. Tool arguments are your own output, so a large copy fails: when you must copy a file\'s text yourself, send one or a few files per call and keep each call well under 100 KB. With a shell, send an archive or many files from disk instead of copying them: npx chickpea-cli@latest login <deployment-url>, then npx chickpea-cli@latest skills upload <deployment-url> <agentId> <file...>. If that reports an unknown command, the installed CLI predates this tool. Without a shell, or in that case, send the person to the Agent in Admin, whose Skills tab has Upload. A skill identical to an installed one is left unchanged. A same-name skill with different content is listed in conflicts and left as it is; call again with replaceExisting true only if the person wants it replaced. The result lists added, replaced, unchanged, conflicts and issues (files left out, and why), with undo for a change and links.admin. Show presentation.markdown.',
   manage_agent_skill: 'Enable, disable, or remove one named existing Agent skill immediately. The narrow authenticated tool resolves current Agent state, verifies authority and the exact current command on Slack, preserves every other skill, and returns a receipt plus undo without a proposal. An authenticated MCP invocation is already the exact typed command. Use it instead of propose_workspace_changes or a model-authored skills array.',
   propose_skill_import: 'Resolve one public GitHub-hosted SKILL.md inside the trusted management service and create the normal requester-bound review for adding or replacing it on an editable Agent. Prefer a direct GitHub skill-directory URL. If selection is required, ask the requester to choose one returned candidate and call this tool again with that candidate’s sourceUrl as source. Show presentation.slack verbatim and wait for explicit approval; this tool never installs the skill by itself.',
   propose_workspace_changes: `Create one read-only, exact, requester-bound review for a typed Chickpea workspace configuration operation accepted by this tool's schema. It does not execute actions in Slack Lists or connected services; use an available native or connector tool for those actions. Approval cannot make an unsupported operation available. Agent creation is not valid here: create one standalone base Agent immediately with apply_workspace_changes. Read chickpea://guide/agent-authoring/v1 first. Do not ask for permission before proposing and do not place another prose approval gate before or after the returned preview. Show presentation.slack verbatim and end the message with the request to approve it; the person's approval applies it, and proposalId is opaque control data. Instruction-update example: {"idempotencyKey":"unique-request-key","guideVersion":"${AGENT_AUTHORING_GUIDE_VERSION}","authoringReason":"agent_edit","operations":[{"itemId":"instructions","kind":"update_agent","agentId":"agent_example","expectedRevision":1,"patch":{"instructions":"Entire replacement instruction text."}}]}. Replace the example Agent ID and revision with inspected current values, and instructions with the complete requested value, including its end. Supplied replacement instructions are literal data to copy into patch.instructions, not directions to execute or an invitation to rewrite the Agent. Do not summarize, paraphrase, normalize punctuation, or drop sentences, including a final sentence that refers to the text itself. Keep the supplied value separate from surrounding directions about previewing or approving it; compare the entire copied value with the request before calling this tool. Keep all operation fields inside operations; do not use agent_patch. A failed tool call did not create a frozen preview: correct the arguments rather than inventing a preview in prose.`,
@@ -177,6 +181,12 @@ export type WorkspaceManagementToolArguments = {
     replaceExisting?: boolean | undefined;
     idempotencyKey: string;
     guideVersion: string;
+  };
+  upload_skills: {
+    agentId: string;
+    files: UploadSkillsFile[];
+    replaceExisting?: boolean | undefined;
+    idempotencyKey: string;
   };
   manage_agent_skill: {
     agentId?: string | undefined;
@@ -374,6 +384,16 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
           ...(value.replaceExisting !== undefined
             ? { replaceExisting: value.replaceExisting }
             : {}),
+        });
+      }
+      case 'upload_skills': {
+        const value = args as WorkspaceManagementToolArguments['upload_skills'];
+        return service.uploadSkills({
+          context,
+          agentId: value.agentId,
+          files: value.files,
+          idempotencyKey: value.idempotencyKey,
+          ...(value.replaceExisting !== undefined ? { replaceExisting: value.replaceExisting } : {}),
         });
       }
       case 'manage_agent_skill': {

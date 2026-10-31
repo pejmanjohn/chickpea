@@ -137,27 +137,43 @@ test('text character limits accept exact boundaries and fail one over without sl
   }]);
 });
 
+test('a 40,000-character markdown file and two of them in one message are read whole', async () => {
+  const skill = `---\nname: skill\n---\n${'- line of a long skill file\n'.repeat(1_500)}`.slice(0, 40_000);
+  const result = await normalizeSlackAttachments({
+    fileIds: ['F_ONE', 'F_TWO'],
+    gateway: mapGateway(new Map([
+      ['F_ONE', textRead('F_ONE', 'one.md', new TextEncoder().encode(skill))],
+      ['F_TWO', textRead('F_TWO', 'two.md', new TextEncoder().encode(skill))],
+    ])),
+  });
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.totalCharacters, 80_000);
+});
+
 test('aggregate character limits accept exact boundaries and reject one over per file', async () => {
-  const first = 'a'.repeat(24_000);
-  const exactSecond = 'b'.repeat(MAX_SLACK_ATTACHMENT_TOTAL_CHARACTERS - first.length);
+  const first = 'a'.repeat(MAX_SLACK_ATTACHMENT_CHARACTERS);
+  const second = 'c'.repeat(MAX_SLACK_ATTACHMENT_TOTAL_CHARACTERS - MAX_SLACK_ATTACHMENT_CHARACTERS - 1_000);
+  const exactThird = 'b'.repeat(1_000);
   const exact = await normalizeSlackAttachments({
-    fileIds: ['F_A', 'F_B'],
+    fileIds: ['F_A', 'F_C', 'F_B'],
     gateway: mapGateway(new Map([
       ['F_A', textRead('F_A', 'a.txt', new TextEncoder().encode(first))],
-      ['F_B', textRead('F_B', 'b.txt', new TextEncoder().encode(exactSecond))],
+      ['F_C', textRead('F_C', 'c.txt', new TextEncoder().encode(second))],
+      ['F_B', textRead('F_B', 'b.txt', new TextEncoder().encode(exactThird))],
     ])),
   });
   assert.equal(exact.failures.length, 0);
   assert.equal(exact.totalCharacters, MAX_SLACK_ATTACHMENT_TOTAL_CHARACTERS);
 
   const over = await normalizeSlackAttachments({
-    fileIds: ['F_A', 'F_B'],
+    fileIds: ['F_A', 'F_C', 'F_B'],
     gateway: mapGateway(new Map([
       ['F_A', textRead('F_A', 'a.txt', new TextEncoder().encode(first))],
-      ['F_B', textRead('F_B', 'b.txt', new TextEncoder().encode(`${exactSecond}x`))],
+      ['F_C', textRead('F_C', 'c.txt', new TextEncoder().encode(second))],
+      ['F_B', textRead('F_B', 'b.txt', new TextEncoder().encode(`${exactThird}x`))],
     ])),
   });
-  assert.deepEqual(over.attachments.map(({ fileId }) => fileId), ['F_A']);
+  assert.deepEqual(over.attachments.map(({ fileId }) => fileId), ['F_A', 'F_C']);
   assert.deepEqual(over.failures.map(({ fileId, code }) => ({ fileId, code })), [{
     fileId: 'F_B',
     code: 'attachment_aggregate_character_limit_exceeded',

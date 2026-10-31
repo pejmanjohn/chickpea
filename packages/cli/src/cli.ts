@@ -1,5 +1,6 @@
 import { connectChatgpt } from './chatgpt.ts';
 import { openBrowserDetached } from './browser.ts';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import { runDoctor, renderDoctorReport } from './doctor.ts';
@@ -8,6 +9,7 @@ import { isMcpClient, MCP_CLIENTS, mcpConfigRecord, renderMcpConfig, type McpCli
 import { connectManagementClient, login, logout, type AuthDeps } from './oauth.ts';
 import { normalizeDeploymentOrigin, mcpUrl } from './origin.ts';
 import { Io } from './output.ts';
+import { skillUploadBatches, skillUploadFile } from './skills.ts';
 import { CredentialStore, resolveConfigDir } from './store.ts';
 import { callManagementTool, collectEnvelopeHints, renderEnvelopeHints, renderToolList, type ToolEnvelope } from './tools.ts';
 import { CLI_VERSION } from './version.ts';
@@ -22,6 +24,7 @@ export interface CliDeps {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   readFile: (path: string) => string;
+  readBytes: (path: string) => Uint8Array;
   /** Test hook forwarded to `login`. */
   onAuthorizationUrl?: (url: string) => void;
   loginTimeoutMs?: number;
@@ -43,6 +46,8 @@ Usage:
                                                       Call a management tool; prints the { ok, result | error } envelope
   chickpea recipe export <deployment-url> [--agents id,id]
   chickpea recipe preview <deployment-url> <recipe.json>
+  chickpea skills upload <deployment-url> <agent-id> <file...> [--replace]
+                                                      Install skills from SKILL.md, markdown, .zip or .skill files
 
 Global flags:
   --json     Machine-readable output on stdout
@@ -100,6 +105,7 @@ export function defaultDeps(): CliDeps {
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
     readFile: (path) => readFileSync(path, 'utf8'),
+    readBytes: (path) => readFileSync(path),
   };
 }
 
@@ -152,6 +158,8 @@ export async function run(argv: readonly string[], overrides: Partial<CliDeps> =
         return await commandCall(rest, flags, io, deps);
       case 'recipe':
         return await commandRecipe(rest, flags, io, deps);
+      case 'skills':
+        return await commandSkills(rest, flags, io, deps);
       default:
         throw new CliError('UNKNOWN_COMMAND', `Unknown command "${command}"`, 'Run: chickpea --help');
     }
@@ -368,6 +376,63 @@ async function commandRecipe(args: readonly string[], flags: ParsedArgs['flags']
     return 0;
   }
   throw new CliError('UNKNOWN_COMMAND', `Unknown recipe subcommand "${subcommand ?? ''}"`, 'Usage: chickpea recipe export|preview ...');
+}
+
+async function commandSkills(args: readonly string[], flags: ParsedArgs['flags'], io: Io, deps: CliDeps): Promise<number> {
+  const usage = 'chickpea skills upload <deployment-url> <agent-id> <file...> [--replace]';
+  const [subcommand, ...rest] = args;
+  if (subcommand !== 'upload') {
+    throw new CliError('UNKNOWN_COMMAND', `Unknown skills subcommand "${subcommand ?? ''}"`, `Usage: ${usage}`);
+  }
+  const origin = requireOrigin(rest, usage);
+  const [, agentId, ...paths] = rest;
+  if (!agentId || paths.length === 0) {
+    throw new CliError('MISSING_ARGUMENT', 'An Agent id and at least one file are required', `Usage: ${usage}`);
+  }
+  const files = paths.map((path) => {
+    let bytes: Uint8Array;
+    try {
+      bytes = deps.readBytes(path);
+    } catch (error) {
+      throw new CliError('INVALID_ARGUMENT', `Cannot read ${path} (${error instanceof Error ? error.message : String(error)})`);
+    }
+    return skillUploadFile(path, bytes);
+  });
+  const batches = skillUploadBatches(files, `${origin}/admin/agents/${encodeURIComponent(agentId)}`);
+  const envelopes = await withConnection(origin, io, deps, async (client) => {
+    const results: ToolEnvelope[] = [];
+    for (const batch of batches) {
+      const envelope = await callManagementTool(client, 'upload_skills', {
+        agentId,
+        files: batch,
+        idempotencyKey: `cli-skills-upload-${randomUUID()}`,
+        ...(flags.has('--replace') ? { replaceExisting: true } : {}),
+      });
+      results.push(envelope);
+      if (!envelope.ok) break;
+    }
+    return results;
+  });
+  if (io.json) {
+    io.printJson(envelopes);
+    return envelopes.every(({ ok }) => ok) ? 0 : 1;
+  }
+  const conflicts: string[] = [];
+  let adminLink: string | undefined;
+  for (const envelope of envelopes) {
+    if (!envelope.ok) return failEnvelope(envelope, io);
+    const result = envelope.result as {
+      presentation: { markdown: string };
+      conflicts: Array<{ name: string }>;
+      links?: { admin?: string };
+    };
+    io.print(result.presentation.markdown);
+    conflicts.push(...result.conflicts.map(({ name }) => name));
+    adminLink ??= result.links?.admin;
+  }
+  if (conflicts.length) io.note(`To replace ${conflicts.join(', ')}, run the same command with --replace.`);
+  if (adminLink) io.print(`Agent in Admin: ${adminLink}`);
+  return 0;
 }
 
 function renderRecipePreview(result: unknown): string {

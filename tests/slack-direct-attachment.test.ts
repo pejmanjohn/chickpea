@@ -85,6 +85,47 @@ test('files.info caps chunked metadata and cancels its stream before JSON parsin
   assert.equal(calls, 1);
   assert.equal(cancelled, true);
 });
+test('files.info for a 40 KB text file, which inlines its content three times, still reads the file', async () => {
+  // Slack's files.info measured 2026-10-30: a 39,902-byte markdown upload returned 1,665,332 bytes,
+  // mostly content_highlight_html, then content_html and content.
+  const text = 'x'.repeat(40_000);
+  let calls = 0;
+  const fetcher: typeof fetch = async () => {
+    calls++;
+    if (calls === 1) {
+      return Response.json({
+        ok: true,
+        file: { id: 'F123', name: 'skill.md', mimetype: 'text/plain', size: text.length,
+          url_private_download: 'https://files.slack.com/files-pri/TPARENT-F123/download/skill.md' },
+        content: text,
+        content_html: `<pre>${text}</pre>`,
+        content_highlight_html: `<span class="hl">${text}</span>`.repeat(38),
+      });
+    }
+    return new Response(text, { headers: { 'content-type': 'text/plain' } });
+  };
+  const result = await readDirectSlackAttachment({ ...base, maxBytes: 8 * 1024 * 1024, fetch: fetcher });
+  assert.equal(result.representation, 'text_original');
+  assert.equal(result.bytes.byteLength, text.length);
+  assert.equal(calls, 2);
+});
+test('files.info sent compressed reads by its decoded body, not its encoded Content-Length', async () => {
+  // Node's fetch asks for compression; Slack answered a 413,023-byte files.info
+  // as brotli with Content-Length 11228, and fetch returns the decoded body.
+  let calls = 0;
+  const fetcher: typeof fetch = async () => {
+    calls++;
+    if (calls === 1) {
+      return new Response(JSON.stringify({ ok: true, file: { id: 'F123', name: 'fixture.txt', mimetype: 'text/plain', size: 5,
+        url_private: 'https://files.slack.com/files-pri/TPARENT-F123/fixture.txt' }, content_highlight_html: 'x'.repeat(4096) }), {
+        headers: { 'content-type': 'application/json', 'content-encoding': 'br', 'content-length': '512' },
+      });
+    }
+    return new Response('hello', { headers: { 'content-type': 'text/plain' } });
+  };
+  const result = await readDirectSlackAttachment({ ...base, fetch: fetcher });
+  assert.equal(new TextDecoder().decode(result.bytes), 'hello');
+});
 test('files.info refuses non-JSON metadata before downloading', async () => {
   const fetcher: typeof fetch = async () => new Response('<html>login</html>', { headers: { 'content-type': 'text/html' } });
   await assert.rejects(readDirectSlackAttachment({ ...base, fetch: fetcher }), /invalid_file_metadata/);
