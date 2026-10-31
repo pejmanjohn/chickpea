@@ -387,6 +387,19 @@ interface SlackPresentationTaskV3 {
   detail?: string;
 }
 
+/**
+ * A reply the Agent posted mid-run (KTD14). It is recorded before it posts,
+ * so a restarted turn never answers the same message twice.
+ */
+export interface SlackPresentationMidRunReply {
+  /** The message it answers, one the response read mid-run. */
+  messageTs: string;
+  /** When it was recorded: replies keep a minimum spacing. */
+  at: number;
+  /** Slack accepted it. */
+  posted?: true;
+}
+
 export interface SlackPresentationPlanV3 {
   displayMode: 'timeline' | 'plan';
   tasks: SlackPresentationTaskV3[];
@@ -454,6 +467,8 @@ export interface SlackRunPresentationV3 extends SlackRunPresentationBase {
   /** Durable pacing for background repair, absent until the first drain attempt. */
   repair?: SlackPresentationRepairSchedule;
   plan?: SlackPresentationPlanV3;
+  /** The Agent's mid-run replies, in order; absent until the first. */
+  midRunReplies?: SlackPresentationMidRunReply[];
   compatibility: {
     sourceSchemaVersion: 1 | 2 | 3;
     legacyPersona?: SlackPresentationPersona;
@@ -722,7 +737,10 @@ export type SlackPresentationMutation =
     }
   | { kind: 'retry_cleanup'; operationId: string }
   | { kind: 'record_title_intent'; valueHash: string }
-  | { kind: 'record_title_outcome'; outcome: 'set' | 'failed' };
+  | { kind: 'record_title_outcome'; outcome: 'set' | 'failed' }
+  /** A mid-run reply about to post, stamped now; refused once the final is under way. */
+  | { kind: 'reserve_midrun_reply'; messageTs: string }
+  | { kind: 'record_midrun_reply_posted'; messageTs: string };
 
 export interface SlackPresentationTransitionInput {
   runId: string;
@@ -2877,6 +2895,30 @@ function applyMutation(
       }
       next.title = { ...current.title, outcome: mutation.outcome };
       return next;
+    case 'reserve_midrun_reply': {
+      requireV3(current);
+      requireV3(next);
+      validateSlackTimestamp(mutation.messageTs, 'Mid-run reply message');
+      if (current.terminalDelivery.state !== 'none') {
+        throw stateError('terminal_rewrite', 'The final reply is already under way.');
+      }
+      if (current.midRunReplies?.some((reply) => reply.messageTs === mutation.messageTs)) {
+        throw stateError('identity_conflict', 'That message already has a mid-run reply.');
+      }
+      next.midRunReplies = [...current.midRunReplies ?? [], { messageTs: mutation.messageTs, at }];
+      return next;
+    }
+    case 'record_midrun_reply_posted': {
+      requireV3(current);
+      requireV3(next);
+      const replies = current.midRunReplies ?? [];
+      if (!replies.some((reply) => reply.messageTs === mutation.messageTs)) {
+        throw stateError('invalid_transition', 'Only a recorded mid-run reply can be marked posted.');
+      }
+      next.midRunReplies = replies.map((reply) =>
+        reply.messageTs === mutation.messageTs ? { ...reply, posted: true } : reply);
+      return next;
+    }
   }
 }
 
@@ -3345,6 +3387,12 @@ function isStoredV3Presentation(
           presentation.cleanup.disposition !== 'superseded') return false;
     } else return false;
     if (!isStoredContinuations(presentation.continuations)) return false;
+    if (presentation.midRunReplies !== undefined && (
+      !Array.isArray(presentation.midRunReplies) ||
+      !presentation.midRunReplies.every((reply) =>
+        typeof reply?.messageTs === 'string' && Number.isSafeInteger(reply.at) &&
+        (reply.posted === undefined || reply.posted === true))
+    )) return false;
     if (presentation.repair !== undefined && (
       !Number.isSafeInteger(presentation.repair.attempts) ||
       presentation.repair.attempts < 1 ||

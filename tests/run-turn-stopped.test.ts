@@ -13,7 +13,7 @@ import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { CodingTaskStopReport } from '../src/sandbox/coding-task-stop.ts';
 import { SlackStateLogic } from '../src/slack/claim-store.ts';
 import { AgentPromptFailure, AgentRunAborted } from '../src/slack/flue-dispatch.ts';
-import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
+import { SlackRunPresentationStoreLogic, type SlackPresentationMutation } from '../src/slack/run-presentations.ts';
 import { runTurn, type RunTurnOptions, type SlackStopEnding } from '../src/slack/run-turn.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
@@ -772,6 +772,29 @@ test('covers AE1: a stopped run posts one note naming the stopper and the pushed
     assert.equal(stored.repairRequired, false);
     const run = await h.work.getRun(h.runId);
     assert.equal(run?.terminalDisposition, 'cancelled', 'the Run is cancelled, not failed');
+  } finally { h.close(); }
+});
+
+test('the stop note counts the replies the Agent posted mid-run, not one Slack refused', async () => {
+  const turn = dmTurn('1790100001.000200');
+  const h = await presentationHarness(turn);
+  try {
+    const record = (mutation: SlackPresentationMutation) => {
+      const current = h.store.get(h.runId)!;
+      h.store.transition({
+        runId: current.runId, workBindingGeneration: current.workBindingGeneration,
+        runFencingToken: current.runFencingToken, expectedProjectionVersion: current.projectionVersion,
+        expectedStreamState: current.stream.state, mutation,
+      });
+    };
+    record({ kind: 'reserve_midrun_reply', messageTs: '1790100001.000300' });
+    record({ kind: 'record_midrun_reply_posted', messageTs: '1790100001.000300' });
+    record({ kind: 'reserve_midrun_reply', messageTs: '1790100001.000400' });
+    const { ending } = stopEnding({ ...FACTS, pullRequests: [] });
+    await stoppedRun(turn, h, { stopEnding: ending });
+    const texts = written(h);
+    assert.equal(texts.length, 1, JSON.stringify(h.slack));
+    assert.match(texts[0]!, /Already done, not undone:\n- Posted 1 reply in this thread\./);
   } finally { h.close(); }
 });
 
