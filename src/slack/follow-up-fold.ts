@@ -8,7 +8,7 @@ import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import type { TurnFoldClaim, TurnFoldRequest } from './turn-job-types.ts';
 
 /** Late folds this response appended; written in the same durable batch as each append. */
-export const SLACK_FOLLOW_UP_STATE_NAME = 'chickpeaSlackFollowUps';
+const SLACK_FOLLOW_UP_STATE_NAME = 'chickpeaSlackFollowUps';
 
 interface FollowUpFoldState {
   cycles: number;
