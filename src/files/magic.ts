@@ -86,8 +86,27 @@ export function isTextMimeType(mimeType: string): boolean {
   return (mimeType.startsWith('text/') && mimeType !== 'text/rtf') || TEXT_APPLICATION_MIME_TYPES.has(mimeType);
 }
 
+/** Office files the readers serve as Slack's PDF copy: the gateway's list. */
+const DOCUMENT_MIME_TYPES = new Set([
+  'application/msword',
+  'application/rtf',
+  'application/vnd.apple.keynote',
+  'application/vnd.apple.numbers',
+  'application/vnd.apple.pages',
+  'application/vnd.ms-excel',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.oasis.opendocument.presentation',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/rtf',
+]);
+const DOCUMENT_NAMES = /\.(?:doc|docx|key|keynote|numbers|odp|ods|odt|pages|ppt|pptx|rtf|xls|xlsx)$/i;
+
 /** What `read_slack_file` reads a non-image Slack file as. */
-export type ReadableFileKind = 'archive' | 'pdf' | 'text';
+export type ReadableFileKind = 'archive' | 'pdf' | 'document' | 'text';
 
 /**
  * The kind a Slack file reads as, by its name and Slack's MIME type, the way
@@ -96,6 +115,7 @@ export type ReadableFileKind = 'archive' | 'pdf' | 'text';
 export function readableFileKind(name: string, mimeType?: string): ReadableFileKind | undefined {
   if (ARCHIVE_NAMES.test(name)) return 'archive';
   if (mimeType === 'application/pdf' || PDF_NAMES.test(name)) return 'pdf';
+  if ((mimeType !== undefined && DOCUMENT_MIME_TYPES.has(mimeType)) || DOCUMENT_NAMES.test(name)) return 'document';
   if ((mimeType !== undefined && isTextMimeType(mimeType)) || TEXT_NAMES.test(name)) return 'text';
   return undefined;
 }

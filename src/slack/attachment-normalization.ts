@@ -26,7 +26,7 @@ export const DEFAULT_NORMALIZATION_DEADLINE_PER_ATTACHMENT_MS = 13_000;
 const ANALYSIS_ACCEPT: readonly GatewayAttachmentRepresentation[] = [...DEFAULT_ATTACHMENT_ACCEPT, 'zip_original'];
 /** What read_slack_file reads, so the manifest names these files' handles. */
 const READ_TOOL_REPRESENTATIONS: ReadonlySet<GatewayAttachmentRepresentation> = new Set([
-  'text_original', 'pdf_original', 'zip_original',
+  'text_original', 'pdf_original', 'slack_pdf_conversion', 'zip_original',
 ]);
 
 export type SlackAttachmentNextAction =

@@ -59,7 +59,9 @@ test('readable kinds take a handle by name or Slack type; images and unserved fi
   assert.equal(readableFileKind('notes.md', 'text/plain'), 'text');
   assert.equal(readableFileKind('export', 'application/json'), 'text');
   assert.equal(readableFileKind('script.py'), 'text');
-  assert.equal(readableFileKind('memo.rtf', 'text/rtf'), undefined);
+  assert.equal(readableFileKind('memo.rtf', 'text/rtf'), 'document');
+  assert.equal(readableFileKind('Budget.XLSX'), 'document');
+  assert.equal(readableFileKind('brief', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'), 'document');
   assert.equal(readableFileKind('demo.mp4', 'video/mp4'), undefined);
   assert.equal(readableFileKind('archive.tar.gz', 'application/gzip'), undefined);
 });
@@ -107,6 +109,26 @@ test('a PDF reads as its extracted text, page markers included, and says when a 
   const scanned = await call(tool, { file: 'file:2' });
   assert.ok(scanned.ok && 'note' in scanned);
   assert.equal(scanned.note, 'Some pages have no text layer, such as scanned pages, so their content is missing here.');
+});
+
+test('a Word, Excel or PowerPoint file reads as the text of Slack\'s PDF copy, with a note on what it may miss', async () => {
+  const converted = (fileId: string, filename: string, pages: string[]): GatewayAttachmentRead =>
+    ({ ...pdfRead(fileId, filename, pages), representation: 'slack_pdf_conversion' });
+  const tool = fileTool(['F0BRIEF0001', 'F0DECK00001'], reader({
+    F0BRIEF0001: converted('F0BRIEF0001', 'brief.docx', ['Launch date: TOKEN-MAY-9']),
+    F0DECK00001: converted('F0DECK00001', 'deck.pptx', ['Title', '']),
+  }));
+  const note = 'This is the text of Slack\'s PDF copy of the file, so layout and formulas may be missing.';
+  assert.deepEqual(await call(tool, { file: 'file:1' }), {
+    ok: true, file: 'file:1', kind: 'document', note, text: '--- Page 1 of 1 ---\nLaunch date: TOKEN-MAY-9', name: 'brief.docx',
+  });
+  const deck = await call(tool, { file: 'file:2' });
+  assert.ok(deck.ok && 'note' in deck);
+  assert.equal(deck.note, `${note} Some pages have no text layer, such as scanned pages, so their content is missing here.`);
+  const analyzed = await normalizeSlackAttachments({
+    fileIds: ['F0BRIEF0001'], gateway: reader({ F0BRIEF0001: converted('F0BRIEF0001', 'brief.docx', ['Launch']) }),
+  });
+  assert.equal(analyzed.attachments[0]?.handle, 'file:1', 'the attachment manifest names its handle');
 });
 
 test('a damaged PDF is refused with its name and no exception', async () => {

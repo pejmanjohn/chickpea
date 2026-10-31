@@ -6,7 +6,7 @@ import { compareSlackTs, type SlackWebApiMessage } from './thread-context.ts';
 
 /**
  * Per-turn inventory of the readable non-image files in this Slack
- * conversation: zips, PDFs and text files. The Agent addresses them by
+ * conversation: zips, PDFs, text and Office files. The Agent addresses them by
  * `file:N` handles and `read_slack_file` reads them; no tool takes a Slack
  * file ID. Images keep their own `img:N` inventory (thread-images.ts).
  */
