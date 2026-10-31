@@ -40,6 +40,25 @@ export type HostApprovalSpec =
       host: string;
     };
 
+/**
+ * The front desk's card: the person picks which Agent takes their message.
+ * It carries the message itself (`origin`), because the message's turn job
+ * is gone long before the card is; a pick admits that message again.
+ */
+export interface HostAgentChoiceSpec {
+  kind: 'agent_choice';
+  requesterUserId: string;
+  options: Array<{ agentId: string; name: string }>;
+  origin: {
+    userId: string;
+    messageTs: string;
+    text: string;
+    attachments?: Array<{ fileId: string }>;
+    attachmentIntake?: { status: 'ok' | 'too_many' | 'invalid_metadata'; count: number };
+    requesterTimezone?: string;
+  };
+}
+
 /** A model-chosen question (ask_user) the person answers with one click. */
 export interface QuestionSurfaceSpec {
   kind: 'question';
@@ -76,6 +95,7 @@ export function isDisplaySurface(spec: UiSurfaceSpec): spec is DisplaySurfaceSpe
 
 export type UiSurfaceSpec =
   | HostApprovalSpec
+  | HostAgentChoiceSpec
   | QuestionSurfaceSpec
   | ActionsSurfaceSpec
   | FormSurfaceSpec
@@ -91,6 +111,8 @@ export interface UiSurfaceResolution {
   values?: string[];
   /** The answer arrived as typed text rather than a click. */
   typed?: true;
+  /** The chosen Agent could not take the message; the card says so. */
+  refused?: true;
 }
 
 export interface UiSurfaceRecord {

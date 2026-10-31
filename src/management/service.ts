@@ -4437,7 +4437,7 @@ export class WorkspaceManagementService {
       this.slackFactsFor(workspaceId),
     ]);
     if (!user) return [];
-    const usable = await listPrivatelyUsableAgents({
+    const { agents: usable } = await listPrivatelyUsableAgents({
       agents,
       workspaceId,
       grants,

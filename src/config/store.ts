@@ -65,6 +65,8 @@ import {
   type SlackPublicContextFileRef,
   type SlackPublicContextImage,
   type RecentSlackPublicContextInput,
+  type RecentSlackAgentRepliesInput,
+  type RecentSlackAgentReply,
   MAX_SLACK_PUBLIC_HANDOFF_MESSAGES,
   type NonChatModelRole,
   type WorkspaceModelDefault,
@@ -555,6 +557,8 @@ export interface ConfigStore {
     rootTs: string,
   ): Promise<SlackPublicContextEntry[]>;
   listRecentSlackPublicContext(input: RecentSlackPublicContextInput): Promise<SlackPublicContextEntry[]>;
+  /** Each Agent's newest reply in one channel since a time, across its threads still within retention. */
+  listRecentSlackAgentReplies(input: RecentSlackAgentRepliesInput): Promise<RecentSlackAgentReply[]>;
   putSlackPublicContext(input: SlackPublicContextEntryInput): Promise<SlackPublicContextEntry>;
   /** Insert rows read from Slack that the record lacks; existing rows win. Returns rows added. */
   seedSlackPublicContext(inputs: SlackPublicContextEntryInput[]): Promise<number>;
@@ -1800,6 +1804,33 @@ export class ConfigStoreLogic {
       now - SLACK_PUBLIC_CONTEXT_RETENTION_MS,
       limit,
     ).map((row) => rowToSlackPublicContext(row as unknown as SlackPublicContextRow));
+  }
+
+  listRecentSlackAgentReplies(input: RecentSlackAgentRepliesInput): RecentSlackAgentReply[] {
+    const since = Number(input.sinceMessageTs);
+    if (!Number.isFinite(since)) return [];
+    const now = Date.now();
+    this.pruneExpiredSlackPublicContext(now);
+    // SQLite returns message_ts from the row holding each group's maximum.
+    return this.db.all(
+      `SELECT agent_id, message_ts, MAX(CAST(message_ts AS REAL)) AS newest
+       FROM config_slack_public_context
+       WHERE workspace_id = ? AND channel_id = ? AND role = 'agent' AND agent_id IS NOT NULL
+         AND CAST(message_ts AS REAL) >= ?
+         AND root_ts IN (
+           SELECT root_ts FROM config_slack_public_context
+           WHERE workspace_id = ? AND channel_id = ?
+           GROUP BY root_ts HAVING MAX(updated_at) >= ?
+         )
+       GROUP BY agent_id
+       ORDER BY newest DESC`,
+      input.workspaceId,
+      input.channelId,
+      since,
+      input.workspaceId,
+      input.channelId,
+      now - SLACK_PUBLIC_CONTEXT_RETENTION_MS,
+    ).map((row) => ({ agentId: String(row.agent_id), messageTs: String(row.message_ts) }));
   }
 
   putSlackPublicContext(input: SlackPublicContextEntryInput): SlackPublicContextEntry {

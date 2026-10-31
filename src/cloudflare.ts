@@ -128,6 +128,8 @@ import type {
   RollbackChickpeaCutoverInput,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
+  RecentSlackAgentRepliesInput,
+  RecentSlackAgentReply,
   RecentSlackPublicContextInput,
   NonChatModelRole,
   WorkspaceModelDefault,
@@ -1466,6 +1468,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     input: RecentSlackPublicContextInput,
   ): Promise<StateRpcResult<SlackPublicContextEntry[]>> {
     return this.call((stores) => stores.config.listRecentSlackPublicContext(input));
+  }
+
+  async configListRecentSlackAgentReplies(
+    input: RecentSlackAgentRepliesInput,
+  ): Promise<StateRpcResult<RecentSlackAgentReply[]>> {
+    return this.call((stores) => stores.config.listRecentSlackAgentReplies(input));
   }
 
   async configPutSlackPublicContext(

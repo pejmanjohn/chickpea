@@ -259,6 +259,13 @@ export interface NormalizedSlackTurn {
    */
   coAddressed?: SlackCoAddressed;
   /**
+   * Set only by the host on a front-desk takeover: the system Agent handed
+   * this person's message to this turn's Agent (`handoff`), or the person
+   * picked it on the system Agent's card (`click`). Every other field is the
+   * message's turn as the system Agent was admitted with it.
+   */
+  frontDesk?: SlackFrontDeskTurn;
+  /**
    * Set only by edit admission (decideEdit): this turn is a later version of
    * the person's message `messageTs`, saved at `editedTs`. Every other field
    * is that message's turn as first admitted, except `text` (the new text)
@@ -273,6 +280,11 @@ export interface SlackTurnEdit {
   editedTs: string;
   /** The message's newest stored text before this edit. */
   previousText: string;
+}
+
+export interface SlackFrontDeskTurn {
+  fromAgentId: string;
+  via: 'handoff' | 'click';
 }
 
 export interface SlackCoAddressed {

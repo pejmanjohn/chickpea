@@ -88,6 +88,9 @@ import {
   type PrivateAgentActor,
   type PrivateAgentPlacementFacts,
 } from '../slack/agent-access.ts';
+import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
+import { frontDeskConversation } from '../slack/front-desk.ts';
+import { readFrontDeskDirectory } from '../slack/front-desk-directory.ts';
 import {
   agentAppHomeStarterMessage,
   agentDirectoryAppHome,
@@ -1214,13 +1217,13 @@ async function publishAgentAppHome(input: {
       ])
     : [[], []];
   const visible = actor.routing.fullMember
-    ? await listPrivatelyUsableAgents({
+    ? (await listPrivatelyUsableAgents({
         agents,
         workspaceId: input.workspaceId,
         grants,
         actor: privateAgentActor(actor, input.userId),
         transport: input.transport,
-      })
+      })).agents
     : [];
   await input.transport.publishAppHome({
     userId: input.userId,
@@ -2996,6 +2999,27 @@ async function processSlackEvent(
           ...(fallbackContext.length ? { handoffContext: fallbackContext } : {}),
         };
       }
+      if (
+        !ask && !ui && routed.source === 'default_agent' && turn.source === 'dm_message' &&
+        installation.runtimeContract === 'chickpea-v1' && routedAssignment.agentId === CHICKPEA_AGENT_ID &&
+        frontDeskConversation(turn)
+      ) {
+        // Frozen with the turn, so a retry offers the same Agents.
+        const frontDesk = await readFrontDeskDirectory({
+          workspaceId: turn.workspaceId,
+          channelId: turn.channelId,
+          actor: privateAgentActor(agentRoutingActor, turn.userId),
+          transport: execution?.placementFacts ?? runtimeTransport,
+          config: store,
+          settings: stores.settings,
+          ...(platformEnv ? { platformEnv } : {}),
+        }).catch((err: unknown) => {
+          if (isRetryableDependencyFailure(err)) throw err;
+          console.warn('[chickpea] front desk list unavailable:', sanitizeError(err));
+          return undefined;
+        });
+        if (frontDesk) routedAssignment = { ...routedAssignment, frontDesk };
+      }
       routedBaseAssignment = routedAssignment;
       const policyAssignment = await resolveModelPolicyForAssignment(
         routedAssignment, store, process.env, undefined, platformEnv,
@@ -3049,6 +3073,7 @@ async function processSlackEvent(
         ...(routedAssignment.teammates?.length
           ? { teammates: routedAssignment.teammates }
           : {}),
+        ...(routedAssignment.frontDesk ? { frontDesk: routedAssignment.frontDesk } : {}),
       };
   } catch (err) {
     // A model that cannot resolve is NOT fail-closed: admit with a best-effort

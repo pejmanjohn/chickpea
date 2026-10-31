@@ -140,11 +140,21 @@ export async function resolvePrivateAgentAudience(
   return audienceForPlacement(placementState(grants, facts));
 }
 
+/**
+ * The Agents one person may use, from one fact snapshot for this interaction.
+ * `incomplete`: Slack could not confirm some Agent's placement or the
+ * person's Channels, so an Agent they may use can be missing.
+ */
+export interface PrivatelyUsableAgents {
+  agents: CustomAgentConfig[];
+  incomplete: boolean;
+}
+
 /** Resolve the App Home directory with one fact snapshot for this interaction. */
 export async function listPrivatelyUsableAgents(
   input: PrivateAgentDirectoryInput,
-): Promise<CustomAgentConfig[]> {
-  if (!input.actor.fullMember) return [];
+): Promise<PrivatelyUsableAgents> {
+  if (!input.actor.fullMember) return { agents: [], incomplete: false };
   const agents = input.agents
     .filter(agentIsEligible)
     .sort((left, right) => left.name.localeCompare(right.name));
@@ -176,9 +186,14 @@ export async function listPrivatelyUsableAgents(
     ? await listMemberChannels(input.transport, input.actor.slackUserId)
     : undefined;
 
-  return agents.filter((agent) =>
-    evaluateAccess(agent, input.actor, placements.get(agent.id)!, memberChannels).status === 'allowed'
-  );
+  const usable: CustomAgentConfig[] = [];
+  let incomplete = false;
+  for (const agent of agents) {
+    const { status } = evaluateAccess(agent, input.actor, placements.get(agent.id)!, memberChannels);
+    if (status === 'allowed') usable.push(agent);
+    else if (status === 'unavailable') incomplete = true;
+  }
+  return { agents: usable, incomplete };
 }
 
 function activeAgentGrants(input: {

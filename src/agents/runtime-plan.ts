@@ -170,6 +170,16 @@ export interface RuntimePlanConnectionAuthorizationV2 {
   }>;
 }
 
+/**
+ * The front desk this turn mounts (src/slack/front-desk.ts): the Agents the
+ * requester may use, as the host listed them, and whether the message fits
+ * a card offering several of them.
+ */
+export interface RuntimePlanFrontDeskV1 {
+  agents: Array<{ id: string; name: string; handle?: string }>;
+  choices?: true;
+}
+
 /** A team connection bound to this Agent that only an admin can reconnect. */
 export interface RuntimePlanTeamReconnectV1 {
   providerId: string;
@@ -231,6 +241,11 @@ export interface RuntimePlanV2 {
    * an earlier reader parks a plan that has it.
    */
   teamReconnects?: RuntimePlanTeamReconnectV1[];
+  /**
+   * Present only on the system Agent's root DM turn with a front desk; an
+   * earlier reader parks a plan that has it.
+   */
+  frontDesk?: RuntimePlanFrontDeskV1;
   /** Object revisions used to explain which live configuration this turn froze. */
   configurationRevision?: {
     agent: number;
@@ -408,6 +423,7 @@ export interface CompileRuntimePlanV2Input {
   connectionChoices?: readonly RuntimePlanConnectionChoiceV2[];
   connectionSelections?: readonly ConnectionAccountSelection[];
   teamReconnects?: readonly TeamConnectionNeedingReconnect[];
+  frontDesk?: RuntimePlanFrontDeskV1;
   /**
    * Thread that artifact tools deliver into. Defaults to
    * the turn's real Slack thread. Scheduled runs must pass the saved routine
@@ -497,6 +513,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
       choices: choice.choices.map((candidate) => ({ ...candidate })),
     })),
     ...(teamReconnects.length > 0 ? { teamReconnects } : {}),
+    ...(input.frontDesk ? { frontDesk: compileFrontDesk(input.frontDesk) } : {}),
     configurationRevision: {
       agent: input.assignment.agent.revision,
       ...(input.assignment.channelRevision
@@ -917,6 +934,7 @@ export function parseRuntimePlanV2(
     'connectionAuthorizations',
     'connectionChoices',
     'teamReconnects',
+    'frontDesk',
     'configurationRevision',
     'ownerIncarnation',
     'handoffContext',
@@ -952,6 +970,7 @@ export function parseRuntimePlanV2(
     'connectionAuthorizations',
     'connectionChoices',
     'teamReconnects',
+    'frontDesk',
     'managedConnections',
     'ownerIncarnation',
     'handoffContext',
@@ -1019,6 +1038,7 @@ export function parseRuntimePlanV2(
   if (teamReconnects?.length === 0) {
     throw new Error('Runtime plan teamReconnects must be absent when empty.');
   }
+  const frontDesk = record.frontDesk === undefined ? undefined : parseFrontDesk(record.frontDesk);
   const configurationRevision = record.configurationRevision === undefined
     ? undefined
     : parseConfigurationRevision(record.configurationRevision);
@@ -1173,6 +1193,7 @@ export function parseRuntimePlanV2(
     ...(record.connectionAuthorizations === undefined ? {} : { connectionAuthorizations }),
     ...(record.connectionChoices === undefined ? {} : { connectionChoices }),
     ...(teamReconnects ? { teamReconnects } : {}),
+    ...(frontDesk ? { frontDesk } : {}),
     ...(configurationRevision ? { configurationRevision } : {}),
     ...(ownerIncarnation ? { ownerIncarnation } : {}),
     ...(handoffContext?.length ? { handoffContext } : {}),
@@ -1443,6 +1464,7 @@ function computeHarnessRevision(plan: HarnessRevisionInput): string {
         ? { connectionChoices: plan.connectionChoices }
         : {}),
       ...(plan.teamReconnects ? { teamReconnects: plan.teamReconnects } : {}),
+      ...(plan.frontDesk ? { frontDesk: plan.frontDesk } : {}),
       ...(plan.configurationRevision
         ? { configurationRevision: plan.configurationRevision }
         : {}),
@@ -1476,6 +1498,34 @@ function computeHarnessRevision(plan: HarnessRevisionInput): string {
       artifactDestinationKind: plan.artifactDestination.kind,
     }))
     .digest('hex');
+}
+
+const FRONT_DESK_PLAN_AGENT_LIMIT = 12;
+
+function compileFrontDesk(frontDesk: RuntimePlanFrontDeskV1): RuntimePlanFrontDeskV1 {
+  return {
+    agents: frontDesk.agents.map(({ id, name, handle }) => ({ id, name, ...(handle ? { handle } : {}) })),
+    ...(frontDesk.choices ? { choices: true as const } : {}),
+  };
+}
+
+function parseFrontDesk(value: unknown): RuntimePlanFrontDeskV1 {
+  const record = exactRecord(value, 'frontDesk', ['agents', 'choices'], ['choices']);
+  if (record.choices !== undefined && record.choices !== true) {
+    throw new Error('Runtime plan frontDesk.choices must be true when present.');
+  }
+  const agents = arrayOf(record.agents, 'frontDesk.agents', (entry) => {
+    const agent = exactRecord(entry, 'frontDesk agent', ['id', 'name', 'handle'], ['handle']);
+    return {
+      id: boundedString(agent.id, 'frontDesk agent id', 1, 128),
+      name: boundedString(agent.name, 'frontDesk agent name', 1, 200),
+      ...(agent.handle === undefined ? {} : { handle: boundedString(agent.handle, 'frontDesk agent handle', 1, 80) }),
+    };
+  }, FRONT_DESK_PLAN_AGENT_LIMIT);
+  if (agents.length === 0 || new Set(agents.map(({ id }) => id)).size !== agents.length) {
+    throw new Error('Runtime plan frontDesk agents must be present and unique.');
+  }
+  return { agents, ...(record.choices === true ? { choices: true as const } : {}) };
 }
 
 function parseImageCapability(value: unknown): RuntimePlanImageCapabilityV3 {

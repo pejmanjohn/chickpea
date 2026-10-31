@@ -87,6 +87,8 @@ import type {
   RollbackChickpeaCutoverInput,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
+  RecentSlackAgentRepliesInput,
+  RecentSlackAgentReply,
   RecentSlackPublicContextInput,
   NonChatModelRole,
   WorkspaceModelDefault,
@@ -335,7 +337,8 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'configGetChannel', 'configGetWorkspaceInstallation', 'configGetWorkspaceModelDefault',
   'configGetWorkspaceModelRole', 'configListAgentChannelGrants', 'configListAgentConnectionBindings',
   'configListAgentScheduleReferences', 'configListAgents', 'configListChannels',
-  'configListConnectionAccounts', 'configListRecentSlackPublicContext', 'configListSlackPublicContext',
+  'configListConnectionAccounts', 'configListRecentSlackAgentReplies', 'configListRecentSlackPublicContext',
+  'configListSlackPublicContext',
   'configListUserAgents', 'configListWorkspaceInstallations', 'configPreflightChickpeaCutover',
   'configSummarizeAdoptionInventory', 'encryptedCredentialCensus', 'encryptedCredentialGet', 'encryptedCredentialList',
   'modelCredentialRead',
@@ -1762,6 +1765,15 @@ export class CfConfigStore implements ConfigStore {
     return rpcVia(this.stub,
       'configListRecentSlackPublicContext',
       (stub) => stub.configListRecentSlackPublicContext(input),
+    );
+  }
+
+  async listRecentSlackAgentReplies(
+    input: RecentSlackAgentRepliesInput,
+  ): Promise<RecentSlackAgentReply[]> {
+    return rpcVia(this.stub,
+      'configListRecentSlackAgentReplies',
+      (stub) => stub.configListRecentSlackAgentReplies(input),
     );
   }
 

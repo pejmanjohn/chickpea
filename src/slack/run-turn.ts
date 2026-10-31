@@ -57,6 +57,7 @@ import {
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
+import { compileFrontDeskPlan, renderFrontDeskBlock } from './front-desk.ts';
 import { browserCapabilityForTurn, runGrantsWebsiteLogins, websiteLoginsForTurn } from '../browser/capability.ts';
 import { webSearchConfigured } from '../web/exa.ts';
 import type {
@@ -1899,8 +1900,12 @@ async function runTurnAttempt(
     // An information-only member keeps its 👀: its own turn reads it next.
     await swapReadReceipts(receipts.filter(({ turnJobId }) =>
       !requestFollowUps.some((message) => message.informationOnly && message.turnJobId === turnJobId)));
+    const frontDeskPlan = runtimePlanDecision?.runtimePlan.frontDesk;
     const prompt = assembleSlackPrompt(turn, promptContext, {
       followUps: requestFollowUps,
+      ...(frontDeskPlan && assignment.frontDesk
+        ? { frontDeskBlock: renderFrontDeskBlock(assignment.frontDesk, Date.now()) }
+        : {}),
       ...(handoffBlock ? { handoffBlock } : {}),
       ...(preparedMemory?.promptBlock && !memoryRendered
         ? { memoryBlock: preparedMemory.promptBlock }
@@ -2949,6 +2954,7 @@ export async function freezeRuntimePlanForTurn(input: {
     input.platformEnv,
   );
   const codingWorkspace = workspaceDecision.capability === 'available';
+  const frontDesk = compileFrontDeskPlan(input.turn, input.assignment);
   const codingModel = codingWorkspace
     ? await freezeCodingModelForTurn({
         workspaceId: input.turn.workspaceId,
@@ -2983,6 +2989,7 @@ export async function freezeRuntimePlanForTurn(input: {
     connectionChoices: connectionResolution.ambiguous,
     connectionSelections: connectionResolution.selections,
     ...(teamReconnects ? { teamReconnects } : {}),
+    ...(frontDesk ? { frontDesk } : {}),
   });
   const decision = input.persist
     ? await input.persist(candidate)
