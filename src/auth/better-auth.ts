@@ -94,9 +94,9 @@ export interface CreateBetterAuthInput {
    */
   throttleRegistration?: McpRegistrationThrottle;
   /**
-   * Signs Claude in by its client ID metadata document. Off unless
-   * serveHostedSharedAuth turns it on: a self-hosted deployment registers
-   * every client dynamically.
+   * Signs in a client by its accepted client ID metadata document. Off
+   * unless serveHostedSharedAuth turns it on: a self-hosted deployment
+   * registers every client dynamically.
    */
   clientMetadataDocuments?: boolean;
   /** Fetches client metadata documents; the guarded public-HTTPS transport by default. */

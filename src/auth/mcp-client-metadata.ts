@@ -11,14 +11,19 @@ export type ClientMetadataFetch = CimdOptions['fetchClientMetadataResource'];
 
 /**
  * The only client ID metadata documents Chickpea signs a client in by,
- * matched as exact strings: Claude's, as claude.ai publishes them. Any other
- * client ID is an unknown client.
+ * matched as exact strings. Any other client ID is an unknown client.
  */
 export const ACCEPTED_CLIENT_METADATA_DOCUMENTS: ReadonlySet<string> = new Set([
   // claude.ai, Claude Desktop and Cowork
   'https://claude.ai/oauth/mcp-oauth-client-metadata',
   // Claude Code
   'https://claude.ai/oauth/claude-code-client-metadata',
+  // Codex: the CLI, the IDE extension, and Codex in the ChatGPT desktop app
+  'https://chatgpt.com/oauth/codex/client.json',
+  'https://vscode.dev/oauth/client-metadata.json',
+  'https://insiders.vscode.dev/oauth/client-metadata.json',
+  'https://zed.dev/oauth/client-metadata.json',
+  'https://goose-docs.ai/oauth/client-metadata.json',
 ]);
 
 /** One transport's discovery, and the stored clients whose last fetch could not reach their document. */
@@ -38,7 +43,7 @@ interface NewClientGate {
 
 /**
  * Sign-in for a client whose `client_id` is the HTTPS URL of its Client ID
- * Metadata Document (MCP 2026-07-28), as Claude signs in. The discovery
+ * Metadata Document (MCP 2026-07-28). The discovery
  * matches only ACCEPTED_CLIENT_METADATA_DOCUMENTS, and Better Auth asks it
  * before resolving a client, so any other client ID is an unknown client:
  * never fetched, throttled or stored. Better Auth fetches the document over
