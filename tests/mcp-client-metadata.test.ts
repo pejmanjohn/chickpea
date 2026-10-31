@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { test, type TestContext } from 'node:test';
+import { makeSignature } from 'better-auth/crypto';
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose';
 import { Hono } from 'hono';
 
@@ -57,6 +58,11 @@ const storeDocumentClient = (backend: NodeBetterAuthBackend, clientId: string) =
   `INSERT INTO oauthClient (id, clientId, clientDiscoveryId, redirectUris, tokenEndpointAuthMethod, name, createdAt, updatedAt)
    VALUES (?, ?, 'cimd', ?, 'none', 'Claude', ?, ?)`,
 ).run(randomBytes(8).toString('hex'), clientId, JSON.stringify([CLAUDE_CALLBACK]), Date.now(), Date.now());
+
+const NATIVE_APPS_LOOPBACK_ONLY = {
+  error: 'invalid_request',
+  error_description: 'a native app signs in only through an HTTP redirect_uri on a loopback host (127.0.0.1, localhost or [::1], any port), not a web page that relays the code',
+};
 
 const PUBLIC_CLIENTS_ONLY = {
   error: 'invalid_client',
@@ -165,7 +171,10 @@ async function fixture(t: TestContext, options: {
   const clients = () => (backend.database.prepare(
     'SELECT clientId, clientDiscoveryId, userId, clientSecret, tokenEndpointAuthMethod, name FROM oauthClient ORDER BY createdAt, clientId',
   ).all() as Record<string, unknown>[]).map((row) => ({ ...row }));
-  return { backend, handler, browser, cookie, userId: person.userId, signInMember, authorize, approve, token, exchange, refresh, clients };
+  return {
+    backend, handler, browser, cookie, secret: environment.secret, userId: person.userId,
+    signInMember, authorize, approve, token, exchange, refresh, clients,
+  };
 }
 
 const claudeHost = () => metadataDocumentServer({
@@ -405,8 +414,7 @@ test('a metadata-document client asks for consent at every sign-in, whatever its
   const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
   for (const [clientId, redirect] of [
     [CLAUDE, CLAUDE_CALLBACK],
-    // A relay that forwards the code to whatever `state` names, a loopback port included.
-    [vscode.url, 'https://vscode.dev/redirect'],
+    [vscode.url, vscode.redirect],
     [CLAUDE_CODE, 'http://localhost:53682/callback'],
   ] as const) {
     const first = await f.authorize(clientId, redirect);
@@ -428,6 +436,67 @@ test('a metadata-document client asks for consent at every sign-in, whatever its
   assert.ok(callback.searchParams.get('code'));
   const posted = await f.authorize(CLAUDE_CODE, 'http://localhost:4444/callback', { post: true, headers: { origin: ORIGIN } });
   assert.equal(posted.status, 404, `authorize by POST skips the consent rule: ${posted.headers.get('location')}`);
+});
+
+test('a native app signs in by its document only on loopback: VS Code\'s port works, its vscode.dev relay is refused', async (t) => {
+  const { vscode, vscodeInsiders } = PUBLIC_CLIENT_DOCUMENTS;
+  const host = metadataDocumentServer({ [vscode.url]: vscode.served, [vscodeInsiders.url]: vscodeInsiders.served });
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  for (const [document, relay] of [
+    [vscode, 'https://vscode.dev/redirect'],
+    [vscodeInsiders, 'https://insiders.vscode.dev/redirect'],
+  ] as const) {
+    // Signed out, the first lookup stores the client; signed in, the stored client answers.
+    for (const signedIn of [false, true]) {
+      const refused = await f.authorize(document.url, relay, { signedIn });
+      assert.equal(refused.status, 400, `${relay} signed ${signedIn ? 'in' : 'out'}`);
+      assert.equal(refused.headers.get('location'), null, 'the relay never receives the browser');
+      assert.deepEqual(await refused.json(), NATIVE_APPS_LOOPBACK_ONLY, relay);
+    }
+    // The port VS Code asks for first, and a port of its own when that one is taken.
+    for (const loopback of [document.redirect, 'http://127.0.0.1:50116/']) {
+      const consent = new URL((await f.authorize(document.url, loopback)).headers.get('location')!, ORIGIN);
+      assert.equal(consent.pathname, '/auth/mcp/consent', loopback);
+      const callback = await f.approve(consent.toString());
+      assert.equal(`${callback.origin}${callback.pathname}`, loopback);
+      const exchanged = await f.exchange(document.url, loopback, callback.searchParams.get('code')!);
+      assert.equal(exchanged.status, 200, `${loopback}: ${await exchanged.clone().text()}`);
+    }
+  }
+  assert.deepEqual(f.clients().map((client) => client.clientId).sort(), [vscodeInsiders.url, vscode.url].sort(),
+    'a refused redirect leaves the document\'s client in place');
+});
+
+/** `signed`, a consent page's query, with `changes` applied and signed again as Better Auth signs it. */
+async function resigned(signed: URLSearchParams, changes: Record<string, string>, secret: string): Promise<string> {
+  const params = new URLSearchParams(signed);
+  params.delete('sig');
+  for (const [name, value] of Object.entries(changes)) params.set(name, value);
+  const canonical = new URLSearchParams([...params.entries()].sort(([a, x], [b, y]) => a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0));
+  params.set('sig', await makeSignature(canonical.toString(), secret));
+  return params.toString();
+}
+
+test('a signed query that names a native app\'s relay gets no code at consent or continue', async (t) => {
+  const { vscode } = PUBLIC_CLIENT_DOCUMENTS;
+  const f = await fixture(t, { fetchClientMetadataResource: metadataDocumentServer({ [vscode.url]: vscode.served }).fetch });
+  const consent = new URL((await f.authorize(vscode.url, vscode.redirect)).headers.get('location')!, ORIGIN);
+  const relay = await resigned(consent.searchParams, { redirect_uri: 'https://vscode.dev/redirect' }, f.secret);
+  for (const [path, body] of [
+    ['/api/auth/oauth2/consent', { accept: true, oauth_query: relay }],
+    ['/api/auth/oauth2/continue', { postLogin: true, oauth_query: relay }],
+  ] as const) {
+    const response = await f.handler(new Request(`${ORIGIN}${path}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie: f.cookie, origin: ORIGIN }, body: JSON.stringify(body),
+    }));
+    const text = await response.text();
+    assert.equal(response.status, 400, `${path}: ${text}`);
+    assert.deepEqual(JSON.parse(text), NATIVE_APPS_LOOPBACK_ONLY, path);
+  }
+  const loopback = await resigned(consent.searchParams, { redirect_uri: 'http://127.0.0.1:50117/' }, f.secret);
+  const callback = await f.approve(`/auth/mcp/consent?${loopback}`);
+  assert.equal(`${callback.origin}${callback.pathname}`, 'http://127.0.0.1:50117/', 'the same signing on loopback gets a code');
+  assert.ok(callback.searchParams.get('code'));
 });
 
 test('a metadata document is refused unless it names its own URL, lists the redirect, and comes back small JSON at once', async (t) => {
