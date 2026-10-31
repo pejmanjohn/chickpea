@@ -40,6 +40,11 @@ import {
   threadImageRecordsFromRecord,
   type ThreadImageRecord,
 } from './thread-images.ts';
+import {
+  collectThreadArchiveRecords,
+  retainThreadArchives,
+  type ThreadArchiveRecord,
+} from './thread-archives.ts';
 import type { SlackPublicContextEntry } from '../config/types.ts';
 import type { AgentAppBot } from './agent-app-bots.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
@@ -331,6 +336,10 @@ async function fetchHistory(
     collectThreadImages(windowRows, turn, input.followUps),
     collectThreadImages(triggerRows, turn),
   );
+  const archives = retainThreadArchives([
+    ...collectThreadArchives(windowRows, turn, input.followUps),
+    ...collectThreadArchives(triggerRows, turn),
+  ]);
   const messages = ensureTriggerMessage(
     orderMessages(
       toContextMessages(windowRows, input.self).filter((message) =>
@@ -350,6 +359,7 @@ async function fetchHistory(
     truncated: hasCursor,
     degradations,
     ...(images.length > 0 ? { images } : {}),
+    ...(archives.length > 0 ? { archives } : {}),
   };
 }
 
@@ -377,6 +387,7 @@ async function fetchThread(
   let replyCount: number | undefined;
   const collected: SlackContextMessage[] = [];
   const images: ThreadImageRecord[] = [];
+  const archives: ThreadArchiveRecord[] = [];
   const degradations: string[] = [];
   let cursor: string | undefined;
   let pagesRead = 0;
@@ -423,6 +434,7 @@ async function fetchThread(
     if (images.length > MAX_THREAD_IMAGE_ENTRIES) {
       images.splice(0, images.length - MAX_THREAD_IMAGE_ENTRIES);
     }
+    archives.push(...collectThreadArchives(rawMessages, turn, input.followUps));
     for (const raw of rawMessages) {
       if (raw.ts === turn.threadTs && typeof raw.reply_count === 'number') replyCount = raw.reply_count;
       if (!raw.ts || !atOrBeforeSlackWatermark(raw.ts, watermark)) continue;
@@ -464,6 +476,7 @@ async function fetchThread(
     degradations,
     ...(replyCount !== undefined ? { threadReplyCount: replyCount } : {}),
     ...(images.length > 0 ? { images } : {}),
+    ...(archives.length > 0 ? { archives: retainThreadArchives(archives) } : {}),
   };
 }
 
@@ -515,8 +528,24 @@ function collectThreadImages(
   turn: NormalizedSlackTurn,
   followUps: readonly FoldedMessage[] = [],
 ): ThreadImageRecord[] {
-  return collectThreadImageRecords(rawMessages, slackThreadImageConversationKey(turn))
-    .filter((record) => atOrBeforeSlackWatermark(record.messageTs, slackContextWatermark(turn, followUps)));
+  return withinWatermark(collectThreadImageRecords(rawMessages, slackThreadImageConversationKey(turn)), turn, followUps);
+}
+
+function collectThreadArchives(
+  rawMessages: readonly SlackWebApiMessage[],
+  turn: NormalizedSlackTurn,
+  followUps: readonly FoldedMessage[] = [],
+): ThreadArchiveRecord[] {
+  return withinWatermark(collectThreadArchiveRecords(rawMessages), turn, followUps);
+}
+
+function withinWatermark<T extends { messageTs: string }>(
+  records: T[],
+  turn: NormalizedSlackTurn,
+  followUps: readonly FoldedMessage[],
+): T[] {
+  const watermark = slackContextWatermark(turn, followUps);
+  return records.filter((record) => atOrBeforeSlackWatermark(record.messageTs, watermark));
 }
 
 /**
@@ -559,6 +588,7 @@ export function assembleSlackPrompt(
      * thread, so it rides in the request instead of the Agent's system prompt.
      */
     threadImageManifest?: string;
+    threadArchiveManifest?: string;
     /** The person's messages queued after the trigger that this turn took as part of its request. */
     followUps?: readonly FoldedMessage[];
   } = {},
@@ -659,6 +689,9 @@ export function assembleSlackPrompt(
   }
   if (options.threadImageManifest) {
     parts.push('', 'Images in this conversation, with the img:N handles for this request:', options.threadImageManifest);
+  }
+  if (options.threadArchiveManifest) {
+    parts.push('', options.threadArchiveManifest);
   }
   const answered = followUps.filter((message) => !message.informationOnly);
   const informed = followUps.filter((message) => message.informationOnly);

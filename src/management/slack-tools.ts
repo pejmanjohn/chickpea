@@ -82,6 +82,7 @@ import {
 } from './slack-memory-actions.ts';
 import { parseAdmittedSlackListIds } from '../slack/lists/admission.ts';
 import { parseAttachmentFileIds } from '../slack/attachment-context.ts';
+import { parseThreadArchiveFileIds } from '../slack/thread-archives.ts';
 
 const SIGNAL_ATTRIBUTE_KEYS = [
   'workspaceId',
@@ -101,6 +102,7 @@ const SIGNAL_OPTIONAL_ATTRIBUTE_KEYS = [
   'attachmentIntakeStatus',
   'attachmentCount',
   'threadImages',
+  'threadArchiveFileIds',
   'admittedListIds',
 ] as const;
 const SIGNAL_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
@@ -158,6 +160,7 @@ export interface SlackManagementSignal {
   admittedListIds?: readonly string[];
   /** Files attached to the requester's current message, from the host's normalized turn. Never model-written. */
   attachmentFileIds?: readonly string[];
+  threadArchiveFileIds?: readonly string[];
   /** Trusted current Slack message body, carried outside model-selected tool input. */
   requesterText?: string;
   /** The host wrote requesterText to describe the person's click or form answer. */
@@ -1015,6 +1018,8 @@ export function parseSlackManagementSignal(
   if (delivery.attributes.admittedListIds !== undefined && !admittedListIds) return undefined;
   const attachmentFileIds = parseAttachmentFileIds(delivery.attributes.attachmentFileIds);
   if (delivery.attributes.attachmentFileIds !== undefined && !attachmentFileIds) return undefined;
+  const threadArchiveFileIds = parseThreadArchiveFileIds(delivery.attributes.threadArchiveFileIds);
+  if (delivery.attributes.threadArchiveFileIds !== undefined && !threadArchiveFileIds) return undefined;
   return {
     ...values,
     ...(conversationKind ? { conversationKind } : {}),
@@ -1027,6 +1032,7 @@ export function parseSlackManagementSignal(
       : {}),
     ...(admittedListIds ? { admittedListIds } : {}),
     ...(attachmentFileIds ? { attachmentFileIds } : {}),
+    ...(threadArchiveFileIds ? { threadArchiveFileIds } : {}),
     agentId: plan.agentId,
   };
 }

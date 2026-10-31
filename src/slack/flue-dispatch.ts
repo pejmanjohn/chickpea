@@ -220,6 +220,7 @@ export interface SlackFlueDispatchState {
     admittedListIds?: readonly string[],
     /** Per-turn settings the Agent's tools read; frozen with the first dispatch. */
     turnEnvelope?: TurnEnvelopeV1,
+    threadArchiveFileIds?: readonly string[],
   ): FlueDispatchEnvelopeV1 | Promise<FlueDispatchEnvelopeV1>;
   recordReceipt(
     receipt: FlueDispatchReceiptV1,
@@ -256,6 +257,7 @@ interface PromptSlackAgentInput {
   stageTurnInput?: (input: SlackTurnInputV1) => Promise<void>;
   /** Images already in this Slack conversation, collected by the host fetch. */
   threadImages?: readonly ThreadImageRecord[];
+  threadArchiveFileIds?: readonly string[];
   /** Host-admitted List references for this exact turn. */
   admittedListIds?: readonly string[];
   /**
@@ -417,6 +419,7 @@ export async function promptSlackThreadAgent(
       input.threadImages,
       input.admittedListIds,
       await buildTurnEnvelopeSafely(input.buildTurnEnvelope),
+      input.threadArchiveFileIds,
     );
   input.state.dispatchEnvelope = envelope;
   if (!input.state.dispatchReceipt && input.runtimePlan) {

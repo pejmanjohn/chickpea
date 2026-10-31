@@ -1000,7 +1000,8 @@ export function useChickpeaSlackRuntimeCapabilities(
   useReadArchiveFileTool({
     instanceId: id,
     turnKey: signal?.turnJobId ?? '',
-    fileIds: signal?.attachmentFileIds,
+    currentMessageFileIds: signal?.attachmentFileIds,
+    threadArchiveFileIds: signal?.threadArchiveFileIds,
     client: async () => createSlackAttachmentClient(await resolveAgentPlatformEnv()),
   });
 }

@@ -381,14 +381,16 @@ function runnerPorts(script: RunTurnScript) {
   const ports = h.ports as unknown as Record<string, unknown>;
   const prepared: unknown[] = [];
   const envelopes: unknown[] = [];
+  const archives: unknown[] = [];
   ports.turnJobs = {
     ...asyncOf(ports.turnJobs as Record<string, unknown>),
     prepareFlueDispatch: async (
       _id: string, _message: string, observation: unknown,
-      _images: unknown, _lists: unknown, turnEnvelope: unknown,
+      _images: unknown, _lists: unknown, turnEnvelope: unknown, threadArchiveFileIds: unknown,
     ) => {
       prepared.push(observation);
       envelopes.push(turnEnvelope);
+      archives.push(threadArchiveFileIds);
       return { instanceId: 'agent' };
     },
   };
@@ -403,13 +405,13 @@ function runnerPorts(script: RunTurnScript) {
     latency: { lane: 'cloudflare', executor: 'runner' },
     observationRoute: { executor: 'runner', runnerKey: 'T1:D1:1785900000.000100' },
   };
-  return { ...h, options, prepared, envelopes, statusRegistry };
+  return { ...h, options, prepared, envelopes, archives, statusRegistry };
 }
 
 test('runner ports: a delivered turn records the same writes and passes its registry and route', async () => {
   const h = runnerPorts(async (options) => {
     await options.flueDispatch?.prepare('hello', { generation: 'g1' }, undefined, undefined,
-      { envelope: 'frozen' } as never);
+      { envelope: 'frozen' } as never, ['F0Q3PACK001']);
     await options.onInteractionIntent?.({ disposition: 'work' } as never);
     await options.onDelivered?.('completed' as never);
   });
@@ -426,6 +428,7 @@ test('runner ports: a delivered turn records the same writes and passes its regi
     generation: 'g1', executor: 'runner', runnerKey: 'T1:D1:1785900000.000100',
   }], 'the dispatch records where observed activity must go');
   assert.deepEqual(h.envelopes, [{ envelope: 'frozen' }], 'the turn envelope is forwarded too');
+  assert.deepEqual(h.archives, [['F0Q3PACK001']], 'and the conversation\'s archive file IDs');
 });
 
 test('runner ports: a failure after the final is posted never re-runs the turn', async () => {

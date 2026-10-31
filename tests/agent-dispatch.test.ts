@@ -167,7 +167,7 @@ function promptInput(dispatchState: SlackFlueDispatchState, agent: AgentInstance
 }
 
 
-test('the host turn hands its thread images to the durable dispatch preparation', async () => {
+test('the host turn hands its thread images and archives to the durable dispatch preparation', async () => {
   const prepared: unknown[][] = [];
   const records = [{
     conversationKey: 'T1:C1:1.0',
@@ -177,25 +177,19 @@ test('the host turn hands its thread images to the durable dispatch preparation'
     origin: 'person' as const,
     messageTs: '1.0',
   }];
-  const dispatchState = state({
-    prepare: async (_message, _observation, threadImages, admittedListIds) => {
-      prepared.push([threadImages, admittedListIds]);
-      return ENVELOPE;
-    },
-  });
+  const prepare: SlackFlueDispatchState['prepare'] = async (_message, _observation, threadImages, admittedListIds, _envelope, threadArchiveFileIds) => {
+    prepared.push([threadImages, admittedListIds, threadArchiveFileIds]);
+    return ENVELOPE;
+  };
   await promptSlackThreadAgent({
-    ...promptInput(dispatchState, handle({})),
+    ...promptInput(state({ prepare }), handle({})),
     threadImages: records,
     admittedListIds: ['FEXISTING'],
+    threadArchiveFileIds: ['F0Q3PACK001'],
   });
   // Omitting the images is the no-image turn, not a different contract.
-  await promptSlackThreadAgent({ ...promptInput(state({
-    prepare: async (_message, _observation, threadImages, admittedListIds) => {
-      prepared.push([threadImages, admittedListIds]);
-      return ENVELOPE;
-    },
-  }), handle({})) });
-  assert.deepEqual(prepared, [[records, ['FEXISTING']], [undefined, undefined]]);
+  await promptSlackThreadAgent({ ...promptInput(state({ prepare }), handle({})) });
+  assert.deepEqual(prepared, [[records, ['FEXISTING'], ['F0Q3PACK001']], [undefined, undefined, undefined]]);
 });
 
 test('the turn envelope is built before the first dispatch only, and a failed build still dispatches', async () => {
