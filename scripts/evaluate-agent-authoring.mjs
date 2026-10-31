@@ -298,7 +298,13 @@ function toolRefusal(message) {
 function pastedKeyAdmitted(key, hosts, connectionId) {
   const approvedFrom = connectionState.approved.get(connectionId);
   return (currentRequesterMessage.includes(key) && hosts.every(typedHere)) ||
-    (approvedFrom !== undefined && (approvedFrom.includes(key) || currentRequesterMessage.includes(key)));
+    (approvedFrom !== undefined && (approvedFrom.includes(key) || currentKeyForHosts(key, hosts)));
+}
+
+/** A key alone in this message, which names no other host: the host refuses a phrase and another service's URL. */
+function currentKeyForHosts(key, hosts) {
+  const named = [...currentRequesterMessage.matchAll(/https?:\/\/([^\s/<>|"'`]+)/gi)].map(([, host]) => host.toLowerCase());
+  return currentRequesterMessage.includes(key) && !/\s/.test(key) && named.every((host) => hosts.includes(host));
 }
 
 /** try_connection as the service admits it from Slack, then the synthetic API's answer. */

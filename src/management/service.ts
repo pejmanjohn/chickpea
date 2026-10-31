@@ -9207,8 +9207,12 @@ function keyTypedForApprovedConnection(
   key: string,
   approved: { allowedHosts: readonly string[] },
 ): boolean {
-  return !/\s/.test(key) && requesterTextContainsExactKey(requestText, key) &&
-    requesterTypedUrls(requestText).every((url) => approved.allowedHosts.includes(url.host));
+  if (/\s/.test(key) || !requesterTextContainsExactKey(requestText, key)) return false;
+  const typed = requesterTypedUrls(requestText);
+  // A URL the parser drops (one with a user part, or a bad port) still names somewhere else.
+  const written = requestText.replace(/<(https?:\/\/[^>|\s]+)(?:\|[^>]*)?>/gi, ' $1 ').match(/https?:\/\//gi)?.length ?? 0;
+  return typed.length === written && typed.every((url) =>
+    approved.allowedHosts.some((host) => host.toLowerCase() === url.host));
 }
 
 /** Why a key pasted in Slack may not go to these URLs on the strength of the current message alone. */

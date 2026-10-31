@@ -552,6 +552,9 @@ test('the approval admits only its own connection, the person who approved it, f
       (f) => f.slack(name, { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, `my Statuspage key is ${KEY}, at https://api.statuspage.example/v1`),
       `${name}: the current message is about another service's URL`);
     await refused(async (f) => { await approvedConnection(f, KEY_LATER); },
+      (f) => f.slack(name, { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, `key ${KEY} for https://api.statusboard.example@api.pagerboard.example/v1`),
+      `${name}: a URL whose host hides behind a user part`);
+    await refused(async (f) => { await approvedConnection(f, KEY_LATER); },
       (f) => f.slack(name, { connectionId: CONNECTION.id, key: `here is the key ${KEY}`, path: INCIDENTS }, `here is the key ${KEY}`),
       `${name}: a phrase from the current message is no key`);
   }
