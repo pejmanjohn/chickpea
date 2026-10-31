@@ -8,10 +8,16 @@ import type { CustomAgentConfig } from '../src/config/types.ts';
 import type { WebClient } from '@slack/web-api';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
-import { runTurn } from '../src/slack/run-turn.ts';
+import { freezeRuntimePlanForTurn, runTurn } from '../src/slack/run-turn.ts';
 import { uiActionId, uiBlockId, uiSurfaceId, uiValue, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
-import { compileFrontDeskPlan, frontDeskFailureLine, type SlackFrontDeskHandoffRequest } from '../src/slack/front-desk.ts';
+import {
+  FRONT_DESK_MAX_NAME_CHARS,
+  clampText,
+  compileFrontDeskPlan,
+  frontDeskFailureLine,
+  type SlackFrontDeskHandoffRequest,
+} from '../src/slack/front-desk.ts';
 import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
 import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
@@ -172,6 +178,29 @@ test('a root DM delivered again after its admission failed still reaches Chickpe
     assert.equal(jobs.length, 1);
     assert.equal(jobs[0]!.assignment.agentId, CHICKPEA_AGENT_ID);
     assert.equal(jobs[0]!.assignment.frontDesk?.agents.length, 2);
+  });
+});
+
+test('an Agent name too long, or empty once cleaned, still freezes the turn\'s plan', async () => {
+  await withFrontDeskLane(async ({ stores, gateway, jobs, enqueueTurn, ownerMembershipId }) => {
+    const longName = `Quarterly ${'very '.repeat(42)}long report Agent`;
+    assert.ok(longName.length > 200 && longName.length <= 240);
+    await stores.config.createAgent(agentInput('agent_long', longName, 'quarterly', ownerMembershipId));
+    await stores.config.createAgent(agentInput('agent_brackets', '<>', 'brackets', ownerMembershipId));
+    await processGatewaySlackEnvelope(directMessage('Ev1', ROOT, 'Check order 4821 on the portal.'),
+      undefined, gateway, { stores, enqueueTurn });
+    const chickpea = jobs[0]!;
+    const { decision } = await freezeRuntimePlanForTurn({
+      turn: chickpea.turn,
+      assignment: chickpea.assignment,
+      platformEnv: undefined,
+      settingsStore: stores.settings,
+      configStore: stores.config,
+      memoryEpoch: Promise.resolve(1),
+    });
+    const names = new Map(decision.runtimePlan.frontDesk?.agents.map(({ id, name }) => [id, name]));
+    assert.equal(names.get('agent_brackets'), 'brackets', 'a name that cleans to nothing falls back to the handle');
+    assert.equal(names.get('agent_long'), clampText(longName, FRONT_DESK_MAX_NAME_CHARS));
   });
 });
 

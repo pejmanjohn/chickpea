@@ -48,10 +48,17 @@ export interface FrontDeskFacts {
 /**
  * The usable Agents the front desk may list. An Agent with its own live
  * Slack app is left out: it posts as its own bot, which is not in this DM.
+ * So is one with neither a name that survives cleaning nor a handle.
  */
 export function frontDeskCandidates(usable: PrivatelyUsableAgents): CustomAgentConfig[] {
   return usable.agents.filter((agent) =>
-    agent.kind === 'user' && agent.id !== CHICKPEA_AGENT_ID && !agentAppIsLive(agent.slackPresence));
+    agent.kind === 'user' && agent.id !== CHICKPEA_AGENT_ID && !agentAppIsLive(agent.slackPresence) &&
+    frontDeskName(agent) !== '');
+}
+
+/** The Agent's name as the block, the card, and the plan show it: one short line, else its handle. */
+function frontDeskName(agent: CustomAgentConfig): string {
+  return clampText(inlineText(agent.name), FRONT_DESK_MAX_NAME_CHARS) || (agent.slackPresence?.normalizedHandle ?? '');
 }
 
 /** The candidates in listing order: the recent Agent first, then by name. */
@@ -160,7 +167,7 @@ function frontDeskAgent(agent: CustomAgentConfig, facts: FrontDeskFacts): FrontD
   const handle = agent.slackPresence?.normalizedHandle;
   return {
     id: agent.id,
-    name: inlineText(agent.name),
+    name: frontDeskName(agent),
     ...(handle ? { handle } : {}),
     ...(purpose ? { purpose } : {}),
     connections: connections.names,

@@ -167,6 +167,15 @@ test('the directory shows what this person would get from each Agent and nothing
   assert.equal(assembleFrontDeskDirectory({
     usable: { agents: [ownApp], incomplete: false }, accounts: [], bindings: new Map(), recentReplies: [], nowMs: NOW,
   }), undefined, 'no Agent left: no front desk');
+
+  // A name that cleans to nothing, with no handle to stand in for it, cannot be named.
+  const { slackPresence: _handle, ...nameless } = userAgent('agent_nameless', '<>');
+  const named = assembleFrontDeskDirectory({
+    usable: { agents: [nameless, research], incomplete: false }, accounts: [], bindings: new Map(),
+    recentReplies: [], nowMs: NOW,
+  });
+  assert.deepEqual(named?.agents.map(({ id }) => id), ['agent_research']);
+  assert.equal(named?.omitted, 0);
 });
 
 test('at most twelve Agents are listed, the recent one first, and the block stays within its budget', () => {
