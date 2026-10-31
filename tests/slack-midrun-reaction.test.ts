@@ -912,8 +912,10 @@ test('a turn swaps 👀 for 👍 on its own message and the follow-ups it answer
       usageRecordingEnabled: false,
     });
     const swapped = access === 'shared' ? [head, own, teammate] : [head, own];
+    // The swaps run at once: every 👀 comes off, then every 👍 goes on.
     assert.deepEqual(reactions.log, [
-      ...swapped.flatMap((ts) => [`remove ${ts}:eyes`, `add ${ts}:+1`]),
+      ...swapped.map((ts) => `remove ${ts}:eyes`),
+      ...swapped.map((ts) => `add ${ts}:+1`),
       `remove ${head}:+1`,
     ], access);
     if (access === 'personal') {
@@ -1077,9 +1079,8 @@ test('on the runner\'s executor a head and two follow-ups each swap 👀 for �
 
     const [head, first, second] = rows.map(([, ts]) => ts);
     assert.deepEqual(h.reactions.log, [
-      `remove ${head}:eyes`, `add ${head}:+1`,
-      `remove ${first}:eyes`, `add ${first}:+1`,
-      `remove ${second}:eyes`, `add ${second}:+1`,
+      `remove ${head}:eyes`, `remove ${first}:eyes`, `remove ${second}:eyes`,
+      `add ${head}:+1`, `add ${first}:+1`, `add ${second}:+1`,
       `remove ${head}:+1`,
       `remove ${first}:+1`,
       `remove ${second}:+1`,

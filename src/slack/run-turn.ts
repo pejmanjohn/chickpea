@@ -1369,13 +1369,15 @@ async function runTurnAttempt(
    * The run reads these messages now, so each 👀 becomes 👍; the state
    * store recorded each swap owed when it gave them to this turn. The head's
    * receipt is this turn's own; a member's is recorded on its row, whose
-   * settlement or stop removes it. Best effort: a swap that fails stays
-   * owed, and the removal takes off both emoji.
+   * settlement or stop removes it. The swaps run at once, so the model is
+   * called two Slack round trips later however many messages the turn read.
+   * Best effort: a swap that fails stays owed, and the removal takes off
+   * both emoji.
    */
   const swapReadReceipts = async (read: readonly TurnReadReceipt[]): Promise<void> => {
-    for (const { turnJobId, receipt } of read) {
+    await Promise.all(read.map(async ({ turnJobId, receipt }) => {
       const own = turnJobId === options.turnId;
-      if (!own && !options.recordFollowUpProgress) continue;
+      if (!own && !options.recordFollowUpProgress) return;
       if (own && interactionProgress.acknowledgment) {
         interactionProgress = {
           ...interactionProgress,
@@ -1395,7 +1397,7 @@ async function runTurnAttempt(
       } catch {
         console.warn('[chickpea] a mid-run reaction was not swapped for a read one');
       }
-    }
+    }));
   };
   /**
    * A reaction answer that is the receipt's own emoji on the receipt's own

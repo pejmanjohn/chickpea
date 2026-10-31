@@ -273,7 +273,6 @@ test('a failed head on Node releases its follow-ups, which then run once as one 
   } finally { h.close(); }
 });
 
-
 test('on Node a head and two follow-ups each swap 👀 for 👍, then the reply and the sweep remove each 👍', async () => {
   const h = relayHarness();
   const thread = slackThread('1800000900.000100', 'im');
@@ -305,9 +304,8 @@ test('on Node a head and two follow-ups each swap 👀 for 👍, then the reply 
     assert.deepEqual(h.runs, [prior.id, head.id]);
     const [ownTs, firstTs, secondTs] = [thread.ts('102'), thread.ts('103'), thread.ts('104')];
     assert.deepEqual(h.reactions, [
-      `remove ${ownTs}:eyes`, `add ${ownTs}:+1`,
-      `remove ${firstTs}:eyes`, `add ${firstTs}:+1`,
-      `remove ${secondTs}:eyes`, `add ${secondTs}:+1`,
+      `remove ${ownTs}:eyes`, `remove ${firstTs}:eyes`, `remove ${secondTs}:eyes`,
+      `add ${ownTs}:+1`, `add ${firstTs}:+1`, `add ${secondTs}:+1`,
       `remove ${ownTs}:+1`,
       `remove ${firstTs}:+1`,
       `remove ${secondTs}:+1`,
