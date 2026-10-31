@@ -18,9 +18,10 @@ const TOTAL_CHARS = 1024 * 1024;
 /**
  * One submission's steps, from the conversation stream its reply observation
  * reads: model text and reasoning, each tool call joined to its result, and
- * the messages late folds appended to it. Every observation replays the
- * conversation from its start, so only this submission's messages count, and
- * the trace is cut as it arrives.
+ * the messages late folds appended to it or dispatched into its run under
+ * its turn job. Every observation replays the conversation from its start,
+ * so only this submission's messages count, and the trace is cut as it
+ * arrives.
  */
 export class RunReviewCollector {
   readonly #messageIds = new Set<string>();
@@ -31,11 +32,12 @@ export class RunReviewCollector {
   #truncated = false;
   #position: { batch: number; index: number } | undefined;
 
-  constructor(readonly submissionId: string) {}
+  /** `turnJobId`: the Slack turn job the submission answers, when it has one. */
+  constructor(readonly submissionId: string, readonly turnJobId?: string) {}
 
   /** The steps a settled conversation's history holds, when the stream was never observed. */
-  static fromHistory(snapshot: ConversationSnapshot, submissionId: string): RunReviewCollector {
-    const collector = new RunReviewCollector(submissionId);
+  static fromHistory(snapshot: ConversationSnapshot, submissionId: string, turnJobId?: string): RunReviewCollector {
+    const collector = new RunReviewCollector(submissionId, turnJobId);
     collector.#rebuild(snapshot.messages);
     return collector;
   }
@@ -94,6 +96,12 @@ export class RunReviewCollector {
     return message.role === 'assistant' && message.submissionId === this.submissionId;
   }
 
+  /** Appended to this submission, or dispatched into its run under the same turn job (Flue keeps that one's own submission id). */
+  #joins(message: ConversationMessage): boolean {
+    return message.submissionId === this.submissionId ||
+      (this.turnJobId !== undefined && message.signal?.attributes?.turnJobId === this.turnJobId);
+  }
+
   #rebuild(messages: readonly ConversationMessage[]): void {
     this.#messageIds.clear();
     this.#tools.clear();
@@ -107,7 +115,7 @@ export class RunReviewCollector {
   }
 
   #addFollowUps(message: ConversationMessage): void {
-    if (message.role !== 'system' || message.submissionId !== this.submissionId ||
+    if (message.role !== 'system' || !this.#joins(message) ||
         message.signal?.tagName !== 'slack_message' || this.#followUps.has(message.id)) return;
     const [part] = message.parts;
     const followUps = part?.type === 'text' ? followUpSignalMessages(part.text) : undefined;

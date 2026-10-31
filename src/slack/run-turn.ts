@@ -1191,6 +1191,7 @@ async function runTurnAttempt(
           ? turn.sharedChannel === true
           : turn.sharedChannel !== false,
         grantsWebsiteLogins: runGrantsWebsiteLogins(runtimePlanDecision.runtimePlan, assignment.agent.websiteLogins),
+        ...(options.turnId ? { turnJobId: options.turnId } : {}),
         settings: () => settingsStore ?? getSettingsStore(platformEnv),
         ...(options.runReviewSettings ? { prefetched: options.runReviewSettings } : {}),
       })
