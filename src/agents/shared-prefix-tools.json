@@ -6218,7 +6218,7 @@
    },
    {
     "name": "workspace_task",
-    "description": "Brief a coding worker that works in the coding workspace with its own shell and file tools: it can clone, install dependencies, edit files, run tests or a build, push a branch, and open a pull request. The worker cannot see this conversation, so the task must be a complete brief: the repository, what to change, how to verify it, the branch name to use, and whether to open a pull request. It returns the worker's answer and any pull requests it opened. One task can run for up to 60 minutes; at most 2 tasks per response. Use workspace_write and workspace_read to move files in and out, and post_artifact with the workspace to attach a file the worker made.",
+    "description": "Brief a coding worker that works in the coding workspace with its own shell and file tools: it can clone, install dependencies, edit files, run tests or a build, push a branch, and open a pull request. The worker cannot see this conversation, so the task must be a complete brief: the repository, what to change, how to verify it, the branch name to use, and whether to open a pull request. It returns the worker's answer and any pull requests it opened. One task can run for up to 60 minutes; at most 2 tasks per response. If new messages arrive while it runs, it returns early with running: true; follow its message. Use workspace_write and workspace_read to move files in and out, and post_artifact with the workspace to attach a file the worker made.",
     "eager_input_streaming": true,
     "input_schema": {
      "type": "object",
@@ -6237,6 +6237,47 @@
      },
      "required": [
       "task"
+     ]
+    }
+   },
+   {
+    "name": "workspace_task_resume",
+    "description": "Keep waiting for a coding task this response started, after workspace_task returned running: true. It returns the task's answer as workspace_task would, or returns running: true again if more messages arrive. It starts nothing and does not count toward the task limit.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "workspace": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 32,
+       "description": "Workspace name (default \"main\"). Use one workspace per repository or line of work, for example \"api\" and \"web\"; at most 2 can be open in this thread."
+      }
+     },
+     "required": []
+    }
+   },
+   {
+    "name": "workspace_task_steer",
+    "description": "Pass a change to a coding task that is still running, after workspace_task returned running: true. The worker reads it at its next step and adjusts its work; it gets no new access. The worker cannot see this conversation, so write the change as a complete instruction. Then call workspace_task_resume to wait for its answer.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "workspace": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 32,
+       "description": "Workspace name (default \"main\"). Use one workspace per repository or line of work, for example \"api\" and \"web\"; at most 2 can be open in this thread."
+      },
+      "guidance": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 8192
+      }
+     },
+     "required": [
+      "guidance"
      ]
     }
    }

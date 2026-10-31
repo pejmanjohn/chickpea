@@ -47,6 +47,10 @@ export type LateFoldRequest = Exclude<TurnFoldRequest, { phase: 'start' }>;
  * the store counts a fold as read only when a later call confirms it. A
  * failed call leaves the response as it was; any message the model never
  * saw then runs as its own turn.
+ *
+ * A single long tool step (a coding job's wait) asks `waiting` meanwhile and
+ * returns early when it answers yes, which makes the step's end the
+ * boundary where the messages join.
  */
 export function useSlackFollowUpFold(input: {
   instanceId: string;
@@ -54,7 +58,7 @@ export function useSlackFollowUpFold(input: {
   blocked: () => boolean;
   /** The state store's fold (TurnJobStoreLogic.fold); undefined where the store has none. */
   fold: (request: LateFoldRequest) => Promise<TurnFoldClaim | undefined>;
-}): void {
+}): SlackFollowUpCheck {
   const delivery = useDelivery();
   const dispatch = useDispatchMessage();
   const [, update] = usePersistentState<FollowUpFoldState>(SLACK_FOLLOW_UP_STATE_NAME, { cycles: 0, finishes: 0 });
@@ -98,6 +102,16 @@ export function useSlackFollowUpFold(input: {
     }),
   } satisfies DeliveredMessageInput);
 
+  // The same claim the next tool boundary makes: the store returns a cycle's
+  // claimed rows again, so that boundary's pull reads these very messages,
+  // and once it counted them, only messages sent later answer yes. A check
+  // past the gate answers no.
+  const waiting = async () => {
+    const { cycles } = current();
+    if (!framing || cycles >= MAX_TURN_FOLD_CYCLES || input.blocked()) return false;
+    return ((await claim('turn', cycles, true))?.messages.length ?? 0) > 0;
+  };
+
   // Nothing to confirm here when the gate is shut: the would-stop call does.
   bindToolBoundaryFold(async () => {
     const { cycles, finishes } = current();
@@ -127,6 +141,17 @@ export function useSlackFollowUpFold(input: {
       log.warn('Could not check for follow-up messages; the reply answers what the Agent has read');
     }
   });
+
+  return { waiting };
+}
+
+export interface SlackFollowUpCheck {
+  /**
+   * Whether messages this response has not read wait to join it at its next
+   * tool boundary. Claims them for that boundary; throws when the state
+   * store cannot be reached.
+   */
+  waiting(): Promise<boolean>;
 }
 
 interface ToolBoundary {

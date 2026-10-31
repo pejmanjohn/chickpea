@@ -154,6 +154,30 @@ export async function observeAgentSettlementBounded(
   }
 }
 
+/**
+ * Whether an agent submission has settled, as the instance's stream holds it
+ * now: one pass over the updates view through the agent's namespace that
+ * never waits.
+ */
+export async function agentSubmissionSettledBounded(
+  env: Record<string, unknown> | undefined,
+  target: Pick<BoundedObservationTarget, 'agentName' | 'instanceId' | 'submissionId'>,
+): Promise<boolean> {
+  const bindingName = agentObjectBindingName(target.agentName);
+  const binding = agentObjectNamespace(env, bindingName);
+  if (!binding) throw new AgentObjectBindingUnavailableError(bindingName);
+  const caughtUp = new Error('caught up');
+  try {
+    await observeAgentSettlementBounded(agentObjectRoute(binding, target.instanceId), target, {
+      sleep: () => Promise.reject(caughtUp),
+    });
+    return true;
+  } catch (error) {
+    if (error === caughtUp) return false;
+    throw error;
+  }
+}
+
 /** Mirrors Flue's settlement detection on the updates stream. */
 function settlementFromChunk(chunk: ConversationStreamChunk, submissionId: string): ObservedSettlement | undefined {
   const record = chunk as unknown as Record<string, unknown>;
