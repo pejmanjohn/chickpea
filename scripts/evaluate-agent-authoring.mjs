@@ -398,7 +398,7 @@ function evalApplyWorkspaceChanges(data) {
       presentation: {
         slack: `*Proposed changes*\nAdd ${fresh.map(({ displayName }) => displayName).join(', ')}, sending its key to ${fresh.flatMap(({ allowedHosts }) => allowedHosts ?? []).join(', ')}.`,
       },
-      instruction: 'The changes in presentation.slack need the person\'s approval and were not applied. Send presentation.slack verbatim and say what it would change. Only the person can apply it, by pressing Approve.',
+      instruction: 'The changes in presentation.slack need the person\'s approval and were not applied. Introduce presentation.slack in a sentence or two and send it verbatim; do not restate the changes it lists. Only the person can apply it, by pressing Approve.',
     };
   }
   for (const connection of written) connectionState.connections.set(connection.id, connection);

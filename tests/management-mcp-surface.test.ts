@@ -37,7 +37,7 @@ test('MCP tool descriptions carry no Slack-conversation instructions while Slack
   }
 
   // The Slack door still tells Chickpea to show presentation.slack and derive the DM from the origin.
-  assert.match(workspaceManagementToolDescription('propose_workspace_changes'), /Show presentation\.slack verbatim/);
+  assert.match(workspaceManagementToolDescription('propose_workspace_changes'), /Introduce presentation\.slack in a sentence or two, show it verbatim/);
   assert.match(workspaceManagementToolDescription('inspect_routines'), /In a DM, omit channelId/);
   assert.match(workspaceManagementToolDescription('prepare_connector_setup'), /agentId may be omitted/);
 

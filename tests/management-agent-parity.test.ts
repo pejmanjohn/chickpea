@@ -420,7 +420,7 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
       presentation: { slack: string };
     } }).result;
     assert.ok(oversizedResult.presentation.slack.length <= slackMarkdownBlockTextLimit);
-    assert.match(oversizedResult.presentation.slack, /Preview truncated to fit Slack/);
+    assert.match(oversizedResult.presentation.slack, /^Approval applies the full instructions\.$/m);
     assert.match(oversizedResult.presentation.slack, /Reply `approve`/);
     assert.equal(oversizedResult.presentation.slack.includes(longInstruction), false);
     assert.equal((await f.config.getAgent(agent.id)).instructions, updated.instructions);
