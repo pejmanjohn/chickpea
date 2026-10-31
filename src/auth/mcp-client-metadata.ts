@@ -3,7 +3,7 @@ import { APIError, isAPIError } from 'better-auth/api';
 
 import { createMcpGuardedFetch, validateMcpUrl } from '../config/mcp-url.ts';
 import type { McpRegistrationThrottle } from './better-auth-backend.ts';
-import { validRedirectUri } from './mcp-oauth.ts';
+import { isLoopbackHost, validRedirectUri } from './mcp-oauth.ts';
 
 type ClientDiscovery = ReturnType<typeof createCimdClientDiscovery>;
 type Client = NonNullable<Awaited<ReturnType<ClientDiscovery['resolve']>>>;
@@ -54,20 +54,24 @@ interface NewClientGate {
  * connection guard: public HTTPS hosts only, every DNS answer checked and
  * pinned on Node, no redirect followed. The plugin adds a 5-second timeout,
  * a 5 KB JSON-only body and the MCP profile's required fields. A document
- * client must be public and redirect as a registered one must; a refused new
- * one is not kept.
+ * client must be public, redirect as a registered one must, and redirect only
+ * to its own host or loopback; a refused new one is not kept.
  *
  * Better Auth is built per request, so the discovery, which caches documents
  * and budgets fetches per origin, is kept per transport for the isolate.
  * Storing a client the database does not hold yet first passes `gate`: the
  * per-source limit and the bound on clients no one consented to that dynamic
- * registration has. A stored client never does.
+ * registration has. A stored client no one has consented to still passes the
+ * per-source limit at every lookup, so its document cannot be fetched again
+ * faster than that limit allows; one someone consented to never does.
  *
  * A stored client's document is fetched again once its cached copy lapses.
  * When that fetch cannot reach the document, the stored client stands for up
  * to a day after the document last answered, so an outage at the client's
- * host does not sign its users out. A document that answers still replaces
- * the stored client, or refuses it.
+ * host does not sign its users out. A client someone consented to also stands
+ * in when the fetch budget is spent, so strangers who spend it cannot sign its
+ * users out. A document that answers still replaces the stored client, or
+ * refuses it.
  */
 export function clientMetadataDiscovery(
   fetchClientMetadataResource: ClientMetadataFetch | undefined,
@@ -84,8 +88,10 @@ export function clientMetadataDiscovery(
       // pending bound and the plugin's fetch permit behind the URL check
       // whatever order it calls in.
       if (!isClientMetadataDocumentUrl(clientId)) return null;
+      const source = ctx.request ?? new Request(ctx.context.baseURL, { headers: ctx.headers ?? {} });
       if (!existing) {
-        await assertNewClientAdmitted(gate, ctx.request ?? new Request(ctx.context.baseURL, { headers: ctx.headers ?? {} }));
+        await assertSourceAdmitted(gate, source);
+        await assertPendingAdmitted(gate);
         const created = await discovery.resolve(ctx, clientId, null);
         const refusal = created && registrationRefusal(created);
         if (refusal) {
@@ -94,25 +100,34 @@ export function clientMetadataDiscovery(
         }
         return created;
       }
+      const consented = Boolean(await ctx.context.adapter.findOne({
+        model: 'oauthConsent', where: [{ field: 'clientId', value: clientId }],
+      }));
+      if (!consented) await assertSourceAdmitted(gate, source);
       let client: Client | null;
       try {
         client = await discovery.resolve(ctx, clientId, existing);
         unreachable.delete(clientId);
       } catch (error) {
         const failure = readFailure(error);
-        // The plugin declines a fetch for a second after a failed one, or when
-        // its budget is spent; a decline stands in for the last fetch's outcome.
-        if (failure !== 'unreachable' && !(failure === 'declined' && unreachable.has(clientId))) {
+        // The plugin pauses a client's fetches for a second after a failed one
+        // and declines every fetch once its budget is spent; either decline
+        // stands in for the last fetch's outcome. A spent budget also lets a
+        // client someone consented to stand in. A pause after a refused fetch
+        // never does.
+        const lastFetchUnreachable = failure === 'unreachable' || (failure !== undefined && unreachable.has(clientId));
+        if (!lastFetchUnreachable && !(failure === 'budget' && consented)) {
           unreachable.delete(clientId);
           throw error;
         }
-        remember(unreachable, clientId);
+        if (lastFetchUnreachable) remember(unreachable, clientId);
+        const why = lastFetchUnreachable ? 'unreachable' : 'not fetched, the fetch budget is spent';
         // The plugin rewrites updatedAt each time the document answers, changed or not.
         if (Date.now() - (existing.updatedAt?.getTime() ?? 0) > STORED_CLIENT_STAND_IN_MS) {
-          ctx.context.logger.warn(`Client metadata document unreachable for over a day; refusing the stored client: ${clientId}`);
+          ctx.context.logger.warn(`Client metadata document ${why} over a day after it last answered; refusing the stored client: ${clientId}`);
           throw error;
         }
-        ctx.context.logger.warn(`Client metadata document unreachable; using the stored client: ${clientId}`);
+        ctx.context.logger.warn(`Client metadata document ${why}; using the stored client: ${clientId}`);
         client = existing;
       }
       const refusal = client && registrationRefusal(client);
@@ -122,7 +137,7 @@ export function clientMetadataDiscovery(
   };
 }
 
-async function assertNewClientAdmitted(gate: NewClientGate, request: Request): Promise<void> {
+async function assertSourceAdmitted(gate: NewClientGate, request: Request): Promise<void> {
   const throttled = await gate.throttle?.(request);
   if (throttled) {
     const retryAfter = throttled.headers.get('retry-after');
@@ -131,6 +146,9 @@ async function assertNewClientAdmitted(gate: NewClientGate, request: Request): P
       error_description: 'Too many new apps are signing in from here. Try again later.',
     }, retryAfter ? { 'retry-after': retryAfter } : undefined);
   }
+}
+
+async function assertPendingAdmitted(gate: NewClientGate): Promise<void> {
   if (!(await gate.admitPending())) {
     throw new APIError('TOO_MANY_REQUESTS', {
       error: 'temporarily_unavailable',
@@ -139,14 +157,27 @@ async function assertNewClientAdmitted(gate: NewClientGate, request: Request): P
   }
 }
 
-/** Dynamic registration's rules (validatePublicMcpClientRegistration) that a document client must meet too. */
+/**
+ * Dynamic registration's rules (validatePublicMcpClientRegistration) that a
+ * document client must meet too, and redirects that stay on the client ID's
+ * host or loopback, so the consent page's Domain row also names where the
+ * code goes.
+ */
 function registrationRefusal(client: Client): APIError | undefined {
   const refuse = (description: string) => new APIError('BAD_REQUEST', { error: 'invalid_client', error_description: description });
   if (client.tokenEndpointAuthMethod !== 'none' || client.jwks || client.jwksUri) {
     return refuse('metadata document must describe a public client: token_endpoint_auth_method "none", no jwks or jwks_uri');
   }
-  if (!(client.redirectUris ?? []).every(validRedirectUri)) {
+  const redirectUris = client.redirectUris ?? [];
+  if (!redirectUris.every(validRedirectUri)) {
     return refuse('metadata document redirect_uris must be HTTPS, or HTTP on a loopback host, with no wildcard, credentials or fragment');
+  }
+  const clientHost = new URL(client.clientId).hostname;
+  if (!redirectUris.every((uri) => {
+    const { hostname } = new URL(uri);
+    return isLoopbackHost(hostname) || hostname === clientHost || hostname.endsWith(`.${clientHost}`);
+  })) {
+    return refuse('metadata document redirect_uris must be on the client ID\'s host or a subdomain of it, or on a loopback host');
   }
   return undefined;
 }
@@ -167,11 +198,13 @@ function remember(unreachable: Set<string>, clientId: string): void {
 }
 
 const UNREACHABLE_DOCUMENT = /^(?:Failed to fetch metadata document|Metadata document fetch timed out|Metadata document fetch returned HTTP (?:429|5\d\d)$)/;
+const PAUSED_CLIENT = 'metadata document fetch is within the per-client minimum interval';
 
-function readFailure(error: unknown): 'unreachable' | 'declined' | undefined {
+/** Why the plugin did not resolve a stored client: its fetch could not reach the document, it paused this client after a failed fetch, or its budget is spent. */
+function readFailure(error: unknown): 'unreachable' | 'paused' | 'budget' | undefined {
   if (!isAPIError(error)) return undefined;
-  if (error.status === 'TOO_MANY_REQUESTS') return 'declined';
   const description = (error.body as { error_description?: unknown } | undefined)?.error_description;
+  if (error.status === 'TOO_MANY_REQUESTS') return description === PAUSED_CLIENT ? 'paused' : 'budget';
   return typeof description === 'string' && UNREACHABLE_DOCUMENT.test(description) ? 'unreachable' : undefined;
 }
 
