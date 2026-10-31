@@ -3873,16 +3873,20 @@ interface MidRunReaction {
  * Once Slack says the 👀 is Chickpea's, read the row again; when it has left
  * the queue (dropped, delivered or gone) or its receipt is already finished,
  * take that 👀 off the recorded message at once. A row still queued keeps it
- * for its turn. Only where the state store serves its rows here (Node, and
- * the Cloudflare state store's own gateway intake).
+ * for its turn. When a run already read the message, its 👍 is the receipt
+ * now: only the late 👀 comes off. Only where the state store serves its
+ * rows here (Node, and the Cloudflare state store's own gateway intake).
  */
 async function removeLateMidRunReaction(input: MidRunReaction, name: string): Promise<void> {
   if (!input.state.turnJobView) return;
   try {
     const view = await input.state.turnJobView(input.jobId);
     const settled = view.status === 'done' || view.status === 'error' || view.status === 'missing';
-    if (!settled && view.job?.progress.slackInteraction?.acknowledgment?.cleanup !== 'done') return;
+    const acknowledgment = view.job?.progress.slackInteraction?.acknowledgment;
+    const read = acknowledgment?.read === 'done';
+    if (!settled && !read && acknowledgment?.cleanup !== 'done') return;
     await removeSlackReaction(input.client, name, input.receipt);
+    if (read) return;
     await input.state.recordSlackInteractionProgress?.(input.jobId, {
       acknowledgment: {
         ...input.receipt, name, created: true, cleanup: 'done', reaction: 'seen_mid_run',

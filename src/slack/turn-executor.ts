@@ -70,7 +70,7 @@ import {
   type TurnJobStoreLogic,
 } from './turn-jobs.ts';
 import {
-  removeSlackReaction,
+  removeSlackReceipt,
   STOP_ALREADY_FINISHED_TEXT,
   type SlackStopNoteFacts,
 } from './web-client-presenter.ts';
@@ -510,7 +510,14 @@ export async function executeTurnJob(
       // Only an executor that reads each row again before running it may
       // fold: the alarm executor runs rows it listed earlier, so a follow-up
       // its own head took could run again.
-      ...(ports.turnJobs.fold ? { claimFold: (request) => ports.turnJobs.fold!(request) } : {}),
+      ...(ports.turnJobs.fold
+        ? {
+            claimFold: (request) => ports.turnJobs.fold!(request),
+            recordFollowUpProgress: async (id, patch) => {
+              await ports.turnJobs.recordSlackInteractionProgress(id, patch);
+            },
+          }
+        : {}),
       flueDispatch,
       presentationState,
       progressiveAttributionProven: true,
@@ -790,10 +797,11 @@ export function stopRefusedDispatch(refusal: unknown): AgentPromptFailure {
 }
 
 /**
- * The 👀 of the messages a stop dropped (KTD3, KTD9): a dropped row never
- * runs, so the 👀 Chickpea added when its message arrived mid-run goes here,
- * on that message, and its receipt is finished. Only receipts Chickpea
- * recorded as its own are listed (TurnStopFinish rows). Best effort and
+ * The 👀 of the messages a stop dropped (KTD3, KTD9), or the 👍 that replaced
+ * it once the stopped run read one: a dropped row never runs, so the receipt
+ * Chickpea added when its message arrived mid-run comes off that message
+ * here, and its receipt is finished. Only receipts Chickpea recorded as its
+ * own are listed (TurnStopFinish rows). Best effort and
  * content-free: a failure leaves the delivered row's receipt pending for the
  * durable interaction cleanup. Released rows keep theirs for their own turn.
  * Shared with the Node relay (KTD16).
@@ -806,7 +814,7 @@ export async function removeDroppedReceipts(
   for (const row of rows) {
     if (!row.receipt) continue;
     try {
-      await removeSlackReaction(client, row.receipt.name, row.receipt);
+      await removeSlackReceipt(client, row.receipt);
       await recordProgress(row.id, {
         acknowledgment: { ...row.receipt, created: true, cleanup: 'done' },
       });

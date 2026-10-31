@@ -144,6 +144,7 @@ import type {
   TurnFoldClaim,
   TurnFoldRequest,
   TurnPreviousStop,
+  TurnReadReceipt,
 } from './turn-job-types.ts';
 import { slackContextSinceWatermark, threadContinuityNote } from './thread-continuity.ts';
 import { hydrateTurnSlackContext } from './turn-context-reads.ts';
@@ -191,6 +192,8 @@ import {
   slackStopNoteText,
   type SlackReactionReceipt,
   type SlackStopNoteFacts,
+  removeSlackReceipt,
+  swapReceiptForRead,
 } from './web-client-presenter.ts';
 import type { SlackTablePresentation } from './table-presentation.ts';
 import type { SlackArtifactReceipt } from './artifact-receipts.ts';
@@ -282,6 +285,8 @@ export interface RunTurnOptions {
    * request (TurnJobStoreLogic.fold). Repeatable: a retry gets the same ones.
    */
   claimFold?: (request: Extract<TurnFoldRequest, { phase: 'start' }>) => TurnFoldClaim | Promise<TurnFoldClaim>;
+  /** Persist a follow-up row's receipt once its 👀 became 👍 (see TurnFoldClaim `receipts`). */
+  recordFollowUpProgress?: (turnJobId: string, patch: SlackInteractionProgressPatch) => void | Promise<void>;
   /** Recovery replays can be a durable failure rather than a successful answer. */
   replayTerminalResult?: 'answer' | 'failure';
   /** Persist sandbox side effects before the final Slack delivery can fail. */
@@ -495,11 +500,13 @@ export async function runTurn(
 ): Promise<void> {
   // A replay delivers a recorded answer and a turn stopped before its
   // dispatch reads nothing more: neither takes follow-ups.
-  const followUps = options.claimFold && options.turnId && options.replayText === undefined &&
+  const claim = options.claimFold && options.turnId && options.replayText === undefined &&
       options.stopEnding?.beforeDispatch !== true
-    ? (await options.claimFold({ phase: 'start', headId: options.turnId })).messages
-    : [];
-  if (!options.turnLatency) return runTurnAttempt(turn, assignment, platformEnv, options, followUps);
+    ? await options.claimFold({ phase: 'start', headId: options.turnId })
+    : undefined;
+  const followUps = claim?.messages ?? [];
+  const receipts = claim?.receipts ?? [];
+  if (!options.turnLatency) return runTurnAttempt(turn, assignment, platformEnv, options, followUps, receipts);
   const tracker = new TurnLatencyTracker(options.turnLatency, {
     ...(options.turnId ? { turnJobId: options.turnId } : {}),
     ...(options.runId ? { runId: options.runId } : {}),
@@ -526,7 +533,7 @@ export async function runTurn(
             },
           }
         : {}),
-    }, followUps);
+    }, followUps, receipts);
     tracker.emit(stopped ? 'stopped' : 'returned');
   } catch (error) {
     tracker.emit('threw');
@@ -540,6 +547,7 @@ async function runTurnAttempt(
   platformEnv: PlatformEnv | undefined,
   options: RunTurnOptions,
   followUps: readonly FoldedMessage[],
+  receipts: readonly TurnReadReceipt[],
 ): Promise<void> {
   // The person's words across the request's messages, for every reader that
   // weighs what was asked rather than which message asked it.
@@ -1344,16 +1352,44 @@ async function runTurnAttempt(
     const persisted = interactionProgress.acknowledgment;
     if (!workAcknowledgment?.created || !persisted || persisted.cleanup === 'done') return;
     try {
-      await presenter.removeReaction(persisted.name, {
-        channelId: persisted.channelId,
-        messageTs: persisted.messageTs,
-      });
+      await removeSlackReceipt(client, persisted);
       workAcknowledgment = undefined;
       await recordInteractionProgress({
         acknowledgment: { ...persisted, created: true, cleanup: 'done' },
       });
     } catch {
       console.warn('[chickpea] Slack work acknowledgment cleanup failed');
+    }
+  };
+  /**
+   * The run reads these messages now, so each 👀 becomes 👍; the state
+   * store recorded each swap owed when it gave them to this turn. The head's
+   * receipt is this turn's own; a member's is recorded on its row, whose
+   * settlement or stop removes it. Best effort: a swap that fails stays
+   * owed, and the removal takes off both emoji.
+   */
+  const swapReadReceipts = async (read: readonly TurnReadReceipt[]): Promise<void> => {
+    for (const { turnJobId, receipt } of read) {
+      const own = turnJobId === options.turnId;
+      if (!own && !options.recordFollowUpProgress) continue;
+      if (own && interactionProgress.acknowledgment) {
+        interactionProgress = {
+          ...interactionProgress,
+          acknowledgment: { ...interactionProgress.acknowledgment, read: 'owed' },
+        };
+      }
+      try {
+        const acknowledgment = await swapReceiptForRead(client, receipt);
+        options.onSlackWrite?.('reaction');
+        if (own) {
+          workAcknowledgment = { name: acknowledgment.name, created: true };
+          await recordInteractionProgress({ acknowledgment });
+        } else {
+          await options.recordFollowUpProgress?.(turnJobId, { acknowledgment });
+        }
+      } catch {
+        console.warn('[chickpea] a mid-run reaction was not swapped for a read one');
+      }
     }
   };
   /**
@@ -1831,6 +1867,9 @@ async function runTurnAttempt(
         ? { ...message, informationOnly: true as const }
         : message);
     options.onFollowUpsInformed?.(requestFollowUps.filter((message) => message.informationOnly).length);
+    // An information-only member keeps its 👀: its own turn reads it next.
+    await swapReadReceipts(receipts.filter(({ turnJobId }) =>
+      !requestFollowUps.some((message) => message.informationOnly && message.turnJobId === turnJobId)));
     const prompt = assembleSlackPrompt(turn, promptContext, {
       followUps: requestFollowUps,
       ...(handoffBlock ? { handoffBlock } : {}),
@@ -2483,10 +2522,7 @@ export async function repairSlackInteractionProgress(
   }
   const acknowledgment = progress.acknowledgment;
   if (acknowledgment?.created && acknowledgment.cleanup === 'pending') {
-    await presenter.removeReaction(acknowledgment.name, {
-      channelId: acknowledgment.channelId,
-      messageTs: acknowledgment.messageTs,
-    });
+    await removeSlackReceipt(client, acknowledgment);
     await onProgress({
       acknowledgment: { ...acknowledgment, cleanup: 'done' },
     });
