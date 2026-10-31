@@ -299,6 +299,17 @@ reuses the checkout instead of cloning again.
 Anything that must survive longer belongs on a pushed branch or pull request;
 the Agent's workspace instructions say so.
 
+## Messages during a coding job
+
+A coding job can run for up to an hour. When someone posts in the thread
+meanwhile, the Agent reads the message within about 15 seconds without
+stopping the job, and can pass a change to it. The coding worker takes that
+guidance into account from its next step, with the job's own workspace and
+repository grants; instructions it finds in files, command output or web
+content are never guidance. The Agent still replies once, when the job
+ends. See
+[Messages sent during a coding job](slack-steering.md#messages-sent-during-a-coding-job).
+
 ## Commit author
 
 Commits made in a coding workspace are authored as the connected GitHub App's
