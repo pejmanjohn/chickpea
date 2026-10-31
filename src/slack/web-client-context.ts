@@ -134,6 +134,7 @@ export async function hydrateSlackContextViaWebClient(
       maxMessages: gate.gated ? Math.min(maxMessages, PACED_SLACK_READ_LIMIT) : maxMessages,
       gate,
       self,
+      followUps,
     });
   } catch (error) {
     return currentMessageOnlyContext(turn, [
@@ -272,12 +273,18 @@ export async function hydrateSlackPublicHandoffFallback(
 async function fetchHistory(
   client: WebClient,
   turn: NormalizedSlackTurn,
-  input: { maxMessages: number; gate: SlackReadGate; self: SlackContextSelf },
+  input: {
+    maxMessages: number;
+    gate: SlackReadGate;
+    self: SlackContextSelf;
+    followUps: readonly FoldedMessage[];
+  },
 ): Promise<SlackTurnContext> {
   // dm_history and channel_history share the same bounded-history policy; only
   // conversations.history is used (never conversations.replies for DMs).
   const mode = turn.contextMode as Exclude<NormalizedSlackTurn['contextMode'], 'thread'>;
-  const window = computeHistoryWindow(mode, turn.text, turn.messageTs);
+  const latest = slackContextWatermark(turn, input.followUps) ?? turn.messageTs;
+  const window = computeHistoryWindow(mode, turn.text, latest);
   const degradations: string[] = [];
   const decision = await reserveRead(input.gate, 'conversations.history', degradations, mode);
   if (!decision.ok) return { ...currentMessageOnlyContext(turn, degradations), window };
@@ -316,17 +323,18 @@ async function fetchHistory(
     : await fetchTriggerRow(client, turn);
   const windowRows = rawMessages.filter((row) => row.ts !== turn.messageTs).slice(0, input.maxMessages);
   const images = mergeThreadImages(
-    collectThreadImages(windowRows, turn),
+    collectThreadImages(windowRows, turn, input.followUps),
     collectThreadImages(triggerRows, turn),
   );
   const messages = ensureTriggerMessage(
     orderMessages(
       toContextMessages(windowRows, input.self).filter((message) =>
-        atOrBeforeSlackWatermark(message.ts, turn.messageTs)
+        atOrBeforeSlackWatermark(message.ts, latest)
       ),
     ),
     turn,
     slackFileSummaries(triggerRows[0]?.files),
+    input.followUps,
   );
   if (hasCursor) degradations.push(`slack_context.${turn.contextMode}:truncated`);
 

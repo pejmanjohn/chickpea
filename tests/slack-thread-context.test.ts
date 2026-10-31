@@ -1063,6 +1063,32 @@ test('a DM turn whose own message carries an image still yields a handle for it'
   assert.equal(context.messages.at(-1)?.ts, turn.messageTs);
 });
 
+test('a DM turn with follow-ups reads its history through the newest of them', async () => {
+  const turn = threadTurn({
+    contextMode: 'dm_history', channelType: 'im', messageTs: '2000.000000', threadTs: '2000.000000',
+    text: 'Draft the launch email.',
+  });
+  const followUps = [
+    { turnJobId: 'second', userId: 'U_HUMAN', messageTs: '2010.000000', text: 'Keep it short.' },
+    { turnJobId: 'third', userId: 'U_HUMAN', messageTs: '2020.000000', text: 'Address it to the beta list.' },
+  ];
+  const client = fakeHistoryClient([
+    { user: 'U_HUMAN', type: 'message', text: 'here is the brief', ts: '1900.000000' },
+    { user: 'U_HUMAN', type: 'message', text: 'Keep it short.', ts: '2010.000000' },
+    { user: 'U_HUMAN', type: 'message', text: 'Address it to the beta list.', ts: '2020.000000' },
+    { user: 'U_HUMAN', type: 'message', text: 'AFTER_THE_REQUEST', ts: '2030.000000' },
+  ], []);
+
+  const context = await hydrateSlackContextViaWebClient(client as never, turn, { followUps });
+
+  assert.equal(client.calls[0]?.latest, '2020.000000', 'the window reads through the newest follow-up');
+  assert.deepEqual(
+    context.messages.filter((message) => message.isTrigger).map((message) => message.ts),
+    ['2000.000000', '2010.000000', '2020.000000'],
+  );
+  assert.equal(context.messages.some((message) => message.text === 'AFTER_THE_REQUEST'), false);
+});
+
 test('the trigger read is skipped when the triggering message carried no file', async () => {
   const turn = threadTurn({ contextMode: 'dm_history', channelType: 'im', messageTs: '2000.000000' });
   const client = fakeHistoryClient(
