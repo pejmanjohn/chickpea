@@ -99,30 +99,33 @@ export function followUpSignalBody(input: {
   timezone: string;
   envelope: string;
 }): string {
-  const count = input.messages.length;
   return [
-    `While you were working, <@${input.userId}> sent ${count === 1 ? 'another message' : `${count} more messages`} in this thread:`,
+    followUpSignalHeading(input.userId, input.messages.length),
     frameFoldedMessages(input.messages, input.timezone),
     'Your draft reply has not been sent. Read these with the request above, in order, since a later message may correct or add to an earlier one. Do any extra work they need, then write your next message as the complete reply to the whole request, not only to these messages.',
     input.envelope,
   ].join('\n\n');
 }
 
-const FOLLOW_UP_SIGNAL_HEADING = /^While you were working, <@([^>\s]+)> sent (?:another message|(\d+) more messages) in this thread:$/;
+function followUpSignalHeading(userId: string, count: number): string {
+  return `While you were working, <@${userId}> sent ${count === 1 ? 'another message' : `${count} more messages`} in this thread:`;
+}
+
+/** One row of frameFoldedMessages: an optional local time, the ts, the human role, the sender's id, the text. */
 const FOLLOW_UP_SIGNAL_ROW = /^- \[(?:[^\]]*; )?(\d+\.\d+) role=human\] ([^\s:]+): ([\s\S]*)$/;
 
 /**
- * The messages a late fold's signal carried, read back from its body
- * (followUpSignalBody); undefined for any other body. Message text cannot
- * start a row or end the row block: every later line of it carries the
- * continuation marker.
+ * The messages a late fold's signal carried, read back from its body;
+ * undefined for any other body. The rows are the paragraph after the
+ * heading, and the heading must be the one followUpSignalBody writes for
+ * their sender and count. Message text cannot start a row or end the row
+ * block: every later line of it carries the continuation marker.
  */
 export function followUpSignalMessages(
   body: string,
 ): Pick<FoldedMessage, 'userId' | 'messageTs' | 'text'>[] | undefined {
   const [heading, block] = body.split('\n\n', 2);
-  const announced = heading?.match(FOLLOW_UP_SIGNAL_HEADING);
-  if (!announced || block === undefined) return undefined;
+  if (heading === undefined || block === undefined) return undefined;
   const rows: string[] = [];
   for (const line of block.split('\n')) {
     if (rows.length > 0 && line.startsWith(SLACK_CONTEXT_CONTINUATION_MARKER)) {
@@ -134,10 +137,12 @@ export function followUpSignalMessages(
   const messages: Pick<FoldedMessage, 'userId' | 'messageTs' | 'text'>[] = [];
   for (const row of rows) {
     const [, messageTs, userId, text] = row.match(FOLLOW_UP_SIGNAL_ROW) ?? [];
-    if (messageTs === undefined || userId === undefined || userId !== announced[1] || text === undefined) return undefined;
+    if (messageTs === undefined || userId === undefined || text === undefined) return undefined;
     messages.push({ userId, messageTs, text });
   }
-  return messages.length === Number(announced[2] ?? 1) ? messages : undefined;
+  const sender = messages[0]?.userId;
+  if (sender === undefined || messages.some((message) => message.userId !== sender)) return undefined;
+  return heading === followUpSignalHeading(sender, messages.length) ? messages : undefined;
 }
 
 /**
