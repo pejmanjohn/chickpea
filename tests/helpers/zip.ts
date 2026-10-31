@@ -5,12 +5,19 @@ export interface ZipFixtureEntry {
   content?: string | Uint8Array;
   /** 0 stores, 8 deflates; any other value is written as-is with stored bytes. */
   method?: number;
+  /** Write `content` as the entry's data even when `method` says deflate. */
+  rawBody?: boolean;
   flags?: number;
   /** Uncompressed size written to the central directory instead of the real one. */
   declaredSize?: number;
   /** Name written to the local header instead of `path`. */
   localPath?: string;
   zip64?: boolean;
+  /**
+   * Point the central record at this offset and write no local record, as an
+   * archive that reuses or overlaps another entry's data does.
+   */
+  localOffset?: number;
 }
 
 /** A minimal ZIP writer for synthetic test archives. */
@@ -21,7 +28,7 @@ export function buildZip(entries: readonly ZipFixtureEntry[]): Uint8Array<ArrayB
   for (const entry of entries) {
     const data = Buffer.from(entry.content ?? '');
     const method = entry.method ?? 8;
-    const body = method === 8 ? deflateRawSync(data) : data;
+    const body = method === 8 && !entry.rawBody ? deflateRawSync(data) : data;
     const name = Buffer.from(entry.path);
     const localName = Buffer.from(entry.localPath ?? entry.path);
     const checksum = crc32(data);
@@ -36,7 +43,7 @@ export function buildZip(entries: readonly ZipFixtureEntry[]): Uint8Array<ArrayB
     local.writeUInt32LE(body.length, 18);
     local.writeUInt32LE(data.length, 22);
     local.writeUInt16LE(localName.length, 26);
-    locals.push(local, localName, body);
+    if (entry.localOffset === undefined) locals.push(local, localName, body);
 
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50, 0);
@@ -49,9 +56,9 @@ export function buildZip(entries: readonly ZipFixtureEntry[]): Uint8Array<ArrayB
     central.writeUInt32LE(entry.zip64 ? 0xffffffff : body.length, 20);
     central.writeUInt32LE(entry.zip64 ? 0xffffffff : entry.declaredSize ?? data.length, 24);
     central.writeUInt16LE(name.length, 28);
-    central.writeUInt32LE(offset, 42);
+    central.writeUInt32LE(entry.localOffset ?? offset, 42);
     centrals.push(central, name);
-    offset += local.length + localName.length + body.length;
+    if (entry.localOffset === undefined) offset += local.length + localName.length + body.length;
   }
   const directory = Buffer.concat(centrals);
   const end = Buffer.alloc(22);

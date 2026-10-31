@@ -104,7 +104,7 @@ interface LedgerSlackTurnStore {
     id: string,
     patch: SlackInteractionProgressPatch,
   ): MaybePromise<unknown>;
-  markDelivered(id: string): MaybePromise<void>;
+  markDelivered(id: string): MaybePromise<unknown>;
   markError(id: string): MaybePromise<void>;
 }
 

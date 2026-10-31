@@ -188,6 +188,19 @@ test('an unreadable markdown entry is one issue; the rest of its archive still r
   ]);
 });
 
+test('an archive entry the reader refuses is reported, and the first copy of a repeated path is the one read', async () => {
+  const resolution = await resolveUploadedSkills([file('dup.zip', buildZip([
+    { path: 'alpha/SKILL.md', content: skillMarkdown('alpha', 'First copy.') },
+    { path: 'alpha/SKILL.md', content: skillMarkdown('alpha', 'Second copy.') },
+  ]))]);
+  assert.deepEqual(resolution.skills.map(({ description }) => description), ['First copy.']);
+  assert.deepEqual(resolution.issues, [{
+    path: 'dup.zip/alpha/SKILL.md',
+    code: 'invalid_archive',
+    message: 'This archive lists this path more than once. Only the first copy was read.',
+  }]);
+});
+
 test('an upload offers at most 100 skills and reports the cap once', async () => {
   const entries = Array.from({ length: 103 }, (_, index) => ({
     path: `s${index}/SKILL.md`, content: skillMarkdown(`s${index}`, 'One of many.'),

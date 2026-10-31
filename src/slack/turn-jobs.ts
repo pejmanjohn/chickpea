@@ -1318,7 +1318,9 @@ export class TurnJobStoreLogic {
    * does an informed member, which the reply did not answer. Plain
    * statements, run before the head's own tombstone, so a repeat converges.
    * A settled member keeps its receipt (👀, or the 👍 that replaced it)
-   * owed: the interaction cleanup sweeps remove it like a delivered turn's.
+   * owed: the executor removes it once the reply posted (markDelivered
+   * returns the member), and the interaction cleanup sweeps remove it when
+   * that removal fails, like a delivered turn's.
    */
   private settleFoldMembers(headId: string): void {
     const head = this.db.get(
@@ -2656,13 +2658,15 @@ export class TurnJobStoreLogic {
 
   /**
    * Tombstone a delivered job so no later scan re-delivers it, ending with it
-   * the follow-ups its run read (settleFoldMembers).
+   * the follow-ups its run read (settleFoldMembers). Returns those follow-ups
+   * (settledFoldMembers), so the caller removes their receipts with the reply.
    */
-  markDelivered(id: string): void {
+  markDelivered(id: string): TurnEndedRow[] {
     this.recordTerminalStatus(id, 'success');
     this.settleFoldMembers(id);
     this.db.run("UPDATE turn_jobs SET delivered = 1, status = 'done' WHERE id = ?", id);
     this.releaseStop(id);
+    return this.settledFoldMembers(id);
   }
 
   /** Tombstone a job that exhausted its attempts (terminal failure). */
