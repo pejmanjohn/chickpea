@@ -214,6 +214,7 @@ import {
 } from '../connections/connection-check.ts';
 import type { SlackMessageQuery, SlackTypedMessage } from '../slack/turn-jobs.ts';
 import { approvedNewKeyedApiConnections, CONNECTION_APPROVAL_WINDOW_MS } from './connection-approval.ts';
+import { setupWakeAgent } from './setup-wake.ts';
 import {
   assertScopeInsideConnection,
   ConnectionKeyRefusedError,
@@ -2235,9 +2236,9 @@ export class WorkspaceManagementService {
    * Checks a key against one of an Agent's API connections and saves it, as
    * the setup page does. It is a tool, not an operation, so the key never
    * enters an operation record. From Slack the requester must have typed
-   * the key and every URL it goes to in their own current message, or typed
-   * the key in the message that proposed this connection, which they then
-   * approved; a saved key is never replaced.
+   * the key and every URL it goes to in their own current message, or, once
+   * they approved this connection, typed the key in their current message or
+   * in the message that proposed it; a saved key is never replaced.
    */
   async saveConnectionKey(
     context: ApplyWorkspaceChangesInput['context'],
@@ -2478,14 +2479,15 @@ export class WorkspaceManagementService {
   }
 
   /**
-   * Slack, after an Approve click, which no model turn follows: the key may
-   * come from the message that proposed this connection when, in the last
-   * 30 minutes and in this conversation, the requester approved a change
-   * that added it, and they typed the key whole in that message. It admits
-   * only the connection's first key, and only while the connection sends it
-   * inside the hosts and paths that change approved, so an edit made since
-   * cannot move the key elsewhere. The text is the host's own record of the
-   * turn; nothing is read from Slack, and nothing about the key is stored.
+   * Slack, once the requester approved a change that added this connection,
+   * in the last 30 minutes and in this conversation: approving the card that
+   * lists its hosts and paths is their choice of where the key goes, so the
+   * key may come from their current message, or from the message that
+   * proposed the connection, typed whole. It admits only the connection's
+   * first key, and only while the connection sends it inside the hosts and
+   * paths that change approved, so an edit made since cannot move the key
+   * elsewhere. Both texts are the host's own record of what the person typed;
+   * nothing is read from Slack, and nothing about the key is stored.
    */
   private async keyFromApprovedConnection(
     actor: LiveManagementActor,
@@ -2494,7 +2496,7 @@ export class WorkspaceManagementService {
     key: string,
   ): Promise<boolean> {
     const { origin } = actor;
-    if (origin.kind !== 'slack' || startedWithoutPerson(actor) || !this.stores.typedSlackMessage) return false;
+    if (origin.kind !== 'slack' || startedWithoutPerson(actor)) return false;
     if (entry.account.lifecycle !== 'pending') return false;
     const proposal = await this.stores.management.findConnectionApproval({
       organizationId: actor.organizationId,
@@ -2507,7 +2509,10 @@ export class WorkspaceManagementService {
     });
     const approved = proposal && approvedNewKeyedApiConnections(proposal).find((added) =>
       added.agentId === agentId && added.connectionId === connectionId);
-    if (!proposal?.proposedMessageTs || !approved || urlsOutsideConnection(policy, approved).length > 0) return false;
+    if (!approved || urlsOutsideConnection(policy, approved).length > 0) return false;
+    const current = requestAddressedHere(actor);
+    if (current !== undefined && keyTypedForApprovedConnection(current, key, approved)) return true;
+    if (!proposal.proposedMessageTs || !this.stores.typedSlackMessage) return false;
     const [message, user] = await Promise.all([
       this.stores.typedSlackMessage({
         workspaceId: origin.workspaceId,
@@ -9128,12 +9133,12 @@ function slackCommandAddress(
 /**
  * The person's Slack message without the routed Agent's leading mention, when
  * the message is addressed to that Agent. A message that mentions anyone else
- * is addressed to them, so no explicit-command check reads it, and a click's
- * host-written text quotes the surface, not a command the person typed.
+ * is addressed to them, so no explicit-command check reads it, and text with
+ * any requestTextSource is the host's, such as a click's, never one the person typed.
  */
 function requestAddressedHere(actor: LiveManagementActor): string | undefined {
   const { origin } = actor;
-  if (origin.kind !== 'slack' || !origin.requestText || origin.requestTextSource === 'click') {
+  if (origin.kind !== 'slack' || !origin.requestText || origin.requestTextSource !== undefined) {
     return undefined;
   }
   return addressedRequestText(origin.requestText, actor.commandAddress);
@@ -9213,6 +9218,25 @@ function requesterTextContainsExactKey(requestText: string, key: string): boolea
   return false;
 }
 
+/**
+ * A key the requester typed whole in their current message, for a connection
+ * they approved: one token, in a message that names no host outside the
+ * approved connection. A phrase is no key, and a message about another
+ * service's URL is about another service's key.
+ */
+function keyTypedForApprovedConnection(
+  requestText: string,
+  key: string,
+  approved: { allowedHosts: readonly string[] },
+): boolean {
+  if (/\s/.test(key) || !requesterTextContainsExactKey(requestText, key)) return false;
+  const typed = requesterTypedUrls(requestText);
+  // A URL the parser drops (one with a user part, or a bad port) still names somewhere else.
+  const written = requestText.replace(/<(https?:\/\/[^>|\s]+)(?:\|[^>]*)?>/gi, ' $1 ').match(/https?:\/\//gi)?.length ?? 0;
+  return typed.length === written && typed.every((url) =>
+    approved.allowedHosts.some((host) => host.toLowerCase() === url.host));
+}
+
 /** Why a key pasted in Slack may not go to these URLs on the strength of the current message alone. */
 interface PastedKeyRefusal {
   reason: 'key_not_typed' | 'urls_not_typed';
@@ -9238,12 +9262,12 @@ function slackPastedKeyRefusal(
 }
 
 const SAVE_KEY_REFUSALS: Record<PastedKeyRefusal['reason'], (untyped: readonly string[]) => string> = {
-  key_not_typed: () => 'Nothing was saved: save_connection_key takes only a key the requester typed in their own current message to this Agent, or in the message that proposed this connection when they approved it in the last 30 minutes. Send a setup link with request_setup instead, and never ask anyone to paste a key in chat.',
+  key_not_typed: () => 'Nothing was saved: save_connection_key takes only a key the requester typed in their own current message to this Agent, or, when they approved this connection in this conversation in the last 30 minutes, in the message that proposed it. Send a setup link with request_setup instead, and never ask anyone to paste a key in chat.',
   urls_not_typed: (untyped) => `Nothing was saved: this connection sends its key to ${untyped.join(', ')}, which the requester did not type in the same message as the key. Send a setup link with request_setup instead; its page shows where the key goes.`,
 };
 
 const TRY_KEY_REFUSALS: Record<PastedKeyRefusal['reason'], (untyped: readonly string[]) => string> = {
-  key_not_typed: () => 'Nothing was sent: try_connection takes only a key the requester typed in their own current message to this Agent, or in the message that proposed this connection when they approved it in the last 30 minutes. Never use a key from someone else\'s message, and never ask anyone to paste a key in chat.',
+  key_not_typed: () => 'Nothing was sent: try_connection takes only a key the requester typed in their own current message to this Agent, or, when they approved this connection in this conversation in the last 30 minutes, in the message that proposed it. Never use a key from someone else\'s message, and never ask anyone to paste a key in chat.',
   urls_not_typed: (untyped) => `Nothing was sent: the key would go to ${untyped.join(', ')}, which the requester did not type in the same message as the key. Narrow the draft to the hosts and paths they typed and try again. Only if the API lives outside them, add the connection with update_agent so the person approves where the key goes, then try it with connectionId after they approve.`,
 };
 
