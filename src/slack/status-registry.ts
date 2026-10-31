@@ -7,6 +7,7 @@ import {
   type SemanticActivityTelemetrySink,
 } from '../activity/telemetry.ts';
 import { activityShowsProgress, isSafeTypedActivityStatus } from '../activity/status.ts';
+import type { MidRunReplyHandler, MidRunReplyOutcome, MidRunReplyRequest } from './midrun-reply.ts';
 
 /**
  * A run with no real progress for this long is quiet: its turn stops
@@ -145,6 +146,12 @@ interface SlackStatusTurnRegistration {
    * so the hand-over's release reaches Slack after it.
    */
   releaseNative(): Promise<void>;
+  /**
+   * Post a reply the Agent wrote mid-run (KTD14), unless the final is
+   * already under way. prepareFinal waits for one in flight, so the final
+   * always lands after it.
+   */
+  midRunReply(request: MidRunReplyRequest): Promise<MidRunReplyOutcome>;
 }
 
 interface StatusPresenter {
@@ -196,6 +203,8 @@ interface SlackStatusTurnOptions {
   refreshInitialStatus?: boolean;
   /** Fixed-schema content-free observability; injectable for focused tests. */
   telemetry?: SemanticActivityTelemetrySink;
+  /** Posts the Agent's mid-run replies for this turn; without it every one is refused. */
+  midRunReply?: MidRunReplyHandler;
 }
 
 interface QueuedStatusWrite {
@@ -256,6 +265,8 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private nativeTimer: ReturnType<typeof setTimeout> | undefined;
   /** A keepalive in flight: the hand-over and the settle wait for it. */
   private nativeKeepalive: Promise<void> | undefined;
+  /** Mid-run replies, one at a time; the final waits for the last. */
+  private replying: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly registry: SlackStatusRegistry,
@@ -272,6 +283,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     initialAppliedStatus: SlackStatusUpdate | undefined,
     refreshInitialStatus: boolean | undefined,
     clock: SlackRunClock,
+    private readonly replyHandler: MidRunReplyHandler | undefined,
   ) {
     this.now = clock.now;
     this.quietAfterMs = clock.quietAfterMs;
@@ -461,8 +473,19 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     this.cancelQuiet();
     this.endNative();
     this.discardPending('terminal_dropped');
-    // The final lands after a keepalive already in flight, never before it.
+    // The final lands after a keepalive or a mid-run reply already in flight, never before it.
     if (this.nativeKeepalive) await this.nativeKeepalive;
+    await this.replying;
+  }
+
+  midRunReply(request: MidRunReplyRequest): Promise<MidRunReplyOutcome> {
+    const reply = this.replying.then((): Promise<MidRunReplyOutcome> | MidRunReplyOutcome => {
+      if (this.closed || this.terminalizing || !this.acceptsWrites) return { posted: false, refusal: 'final_started' };
+      if (!this.replyHandler) return { posted: false, refusal: 'unavailable' };
+      return this.replyHandler(request);
+    });
+    this.replying = reply.catch(() => undefined);
+    return reply.catch(() => ({ posted: false, refusal: 'failed' }));
   }
 
   close(): void {
@@ -988,6 +1011,7 @@ export class SlackStatusRegistry {
           ? { facts: stored, fresh: false }
           : { facts: { startedAt: now, progressAt: now, milestones: 0 }, fresh: true }),
       },
+      options.midRunReply,
     );
     turns.add(turn);
     this.activeTurns.set(instanceId, turns);
@@ -1028,6 +1052,21 @@ export class SlackStatusRegistry {
     if (!matchingTurn) return true;
     void matchingTurn.setObservedStatus(update);
     return true;
+  }
+
+  /**
+   * A mid-run reply for the live turn carrying this generation, the same
+   * match setObservedStatus makes. No such turn, or two of them, posts
+   * nothing.
+   */
+  midRunReply(
+    instanceId: string,
+    generation: string,
+    request: MidRunReplyRequest,
+  ): Promise<MidRunReplyOutcome> {
+    const matching = [...this.activeTurns.get(instanceId) ?? []].filter((turn) => turn.belongsTo(generation));
+    if (matching.length !== 1) return Promise.resolve({ posted: false, refusal: 'unavailable' });
+    return matching[0]!.midRunReply(request);
   }
 
   /**

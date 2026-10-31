@@ -14,6 +14,7 @@ import { SLACK_SETTING_KEYS } from './credentials.ts';
 import { GATEWAY_DEPLOYMENT_IDENTITY_SETTING } from './gateway/identity.ts';
 import { GATEWAY_BINDING_SETTING } from './gateway/settings.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
+import type { MidRunReplyOutcome, MidRunReplyRequest } from './midrun-reply.ts';
 import type {
   SlackPresentationTransitionInput,
   SlackPresentationTransitionResult,
@@ -141,6 +142,15 @@ export interface SlackThreadRunnerRpc {
     submissionId: string,
     status: TypedActivityStatus,
   ): Promise<StateRpcResult<null>>;
+  /**
+   * A reply the Agent wrote mid-run for a turn this runner executes (see
+   * midrun-reply.ts): posted by the turn's presenter, or refused with a reason.
+   */
+  midRunReply(
+    instanceId: string,
+    submissionId: string,
+    request: MidRunReplyRequest,
+  ): Promise<MidRunReplyOutcome>;
   /**
    * A turn's run facts (start, fixed-copy step, last progress and the bucketed
    * time since it), for a check-in; null when the turn has not started here.
