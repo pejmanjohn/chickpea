@@ -653,15 +653,35 @@ test('a follow-up dispatched into the run under its turn job is copied, though F
     timezone: 'UTC',
     envelope: '<current_request_envelope>{}</current_request_envelope>',
   });
-  for (const event of [
+  const events = [
     signal('delivery', SUBMISSION, 'head', 'Draft the email.'),
     chunk({ type: 'message-started', messageId: 'step1', submissionId: SUBMISSION }),
     chunk({ type: 'message-delta', messageId: 'step1', kind: 'text', delta: 'A draft.' }),
     signal('joined', 'sub_join', 'head', fold('1.5', 'Make it formal.')),
     signal('elsewhere', 'sub_elsewhere', 'other_job', fold('1.6', 'Not this run.')),
-  ]) session!.ingest(event, SUBMISSION);
+    // Named for the head, but no fold signal: nothing of it is copied.
+    chunk({
+      type: 'message-appended',
+      message: {
+        id: 'note', role: 'system', purpose: 'dispatch', display: 'diagnostic', submissionId: 'sub_note',
+        signal: { tagName: 'note', attributes: { turnJobId: 'head' } },
+        parts: [{ type: 'text', text: fold('1.7', 'Not a Slack message.'), state: 'done' }],
+      },
+    }),
+  ];
+  for (const event of events) session!.ingest(event, SUBMISSION);
   await session!.finish({ ...ENDING, trigger: { author: 'U012ABCDEF3', text: 'Draft the email.', files: [] } });
   assert.equal(records[0]!.record.trigger.text, 'Draft the email.\n\nMake it formal.');
+
+  // A settled history reads the same way.
+  const appended = events.flatMap((event) => event.type === 'message-appended' ? [event.message] : []);
+  const history = RunReviewCollector.fromHistory(
+    { v: 1, conversationId: 'conversation', offset: '6', settlements: [], messages: appended }, SUBMISSION, 'head',
+  );
+  assert.deepEqual(history.followUps().map((followUp) => followUp.text), ['Make it formal.']);
+  assert.deepEqual(RunReviewCollector.fromHistory(
+    { v: 1, conversationId: 'conversation', offset: '6', settlements: [], messages: appended }, SUBMISSION,
+  ).followUps(), [], 'without a turn job, only the submission\'s own folds count');
 });
 
 test('a settled history keeps the late fold\'s messages, read back exactly as framed', () => {
