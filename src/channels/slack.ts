@@ -42,6 +42,7 @@ import {
 } from '../config/errors.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { deploymentTenancy, requireInstallationScope } from '../config/installation-scope.ts';
+import { emitSlackEditAdmission } from '../observability/runtime-latency.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import { createRequestTelemetryLifecycle } from '../telemetry/runtime.ts';
@@ -2683,12 +2684,16 @@ async function steerWithSlackEdit(input: {
   try {
     admitted = await input.state.admitEdit?.(input.edit);
   } catch (err) {
+    emitSlackEditAdmission({ outcome: 'failed' });
     console.error('[chickpea] edit admission failed:', sanitizeError(err));
     if (isCloudflareTarget() || execution?.durableIngress) {
       throw new SlackDurableEnqueueError('Edit admission failed.');
     }
     return;
   }
+  emitSlackEditAdmission({
+    outcome: !admitted ? 'unsupported' : admitted.outcome === 'refused' ? admitted.reason : admitted.outcome,
+  });
   if (!admitted || admitted.outcome === 'refused') return;
   if (isCloudflareTarget()) {
     const enqueued = await (execution?.enqueueTurn

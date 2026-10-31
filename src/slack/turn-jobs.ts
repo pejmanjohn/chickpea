@@ -1046,21 +1046,24 @@ export class TurnJobStoreLogic {
    */
   fold(request: TurnFoldRequest): TurnFoldClaim {
     validateFoldRequest(request);
-    const { claim, confirmed, informed, toolBoundary } = this.db.transaction(() => this.claimFold(request));
-    if (confirmed > 0) emitTurnFold({ turnJobId: request.headId, late: confirmed, informed, turn: toolBoundary });
+    const { claim, confirmed, informed, toolBoundary, edits } = this.db.transaction(() => this.claimFold(request));
+    if (confirmed > 0 || edits > 0) {
+      emitTurnFold({ turnJobId: request.headId, late: confirmed, informed, turn: toolBoundary, edits });
+    }
     return claim;
   }
 
   /**
    * The claim, and how many late members this call confirmed as read:
    * `informed` of them information only, `toolBoundary` of them taken at a
-   * tool boundary.
+   * tool boundary; `edits` counts confirmed edit rows apart.
    */
   private claimFold(request: TurnFoldRequest): {
     claim: TurnFoldClaim;
     confirmed: number;
     informed: number;
     toolBoundary: number;
+    edits: number;
   } {
     const head = this.db.get(
       `SELECT rowid AS row_order, id, turn_json, assignment_json, delivered, status, execution_authority,
@@ -1069,7 +1072,7 @@ export class TurnJobStoreLogic {
       request.headId,
     );
     const threadKey = typeof head?.thread_key === 'string' ? head.thread_key : undefined;
-    const none = { claim: { messages: [], requesterText: '' }, confirmed: 0, informed: 0, toolBoundary: 0 };
+    const none = { claim: { messages: [], requesterText: '' }, confirmed: 0, informed: 0, toolBoundary: 0, edits: 0 };
     if (!head || !threadKey) return none;
     let headTurn: NormalizedSlackTurn;
     let headAssignment: ResolvedAssignment;
@@ -1082,10 +1085,15 @@ export class TurnJobStoreLogic {
     let confirmed = 0;
     let informed = 0;
     let toolBoundary = 0;
+    let edits = 0;
     if (request.phase !== 'start') {
       for (const { record, message } of this.foldMembers(threadKey, request.headId)) {
         if (record.cycle < 1 || record.cycle > request.received || record.received) continue;
         this.writeFoldRecord(message.turnJobId, { ...record, received: true });
+        if (isEditTurn(message)) {
+          edits += 1;
+          continue;
+        }
         if (record.role === 'absorbed') this.oweReadReceipt(message.turnJobId);
         confirmed += 1;
         if (record.role === 'informed') informed += 1;
@@ -1118,6 +1126,7 @@ export class TurnJobStoreLogic {
         confirmed,
         informed,
         toolBoundary,
+        edits,
       };
     };
     if (request.phase !== 'start' && !request.take) return claim(false);

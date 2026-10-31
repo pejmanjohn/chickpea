@@ -1711,6 +1711,28 @@ test('a plan freeze that decides start roles again moves an edit row with its me
   }
 });
 
+test('turn_fold counts the confirmed edits apart from the late messages', (t) => {
+  const records: Array<Record<string, unknown>> = [];
+  t.mock.method(console, 'info', (record: Record<string, unknown>) => {
+    if (record.event === 'turn_fold') records.push(record);
+  });
+  const c = canonicalStore();
+  try {
+    const head = posted('101');
+    enqueueAll(c, [head]);
+    dispatch(c.turns, head);
+    enqueueAll(c, [posted('102')]);
+    admitEdit(c, editOf(head, '150', 'v2'));
+    late(c, head, 0);
+    late(c, head, 1, 'finish', false);
+    assert.deepEqual(records, [
+      { component: 'runtime', event: 'turn_fold', turnRef: opaqueTurnRef(head.id), late: 1, turn: 1, edits: 1 },
+    ]);
+  } finally {
+    c.db.close();
+  }
+});
+
 // ── edits: identity and counts ────────────────────────────────────────
 
 test('an edit running on its own reads through its edit, so the Agent\'s earlier reply is in reach', () => {

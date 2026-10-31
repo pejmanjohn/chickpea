@@ -330,12 +330,13 @@ export class TurnLatencyTracker {
 /**
  * A running turn's model read `late` more queued messages, sent while it
  * worked: `informed` of them as information only, `turn` of them after a
- * tool batch rather than as it was about to reply. `turn_latency.folded`
- * and `foldedInformed` count the ones it took at its start. Emitted when
- * the state store confirms the Agent read them.
+ * tool batch rather than as it was about to reply. `edits` counts the
+ * edits of messages it had already read, apart from `late`.
+ * `turn_latency.folded` and `foldedInformed` count the ones it took at its
+ * start. Emitted when the state store confirms the Agent read them.
  */
 export function emitTurnFold(
-  record: { turnJobId: string; late: number; informed: number; turn: number },
+  record: { turnJobId: string; late: number; informed: number; turn: number; edits: number },
   sink?: RuntimeLatencySink,
 ): void {
   emitRuntimeLatency('turn_fold', {
@@ -343,7 +344,19 @@ export function emitTurnFold(
     late: record.late,
     informed: record.informed > 0 ? record.informed : undefined,
     turn: record.turn > 0 ? record.turn : undefined,
+    edits: record.edits > 0 ? record.edits : undefined,
   }, sink);
+}
+
+/**
+ * One delivery of a person's edit of a message: `admitted`, or
+ * `already_admitted` for a redelivery, when it will steer its message's
+ * turn; otherwise why not (a SlackEditRefusal), `unsupported` for a state
+ * store without edit admission, or `failed` when admission threw and the
+ * delivery is retried. On `turn_fold` with `op` `edit_admission`.
+ */
+export function emitSlackEditAdmission(record: { outcome: string }, sink?: RuntimeLatencySink): void {
+  emitRuntimeLatency('turn_fold', { op: 'edit_admission', outcome: record.outcome }, sink);
 }
 
 /**

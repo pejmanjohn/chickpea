@@ -1247,3 +1247,32 @@ test('the Node path admits an edit the same way', async () => {
       'Node\'s gateway does not filter Chickpea\'s own updates; the parse does');
   }, { target: 'node' });
 });
+
+test('each edit delivery logs one content-free edit_admission outcome', async (t) => {
+  const records: Array<Record<string, unknown>> = [];
+  const info = console.info;
+  t.mock.method(console, 'info', (record: unknown, ...rest: unknown[]) => {
+    if (record && typeof record === 'object' && (record as Record<string, unknown>).op === 'edit_admission') {
+      records.push(record as Record<string, unknown>);
+    } else {
+      info(record, ...rest);
+    }
+  });
+  await withHarness(async (harness) => {
+    await startRun(harness);
+    const canary = `${OPS} CANARY_EDIT_TEXT_7f3a`;
+    const change = { ts: ROOT_TS, previousText: ROOT_TEXT, text: canary, editedTs: EDITED_TS };
+    await harness.edit(change);
+    await harness.edit(change);
+    await harness.edit({ ts: ROOT_TS, previousText: canary, text: canary, eventId: 'EvPreviewOnly' });
+    await harness.edit({
+      ts: '1800000002.000100', threadTs: ROOT_TS, user: 'U2', previousText: 'lunch?', text: 'lunch at 1?', editedTs: EDITED_TS,
+    });
+  });
+  assert.deepEqual(records, [
+    { component: 'runtime', event: 'turn_fold', op: 'edit_admission', outcome: 'admitted' },
+    { component: 'runtime', event: 'turn_fold', op: 'edit_admission', outcome: 'already_admitted' },
+    { component: 'runtime', event: 'turn_fold', op: 'edit_admission', outcome: 'no_live_turn' },
+  ], 'a link preview is no edit and logs nothing');
+  assert.doesNotMatch(JSON.stringify(records), /CANARY|lunch|C1|U1|U2|180000/, 'no text, ids or times');
+});
