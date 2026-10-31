@@ -776,24 +776,25 @@ test('an installation on Chickpea\'s models switches back to its own key only wi
       });
       assert.equal(saved.status, 200, await saved.clone().text());
     };
-    const ownKey = async () => (await json(admin('/admin/api/billing'))).switchFunding;
+    type OwnKeyView = { funding: BillingFunding; ownKey: { key: unknown } };
+    const ownKey = async () => (await json<OwnKeyView>(admin('/admin/api/billing'))).ownKey.key;
     const switchToOwnKey = () => admin('/admin/api/billing/funding', { method: 'POST', body: JSON.stringify({ funding: 'own_key' }) });
 
-    assert.deepEqual(await ownKey(), { to: 'own_key', ready: false, needs: 'key', provider: 'anthropic' });
+    assert.deepEqual(await ownKey(), { ready: false, provider: 'anthropic' });
     await saveKey('openrouter');
-    assert.deepEqual(await ownKey(), { to: 'own_key', ready: false, needs: 'key', provider: 'anthropic' }, 'a key for another provider is not enough');
+    assert.deepEqual(await ownKey(), { ready: false, provider: 'anthropic' }, 'a key for another provider is not enough');
     const refused = await switchToOwnKey();
     assert.equal(refused.status, 409);
     assert.deepEqual(await refused.json(), { error: 'own_key_missing', provider: 'anthropic' });
     assert.deepEqual(chosen, [], 'a workspace whose default model has no key stays on Chickpea\'s models');
 
     await saveKey('anthropic');
-    assert.deepEqual(await ownKey(), { to: 'own_key', ready: true, agentsWithoutKey: ['Research'] },
+    assert.deepEqual(await ownKey(), { ready: true, provider: 'anthropic', agentsWithoutKey: ['Research'] },
       'only an active, enabled Agent pinned to a provider with no key would stop');
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const switched = await json(switchToOwnKey());
+      const switched = await json<OwnKeyView>(switchToOwnKey());
       assert.equal(switched.funding, 'own_key');
-      assert.deepEqual(switched.switchFunding, { to: 'platform' });
+      assert.deepEqual(switched.ownKey.key, { ready: true, provider: 'anthropic', agentsWithoutKey: ['Research'] }, 'the key in use stays reported');
     }
     assert.deepEqual(chosen, ['own_key', 'own_key'], 'switching again asks the host for the same funding');
   });

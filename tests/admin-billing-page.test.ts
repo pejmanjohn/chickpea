@@ -19,7 +19,9 @@ import {
 } from '../src/config/platform-billing.ts';
 import type { ProviderKeyId } from '../src/config/provider-keys.ts';
 import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
-import { NO_PLAN, OWN_KEY_NO_PLAN, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_DOWNGRADING, TEAM_ENDING, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
+import {
+  NO_PLAN, OFFERS, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_DOWNGRADING, TEAM_ENDING, TEAM_PLAN, TRIAL_GRANT, usd,
+} from './helpers/billing-summaries.ts';
 
 interface FakeResponse {
   ok: boolean;
@@ -62,7 +64,7 @@ const FROZEN: BillingSummary = {
   ...NO_PLAN,
   extraUsage: { remainingMicros: usd(40), frozen: true, expiresAt: new Date('2027-10-07T17:00:00Z') },
 };
-const TRIAL: BillingSummary = { ...NO_PLAN, trial: { remainingMicros: usd(32.5), expiresAt: new Date('2026-11-06T17:00:00Z') } };
+const TRIAL: BillingSummary = { ...NO_PLAN, trial: TRIAL_GRANT };
 const OWN_KEY_TEAM: BillingSummary = { ...TEAM_PLAN, funding: 'own_key' };
 const UNREADABLE: BillingSummary = { ...TEAM_PLAN, offers: { ...TEAM_PLAN.offers, ownKeyMinimumPlanKey: 'retired_pro' } };
 
@@ -113,6 +115,8 @@ async function harness(options: {
   /** A workspace admin who is not the Owner, who reaches Settings but not the Owner's billing. */
   admin?: boolean;
   ownKey?: OwnKeyFacts;
+  /** Admin's Agent list, for the avatars beside use by Agent. */
+  agents?: unknown[];
   onboarding?: Record<string, unknown>;
   onboardingUnread?: boolean;
   modelsHeld?: boolean;
@@ -192,7 +196,7 @@ async function harness(options: {
         method, headers: { 'content-type': 'application/json' }, ...(init?.body ? { body: init.body } : {}),
       }, ENV);
     }
-    if (path === '/admin/api/agents') return response({ agents: [] });
+    if (path === '/admin/api/agents') return response({ agents: options.agents ?? [] });
     if (path === '/admin/api/assignments') return response({ assignments: [] });
     if (path === '/admin/api/models') {
       await modelsGate;
@@ -268,6 +272,10 @@ async function harness(options: {
     listeners.click!({ target: actionTarget(attributes), preventDefault() {} });
     await flush();
   };
+  /** Picks a plan size in a plan card's select. */
+  const choose = (cardKey: 'platform' | 'own_key', planKey: string) => {
+    listeners.change!({ target: actionTarget({ 'data-action': 'billing-plan-level', 'data-card': cardKey }, planKey) });
+  };
   /** Pastes a key into a provider's field on Model providers and validates it. */
   const saveKey = async (provider: ProviderKeyId) => {
     listeners.input!({ target: actionTarget({ 'data-action': 'prov-key-input', 'data-provider': provider }, 'sk-test') });
@@ -280,340 +288,577 @@ async function harness(options: {
     await flush();
   };
   return {
-    html: () => html, renders, timerDelays, requests, assigned, location, click, saveKey, firePoll, serverHtml,
+    html: () => html, renders, timerDelays, requests, assigned, location, click, choose, saveKey, firePoll, serverHtml,
     portCalls: billing?.calls ?? [], releasePlatform: () => releasePlatform(), releaseModels: () => releaseModels(),
   };
 }
 
 /** The page's HTML with its entities decoded, so copy can be matched as a person reads it. */
 function decoded(html: string): string {
-  return html.replace(/&rsquo;/g, '’').replace(/&hellip;/g, '…').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+  return html.replace(/&rsquo;/g, '’').replace(/&ldquo;/g, '“').replace(/&rdquo;/g, '”').replace(/&middot;/g, '·')
+    .replace(/&hellip;/g, '…').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"').replace(/&#39;/g, '\'').replace(/&amp;/g, '&');
 }
 
+/** What a person reads: the text without tags, its spaces collapsed. */
+function text(html: string): string {
+  return decoded(html.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+}
+
 function assertShows(html: string, copy: string): void {
-  assert.ok(decoded(html).includes(copy), `the page shows "${copy}"`);
+  assert.ok(text(html).includes(copy), `the page shows "${copy}" in: ${text(html).slice(0, 400)}`);
 }
 
 function assertHides(html: string, copy: string): void {
-  assert.ok(!decoded(html).includes(copy), `the page does not show "${copy}"`);
+  assert.ok(!text(html).includes(copy), `the page does not show "${copy}"`);
 }
-
-const PLAN_LEDE = 'Your plan includes usage for your Agents’ chat and tasks.';
-const NO_PLAN_LEDE = 'Your workspace has no plan. Plans include usage for your Agents’ chat and tasks.';
 
 /** The sentence under the page title. */
 function lede(html: string): string {
-  return decoded(/<h1 class="page-title">Plan<\/h1><p class="hint">([^<]*)<\/p>/.exec(html)?.[1] ?? '');
+  return decoded(/<p class="plan-lede">([^<]*)<\/p>/.exec(html)?.[1] ?? '');
 }
 
-/** The sentence under the plan's name in the Plan section. */
-function planTerms(html: string): string {
-  return decoded(/<h2 class="section-title">Plan<\/h2><p><strong>[^<]*<\/strong><\/p><p class="hint">([^<]*)<\/p>/.exec(html)?.[1] ?? '');
+/** The status card. */
+function hero(html: string): string {
+  const start = html.indexOf('<section class="plan-hero');
+  assert.ok(start >= 0, 'the page shows the status card');
+  return html.slice(start, html.indexOf('</section>', start) + '</section>'.length);
+}
+
+type Card = 'platform' | 'own_key';
+
+/** One plan card: Models included (platform) or Your own API key (own_key). */
+function card(html: string, which: Card): string {
+  const heading = html.indexOf(`aria-labelledby="plan-card-${which}"`);
+  assert.ok(heading >= 0, `the page shows the ${which} card`);
+  const start = html.lastIndexOf('<article', heading);
+  return html.slice(start, html.indexOf('</article>', heading) + '</article>'.length);
+}
+
+/** A card's button as a person reads it, with where it leads: a link's path, a Checkout's plan key, and its tone. */
+function cardStep(html: string, which: Card): string {
+  const action = /<(button|a) ([^>]*class="btn ([^"]*) plan-card-action"[^>]*)>([^<]*)<\/\1>/.exec(card(html, which));
+  if (!action) return 'no button';
+  const [, element, attributes, tone, label] = action as unknown as [string, string, string, string, string];
+  if (element === 'a') return `${decoded(label)} → ${/href="([^"]*)"/.exec(attributes)?.[1]}`;
+  if (/ disabled/.test(attributes)) return `${decoded(label)} (disabled)`;
+  const key = /data-key="([^"]*)"/.exec(attributes)?.[1];
+  return `${decoded(label)} [${tone.includes('btn-primary') ? 'primary' : 'soft'}${key ? ` ${key}` : ''}]`;
+}
+
+function cardTag(html: string, which: Card): string {
+  return decoded(/<p class="plan-card-tag">([^<]*)<\/p>/.exec(card(html, which))?.[1] ?? '');
+}
+
+/** The plan sizes a card's select offers, as a person reads them, and the one it shows. */
+function cardLevels(html: string, which: Card): { options: string[]; selected: string } {
+  const options = [...card(html, which).matchAll(/<option value="([^"]*)"( selected)?>([^<]*)<\/option>/g)];
+  return {
+    options: options.map((option) => decoded(option[3]!)),
+    selected: options.find((option) => option[2])?.[1] ?? '',
+  };
 }
 
 const fundingWrites = (requests: Array<{ path: string }>) => requests.filter((request) => request.path === '/admin/api/billing/funding');
 const billingWrites = (requests: Array<{ path: string; method: string; body: unknown }>) =>
   requests.filter((request) => request.path.startsWith('/admin/api/billing/')).map((request) => [request.method, request.path, request.body]);
+const billingReads = (requests: Array<{ path: string; method: string }>) =>
+  requests.filter((request) => request.method === 'GET' && request.path === '/admin/api/billing').length;
 
-/** The meter sentence's two dollar figures and its percentage. */
-function meterFigures(html: string): { used: number; included: number; percent: number } {
-  const match = /(\$[\d,]+(?:\.\d\d)?) of (\$[\d,]+(?:\.\d\d)?) used, (\d+)%/.exec(decoded(html));
-  assert.ok(match, 'the page shows the meter sentence');
-  const dollars = (figure: string) => Number(figure.replace(/[$,]/g, ''));
-  return { used: dollars(match[1]!), included: dollars(match[2]!), percent: Number(match[3]) };
-}
+/** The Plus plan with an own key, part-way through its period: 122 of its 400 tasks used. */
+const OWN_KEY_PLUS: BillingSummary = {
+  ...NO_PLAN,
+  funding: 'own_key',
+  plan: { key: 'plus', name: 'Plus', priceCents: 10_000 },
+  period: PERIOD,
+  planUsage: { usedMicros: usd(36.6), includedMicros: usd(120), onPacePercent: 64 },
+};
+/** The Starter plan with all of its usage used and nothing in reserve. */
+const STARTER_USED_UP: BillingSummary = { ...STARTER_PLAN, planUsage: { usedMicros: usd(60), includedMicros: usd(60), onPacePercent: null } };
+const OWN_KEY_USED_UP: BillingSummary = { ...OWN_KEY_PLUS, planUsage: { usedMicros: usd(120), includedMicros: usd(120), onPacePercent: null } };
 
-test('an Owner on the Team plan sees the meter in dollars, what carried over, extra usage, the plan, its offers, and use in dollars', async () => {
+test('an Owner on the Team plan reads what is left, the tasks it covers, the meter, and what carried over, with Add usage beside it', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN });
   const html = page.html();
   assert.equal(page.location.pathname, '/admin/plan');
   assert.match(html, /<h1 class="page-title">Plan<\/h1>/);
   assert.match(html, /data-action="open-billing"[^>]*>Plan<\/button>/, 'the section switcher names the page');
-  assert.match(html, /<span class="chan-name">Overview<\/span><span class="chan-meta">Usage<\/span>/);
-  assert.equal(lede(html), PLAN_LEDE);
-  assert.match(html, /<span class="usage-card-label">Plan usage<\/span>/);
-  assertShows(html, '$128 of $240 used, 53%, resets Nov 7, on pace for 80%');
-  assert.match(html, /role="meter"[^>]*aria-valuemin="0" aria-valuemax="100" aria-valuenow="53"><span style="width: 53%">/);
-  assert.match(html, /<ul class="billing-lines"><li>Carried from last month: \$20<\/li><li>Extra usage: \$40<\/li><\/ul>/);
-  assert.match(html, /<h2 class="section-title">Plan<\/h2><p><strong>Team<\/strong><\/p><p class="hint">\$200 a month includes \$240 of usage\. Renews Nov 7\.<\/p>/);
-  assert.match(html, /data-action="billing-change-plan">Change plan<\/button>/);
+  assert.match(html, /<span class="chan-name">Overview<\/span><span class="chan-meta">Models included<\/span>/);
+  assert.equal(lede(html), 'Your workspace is on the $200 plan with models included.');
   assert.match(html, /data-action="billing-manage">Manage billing<\/button>/);
-  assert.match(html, /<h2 class="section-title">Extra usage<\/h2>/);
+  const status = hero(html);
+  assertShows(status, 'This month $172 left About 375 tasks · Renews Nov 7');
+  assert.match(status, /role="meter" aria-label="Plan usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="53"><span class="plan-meter-fill" style="width: 53%"><\/span><span class="plan-meter-pace" style="left: 80%"><\/span>/);
+  assertShows(status, '$128 of $240 plan usage On pace for 80% by Nov 7');
+  assertShows(status, '+$20 carried over until Nov 7');
+  assertShows(status, '+$40 extra usage until Sep 14, 2027');
+  assertShows(status, 'Add usage $25 $50 $100 Keeps 12 months');
   for (const dollars of [25, 50, 100]) {
-    assert.match(html, new RegExp(`data-action="billing-add-extra-usage" data-key="extra_usage_${dollars}">Add \\$${dollars}</button>`));
+    assert.match(status, new RegExp(`class="btn btn-soft" data-action="billing-add-extra-usage" data-key="extra_usage_${dollars}" aria-label="Add \\$${dollars} of extra usage">\\$${dollars}</button>`));
   }
-  assertShows(html, 'Extra usage is sold at face value and keeps for 12 months. You need a plan to use it.');
-  assert.match(html, /<h2 class="section-title">Usage this period<\/h2><p class="hint">Since Oct 7\.<\/p>/);
-  assert.match(html, /<th>Agent<\/th><th class="number">Used<\/th>[\s\S]*<td>Chickpea<\/td><td class="number">\$30\.25<\/td><\/tr><tr><td>Other<\/td><td class="number">\$7<\/td>/);
-  assert.match(html, /<th>Person<\/th><th class="number">Used<\/th>[\s\S]*<td>Maya Chen<\/td><td class="number">\$31\.50<\/td><\/tr><tr><td>Other<\/td><td class="number">\$6<\/td>/);
+  assert.doesNotMatch(status, /plan-hero-alert|is-out/);
   assert.deepEqual(billingWrites(page.requests), []);
-
-  await page.click({ 'data-action': 'billing-change-plan' });
-  const chooser = page.html();
-  assert.match(chooser, /id="billing-plans-heading">Choose a plan<\/h3>/);
-  const rows = [...chooser.matchAll(/<div class="billing-plan"><div><strong>([^<]+)<\/strong><p class="hint">([^<]+)<\/p>(<p class="hint">[^<]+<\/p>)?<\/div>(.*?)<\/div>/g)]
-    .map((row) => [row[1], row[2], row[3] ?? '', /Current plan/.test(row[4]!) ? 'current' : /data-action="billing-choose-plan"/.test(row[4]!) ? 'choose' : row[4]]);
-  assert.deepEqual(rows, [
-    ['Solo', '$25 a month includes $30 of usage', '', 'choose'],
-    ['Starter', '$50 a month includes $60 of usage', '', 'choose'],
-    ['Plus', '$100 a month includes $120 of usage', '<p class="hint">Lowest plan for your own API key</p>', 'choose'],
-    ['Team', '$200 a month includes $240 of usage', '', 'current'],
-    ['Growth', '$300 a month includes $360 of usage', '', 'choose'],
-    ['Business', '$500 a month includes $600 of usage', '', 'choose'],
-  ]);
 });
 
-test('an Owner on a plan with no recorded period sees the plan by name, with no meter, and can still add extra usage', async () => {
-  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: PLAN_NO_PERIOD })).html();
-  assert.equal(lede(html), PLAN_LEDE);
-  assert.match(html, /<div class="usage-card usage-card-primary"><span class="usage-card-label">Plan<\/span><span class="usage-card-value">Team<\/span><\/div>/);
-  assertHides(html, 'No plan');
-  assert.doesNotMatch(html, /role="meter"/);
-  assertHides(html, 'resets');
-  assert.match(html, /<h2 class="section-title">Plan<\/h2><p><strong>Team<\/strong><\/p><p class="hint">\$200 a month includes \$240 of usage\.<\/p>/);
-  assertHides(html, 'Renews');
-  assert.match(html, /<li>Extra usage: \$40<\/li>/);
-  for (const dollars of [25, 50, 100]) {
-    assert.match(html, new RegExp(`data-action="billing-add-extra-usage" data-key="extra_usage_${dollars}">Add \\$${dollars}</button>`));
+test('on an own key, the status counts exact tasks left and the meter counts tasks used', async () => {
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_PLUS })).html();
+  assert.equal(lede(html), 'Your workspace is on the $100 plan with its own API key.');
+  assert.match(html, /<span class="chan-meta">Own API key<\/span>/);
+  const status = hero(html);
+  assertShows(status, 'This month 278 tasks left $83.40 of usage left · Renews Nov 7 · Your provider bills tokens');
+  assertShows(status, '122 of 400 tasks used On pace for 64% by Nov 7');
+  assert.match(status, /aria-label="Plan tasks"[^>]*aria-valuenow="30"/);
+  assertHides(status, 'About');
+});
+
+test('used up, the meter turns red, Add usage turns primary, and the alert says what is paused and when it starts again', async () => {
+  const cases: Array<[string, BillingSummary, boolean, string]> = [
+    ['models included', STARTER_USED_UP, true,
+      'Your Agents are paused. Add usage to keep them working now, or they start again when your plan renews Nov 7.'],
+    ['an own key', OWN_KEY_USED_UP, true,
+      'Tasks are paused, and your Agents can still chat. Add usage to keep tasks going, or they start again when your plan renews Nov 7.'],
+    ['a plan that ends', { ...STARTER_USED_UP, pendingChange: TEAM_ENDING.pendingChange }, true,
+      'Your Agents are paused. Add usage to keep them working now.'],
+    ['a Member on models included', STARTER_USED_UP, false,
+      'Your Agents are paused. An Owner can add usage to keep them working now, or they start again when your plan renews Nov 7.'],
+    ['a Member on an own key', OWN_KEY_USED_UP, false,
+      'Tasks are paused, and your Agents can still chat. An Owner can add usage to keep tasks going, or they start again when your plan renews Nov 7.'],
+  ];
+  for (const [label, summary, owner, alert] of cases) {
+    const status = hero((await harness({ path: '/admin/plan', billingOffered: true, owner, summary })).html());
+    assert.match(status, /<section class="plan-hero is-out"/, label);
+    assert.match(status, /<div class="plan-meter is-out"/, label);
+    assert.equal(decoded(/<p class="plan-hero-alert" role="status">.*?<span>([^<]*)<\/span><\/p>/.exec(status)?.[1] ?? ''), alert, label);
+    assertShows(status, 'Used up');
+    assertHides(status, 'About');
+    const buttons = [...status.matchAll(/class="btn (btn-\w+)" data-action="billing-add-extra-usage"/g)].map((match) => match[1]);
+    assert.deepEqual(buttons, owner ? ['btn-primary', 'btn-primary', 'btn-primary'] : [], label);
   }
-
-  const ownKey = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...PLAN_NO_PERIOD, funding: 'own_key' } })).html();
-  assert.equal(lede(ownKey), 'Your workspace pays for models with its own API key. Your plan covers tasks.');
+  assertShows(hero((await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_USED_UP })).html()), '$0 left Renews Nov 7');
+  assertShows(hero((await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_USED_UP })).html()), '0 tasks left $0 of usage left');
 });
 
-test('a Member on a plan with no recorded period sees the plan by name, not no plan', async () => {
-  const html = (await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: PLAN_NO_PERIOD })).html();
-  assert.equal(lede(html), PLAN_LEDE);
-  assert.match(html, /<span class="usage-card-label">Plan<\/span><span class="usage-card-value">Team<\/span>/);
-  assertHides(html, 'No plan');
+test('the plan\'s usage used up is not the workspace\'s: what carried over and extra usage keep the Agents working, and debt counts against them', async () => {
+  const planUsedUp: BillingSummary = { ...TEAM_PLAN, planUsage: { usedMicros: usd(240), includedMicros: usd(240), onPacePercent: null } };
+  const working = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: planUsedUp })).html());
+  assertShows(working, '$60 left About 125 tasks');
+  assertShows(working, '$240 of $240 plan usage Used up');
+  assert.doesNotMatch(working, /is-out|plan-hero-alert|btn-primary/);
+  const owing = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...planUsedUp, debtMicros: usd(60) } })).html());
+  assertShows(owing, '$0 left');
+  assert.match(owing, /plan-hero-alert/, 'what the workspace owes uses up what it has');
 });
 
-test('a plan cancelled in Stripe\'s portal says when it ends, and a downgrade names the plan it changes to, in place of when it renews', async () => {
-  const ending = (await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_ENDING })).html();
-  assert.equal(planTerms(ending), '$200 a month includes $240 of usage. Ends Nov 7.');
-  const downgrading = (await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_DOWNGRADING })).html();
-  assert.equal(planTerms(downgrading), '$200 a month includes $240 of usage. Changes to the Chickpea $50 plan on Nov 7.');
-});
-
-test('the meter of a plan that ends says the day it ends, not that it resets; a plan that changes still resets', async () => {
-  const endsNov8: BillingSummary = { ...TEAM_PLAN, pendingChange: { kind: 'ends', at: new Date('2026-11-08T17:00:00Z') } };
-  const ending = (await harness({ path: '/admin/plan', billingOffered: true, summary: endsNov8 })).html();
-  assertShows(ending, '$128 of $240 used, 53%, ends Nov 8, on pace for 80%');
-  assertHides(ending, 'resets');
-  assertShows((await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_DOWNGRADING })).html(), '$128 of $240 used, 53%, resets Nov 7, on pace for 80%');
-});
-
-test('a plan that renews unchanged still says when it renews, whether the host leaves out the pending change or sends none', async () => {
-  for (const summary of [TEAM_PLAN, { ...TEAM_PLAN, pendingChange: null }]) {
-    const html = (await harness({ path: '/admin/plan', billingOffered: true, summary })).html();
-    assert.equal(planTerms(html), '$200 a month includes $240 of usage. Renews Nov 7.');
-  }
-});
-
-test('a plan with no recorded period still says when it ends or which plan it changes to', async () => {
-  for (const [pendingChange, terms] of [
-    [TEAM_ENDING.pendingChange!, 'Ends Nov 7.'],
-    [TEAM_DOWNGRADING.pendingChange!, 'Changes to the Chickpea $50 plan on Nov 7.'],
-  ] as const) {
-    const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...PLAN_NO_PERIOD, pendingChange } })).html();
-    assert.equal(planTerms(html), `$200 a month includes $240 of usage. ${terms}`);
-  }
-});
-
-test('each Stripe button asks the host for a Stripe page and opens the URL it returns', async () => {
-  const extra = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN });
-  await extra.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_50' });
-  assert.deepEqual(extra.assigned, ['https://checkout.stripe.com/c/pay/extra_usage_50']);
-  assert.match(extra.html(), /data-key="extra_usage_50" disabled>Opening Stripe&hellip;<\/button>/, 'the busy button stays until the browser leaves');
-  assert.match(extra.html(), /data-key="extra_usage_25" disabled>Add \$25<\/button>/, 'only the button pressed is opening');
-
-  const plans = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN });
-  await plans.click({ 'data-action': 'billing-change-plan' });
-  await plans.click({ 'data-action': 'billing-choose-plan', 'data-key': 'business' });
-  assert.deepEqual(plans.assigned, ['https://checkout.stripe.com/c/pay/business']);
-
-  const portal = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN });
-  await portal.click({ 'data-action': 'billing-manage' });
-  assert.deepEqual(portal.assigned, ['https://billing.stripe.com/p/session/portal']);
-
-  assert.deepEqual([...extra.portCalls, ...plans.portCalls, ...portal.portCalls], [
-    ['checkout', { kind: 'extra_usage', key: 'extra_usage_50' }],
-    ['checkout', { kind: 'plan', key: 'business' }],
-    ['portal'],
-  ]);
-});
-
-test('a Stripe page that cannot be opened says so beside the button that asked for it', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, stripeFails: new Error('Stripe is down.') });
-  await page.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_25' });
+test('a trial shows what is left, the tasks that covers, when it ends, and how much is used, and its plans are on offer', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TRIAL });
   const html = page.html();
-  const error = html.indexOf('Stripe could not be opened. Try again.');
-  assert.ok(error > html.indexOf('data-key="extra_usage_100"'), 'the error follows the extra usage buttons');
-  assert.ok(error < html.indexOf('Usage this period'), 'and stays in their section');
-  assert.match(html, /data-key="extra_usage_25">Add \$25<\/button>/, 'the button can be pressed again');
-  assert.deepEqual(page.assigned, []);
+  assert.equal(lede(html), 'Your free trial includes $50 of usage, with models included.');
+  assert.match(html, /<span class="chan-meta">Free trial<\/span>/);
+  assert.doesNotMatch(html, /billing-manage|billing-add-extra-usage/, 'a trial has nothing to manage and no plan to add usage to');
+  const status = hero(html);
+  assertShows(status, 'Free trial $32.50 left About 70 tasks · Ends Nov 6');
+  assert.match(status, /aria-label="Trial usage"[^>]*aria-valuenow="35"/);
+  assertShows(status, '$17.50 of $50 used No card needed');
+  assert.match(html, /<h2 class="section-title" id="plan-cards-heading">Choose a plan<\/h2><p class="hint">Both include every feature and connector\. Pay for models with us, or bring your own key\.<\/p>/);
+
+  const usedUp = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...NO_PLAN, trial: { ...TRIAL_GRANT, remainingMicros: usd(0) } } })).html());
+  assertShows(usedUp, 'Free trial $0 left Ends Nov 6');
+  assertShows(usedUp, 'Your trial’s usage is used up. Choose a plan to keep your Agents working.');
+  assert.match(usedUp, /plan-meter is-out/);
+
+  const beside = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, trial: TRIAL_GRANT } })).html());
+  assertShows(beside, 'This month $204.50 left', );
+  assertShows(beside, '+$32.50 trial usage until Nov 6');
 });
 
-const PLAN_FIRST = 'Choose a plan first. Extra usage is available while your workspace has a plan. Choose a plan, then add extra usage.';
-const billingReads = (requests: Array<{ path: string; method: string }>) =>
-  requests.filter((request) => request.method === 'GET' && request.path === '/admin/api/billing').length;
+test('an own key with no plan says tasks are paused while chat goes on, and offers the lowest plan for an own key', async () => {
+  for (const owner of [true, false]) {
+    const page = await harness({ path: '/admin/plan', billingOffered: true, owner, summary: OWN_KEY_NO_PLAN });
+    const html = page.html();
+    assert.equal(lede(html), 'Your workspace pays for models with its own API key, and has no plan yet.');
+    assert.match(html, /<span class="chan-meta">Own API key<\/span>/);
+    const status = hero(html);
+    assert.match(status, /<section class="plan-hero is-muted"/);
+    assertShows(status, 'No plan Tasks are paused Your Agents can still chat. With your own API key, plans start at $100 a month, which covers 400 tasks.');
+    assert.equal(/data-action="billing-choose-plan"/.test(status), owner, owner ? 'an Owner can choose it' : 'a Member cannot');
+  }
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_NO_PLAN });
+  assert.match(hero(page.html()), /class="btn btn-primary" data-action="billing-choose-plan" data-key="plus" data-at="hero">Choose the \$100 plan<\/button>/);
+  await page.click({ 'data-action': 'billing-choose-plan', 'data-key': 'plus', 'data-at': 'hero' });
+  assert.deepEqual(page.portCalls, [['checkout', { kind: 'plan', key: 'plus' }]]);
+  assert.deepEqual(page.assigned, ['https://checkout.stripe.com/c/pay/plus']);
+  assert.match(hero(page.html()), /data-key="plus" data-at="hero" disabled>Opening Stripe&hellip;<\/button>/);
 
-test('extra usage the host refuses for want of a plan says to choose one first, beside the extra usage buttons', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, stripeFails: new BillingRefusal('plan_required') });
-  await page.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_25' });
+  const team = { ...OWN_KEY_NO_PLAN, offers: { ...OWN_KEY_NO_PLAN.offers, ownKeyMinimumPlanKey: 'team' } };
+  assertShows(hero((await harness({ path: '/admin/plan', billingOffered: true, summary: team })).html()), 'plans start at $200 a month, which covers 800 tasks.');
+});
+
+test('models included with no plan or trial says the Agents are paused, and extra usage waits for a plan', async () => {
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: FROZEN })).html();
+  assert.equal(lede(html), 'Your workspace has no plan yet.');
+  const status = hero(html);
+  assert.match(status, /<section class="plan-hero is-muted"/);
+  assertShows(status, 'No plan Your Agents are paused Choose a plan to get them working again.');
+  assertShows(status, '$40 of extra usage waits for a plan until Oct 7, 2027');
+  assertHides(status, '+$40');
+  assert.doesNotMatch(html, /billing-add-extra-usage|billing-manage/);
+  assert.doesNotMatch(html, /plan-use-heading/, 'no plan and no use, so no usage section');
+});
+
+test('a plan with no period yet shows its monthly usage and the tasks it covers, with no meter', async () => {
+  const status = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: PLAN_NO_PERIOD })).html());
+  assertShows(status, 'Each month $240 of usage a month About 500 tasks');
+  assertShows(status, '+$40 extra usage');
+  assert.doesNotMatch(status, /role="meter"|plan-hero-alert/);
+  assertHides(status, 'Renews');
+  assert.match(status, /billing-add-extra-usage/, 'extra usage stays on sale with a plan');
+  assertShows(hero((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...PLAN_NO_PERIOD, funding: 'own_key' } })).html()),
+    'Each month 800 tasks a month $240 of usage a month · Your provider bills tokens');
+  assertShows(hero((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...PLAN_NO_PERIOD, pendingChange: TEAM_ENDING.pendingChange } })).html()),
+    'About 500 tasks · Ends Nov 7');
+});
+
+test('a plan cancelled in Stripe\'s portal says when it ends, and a downgrade names the plan it changes to, in place of when it renews, to everyone', async () => {
+  for (const owner of [true, false]) {
+    const ending = hero((await harness({ path: '/admin/plan', billingOffered: true, owner, summary: TEAM_ENDING })).html());
+    assertShows(ending, 'About 375 tasks · Ends Nov 7');
+    assertHides(ending, 'Renews');
+    const downgrading = hero((await harness({ path: '/admin/plan', billingOffered: true, owner, summary: TEAM_DOWNGRADING })).html());
+    assertShows(downgrading, 'About 375 tasks · Changes to the Chickpea $50 plan on Nov 7');
+    assertHides(downgrading, 'Renews');
+  }
+});
+
+test('the cards offer every plan with models included and the own-key plans with your own key, each counted in tasks', async () => {
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN })).html();
+  assert.match(html, /<h2 class="section-title" id="plan-cards-heading">Your plan<\/h2><p class="hint">Change your plan&rsquo;s size, or how your workspace pays for models\.<\/p>/);
+  assert.deepEqual(cardLevels(html, 'platform'), {
+    options: ['$25 a month · about 60 tasks', '$50 a month · about 125 tasks', '$100 a month · about 250 tasks',
+      '$200 a month · about 500 tasks', '$300 a month · about 800 tasks', '$500 a month · about 1,300 tasks'],
+    selected: 'team',
+  });
+  assert.deepEqual(cardLevels(html, 'own_key'), {
+    options: ['$100 a month · 400 tasks', '$200 a month · 800 tasks', '$300 a month · 1,200 tasks', '$500 a month · 2,000 tasks'],
+    selected: 'team',
+  });
+  assertShows(card(html, 'platform'), 'Models included Claude, GPT, and open models through our provider accounts. One bill. $200 / month');
+  assertShows(card(html, 'own_key'), 'Your own API key Bring your Anthropic, OpenAI, or OpenRouter key. $200 / month');
+  assertShows(html, 'Prices in US dollars. Tax added where required. Pricing questions');
+  assert.match(html, /<a href="https:\/\/chickpea\.co\/pricing#questions" target="_blank" rel="noopener">Pricing questions<\/a>/);
+
+  const starter = (await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_PLAN })).html();
+  assert.equal(cardLevels(starter, 'platform').selected, 'starter', 'the current plan, where it fits the card');
+  assert.equal(cardLevels(starter, 'own_key').selected, 'plus', 'else the lowest plan for an own key');
+  assert.equal(cardLevels((await harness({ path: '/admin/plan', billingOffered: true, summary: NO_PLAN })).html(), 'platform').selected, 'plus');
+});
+
+test('each card\'s button is the next step toward paying its way at the size it shows', async () => {
+  const NO_KEY_AT_ALL: OwnKeyFacts = { savedKeys: new Set(), defaultModel: undefined, agents: [] };
+  const cases: Array<[string, BillingSummary, OwnKeyFacts, Card, string | null, string]> = [
+    ['models included on Team, at Team', TEAM_PLAN, KEYED, 'platform', null, 'Your current plan (disabled)'],
+    ['models included on Team, at $500', TEAM_PLAN, KEYED, 'platform', 'business', 'Change to the $500 plan [primary business]'],
+    ['models included with no plan', NO_PLAN, KEYED, 'platform', null, 'Choose the $100 plan [primary plus]'],
+    ['models included with no plan, at $25', NO_PLAN, KEYED, 'platform', 'solo', 'Choose the $25 plan [primary solo]'],
+    ['models included in a trial', TRIAL, KEYED, 'platform', null, 'Choose the $100 plan [primary plus]'],
+    ['an own key from Team, at Team, with the key', TEAM_PLAN, KEYED, 'own_key', null, 'Switch to your own key [soft]'],
+    ['an own key from Team, at Team, without the key', TEAM_PLAN, NEEDS_ANTHROPIC, 'own_key', null, 'Add your Anthropic key → /admin/settings/providers?return=plan'],
+    ['an own key from Team, with no default model or key', TEAM_PLAN, NO_KEY_AT_ALL, 'own_key', null, 'Add your API key → /admin/settings/providers?return=plan'],
+    ['an own key from Team, at $300', TEAM_PLAN, KEYED, 'own_key', 'growth', 'Choose the $300 plan [soft growth]'],
+    ['an own key from Starter', STARTER_PLAN, KEYED, 'own_key', null, 'Choose the $100 plan [soft plus]'],
+    ['an own key with no plan yet', NO_PLAN, KEYED, 'own_key', null, 'Choose the $100 plan [soft plus]'],
+    ['an own key on Team, at Team', OWN_KEY_TEAM, KEYED, 'own_key', null, 'Your current plan (disabled)'],
+    ['an own key on Team, at $100', OWN_KEY_TEAM, KEYED, 'own_key', 'plus', 'Change to the $100 plan [primary plus]'],
+    ['an own key with no plan', OWN_KEY_NO_PLAN, KEYED, 'own_key', null, 'Choose the $100 plan [primary plus]'],
+    ['models included from an own key', OWN_KEY_TEAM, KEYED, 'platform', null, 'Switch to models included [soft]'],
+    ['models included from an own key, at $500', OWN_KEY_TEAM, KEYED, 'platform', 'business', 'Switch to models included [soft]'],
+    ['models included from an own key with no plan', OWN_KEY_NO_PLAN, KEYED, 'platform', null, 'Switch to models included [soft]'],
+  ];
+  for (const [label, summary, ownKey, which, size, step] of cases) {
+    const page = await harness({ path: '/admin/plan', billingOffered: true, summary, ownKey });
+    if (size) page.choose(which, size);
+    assert.equal(cardStep(page.html(), which), step, label);
+  }
+});
+
+test('a card\'s Checkout opens Stripe for the size it shows, and says so in that card when Stripe cannot open', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN });
+  page.choose('platform', 'business');
+  await page.click({ 'data-action': 'billing-choose-plan', 'data-key': 'business', 'data-at': 'platform' });
+  assert.deepEqual(page.portCalls, [['checkout', { kind: 'plan', key: 'business' }]]);
+  assert.deepEqual(page.assigned, ['https://checkout.stripe.com/c/pay/business']);
   const html = page.html();
-  const error = html.indexOf(`<p class="field-error" role="alert">${PLAN_FIRST}</p>`);
-  assert.ok(error > html.indexOf('data-key="extra_usage_100"'), 'the reason follows the extra usage buttons');
-  assert.ok(error < html.indexOf('Usage this period'), 'and stays in their section');
-  assertHides(html, 'Stripe could not be opened');
-  assert.deepEqual(page.assigned, []);
-  assert.equal(billingReads(page.requests), 1, 'the plan is not read again');
+  assert.match(card(html, 'platform'), /data-key="business" data-at="platform" disabled>Opening Stripe&hellip;<\/button>/, 'the busy button stays until the browser leaves');
+  assert.match(card(html, 'own_key'), /<select [^>]*disabled>/, 'nothing else can be chosen meanwhile');
+  assert.match(hero(html), /data-key="extra_usage_25"[^>]* disabled>\$25<\/button>/);
+
+  const failing = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_PLAN, stripeFails: new Error('Stripe is down.') });
+  await failing.click({ 'data-action': 'billing-choose-plan', 'data-key': 'plus', 'data-at': 'own_key' });
+  assertShows(card(failing.html(), 'own_key'), 'Stripe could not be opened. Try again.');
+  assertHides(card(failing.html(), 'platform'), 'Stripe could not be opened');
+  assertHides(hero(failing.html()), 'Stripe could not be opened');
+  assert.equal(cardStep(failing.html(), 'own_key'), 'Choose the $100 plan [soft plus]', 'the button can be pressed again');
+  assert.deepEqual(failing.assigned, []);
 });
 
-test('a plan choice the host refuses for an own key names the lowest plan for one, beside the plans', async () => {
+test('a plan the host refuses for an own key names the lowest plan for one, in the card that asked', async () => {
   for (const [minimum, price] of [['plus', '$100'], ['team', '$200']] as const) {
     const summary: BillingSummary = { ...OWN_KEY_TEAM, offers: { ...OWN_KEY_TEAM.offers, ownKeyMinimumPlanKey: minimum } };
     const page = await harness({ path: '/admin/plan', billingOffered: true, summary, stripeFails: new BillingRefusal('own_key_plan_required') });
-    await page.click({ 'data-action': 'billing-change-plan' });
-    await page.click({ 'data-action': 'billing-choose-plan', 'data-key': 'plus' });
-    const html = page.html();
-    const error = html.indexOf(`<p class="field-error" role="alert">Your own API key needs the ${price} plan or higher.</p>`);
-    assert.ok(error > html.indexOf('data-action="billing-manage"'), `the ${price} plan is named in the Plan section`);
-    assert.ok(error < html.indexOf('id="billing-plans-heading"'), 'above the plans');
-    assertHides(html, 'Stripe could not be opened');
-    assert.deepEqual(page.portCalls, [['checkout', { kind: 'plan', key: 'plus' }]]);
+    await page.click({ 'data-action': 'billing-choose-plan', 'data-key': 'growth', 'data-at': 'own_key' });
+    assert.match(card(page.html(), 'own_key'), new RegExp(`<p class="field-error" role="alert">Your own API key needs the \\${price} plan or higher\\.</p>`));
+    assertHides(page.html(), 'Stripe could not be opened');
     assert.equal(billingReads(page.requests), 1, 'the plan is not read again');
   }
 });
 
-test('frozen extra usage shows until when it keeps, and no plan means nothing to add it to', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: FROZEN });
-  const html = page.html();
-  assert.equal(lede(html), NO_PLAN_LEDE);
-  assertHides(html, PLAN_LEDE);
-  assert.match(html, /<li>\$40 of extra usage, available when you renew, until Oct 7, 2027<\/li>/);
-  assertHides(html, 'Extra usage: $40');
-  assert.match(html, /<span class="usage-card-label">Plan<\/span><span class="usage-card-value">No plan<\/span><span class="hint">Choose a plan for monthly usage\.<\/span>/);
-  assertShows(html, 'Choose a plan to add extra usage.');
-  assert.doesNotMatch(html, /billing-add-extra-usage/);
-  assert.match(html, /<h2 class="section-title">Plan<\/h2><p class="hint">No plan<\/p>/);
-  assert.match(html, /data-action="billing-change-plan">Choose a plan<\/button>/);
-  assert.doesNotMatch(html, /billing-manage/);
-});
-
-test('a trial shows what is left and until when, as the card without a plan and as a line beside one', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TRIAL });
-  const html = page.html();
-  assert.equal(lede(html), 'Your trial includes usage for your Agents’ chat and tasks.');
-  assertHides(html, PLAN_LEDE);
-  assert.match(html, /<span class="usage-card-label">Trial<\/span><span class="billing-meter-text">\$32\.50 of trial usage left, until Nov 6<\/span>/);
-  assert.doesNotMatch(html, /role="meter"|Plan usage/);
-
-  const both = await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, trial: TRIAL.trial } });
-  assert.match(both.html(), /<li>Extra usage: \$40<\/li><li>\$32\.50 of trial usage left, until Nov 6<\/li><\/ul>/);
-  assert.match(both.html(), /<span class="usage-card-label">Plan usage<\/span>/);
-  assert.equal(lede(both.html()), PLAN_LEDE, 'a plan\'s meter outranks the trial');
-
-  const noPeriod = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...PLAN_NO_PERIOD, trial: TRIAL.trial } })).html();
-  assert.match(noPeriod, /<span class="usage-card-label">Plan<\/span><span class="usage-card-value">Team<\/span>/);
-  assert.match(noPeriod, /<li>Extra usage: \$40<\/li><li>\$32\.50 of trial usage left, until Nov 6<\/li><\/ul>/);
-  assert.equal(lede(noPeriod), PLAN_LEDE, 'a plan outranks the trial without a period too');
-});
-
-test('on their own key with no plan, an Owner and a Member read only that it needs the $100 plan or higher', async () => {
-  for (const owner of [true, false]) {
-    const html = (await harness({ path: '/admin/plan', billingOffered: true, owner, summary: OWN_KEY_NO_PLAN })).html();
-    const role = owner ? 'an Owner' : 'a Member';
-    assert.equal(html.split('<div class="callout"><span>Your own API key needs the $100 plan or higher.</span></div>').length, 2, `${role} reads the sentence once`);
-    assert.doesNotMatch(html, /charges/i, `${role} reads nothing about charges`);
+test('the tag and ring mark how the workspace pays now', async () => {
+  const cases: Array<[string, BillingSummary, string, string]> = [
+    ['models included on a plan', TEAM_PLAN, 'Current plan', ''],
+    ['a trial', TRIAL, 'Recommended', ''],
+    ['models included with no plan', NO_PLAN, 'Recommended', ''],
+    ['an own key on a plan', OWN_KEY_TEAM, '', 'Current plan'],
+    ['an own key with no plan', OWN_KEY_NO_PLAN, '', 'Your setup'],
+  ];
+  for (const [label, summary, platform, ownKey] of cases) {
+    const html = (await harness({ path: '/admin/plan', billingOffered: true, summary })).html();
+    assert.deepEqual([cardTag(html, 'platform'), cardTag(html, 'own_key')], [platform, ownKey], label);
+    assert.deepEqual([/class="plan-card is-marked"/.test(card(html, 'platform')), /class="plan-card is-marked"/.test(card(html, 'own_key'))], [!!platform, !!ownKey], label);
   }
 });
 
-test('an own key with no plan shows which plans an own key can choose, and offers Chickpea\'s models', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_NO_PLAN });
-  const html = page.html();
-  assert.equal(lede(html), 'Your workspace pays for models with its own API key.', 'no plan, so no plan covers tasks');
-  assert.match(html, /<span class="chan-meta">Own API key<\/span>/);
-  assert.doesNotMatch(html, /usage-card-primary/, 'no meter, trial or plan card on an own key without them');
-  assert.match(html, /<h2 class="section-title">Plan<\/h2><p class="hint">No plan<\/p>/);
-  assert.match(html, /data-action="billing-change-plan">Choose a plan<\/button>/);
-  assert.doesNotMatch(html, /<h2 class="section-title">Extra usage<\/h2>|billing-add-extra-usage/);
-  assert.match(html, /<h2 class="section-title">Usage<\/h2><\/div>[\s\S]*<th>Agent<\/th>/);
-  assertShows(html, 'With Chickpea’s models, no API key is needed. Replies draw on your plan’s usage.');
-  assert.match(html, /data-action="billing-use-platform">Use Chickpea&rsquo;s models<\/button>/);
+test('each card says what its size includes and what paying its way gives', async () => {
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM, ownKey: KEYED })).html();
+  assertShows(card(html, 'platform'), 'Replies stop using your key, and model tokens draw on your plan’s usage at list price.');
+  assertShows(card(html, 'platform'), 'Model tokens at list price, no markup 20% bonus usage every month Unused usage rolls over for one month Every feature and connector');
+  assertShows(card(html, 'own_key'), 'Your provider bills tokens, so the whole plan goes to tasks, 30¢ each.');
+  assertShows(card(html, 'own_key'), 'Tokens at your own provider rates Chat replies included Unused usage rolls over for one month Every feature and connector Using your Anthropic key. Manage keys');
+  assert.match(card(html, 'own_key'), /<a class="hint-link" href="\/admin\/settings\/providers">Manage keys<\/a>/);
+  assert.doesNotMatch(card(html, 'own_key'), /plan-needs/, 'an own key on a plan needs nothing more');
 
-  await page.click({ 'data-action': 'billing-change-plan' });
-  const rows = Object.fromEntries([...page.html().matchAll(/<div class="billing-plan"><div><strong>([^<]+)<\/strong>.*?<\/div>(.*?)<\/div>/g)]
-    .map((row) => [row[1], /data-action="billing-choose-plan"/.test(row[2]!) ? 'choose' : decoded(row[2]!)]));
-  assert.deepEqual(rows, {
-    Solo: '<span class="hint">Chickpea’s models only</span>',
-    Starter: '<span class="hint">Chickpea’s models only</span>',
-    Plus: 'choose', Team: 'choose', Growth: 'choose', Business: 'choose',
-  });
+  const platform = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN });
+  assertShows(card(platform.html(), 'platform'), '$240 of usage a month, 20% more than you pay. Task counts assume a typical mix on the default model.');
+  platform.choose('platform', 'solo');
+  assertShows(card(platform.html(), 'platform'), '$25 / month');
+  assertShows(card(platform.html(), 'platform'), '$30 of usage a month, 20% more than you pay.');
+
+  const keyGone = card((await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM, ownKey: NEEDS_ANTHROPIC })).html(), 'own_key');
+  assertShows(keyGone, 'Your default model needs an Anthropic API key. Add key');
+
+  const plain: BillingSummary = { ...OWN_KEY_TEAM, offers: { ...OFFERS, rolloverMonths: 0, chatReplyFeeMicros: usd(0.05) } };
+  const page = (await harness({ path: '/admin/plan', billingOffered: true, summary: plain })).html();
+  assert.doesNotMatch(page, /rolls over|carries over/, 'no rollover, so nothing says it rolls over');
+  assertHides(page, 'Chat replies included');
 });
 
-test('below the lowest plan for an own key, the switch asks for that plan first and opens its Checkout, never the switch', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_PLAN, ownKey: KEYED });
-  assert.match(page.html(), /data-action="billing-use-own-key">Use your own key instead<\/button>/);
-  await page.click({ 'data-action': 'billing-use-own-key' });
-  assert.match(page.html(), /<div class="callout"><span>Your own API key needs the \$100 plan or higher\. Choose it first, then switch to your own key\.<\/span><\/div>/);
-  assert.match(page.html(), /data-action="billing-funding-cancel">Cancel<\/button><button type="button" class="btn btn-primary" data-action="billing-choose-minimum-plan" data-key="plus">Choose the \$100 plan<\/button>/);
-  assertHides(page.html(), 'Switch to your own key?');
+test('the own-key card lists what an own key still needs: the size it shows, and a key for the default model', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, ownKey: NEEDS_ANTHROPIC });
+  const needs = card(page.html(), 'own_key');
+  assertShows(needs, 'To switch Done: The $200 plan Not yet: An Anthropic API key, for your default model. Add key');
+  assert.match(needs, /<a class="hint-link" href="\/admin\/settings\/providers\?return=plan">Add key<\/a>/);
+  page.choose('own_key', 'growth');
+  assertShows(card(page.html(), 'own_key'), 'Not yet: The $300 plan');
+
+  const ownKey = card((await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_NO_PLAN, ownKey: NEEDS_ANTHROPIC })).html(), 'own_key');
+  assertShows(ownKey, 'To do tasks Not yet: The $100 plan Not yet: An Anthropic API key, for your default model. Add key');
+  assert.match(ownKey, /<a class="hint-link" href="\/admin\/settings\/providers">Add key<\/a>/, 'already on an own key, so nothing to switch on return');
+
+  const keyed = card((await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_NO_PLAN, ownKey: KEYED })).html(), 'own_key');
+  assertShows(keyed, 'Done: An Anthropic API key, for your default model');
+  assertHides(keyed, 'Add key');
+
+  const anyKey = card((await harness({
+    path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, ownKey: { savedKeys: new Set(), defaultModel: undefined, agents: [] },
+  })).html(), 'own_key');
+  assertShows(anyKey, 'Not yet: A model provider API key. Add key');
+});
+
+test('an Owner on the plan with a saved key switches to it from its card only after confirming there', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, ownKey: KEYED });
+  await page.click({ 'data-action': 'billing-switch-funding' });
+  const confirming = card(page.html(), 'own_key');
+  assertShows(confirming, 'Switch to your own key? Your provider bills you for tokens directly, and your plan pays for tasks. Cancel Switch to your own key');
+  assert.doesNotMatch(confirming, /will stop replying/, 'no Agent is named when every pinned model has a key');
+  assert.doesNotMatch(card(page.html(), 'platform'), /billing-funding-confirm/);
   await page.click({ 'data-action': 'billing-funding-cancel' });
-  assertHides(page.html(), 'needs the $100 plan');
+  assertHides(page.html(), 'Switch to your own key?');
+  assert.equal(cardStep(page.html(), 'own_key'), 'Switch to your own key [soft]');
+  assert.deepEqual(fundingWrites(page.requests), [], 'nothing switches before the Owner confirms');
 
-  await page.click({ 'data-action': 'billing-use-own-key' });
-  await page.click({ 'data-action': 'billing-choose-minimum-plan', 'data-key': 'plus' });
-  assert.deepEqual(billingWrites(page.requests), [['POST', '/admin/api/billing/checkout', { kind: 'plan', key: 'plus' }]]);
-  assert.deepEqual(page.portCalls, [['checkout', { kind: 'plan', key: 'plus' }]]);
-  assert.deepEqual(page.assigned, ['https://checkout.stripe.com/c/pay/plus']);
-  assert.match(page.html(), /data-key="plus" disabled>Opening Stripe&hellip;<\/button>/);
-  assert.deepEqual(fundingWrites(page.requests), [], 'nothing asks to switch funding');
-});
+  await page.click({ 'data-action': 'billing-switch-funding' });
+  page.choose('own_key', 'growth');
+  assert.ok(!text(page.html()).includes('Switch to your own key?'), 'choosing another size closes the question');
 
-test('with no plan, the page offers a plan and nothing else to buy', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: NO_PLAN });
+  page.choose('own_key', 'team');
+  await page.click({ 'data-action': 'billing-switch-funding' });
+  await page.click({ 'data-action': 'billing-funding-confirm' });
+  assert.deepEqual(billingWrites(page.requests), [['POST', '/admin/api/billing/funding', { funding: 'own_key' }]]);
+  assert.deepEqual(page.portCalls, [['chooseFunding', 'own_key']]);
   const html = page.html();
-  assert.equal(lede(html), NO_PLAN_LEDE);
-  assertHides(html, PLAN_LEDE);
-  assert.match(html, /<span class="usage-card-value">No plan<\/span><span class="hint">Choose a plan for monthly usage\.<\/span>/);
-  assert.match(html, /data-action="billing-change-plan">Choose a plan<\/button>/);
-  assert.doesNotMatch(html, /billing-add-extra-usage|billing-manage|billing-lines/);
-  assertShows(html, 'Choose a plan to add extra usage.');
-  assert.match(html, /<h2 class="section-title">Usage<\/h2><\/div>/, 'no period, so no "since"');
-  assert.match(html, /<td colspan="2">No usage yet\.<\/td>/);
-  assert.match(html, /data-action="billing-use-own-key">Use your own key instead<\/button>/);
+  assert.equal(lede(html), 'Your workspace is on the $200 plan with its own API key.', 'the page turns into the own-key view');
+  assert.equal(cardTag(html, 'own_key'), 'Current plan');
+  assert.equal(cardStep(html, 'own_key'), 'Your current plan (disabled)');
+  assert.equal(cardStep(html, 'platform'), 'Switch to models included [soft]');
+  assertShows(hero(html), '573 tasks left');
 });
 
-test('a host that records no person shows the Agent table alone, with no empty Person table beside it', async () => {
-  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, use: { ...TEAM_PLAN.use, byPerson: [] } } })).html();
-  assert.match(html, /<th>Agent<\/th><th class="number">Used<\/th>[\s\S]*<td>Chickpea<\/td><td class="number">\$30\.25<\/td><\/tr><tr><td>Other<\/td><td class="number">\$7<\/td>/);
-  assert.doesNotMatch(html, /<th>Person<\/th>/);
-  assertHides(html, 'No usage yet');
+test('the confirmation names each Agent whose pinned model has no saved key, in the singular for one', async () => {
+  const page = await harness({
+    path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN,
+    ownKey: { ...KEYED, agents: [{ name: 'Research', model: 'openai/gpt-5.6-terra' }, { name: 'Ops <Desk>', model: 'openrouter/openai/gpt-5.6-terra' }, { name: 'Writer' }] },
+  });
+  assert.doesNotMatch(page.html(), /will stop replying/, 'only the confirmation warns');
+  await page.click({ 'data-action': 'billing-switch-funding' });
+  assert.match(card(page.html(), 'own_key'), /and your plan pays for tasks\. These Agents will stop replying until a key is added for their model&rsquo;s provider: Research, Ops &lt;Desk&gt;\.<\/p>/);
 
-  const none = (await harness({ path: '/admin/plan', billingOffered: true, summary: NO_PLAN })).html();
-  assert.equal(none.match(/No usage yet\./g)?.length, 1, 'with no use at all, the empty message shows once');
+  const one = await harness({
+    path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN,
+    ownKey: { ...KEYED, agents: [{ name: 'Research', model: 'openai/gpt-5.6-terra' }, { name: 'Writer' }] },
+  });
+  await one.click({ 'data-action': 'billing-switch-funding' });
+  assert.match(card(one.html(), 'own_key'), /and your plan pays for tasks\. This Agent will stop replying until a key is added for its model&rsquo;s provider: Research\.<\/p>/);
+  assertHides(one.html(), 'These Agents');
 });
 
-test('a Member sees the plan\'s usage and that an Owner changes it, with no buttons, plan, or use', async () => {
+test('a switch to your own key that fails, or that the host refuses below the lowest plan for it, says so under the open confirmation', async () => {
+  const cases: Array<[Error, string]> = [
+    [new Error('The host is down.'), 'Could not switch to your own key. Try again.'],
+    [new BillingRefusal('own_key_plan_required'), 'Your own API key needs the $100 plan or higher.'],
+  ];
+  for (const [failure, message] of cases) {
+    const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, switchFails: failure });
+    await page.click({ 'data-action': 'billing-switch-funding' });
+    await page.click({ 'data-action': 'billing-funding-confirm' });
+    assert.deepEqual(page.portCalls, [['chooseFunding', 'own_key']], 'Admin\'s own check passed and the host was asked');
+    const ownKey = card(page.html(), 'own_key');
+    const confirm = ownKey.indexOf('data-action="billing-funding-confirm">Switch to your own key</button>');
+    assert.ok(confirm >= 0, 'the confirmation stays open and can be retried');
+    assert.ok(ownKey.indexOf(`<p class="field-error" role="alert">${message}</p>`) > confirm, `"${message}" follows it`);
+    assertHides(card(page.html(), 'platform'), message);
+    assert.equal(billingReads(page.requests), 1, 'the plan is not read again');
+  }
+});
+
+test('an Owner on their own key switches to models included from its card only after confirming there', async () => {
+  const home = await harness({ path: '/admin/agents', billingOffered: true, summary: OWN_KEY_TEAM });
+  assert.match(home.html(), /data-action="open-billing"[^>]*>Plan<\/button>/, 'the nav entry is there on your own key');
+  assert.equal(home.requests.some((request) => request.path.startsWith('/admin/api/billing')), false, 'no billing read until the page opens');
+  await home.click({ 'data-action': 'open-billing' });
+  assert.equal(home.location.pathname, '/admin/plan');
+
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM });
+  await page.click({ 'data-action': 'billing-switch-funding' });
+  assertShows(card(page.html(), 'platform'), 'Switch to models included? Replies will stop using your key and draw on your plan’s usage. Cancel Switch to models included');
+  await page.click({ 'data-action': 'billing-funding-cancel' });
+  assert.deepEqual(fundingWrites(page.requests), [], 'nothing switches before the Owner confirms');
+
+  await page.click({ 'data-action': 'billing-switch-funding' });
+  await page.click({ 'data-action': 'billing-funding-confirm' });
+  assert.deepEqual(billingWrites(page.requests), [['POST', '/admin/api/billing/funding', { funding: 'platform' }]]);
+  assert.equal(lede(page.html()), 'Your workspace is on the $200 plan with models included.');
+  assert.equal(cardStep(page.html(), 'platform'), 'Your current plan (disabled)', 'the card is current, and its select changes the plan');
+  page.choose('platform', 'business');
+  assert.equal(cardStep(page.html(), 'platform'), 'Change to the $500 plan [primary business]');
+});
+
+test('a switch to models included that fails keeps the confirmation open in its card with a retryable error', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM, switchFails: new Error('The host is down.') });
+  await page.click({ 'data-action': 'billing-switch-funding' });
+  await page.click({ 'data-action': 'billing-funding-confirm' });
+  const platform = card(page.html(), 'platform');
+  assertShows(platform, 'Could not switch to models included. Try again.');
+  assert.match(platform, /data-action="billing-funding-confirm">Switch to models included<\/button>/);
+});
+
+test('Add usage and Manage billing ask the host for a Stripe page and open the URL it returns', async () => {
+  const extra = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN });
+  await extra.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_50' });
+  assert.deepEqual(extra.assigned, ['https://checkout.stripe.com/c/pay/extra_usage_50']);
+  assert.match(hero(extra.html()), /data-key="extra_usage_50"[^>]* disabled>Opening Stripe&hellip;<\/button>/, 'the busy button stays until the browser leaves');
+  assert.match(hero(extra.html()), /data-key="extra_usage_25"[^>]* disabled>\$25<\/button>/, 'only the button pressed is opening');
+
+  const portal = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN });
+  await portal.click({ 'data-action': 'billing-manage' });
+  assert.deepEqual(portal.assigned, ['https://billing.stripe.com/p/session/portal']);
+  assert.deepEqual([...extra.portCalls, ...portal.portCalls], [['checkout', { kind: 'extra_usage', key: 'extra_usage_50' }], ['portal']]);
+
+  const down = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, stripeFails: new Error('Stripe is down.') });
+  await down.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_25' });
+  assertShows(hero(down.html()), 'Stripe could not be opened. Try again.');
+  assert.match(hero(down.html()), /data-key="extra_usage_25"[^>]*>\$25<\/button>/, 'the button can be pressed again');
+  assertHides(card(down.html(), 'platform'), 'Stripe could not be opened');
+});
+
+test('extra usage the host refuses for want of a plan says to choose one first, in the status card', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, stripeFails: new BillingRefusal('plan_required') });
+  await page.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_25' });
+  assert.match(hero(page.html()), /<p class="field-error" role="alert">Choose a plan first\. Extra usage is available while your workspace has a plan\. Choose a plan, then add extra usage\.<\/p>/);
+  assertHides(page.html(), 'Stripe could not be opened');
+  assert.deepEqual(page.assigned, []);
+  assert.equal(billingReads(page.requests), 1, 'the plan is not read again');
+});
+
+test('usage this period shows a bar per Agent, scaled to the largest, with its avatar, and a toggle to people only when there are people', async () => {
+  const agents = [{ id: 'agent_chickpea', name: 'Chickpea', slackPresence: { avatar: { url: 'https://cdn.example/chickpea.png' } } }];
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, agents })).html();
+  assert.match(html, /<h2 class="section-title" id="plan-use-heading">Usage this period<\/h2><p class="hint">Since Oct 7\.<\/p>/);
+  const rows = [...html.matchAll(/<li class="plan-use-row">(.*?)<\/li>/g)].map((row) => row[1]!);
+  assert.equal(rows.length, 2);
+  assert.match(rows[0]!, /<img src="https:\/\/cdn\.example\/chickpea\.png" alt="">.*<span class="plan-use-name">Chickpea<\/span><span class="plan-use-track" aria-hidden="true"><span style="width: 100%"><\/span><\/span><span class="plan-use-amount">\$30\.25<\/span>/);
+  assert.match(rows[1]!, /<span class="plan-use-avatar is-other" aria-hidden="true"><\/span><span class="plan-use-name">Other<\/span>.*width: 23%.*\$7</, 'use by no Agent or one gone gathers last');
+  assert.match(html, /data-action="billing-use-by" data-by="agent" aria-pressed="true">By Agent<\/button>/);
+
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN });
+  assert.match(page.html(), /<span class="plan-use-avatar is-letter" aria-hidden="true">C<\/span><span class="plan-use-name">Chickpea<\/span>/, 'an Agent Admin cannot show reads by its initial');
+  await page.click({ 'data-action': 'billing-use-by', 'data-by': 'person' });
+  assert.match(page.html(), /aria-pressed="true">By person<\/button>/);
+  assertShows(page.html(), 'Maya Chen $31.50 Other $6');
+  assertHides(page.html(), '$30.25');
+
+  const agentsOnly = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, use: { ...TEAM_PLAN.use, byPerson: [] } } })).html();
+  assert.doesNotMatch(agentsOnly, /billing-use-by/, 'a host that records no person shows no toggle');
+  assertShows((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, use: { byAgent: [], byPerson: [] } } })).html(), 'No usage yet this period.');
+  const noPeriod = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...PLAN_NO_PERIOD, use: { byAgent: [], byPerson: [] } } })).html();
+  assert.match(noPeriod, /id="plan-use-heading">Usage<\/h2><\/div>/);
+  assertShows(noPeriod, 'No usage yet.');
+});
+
+test('how usage works compares the two ways to pay, marks yours, and says what counts as a task', async () => {
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN })).html();
+  const how = html.slice(html.indexOf('id="plan-how-heading"'));
+  assertShows(how, 'How usage works One plan covers your whole workspace. No seats.');
+  assertShows(how, 'Models included Yours Your own API key Chat reply Model tokens at list price Included Task Model tokens + 30¢ 30¢ ' +
+    'Who bills tokens Chickpea, on your plan Your provider, directly Plan sizes $25 to $500 a month $100 to $500 a month');
+  assertShows(how, 'What counts as a task? A reply where an Agent works in your tools, like reading channels or documents, using connectors, or writing code. ' +
+    'However many steps it takes, it’s one task and one 30¢ fee.');
+  assertShows(how, '“Make this reply friendlier” Chat “Summarize #support and file the bugs in Linear” 1 task “Research three competitors’ pricing and write it up” 1 task');
+  assertShows(how, '20% bonus usage on every plan Unused plan usage carries over one month Extra usage keeps 12 months');
+  assert.match((await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM })).html(), /<th scope="col">Your own API key <span class="plan-yours">Yours<\/span><\/th>/);
+  const chatFee = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, offers: { ...OFFERS, chatReplyFeeMicros: usd(0.05) } } })).html();
+  assertShows(chatFee, 'Chat reply Model tokens + 5¢ 5¢');
+});
+
+test('a Member sees the status and that an Owner changes the plan, with no buttons, cards, use, or how usage works', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: TEAM_PLAN });
   const html = page.html();
   assert.equal(page.location.pathname, '/admin/plan', 'a Member may open the page');
-  assertShows(html, '$128 of $240 used, 53%, resets Nov 7, on pace for 80%');
-  assert.match(html, /<li>Carried from last month: \$20<\/li><li>Extra usage: \$40<\/li>/);
-  assert.match(html, /<div class="usage-contract"><p>An Owner can change the plan and how your workspace pays for models\.<\/p><\/div>/);
+  assert.equal(lede(html), 'Your workspace is on the $200 plan with models included.');
+  assertShows(hero(html), 'This month $172 left About 375 tasks · Renews Nov 7');
+  assertShows(hero(html), '+$20 carried over until Nov 7');
+  assert.match(html, /<p class="plan-member-note"><span class="plan-chip-dot" aria-hidden="true"><\/span>An Owner can change the plan, add usage, or switch how your workspace pays for models\.<\/p>/);
   assert.match(html, /data-action="open-billing"[^>]*>Plan<\/button>/);
-  assert.doesNotMatch(html, /data-action="billing-/);
-  assert.doesNotMatch(html, /<h2 class="section-title">(Plan|Extra usage|Usage this period)<\/h2>|<th>Agent<\/th>|<th>Person<\/th>/);
-  assertHides(html, 'Use your own key instead');
+  assert.doesNotMatch(html, /data-action="billing-|<select|plan-card|plan-use|plan-how/);
 
   const ownKey = (await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_NO_PLAN })).html();
-  assert.match(ownKey, /<div class="usage-contract"><p>An Owner can change the plan and how your workspace pays for models\.<\/p><\/div>/);
-  assert.doesNotMatch(ownKey, /data-action="billing-|<h2 class="section-title">Plan<\/h2>/);
+  assert.doesNotMatch(ownKey, /data-action="billing-|plan-card/);
 });
 
 test('the meter\'s dollar figures give its percentage', async () => {
+  const meterFigures = (html: string) => {
+    const match = /(\$[\d,]+(?:\.\d\d)?) of (\$[\d,]+(?:\.\d\d)?) plan usage/.exec(text(hero(html)));
+    assert.ok(match, 'the page shows the meter');
+    const dollars = (figure: string) => Number(figure.replace(/[$,]/g, ''));
+    return { used: dollars(match[1]!), included: dollars(match[2]!), percent: Number(/aria-valuenow="(\d+)"/.exec(hero(html))?.[1]) };
+  };
   const nonRound: BillingSummary = {
     ...TEAM_PLAN,
     planUsage: { usedMicros: 37_456_789 as UsageMicros, includedMicros: 60_000_000 as UsageMicros, onPacePercent: null },
@@ -623,14 +868,13 @@ test('the meter\'s dollar figures give its percentage', async () => {
     planUsage: { usedMicros: 239_999_999 as UsageMicros, includedMicros: 240_000_000 as UsageMicros, onPacePercent: null },
   };
   for (const summary of [TEAM_PLAN, nonRound, edge]) {
-    const html = (await harness({ path: '/admin/plan', billingOffered: true, summary })).html();
-    const { used, included, percent } = meterFigures(html);
+    const { used, included, percent } = meterFigures((await harness({ path: '/admin/plan', billingOffered: true, summary })).html());
     assert.equal(Math.floor((used / included) * 100), percent, `${used} of ${included}`);
   }
   const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: nonRound })).html();
-  assertShows(html, '$37.45 of $60 used, 62%, resets Nov 7</span>');
-  assertHides(html, 'on pace');
-  assertShows((await harness({ path: '/admin/plan', billingOffered: true, summary: edge })).html(), '$239.99 of $240 used, 99%');
+  assertShows(hero(html), '$37.45 of $60 plan usage');
+  assertHides(html, 'On pace');
+  assertShows(hero((await harness({ path: '/admin/plan', billingOffered: true, summary: edge })).html()), '$239.99 of $240 plan usage');
 });
 
 test('every date reads as its UTC day, whatever timezone the server and browser run in', async () => {
@@ -638,26 +882,28 @@ test('every date reads as its UTC day, whatever timezone the server and browser 
   const edges: BillingSummary = {
     ...TEAM_PLAN,
     period: { start: new Date('2026-10-07T23:30:00Z'), end: new Date('2026-11-07T23:30:00Z') },
-    trial: { remainingMicros: usd(32.5), expiresAt: new Date('2026-11-06T23:30:00Z') },
+    rollover: { remainingMicros: usd(20), expiresAt: new Date('2026-11-07T23:30:00Z') },
+    trial: { ...TRIAL_GRANT, expiresAt: new Date('2026-11-06T23:30:00Z') },
   };
   const plan = (await harness({ path: '/admin/plan', billingOffered: true, summary: edges })).html();
-  assertShows(plan, 'resets Nov 7');
-  assertShows(plan, 'Renews Nov 7.');
+  assertShows(plan, 'Renews Nov 7');
+  assertShows(plan, 'On pace for 80% by Nov 7');
+  assertShows(plan, '+$20 carried over until Nov 7');
   assertShows(plan, 'Since Oct 7.');
-  assertShows(plan, '$32.50 of trial usage left, until Nov 6');
+  assertShows(plan, '+$32.50 trial usage until Nov 6');
   const frozen = (await harness({
     path: '/admin/plan', billingOffered: true,
     summary: { ...FROZEN, extraUsage: { ...FROZEN.extraUsage!, expiresAt: new Date('2027-10-07T23:30:00Z') } },
   })).html();
-  assertShows(frozen, 'available when you renew, until Oct 7, 2027');
+  assertShows(frozen, 'waits for a plan until Oct 7, 2027');
   // A day after the period's end, so a page that printed the period's end instead would read Nov 7.
   for (const at of [new Date('2026-11-08T00:30:00Z'), new Date('2026-11-08T23:30:00Z')]) {
     const ending = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, pendingChange: { kind: 'ends', at } } })).html();
-    assert.equal(planTerms(ending), '$200 a month includes $240 of usage. Ends Nov 8.');
+    assertShows(hero(ending), '· Ends Nov 8');
     const changing = (await harness({
       path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, pendingChange: { ...TEAM_DOWNGRADING.pendingChange!, at } },
     })).html();
-    assert.equal(planTerms(changing), '$200 a month includes $240 of usage. Changes to the Chickpea $50 plan on Nov 8.');
+    assertShows(hero(changing), '· Changes to the Chickpea $50 plan on Nov 8');
   }
 });
 
@@ -665,96 +911,14 @@ test('a plan the host cannot read says so, with a retry', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, summary: UNREADABLE });
   assert.match(page.html(), /<p class="field-error">Your plan could not be loaded\.<\/p><button type="button" class="btn btn-ghost" data-action="billing-retry">Retry<\/button>/);
   assert.equal(lede(page.html()), '', 'a plan that could not be read is not described');
+  await page.click({ 'data-action': 'billing-retry' });
+  assert.equal(billingReads(page.requests), 2, 'Retry reads the plan again');
 });
 
-test('an Owner on the plan with a saved key switches to it only after confirming, and the plan keeps covering tasks', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, ownKey: KEYED });
-  assert.match(page.html(), /data-action="billing-use-own-key">Use your own key instead<\/button>/);
-  await page.click({ 'data-action': 'billing-use-own-key' });
-  assert.match(page.html(), /<div class="callout"><span>Switch to your own key\? Your provider bills you for the model directly, and your plan covers tasks\.<\/span><\/div>/);
-  assert.doesNotMatch(page.html(), /will stop replying/, 'no Agent is named when every pinned model has a key');
-  await page.click({ 'data-action': 'billing-funding-cancel' });
-  assertHides(page.html(), 'Switch to your own key?');
-  assert.deepEqual(fundingWrites(page.requests), [], 'nothing switches before the Owner confirms');
-
-  await page.click({ 'data-action': 'billing-use-own-key' });
-  await page.click({ 'data-action': 'billing-funding-confirm' });
-  assert.deepEqual(billingWrites(page.requests), [['POST', '/admin/api/billing/funding', { funding: 'own_key' }]]);
-  assert.deepEqual(page.portCalls, [['chooseFunding', 'own_key']]);
-  assert.match(page.html(), /<p class="hint">Your workspace pays for models with its own API key\. Your plan covers tasks\.<\/p>/, 'the page turns into the own-key view');
-  assertShows(page.html(), '$128 of $240 used, 53%');
-  assert.match(page.html(), /<h2 class="section-title">Extra usage<\/h2>/, 'extra usage stays on sale with a plan');
-  assert.match(page.html(), /data-action="billing-use-platform">Use Chickpea&rsquo;s models<\/button>/);
-  assertHides(page.html(), 'Switch to Chickpea’s models?');
-});
-
-test('the confirmation names each Agent whose pinned model has no saved key, in the singular for one', async () => {
-  const page = await harness({
-    path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN,
-    ownKey: { ...KEYED, agents: [{ name: 'Research', model: 'openai/gpt-5.6-terra' }, { name: 'Ops <Desk>', model: 'openrouter/openai/gpt-5.6-terra' }, { name: 'Writer' }] },
-  });
-  assert.doesNotMatch(page.html(), /will stop replying/, 'only the confirmation warns');
-  await page.click({ 'data-action': 'billing-use-own-key' });
-  assert.match(page.html(), /and your plan covers tasks\. These Agents will stop replying until a key is added for their model&rsquo;s provider: Research, Ops &lt;Desk&gt;\.<\/span>/);
-
-  const one = await harness({
-    path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN,
-    ownKey: { ...KEYED, agents: [{ name: 'Research', model: 'openai/gpt-5.6-terra' }, { name: 'Writer' }] },
-  });
-  await one.click({ 'data-action': 'billing-use-own-key' });
-  assert.match(one.html(), /and your plan covers tasks\. This Agent will stop replying until a key is added for its model&rsquo;s provider: Research\.<\/span>/);
-  assertHides(one.html(), 'These Agents');
-});
-
-test('a switch to your own key that fails shows its error beside the open confirmation', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, switchFails: new Error('The host is down.') });
-  await page.click({ 'data-action': 'billing-use-own-key' });
-  await page.click({ 'data-action': 'billing-funding-confirm' });
-  const html = page.html();
-  const confirm = html.indexOf('data-action="billing-funding-confirm">Switch to your own key</button>');
-  const error = html.indexOf('Could not switch to your own key. Try again.');
-  assert.ok(confirm >= 0, 'the confirmation stays open and can be retried');
-  assert.ok(error > confirm, 'the error follows the confirmation, not the Stripe buttons');
-});
-
-test('a switch to your own key the host refuses below the lowest plan for it names that plan beside the open confirmation', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, switchFails: new BillingRefusal('own_key_plan_required') });
-  await page.click({ 'data-action': 'billing-use-own-key' });
-  await page.click({ 'data-action': 'billing-funding-confirm' });
-  assert.deepEqual(page.portCalls, [['chooseFunding', 'own_key']], 'Admin\'s own check passed and the host was asked');
-  const html = page.html();
-  const confirm = html.indexOf('data-action="billing-funding-confirm">Switch to your own key</button>');
-  const error = html.indexOf('<p class="field-error" role="alert">Your own API key needs the $100 plan or higher.</p>');
-  assert.ok(confirm >= 0, 'the confirmation stays open');
-  assert.ok(error > confirm, 'the reason follows the confirmation');
-  assertHides(html, 'Could not switch to your own key');
-  assert.equal(billingReads(page.requests), 1, 'the plan is not read again');
-});
-
-const KEY_LINK = '<a class="btn btn-ghost" href="/admin/settings/providers?return=plan">Use your own key instead</a></div>';
 const BEFORE_KEY = 'Save a key for your default model’s provider to switch to your own key.';
 const SWITCH_UNFINISHED = 'Your key is saved, but the switch to your own key did not finish. Go back to Plan to try again.';
 const BACK_TO_PLAN = '<a class="btn btn-primary btn-sm" href="/admin/plan">Back to Plan</a></div>';
-const OWN_KEY_LEDE = 'Your workspace pays for models with its own API key. Your plan covers tasks.';
-
-test('an Owner on the plan whose default model has no key is told which key to add', async () => {
-  const page = await harness({
-    path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN,
-    ownKey: { savedKeys: new Set(['openrouter']), defaultModel: 'anthropic/claude-sonnet-5-5', agents: [] },
-  });
-  assert.ok(page.html().includes(`${KEY_LINK}<p class="hint">Your default model needs an Anthropic API key. Add one in Settings first.</p>`));
-  assert.doesNotMatch(page.html(), /billing-use-own-key/);
-});
-
-test('an Owner on the plan with no saved key is sent to Model providers to add one first', async () => {
-  const page = await harness({
-    path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN,
-    ownKey: { savedKeys: new Set(), defaultModel: undefined, agents: [] },
-  });
-  assert.ok(page.html().includes(`${KEY_LINK}<p class="hint">Add a provider API key in Settings first.</p>`));
-  assert.doesNotMatch(page.html(), /billing-use-own-key/);
-  assert.deepEqual(billingWrites(page.requests), []);
-});
+const OWN_KEY_LEDE = 'Your workspace is on the $200 plan with its own API key.';
 
 test('sent from Plan, saving the default model\'s key switches to the own key once and returns to Plan', async () => {
   const page = await harness({ path: '/admin/settings/providers?return=plan', billingOffered: true, summary: TEAM_PLAN, ownKey: NEEDS_ANTHROPIC });
@@ -766,6 +930,7 @@ test('sent from Plan, saving the default model\'s key switches to the own key on
   assert.deepEqual(page.portCalls, [['chooseFunding', 'own_key']]);
   assert.equal(`${page.location.pathname}${page.location.search}`, '/admin/plan');
   assert.equal(lede(page.html()), OWN_KEY_LEDE);
+  assert.equal(cardTag(page.html(), 'own_key'), 'Current plan');
 });
 
 test('sent from Plan, a key the switch cannot use stays on Settings, says the switch did not finish, and tries nothing more', async () => {
@@ -806,70 +971,48 @@ test('standalone with the Plan marker typed shows no callout and makes no billin
   assertHides(page.html(), SWITCH_UNFINISHED);
 });
 
-test('an Owner on their own key finds the page and switches to Chickpea\'s models only after confirming', async () => {
-  const home = await harness({ path: '/admin/agents', billingOffered: true, summary: OWN_KEY_TEAM });
-  assert.match(home.html(), /data-action="open-billing"[^>]*>Plan<\/button>/, 'the nav entry is there on your own key');
-  assert.equal(home.requests.some((request) => request.path.startsWith('/admin/api/billing')), false, 'no billing read until the page opens');
-  await home.click({ 'data-action': 'open-billing' });
-  assert.equal(home.location.pathname, '/admin/plan');
-
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM });
-  assert.match(page.html(), /<h1 class="page-title">Plan<\/h1>/);
-  assert.match(page.html(), /data-action="billing-use-platform">Use Chickpea&rsquo;s models<\/button>/);
-  await page.click({ 'data-action': 'billing-use-platform' });
-  assert.match(page.html(), /<div class="callout"><span>Switch to Chickpea&rsquo;s models\? Replies will stop using your own key\.<\/span><\/div>/);
-  await page.click({ 'data-action': 'billing-funding-cancel' });
-  assertHides(page.html(), 'Switch to Chickpea’s models?');
-  assert.deepEqual(fundingWrites(page.requests), [], 'nothing switches before the Owner confirms');
-
-  await page.click({ 'data-action': 'billing-use-platform' });
-  await page.click({ 'data-action': 'billing-funding-confirm' });
-  assert.deepEqual(billingWrites(page.requests), [['POST', '/admin/api/billing/funding', { funding: 'platform' }]]);
-  assert.equal(lede(page.html()), PLAN_LEDE);
-  assert.match(page.html(), /data-action="billing-use-own-key">Use your own key instead<\/button>/, 'the page turns into the platform view');
-});
-
-test('a switch to Chickpea\'s models that fails keeps the confirmation open with a retryable error', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM, switchFails: new Error('The host is down.') });
-  await page.click({ 'data-action': 'billing-use-platform' });
-  await page.click({ 'data-action': 'billing-funding-confirm' });
-  assertShows(page.html(), 'Could not switch to Chickpea’s models. Try again.');
-  assert.match(page.html(), /data-action="billing-funding-confirm">Switch to Chickpea&rsquo;s models<\/button>/);
-});
-
-const FORBIDDEN_WORDS = /credit|markup|refund|multiplier|\bsteps\b|cache|prefix|working reply/i;
+/** Words the Plan page and onboarding never use. The Plan page says "models included", never "Chickpea's models". */
+const FORBIDDEN_WORDS = /credit|refund|multiplier|cache|prefix|working reply/i;
+const PLAN_ONLY_WORDS = /Chickpea(&rsquo;|’|')s models/;
 
 test('no Plan page or onboarding state uses words the customer never sees', async () => {
   const states: Array<[string, Parameters<typeof harness>[0], Array<Record<string, string>>]> = [
-    ['plan', { path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-own-key' }]],
-    ['frozen', { path: '/admin/plan', billingOffered: true, summary: FROZEN }, [{ 'data-action': 'billing-change-plan' }]],
-    ['trial', { path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, trial: TRIAL.trial } }, []],
+    ['plan', { path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN }, [{ 'data-action': 'billing-switch-funding' }, { 'data-action': 'billing-use-by', 'data-by': 'person' }]],
+    ['frozen', { path: '/admin/plan', billingOffered: true, summary: FROZEN }, []],
+    ['trial beside a plan', { path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, trial: TRIAL_GRANT } }, []],
     ['trial without a plan', { path: '/admin/plan', billingOffered: true, summary: TRIAL }, []],
-    ['plan with no period', { path: '/admin/plan', billingOffered: true, summary: PLAN_NO_PERIOD }, [{ 'data-action': 'billing-change-plan' }]],
+    ['plan with no period', { path: '/admin/plan', billingOffered: true, summary: PLAN_NO_PERIOD }, []],
     ['plan ending', { path: '/admin/plan', billingOffered: true, summary: TEAM_ENDING }, []],
     ['plan changing', { path: '/admin/plan', billingOffered: true, summary: TEAM_DOWNGRADING }, []],
+    ['used up', { path: '/admin/plan', billingOffered: true, summary: STARTER_USED_UP }, []],
+    ['own key used up', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_USED_UP }, []],
     ['member, plan with no period', { path: '/admin/plan', billingOffered: true, owner: false, summary: PLAN_NO_PERIOD }, []],
-    ['own key without a plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_NO_PLAN }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
+    ['own key without a plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_NO_PLAN }, [{ 'data-action': 'billing-switch-funding' }]],
     ['member, own key without a plan', { path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_NO_PLAN }, []],
-    ['below the minimum', { path: '/admin/plan', billingOffered: true, summary: STARTER_PLAN }, [{ 'data-action': 'billing-use-own-key' }]],
+    ['below the minimum', { path: '/admin/plan', billingOffered: true, summary: STARTER_PLAN }, []],
     ['no plan', { path: '/admin/plan', billingOffered: true, summary: NO_PLAN }, []],
     ['member', { path: '/admin/plan', billingOffered: true, owner: false, summary: TEAM_PLAN }, []],
-    ['own key on a plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM }, [{ 'data-action': 'billing-use-platform' }]],
+    ['own key on a plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM }, [{ 'data-action': 'billing-switch-funding' }]],
     ['unreadable', { path: '/admin/plan', billingOffered: true, summary: UNREADABLE }, []],
     ['needs a key', { path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, ownKey: NEEDS_ANTHROPIC }, []],
     ['extra usage refused for want of a plan', { path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, stripeFails: new BillingRefusal('plan_required') },
       [{ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_25' }]],
     ['a plan refused below the own-key plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM, stripeFails: new BillingRefusal('own_key_plan_required') },
-      [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-choose-plan', 'data-key': 'plus' }]],
+      [{ 'data-action': 'billing-choose-plan', 'data-key': 'plus', 'data-at': 'own_key' }]],
     ['own key refused below its plan', { path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, switchFails: new BillingRefusal('own_key_plan_required') },
-      [{ 'data-action': 'billing-use-own-key' }, { 'data-action': 'billing-funding-confirm' }]],
+      [{ 'data-action': 'billing-switch-funding' }, { 'data-action': 'billing-funding-confirm' }]],
+    ['models included refused', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM, switchFails: new Error('The host is down.') },
+      [{ 'data-action': 'billing-switch-funding' }, { 'data-action': 'billing-funding-confirm' }]],
   ];
   for (const [label, options, clicks] of states) {
     const page = await harness(options);
+    const plan = () => page.html().slice(page.html().indexOf('<main'));
     assert.doesNotMatch(page.html(), FORBIDDEN_WORDS, label);
+    assert.doesNotMatch(plan(), PLAN_ONLY_WORDS, label);
     for (const target of clicks) {
       await page.click(target);
       assert.doesNotMatch(page.html(), FORBIDDEN_WORDS, `${label} after ${target['data-action']}`);
+      assert.doesNotMatch(plan(), PLAN_ONLY_WORDS, `${label} after ${target['data-action']}`);
     }
   }
   const onboarding: Array<[string, Parameters<typeof harness>[0], Array<Record<string, string>>]> = [
