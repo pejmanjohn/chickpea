@@ -675,7 +675,7 @@ test('a follow-up dispatched into the run under its turn job is copied, though F
   });
   const fold = (messageTs: string, text: string) => followUpSignalBody({
     messages: [{ userId: 'U012ABCDEF3', messageTs, text }],
-    userId: 'U012ABCDEF3',
+    requesterId: 'U012ABCDEF3',
     timezone: 'UTC',
     envelope: '<current_request_envelope>{}</current_request_envelope>',
   });
