@@ -149,3 +149,70 @@ test('Slack text metadata still rejects an HTML download response', async () => 
   const f = fixture({}, new Response('hello', { headers: { 'content-type': 'text/html' } }));
   await assert.rejects(readDirectSlackAttachment({ ...base, fetch: f.fetcher }), /invalid_attachment_response/);
 });
+
+const ZIP = Uint8Array.of(0x50, 0x4b, 0x03, 0x04, 0x14, 0x00);
+const SKILL_ACCEPT = ['text_original', 'zip_original'] as const;
+function archive(name: string, mimetype: string, downloadType: string, bytes: Uint8Array<ArrayBuffer> = ZIP) {
+  return fixture({ name, mimetype, size: bytes.byteLength },
+    new Response(bytes, { headers: { 'content-type': downloadType } }));
+}
+
+// Slack labels measured 2026-10-30 on real web uploads: a .skill is binary,
+// application/octet-stream, served as application/octet-stream.
+for (const [name, mimetype, downloadType] of [
+  ['skills.zip', 'application/zip', 'application/zip'],
+  ['trellis.skill', 'application/octet-stream', 'application/octet-stream'],
+  ['writer.SKILL', 'text/plain', 'application/force-download'],
+  ['bundle.zip', 'application/x-zip-compressed', 'application/x-zip-compressed'],
+] as const) test(`a skill read takes ${name}, labelled ${mimetype}, as zip_original`, async () => {
+  const f = archive(name, mimetype, downloadType);
+  const result = await readDirectSlackAttachment({ ...base, fetch: f.fetcher, accept: SKILL_ACCEPT });
+  assert.deepEqual(
+    { representation: result.representation, contentType: result.contentType, filename: result.filename },
+    { representation: 'zip_original', contentType: 'application/zip', filename: name },
+  );
+  assert.deepEqual(result.bytes, ZIP);
+});
+test('an empty archive, only its end record, reads as zip_original', async () => {
+  const empty = Uint8Array.of(0x50, 0x4b, 0x05, 0x06, ...new Array<number>(18).fill(0));
+  const f = archive('empty.zip', 'application/zip', 'application/zip', empty);
+  assert.equal((await readDirectSlackAttachment({ ...base, fetch: f.fetcher, accept: SKILL_ACCEPT })).representation, 'zip_original');
+});
+test('a read that does not accept zip_original reads a plain-text .skill as text', async () => {
+  const f = fixture({ name: 'notes.skill', mimetype: 'text/plain' });
+  const result = await readDirectSlackAttachment({ ...base, fetch: f.fetcher });
+  assert.deepEqual([result.representation, new TextDecoder().decode(result.bytes)], ['text_original', 'hello']);
+});
+test('a read that does not accept zip_original refuses an archive before downloading it', async () => {
+  const f = archive('skills.zip', 'application/zip', 'application/zip');
+  await assert.rejects(readDirectSlackAttachment({ ...base, fetch: f.fetcher }), /unsupported_file_type/);
+  assert.equal(f.calls(), 1);
+});
+test('a .markdown upload, which Slack stores as a snippet served as a forced download, reads as text', async () => {
+  const f = fixture({ name: 'notes.markdown', filetype: 'markdown', mimetype: 'text/plain' },
+    new Response('hello', { headers: { 'content-type': 'application/force-download' } }));
+  const result = await readDirectSlackAttachment({ ...base, fetch: f.fetcher, accept: SKILL_ACCEPT });
+  assert.deepEqual([result.representation, result.contentType], ['text_original', 'text/plain']);
+});
+for (const [label, changes] of Object.entries({
+  image: { name: 'diagram.png', mimetype: 'image/png' },
+  pdf: { name: 'spec.pdf', mimetype: 'application/pdf' },
+  convertingOffice: { name: 'notes.docx', filetype: 'docx', mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+  externalArchive: { name: 'skills.zip', mimetype: 'application/zip', is_external: true },
+})) test(`a skill read refuses ${label} as unsupported before downloading`, async () => {
+  const f = fixture(changes);
+  await assert.rejects(readDirectSlackAttachment({ ...base, fetch: f.fetcher, accept: SKILL_ACCEPT }), /unsupported_file_type/);
+  assert.equal(f.calls(), 1);
+});
+test('a .zip or .skill that is not a zip, or that Slack serves as a page, is refused', async () => {
+  const text = new TextEncoder().encode('hello');
+  await assert.rejects(readDirectSlackAttachment({
+    ...base, fetch: archive('renamed.zip', 'application/zip', 'application/zip', text).fetcher, accept: SKILL_ACCEPT,
+  }), /invalid_slack_file_magic/);
+  await assert.rejects(readDirectSlackAttachment({
+    ...base, fetch: archive('notes.skill', 'text/plain', 'application/force-download', text).fetcher, accept: SKILL_ACCEPT,
+  }), /invalid_slack_file_magic/);
+  await assert.rejects(readDirectSlackAttachment({
+    ...base, fetch: archive('skills.zip', 'application/zip', 'text/html').fetcher, accept: SKILL_ACCEPT,
+  }), /invalid_slack_file_type/);
+});

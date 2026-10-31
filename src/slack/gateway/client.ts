@@ -16,7 +16,7 @@ import {
 } from './identity.ts';
 import {
   CHICKPEA_GATEWAY_PROTOCOL_VERSION,
-  GATEWAY_ATTACHMENT_REPRESENTATIONS,
+  DEFAULT_ATTACHMENT_ACCEPT,
   MAX_GATEWAY_FRAME_BYTES,
   MAX_GATEWAY_ARTIFACT_BYTES,
   gatewayOperationAllowed,
@@ -55,9 +55,6 @@ const GATEWAY_REQUEST_TIMEOUT_MS = 15_000;
 const GATEWAY_IDENTITY_RECOVERY_CONTENTION_LIMIT = 3;
 const MAX_GATEWAY_ATTACHMENT_BYTES = 8 * 1_024 * 1_024;
 const GATEWAY_ATTACHMENT_OPERATION = 'slack.attachment.read';
-const GATEWAY_ATTACHMENT_REPRESENTATION_SET = new Set<string>(
-  GATEWAY_ATTACHMENT_REPRESENTATIONS,
-);
 
 export interface GatewayClaimState {
   claimId: string;
@@ -99,10 +96,12 @@ export interface GatewayAttachmentRead {
 }
 
 export interface GatewayAttachmentClient {
+  /** Without `accept`, a read returns one of DEFAULT_ATTACHMENT_ACCEPT. */
   readAttachment(
     fileId: string,
     maxBytes: number,
     signal?: AbortSignal,
+    accept?: readonly GatewayAttachmentRepresentation[],
   ): Promise<GatewayAttachmentRead>;
 }
 
@@ -609,6 +608,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     fileId: string,
     maxBytes: number,
     signal?: AbortSignal,
+    accept?: readonly GatewayAttachmentRepresentation[],
   ): Promise<GatewayAttachmentRead> {
     if (!isGatewayId(fileId)) {
       throw new SlackTransportError(GATEWAY_ATTACHMENT_OPERATION, 'invalid_file_id');
@@ -637,6 +637,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       workspaceId: binding.workspaceId,
       fileId,
       maxBytes,
+      ...(accept ? { accept: [...accept] } : {}),
     } satisfies Omit<GatewayAttachmentReadRequest, 'signature'>;
     const request = await signGatewayRequest(identity, unsigned);
     const response = await this.requestAttachment(
@@ -648,6 +649,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       requestId: request.requestId,
       fileId,
       maxBytes,
+      accept: accept ?? DEFAULT_ATTACHMENT_ACCEPT,
     });
   }
 
@@ -946,6 +948,12 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
         GATEWAY_ATTACHMENT_OPERATION,
         'invalid_gateway_response',
       );
+    }
+    // A gateway older than `accept` refuses the unknown field before it reads
+    // the request ID, so its refusal names no request.
+    if (request.accept && response.status === 403 && envelope.requestId === 'unknown' &&
+        envelope.error?.code === 'attachment_field_not_allowed') {
+      throw new SlackTransportError(GATEWAY_ATTACHMENT_OPERATION, 'gateway_attachment_unsupported');
     }
     if (envelope.requestId !== request.requestId) {
       throw new SlackTransportError(
@@ -1327,7 +1335,12 @@ function encodeValue(value: unknown): unknown {
 
 async function parseGatewayAttachmentResponse(
   response: Response,
-  expected: { requestId: string; fileId: string; maxBytes: number },
+  expected: {
+    requestId: string;
+    fileId: string;
+    maxBytes: number;
+    accept: readonly GatewayAttachmentRepresentation[];
+  },
 ): Promise<GatewayAttachmentRead> {
   const invalid = (code: string): never => {
     void response.body?.cancel();
@@ -1354,13 +1367,17 @@ async function parseGatewayAttachmentResponse(
   } catch {
     return invalid('invalid_attachment_filename');
   }
+  // Only a representation the caller asked for, so a faulty gateway cannot
+  // hand a zip to a reader that expects text, images or PDFs.
   const representation = response.headers.get('x-chickpea-representation');
-  if (!representation || !GATEWAY_ATTACHMENT_REPRESENTATION_SET.has(representation)) {
+  if (!representation ||
+      !(expected.accept as readonly string[]).includes(representation)) {
     return invalid('invalid_attachment_representation');
   }
   const contentType = response.headers.get('content-type');
   if (!contentType || contentType.length > 128 ||
-      !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(contentType)) {
+      !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(contentType) ||
+      (representation === 'zip_original' && contentType !== 'application/zip')) {
     return invalid('invalid_attachment_content_type');
   }
   // content-length is hop-sensitive: workerd can transparently decompress a

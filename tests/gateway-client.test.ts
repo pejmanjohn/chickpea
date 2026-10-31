@@ -1041,6 +1041,88 @@ test('an older gateway route-level 404 reports missing attachment support', asyn
   } finally { settings.close(); config.close(); }
 });
 
+/** A bound client whose attachment route answers `respond`, recording each signed request. */
+async function attachmentClient(respond: (request: Record<string, unknown>) => Response) {
+  const { settings, config } = gatewayStores(() => NOW);
+  const gateway = new FakeGateway();
+  const requests: Array<Record<string, unknown>> = [];
+  const client = new GatewayDeploymentClient({
+    settings, config, keyring: generateCredentialKeyring('key_gateway'), gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: async (input, init) => {
+      if (!new URL(input instanceof Request ? input.url : input.toString()).pathname.endsWith('/attachments/read')) {
+        return gateway.fetch(input, init);
+      }
+      const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(request);
+      return respond(request);
+    },
+    now: () => NOW,
+  });
+  await client.beginClaim();
+  await client.refreshClaim();
+  return { client, gateway, requests, close() { settings.close(); config.close(); } };
+}
+
+function zipRead(request: Record<string, unknown>, contentType = 'application/zip'): Response {
+  const bytes = Uint8Array.of(0x50, 0x4b, 0x03, 0x04);
+  return new Response(bytes, {
+    headers: {
+      'content-type': contentType,
+      'x-chickpea-complete': 'true',
+      'x-chickpea-content-length': String(bytes.byteLength),
+      'x-chickpea-file-id': String(request.fileId),
+      'x-chickpea-filename': Buffer.from('skills.zip').toString('base64url'),
+      'x-chickpea-protocol-version': String(CHICKPEA_GATEWAY_PROTOCOL_VERSION),
+      'x-chickpea-representation': 'zip_original',
+      'x-chickpea-request-id': String(request.requestId),
+    },
+  });
+}
+
+test('a skill read signs accept and takes zip_original only when it asked for one', async () => {
+  let contentType = 'application/zip';
+  const { client, gateway, requests, close } = await attachmentClient((request) => zipRead(request, contentType));
+  try {
+    const read = await client.readAttachment('F_ZIP', 4_096, undefined, ['text_original', 'zip_original']);
+    assert.deepEqual([read.representation, read.contentType, read.filename], ['zip_original', 'application/zip', 'skills.zip']);
+    assert.deepEqual(requests[0]?.accept, ['text_original', 'zip_original']);
+    assert.ok(await verifyGatewayRequestSignature({ publicKey: gateway.publicKey!, request: requests[0] as never }),
+      'accept is part of the signed request');
+    assert.ok(await verifyGatewayRequestSignature({ publicKey: gateway.publicKey!, request: { ...requests[0], accept: ['zip_original'] } as never }) === false,
+      'a changed accept breaks the signature');
+
+    // An analysis or image read sends no accept, so a faulty gateway cannot hand it a zip.
+    await assert.rejects(client.readAttachment('F_ZIP', 4_096),
+      (error: unknown) => error instanceof SlackTransportError && error.code === 'invalid_attachment_representation');
+    assert.equal('accept' in requests[1]!, false);
+
+    contentType = 'application/octet-stream';
+    await assert.rejects(client.readAttachment('F_ZIP', 4_096, undefined, ['zip_original']),
+      (error: unknown) => error instanceof SlackTransportError && error.code === 'invalid_attachment_content_type');
+  } finally {
+    close();
+  }
+});
+
+test('a gateway older than accept refuses the field, and Core reports missing attachment support', async () => {
+  // The old gateway's exact answer: it rejects the unknown field before reading the request ID.
+  const { client, close } = await attachmentClient(() => json({
+    protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+    requestId: 'unknown',
+    ok: false,
+    error: { code: 'attachment_field_not_allowed', retryable: false },
+  }, 403));
+  try {
+    await assert.rejects(client.readAttachment('F_ZIP', 4_096, undefined, ['text_original', 'zip_original']),
+      (error: unknown) => error instanceof SlackTransportError && error.code === 'gateway_attachment_unsupported');
+    await assert.rejects(client.readAttachment('F_TEXT', 4_096),
+      (error: unknown) => error instanceof SlackTransportError && error.code === 'attachment_request_mismatch',
+      'a read that sent no accept keeps treating a foreign request ID as a mismatch');
+  } finally {
+    close();
+  }
+});
+
 test('gateway attachment headers and per-file ceiling accept exact values and reject one over', async () => {
   const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
