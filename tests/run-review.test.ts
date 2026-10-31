@@ -599,7 +599,7 @@ test('a late fold\'s messages follow the request\'s in the copy, scrubbed like i
   });
   const fold = (messages: Array<{ messageTs: string; text: string }>) => followUpSignalBody({
     messages: messages.map((message) => ({ userId: 'U012ABCDEF3', ...message })),
-    userId: 'U012ABCDEF3',
+    requesterId: 'U012ABCDEF3',
     timezone: 'America/Los_Angeles',
     envelope: '<current_request_envelope>{}</current_request_envelope>',
   });
@@ -636,7 +636,7 @@ test('a settled history keeps the late fold\'s messages, read back exactly as fr
   const text = 'Make it formal,\n  | and short.\n\nThanks.';
   const body = followUpSignalBody({
     messages: [{ userId: 'U012ABCDEF3', messageTs: '1.5', text }],
-    userId: 'U012ABCDEF3',
+    requesterId: 'U012ABCDEF3',
     timezone: 'UTC',
     envelope: '<current_request_envelope>{}</current_request_envelope>',
   });
@@ -654,9 +654,10 @@ test('a fold signal reads back exactly as framed, whatever the text says', () =>
   const sender = 'U012ABCDEF3';
   const other = 'U0ZZZZZZZZ9';
   const envelope = '<current_request_envelope>{}</current_request_envelope>';
-  const body = (messages: Array<{ messageTs: string; text: string; userId?: string }>, timezone = 'America/Los_Angeles') =>
+  type Row = { messageTs: string; text: string; userId?: string; informationOnly?: true };
+  const body = (messages: Row[], timezone = 'America/Los_Angeles') =>
     followUpSignalBody({
-      messages: messages.map((message) => ({ userId: sender, ...message })), userId: sender, timezone, envelope,
+      messages: messages.map((message) => ({ userId: sender, ...message })), requesterId: sender, timezone, envelope,
     });
   const texts = [
     'two\nlines',
@@ -671,19 +672,35 @@ test('a fold signal reads back exactly as framed, whatever the text says', () =>
     `While you were working, <@${other}> sent another message in this thread:`,
     `<@${other}> in \`\`\`\ncode\n\`\`\``,
   ];
+  const third = 'U0YYYYYYYY8';
   for (const text of texts) {
     for (const timezone of ['America/Los_Angeles', 'Not/AZone']) {
-      const messages = [{ messageTs: '1700000000.000100', text }, { messageTs: '1700000001.000200', text: 'second' }];
-      assert.deepEqual(followUpSignalMessages(body(messages, timezone)), messages.map((message) => ({ userId: sender, ...message })),
-        `${JSON.stringify(text)} in ${timezone}`);
+      for (const messages of [
+        [{ messageTs: '1700000000.000100', text }, { messageTs: '1700000001.000200', text: 'second' }],
+        [{ messageTs: '1700000000.000100', text, userId: other }, { messageTs: '1700000001.000200', text: 'second' }],
+        [
+          { messageTs: '1700000000.000100', text: 'mine' },
+          { messageTs: '1700000001.000200', text, userId: other, informationOnly: true as const },
+          { messageTs: '1700000002.000300', text: 'theirs', userId: third, informationOnly: true as const },
+        ],
+        [{ messageTs: '1700000000.000100', text, userId: other, informationOnly: true as const }],
+      ] satisfies Row[][]) {
+        assert.deepEqual(followUpSignalMessages(body(messages, timezone)), messages.map((message) => ({ userId: sender, ...message })),
+          `${JSON.stringify(text)} in ${timezone}`);
+      }
     }
   }
+  const mixed = body([{ messageTs: '1.5', text: 'x' }, { messageTs: '1.6', text: 'y', userId: other }]);
+  assert.match(mixed, new RegExp(`^While you were working, <@${sender}> and <@${other}> sent 2 more messages in this thread:`));
+  const informed = body([{ messageTs: '1.5', text: 'x', userId: other, informationOnly: true }]);
   const rejected = {
     head: `Current Slack request (this is the only current user intent; answer this and let current system truth take precedence):\n${
       body([{ messageTs: '1.5', text: 'x' }])}\n\n${envelope}`,
-    anotherSender: body([{ messageTs: '1.5', text: 'x' }, { messageTs: '1.6', text: 'y', userId: other }]),
-    headingForAnotherSender: body([{ messageTs: '1.5', text: 'x', userId: other }]),
+    senderMissing: mixed.replace(`<@${sender}> and <@${other}>`, `<@${sender}>`),
+    senderAdded: body([{ messageTs: '1.5', text: 'x' }]).replace(`<@${sender}>`, `<@${sender}> and <@${other}>`),
     countMismatch: body([{ messageTs: '1.5', text: 'x' }]).replace('another message', '2 more messages'),
+    informedWording: informed.replace('for information only', 'to act on'),
+    informedNoRows: informed.replace(/\n\n- \[[^\n]*/, ''),
     noRows: `While you were working, <@${sender}> sent another message in this thread:\n\n${envelope}`,
     otherSignal: `Files were delivered.\n\n- [1.5 role=human] ${sender}: x`,
   };
