@@ -21,13 +21,18 @@ fix one Agent's message: other Agents share that installation.
 
 ## Steering replies and the stop note
 
-Stopping a run and checking on it (see [Slack steering](slack-steering.md))
-add two senders:
+Stopping a run, checking on it and answering while it works (see
+[Slack steering](slack-steering.md)) add three senders:
 
 | Message | Sender | Delivery path | Who sees it |
 | --- | --- | --- | --- |
 | Stop note | The thread's Agent, with its footer | The final-reply path. An open stream is sealed with the note after its partial answer, through `chat.stopStream` with `chunks` and the footer `blocks`, never `chat.update`. When Slack already halted the stream (its Stop button does), the partial answer stays and the note posts once as a fresh customized threaded reply. Otherwise it posts like any final. | Everyone in the thread |
+| A reply the Agent posts while it works | The thread's Agent, with no footer and no files | The turn's presenter (the persona of every `chat.postMessage` it sends): one threaded `chat.postMessage` with a `markdown` block, under the selected Agent's name and avatar, or as an Agent app's own bot with no override. It mentions no teammate Agent live. | Everyone in the thread |
 | Chickpea's steering replies: check-in answers, `You can't stop this run.`, `This run had already finished…`, and the direct-message hints | The installation's bot, with no Agent persona and no footer | `chat.postEphemeral` with `thread_ts` in channels and group DMs; a threaded `chat.postMessage` in a one-to-one DM | Only the person it answers |
+
+Verify a reply posted while the Agent works the same way: sender and avatar
+on the exact message, no footer, and the text as the recipient sees it, by API
+readback and fresh desktop and real phone views.
 
 Verify the stop note's sender, avatar and footer on the exact message, with
 API readback and fresh desktop and real phone views, for both a sealed stream

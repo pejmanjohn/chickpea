@@ -95,6 +95,9 @@ only what Chickpea can see:
 - `Already done, not undone:` with each branch the run pushed and each pull
   request it opened, from the run's saved progress and its coding task
   records.
+- `Posted 2 replies in this thread.` under the same heading, for the replies
+  the Agent posted mid-run (see [Answering while it
+  works](#answering-while-it-works)). A reply Slack refused does not count.
 - `Coding work may still be winding down.` when a coding job's stop was not
   confirmed: its records could not be read, a job did not confirm, or the
   executor has no coding stop cascade (the alarm executor, below).
@@ -285,11 +288,37 @@ turn), it is released if the run fails, and a stop drops it. In addition:
 A message that waits starts the next turn when the run ends, and that turn
 takes any later messages with it.
 
+### Answering while it works
+
+When a message the Agent reads after a tool step asks something worth
+answering at once ("which repo are you using?"), the Agent can answer it with
+a short reply in the thread and keep working. Its final reply still answers
+everything. It posts progress updates only when someone in the thread asked
+for one; it never posts them on its own.
+
+- The reply posts as the thread's Agent, the same sender as its final reply,
+  with no footer and no files. Text past 600 characters is cut at a word with
+  an ellipsis. See [Slack message identity](slack-message-identity.md#steering-replies-and-the-stop-note).
+- It answers only a message this run read after it started, at a tool step or
+  before its reply, and never one read as information only.
+- One reply per message, at most 3 per run, at least 20 seconds apart.
+- None once the Agent streams its answer, has posted a question, or has
+  started delivering its final reply.
+- Each reply is recorded with the run's presentation before it posts, so a
+  restarted run never answers the same message twice, and the stop note
+  counts the replies that posted.
+
+The Agent is told this with each message it reads after a tool step, and the
+tool is offered only to runs that can read messages mid-run. Only the thread
+runner and the Node relay read messages mid-run, so only they post these
+replies.
+
 ## Node installations
 
 Node installs behave the same: the stop phrases, the Stop button (through the
 shared app's outbound connection or a customer-owned app's HTTP events),
-check-ins, the status line, the 👀, follow-ups, and the stop note. The Node
+check-ins, the status line, the 👀, follow-ups, replies while it works, and
+the stop note. The Node
 relay acts on a stop in its own process: it aborts the run and runs the same
 ending. Node has no coding sandbox, so there is no coding stop cascade. Run
 facts live in memory and reset when the process restarts. Logs print to the
@@ -309,6 +338,7 @@ user, channel, or workspace IDs.
 | `thread_runner_alarm` field `dropped` | Runtime event, Cloudflare runners | Turns that stopped runs' endings dropped since the runner's previous record. |
 | `turn_latency` field `folded` | Runtime event | How many follow-ups the turn read with its own message (both lanes); `foldedInformed` counts those that were information only. |
 | `turn_latency` field `read` | Runtime event | How many 👀 the turn replaced with 👍 (both lanes). |
+| `turn_latency` field `midRunReplies` | Runtime event | How many replies the Agent posted while it worked (both lanes). `firstWrite: midrun_reply` when one was the attempt's first Slack write. |
 | `turn_fold` | Runtime event | Messages a running turn read after a tool step or before its reply (`late`, both lanes); `informed` counts those that were information only, `turn` those read after a tool step. |
 | `run_completed` with `outcome: stopped` | [Product telemetry](../../TELEMETRY.md) | An anonymous stopped-run count. |
 
@@ -364,7 +394,8 @@ Every durable change is additive. `turn_jobs` gains nullable columns
 (`thread_key`, `message_ts`, `stop_json`, `stop_notice_at`, `fold_json`) and
 `stop_notice_attempts` with a default. Dropped turns keep the existing `done`
 status. Presentations record a stop reason beside their existing terminal
-states. Runners add `runner_stops` and run-fact columns on `runner_jobs`.
+states, and the replies an Agent posted while it worked in an optional
+`midRunReplies` list, which an older release ignores. Runners add `runner_stops` and run-fact columns on `runner_jobs`.
 Coding task records live in the Sandbox Durable Object's storage. There is no
 Durable Object migration and no schema-generation change.
 
