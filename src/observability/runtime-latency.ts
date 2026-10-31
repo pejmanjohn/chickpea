@@ -346,6 +346,25 @@ export function emitTurnFold(
   }, sink);
 }
 
+/**
+ * A coding job's wait during a running turn: `pause` (it returned early so
+ * the model could read new messages: `outcome` `messages`, or `unchecked`
+ * after the check kept failing), `resume` (a later wait ended: `outcome`
+ * `completed`, `paused` or a failure reason), or `relay` (guidance for the
+ * running job: `sent`, `finished`, `stopped` or `not_sent`). One record per
+ * event, on `turn_fold` with `op` `coding_<kind>`; each counts once.
+ */
+export function emitCodingTaskSteering(
+  record: { turnJobId: string | undefined; op: 'pause' | 'resume' | 'relay'; outcome: string },
+  sink?: RuntimeLatencySink,
+): void {
+  emitRuntimeLatency('turn_fold', {
+    turnRef: opaqueTurnRef(record.turnJobId),
+    op: `coding_${record.op}`,
+    outcome: record.outcome,
+  }, sink);
+}
+
 // ---------------------------------------------------------------------------
 // state_rpc: sampled timing of calls from the Cf*Store proxies into TagStateStore.
 

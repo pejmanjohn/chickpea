@@ -169,6 +169,8 @@ import {
   CHICKPEA_SUBMISSION_DURABILITY,
   WORKSPACE_TASK_INSTRUCTION,
   createRuntimePlanCodingTools,
+  createRuntimePlanWorkspaceTaskFinishCheck,
+  useWorkspaceTaskFinishGuard,
   workspaceTaskRunning,
 } from './coding-worker-task.ts';
 import {
@@ -923,6 +925,17 @@ function useSlackTurnRenderInput(
   });
 }
 
+/**
+ * Whether the Slack turn a response answers has ended or carries a stop
+ * record; false for a response that answers no Slack turn.
+ */
+async function slackTurnStopped(turnJobId: string | undefined): Promise<boolean> {
+  if (turnJobId === undefined) return false;
+  const view = await getSlackStateStore(await resolveAgentPlatformEnv()).turnJobView?.(turnJobId);
+  if (!view) throw new Error('The state store cannot read the turn.');
+  return view.status !== 'pending' || view.job?.stop?.role === 'stopped';
+}
+
 function slackDeliveryTurnJobId(delivery: ReturnType<typeof useDelivery>): string | undefined {
   if (delivery.kind !== 'signal' || delivery.type !== 'slack.message') return undefined;
   const turnJobId = delivery.attributes?.turnJobId;
@@ -1292,9 +1305,9 @@ export function useRuntimePlanAgent(
      * Mounts the tools every turn of the caller shares, after post_artifact
      * and complete_file_delivery and before any tool that differs by
      * workspace, Agent, or turn, so the shared tools form a cacheable prefix.
-     * `followUps`: what the response read mid-run, when it can.
+     * `followUps`: what the response read mid-run.
      */
-    mountBeforeTenantTools?: (followUps: SlackFollowUps | undefined) => void;
+    mountBeforeTenantTools?: (followUps: SlackFollowUps) => void;
   } = {},
 ): void {
   assertRuntimePlanInstallation(plan, id);
@@ -1468,19 +1481,29 @@ export function useRuntimePlanAgent(
     schema: WorkspaceMilestoneSchema,
   });
   const workspaceToolsMounted = runtimePlanWorkspaceToolsMounted(plan, fileCompletion.repairing);
+  const slackTurnId = slackDeliveryTurnJobId(useDelivery());
+  const codingTaskInput = {
+    plan,
+    coordinatorId: id,
+    ...(options.sandboxConversationKey ? { sandboxConversationKey: options.sandboxConversationKey } : {}),
+    resolve: resolveWorkspace,
+    onWorkerStarted: writeCodingWorkerRun,
+    onWorkerUsage: writeCodingWorkerUsage,
+    onMilestone: writeWorkspaceMilestone,
+    pendingMessages: followUps.waiting,
+    turnStopped: () => slackTurnStopped(slackTurnId),
+  };
   if (workspaceToolsMounted) {
     tenantTools.push(...createRuntimePlanCodingTools({
-      plan,
-      coordinatorId: id,
-      ...(options.sandboxConversationKey ? { sandboxConversationKey: options.sandboxConversationKey } : {}),
-      resolve: resolveWorkspace,
+      ...codingTaskInput,
       roster: workspaceRoster,
       taskRunning: workspaceTaskRunning,
-      onWorkerStarted: writeCodingWorkerRun,
-      onWorkerUsage: writeCodingWorkerUsage,
-      onMilestone: writeWorkspaceMilestone,
     }));
     useInstruction(WORKSPACE_TASK_INSTRUCTION);
+  }
+  // Also in a repair, which mounts no coding tools: a task left running there is stopped, not waited for.
+  if (runtimePlanWorkspaceToolsMounted(plan, false)) {
+    useWorkspaceTaskFinishGuard(createRuntimePlanWorkspaceTaskFinishCheck(codingTaskInput), () => fileCompletion.repairing);
   }
   if (!options.artifactToolsDisabled) {
     // Built once per render: the tools resolve `img:N` handles against the

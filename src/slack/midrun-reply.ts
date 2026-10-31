@@ -209,9 +209,9 @@ export function createSlackMidRunReplyTool(input: {
 /**
  * Mounts reply_in_thread on every Slack turn, in the tools every turn shares
  * (see shared-prefix.ts), so the prompt cache holds across turns and renders.
- * A response that cannot read messages mid-run (no useSlackFollowUpFold
- * result) has read none, so the tool refuses every reply there.
+ * A response that cannot read messages mid-run has read none, so the tool
+ * refuses every reply there.
  */
-export function useSlackMidRunReplyTool(followUps: SlackFollowUps | undefined): void {
-  useTool(createSlackMidRunReplyTool({ read: () => followUps?.read() ?? [] }));
+export function useSlackMidRunReplyTool(followUps: SlackFollowUps): void {
+  useTool(createSlackMidRunReplyTool({ read: followUps.read }));
 }

@@ -35,8 +35,10 @@ export const WORKSPACE_EXEC_TOOL_NAME = 'workspace_exec';
 export const WORKSPACE_READ_TOOL_NAME = 'workspace_read';
 export const WORKSPACE_WRITE_TOOL_NAME = 'workspace_write';
 export const WORKSPACE_LIST_FILES_TOOL_NAME = 'workspace_list_files';
-/** Delegation to a coding worker; defined in ./workspace-task.ts. */
+/** Delegation to a coding worker, and the wait and guidance for a paused one; defined in ./workspace-task.ts. */
 export const WORKSPACE_TASK_TOOL_NAME = 'workspace_task';
+export const WORKSPACE_TASK_RESUME_TOOL_NAME = 'workspace_task_resume';
+export const WORKSPACE_TASK_STEER_TOOL_NAME = 'workspace_task_steer';
 
 export const WORKSPACE_TOOL_NAMES = [
   WORKSPACE_OPEN_TOOL_NAME,
@@ -47,6 +49,8 @@ export const WORKSPACE_TOOL_NAMES = [
   WORKSPACE_WRITE_TOOL_NAME,
   WORKSPACE_LIST_FILES_TOOL_NAME,
   WORKSPACE_TASK_TOOL_NAME,
+  WORKSPACE_TASK_RESUME_TOOL_NAME,
+  WORKSPACE_TASK_STEER_TOOL_NAME,
 ] as const;
 
 /** Output kept per stream from one `workspace_exec` call. */

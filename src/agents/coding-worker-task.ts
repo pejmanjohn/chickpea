@@ -1,9 +1,15 @@
-import { init, type AgentInstanceHandle } from '@flue/runtime';
+import { init, useAgentFinish, useDelivery, type AgentInstanceHandle } from '@flue/runtime';
 
 import { currentModelAccessRunId } from '../config/model-access.ts';
-import { agentObjectBindingName, createCloudflareBoundedAgentReplyReader } from '../slack/bounded-agent-observation.ts';
+import { currentRequestEnvelopeText } from '../memory/tool-policy.ts';
+import {
+  agentObjectBindingName,
+  createCloudflareBoundedAgentReplyReader,
+  agentSubmissionSettledBounded,
+} from '../slack/bounded-agent-observation.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
-import type { SandboxCodingTaskStub } from '../sandbox/coding-task-record.ts';
+import { endsResponseWork } from '../slack/presentation-tool-policy.ts';
+import { parseCodingTaskRecord, type SandboxCodingTaskStub } from '../sandbox/coding-task-record.ts';
 import {
   codingWorkerBindingForPlan,
   codingWorkerInstanceId,
@@ -17,6 +23,9 @@ import { WORKSPACE_DELEGATION_GUIDANCE } from '../sandbox/workspace-skill.ts';
 import type { WorkspaceRoster } from '../sandbox/workspace-limits.ts';
 import { createWorkspaceTools } from '../sandbox/workspace-tools.ts';
 import {
+  createWorkspaceTaskFinishCheck,
+  createWorkspaceTaskResumeTool,
+  createWorkspaceTaskSteerTool,
   createWorkspaceTaskTool,
   emptyWorkspaceTaskResponseState,
   type CodingTaskRecordStore,
@@ -49,6 +58,10 @@ interface RuntimePlanWorkspaceTaskToolInput {
   onWorkerStarted: (record: CodingWorkerRunRecord) => void;
   onWorkerUsage: (record: CodingWorkerUsageRecord) => void;
   onMilestone: (record: WorkspaceMilestoneRecord) => void;
+  /** Whether new messages wait to join this response (useSlackFollowUpFold's check). */
+  pendingMessages?: () => Promise<boolean>;
+  /** Whether the run's turn has ended or carries a stop record. */
+  turnStopped?: () => Promise<boolean>;
 }
 
 /**
@@ -60,15 +73,55 @@ export function createRuntimePlanCodingTools(input: RuntimePlanWorkspaceTaskTool
   roster: WorkspaceRoster;
   taskRunning: (workspaceId: string) => boolean;
 }) {
+  const options = runtimePlanWorkspaceTaskOptions(input);
   return [
     ...createWorkspaceTools({ resolve: input.resolve, roster: input.roster, taskRunning: input.taskRunning }),
-    createRuntimePlanWorkspaceTaskTool(input),
+    createWorkspaceTaskTool(options),
+    createWorkspaceTaskResumeTool(options),
+    createWorkspaceTaskSteerTool(options),
   ];
 }
 
-/** `workspace_task` for a coordinator running `plan`. */
-export function createRuntimePlanWorkspaceTaskTool(input: RuntimePlanWorkspaceTaskToolInput) {
-  return createWorkspaceTaskTool({
+/** The would-stop check for coding tasks a coordinator running `plan` left running. */
+export function createRuntimePlanWorkspaceTaskFinishCheck(input: RuntimePlanWorkspaceTaskToolInput) {
+  return createWorkspaceTaskFinishCheck(runtimePlanWorkspaceTaskOptions(input));
+}
+
+/**
+ * Sends the model back to a coding task it left running (see
+ * createWorkspaceTaskFinishCheck). The signal carries the delivery's
+ * attributes and request envelope, as the file-delivery check's does, so
+ * the tools the model calls next keep their request context.
+ */
+export function useWorkspaceTaskFinishGuard(
+  check: ReturnType<typeof createWorkspaceTaskFinishCheck>,
+  /** True while the coding tools are not mounted (a file-delivery repair): nothing can wait then. */
+  unmounted: () => boolean = () => false,
+): void {
+  const delivery = useDelivery();
+  useAgentFinish(async ({ append, response }) => {
+    const body = await check({
+      workEnded: unmounted() || response.toolCalls.some((call) => endsResponseWork(call.tool) && !call.isError),
+    });
+    if (!body) return;
+    const envelope = currentRequestEnvelopeText(delivery.body);
+    const { requesterText: _requesterText, ...attributes } = delivery.kind === 'signal' ? delivery.attributes ?? {} : {};
+    append({
+      kind: 'signal',
+      type: WORKSPACE_TASK_RUNNING_SIGNAL_TYPE,
+      tagName: WORKSPACE_TASK_RUNNING_SIGNAL_TAG,
+      attributes,
+      body: envelope ? `${body}\n\n${envelope}` : body,
+    });
+  });
+}
+
+export const WORKSPACE_TASK_RUNNING_SIGNAL_TYPE = 'chickpea.workspace_task_running';
+const WORKSPACE_TASK_RUNNING_SIGNAL_TAG = 'workspace_task_running';
+
+/** `workspace_task` and its resume and steer tools for a coordinator running `plan`. */
+function runtimePlanWorkspaceTaskOptions(input: RuntimePlanWorkspaceTaskToolInput): WorkspaceTaskToolOptions {
+  return {
     resolve: input.resolve,
     binding: (workspaceId) => codingWorkerBindingForPlan(input.plan, workspaceId),
     instanceId: codingWorkerInstanceId,
@@ -88,7 +141,9 @@ export function createRuntimePlanWorkspaceTaskTool(input: RuntimePlanWorkspaceTa
       return (await stub.getTurnProgress?.())?.pullRequest;
     },
     taskRecords: threadCodingTaskRecords(() => input.sandboxConversationKey ?? runtimePlanWorkspaceConversationKey(input.plan)),
-  });
+    ...(input.pendingMessages ? { pendingMessages: input.pendingMessages } : {}),
+    ...(input.turnStopped ? { turnStopped: input.turnStopped } : {}),
+  };
 }
 
 /**
@@ -105,6 +160,10 @@ function threadCodingTaskRecords(conversationKey: () => string): CodingTaskRecor
   return {
     put: (hostTurnId, record) => stub.putCodingTask(hostTurnId, record),
     settle: (hostTurnId, taskKey) => stub.settleCodingTask(hostTurnId, taskKey),
+    list: async (hostTurnId) => (await stub.readCodingTasks(hostTurnId)).flatMap((entry) => {
+      const record = parseCodingTaskRecord(entry);
+      return record ? [record] : [];
+    }),
   };
 }
 
@@ -184,6 +243,14 @@ function cloudflareCodingWorkerClient(): CodingWorkerClient {
         CHICKPEA_CODING_WORKER_AGENT_NAME,
       );
       return reader({ handle: await workerHandle(instanceId), instanceId, receipt, onEvent, signal });
+    },
+    settled: async ({ instanceId, submissionId }) => {
+      const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
+      return agentSubmissionSettledBounded(getCloudflareContext().env as Record<string, unknown>, {
+        agentName: CHICKPEA_CODING_WORKER_AGENT_NAME,
+        instanceId,
+        submissionId,
+      });
     },
   };
 }

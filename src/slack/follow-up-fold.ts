@@ -28,8 +28,14 @@ interface FollowUpFoldState {
   read?: MidRunReadMessage[];
 }
 
-/** A response that can read messages mid-run. */
+/** What a Slack response reads mid-run; nothing where it cannot (no v2 Slack signal). */
 export interface SlackFollowUps {
+  /**
+   * Whether messages this response has not read wait to join it at its next
+   * tool boundary. Claims them for that boundary; throws when the state
+   * store cannot be reached.
+   */
+  waiting(): Promise<boolean>;
   /** The messages its model read mid-run so far. */
   read(): readonly MidRunReadMessage[];
 }
@@ -59,7 +65,9 @@ export type LateFoldRequest = Exclude<TurnFoldRequest, { phase: 'start' }>;
  * failed call leaves the response as it was; any message the model never
  * saw then runs as its own turn.
  *
- * Returns, when the response can read messages mid-run, what its model read
+ * A single long tool step (a coding job's wait) asks `waiting` meanwhile and
+ * returns early when it answers yes, which makes the step's end the
+ * boundary where the messages join. `read` is what the model read mid-run
  * so far: reply_in_thread answers only those (see midrun-reply.ts).
  */
 export function useSlackFollowUpFold(input: {
@@ -68,7 +76,7 @@ export function useSlackFollowUpFold(input: {
   blocked: () => boolean;
   /** The state store's fold (TurnJobStoreLogic.fold); undefined where the store has none. */
   fold: (request: LateFoldRequest) => Promise<TurnFoldClaim | undefined>;
-}): SlackFollowUps | undefined {
+}): SlackFollowUps {
   const delivery = useDelivery();
   const dispatch = useDispatchMessage();
   const [, update] = usePersistentState<FollowUpFoldState>(SLACK_FOLLOW_UP_STATE_NAME, { cycles: 0, finishes: 0 });
@@ -119,6 +127,20 @@ export function useSlackFollowUpFold(input: {
     }),
   } satisfies DeliveredMessageInput);
 
+  // The same claim the next tool boundary makes: the store returns a cycle's
+  // claimed rows again, so that boundary's pull reads these very messages,
+  // and once it counted them, only messages sent later answer yes. A check
+  // past the gate answers no.
+  const waiting = async () => {
+    const { cycles } = current();
+    if (!framing || cycles >= MAX_TURN_FOLD_CYCLES || input.blocked()) return false;
+    if (!(await claim('turn', cycles, true))?.messages.length) return false;
+    // The step returns for these messages, so its boundary pulls whenever the last check was.
+    const boundary = toolBoundaries.getStore();
+    if (boundary) delete boundary.pulledAt;
+    return true;
+  };
+
   // Nothing to confirm here when the gate is shut: the would-stop call does.
   bindToolBoundaryFold(async () => {
     const { cycles, finishes, read } = current();
@@ -149,7 +171,7 @@ export function useSlackFollowUpFold(input: {
     }
   });
 
-  return framing ? { read: () => current().read } : undefined;
+  return { waiting, read: () => current().read };
 }
 
 interface ToolBoundary {
