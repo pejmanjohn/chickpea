@@ -421,6 +421,8 @@ export interface RunTurnOptions {
   turnLatency?: TurnLatencyContext;
   /** Set by `runTurn` itself when `turnLatency` is present. */
   onSlackWrite?: (surface: TurnFirstWrite) => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: the follow-ups the prompt frames as information only. */
+  onFollowUpsInformed?: (count: number) => void;
 }
 
 /** How a stopped turn ends (see RunTurnOptions.stopEnding). */
@@ -510,6 +512,7 @@ export async function runTurn(
     await runTurnAttempt(turn, assignment, platformEnv, {
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
+      onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
         if (outcome === 'stopped') stopped = true;
@@ -1823,11 +1826,13 @@ async function runTurnAttempt(
     // took these messages (TurnJobStoreLogic.decideStartFoldRoles).
     const usesPersonalAccess = runtimePlanDecision === undefined ||
       runtimePlanUsesPersonalAccess(runtimePlanDecision.runtimePlan);
+    const requestFollowUps = followUps.map(({ informationOnly: _provisional, ...message }): FoldedMessage =>
+      foldedInformationOnly(message.userId, turn.userId, usesPersonalAccess)
+        ? { ...message, informationOnly: true as const }
+        : message);
+    options.onFollowUpsInformed?.(requestFollowUps.filter((message) => message.informationOnly).length);
     const prompt = assembleSlackPrompt(turn, promptContext, {
-      followUps: followUps.map(({ informationOnly: _provisional, ...message }) =>
-        foldedInformationOnly(message.userId, turn.userId, usesPersonalAccess)
-          ? { ...message, informationOnly: true as const }
-          : message),
+      followUps: requestFollowUps,
       ...(handoffBlock ? { handoffBlock } : {}),
       ...(preparedMemory?.promptBlock && !memoryRendered
         ? { memoryBlock: preparedMemory.promptBlock }

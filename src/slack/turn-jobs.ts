@@ -1030,13 +1030,13 @@ export class TurnJobStoreLogic {
    */
   fold(request: TurnFoldRequest): TurnFoldClaim {
     validateFoldRequest(request);
-    const { claim, confirmed } = this.db.transaction(() => this.claimFold(request));
-    if (confirmed > 0) emitTurnFold({ turnJobId: request.headId, late: confirmed });
+    const { claim, confirmed, informed } = this.db.transaction(() => this.claimFold(request));
+    if (confirmed > 0) emitTurnFold({ turnJobId: request.headId, late: confirmed, informed });
     return claim;
   }
 
-  /** The claim, and how many late members this call confirmed as read. */
-  private claimFold(request: TurnFoldRequest): { claim: TurnFoldClaim; confirmed: number } {
+  /** The claim, and how many late members this call confirmed as read (`informed` of them information only). */
+  private claimFold(request: TurnFoldRequest): { claim: TurnFoldClaim; confirmed: number; informed: number } {
     const head = this.db.get(
       `SELECT rowid AS row_order, id, turn_json, assignment_json, delivered, status, execution_authority,
          dispatch_started_at, agent_instance_id, stop_json, fold_json, thread_key, enqueued_at
@@ -1044,7 +1044,7 @@ export class TurnJobStoreLogic {
       request.headId,
     );
     const threadKey = typeof head?.thread_key === 'string' ? head.thread_key : undefined;
-    const none = { claim: { messages: [], requesterText: '' }, confirmed: 0 };
+    const none = { claim: { messages: [], requesterText: '' }, confirmed: 0, informed: 0 };
     if (!head || !threadKey) return none;
     let headTurn: NormalizedSlackTurn;
     let headAssignment: ResolvedAssignment;
@@ -1055,11 +1055,13 @@ export class TurnJobStoreLogic {
       return none;
     }
     let confirmed = 0;
+    let informed = 0;
     if (request.phase === 'finish') {
       for (const { record, message } of this.foldMembers(threadKey, request.headId)) {
         if (record.cycle < 1 || record.cycle > request.received || record.received || !holdsFold(record)) continue;
         this.writeFoldRecord(message.turnJobId, { ...record, received: true });
         confirmed += 1;
+        if (record.role === 'informed') informed += 1;
       }
     }
     const cycle = request.phase === 'start' ? 0 : request.received + 1;
@@ -1073,6 +1075,7 @@ export class TurnJobStoreLogic {
         ),
       },
       confirmed,
+      informed,
     });
     if (request.phase === 'finish' && !request.take) return claim([]);
     const stamped = this.foldMembers(threadKey, request.headId)

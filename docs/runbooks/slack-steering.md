@@ -6,10 +6,11 @@ or a group of messages does to durable state, the logs an operator reads,
 rollback, and turning on Slack's Stop button for the shared Chickpea app.
 
 This release covers stopping, check-ins, the status line, a 👀 on messages
-posted during a run, and follow-ups: when a person's messages queue in a
+posted during a run, and follow-ups: when people's messages queue in a
 thread, the turn that starts next reads them all and replies once, and a
-message that person sends while the Agent works joins the running reply
-before it posts.
+message sent while the Agent works joins the running reply before it posts.
+Everyone in the thread steers, except where the run uses the requester's own
+connections: there a teammate's message is information only.
 
 ## Stopping a run
 
@@ -178,17 +179,18 @@ removes a 👀 it recorded adding.
 
 ### Follow-ups
 
-When a turn starts, it takes the messages the same person sent right after
-it, which are queued behind it in the thread, as part of its request. These
-are its follow-ups. The Agent reads the first message and its follow-ups
-together, in order, and writes one reply. While it reads them, the status
+When a turn starts, it takes the messages people sent right after it, which
+are queued behind it in the thread, as part of its request. These are its
+follow-ups. The Agent reads the first message and its follow-ups together, in
+order, and writes one reply. Each message is labelled with its sender, and
+the request names everyone who sent one. While it reads them, the status
 line shows `Reading 3 messages…` (the count includes the first message).
 
-Only plain messages that person typed to the same Agent join, oldest first.
-The group ends at the first message that is anything else, and that message
-keeps its own turn and its own reply as before:
+Plain messages anyone typed to the same Agent join, oldest first. The group
+ends at the first message that is anything else, and that message keeps its
+own turn and its own reply as before:
 
-- a message from another person, or to another Agent in the thread
+- a message to another Agent in the thread
 - an approval, a click, or a reaction
 - a command such as `!memory` or `!routines`
 - a message with files
@@ -209,7 +211,25 @@ A follow-up never runs on its own:
 A message that arrives after the turn has started is not one of its
 follow-ups. It can still join the running reply, as the next section
 describes; otherwise it waits, then starts the next turn with any later
-messages from the same person.
+messages.
+
+### Teammates' messages and personal connections
+
+Whose message it is matters only for what the run may use. When the run uses
+only the Agent's shared connections, a teammate's message joins like the
+requester's own and the one reply answers it too. When the run uses the
+requester's own (personal) connections, a teammate's message reaches the
+Agent as information only: the Agent reads it, under its own heading, and is
+told not to act on it, not to use the requester's connections for it, and
+not to answer it in this reply. When the run ends, however it ends, that
+message runs as the teammate's own turn with their own access, and its 👀
+stays until that turn's reply. A stop drops it like any other held message.
+
+The run decides this from its frozen plan: it uses personal access when it
+was granted any connection account the requester owns. The Agent's website
+logins are shared and never make a run personal. A turn admitted before this
+release reads as personal. A teammate's words never steer the classifier,
+connection choice or memory lookup; only the requester's own messages do.
 
 ### Messages sent while the Agent works
 
@@ -219,9 +239,10 @@ as part of the same request, does any extra work they need, and writes one
 reply to everything. Its draft is never posted. While it reads them, the
 status line shows `Reading 2 new messages…` (only the new ones count).
 
-The same rules as for follow-ups decide which messages join, and a message
-that joins ends the same way: its 👀 goes when the reply posts, it is
-released if the run fails, and a stop drops it. In addition:
+The same rules as for follow-ups decide which messages join and which are
+information only, and a message that joins ends the same way: its 👀 goes
+when the reply posts (an information-only message keeps it for its own
+turn), it is released if the run fails, and a stop drops it. In addition:
 
 - The Agent checks at most three times in one run. A message that arrives
   after the third check waits for the run to end.
@@ -233,7 +254,7 @@ released if the run fails, and a stop drops it. In addition:
   it is.
 
 A message that waits starts the next turn when the run ends, and that turn
-takes any later messages from the same person with it.
+takes any later messages with it.
 
 ## Node installations
 
@@ -257,8 +278,8 @@ user, channel, or workspace IDs.
 | `[chickpea] steering.stop_button` | Worker or Node log | A Stop press that stopped nothing. `outcome` is `invalid` (unreadable event), `no_route` (not an Agent thread), `no_running_job`, or `not_allowed` (no access and not told, a guest for example). |
 | `turn_latency` with `outcome: stopped` | Runtime event | A stopped run's ending (both lanes). |
 | `thread_runner_alarm` field `dropped` | Runtime event, Cloudflare runners | Turns that stopped runs' endings dropped since the runner's previous record. |
-| `turn_latency` field `folded` | Runtime event | How many follow-ups the turn read with its own message (both lanes). |
-| `turn_fold` | Runtime event | Messages a running turn read before its reply (`late`, both lanes). |
+| `turn_latency` field `folded` | Runtime event | How many follow-ups the turn read with its own message (both lanes); `foldedInformed` counts those that were information only. |
+| `turn_fold` | Runtime event | Messages a running turn read before its reply (`late`, both lanes); `informed` counts those that were information only. |
 | `run_completed` with `outcome: stopped` | [Product telemetry](../../TELEMETRY.md) | An anonymous stopped-run count. |
 
 See [runtime observability](runtime-observability.md#turn-latency-and-relay-alarm-logs)
@@ -275,7 +296,10 @@ for the runtime events. Other records a stop leaves:
   it, whether at its start (`cycle` 0) or before its reply (`cycle` 1 to 3),
   whether its run read it, and `settled` once that run's reply posted. A
   message taken before the reply counts as read once the Agent's next check
-  confirms it was shown to the model.
+  confirms it was shown to the model. A teammate's information-only message
+  is `informed` and is never settled: once its turn ends it reads as
+  released and runs on its own. Before the taking turn's plan is frozen, a
+  teammate's message taken at its start is `informed`; the freeze decides it.
   A follow-up whose turn ended any other way reads as released; nothing is
   written for that.
 
@@ -317,7 +341,9 @@ Rolling back to the previous release is safe with two exceptions. While a stop
 is still holding messages (usually a few seconds), the older release does not
 know they are held and runs them as ordinary turns. Likewise, follow-ups a
 running turn took run again as their own turns after a rollback, so their
-person may get a second reply. A stop the runner had not
+person may get a second reply. Runtime plans are version 4 (they carry
+`usesPersonalAccess`); the older release cannot read them and parks those
+turns for recovery. A stop the runner had not
 acted on yet is ignored, and that run continues. After a rollback, an app
 subscribed to `agent_session_stopped` still shows the Stop button, but the
 older release ignores the press, and a typed `stop` becomes an ordinary
@@ -390,6 +416,9 @@ The live journeys:
 - A request, then a correction about 10 seconds later while the Agent works:
   the status line shows `Reading 1 new message…`, one reply honors the
   correction, and the correction's 👀 goes when that reply posts.
+- A teammate's correction in a run with only shared connections joins the
+  reply. In a run with the requester's personal connection, the teammate's
+  message is not acted on in that reply and gets its own reply afterwards.
 - A person without access presses Stop. The run continues, and only that
   person sees why.
 - A run quiet for more than five minutes shows Slack's working indicator and

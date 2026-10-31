@@ -363,6 +363,30 @@ test('the turn_latency record counts the follow-ups, content-free', async () => 
   assert.equal(latency[0]?.folded, 2);
 });
 
+test('the turn_latency record counts the information-only follow-ups apart', async () => {
+  for (const personal of [false, true]) {
+    const h = await harness(threadTurn());
+    const info = console.info;
+    const records: Array<Record<string, unknown>> = [];
+    console.info = (record: unknown) => {
+      if (record && typeof record === 'object') records.push(record as Record<string, unknown>);
+    };
+    try {
+      await promptOf(h, {
+        claimFold: folding([], TEAMMATE_FOLLOW_UPS),
+        runtimePlanDecision: frozenPlan(personal),
+        turnLatency: { lane: 'cloudflare', executor: 'runner' },
+      });
+    } finally {
+      console.info = info;
+      h.close();
+    }
+    const [latency] = records.filter((record) => record.event === 'turn_latency');
+    assert.equal(latency?.folded, 2);
+    assert.equal(latency?.foldedInformed, personal ? 1 : undefined);
+  }
+});
+
 test('a replay never claims follow-ups', async () => {
   const h = await harness(threadTurn());
   try {

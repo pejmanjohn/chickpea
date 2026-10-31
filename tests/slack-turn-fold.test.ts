@@ -309,6 +309,26 @@ test('a late fold decides a teammate\'s message from the head\'s frozen plan', (
   }
 });
 
+test('turn_fold counts the confirmed late messages that were information only, content-free', (t) => {
+  const records: Array<Record<string, unknown>> = [];
+  t.mock.method(console, 'info', (record: Record<string, unknown>) => {
+    if (record.event === 'turn_fold') records.push(record);
+  });
+  const s = store();
+  try {
+    const head = job('head', '101');
+    enqueueAll(s, [head]);
+    dispatch(s.turns, head, 'personal');
+    const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
+    enqueueAll(s, [job('own', '102'), job('teammate', '103', { userId: 'U_TEAMMATE' })]);
+    s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 0, take: true });
+    s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 1, take: false });
+    assert.deepEqual(records, [{ component: 'runtime', event: 'turn_fold', turnRef: opaqueTurnRef('head'), late: 2, informed: 1 }]);
+  } finally {
+    s.db.close();
+  }
+});
+
 test('a stop drops a teammate\'s information-only message with the rest, counting it read once the run had it', () => {
   const s = store();
   try {
