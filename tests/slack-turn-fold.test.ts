@@ -22,6 +22,7 @@ import { localSlackStateStore } from '../src/slack/local-state-store.ts';
 import { SlackRunPresentationStoreLogic, type SlackRunPresentationV3 } from '../src/slack/run-presentations.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { WorkStoreLogic } from '../src/work/store.ts';
+import { opaqueTurnRef } from '../src/observability/runtime-latency.ts';
 import type { RunId } from '../src/work/types.ts';
 
 /**
@@ -656,6 +657,55 @@ test('the Node state store settles the follow-ups\' records when it marks their 
     for (const id of ['second', 'third'] as const) {
       assert.equal(c.work.getRun(c.runs[id])?.terminalDisposition, 'superseded', id);
     }
+  } finally {
+    c.db.close();
+  }
+});
+
+test('a late fold through the Node store ends with the reply: confirmed members settle, the rest run on their own', async (t) => {
+  const c = canonicalStore();
+  const records: Array<Record<string, unknown>> = [];
+  t.mock.method(console, 'info', (record: Record<string, unknown>) => {
+    if (record.event === 'turn_fold') records.push(record);
+  });
+  try {
+    const head = job('head', '101');
+    const runs = { head: admitCanonical(c, head) };
+    dispatch(c.turns, head);
+    const instanceId = c.turns.getFrozenRuntimePlan('head')!.instanceId;
+    const late = (id: string, suffix: string) => admitCanonical(c, {
+      ...job(id, suffix),
+      midRunReceipt: { channelId: 'C_FOLD', messageTs: `1800000000.000${suffix}`, name: 'eyes' },
+    });
+    const state = localSlackStateStore({
+      slack: c.slack, work: c.work, turnJobs: c.turns, presentations: c.presentations,
+    });
+    const lateRuns = { read: late('read', '102') };
+    const first = await state.foldTurn!({ phase: 'finish', headId: 'head', instanceId, received: 0, take: true });
+    assert.deepEqual(first.messages.map((message) => message.turnJobId), ['read']);
+    const unread = late('unread', '103');
+    // The Agent appended the first fold; this would-stop confirms it and takes the next.
+    const second = await state.foldTurn!({ phase: 'finish', headId: 'head', instanceId, received: 1, take: true });
+    assert.deepEqual(second.messages.map((message) => message.turnJobId), ['unread']);
+    // A lost reply: the Agent never appended the second fold, so nothing confirms it.
+    assert.deepEqual(records.map(({ late: count, turnRef }) => ({ late: count, turnRef })), [
+      { late: 1, turnRef: opaqueTurnRef('head') },
+    ]);
+    c.turns.recordFlueSettlement('head', COMPLETED);
+    await state.markTurnDelivered!('head');
+
+    const read = view(c.turns, 'read');
+    assert.equal(read.status, 'done');
+    assert.equal(read.cleanupPending, true, 'the cleanup sweep removes its 👀');
+    assert.equal(read.job?.fold?.role, 'settled');
+    assert.equal(c.work.getRun(lateRuns.read)?.terminalDisposition, 'superseded');
+    assert.equal((c.presentations.get(lateRuns.read) as SlackRunPresentationV3).lifecyclePhase, 'settled');
+
+    assert.equal(view(c.turns, 'unread').status, 'pending');
+    assert.equal(turnJobGate(view(c.turns, 'unread').job!), 'run', 'never confirmed: it runs as its own turn');
+    assert.equal(c.work.getRun(unread)?.status, 'admitted');
+    assert.equal(c.work.getRun(runs.head)?.status, 'admitted', 'the head\'s own lifecycle settles its Run');
+    assert.equal(records.length, 1, 'each late member counts once');
   } finally {
     c.db.close();
   }
