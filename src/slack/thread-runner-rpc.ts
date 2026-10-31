@@ -22,6 +22,7 @@ import type {
 import type {
   FrozenRuntimePlanDecision,
   SlackThreadContinuation,
+  TurnEndedRow,
   TurnFoldClaim,
   TurnFoldRequest,
   TurnStopNotice,
@@ -70,7 +71,8 @@ export interface ThreadRunnerTurnOps {
   fold: [{ request: TurnFoldRequest }, TurnFoldClaim];
   recordUsagePersistence: [{ id: string; event: UsagePersistenceEvent }, TurnProgress | null];
   recordInteractionIntent: [{ id: string; intent: SlackInteractionIntent }, TurnProgress | null];
-  markDelivered: [{ id: string }, null];
+  /** The follow-ups that ended with the turn (SlackStateLogic.endTurn); null from an older state store. */
+  markDelivered: [{ id: string }, TurnEndedRow[] | null];
   markError: [{ id: string }, null];
   markCodingActiveWork: [{ key: string; generation: string }, null];
   isCodingActiveWork: [{ key: string; generation: string }, boolean];

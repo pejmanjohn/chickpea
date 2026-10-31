@@ -3026,8 +3026,7 @@ function applyThreadRunnerTurnOp(
     case 'recordInteractionIntent':
       return turnJobs.recordInteractionIntent(op.id, op.intent) ?? null;
     case 'markDelivered':
-      stores.slack.endTurn(op.id, turnJobs, stores.work, stores.presentations);
-      return null;
+      return stores.slack.endTurn(op.id, turnJobs, stores.work, stores.presentations);
     case 'markError':
       turnJobs.markError(op.id);
       return null;

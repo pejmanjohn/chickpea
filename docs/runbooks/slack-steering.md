@@ -211,8 +211,9 @@ The rest wait and form the next group.
 
 A follow-up never runs on its own:
 
-- When the reply posts, each follow-up's Run settles `superseded`, and the
-  interaction cleanup removes its 👍 within seconds.
+- When the reply posts, each follow-up's Run settles `superseded`, and
+  Chickpea removes its 👍 right then, before the thread's next turn starts.
+  If Slack fails that removal, the interaction cleanup retries it.
 - If the turn fails, or is held for recovery instead of answered, its
   follow-ups are released. The first of them runs next and takes the others
   with it, so no message is lost.
@@ -253,7 +254,10 @@ status line shows `Reading 2 new messages…` (only the new ones count).
 The same rules as for follow-ups decide which messages join and which are
 information only, and a message that joins ends the same way: its 👀 goes
 when the reply posts (an information-only message keeps it for its own
-turn), it is released if the run fails, and a stop drops it. In addition:
+turn), it is released if the run fails, and a stop drops it. Messages that
+joined late lose their reaction when the reply posts, even when the thread's
+next turn starts at once, so a message the reply answered never shows 👀
+while that next turn runs. In addition:
 
 - The Agent checks at most three times in one run. A message that arrives
   after the third check waits for the run to end.

@@ -468,6 +468,7 @@ function fakeRows(ids: string[]) {
         }
         calls.push(`markDelivered:${id}`);
         rows.get(id)!.status = 'done';
+        return [];
       },
       async markError(id: string) { calls.push(`markError:${id}`); rows.get(id)!.status = 'error'; },
     },
@@ -978,8 +979,9 @@ test("a runner repairs its own turn's failed Slack interaction cleanup", async (
     h.jobs.admit({ id: 'cleanup', threadKey: 'thread', payload: {} }, 1);
     const original = rows.turns.markDelivered;
     rows.turns.markDelivered = async (id: string) => {
-      await original(id);
+      const settled = await original(id);
       rows.rows.get(id)!.cleanup = true; // the reaction removal failed in the turn
+      return settled;
     };
     const first = await runThreadRunnerAlarm(h.deps);
     assert.deepEqual(h.events, ['dispatch:cleanup', 'delivered:cleanup', 'cleanup-failed:cleanup']);

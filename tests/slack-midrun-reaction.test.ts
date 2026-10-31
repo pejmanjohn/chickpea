@@ -19,7 +19,7 @@ import { repairSlackInteractionProgress, runTurn, type RunTurnOptions } from '..
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import {
   executeTurnJob,
-  removeDroppedReceipts,
+  removeEndedReceipts,
   type TurnExecutionOptions,
   type TurnExecutionPorts,
 } from '../src/slack/turn-executor.ts';
@@ -349,7 +349,7 @@ test('a 👀 whose add lands after a stop dropped its message is removed at once
       })).outcome, 'stopped');
       const finished = await state.finishTurnStop!(ROOT_ID, 'dropped');
       assert.deepEqual(finished?.rows.map(({ id }) => id), [MID_ID]);
-      await removeDroppedReceipts(finished!.rows, client, (id, patch) =>
+      await removeEndedReceipts(finished!.rows, client, (id, patch) =>
         state.recordSlackInteractionProgress!(id, patch));
     });
     await harness.deliver({ ts: MID_TS, threadTs: ROOT_TS, user: 'U2', text: 'Also check the nightly job.' });
@@ -630,7 +630,7 @@ test('a dropped row whose 👀 removal fails keeps its receipt pending for the r
   } finally { db.close(); }
 });
 
-test('a follow-up keeps its 👀 while the run that took it works; after that run delivers, the sweep removes exactly it', async () => {
+test('a follow-up keeps its 👀 while the run that took it works, and loses it when that run\'s reply posts', async () => {
   const db = openStateDb(':memory:');
   try {
     const turns = new TurnJobStoreLogic(db, () => NOW);
@@ -643,33 +643,111 @@ test('a follow-up keeps its 👀 while the run that took it works; after that ru
       assert.deepEqual(claim.messages.map((message) => message.turnJobId), ['follow_1', 'follow_2']);
       dispatch(turns, head);
       assert.deepEqual(h.reactions.log, [], 'kept while the run works');
-      turns.recordFlueSettlement('head', {
-        outcome: 'completed', settledAt: NOW,
-        result: {
-          text: 'Done.', requestedModel: null, returnedModel: null, reportedUsage: null,
-          usageCompleteness: 'not_reported',
-        },
-      });
+      turns.recordFlueSettlement('head', COMPLETED);
       await options.onDelivered?.('succeeded');
     });
     for (const ts of ['1800000000.000102', '1800000000.000103']) h.reactions.react(BOT, ts, 'eyes');
     h.reactions.react('U_MEMBER', '1800000000.000103', 'eyes');
     assert.equal(await executeTurnJob(pendingOf(turns, 'head'), h.ports, h.options), true);
 
-    const due = turns.listPendingSlackInteractionCleanups();
-    assert.deepEqual(due.map(({ id }) => id), ['follow_1', 'follow_2'], 'left to the cleanup sweep');
-    const client = (await h.ports.resolveInstallation('T_MID')).client;
-    for (const row of due) {
-      await repairSlackInteractionProgress(row.turn, row.assignment, row.progress.slackInteraction!, client,
-        (patch) => { turns.recordSlackInteractionProgress(row.id, patch); });
-    }
     // The run read both, so each 👍 was owed; this turn never swapped one in,
-    // and the sweep takes off whichever is there.
+    // and the removal takes off whichever is there.
     assert.deepEqual(h.reactions.log, [
       'remove 1800000000.000102:eyes', 'remove 1800000000.000102:+1',
       'remove 1800000000.000103:eyes', 'remove 1800000000.000103:+1',
     ]);
     assert.deepEqual(h.reactions.on('1800000000.000103'), ['U_MEMBER'], 'the person\'s 👀 stays');
+    assert.deepEqual(turns.listPendingSlackInteractionCleanups(), [], 'nothing left for the sweep');
+  } finally { db.close(); }
+});
+
+const COMPLETED = {
+  outcome: 'completed' as const, settledAt: NOW,
+  result: {
+    text: 'Done.', requestedModel: null, returnedModel: null, reportedUsage: null,
+    usageCompleteness: 'not_reported' as const,
+  },
+};
+
+/**
+ * A running head that took two messages sent while it worked (a late fold),
+ * then a third message that arrives after its reply and runs next; each
+ * turn's first Slack write is logged as `first write <id>`.
+ */
+function lateFoldThread() {
+  const db = openStateDb(':memory:');
+  const turns = new TurnJobStoreLogic(db, () => NOW);
+  const head = job('head', '1800000000.000101', false);
+  turns.enqueue(head);
+  dispatch(turns, head);
+  const h = stopExecutor(turns, async (options) => {
+    h.reactions.log.push(`first write ${options.turnId}`);
+    if (options.turnId !== 'head') {
+      await options.onDelivered?.('succeeded');
+      return;
+    }
+    turns.enqueue(job('late_1', '1800000000.000102'));
+    turns.enqueue(job('late_2', '1800000000.000103'));
+    const instanceId = turns.getFrozenRuntimePlan('head')!.instanceId;
+    const late = turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 0, take: true });
+    assert.deepEqual(late.messages.map((message) => message.turnJobId), ['late_1', 'late_2']);
+    turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 1, take: false });
+    turns.recordFlueSettlement('head', COMPLETED);
+    await options.onDelivered?.('succeeded');
+    turns.enqueue(job('next', '1800000000.000104', false));
+  });
+  for (const ts of ['1800000000.000102', '1800000000.000103']) h.reactions.react(BOT, ts, 'eyes');
+  return { db, turns, h };
+}
+
+test('messages folded in late lose their 👀 when the reply that answered them posts, before the next turn runs', async () => {
+  const { db, turns, h } = lateFoldThread();
+  try {
+    assert.equal(await executeTurnJob(pendingOf(turns, 'head'), h.ports, h.options), true);
+    assert.equal(await executeTurnJob(pendingOf(turns, 'next'), h.ports, h.options), true);
+
+    // A late member's 👍 was owed, never swapped in: both names come off.
+    assert.deepEqual(h.reactions.log, [
+      'first write head',
+      'remove 1800000000.000102:eyes', 'remove 1800000000.000102:+1',
+      'remove 1800000000.000103:eyes', 'remove 1800000000.000103:+1',
+      'first write next',
+    ]);
+    for (const [id, ts] of [['late_1', '1800000000.000102'], ['late_2', '1800000000.000103']] as const) {
+      assert.deepEqual(turns.getProgress(id)?.slackInteraction?.acknowledgment,
+        { ...midReceipt(ts), read: 'owed', cleanup: 'done' }, id);
+      assert.equal(turns.runnerView(id).cleanupPending, undefined, `${id} owes the runner's sweep nothing`);
+    }
+    assert.deepEqual(turns.listPendingSlackInteractionCleanups(), [], 'the sweep afterwards has nothing to remove');
+  } finally { db.close(); }
+});
+
+test('a late member whose removal fails at the reply keeps its receipt for the sweep, which removes it', async () => {
+  const { db, turns, h } = lateFoldThread();
+  try {
+    const client = (await h.ports.resolveInstallation('T_MID')).client as unknown as {
+      reactions: { remove: (input: Record<string, unknown>) => Promise<unknown> };
+    };
+    const remove = client.reactions.remove;
+    let failed = false;
+    client.reactions.remove = async (input) => {
+      if (!failed && input.timestamp === '1800000000.000102') {
+        failed = true;
+        throw new Error('socket hang up');
+      }
+      return remove(input);
+    };
+    assert.equal(await executeTurnJob(pendingOf(turns, 'head'), h.ports, h.options), true);
+
+    assert.deepEqual(h.reactions.on('1800000000.000102'), [BOT], 'still shown');
+    assert.deepEqual(h.reactions.on('1800000000.000103'), []);
+    const due = turns.listPendingSlackInteractionCleanups();
+    assert.deepEqual(due.map(({ id }) => id), ['late_1']);
+    for (const row of due) {
+      await repairSlackInteractionProgress(row.turn, row.assignment, row.progress.slackInteraction!, client as never,
+        (patch) => { turns.recordSlackInteractionProgress(row.id, patch); });
+    }
+    assert.deepEqual(h.reactions.on('1800000000.000102'), []);
     assert.deepEqual(turns.listPendingSlackInteractionCleanups(), []);
   } finally { db.close(); }
 });
@@ -1034,7 +1112,7 @@ test('a stop removes a dropped message\'s 👍, or both emoji while its 👍 is 
   reactions.react(BOT, '1800000000.000321', '+1');
   reactions.react(BOT, '1800000000.000322', 'eyes');
   const recorded: Array<[string, SlackInteractionProgressPatch]> = [];
-  await removeDroppedReceipts([
+  await removeEndedReceipts([
     { id: 'read', receipt: { channelId: 'C_MID', messageTs: '1800000000.000321', name: '+1', read: 'done' } },
     { id: 'owed', receipt: { channelId: 'C_MID', messageTs: '1800000000.000322', name: 'eyes', read: 'owed' } },
   ], queuedTurnClient(reactions), (id, patch) => { recorded.push([id, patch]); });
@@ -1049,7 +1127,7 @@ test('a stop removes a dropped message\'s 👍, or both emoji while its 👍 is 
   ]);
 });
 
-test('on the runner\'s executor a head and two follow-ups each swap 👀 for 👍, then the reply and the sweep remove each 👍', async () => {
+test('on the runner\'s executor a head and two follow-ups each swap 👀 for 👍, then the reply removes each 👍', async () => {
   const db = openStateDb(':memory:');
   try {
     const turns = new TurnJobStoreLogic(db, () => NOW);
@@ -1071,19 +1149,14 @@ test('on the runner\'s executor a head and two follow-ups each swap 👀 for �
         runTurn(turn, assigned, env, { ...options, usageRecordingEnabled: false, agentPrompt: dispatchedAnswer }),
     });
     assert.equal(await executeTurnJob(pendingOf(turns, 'head'), h.ports, h.options), true);
-    assert.deepEqual(turns.listPendingSlackInteractionCleanups().map(({ id }) => id), ['follow_1', 'follow_2']);
-    for (const row of turns.listPendingSlackInteractionCleanups()) {
-      await repairSlackInteractionProgress(row.turn, row.assignment, row.progress.slackInteraction!, client,
-        (patch) => { turns.recordSlackInteractionProgress(row.id, patch); });
-    }
 
     const [head, first, second] = rows.map(([, ts]) => ts);
     assert.deepEqual(h.reactions.log, [
       `remove ${head}:eyes`, `remove ${first}:eyes`, `remove ${second}:eyes`,
       `add ${head}:+1`, `add ${first}:+1`, `add ${second}:+1`,
-      `remove ${head}:+1`,
       `remove ${first}:+1`,
       `remove ${second}:+1`,
+      `remove ${head}:+1`,
     ]);
     for (const [id, ts] of rows) {
       assert.deepEqual(turns.getProgress(id)?.slackInteraction?.acknowledgment, { ...readReceipt(ts), cleanup: 'done' }, id);

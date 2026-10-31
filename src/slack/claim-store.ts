@@ -327,7 +327,8 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   ): Promise<void>;
   listPendingSlackInteractionCleanups?(): Promise<PendingTurnJob[]>;
   hasPendingSlackInteractionCleanup?(): Promise<boolean>;
-  markTurnDelivered?(id: string): Promise<void>;
+  /** Returns the follow-ups that ended with the turn (SlackStateLogic.endTurn). */
+  markTurnDelivered?(id: string): Promise<TurnEndedRow[]>;
   markTurnError?(id: string): Promise<void>;
   markTurnRecoveryRequired?(id: string, reason: string): Promise<void>;
   listTurnRecoveryRequired?(limit?: number): Promise<SlackTurnRecoveryItem[]>;
@@ -629,16 +630,18 @@ export class SlackStateLogic {
    * the follow-ups that ended with it, which never run: each Run settles
    * `superseded` and each admitted presentation closes with no Slack effect,
    * as the stopped ending closes the rows it drops. A repeat settles
-   * whatever is left.
+   * whatever is left. Returns those follow-ups, whose receipts the executor
+   * removes with the reply.
    */
   endTurn(
     headId: string,
     turnJobs: TurnJobStoreLogic,
     work: WorkStoreLogic,
     presentations: SlackRunPresentationStoreLogic,
-  ): void {
-    turnJobs.markDelivered(headId);
-    this.closeUnranRows(turnJobs.settledFoldMembers(headId), FOLDED_RUN, work, presentations);
+  ): TurnEndedRow[] {
+    const settled = turnJobs.markDelivered(headId);
+    this.closeUnranRows(settled, FOLDED_RUN, work, presentations);
+    return settled;
   }
 
   /**
