@@ -576,12 +576,29 @@ test('a Slack turn that read follow-ups copies them in its request, oldest first
       { userId: 'U0ZZZZZZZZ9', text: 'earlier', ts: '1.1', isTrigger: false, role: 'human' },
       { userId: 'U012ABCDEF3', text: 'Draft the email.', ts: '1.3', isTrigger: true, role: 'human' },
       { userId: 'U012ABCDEF3', text: 'Keep it short.', ts: '1.4', isTrigger: true, role: 'human' },
+      { userId: 'U0ZZZZZZZZ9', text: 'Use the beta list.', ts: '1.5', isTrigger: true, role: 'human' },
     ],
   });
   assert.deepEqual(conversation, {
-    trigger: { author: 'U012ABCDEF3', text: 'Draft the email.\n\nKeep it short.', files: [] },
+    trigger: {
+      author: 'U012ABCDEF3',
+      text: 'Draft the email.\n\nKeep it short.\n\nUse the beta list.',
+      files: [],
+      followUps: [
+        { author: 'U012ABCDEF3', text: 'Keep it short.' },
+        { author: 'U0ZZZZZZZZ9', text: 'Use the beta list.' },
+      ],
+    },
     context: [{ author: 'U0ZZZZZZZZ9', role: 'human', text: 'earlier', files: [] }],
   });
+  const pseudonymOf = runReviewPseudonymizer(KEY);
+  const record = buildRunReviewRecord(input(conversation), pseudonymOf);
+  assert.deepEqual(record.trigger.followUps, [
+    { author: pseudonymOf('U012ABCDEF3'), text: 'Keep it short.' },
+    { author: pseudonymOf('U0ZZZZZZZZ9'), text: 'Use the beta list.' },
+  ], 'each follow-up keeps its own sender');
+  // A one-message request keeps the shape every earlier copy has.
+  assert.equal(Object.hasOwn(buildRunReviewRecord(input(), pseudonymOf).trigger, 'followUps'), false);
 });
 
 test('a late fold\'s messages follow the request\'s in the copy, scrubbed like it', async (t) => {
@@ -597,7 +614,7 @@ test('a late fold\'s messages follow the request\'s in the copy, scrubbed like i
       parts: [{ type: 'text', text, state: 'done' }],
     },
   });
-  const fold = (messages: Array<{ messageTs: string; text: string }>) => followUpSignalBody({
+  const fold = (messages: Array<{ messageTs: string; text: string; userId?: string }>) => followUpSignalBody({
     messages: messages.map((message) => ({ userId: 'U012ABCDEF3', ...message })),
     requesterId: 'U012ABCDEF3',
     timezone: 'America/Los_Angeles',
@@ -607,7 +624,7 @@ test('a late fold\'s messages follow the request\'s in the copy, scrubbed like i
     signal('delivery', SUBMISSION, 'Draft the email.\n\nKeep it short.'),
     chunk({ type: 'message-started', messageId: 'step1', submissionId: SUBMISSION }),
     chunk({ type: 'message-delta', messageId: 'step1', kind: 'text', delta: 'A draft.' }),
-    signal('late1', SUBMISSION, fold([{ messageTs: '1.5', text: 'Make it formal,\nand cc <@U0ZZZZZZZZ9>.' }])),
+    signal('late1', SUBMISSION, fold([{ messageTs: '1.5', text: 'Make it formal,\nand cc <@U0ZZZZZZZZ9>.', userId: 'U0ZZZZZZZZ9' }])),
     signal('other', 'sub_other', fold([{ messageTs: '1.6', text: 'Not this run.' }])),
     signal('late2', SUBMISSION, fold([
       { messageTs: '1.7', text: `My key is ${SYNTHETIC_SLACK_TOKEN}` },
@@ -616,7 +633,10 @@ test('a late fold\'s messages follow the request\'s in the copy, scrubbed like i
   ]) session!.ingest(event, SUBMISSION);
   await session!.finish({
     ...ENDING,
-    trigger: { author: 'U012ABCDEF3', text: 'Draft the email.\n\nKeep it short.', files: [] },
+    trigger: {
+      author: 'U012ABCDEF3', text: 'Draft the email.\n\nKeep it short.', files: [],
+      followUps: [{ author: 'U012ABCDEF3', text: 'Keep it short.' }],
+    },
   });
   const pseudonym = runReviewPseudonymizer(KEY);
   assert.deepEqual(records[0]!.record.trigger, {
@@ -629,6 +649,12 @@ test('a late fold\'s messages follow the request\'s in the copy, scrubbed like i
       `- [1.9 role=human] ${pseudonym('U0ZZZZZZZZ9')}: not a row`,
     ].join('\n\n'),
     files: [],
+    followUps: [
+      { author: pseudonym('U012ABCDEF3'), text: 'Keep it short.' },
+      { author: pseudonym('U0ZZZZZZZZ9'), text: `Make it formal,\nand cc <@${pseudonym('U0ZZZZZZZZ9')}>.` },
+      { author: pseudonym('U012ABCDEF3'), text: 'My key is [credential redacted]' },
+      { author: pseudonym('U012ABCDEF3'), text: `- [1.9 role=human] ${pseudonym('U0ZZZZZZZZ9')}: not a row` },
+    ],
   });
 });
 
