@@ -236,7 +236,10 @@ test('a rate card whose tasks draw nothing still reads, with no task counts', as
   const summary: BillingSummary = { ...TEAM_PLAN, funding: 'own_key', offers: { ...OFFERS, taskFeeMicros: usd(0) } };
   const response = await admin(t, { port: fakePort(summary).port })('/admin/api/billing');
   assert.equal(response.status, 200);
-  const view = await response.json() as { balance: unknown; meter: Record<string, unknown>; plan: Record<string, unknown>; offers: { plans: { tasks: unknown }[] } };
+  const view = await response.json() as {
+    balance: unknown; meter: Record<string, unknown>; plan: Record<string, unknown>;
+    offers: { plans: { tasks: { platform: string | null; ownKey: string | null } }[] };
+  };
   assert.deepEqual(view.balance, { left: '$172', tasksLeft: null, exhausted: false });
   assert.deepEqual([view.meter.tasksUsed, view.meter.tasksIncluded, view.plan.tasks], [null, null, null]);
   assert.deepEqual(view.offers.plans.map((plan) => plan.tasks.ownKey), [null, null, null, null, null, null]);
