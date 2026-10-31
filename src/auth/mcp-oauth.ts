@@ -118,7 +118,7 @@ function stringList(value: unknown): string[] | undefined {
   return value as string[];
 }
 
-function validRedirectUri(value: string): boolean {
+export function validRedirectUri(value: string): boolean {
   if (!value || value.includes('*')) return false;
   try {
     const url = new URL(value);

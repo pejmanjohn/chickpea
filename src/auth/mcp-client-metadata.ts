@@ -3,6 +3,7 @@ import { APIError, isAPIError } from 'better-auth/api';
 
 import { createMcpGuardedFetch } from '../config/mcp-url.ts';
 import type { McpRegistrationThrottle } from './better-auth-backend.ts';
+import { validRedirectUri } from './mcp-oauth.ts';
 
 type ClientDiscovery = ReturnType<typeof createCimdClientDiscovery>;
 type Client = NonNullable<Awaited<ReturnType<ClientDiscovery['resolve']>>>;
@@ -31,7 +32,8 @@ interface NewClientGate {
  * connection guard: public HTTPS hosts only, every DNS answer checked and
  * pinned on Node, no redirect followed. The plugin adds a 5-second timeout, a
  * 5 KB JSON-only body and the MCP profile's required fields. A document client
- * must be public, as a registered one must; a refused new one is not kept.
+ * must be public and redirect as a registered one must; a refused new one is
+ * not kept.
  *
  * Better Auth is built per request, so the discovery, which caches documents
  * and budgets fetches per origin, is kept per transport for the isolate.
@@ -58,9 +60,10 @@ export function clientMetadataDiscovery(
       if (!existing) {
         await assertNewClientAdmitted(gate, clientId, ctx.request ?? new Request(ctx.context.baseURL, { headers: ctx.headers ?? {} }));
         const created = await discovery.resolve(ctx, clientId, null);
-        if (created && !isPublicClient(created)) {
+        const refusal = created && registrationRefusal(created);
+        if (refusal) {
           await ctx.context.adapter.delete({ model: 'oauthClient', where: [{ field: 'clientId', value: clientId }] });
-          throw notPublicClient();
+          throw refusal;
         }
         return created;
       }
@@ -85,7 +88,8 @@ export function clientMetadataDiscovery(
         ctx.context.logger.warn(`Client metadata document unreachable; using the stored client: ${clientId}`);
         client = existing;
       }
-      if (client && !isPublicClient(client)) throw notPublicClient();
+      const refusal = client && registrationRefusal(client);
+      if (refusal) throw refusal;
       return client;
     },
   };
@@ -111,15 +115,16 @@ async function assertNewClientAdmitted(gate: NewClientGate, clientId: string, re
   }
 }
 
-function isPublicClient(client: Client): boolean {
-  return client.tokenEndpointAuthMethod === 'none' && !client.jwks && !client.jwksUri;
-}
-
-function notPublicClient(): APIError {
-  return new APIError('BAD_REQUEST', {
-    error: 'invalid_client',
-    error_description: 'metadata document must describe a public client: token_endpoint_auth_method "none", no jwks or jwks_uri',
-  });
+/** Dynamic registration's rules (validatePublicMcpClientRegistration) that a document client must meet too. */
+function registrationRefusal(client: Client): APIError | undefined {
+  const refuse = (description: string) => new APIError('BAD_REQUEST', { error: 'invalid_client', error_description: description });
+  if (client.tokenEndpointAuthMethod !== 'none' || client.jwks || client.jwksUri) {
+    return refuse('metadata document must describe a public client: token_endpoint_auth_method "none", no jwks or jwks_uri');
+  }
+  if (!(client.redirectUris ?? []).every(validRedirectUri)) {
+    return refuse('metadata document redirect_uris must be HTTPS, or HTTP on a loopback host, with no wildcard, credentials or fragment');
+  }
+  return undefined;
 }
 
 function createState(transport: ClientMetadataFetch): TransportState {
