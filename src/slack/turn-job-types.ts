@@ -251,6 +251,18 @@ export interface TurnFoldClaim {
   messages: FoldedMessage[];
   /** The requester's own words over the head and its members through this cycle (foldedRequestText). */
   requesterText: string;
+  /**
+   * `start` only: the head's and these members' 👀 not yet swapped for 👍,
+   * which the turn swaps once its plan says which members it answers.
+   * Absent from an older state store.
+   */
+  receipts?: TurnReadReceipt[];
+}
+
+/** A row's 👀 that its reader swaps for 👍 (see SlackInteractionProgress `read`). */
+export interface TurnReadReceipt {
+  turnJobId: string;
+  receipt: TurnMidRunReceipt;
 }
 
 /** A row that ended without a turn of its own, with what its records still owe. */
@@ -258,8 +270,8 @@ export interface TurnEndedRow {
   id: string;
   runId?: string;
   messageTs?: string;
-  /** The row's 👀 Chickpea added and has not removed yet (KTD9). */
-  receipt?: TurnMidRunReceipt;
+  /** The row's 👀 (or the 👍 that replaced it) Chickpea added and has not removed yet (KTD9). */
+  receipt?: TurnMidRunReceipt & { read?: 'owed' | 'done' };
 }
 
 /**

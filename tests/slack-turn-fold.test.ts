@@ -454,7 +454,7 @@ test('the head\'s delivery after a completed run settles its members with it, �
     assert.equal(member.job?.fold?.role, 'settled');
     assert.deepEqual(s.turns.settledFoldMembers('head'), [{
       id: 'second', runId: 'run_second', messageTs: '1800000000.000102',
-      receipt: { channelId: 'C_FOLD', messageTs: '1800000000.000102', name: 'eyes' },
+      receipt: { channelId: 'C_FOLD', messageTs: '1800000000.000102', name: 'eyes', read: 'owed' },
     }]);
     assert.equal(s.turns.listPending().length, 0);
     s.turns.markDelivered('head');
@@ -758,6 +758,108 @@ test('a late fold needs the head\'s own dispatched instance and stops after thre
   }
 });
 
+// ── 👍 on read ─────────────────────────────────────────────────────────
+
+/** A row whose message arrived mid-run, so it carries Chickpea's 👀. */
+function seen(id: string, suffix: string, overrides: Partial<NormalizedSlackTurn> = {}): TurnJob {
+  return {
+    ...job(id, suffix, overrides),
+    midRunReceipt: { channelId: 'C_FOLD', messageTs: `1800000000.000${suffix}`, name: 'eyes' },
+  };
+}
+
+function receiptOf(turns: TurnJobStoreLogic, id: string) {
+  return view(turns, id).job!.progress.slackInteraction?.acknowledgment;
+}
+
+test('a turn start owes 👍 for its own 👀 and its members\', and lists them for the turn to swap', () => {
+  const s = store();
+  try {
+    enqueueAll(s, [seen('head', '101'), seen('second', '102'), job('third', '103')]);
+    const claim = s.turns.fold({ phase: 'start', headId: 'head' });
+    assert.deepEqual(claim.receipts, [
+      { turnJobId: 'head', receipt: { channelId: 'C_FOLD', messageTs: '1800000000.000101', name: 'eyes' } },
+      { turnJobId: 'second', receipt: { channelId: 'C_FOLD', messageTs: '1800000000.000102', name: 'eyes' } },
+    ]);
+    for (const id of ['head', 'second']) assert.equal(receiptOf(s.turns, id)?.read, 'owed', id);
+    assert.equal(receiptOf(s.turns, 'third'), undefined, 'a message posted while idle has no 👀');
+    // A retry gets the same list and owes nothing new.
+    const before = s.db.all('SELECT id, progress_json FROM turn_jobs ORDER BY id');
+    assert.deepEqual(s.turns.fold({ phase: 'start', headId: 'head' }).receipts, claim.receipts);
+    assert.deepEqual(s.db.all('SELECT id, progress_json FROM turn_jobs ORDER BY id'), before);
+    // Once a member's 👍 replaced its 👀, a retry neither lists nor owes it again.
+    s.turns.recordSlackInteractionProgress('second', {
+      acknowledgment: {
+        channelId: 'C_FOLD', messageTs: '1800000000.000102', name: '+1', created: true, cleanup: 'pending',
+        reaction: 'read', read: 'done',
+      },
+    });
+    assert.deepEqual(s.turns.fold({ phase: 'start', headId: 'head' }).receipts?.map((row) => row.turnJobId), ['head']);
+    assert.equal(receiptOf(s.turns, 'second')?.read, 'done');
+  } finally {
+    s.db.close();
+  }
+});
+
+test('an information-only member keeps its 👀 for its own turn; one the frozen plan folds in is owed 👍', () => {
+  for (const access of ['shared', 'personal'] as const) {
+    const s = store();
+    try {
+      const head = job('head', '101');
+      enqueueAll(s, [head, seen('teammate', '102', { userId: 'U_TEAMMATE' })]);
+      const claim = s.turns.fold({ phase: 'start', headId: 'head' });
+      // Before the plan freezes the store cannot tell, so it owes nothing yet;
+      // the turn decides from the frozen plan which receipts it swaps.
+      assert.deepEqual(claim.receipts?.map((row) => row.turnJobId), ['teammate'], access);
+      assert.equal(receiptOf(s.turns, 'teammate')?.read, undefined, access);
+      freeze(s.turns, head, access);
+      assert.equal(receiptOf(s.turns, 'teammate')?.read, access === 'shared' ? 'owed' : undefined, access);
+    } finally {
+      s.db.close();
+    }
+  }
+});
+
+test('a late fold owes 👍 once a later claim confirms the run read it, never for information only', () => {
+  for (const access of ['shared', 'personal'] as const) {
+    const s = store();
+    try {
+      const head = job('head', '101');
+      enqueueAll(s, [head]);
+      dispatch(s.turns, head, access);
+      const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
+      enqueueAll(s, [seen('own', '102'), seen('teammate', '103', { userId: 'U_TEAMMATE' })]);
+      const late = s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 0, take: true });
+      assert.deepEqual(late.messages.map((message) => message.turnJobId), ['own', 'teammate'], access);
+      assert.equal(late.receipts, undefined, 'a late fold lists none');
+      for (const id of ['own', 'teammate']) assert.equal(receiptOf(s.turns, id)?.read, undefined, `${access} ${id} unconfirmed`);
+      s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 1, take: false });
+      assert.equal(receiptOf(s.turns, 'own')?.read, 'owed', access);
+      assert.equal(receiptOf(s.turns, 'teammate')?.read, access === 'shared' ? 'owed' : undefined, access);
+    } finally {
+      s.db.close();
+    }
+  }
+});
+
+test('a stop that drops members reports each receipt with whether its 👍 was owed', () => {
+  const s = store();
+  try {
+    enqueueAll(s, [job('head', '101'), seen('second', '102')]);
+    claimed(s.turns, 'head');
+    dispatch(s.turns, job('head', '101'));
+    s.turns.steer({
+      kind: 'stop', threadKey: THREAD, source: 'typed', stopperUserId: 'U_PERSON', cutoffTs: '1800000000.000110',
+    });
+    const finished = s.turns.finishStop('head', 'dropped');
+    assert.deepEqual(finished?.rows.find((row) => row.id === 'second')?.receipt, {
+      channelId: 'C_FOLD', messageTs: '1800000000.000102', name: 'eyes', read: 'owed',
+    });
+  } finally {
+    s.db.close();
+  }
+});
+
 // ── the follow-ups' canonical records ────────────────────────────────
 
 /** One state store with every owner of a canonical Slack admission. */
@@ -921,6 +1023,27 @@ test('follow-ups a failed run released keep their Runs and presentations, to run
 });
 
 // ── storage ────────────────────────────────────────────────────────────
+
+test('a receipt written before 👍 existed decodes as it was, and a turn start owes its 👍', () => {
+  const s = store();
+  try {
+    enqueueAll(s, [job('head', '101')]);
+    const before = {
+      channelId: 'C_FOLD', messageTs: '1800000000.000101', name: 'eyes', created: true, cleanup: 'pending',
+      reaction: 'seen_mid_run',
+    };
+    s.db.run('UPDATE turn_jobs SET progress_json = ? WHERE id = ?',
+      JSON.stringify({ slackInteraction: { acknowledgment: before } }), 'head');
+    assert.deepEqual(receiptOf(s.turns, 'head'), before);
+    claimed(s.turns, 'head');
+    assert.deepEqual(receiptOf(s.turns, 'head'), { ...before, read: 'owed' });
+    s.db.run('UPDATE turn_jobs SET progress_json = ? WHERE id = ?',
+      JSON.stringify({ slackInteraction: { acknowledgment: { ...before, read: 'later' } } }), 'head');
+    assert.equal(receiptOf(s.turns, 'head'), undefined, 'a receipt this release cannot read is none');
+  } finally {
+    s.db.close();
+  }
+});
 
 test('rows written before the fold column existed decode with no fold record', () => {
   const db = openStateDb(':memory:');

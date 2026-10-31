@@ -267,6 +267,13 @@ export interface SlackInteractionProgress {
      * turn's own work acknowledgment.
      */
     reaction?: ReceiptReaction;
+    /**
+     * A run has read the message, so its 👀 becomes 👍 (`read`): `owed`
+     * once the state store records the read, `done` once the 👍 replaced it
+     * (`name` then names the 👍). While owed, a removal takes off both
+     * emoji, since a swap may have added the 👍 before recording it.
+     */
+    read?: 'owed' | 'done';
   };
   checklist?: {
     channelId: string;
