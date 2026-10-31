@@ -33,8 +33,9 @@ const IP_ADDRESS_HOST = /^(?:\[.*\]|[\d.]+)$/;
 
 /**
  * One transport's discovery, the stored clients whose last fetch could not
- * reach their document, and those whose document last answered by refusing
- * them, which nothing lets stand in until it answers well again.
+ * reach their document, and those whose last fetch failed any other way,
+ * most often a document refusing them. Nothing stands in for those until a
+ * fetch succeeds again. Both are this isolate's memory only.
  */
 interface TransportState {
   discovery: ClientDiscovery;
@@ -83,7 +84,8 @@ interface NewClientGate {
  * client stands in for an hour after its document last answered, and only
  * for a person who has consented to it, so strangers who spend the budget
  * cannot sign that person out. A document that answers still replaces the
- * stored client, or refuses it.
+ * stored client, or refuses it; after a refusal this isolate lets nothing
+ * stand in until the document answers well again.
  */
 export function clientMetadataDiscovery(
   fetchClientMetadataResource: ClientMetadataFetch | undefined,
@@ -111,6 +113,8 @@ export function clientMetadataDiscovery(
           await ctx.context.adapter.delete({ model: 'oauthClient', where: [{ field: 'clientId', value: clientId }] });
           throw refusal;
         }
+        unreachable.delete(clientId);
+        refused.delete(clientId);
         return created;
       }
       const consentedByAnyone = Boolean(await ctx.context.adapter.findOne({
@@ -124,11 +128,11 @@ export function clientMetadataDiscovery(
         refused.delete(clientId);
       } catch (error) {
         const failure = readFailure(error);
-        if (failure === 'refused') {
+        if (failure === undefined) {
           unreachable.delete(clientId);
           remember(refused, clientId);
         }
-        if (failure === 'refused' || refused.has(clientId)) throw error;
+        if (refused.has(clientId)) throw error;
         // The plugin rewrites updatedAt each time the document answers, changed or not.
         const sinceAnswered = Date.now() - (existing.updatedAt?.getTime() ?? 0);
         // The plugin declines a fetch for a second after a failed one, or when
@@ -264,16 +268,15 @@ function remember(clients: Set<string>, clientId: string): void {
 const UNREACHABLE_DOCUMENT = /^(?:Failed to fetch metadata document|Metadata document fetch timed out|Metadata document fetch returned HTTP (?:429|5\d\d)$)/;
 
 /**
- * Why the plugin did not resolve a stored client: its fetch could not reach
- * the document, the document answered by refusing the client, or the plugin
- * declined to fetch, for its pause after a failed fetch or a spent budget.
+ * Why the plugin did not resolve a stored client, when the reason allows a
+ * stand-in: its fetch could not reach the document, or it declined to fetch,
+ * for its pause after a failed fetch or a spent budget.
  */
-function readFailure(error: unknown): 'unreachable' | 'refused' | 'declined' | undefined {
+function readFailure(error: unknown): 'unreachable' | 'declined' | undefined {
   if (!isAPIError(error)) return undefined;
   if (error.status === 'TOO_MANY_REQUESTS') return 'declined';
   const description = (error.body as { error_description?: unknown } | undefined)?.error_description;
-  if (typeof description === 'string' && UNREACHABLE_DOCUMENT.test(description)) return 'unreachable';
-  return error.status === 'BAD_REQUEST' ? 'refused' : undefined;
+  return typeof description === 'string' && UNREACHABLE_DOCUMENT.test(description) ? 'unreachable' : undefined;
 }
 
 /**
