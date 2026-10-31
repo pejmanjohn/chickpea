@@ -294,10 +294,11 @@ function toolRefusal(message) {
   return { ok: false, error: { code: 'invalid_request', message } };
 }
 
-/** Whether a pasted key may go to these hosts: typed with them in this message, or from the message an approval of this connection came from. */
+/** Whether a pasted key may go to these hosts: typed with them in this message, or, once this connection was approved, typed in this message or the one that proposed it. */
 function pastedKeyAdmitted(key, hosts, connectionId) {
+  const approvedFrom = connectionId === undefined ? undefined : connectionState.approved.get(connectionId);
   return (currentRequesterMessage.includes(key) && hosts.every(typedHere)) ||
-    (connectionId !== undefined && connectionState.approved.get(connectionId)?.includes(key) === true);
+    (approvedFrom !== undefined && (approvedFrom.includes(key) || currentRequesterMessage.includes(key)));
 }
 
 /** try_connection as the service admits it from Slack, then the synthetic API's answer. */
@@ -324,7 +325,7 @@ function evalTryConnection(data) {
   } else if (!pastedKeyAdmitted(key, scope.allowedHosts, connection?.id)) {
     return record(toolRefusal(currentRequesterMessage.includes(key)
       ? `Nothing was sent: the key would go to https://${host}, which the requester did not type in the same message as the key. Narrow the draft to the hosts and paths they typed and try again. Only if the API lives outside them, add the connection with update_agent so the person approves where the key goes, then try it with connectionId after they approve.`
-      : 'Nothing was sent: try_connection takes only a key the requester typed in their own current message to this Agent, or in the message that proposed this connection when they approved it in the last 30 minutes.'));
+      : 'Nothing was sent: try_connection takes only a key the requester typed in their own current message to this Agent, or, when they approved this connection in this conversation in the last 30 minutes, in the message that proposed it.'));
   }
   tried = trialSetup({ ...scope, authShape: data.draft?.authShape }, data.path);
   return record({ check: evalApiCheck({ ...scope, host, path: data.path, authShape: data.draft?.authShape }, key) });

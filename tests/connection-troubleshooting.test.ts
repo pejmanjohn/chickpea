@@ -125,9 +125,9 @@ async function fixture(options: { memberTries?: number[] } = {}) {
   let turn = 0;
   const results: string[] = [];
   /**
-   * One Slack message from `by` to Scribe in its DM, then the tool it led to.
-   * A try carries the turn's budget as the Slack tool does. A click's text is
-   * the host's; another Agent's ask carries none.
+   * One Slack message from `by` to Scribe in its DM, or in `channelId`, then
+   * the tool it led to. A try carries the turn's budget as the Slack tool
+   * does. A click's text is the host's; another Agent's ask carries none.
    */
   const slack = async <TName extends WorkspaceManagementToolName>(
     name: TName,
@@ -135,14 +135,15 @@ async function fixture(options: { memberTries?: number[] } = {}) {
     requesterText: string,
     by: IdentityResolution = f.admin,
     source?: 'click' | 'ask',
+    channelId = DM,
   ): Promise<WorkspaceManagementToolResult> => {
     turn += 1;
     const messageTs = `500.${turn + 1}`;
-    if (!source) typed.set(`${DM}:${messageTs}`, { userId: by.binding.slackUserId, text: requesterText });
+    if (!source) typed.set(`${channelId}:${messageTs}`, { userId: by.binding.slackUserId, text: requesterText });
     const signal: SlackManagementSignal = {
       agentId: agent.id,
       workspaceId,
-      channelId: DM,
+      channelId,
       threadTs: '500.1',
       conversationKind: 'im',
       slackUserId: by.binding.slackUserId,
@@ -262,6 +263,8 @@ async function approvedConnection(
 }
 
 const KEY_NOT_TYPED = /^Nothing was sent: try_connection takes only a key the requester typed in their own current message/;
+/** The request that leads to an approval card with no key: the person says it will come later. */
+const KEY_LATER = 'connect Statusboard so you can read our incidents, I have a key whenever you are ready';
 
 test('a saved key never goes to a host the requester typed for it', async () => {
   const f = await fixture();
@@ -484,7 +487,27 @@ test('an approved connection admits the key from the message that proposed it, o
   } finally { f.close(); }
 });
 
-test('the approval admits only its own connection, the person who approved it, for 30 minutes, a key they typed in that message, and only its first key to the hosts it approved', async () => {
+test('an approved connection admits a key the person sends alone in a later message, and saving it posts no notice', async () => {
+  const f = await fixture();
+  try {
+    await approvedConnection(f, KEY_LATER);
+    await withConnectionNetwork(statusboard, async (requests) => {
+      const tried = ok<TryConnectionResult>(await f.slack('try_connection', { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, KEY));
+      assert.equal(tried.check.kind, 'ok');
+      assert.equal(requests[0]!.headers.get('x-api-key'), KEY);
+      const saved = ok<{ instruction: string }>(await f.slack('save_connection_key', {
+        connectionId: CONNECTION.id, key: KEY, path: INCIDENTS,
+      }, `here it is ${KEY}`));
+      assert.match(saved.instruction, /suggest they rotate it at the service/);
+    });
+    assert.equal(await f.savedKey(), KEY);
+    assert.equal((await f.account()).lifecycle, 'ready');
+    assert.deepEqual(await f.management.claimDueOutbox(f.clock.now + 86_400_000, 10, f.clock.now + 90_000_000), [], 'the Agent reports the save in its reply; no Chickpea notice is queued');
+    assert.deepEqual(f.managementCalls.filter((call) => call.includes(KEY)), [], 'the key never entered a management record');
+  } finally { f.close(); }
+});
+
+test('the approval admits only its own connection, the person who approved it, for 30 minutes, a key they typed in that message or their current one, and only its first key to the hosts it approved', async () => {
   const refused = async (setup: (f: Fixture) => Promise<void>, attempt: (f: Fixture) => Promise<WorkspaceManagementToolResult>, why: string) => {
     const f = await fixture();
     try {
@@ -500,9 +523,29 @@ test('the approval admits only its own connection, the person who approved it, f
     f.slack('try_connection', { connectionId: CONNECTION.id, key, path: INCIDENTS }, 'ok, go ahead', by);
   await refused(async (f) => { await approvedConnection(f); f.clock.now += 31 * 60_000; }, (f) => next(f), 'out of the window');
   await refused(async (f) => { await approvedConnection(f); }, (f) => next(f, OTHER_KEY), 'a key not in the proposing message');
-  await refused(async (f) => { await approvedConnection(f, 'connect Statusboard so you can read our incidents'); },
-    (f) => f.slack('try_connection', { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, `here is the key ${KEY}`),
-    'the key is missing from the proposing message, and this message does not name the host');
+  const pasted = (
+    f: Fixture,
+    name: 'try_connection' | 'save_connection_key' = 'try_connection',
+    by?: IdentityResolution,
+    source?: 'click',
+    channelId?: string,
+  ) => f.slack(name, { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, `here is the key ${KEY}`, by, source, channelId);
+  for (const name of ['try_connection', 'save_connection_key'] as const) {
+    await refused(async (f) => { await approvedConnection(f, KEY_LATER); f.clock.now += 31 * 60_000; },
+      (f) => pasted(f, name), `${name}: a key in the current message after the window`);
+    await refused(async (f) => {
+      await f.config.updateAgent(f.agent.id, { editPolicy: 'all_workspace_members' }, (await f.config.getAgent(f.agent.id)).revision);
+      await approvedConnection(f, KEY_LATER);
+    }, (f) => pasted(f, name, f.owner), `${name}: another member pastes the key after someone else approved`);
+    await refused(async (f) => { await approvedConnection(f, KEY_LATER); },
+      (f) => pasted(f, name, f.admin, undefined, 'D_ELSEWHERE'), `${name}: the key comes in another conversation`);
+    await refused(async (f) => { await approvedConnection(f, KEY_LATER); },
+      (f) => pasted(f, name, f.admin, 'click'), `${name}: the key is only in a click's host-written text`);
+    await refused(async (f) => {
+      await approvedConnection(f, KEY_LATER);
+      await withConnectionNetwork(statusboard, async () => ok(await pasted(f, 'save_connection_key')));
+    }, (f) => pasted(f, name), `${name}: the connection already has its key`);
+  }
   await refused(async (f) => { await approvedConnection(f, `${UNTYPED_HOST} <@U99999999>`); }, (f) => next(f),
     'the proposing message was addressed to someone else');
   await refused(async (f) => {
@@ -558,6 +601,7 @@ test('the approval admits only its own connection, the person who approved it, f
     assert.equal(lifecycle, 'pending', 'the edit leaves the connection waiting for its key');
   };
   await refused(movedInAdmin, (f) => next(f), 'Admin moved the connection to another host after the approval');
+  await refused(movedInAdmin, (f) => pasted(f), 'a key in the current message after Admin moved the connection');
   await refused(movedInAdmin, async (f) => {
     const saved = await f.slack('save_connection_key', { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, 'save it');
     assert.equal(await f.savedKey(), undefined, 'nothing was saved');
