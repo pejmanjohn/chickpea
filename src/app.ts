@@ -39,6 +39,7 @@ import {
   agentFailureDiagnosticsInterceptor,
   observeAgentResultDiagnostics,
 } from './slack/agent-failure-diagnostics.ts';
+import { slackToolBoundaryFoldInterceptor } from './slack/follow-up-fold.ts';
 import {
   observePresentationToolPolicy,
   presentationToolPolicyInterceptor,
@@ -127,6 +128,15 @@ instrument({
   key: Symbol.for('chickpea.slack-presentation-tool-policy'),
   interceptor: presentationToolPolicyInterceptor,
   observe: observePresentationToolPolicy,
+  dispose() {},
+});
+
+// Registered after the presentation policy, so it runs inside it: a tool
+// that policy refuses never counts as a tool boundary.
+instrument({
+  key: Symbol.for('chickpea.slack-tool-boundary-fold'),
+  interceptor: slackToolBoundaryFoldInterceptor,
+  observe() {},
   dispose() {},
 });
 

@@ -128,15 +128,18 @@ const INFORMATION_ONLY_REQUESTER = /^Sent by teammates while you work with <@([^
 
 /**
  * What a late fold tells the running model: the messages that arrived while
- * it worked, those it answers first and then those it only reads, then the
- * head's current-request envelope verbatim, so tool policy still reads this
- * turn's envelope as the last one.
+ * it worked, those it answers first and then those it only reads, what to do
+ * with them at this point of its run, then the head's current-request
+ * envelope verbatim, so tool policy still reads this turn's envelope as the
+ * last one. `turn`: after a tool batch, while it still works; `finish`: it
+ * was about to reply, and that draft was held back.
  */
 export function followUpSignalBody(input: {
   messages: readonly Pick<FoldedMessage, 'userId' | 'messageTs' | 'text' | 'informationOnly'>[];
   requesterId: string;
   timezone: string;
   envelope: string;
+  phase: 'turn' | 'finish';
 }): string {
   const answered = input.messages.filter((message) => !message.informationOnly);
   const informed = input.messages.filter((message) => message.informationOnly);
@@ -147,12 +150,21 @@ export function followUpSignalBody(input: {
     ...(informed.length > 0
       ? [informationOnlyHeading(input.requesterId), frameFoldedMessages(informed, input.timezone)]
       : []),
-    answered.length > 0
-      ? 'Your draft reply has not been sent. Read these with the request above, in order, since a later message may correct or add to an earlier one. Do any extra work they need, then write your next message as the complete reply to the whole request, not only to these messages.'
-      : 'Your draft reply has not been sent. Write your next message as the complete reply to the request above.',
+    FOLLOW_UP_INSTRUCTIONS[input.phase][answered.length > 0 ? 'answered' : 'informed'],
     input.envelope,
   ].join('\n\n');
 }
+
+const FOLLOW_UP_INSTRUCTIONS = {
+  turn: {
+    answered: 'These arrived while you were working. Read them with the request above, in order, since a later message may correct or add to an earlier one, and take them into account before you continue. When you finish, your final message is still the one complete reply to the whole request, not only to these messages.',
+    informed: 'Continue with the request above. When you finish, your final message is still the complete reply to it.',
+  },
+  finish: {
+    answered: 'Your draft reply has not been sent. Read these with the request above, in order, since a later message may correct or add to an earlier one. Do any extra work they need, then write your next message as the complete reply to the whole request, not only to these messages.',
+    informed: 'Your draft reply has not been sent. Write your next message as the complete reply to the request above.',
+  },
+} as const;
 
 function followUpSignalHeading(messages: readonly Pick<FoldedMessage, 'userId'>[]): string {
   const count = messages.length;
@@ -215,7 +227,7 @@ function signalRows(block: string | undefined): Pick<FoldedMessage, 'userId' | '
  * The status while a turn reads its request's messages: at its start
  * `count` includes the head; a late fold counts only the new messages.
  */
-export function foldActivityStatus(count: number, phase: 'start' | 'finish'): TypedActivityStatus {
+export function foldActivityStatus(count: number, phase: 'start' | 'turn' | 'finish'): TypedActivityStatus {
   if (phase === 'start') return activityStatus('reading', 'Reading', `${count} messages`);
   return activityStatus('reading', 'Reading', count === 1 ? '1 new message' : `${count} new messages`);
 }
