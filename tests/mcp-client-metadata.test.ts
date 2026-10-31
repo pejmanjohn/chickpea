@@ -77,7 +77,7 @@ async function fixture(t: TestContext, options: {
 
   const verifier = randomBytes(32).toString('base64url');
   function authorize(clientId: string, redirectUri: string, {
-    signedIn = true, headers = {} as Record<string, string>, prompt = undefined as string | undefined,
+    signedIn = true, headers = {} as Record<string, string>, prompt = undefined as string | undefined, post = false,
   } = {}) {
     const query = new URLSearchParams({
       response_type: 'code', client_id: clientId, redirect_uri: redirectUri,
@@ -85,9 +85,12 @@ async function fixture(t: TestContext, options: {
       code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
       ...(prompt ? { prompt } : {}),
     });
-    return handler(new Request(`${ORIGIN}/api/auth/oauth2/authorize?${query}`, {
-      headers: { ...headers, ...(signedIn ? { cookie } : {}) },
-    }));
+    const sent = { ...headers, ...(signedIn ? { cookie } : {}) };
+    return handler(post
+      ? new Request(`${ORIGIN}/api/auth/oauth2/authorize`, {
+        method: 'POST', headers: { ...sent, 'content-type': 'application/x-www-form-urlencoded' }, body: query,
+      })
+      : new Request(`${ORIGIN}/api/auth/oauth2/authorize?${query}`, { headers: sent }));
   }
   async function approve(consentLocation: string) {
     const consent = await handler(new Request(`${ORIGIN}/api/auth/oauth2/consent`, {
@@ -226,6 +229,8 @@ test('a metadata-document client on a loopback redirect asks for consent every t
   assert.equal(new URL(samePort.headers.get('location')!, ORIGIN).pathname, '/auth/mcp/consent', 'every time, on any port');
   const silent = await f.authorize(CLAUDE_CODE, 'http://localhost:4444/callback', { prompt: 'none' });
   assert.equal(new URL(silent.headers.get('location') ?? '/', ORIGIN).searchParams.get('code'), null, 'prompt=none gets no code');
+  const posted = await f.authorize(CLAUDE_CODE, 'http://localhost:4444/callback', { post: true, headers: { origin: ORIGIN } });
+  assert.equal(posted.status, 404, `authorize by POST skips the consent rule: ${posted.headers.get('location')}`);
 
   const claude = await f.authorize(CLAUDE, CLAUDE_CALLBACK);
   await f.approve(claude.headers.get('location')!);
