@@ -125,11 +125,12 @@ export function compileFrontDeskPlan(
   const agents = assignment.frontDesk!.agents.map(({ id, name, handle }) => ({
     id, name, ...(handle ? { handle } : {}),
   }));
+  // The widest card any choice could make: the longest names, as many as one call may name.
   const widest = [...agents]
     .sort((left, right) => right.name.length - left.name.length)
-    .slice(0, FRONT_DESK_MAX_TARGETS - 1)
+    .slice(0, FRONT_DESK_MAX_TARGETS)
     .map(({ id, name }) => ({ agentId: id, name }));
-  const fits = agentChoiceSpecFits(agentChoiceSpec(turn, [...widest, chickpeaOption()]));
+  const fits = agentChoiceSpecFits(agentChoiceSpec(turn, [...widest, chickpeaOption()].slice(0, FRONT_DESK_MAX_TARGETS)));
   return { agents, ...(fits ? { choices: true as const } : {}) };
 }
 

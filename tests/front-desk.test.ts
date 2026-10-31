@@ -37,7 +37,7 @@ import {
   sanitizeFrontDeskNote,
   slackTsAt,
 } from '../src/slack/front-desk.ts';
-import { assembleFrontDeskDirectory } from '../src/slack/front-desk-directory.ts';
+import { assembleFrontDeskDirectory, readFrontDeskDirectory } from '../src/slack/front-desk-directory.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 
@@ -432,4 +432,55 @@ test('Chickpea\'s refusals speak of its own logins and connections, never the wo
   assert.doesNotMatch(chickpea, WORKSPACE_REFUSALS);
   assert.match(runtimePlanConnectedServicesInstruction({ ...none, agentId: 'agent_support' }),
     /^Active connected-service access selected and configured for this turn: none\./);
+});
+
+test('the directory names each Agent\'s reason to take a request: a website login host, a connection, or a skill', async () => {
+  const LOGIN_ID = `wl_${'a'.repeat(32)}`;
+  const agents = [
+    userAgent('agent_portal', 'Portal Desk', {
+      creatorMembershipId: 'membership_u1', websiteLogins: [{ loginId: LOGIN_ID, level: 'check', enabled: true }],
+    }),
+    userAgent('agent_crm', 'CRM Desk', { creatorMembershipId: 'membership_u1' }),
+    userAgent('agent_writer', 'Writer', {
+      creatorMembershipId: 'membership_u1',
+      skills: [{ name: 'press-release', description: '', instructions: '', enabled: true }],
+    }),
+    userAgent('agent_other', 'Other', { creatorMembershipId: 'membership_u2' }),
+  ];
+  const crm = account('acct_crm', 'Sales CRM');
+  const settings = new Map<string, string>([['browser.logins.v1', JSON.stringify([{
+    id: LOGIN_ID, host: 'portal.example.test', label: 'Portal', createdByMembershipId: 'membership_admin',
+    ownerKind: 'team', method: 'credentials', createdAt: 1, username: 'ops@example.test',
+  }])]]);
+  const read = (browser: boolean) => readFrontDeskDirectory({
+    workspaceId: 'T1', channelId: 'D1',
+    actor: { fullMember: true, membershipId: 'membership_u1', slackUserId: 'U1' },
+    transport: { lookupChannel: async () => { throw new Error('no placements'); }, listMemberChannels: async () => new Set() },
+    config: {
+      listAgents: async () => agents,
+      listAgentChannelGrants: async () => [],
+      listConnectionAccounts: async () => [crm],
+      listAgentConnectionBindings: async (agentId: string) => agentId === 'agent_crm' ? [binding(agentId, crm)] : [],
+      listRecentSlackAgentReplies: async () => [],
+    } as never,
+    settings: {
+      getSetting: async (key: string) => settings.get(key),
+      getSettings: async (keys: string[]) => keys.map((key) => settings.get(key)),
+    } as never,
+    platformEnv: browser ? { BROWSERBASE_API_KEY: 'bb_test_key', BROWSERBASE_PROJECT_ID: 'project' } : {},
+    nowMs: NOW,
+  });
+  const directory = await read(true);
+  const byName = new Map(directory!.agents.map((agent) => [agent.name, agent]));
+  assert.deepEqual([...byName.keys()], ['CRM Desk', 'Portal Desk', 'Writer'], 'only Agents this person may use');
+  assert.deepEqual(byName.get('Portal Desk')!.websiteHosts, ['portal.example.test']);
+  assert.deepEqual(byName.get('CRM Desk')!.connections, ['Sales CRM']);
+  assert.deepEqual(byName.get('Writer')!.skills, ['press-release']);
+  const block = renderFrontDeskBlock(directory!, NOW);
+  assert.match(block, /Website logins: portal\.example\.test/);
+  assert.match(block, /Connections: Sales CRM/);
+  assert.match(block, /Skills: press-release/);
+  assert.ok(!block.includes('ops@example.test'));
+  assert.deepEqual((await read(false))!.agents.find(({ name }) => name === 'Portal Desk')!.websiteHosts, [],
+    'without a connected browser no login is a reason');
 });

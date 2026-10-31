@@ -46,15 +46,15 @@ export interface FrontDeskFacts {
 }
 
 /**
- * The Agents the front desk lists, in order: the recent Agent first, then by
- * name. An Agent with its own live Slack app is left out: it posts as its own
- * bot, which is not in this DM. Undefined when no Agent is left.
+ * The usable Agents the front desk may list. An Agent with its own live
+ * Slack app is left out: it posts as its own bot, which is not in this DM.
  */
 export function frontDeskCandidates(usable: PrivatelyUsableAgents): CustomAgentConfig[] {
   return usable.agents.filter((agent) =>
     agent.kind === 'user' && agent.id !== CHICKPEA_AGENT_ID && !agentAppIsLive(agent.slackPresence));
 }
 
+/** The candidates in listing order: the recent Agent first, then by name. */
 function orderFrontDeskCandidates(
   usable: PrivatelyUsableAgents,
   replies: readonly RecentSlackAgentReply[],
