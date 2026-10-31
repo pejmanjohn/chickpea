@@ -9,12 +9,15 @@ import { createBetterAuthPublicHandler, type BetterAuthPublicHandlerInput } from
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import type { ClientMetadataFetch } from '../src/auth/mcp-client-metadata.ts';
 import { mountMcpOAuthBrowserRoutes, renderMcpConsentPage } from '../src/auth/mcp-oauth-routes.ts';
-import { CLAUDE_DOCUMENTS, metadataDocumentServer, type ServedDocument } from './helpers/client-metadata-documents.ts';
+import {
+  CLAUDE_DOCUMENTS, CODEX_DOCUMENT, PUBLIC_CLIENT_DOCUMENTS, metadataDocumentServer, type ServedDocument,
+} from './helpers/client-metadata-documents.ts';
 
 const ORIGIN = 'https://chickpea.example.test';
 const RESOURCE = `${ORIGIN}/mcp`;
 const CLAUDE = CLAUDE_DOCUMENTS.claude.url;
 const CLAUDE_CODE = CLAUDE_DOCUMENTS.claudeCode.url;
+const CODEX = CODEX_DOCUMENT.url;
 const CLAUDE_CALLBACK = 'https://claude.ai/api/mcp/auth_callback';
 const RENEWABLE_SCOPE = 'chickpea:workspace offline_access';
 
@@ -148,15 +151,25 @@ test('the authorization server advertises client ID metadata documents to public
   }
 });
 
-test('without hosted shared auth no metadata document signs a client in: Claude\'s URL is an unknown client, never fetched', async (t) => {
-  const host = claudeHost();
+test('without hosted shared auth no metadata document signs a client in: an accepted URL is an unknown client, never fetched', async (t) => {
+  const host = metadataDocumentServer({
+    [CLAUDE]: CLAUDE_DOCUMENTS.claude.body,
+    [CLAUDE_CODE]: CLAUDE_DOCUMENTS.claudeCode.body,
+    [CODEX]: CODEX_DOCUMENT.body,
+    ...Object.fromEntries(Object.values(PUBLIC_CLIENT_DOCUMENTS).map(({ url, served }) => [url, served])),
+  });
   const f = await fixture(t, { clientMetadataDocuments: false, fetchClientMetadataResource: host.fetch });
   storeDocumentClient(f.backend, CLAUDE);
   for (const path of ['/.well-known/oauth-authorization-server/api/auth', '/api/auth/.well-known/oauth-authorization-server']) {
     const metadata = await (await f.handler(new Request(`${ORIGIN}${path}`))).json() as Record<string, unknown>;
     assert.equal(metadata.client_id_metadata_document_supported, undefined, path);
   }
-  for (const [clientId, redirect] of [[CLAUDE, CLAUDE_CALLBACK], [CLAUDE_CODE, 'http://localhost:53682/callback']] as const) {
+  for (const [clientId, redirect] of [
+    [CLAUDE, CLAUDE_CALLBACK],
+    [CLAUDE_CODE, 'http://localhost:53682/callback'],
+    [CODEX, 'http://127.0.0.1:52247/callback'],
+    ...Object.values(PUBLIC_CLIENT_DOCUMENTS).map(({ url, redirect }) => [url, redirect] as const),
+  ] as const) {
     for (const signedIn of [false, true]) {
       const response = await f.authorize(clientId, redirect, { signedIn });
       const location = new URL(response.headers.get('location') ?? '/', ORIGIN);
@@ -167,9 +180,14 @@ test('without hosted shared auth no metadata document signs a client in: Claude\
   assert.deepEqual(f.clients().map((client) => client.clientId), [CLAUDE], 'a stored document client stays unknown');
 });
 
-test('only Claude\'s two published documents sign a client in; any other URL is an unknown client, never fetched, throttled or stored', async (t) => {
+test('only the accepted published documents sign a client in; any other URL is an unknown client, never fetched, throttled or stored', async (t) => {
   const others = [
     'https://evil.example/client',
+    // ChatGPT's own document authenticates by private_key_jwt.
+    'https://chatgpt.com/oauth/client.json',
+    // Cursor's document lists a third-party HTTPS redirect, on grok.com, not yet reviewed.
+    'https://cursor.com/oauth/mcp-client.json',
+    `${CODEX}/`,
     'https://claude.ai/oauth/other-client-metadata',
     `${CLAUDE}/`,
     `${CLAUDE}?client=claude`,
@@ -281,10 +299,28 @@ test('Claude Code signs in on a loopback port its document lists without one, an
   assert.equal(typeof (await exchanged.json() as Record<string, unknown>).refresh_token, 'string');
 });
 
-test('a metadata-document client on a loopback redirect asks for consent every time; one on HTTPS asks once', async (t) => {
-  const f = await fixture(t, { fetchClientMetadataResource: claudeHost().fetch });
-  const first = await f.authorize(CLAUDE_CODE, 'http://localhost:53682/callback');
-  await f.approve(first.headers.get('location')!);
+test('a metadata-document client asks for consent at every sign-in, whatever its redirect', async (t) => {
+  const vscode = PUBLIC_CLIENT_DOCUMENTS.vscode;
+  const host = metadataDocumentServer({
+    [CLAUDE]: CLAUDE_DOCUMENTS.claude.body,
+    [CLAUDE_CODE]: CLAUDE_DOCUMENTS.claudeCode.body,
+    [vscode.url]: vscode.served,
+  });
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  for (const [clientId, redirect] of [
+    [CLAUDE, CLAUDE_CALLBACK],
+    // A relay that forwards the code to whatever `state` names, a loopback port included.
+    [vscode.url, 'https://vscode.dev/redirect'],
+    [CLAUDE_CODE, 'http://localhost:53682/callback'],
+  ] as const) {
+    const first = await f.authorize(clientId, redirect);
+    assert.ok((await f.approve(first.headers.get('location')!)).searchParams.get('code'));
+    const again = new URL((await f.authorize(clientId, redirect)).headers.get('location')!, ORIGIN);
+    assert.equal(`${again.origin}${again.pathname}`, `${ORIGIN}/auth/mcp/consent`, `${redirect} is asked again after an approval`);
+    const silent = new URL((await f.authorize(clientId, redirect, { prompt: 'none' })).headers.get('location') ?? '/', ORIGIN);
+    assert.ok(silent.searchParams.get('error'), `${redirect} gets an error for prompt=none`);
+    assert.equal(silent.searchParams.get('code'), null, `${redirect} gets no code for prompt=none`);
+  }
 
   // RFC 8252 8.6: any local app can claim Claude Code's published client ID and a port of its own.
   const otherPort = await f.authorize(CLAUDE_CODE, 'http://localhost:4444/callback');
@@ -294,18 +330,8 @@ test('a metadata-document client on a loopback redirect asks for consent every t
   const callback = await f.approve(consent.toString());
   assert.equal(`${callback.origin}${callback.pathname}`, 'http://localhost:4444/callback');
   assert.ok(callback.searchParams.get('code'));
-  const samePort = await f.authorize(CLAUDE_CODE, 'http://localhost:4444/callback');
-  assert.equal(new URL(samePort.headers.get('location')!, ORIGIN).pathname, '/auth/mcp/consent', 'every time, on any port');
-  const silent = await f.authorize(CLAUDE_CODE, 'http://localhost:4444/callback', { prompt: 'none' });
-  assert.equal(new URL(silent.headers.get('location') ?? '/', ORIGIN).searchParams.get('code'), null, 'prompt=none gets no code');
   const posted = await f.authorize(CLAUDE_CODE, 'http://localhost:4444/callback', { post: true, headers: { origin: ORIGIN } });
   assert.equal(posted.status, 404, `authorize by POST skips the consent rule: ${posted.headers.get('location')}`);
-
-  const claude = await f.authorize(CLAUDE, CLAUDE_CALLBACK);
-  await f.approve(claude.headers.get('location')!);
-  const again = new URL((await f.authorize(CLAUDE, CLAUDE_CALLBACK)).headers.get('location')!, ORIGIN);
-  assert.equal(`${again.origin}${again.pathname}`, CLAUDE_CALLBACK, 'a client on its own HTTPS redirect is not asked twice');
-  assert.ok(again.searchParams.get('code'));
 });
 
 test('a metadata document is refused unless it names its own URL, lists the redirect, and comes back small JSON at once', async (t) => {
