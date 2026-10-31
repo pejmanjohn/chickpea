@@ -351,6 +351,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'snapshotPutIfAbsent', // first write wins
   'slackFlueReceiptRecord', 'slackFlueSettlementRecord', // an equal checkpoint returns the saved one
   'slackTurnStopFinish', // the first stop ending stands and is returned again
+  'slackTurnFold', // a cycle's claim is returned again until a later call confirms it
   'slackTurnDirectThreads', 'slackRunFacts', // reads (a DM lookup keys old rows idempotently)
   'slackPresentationTransition', // compare-and-swap on the projection version
   // Version-fenced; a replay finds exactly what the committed call wrote and succeeds.
@@ -2005,6 +2006,10 @@ export class CfSlackStateStore implements SlackStateStore {
       'slackTurnStopFinish',
       (stub) => stub.slackTurnStopFinish(...args),
     ));
+  }
+
+  async foldTurn(request: TurnFoldRequest) {
+    return rpcVia(this.stub, 'slackTurnFold', (stub) => stub.slackTurnFold(request));
   }
 
   /** One TurnJob as a runner reads it (a mid-run 👀 checks its row after adding). */
