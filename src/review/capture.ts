@@ -36,6 +36,8 @@ export interface RunReviewStart {
    * the Agent's own words.
    */
   grantsWebsiteLogins: boolean;
+  /** The Slack turn job the run answers; follow-ups dispatched into its run under that id are copied with it. */
+  turnJobId?: string;
   /** Where the installation's review key is kept; reached only once a copy is built. */
   settings: () => SettingsStore;
   /** A read of the key already made, as a thread runner's is; it answers the first read only. */
@@ -147,7 +149,7 @@ class Session implements RunReviewSession {
   ingest(chunk: ConversationStreamChunk, submissionId: string): void {
     if (this.#broken) return;
     try {
-      this.#collector ??= new RunReviewCollector(submissionId);
+      this.#collector ??= new RunReviewCollector(submissionId, this.start.turnJobId);
       if (this.#collector.submissionId === submissionId) this.#collector.ingest(chunk);
     } catch {
       this.#broken = true;
@@ -175,7 +177,7 @@ class Session implements RunReviewSession {
     if (!collector && ending.history) {
       const snapshot = await ending.history.read();
       if (snapshot) {
-        collector = RunReviewCollector.fromHistory(snapshot, ending.history.submissionId);
+        collector = RunReviewCollector.fromHistory(snapshot, ending.history.submissionId, this.start.turnJobId);
         source = 'history';
       }
     }

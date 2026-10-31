@@ -2118,6 +2118,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       : { messages: [], requesterText: '' });
   }
 
+  async slackTurnReadThrough(headId: string): ReturnType<TagStateRpc['slackTurnReadThrough']> {
+    return this.call((stores) => stores.turnJobs.readThrough(headId) ?? null);
+  }
+
   async slackTurnDirectThreads(
     query: Parameters<TagStateRpc['slackTurnDirectThreads']>[0],
   ): ReturnType<TagStateRpc['slackTurnDirectThreads']> {

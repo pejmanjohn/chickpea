@@ -422,6 +422,28 @@ test('the next turn continues the transcript after the newest message the previo
   }
 });
 
+test('a head reads through the newest follow-up its model holds, a late fold\'s once a later call confirms it', () => {
+  const s = store();
+  try {
+    const head = job('head', '101');
+    enqueueAll(s, [head]);
+    assert.equal(s.turns.readThrough('head'), '1800000000.000101', 'no follow-ups: the head itself');
+    enqueueAll(s, [job('second', '102'), job('third', '103')]);
+    claimed(s.turns, 'head');
+    dispatch(s.turns, head);
+    assert.equal(s.turns.readThrough('head'), '1800000000.000103');
+    const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
+    enqueueAll(s, [job('late', '104')]);
+    s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 0, take: true });
+    assert.equal(s.turns.readThrough('head'), '1800000000.000103', 'claimed, not yet confirmed');
+    s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 1, take: false });
+    assert.equal(s.turns.readThrough('head'), '1800000000.000104');
+    assert.equal(s.turns.readThrough('unknown'), undefined);
+  } finally {
+    s.db.close();
+  }
+});
+
 // ── stops ─────────────────────────────────────────────────────────────
 
 test('a head with a stop, or a thread with an unfinished stop, takes no follow-ups', () => {
