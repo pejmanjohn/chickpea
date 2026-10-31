@@ -1426,7 +1426,7 @@ test('the managed connector link is reusable and completes from the dedicated pa
     assert.match(authorizeInputs[0]!.principalRef, /^chickpea:organization:/);
     assert.match(authorizeInputs[1]!.principalRef, /^chickpea:membership:/);
     assert.notEqual(authorizeInputs[0]!.principalRef, authorizeInputs[1]!.principalRef);
-    assert.match(authorizeInputs[0]!.returnUrl ?? '', new RegExp(`/setup/${setupId}\\?poll=1$`));
+    assert.equal(authorizeInputs[0]!.returnUrl, `http://localhost/setup/${setupId}?poll=1`);
 
     principal = ownerPrincipal;
     const poll = await app.request(`http://localhost/setup/${setupId}/managed/poll`, {
@@ -2282,6 +2282,8 @@ async function authorize(
     method: 'POST',
     headers: {
       origin: 'http://localhost',
+      // Setup never builds its origin from a forwarded header.
+      'x-forwarded-host': 'forwarded.example',
       cookie,
       'content-type': 'application/x-www-form-urlencoded',
       accept: 'application/json',

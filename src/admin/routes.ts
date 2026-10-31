@@ -52,11 +52,12 @@ import {
   readIdempotencyKey as readAdminIdempotencyKey,
   safeMutationRequest as safeAdminMutationRequest,
 } from './api-support.ts';
-import { requestOrigin } from '../http/request-origin.ts';
+import { requestOrigin, strictRequestOrigin } from '../http/request-origin.ts';
 import {
   ADMIN_CODING_AGENTS_PATH,
   ADMIN_PATH,
   ADMIN_SETTINGS_PATH,
+  MANAGED_SIGN_IN_RETURN_PATH,
   connectOrigin,
   firstAgentPrompt,
 } from '../management/connect.ts';
@@ -5501,6 +5502,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         toolkit: connector.toolkit,
         allowedCapabilities: capabilities,
         accessLane,
+        returnUrl: `${strictRequestOrigin(c)}${MANAGED_SIGN_IN_RETURN_PATH}`,
       });
       startedAuthorizationRef = authorization.authorizationRef;
       await recordManagedAuthorizationRequest({

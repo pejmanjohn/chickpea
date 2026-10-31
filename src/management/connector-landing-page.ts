@@ -422,6 +422,28 @@ export function renderManagedConnectionUnavailablePage(): string {
   });
 }
 
+/**
+ * Where a managed provider sends the sign-in tab Admin opened. The Admin tab
+ * shows the result, so this page closes itself. A browser that keeps it open
+ * shows copy that claims nothing: the person may have declined.
+ */
+export function renderManagedSignInReturnPage(nonce: string): string {
+  return pageShell({
+    title: 'Return to Admin',
+    surface: 'managed-sign-in-return',
+    content: `
+      <main class="flow-shell waiting-shell" aria-labelledby="flow-title">
+        ${brandHeader()}
+        <section class="flow-content centered">
+          <h1 id="flow-title">You're done here</h1>
+          <p class="lead">Go back to your Chickpea Admin tab to see the result.</p>
+          <p class="small-copy">You can close this tab.</p>
+        </section>
+      </main>
+      <script nonce="${escapeHtml(nonce)}">window.close();</script>`,
+  });
+}
+
 /** First page of every setup link. Its script trades the link's fragment for a browser session. */
 export function renderSetupClaimPage(input: { setupId: string; reusable: boolean }): string {
   return pageShell({

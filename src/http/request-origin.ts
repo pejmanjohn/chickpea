@@ -42,3 +42,14 @@ function lastForwardedHop(header: string | undefined): string | undefined {
     .filter(Boolean);
   return hops.length ? hops[hops.length - 1] : undefined;
 }
+
+/**
+ * Narrower than requestOrigin: only the pinned public URL or the request URL
+ * itself, never a forwarded header. Setup routes use it for their CSRF
+ * comparisons and callback URLs, and Admin for a managed provider's return URL.
+ */
+export function strictRequestOrigin(c: Context): string {
+  const pinned = process.env.SLACK_TAG_PUBLIC_URL?.trim();
+  if (pinned) return new URL(pinned).origin;
+  return new URL(c.req.url).origin;
+}

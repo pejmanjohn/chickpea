@@ -19,6 +19,8 @@ import { adminSettingsSectionShown } from './admin-links.ts';
 
 export const CONNECT_MARKDOWN_PATH = '/connect.md';
 export const CONNECT_PAGE_PATH = '/connect';
+/** Where a managed provider returns the sign-in tab Admin opened. */
+export const MANAGED_SIGN_IN_RETURN_PATH = '/managed-connections/return';
 export const MCP_RESOURCE_PATH = '/mcp';
 export const ADMIN_PATH = '/admin';
 export const ADMIN_SETTINGS_PATH = '/admin/settings';
