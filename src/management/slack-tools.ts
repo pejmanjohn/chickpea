@@ -945,7 +945,7 @@ export function useWorkspaceManagementSlackTools(
           signal,
           resolvePlatformEnv,
           'upload_skills',
-          { ...data, idempotencyKey: 'slack-upload' },
+          { ...data, idempotencyKey: data.agentId ? `slack-upload:${data.agentId}` : 'slack-upload' },
           turnGuard,
         );
         creationCoordinator.recordFollowOn(result);

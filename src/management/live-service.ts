@@ -58,7 +58,7 @@ import {
 } from '../slack/installation-credentials.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
-import { classifySkillReplacement } from '../slack/interaction-intent.ts';
+import { createSkillReplacementJudge } from './skill-replacement-judge.ts';
 import { ownerUserGroupToken } from '../slack/user-group-authority.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import type { SlackTransport } from '../slack/transport/types.ts';
@@ -200,8 +200,11 @@ export function createLiveWorkspaceManagementService(
       identity: slackCredentials.state,
       keyring: slackCredentials.keyring,
     }),
-    judgeSkillReplacement: async ({ text, skillNames, model }) =>
-      (await classifySkillReplacement({ text, skillNames, requestedModel: model }, { env, settings })).replace,
+    judgeSkillReplacement: createSkillReplacementJudge({
+      env,
+      settings,
+      usage: () => options.usage ?? getUsageStore(env),
+    }),
     discoverSlackChannels: async (actor) => {
       const organization = await identity.getOrganization();
       if (!organization?.slackTeamId) {

@@ -5,7 +5,9 @@ import {
   type UploadedSkillFile,
 } from '../config/skill-upload.ts';
 import { NOT_A_ZIP_ARCHIVE } from '../config/zip-reader.ts';
+import { AttachmentReadError } from '../slack/attachment-client.ts';
 import type { GatewayAttachmentClient } from '../slack/gateway/client.ts';
+import { SlackTransportError } from '../slack/transport/types.ts';
 import type { GatewayAttachmentRepresentation } from '../slack/gateway/protocol.ts';
 
 /** Markdown arrives as its text and archives as their bytes; an image or PDF is never downloaded. */
@@ -59,8 +61,8 @@ export async function readSlackSkillFiles(
       files.push({ name: read.filename, bytes: read.bytes });
       remaining -= read.bytes.byteLength;
     } catch (error) {
-      const code = (error as { code?: unknown } | undefined)?.code;
-      issues.push({ path, ...(typeof code === 'string' && READ_FAILURE_ISSUES.get(code) || UNREADABLE) });
+      const code = error instanceof AttachmentReadError || error instanceof SlackTransportError ? error.code : undefined;
+      issues.push({ path, ...(code && READ_FAILURE_ISSUES.get(code) || UNREADABLE) });
     }
   }
   return { files, issues };

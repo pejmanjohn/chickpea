@@ -105,7 +105,7 @@ const ROUTINE_PLAN = compileRuntimePlanV2({
   artifactThreadTs: null,
 });
 
-function slackMessage() {
+function slackMessage(files: Record<string, string> = {}) {
   return {
     kind: 'signal' as const,
     type: 'slack.message',
@@ -125,6 +125,7 @@ function slackMessage() {
       conversationKind: 'channel',
       requesterText: 'Do the work.',
       admittedListIds: '["FEXISTING"]',
+      ...files,
     },
   };
 }
@@ -253,6 +254,17 @@ const SCHEDULED = { kind: 'scheduled' } as const;
 const interactive = (toolName: string, descriptor?: SemanticActivityDescriptor) =>
   qualifiesAsTask(CHAT_SANDBOX, tool(toolName, descriptor));
 const withTarget = (target: SemanticTargetFamily): SemanticActivityDescriptor => ({ ...unknownSemanticDescriptor(), target });
+
+test('a turn with files mounts upload_skills after every tool a file-free turn mounts', async () => {
+  const [plain, withFiles] = await withLiveAgent(async () => [
+    await mountedToolNames(SlackCapabilityProbe, 'run-fees-slack-probe', { message: slackMessage() }),
+    await mountedToolNames(SlackCapabilityProbe, 'run-fees-slack-probe', {
+      message: slackMessage({ attachmentFileIds: 'F0SKILLS', attachmentIntakeStatus: 'ok', attachmentCount: '1' }),
+    }),
+  ]);
+  assert.ok(!plain.includes('upload_skills'));
+  assert.deepEqual(withFiles, [...plain, 'upload_skills'], 'the shared tool prefix and the tenant tools come first, unchanged');
+});
 
 test('the table classifies every tool name Core registers', () => {
   const unclassified = [...registered]

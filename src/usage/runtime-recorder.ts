@@ -373,7 +373,7 @@ interface RoutineReportedUsage {
   totalTokens: number;
 }
 
-interface InteractionUsageRecorderOptions {
+export interface InteractionUsageRecorderOptions {
   operationId: string;
   executionId: string;
   runId?: string;
@@ -426,6 +426,28 @@ export function interactionReportedUsage(
     ...(reported.cacheWrite1hTokens ? { cacheWrite1hTokens: reported.cacheWrite1hTokens } : {}),
     totalTokens: reported.totalTokens,
   };
+}
+
+/**
+ * Records one no-tools side call: admission, its terminal measurement, then
+ * repair. An answer the host decided without calling a provider records
+ * nothing.
+ */
+export async function recordSideCallUsage(
+  options: InteractionUsageRecorderOptions,
+  call: { result?: Pick<AgentDispatchResult, 'reportedUsage' | 'returnedModel'> | undefined; failed: boolean },
+): Promise<void> {
+  if (!usageRuntimeRecordingEnabled(options.platformEnv)) return;
+  if (!call.result && !call.failed) return;
+  const recorder = new InteractionUsageRecorder(options);
+  await recorder.admit();
+  await recorder.recordTerminal({
+    status: call.failed ? 'failed' : 'completed',
+    usage: interactionReportedUsage(call.result?.reportedUsage),
+    returnedModel: call.result?.returnedModel ?? null,
+    unknownReason: call.failed ? 'provider_request_unknown' : 'usage_not_reported',
+  });
+  await recorder.repairAfterTerminal();
 }
 
 export class InteractionUsageRecorder {

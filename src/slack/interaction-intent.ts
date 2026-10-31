@@ -450,31 +450,38 @@ export function skillReplacementMessage(context: Pick<SkillReplacementContext, '
   ].join('\n');
 }
 
-/** A failure or timeout judges no replacement, which leaves every installed skill as it is. */
+/**
+ * A failure or timeout judges no replacement, which leaves every installed
+ * skill as it is. The dispatch result carries the call's usage to meter.
+ */
 export async function classifySkillReplacement(
   context: SkillReplacementContext,
   options: {
     env?: PlatformEnv | undefined;
     settings?: SettingsStore;
     /** Stands in for the model call. */
-    prompt?: (message: string) => Promise<string>;
+    prompt?: (message: string) => Promise<string | AgentDispatchResult>;
     timeoutMs?: number;
   } = {},
-): Promise<{ replace: boolean; failed: boolean }> {
+): Promise<{ replace: boolean; failed: boolean; result?: AgentDispatchResult }> {
   const { env, settings, prompt, timeoutMs = DEFAULT_INTERACTION_TIMEOUT_MS } = options;
   const message = skillReplacementMessage(context);
   try {
-    const response = await withTimeout<string>(
+    const response = await withTimeout(
       prompt
         ? prompt(message)
         : promptSideCall('slack-skill-replacement', context.requestedModel, {
             systemPrompt: SKILL_REPLACEMENT_INSTRUCTIONS,
             messages: [{ role: 'user', content: message, timestamp: Date.now() }],
-          }, { answerTokens: 64, env, ...(settings ? { settings } : {}) }).then(({ text }) => text),
+          }, { answerTokens: 64, env, ...(settings ? { settings } : {}) }),
       timeoutMs,
     );
-    const value = parseJsonObject(response);
-    return { replace: isRecord(value) && Object.keys(value).length === 1 && value.replace === true, failed: false };
+    const value = parseJsonObject(typeof response === 'string' ? response : response.text);
+    return {
+      replace: isRecord(value) && Object.keys(value).length === 1 && value.replace === true,
+      ...(typeof response === 'string' ? {} : { result: response }),
+      failed: false,
+    };
   } catch {
     return { replace: false, failed: true };
   }

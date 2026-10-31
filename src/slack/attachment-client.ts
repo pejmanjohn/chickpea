@@ -9,7 +9,7 @@ import { readBoundedBytes } from '../http/bounded-body.ts';
 const OFFICE_TYPES = new Set(['doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx']);
 /** Download types Slack serves for many files whatever files.info declared. */
 const GENERIC_DOWNLOAD_TYPES = new Set(['application/octet-stream', 'binary/octet-stream', 'application/force-download']);
-class AttachmentReadError extends Error {
+export class AttachmentReadError extends Error {
   constructor(public readonly code: string, _status?: number) { super(code); }
 }
 function record(value: unknown): Record<string, unknown> {

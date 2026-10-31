@@ -204,7 +204,7 @@ test('upload_skills keeps edit authority, refuses bad input whole, and takes no 
       'forbidden: The Agent is not available to this member.',
       'invalid_request: skills.zip is not valid base64. No change was made.',
       'invalid_request: Upload up to 50 files at a time. No change was made.',
-      'invalid_request: In Slack, upload_skills reads the files attached to the person\'s message and takes no file content. No change was made.',
+      'invalid_request: In Slack, upload_skills reads the files attached to the person\'s message and takes no file content or replaceExisting. No change was made.',
       'invalid_request: empty.md must carry text or base64, not both. No change was made.',
       `invalid_request: ${full.name} would have 101 skills; an Agent holds at most 100. Remove some first, or upload fewer. No change was made.`,
     ]);

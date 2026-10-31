@@ -21,6 +21,9 @@ import {
 } from '../src/slack/attachment-context.ts';
 import type { GatewayAttachmentClient, GatewayAttachmentRead } from '../src/slack/gateway/client.ts';
 import { classifySkillReplacement, skillReplacementMessage } from '../src/slack/interaction-intent.ts';
+import { createSkillReplacementJudge, type SkillReplacementQuestion } from '../src/management/skill-replacement-judge.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { SqliteUsageStore } from '../src/usage/store.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { createManagementAdapterFixture, type ManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { buildZip, skillMarkdown } from './helpers/zip.ts';
@@ -71,7 +74,7 @@ const KEPT: SkillConfig[] = [
   { name: 'alpha', description: 'Alpha before the upload.', instructions: '# Alpha\nThe original steps.\n', enabled: true },
 ];
 
-type Judge = (input: { text: string; skillNames: string[]; model: string }) => Promise<boolean>;
+type Judge = (question: SkillReplacementQuestion) => Promise<boolean>;
 
 async function slackFixture(suffix: string, files?: Record<string, SlackFile>, judge: Judge = async () => false) {
   const slackFiles = fakeSlackFiles(files);
@@ -206,7 +209,9 @@ test('Slack takes no model-supplied file ID or file content', async () => {
     const withFiles = personMessage(f, { attachmentFileIds: 'F0ALPHA' });
     assert.ok(withFiles);
     assert.match(refusal(await upload(f, withFiles, { files: [{ name: 'SKILL.md', text: skillMarkdown('evil', 'Injected.') }] })),
-      /takes no file content\. No change was made\.$/);
+      /takes no file content or replaceExisting\. No change was made\.$/);
+    assert.match(refusal(await upload(f, withFiles, { replaceExisting: true })),
+      /takes no file content or replaceExisting\. No change was made\.$/, 'only the person\'s message can ask for a replacement');
 
     const noFiles = personMessage(f, {});
     assert.ok(noFiles);
@@ -235,6 +240,14 @@ test('a turn another Agent\'s ask started, or a message that also addresses some
     assert.ok(shared);
     assert.equal(refusal(await upload(f, shared)),
       'The message with the skill files must be addressed only to this Agent. No change was made.');
+
+    for (const requesterText of ['', '<@U_BOT>']) {
+      const silent = personMessage(f, { attachmentFileIds: 'F0ALPHA', requesterText });
+      assert.ok(silent);
+      assert.equal(refusal(await upload(f, silent)),
+        'The message with the skill files says nothing. Ask the person to say what to do with the attached files. No change was made.',
+        JSON.stringify(requesterText));
+    }
 
     assert.deepEqual(slackFiles.reads, []);
     assert.deepEqual((await f.config.getAgent(agent.id)).skills, KEPT);
@@ -274,8 +287,24 @@ test('a same-name skill is replaced only when the person\'s message asks, and un
     const signal = personMessage(f, { attachmentFileIds: 'F0ALPHA', requesterText: 'Replace alpha with the attached version.' });
     assert.ok(signal);
     const result = receipt(await upload(f, signal));
-    assert.deepEqual(judged, [{ text: 'Replace alpha with the attached version.', skillNames: ['alpha'], model: 'openai/gpt-judge-test' }],
-      'the judge sees only the person\'s words, the skill names and the model, never file contents');
+    assert.deepEqual(judged.map(({ text, skillNames, model, modelAttribution }) => ({ text, skillNames, model, modelAttribution })), [{
+      text: 'Replace alpha with the attached version.',
+      skillNames: ['alpha'],
+      model: 'openai/gpt-judge-test',
+      modelAttribution: { source: 'pinned', providerId: 'openai' },
+    }]);
+    assert.deepEqual(judged[0]!.turn, {
+      workspaceId: f.admin.user.slackTeamId,
+      channelId: 'D_SKILL_UPLOAD',
+      eventId: signal.eventId,
+      messageTs: signal.messageTs,
+      conversationKind: 'im',
+      routedAgentId: 'agent_sprout',
+      routedAgentName: 'Sprout',
+      targetAgentId: 'agent_sprout',
+      requesterMembershipId: f.admin.membership.id,
+    });
+    assert.doesNotMatch(JSON.stringify(judged), /uploaded steps|Alpha from Slack|original steps/, 'never file contents');
     assert.equal(result.status, 'updated');
     assert.deepEqual(names(result.replaced), ['alpha']);
     assert.deepEqual(result.conflicts, []);
@@ -328,6 +357,88 @@ for (const [label, judge] of [
     assert.deepEqual((await f.config.getAgent(agent.id)).skills.find(({ name }) => name === 'alpha'), KEPT[1]);
   } finally {
     f.close();
+  }
+});
+
+test('a retry of the turn after the judge said no stays no, even when the judge would now say yes', async () => {
+  const answers = [false, true];
+  const { f, agent, judged } = await slackFixture('slack-upload-judge-once', undefined, async () => answers.shift()!);
+  try {
+    const signal = personMessage(f, { attachmentFileIds: 'F0ALPHA', requesterText: 'Maybe swap alpha for this one?' });
+    assert.ok(signal);
+    const first = receipt(await upload(f, signal));
+    assert.equal(first.status, 'unchanged');
+    assert.deepEqual(names(first.conflicts), ['alpha']);
+    assert.deepEqual(receipt(await upload(f, signal)), first, 'the retry replays the recorded outcome');
+    assert.equal(judged.length, 1, 'the message is judged once');
+    assert.deepEqual((await f.config.getAgent(agent.id)).skills, KEPT);
+  } finally {
+    f.close();
+  }
+});
+
+test('the replacement judge\'s usage is recorded against the Slack turn', async () => {
+  const usage = new SqliteUsageStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const judge = createSkillReplacementJudge({
+      settings,
+      usage: () => usage,
+      classify: async (context) => {
+        assert.deepEqual(context, { text: 'Replace alpha.', skillNames: ['alpha'], requestedModel: 'openai/gpt-judge-test' });
+        return {
+          replace: true,
+          failed: false,
+          result: {
+            text: '{"replace":true}',
+            requestedModel: 'openai/gpt-judge-test',
+            returnedModel: { provider: 'openai', id: 'gpt-judge-test' },
+            reportedUsage: { inputTokens: 210, outputTokens: 6, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 216 },
+            usageCompleteness: 'complete',
+            flueSubmissionRef: null,
+          },
+        };
+      },
+    });
+    assert.equal(await judge({
+      text: 'Replace alpha.',
+      skillNames: ['alpha'],
+      model: 'openai/gpt-judge-test',
+      modelAttribution: { source: 'workspace_default', providerId: 'openai', workspaceDefaultRevision: 3 },
+      turn: {
+        workspaceId: 'T_UPLOAD', channelId: 'C_UPLOAD', eventId: 'Ev_JUDGE', messageTs: '1793409762.496089',
+        conversationKind: 'channel', routedAgentId: 'agent_sprout', routedAgentName: 'Sprout',
+        targetAgentId: 'agent_sprout', requesterMembershipId: 'membership_person',
+      },
+    }), true);
+    const recorded = await usage.getOperation('skill_replacement:T_UPLOAD:C_UPLOAD:Ev_JUDGE:agent_sprout');
+    assert.ok(recorded, 'the side call is metered');
+    assert.deepEqual({
+      workspaceId: recorded.operation.workspaceId,
+      agentId: recorded.operation.agentId,
+      channelId: recorded.operation.channelId,
+      conversationKind: recorded.operation.conversationKind,
+      requesterMembershipId: recorded.operation.requesterMembershipId,
+      modelSource: recorded.operation.modelSource,
+      requestedModel: recorded.operation.requestedModel,
+      startedAt: recorded.operation.startedAt,
+    }, {
+      workspaceId: 'T_UPLOAD',
+      agentId: 'agent_sprout',
+      channelId: 'C_UPLOAD',
+      conversationKind: 'named_channel',
+      requesterMembershipId: 'membership_person',
+      modelSource: 'workspace_default',
+      requestedModel: 'gpt-judge-test',
+      startedAt: 1_793_409_762_496,
+    });
+    assert.deepEqual(recorded.measurements.map(({ operationStatus: status, inputTokens, outputTokens, returnedModel }) =>
+      ({ status, inputTokens, outputTokens, returnedModel })), [
+      { status: 'completed', inputTokens: 210, outputTokens: 6, returnedModel: 'gpt-judge-test' },
+    ]);
+  } finally {
+    usage.close();
+    settings.close();
   }
 });
 

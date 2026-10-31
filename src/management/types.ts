@@ -1367,7 +1367,7 @@ export interface UploadSkillsInput {
   agentId?: string;
   /** Required on MCP and refused on Slack, which reads the requester message's attachments. */
   files?: UploadSkillsFile[];
-  /** Same meaning as import_skill's: replace same-name skills whose content differs. Slack always replaces. */
+  /** MCP only, with import_skill's meaning: replace same-name skills whose content differs. Slack refuses it. */
   replaceExisting?: boolean;
   idempotencyKey: string;
 }

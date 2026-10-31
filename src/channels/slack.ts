@@ -101,11 +101,7 @@ import {
   slackSteeringCommand,
   type SlackSteeringCommand,
 } from '../slack/interaction-intent.ts';
-import {
-  InteractionUsageRecorder,
-  interactionReportedUsage,
-  usageRuntimeRecordingEnabled,
-} from '../usage/runtime-recorder.ts';
+import { recordSideCallUsage } from '../usage/runtime-recorder.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
 import { parseRoutineCommand } from '../routines/commands.ts';
 import { isRoutineSlackTurn } from '../routines/slack-context.ts';
@@ -4614,11 +4610,8 @@ async function recordInteractionClassifierUsage(input: {
   /** The approval judgment is its own side call; only the intent one is `classification`. */
   operation?: 'classification' | 'management_approval';
 }): Promise<void> {
-  if (!usageRuntimeRecordingEnabled(input.platformEnv)) return;
-  // Deterministic edge rules invoke no provider and therefore create no usage.
-  if (!input.classification.result && !input.classification.failed) return;
   const operation = input.operation ?? 'classification';
-  const recorder = new InteractionUsageRecorder({
+  await recordSideCallUsage({
     operationId:
       `${operation}:${input.turn.workspaceId}:${input.turn.channelId}:${input.turn.eventId}`,
     executionId: `${operation}-exec:${input.turn.eventId}`,
@@ -4642,18 +4635,7 @@ async function recordInteractionClassifierUsage(input: {
     store: input.stores.usage,
     ...(input.runId ? { runId: input.runId } : {}),
     ...(input.platformEnv ? { platformEnv: input.platformEnv } : {}),
-  });
-  await recorder.admit();
-  const usage = interactionReportedUsage(input.classification.result?.reportedUsage);
-  await recorder.recordTerminal({
-    status: input.classification.failed ? 'failed' : 'completed',
-    usage,
-    returnedModel: input.classification.result?.returnedModel ?? null,
-    unknownReason: input.classification.failed
-      ? 'provider_request_unknown'
-      : 'usage_not_reported',
-  });
-  await recorder.repairAfterTerminal();
+  }, input.classification);
 }
 
 /**
