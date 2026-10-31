@@ -252,7 +252,10 @@ correction can change course before more of the wrong work. The Agent reads
 it as part of the same request, takes it into account, and still writes one
 reply to everything. When several tools run at once, the check waits until
 the last of them ends. A single long step, such as a coding job, is one step:
-a message sent during it is read when it ends.
+a message sent during it is read when it ends. The Agent checks at most once
+every 3 seconds, so after a run of quick steps a message waits for the first
+step that ends 3 seconds or more after the previous check, or for the check
+before the reply.
 
 When the Agent is about to finish, before its reply posts, it checks once
 more. If the person sent more messages, it reads them, does any extra work

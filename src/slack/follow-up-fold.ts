@@ -9,7 +9,9 @@ import { CHICKPEA_SLACK_AGENT_NAME } from '../agents/names.ts';
 import { validTurnJobId } from '../agents/turn-input.ts';
 import { currentRequestEnvelopeText, parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 import { publishActivityStatus } from './activity-publisher.ts';
-import { foldActivityStatus, followUpSignalBody, MAX_FOLD_CYCLES, MAX_TURN_FOLD_CYCLES } from './follow-ups.ts';
+import {
+  foldActivityStatus, followUpSignalBody, MAX_FOLD_CYCLES, MAX_TURN_FOLD_CYCLES, TOOL_BOUNDARY_PULL_INTERVAL_MS,
+} from './follow-ups.ts';
 import { endsResponseWork } from './presentation-tool-policy.ts';
 import type { TurnFoldClaim, TurnFoldRequest } from './turn-job-types.ts';
 
@@ -138,6 +140,13 @@ interface ToolBoundary {
   pull?: () => Promise<void>;
   /** The check in progress, so two never claim the same cycle. */
   pulling: Promise<void>;
+  /**
+   * When the latest check started (`performance.now()`), for
+   * TOOL_BOUNDARY_PULL_INTERVAL_MS. In memory: a monotonic time means
+   * nothing in another process, and a restarted response that checks at its
+   * first boundary again costs one call.
+   */
+  pulledAt?: number;
 }
 
 const toolBoundaries = new AsyncLocalStorage<ToolBoundary>();
@@ -150,7 +159,8 @@ function bindToolBoundaryFold(pull: () => Promise<void>): void {
 /**
  * The tool boundary of a Slack response: when a model tool call ends and no
  * other call of its batch is still running, the Agent checks for new
- * messages before the batch's results go back to the model. Every model
+ * messages before the batch's results go back to the model, unless the
+ * previous check started under TOOL_BOUNDARY_PULL_INTERVAL_MS ago. Every model
  * tool passes through here (its own, MCP and sandbox tools alike). Mounted
  * inside the presentation policy, so a tool that policy refuses once the
  * response can do no more work never reaches it. The check never fails the
@@ -170,7 +180,10 @@ export const slackToolBoundaryFoldInterceptor: FlueExecutionInterceptor = async 
   } finally {
     boundary.running -= 1;
     const pull = boundary.pull;
-    if (boundary.running === 0 && !boundary.workEnded && pull) {
+    const now = performance.now();
+    if (boundary.running === 0 && !boundary.workEnded && pull &&
+      (boundary.pulledAt === undefined || now - boundary.pulledAt >= TOOL_BOUNDARY_PULL_INTERVAL_MS)) {
+      boundary.pulledAt = now;
       boundary.pulling = boundary.pulling.then(pull).catch(() => {
         console.warn('[chickpea] Could not check for follow-up messages after a tool batch');
       });
