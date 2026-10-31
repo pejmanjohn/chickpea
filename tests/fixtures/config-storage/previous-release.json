@@ -1,5 +1,5 @@
 {
-  "release": "0.1.39",
+  "release": "0.1.40",
   "scenario": "aede56a7a7169154cad0768efb22ca40a2bbc7cbe0da163079aa738ce264b520",
   "ddl": [
     "CREATE TABLE app_settings (\n        key TEXT PRIMARY KEY,\n        value TEXT NOT NULL,\n        updated_at INTEGER NOT NULL\n      )",
@@ -22,7 +22,7 @@
     "CREATE TABLE config_workspace_model_roles (\n        workspace_id TEXT NOT NULL,\n        role TEXT NOT NULL,\n        model_id TEXT,\n        revision INTEGER NOT NULL CHECK (revision > 0),\n        last_changed_by_membership_id TEXT,\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL, effort TEXT,\n        PRIMARY KEY (workspace_id, role)\n      )",
     "CREATE TABLE config_agent_model_roles (\n        agent_id TEXT NOT NULL,\n        role TEXT NOT NULL,\n        model_id TEXT,\n        revision INTEGER NOT NULL CHECK (revision > 0),\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        PRIMARY KEY (agent_id, role)\n      )",
     "CREATE TABLE config_workspace_model_defaults (\n        workspace_id TEXT PRIMARY KEY,\n        model_id TEXT,\n        revision INTEGER NOT NULL CHECK (revision > 0),\n        provenance TEXT NOT NULL,\n        last_changed_by_membership_id TEXT,\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL\n      , effort TEXT)",
-    "CREATE TABLE config_slack_public_context (\n        workspace_id TEXT NOT NULL,\n        channel_id TEXT NOT NULL,\n        root_ts TEXT NOT NULL,\n        message_ts TEXT NOT NULL,\n        role TEXT NOT NULL CHECK (role IN ('human', 'agent')),\n        text TEXT NOT NULL,\n        agent_id TEXT,\n        content_version_ts TEXT,\n        author_kind TEXT,\n        author_id TEXT,\n        author_name TEXT,\n        files_json TEXT,\n        images_json TEXT,\n        gap_before_ts TEXT,\n        updated_at INTEGER NOT NULL,\n        PRIMARY KEY (workspace_id, channel_id, root_ts, message_ts)\n      )",
+    "CREATE TABLE config_slack_public_context (\n        workspace_id TEXT NOT NULL,\n        channel_id TEXT NOT NULL,\n        root_ts TEXT NOT NULL,\n        message_ts TEXT NOT NULL,\n        role TEXT NOT NULL CHECK (role IN ('human', 'agent')),\n        text TEXT NOT NULL,\n        agent_id TEXT,\n        content_version_ts TEXT,\n        author_kind TEXT,\n        author_id TEXT,\n        author_name TEXT,\n        files_json TEXT,\n        images_json TEXT,\n        file_refs_json TEXT,\n        gap_before_ts TEXT,\n        updated_at INTEGER NOT NULL,\n        PRIMARY KEY (workspace_id, channel_id, root_ts, message_ts)\n      )",
     "CREATE INDEX config_slack_public_context_root_idx\n       ON config_slack_public_context(workspace_id, channel_id, root_ts, updated_at)",
     "CREATE TABLE config_chickpea_cutovers (\n        workspace_id TEXT PRIMARY KEY,\n        state TEXT NOT NULL CHECK (state IN ('prepared', 'activated', 'rolled_back')),\n        model_classification TEXT NOT NULL CHECK (model_classification IN (\n          'untouched_cloudflare_starter', 'explicit_agent_pin',\n          'environment_default', 'model_missing'\n        )),\n        starter_agent_id TEXT,\n        starter_agent_generation INTEGER,\n        prepared_default_revision INTEGER NOT NULL,\n        prepared_at INTEGER NOT NULL,\n        activated_at INTEGER,\n        rolled_back_at INTEGER,\n        route_backfill_count INTEGER NOT NULL DEFAULT 0,\n        starter_pin_cleared INTEGER NOT NULL DEFAULT 0 CHECK (starter_pin_cleared IN (0, 1))\n      )",
     "CREATE UNIQUE INDEX config_agent_connection_bindings_account_uidx\n         ON config_agent_connection_bindings(connection_account_id)"
@@ -47,7 +47,7 @@
         "id": "agent_chickpea",
         "agent_kind": "system",
         "revision": 1,
-        "credential_incarnation": "agent_355c6a79fb0f40e2832d992515eecac5",
+        "credential_incarnation": "agent_cca686aa96514b6587941b0d5c74f185",
         "name": "Chickpea",
         "description": "Your workspace assistant and Agent administrator.",
         "instructions": "You are Chickpea, the built-in workspace assistant. Help with general questions, explain how Chickpea works, and administer the workspace only through authorized tools. Suggest a user Agent when work should become specialized, reusable, or recurring. Be direct and concise, and never invent facts or expose secrets.",
@@ -83,8 +83,8 @@
         "archived_at": null,
         "model": "anthropic/claude-sonnet-4-5",
         "skills_json": "[{\"name\":\"weekly-digest\",\"description\":\"Write the weekly digest.\",\"instructions\":\"# Weekly digest\\nList three highlights from the week.\",\"enabled\":true,\"suggestedSkillId\":\"suggested_weekly_digest\"},{\"name\":\"imported-checklist\",\"description\":\"Run the imported checklist.\",\"instructions\":\"# Checklist\\nConfirm each item before replying.\",\"enabled\":false,\"importSource\":{\"repository\":\"example-org/scenario-skills\",\"commit\":\"0123456789abcdef0123456789abcdef01234567\",\"path\":\"skills/checklist/SKILL.md\",\"contentSha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}}]",
-        "mcp_servers_json": "[{\"id\":\"mcp_scenario_tracker\",\"displayName\":\"Scenario Tracker\",\"url\":\"https://Tracker.Example.com\",\"transport\":\"streamable-http\",\"authMode\":\"bearer\",\"headerNames\":[\"X-Workspace\"],\"enabled\":true,\"lifecycleStatus\":\"ready\",\"statusText\":\"Connected\",\"discoveredTools\":[{\"name\":\"search_issues\",\"title\":\"Search issues\",\"description\":\"Search synthetic tracker issues.\",\"readOnlyHint\":true,\"inputSchema\":{\"propertyNames\":[\"query\",\"account_id\"],\"accountFields\":[{\"name\":\"account_id\",\"type\":\"string\",\"required\":false}],\"ambiguous\":false,\"fingerprint\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"}},{\"name\":\"create_issue\",\"description\":\"Create a synthetic issue.\"}],\"toolAccessMode\":\"review\",\"toolPolicies\":{\"search_issues\":{\"effect\":\"read\"},\"create_issue\":{\"effect\":\"write\",\"argumentConstraints\":{\"project\":[\"SCN\"]}}},\"allowedTools\":[\"search_issues\",\"create_issue\"],\"lastCheckedAt\":1792080000000,\"identity\":{\"workspaceName\":\"Example Workspace\",\"accountName\":\"scenario-bot\"},\"presetId\":\"preset_scenario_tracker\",\"credentialRef\":\"connection_f6c4501aca634c66b0c5cff597ff2914\"},{\"id\":\"mcp_scenario_docs\",\"displayName\":\"Scenario Docs\",\"url\":\"https://docs.example.com/mcp/\",\"transport\":\"sse\",\"authMode\":\"oauth\",\"headerNames\":[],\"enabled\":true,\"lifecycleStatus\":\"pending\",\"statusText\":\"Reconnect required\",\"discoveredTools\":[{\"name\":\"read_page\"}],\"allowedTools\":[\"read_page\"],\"oauthScope\":\"docs.read\",\"oauthAttemptId\":\"6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b\",\"credentialRef\":\"connection_569327b219af4b80a8ae75fc4300006f\"},{\"id\":\"mcp_scenario_feed\",\"displayName\":\"Scenario Feed\",\"url\":\"https://feed.example.com/mcp\",\"transport\":\"streamable-http\",\"authMode\":\"none\",\"headerNames\":[\"X-Feed-Key\"],\"credentialHeaderName\":\"X-Feed-Key\",\"credentialValuePrefix\":\"Key \",\"credentialOptional\":true,\"enabled\":false,\"lifecycleStatus\":\"pending\",\"statusText\":\"Not tested\",\"discoveredTools\":[],\"toolAccessMode\":\"auto\",\"allowedTools\":[],\"credentialRef\":\"connection_9b40039f256d4d51b2e153611ef3165a\"}]",
-        "api_connections_json": "[{\"id\":\"api_scenario_weather\",\"displayName\":\"Scenario Weather\",\"allowedHosts\":[\"api.weather.example.com\"],\"pathPrefixes\":[\"/v1/\"],\"headerName\":\"Authorization\",\"headerValuePrefix\":\"Bearer \",\"allowedMethods\":[\"GET\"],\"enabled\":true,\"authMode\":\"credential\",\"lifecycleStatus\":\"ready\",\"statusText\":\"Connected\",\"presetId\":\"preset_scenario_weather\",\"credentialRef\":\"connection_08f75d47585a4f6e9e885f6d5e0ad142\",\"readyRevision\":2},{\"id\":\"api_scenario_calendar\",\"displayName\":\"Scenario Calendar\",\"allowedHosts\":[\"calendar.example.com\"],\"pathPrefixes\":[\"/calendar/v3/\"],\"headerName\":\"Authorization\",\"allowedMethods\":[\"GET\",\"POST\"],\"enabled\":true,\"authMode\":\"oauth\",\"oauthProvider\":\"google\",\"oauthScopes\":[\"https://calendar.example.com/auth/calendar.readonly\"],\"oauthAppType\":\"external\",\"lifecycleStatus\":\"ready\",\"statusText\":\"Connected\",\"identity\":{\"accountName\":\"scenario@example.com\"},\"credentialRef\":\"connection_b07cbdc4a8484044ab0503a06139a5df\"},{\"id\":\"api_scenario_legacy\",\"displayName\":\"Scenario Legacy\",\"allowedHosts\":[\"legacy.example.com\"],\"pathPrefixes\":[\"/\"],\"headerName\":\"X-Api-Key\",\"allowedMethods\":[\"GET\"],\"enabled\":false,\"credentialRef\":\"connection_27fc43e6b85a42749b1a7692f1632ec3\"}]",
+        "mcp_servers_json": "[{\"id\":\"mcp_scenario_tracker\",\"displayName\":\"Scenario Tracker\",\"url\":\"https://Tracker.Example.com\",\"transport\":\"streamable-http\",\"authMode\":\"bearer\",\"headerNames\":[\"X-Workspace\"],\"enabled\":true,\"lifecycleStatus\":\"ready\",\"statusText\":\"Connected\",\"discoveredTools\":[{\"name\":\"search_issues\",\"title\":\"Search issues\",\"description\":\"Search synthetic tracker issues.\",\"readOnlyHint\":true,\"inputSchema\":{\"propertyNames\":[\"query\",\"account_id\"],\"accountFields\":[{\"name\":\"account_id\",\"type\":\"string\",\"required\":false}],\"ambiguous\":false,\"fingerprint\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"}},{\"name\":\"create_issue\",\"description\":\"Create a synthetic issue.\"}],\"toolAccessMode\":\"review\",\"toolPolicies\":{\"search_issues\":{\"effect\":\"read\"},\"create_issue\":{\"effect\":\"write\",\"argumentConstraints\":{\"project\":[\"SCN\"]}}},\"allowedTools\":[\"search_issues\",\"create_issue\"],\"lastCheckedAt\":1792080000000,\"identity\":{\"workspaceName\":\"Example Workspace\",\"accountName\":\"scenario-bot\"},\"presetId\":\"preset_scenario_tracker\",\"credentialRef\":\"connection_e1ccfdf05700468ca39ef03d3cca1445\"},{\"id\":\"mcp_scenario_docs\",\"displayName\":\"Scenario Docs\",\"url\":\"https://docs.example.com/mcp/\",\"transport\":\"sse\",\"authMode\":\"oauth\",\"headerNames\":[],\"enabled\":true,\"lifecycleStatus\":\"pending\",\"statusText\":\"Reconnect required\",\"discoveredTools\":[{\"name\":\"read_page\"}],\"allowedTools\":[\"read_page\"],\"oauthScope\":\"docs.read\",\"oauthAttemptId\":\"6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b\",\"credentialRef\":\"connection_ab1611d14d6d4452893cb7e04481204a\"},{\"id\":\"mcp_scenario_feed\",\"displayName\":\"Scenario Feed\",\"url\":\"https://feed.example.com/mcp\",\"transport\":\"streamable-http\",\"authMode\":\"none\",\"headerNames\":[\"X-Feed-Key\"],\"credentialHeaderName\":\"X-Feed-Key\",\"credentialValuePrefix\":\"Key \",\"credentialOptional\":true,\"enabled\":false,\"lifecycleStatus\":\"pending\",\"statusText\":\"Not tested\",\"discoveredTools\":[],\"toolAccessMode\":\"auto\",\"allowedTools\":[],\"credentialRef\":\"connection_06e4cad24c1b44a29cddaf659ff061b9\"}]",
+        "api_connections_json": "[{\"id\":\"api_scenario_weather\",\"displayName\":\"Scenario Weather\",\"allowedHosts\":[\"api.weather.example.com\"],\"pathPrefixes\":[\"/v1/\"],\"headerName\":\"Authorization\",\"headerValuePrefix\":\"Bearer \",\"allowedMethods\":[\"GET\"],\"enabled\":true,\"authMode\":\"credential\",\"lifecycleStatus\":\"ready\",\"statusText\":\"Connected\",\"presetId\":\"preset_scenario_weather\",\"credentialRef\":\"connection_8d5f775fc9ae46bdb36df147e1a94770\",\"readyRevision\":2},{\"id\":\"api_scenario_calendar\",\"displayName\":\"Scenario Calendar\",\"allowedHosts\":[\"calendar.example.com\"],\"pathPrefixes\":[\"/calendar/v3/\"],\"headerName\":\"Authorization\",\"allowedMethods\":[\"GET\",\"POST\"],\"enabled\":true,\"authMode\":\"oauth\",\"oauthProvider\":\"google\",\"oauthScopes\":[\"https://calendar.example.com/auth/calendar.readonly\"],\"oauthAppType\":\"external\",\"lifecycleStatus\":\"ready\",\"statusText\":\"Connected\",\"identity\":{\"accountName\":\"scenario@example.com\"},\"credentialRef\":\"connection_e862f0681a1341a2bbcca6942e8f8332\"},{\"id\":\"api_scenario_legacy\",\"displayName\":\"Scenario Legacy\",\"allowedHosts\":[\"legacy.example.com\"],\"pathPrefixes\":[\"/\"],\"headerName\":\"X-Api-Key\",\"allowedMethods\":[\"GET\"],\"enabled\":false,\"credentialRef\":\"connection_664eb1d4371f4b5a9a11f27d278f9174\"}]",
         "repositories_json": "[{\"id\":\"repo_scenario_app\",\"installationId\":4242,\"accountLogin\":\"example-org\",\"fullName\":\"example-org/scenario-app\",\"enabled\":true},{\"id\":\"repo_scenario_all\",\"installationId\":null,\"accountLogin\":\"example-user\",\"fullName\":\"example-user/*\",\"allRepos\":true,\"enabled\":false}]",
         "model_effort": "high",
         "website_logins_json": "[{\"loginId\":\"login_scenario_portal\",\"level\":\"act\",\"enabled\":true},{\"loginId\":\"login_scenario_reports\",\"level\":\"check\",\"enabled\":false}]"
@@ -649,6 +649,7 @@
         "author_name": null,
         "files_json": "[{\"name\":\"report-q3.csv\",\"type\":\"csv\",\"sizeBytes\":2048}]",
         "images_json": null,
+        "file_refs_json": "[{\"id\":\"F0SCENARIOCSV\",\"name\":\"report-q3.csv\",\"mimeType\":\"text/csv\",\"sizeBytes\":2048}]",
         "gap_before_ts": null,
         "updated_at": 1792083600000
       },
@@ -666,6 +667,7 @@
         "author_name": "Scenario Jobs",
         "files_json": null,
         "images_json": null,
+        "file_refs_json": null,
         "gap_before_ts": null,
         "updated_at": 1792083600000
       },
@@ -683,6 +685,7 @@
         "author_name": "Scenario Researcher",
         "files_json": null,
         "images_json": "[{\"id\":\"F0SCENARIOIMG\",\"name\":\"chart.png\",\"mimeType\":\"image/png\",\"sizeBytes\":4096}]",
+        "file_refs_json": null,
         "gap_before_ts": null,
         "updated_at": 1792083600000
       },
@@ -700,6 +703,7 @@
         "author_name": "Scenario Alerts",
         "files_json": null,
         "images_json": null,
+        "file_refs_json": null,
         "gap_before_ts": "1792076460.000200",
         "updated_at": 1792083600000
       },
@@ -717,6 +721,7 @@
         "author_name": null,
         "files_json": "[]",
         "images_json": null,
+        "file_refs_json": null,
         "gap_before_ts": null,
         "updated_at": 1792083600000
       }
@@ -1809,6 +1814,14 @@
         {
           "authorId": "U0SCENARIOMEM",
           "channelId": "C0SCENARIO1",
+          "fileRefs": [
+            {
+              "id": "F0SCENARIOCSV",
+              "mimeType": "text/csv",
+              "name": "report-q3.csv",
+              "sizeBytes": 2048
+            }
+          ],
           "files": [
             {
               "name": "report-q3.csv",
