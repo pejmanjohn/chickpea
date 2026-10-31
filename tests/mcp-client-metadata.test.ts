@@ -32,8 +32,7 @@ const signingKeys = () => {
   return { keys: [{ ...jwk, alg: 'EdDSA', use: 'sig', kid: 'k1' }] };
 };
 
-/** A client assertion naming `clientId`, signed by no key it publishes. */
-const clientAssertion = (clientId: string, jti: string) => {
+const forgedClientAssertion = (clientId: string, jti: string) => {
   const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   const claims = {
     iss: clientId, sub: clientId, aud: `${ORIGIN}/api/auth/oauth2/token`, exp: Math.floor(Date.now() / 1_000) + 60, jti,
@@ -118,8 +117,7 @@ const claudeHost = () => metadataDocumentServer({
   [CLAUDE_CODE]: CLAUDE_DOCUMENTS.claudeCode.body,
 });
 
-/** Claude's refresh token after a signed-in sign-in and consent. */
-async function claudeSignIn(f: Awaited<ReturnType<typeof fixture>>): Promise<string> {
+async function claudeRefreshToken(f: Awaited<ReturnType<typeof fixture>>): Promise<string> {
   const authorization = await f.authorize(CLAUDE, CLAUDE_CALLBACK);
   const callback = await f.approve(authorization.headers.get('location')!);
   const exchanged = await f.exchange(CLAUDE, CLAUDE_CALLBACK, callback.searchParams.get('code')!);
@@ -320,7 +318,7 @@ test('a stored client whose document turns to key authentication is refused befo
     const asserted = await f.token({
       grant_type: 'authorization_code', code: 'unused', code_verifier: 'v'.repeat(43), redirect_uri: CLAUDE_CALLBACK,
       client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
-      client_assertion: clientAssertion(CLAUDE, `attempt-${attempt}`),
+      client_assertion: forgedClientAssertion(CLAUDE, `attempt-${attempt}`),
     });
     assert.equal(asserted.status, 400);
     assert.deepEqual(await asserted.json(), PUBLIC_CLIENTS_ONLY);
@@ -355,7 +353,7 @@ test('a client ID refused unfetched spends none of the fetch budget', async (t) 
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const host = claudeHost();
   const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
-  const refreshToken = await claudeSignIn(f);
+  const refreshToken = await claudeRefreshToken(f);
   t.mock.timers.tick(6 * 60_000);
   for (let attempt = 0; attempt < 150; attempt++) {
     const response = await f.authorize(`https://10.0.0.${1 + attempt % 4}/client-${attempt}`, CLAUDE_CALLBACK, { signedIn: false });
@@ -421,7 +419,7 @@ test('a stored client stands in for an unreachable document for a day after its 
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const served: Record<string, ServedDocument> = { [CLAUDE]: CLAUDE_DOCUMENTS.claude.body };
   const f = await fixture(t, { fetchClientMetadataResource: metadataDocumentServer(served).fetch });
-  let refreshToken = await claudeSignIn(f);
+  let refreshToken = await claudeRefreshToken(f);
   const renew = async () => {
     const response = await f.refresh(CLAUDE, refreshToken);
     if (response.ok) refreshToken = (await response.clone().json() as { refresh_token: string }).refresh_token;
@@ -452,7 +450,7 @@ test('a spent fetch budget refuses a stored client unless its last fetch could n
   const served: Record<string, ServedDocument> = { [CLAUDE]: CLAUDE_DOCUMENTS.claude.body };
   const host = metadataDocumentServer(served);
   const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
-  let refreshToken = await claudeSignIn(f);
+  let refreshToken = await claudeRefreshToken(f);
   const renew = async () => {
     const response = await f.refresh(CLAUDE, refreshToken);
     if (response.ok) refreshToken = (await response.clone().json() as { refresh_token: string }).refresh_token;

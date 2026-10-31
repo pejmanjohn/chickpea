@@ -258,6 +258,9 @@ export interface PendingMcpOAuthClientPrune {
   keep: number;
 }
 
+/** A per-source limit on new MCP clients: a response refusing the request, or undefined. */
+export type McpRegistrationThrottle = (request: Request) => Promise<Response | undefined>;
+
 /** How many MCP clients no one has consented to may wait, and for how long. */
 export interface McpRegistrationPolicy {
   maxPendingClients: number;

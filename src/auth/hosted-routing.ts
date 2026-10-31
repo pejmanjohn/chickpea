@@ -9,7 +9,7 @@ import {
   createBetterAuthSessionReader,
   requireSupportedOrigin,
 } from './better-auth.ts';
-import type { BetterAuthMembershipRecord } from './better-auth-backend.ts';
+import type { BetterAuthMembershipRecord, McpRegistrationThrottle } from './better-auth-backend.ts';
 import { hostBetterAuthBackend, type BetterAuthEnvironment } from './better-auth-environment.ts';
 import { BetterAuthDirectory } from './better-auth-principal.ts';
 import { createBetterAuthPublicHandler, type BetterAuthPublicHandlerInput } from './better-auth-routes.ts';
@@ -58,7 +58,7 @@ export interface HostedRouting<E extends PlatformEnv> {
    * response that refuses this request, or undefined to let it through. Core
    * keeps no per-source state on the shared path, so every host supplies one.
    */
-  throttleRegistration(request: Request): Promise<Response | undefined>;
+  throttleRegistration: McpRegistrationThrottle;
   mcpRegistrationPolicy?: BetterAuthPublicHandlerInput['mcpRegistrationPolicy'];
 }
 

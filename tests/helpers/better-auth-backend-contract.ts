@@ -141,8 +141,7 @@ export function betterAuthBackendContract(contract: BetterAuthBackendContract): 
   });
 
   it('a client known by its metadata document is pending until someone consents, whatever its authentication', async (f) => {
-    // Stored before Chickpea refused key-authenticated documents.
-    await f.storeClient({
+    await f.storeLegacyClientRow({
       clientId: 'https://evil.example/client', clientDiscoveryId: 'cimd', tokenEndpointAuthMethod: 'private_key_jwt',
       jwksUri: 'https://evil.example/jwks', redirectUris: [REDIRECT], createdAt: new Date(), updatedAt: new Date(),
     });
@@ -354,8 +353,7 @@ interface Fixture extends BetterAuthBackendSubject {
   /** A dynamically registered MCP client's renewable grant, through consent. */
   grant(cookie: string, options: { resource: boolean }): Promise<Grant>;
   refresh(grant: Grant): Promise<Response>;
-  /** Writes an OAuth client row directly, as an older release may have. */
-  storeClient(data: Record<string, unknown>): Promise<void>;
+  storeLegacyClientRow(data: Record<string, unknown>): Promise<void>;
 }
 
 async function openFixture(t: TestContext, contract: BetterAuthBackendContract): Promise<Fixture | undefined> {
@@ -425,7 +423,7 @@ async function openFixture(t: TestContext, contract: BetterAuthBackendContract):
       grant_type: 'refresh_token', client_id: grant.clientId,
       refresh_token: grant.refreshToken, ...(grant.resource ? { resource: grant.resource } : {}),
     }),
-    async storeClient(data) {
+    async storeLegacyClientRow(data) {
       await (await auth.$context).adapter.create({ model: 'oauthClient', data });
     },
   };
