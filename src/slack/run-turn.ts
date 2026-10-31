@@ -428,6 +428,8 @@ export interface RunTurnOptions {
   onSlackWrite?: (surface: TurnFirstWrite) => void;
   /** Set by `runTurn` itself when `turnLatency` is present: the follow-ups the prompt frames as information only. */
   onFollowUpsInformed?: (count: number) => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: a 👀 on a message the turn read became 👍. */
+  onRead?: () => void;
 }
 
 /** How a stopped turn ends (see RunTurnOptions.stopEnding). */
@@ -520,6 +522,7 @@ export async function runTurn(
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
       onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
+      onRead: () => tracker.markRead(),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
         if (outcome === 'stopped') stopped = true;
@@ -1381,6 +1384,7 @@ async function runTurnAttempt(
       try {
         const acknowledgment = await swapReceiptForRead(client, receipt);
         options.onSlackWrite?.('reaction');
+        options.onRead?.();
         if (own) {
           workAcknowledgment = { name: acknowledgment.name, created: true };
           await recordInteractionProgress({ acknowledgment });

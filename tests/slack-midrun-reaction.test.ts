@@ -931,6 +931,44 @@ test('a turn swaps 👀 for 👍 on its own message and the follow-ups it answer
   }
 });
 
+test('the turn_latency record counts the 👀 the turn swapped for 👍, content-free', async () => {
+  const head = '1800000000.000305';
+  const own = '1800000000.000306';
+  const reactions = new Reactions();
+  for (const ts of [head, own]) reactions.react(BOT, ts, 'eyes');
+  const info = console.info;
+  const records: Array<Record<string, unknown>> = [];
+  console.info = (record: unknown) => {
+    if (record && typeof record === 'object') records.push(record as Record<string, unknown>);
+  };
+  try {
+    await runTurn(queuedDmTurn(head), assignment, undefined, {
+      client: queuedTurnClient(reactions),
+      turnId: 'head',
+      interactionProgress: { acknowledgment: midReceipt(head) },
+      recordFollowUpProgress: () => undefined,
+      claimFold: async () => ({
+        messages: [{ turnJobId: 'own', userId: 'U_MEMBER', messageTs: own, text: 'Keep it short.' }],
+        requesterText: '',
+        receipts: ([['head', head], ['own', own]] as const).map(([turnJobId, messageTs]) => ({
+          turnJobId, receipt: { channelId: 'C_MID', messageTs, name: 'eyes' },
+        })),
+      }),
+      turnLatency: { lane: 'node', executor: 'node' },
+      agentPrompt: async () => ({
+        text: 'Here is the draft.', requestedModel: null, returnedModel: null, reportedUsage: null,
+        usageCompleteness: 'not_reported',
+      }),
+      usageRecordingEnabled: false,
+    });
+  } finally {
+    console.info = info;
+  }
+  const [latency] = records.filter((record) => record.event === 'turn_latency');
+  assert.equal(latency?.read, 2);
+  assert.ok(!JSON.stringify(latency).includes(head) && !JSON.stringify(latency).includes(own), 'no Slack coordinates');
+});
+
 test('a swap that fails stays owed, so the turn\'s finish takes off both emoji', async () => {
   const head = '1800000000.000304';
   const reactions = new Reactions();
