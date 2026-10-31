@@ -30,7 +30,6 @@ const PUBLIC_ROUTES = new Map<string, PublicRoute>([
   ['GET /api/auth/get-session', 'read'],
   ['GET /api/auth/jwks', 'read'],
   ['GET /api/auth/oauth2/authorize', 'read'],
-  ['POST /api/auth/oauth2/authorize', 'protocol-mutation'],
   ['POST /api/auth/oauth2/consent', 'browser-mutation'],
   ['POST /api/auth/oauth2/continue', 'browser-mutation'],
   ['POST /api/auth/oauth2/register', 'registration'],
@@ -83,7 +82,7 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
     }
 
     auth ??= createBetterAuth({ ...input, baseURL });
-    if (route === 'read' && url.pathname === '/api/auth/oauth2/authorize') {
+    if (url.pathname === '/api/auth/oauth2/authorize') {
       const renewable = await withOfflineAccessForRenewableClient(withConsentOnLoopback(request), auth);
       if (renewable instanceof Response) return renewable;
       request = renewable;
