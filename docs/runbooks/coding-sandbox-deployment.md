@@ -306,8 +306,9 @@ meanwhile, the Agent reads the message within about 15 seconds without
 stopping the job, and can pass a change to it. The coding worker takes that
 guidance into account from its next step, with the job's own workspace and
 repository grants; instructions it finds in files, command output or web
-content are never guidance. The Agent still replies once, when the job
-ends. See
+content are never guidance. If the message asks something worth answering
+at once, the Agent can answer it with a short threaded reply while the job
+keeps running. Its final reply still posts once, when the job ends. See
 [Messages sent during a coding job](slack-steering.md#messages-sent-during-a-coding-job).
 
 ## Commit author
