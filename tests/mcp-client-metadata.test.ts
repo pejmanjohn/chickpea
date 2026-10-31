@@ -327,7 +327,7 @@ test('a metadata document may list only the redirects dynamic registration accep
   assert.deepEqual(f.clients(), [], 'a refused document leaves no client behind');
 });
 
-test('a stored client whose document turns to key authentication is refused before any key is fetched', async (t) => {
+test('a stored client whose document turns to key authentication is refused before any key is fetched, even standing in', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const jwksUri = 'https://claude.ai/oauth/jwks';
   const served: Record<string, ServedDocument> = { [CLAUDE]: CLAUDE_DOCUMENTS.claude.body, [jwksUri]: JSON.stringify(signingKeys()) };
@@ -337,6 +337,11 @@ test('a stored client whose document turns to key authentication is refused befo
   const callback = await f.approve(authorization.headers.get('location')!);
   const exchanged = await f.exchange(CLAUDE, CLAUDE_CALLBACK, callback.searchParams.get('code')!);
   const { refresh_token: refreshToken } = await exchanged.json() as { refresh_token: string };
+  const assertKey = (jti: string) => f.token({
+    grant_type: 'authorization_code', code: 'unused', code_verifier: 'v'.repeat(43), redirect_uri: CLAUDE_CALLBACK,
+    client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+    client_assertion: forgedClientAssertion(CLAUDE, jti),
+  });
 
   served[CLAUDE] = lookalike(CLAUDE, { client_uri: 'https://claude.ai', token_endpoint_auth_method: 'private_key_jwt', jwks_uri: jwksUri });
   t.mock.timers.tick(6 * 60_000);
@@ -344,21 +349,29 @@ test('a stored client whose document turns to key authentication is refused befo
   assert.equal(renewed.status, 400);
   assert.deepEqual(await renewed.json(), PUBLIC_CLIENTS_ONLY);
   for (let attempt = 0; attempt < 3; attempt++) {
-    const asserted = await f.token({
-      grant_type: 'authorization_code', code: 'unused', code_verifier: 'v'.repeat(43), redirect_uri: CLAUDE_CALLBACK,
-      client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
-      client_assertion: forgedClientAssertion(CLAUDE, `attempt-${attempt}`),
-    });
+    const asserted = await assertKey(`attempt-${attempt}`);
     assert.equal(asserted.status, 400);
     assert.deepEqual(await asserted.json(), PUBLIC_CLIENTS_ONLY);
   }
+
+  served[CLAUDE] = { body: 'Service Unavailable', status: 503, headers: { 'content-type': 'text/plain' } };
+  t.mock.timers.tick(6 * 60_000);
+  const fetched = host.requests.length;
+  const standingIn = await assertKey('standing-in');
+  assert.deepEqual(host.requests.slice(fetched), [CLAUDE], 'the document did not answer, so the stored key-method row stands in');
+  assert.equal(standingIn.status, 400);
+  assert.deepEqual(await standingIn.json(), PUBLIC_CLIENTS_ONLY);
   assert.ok(!host.requests.includes(jwksUri), 'no key is fetched for a client Chickpea refuses');
 });
 
-test('a metadata document URL must be public HTTPS before anything is fetched or pruned', async (t) => {
+test('a metadata document URL must be public HTTPS before anything is fetched, throttled or pruned', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const host = metadataDocumentServer({});
-  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  let throttled = 0;
+  const f = await fixture(t, {
+    fetchClientMetadataResource: host.fetch,
+    async throttleRegistration() { throttled += 1; return undefined; },
+  });
   const prune = t.mock.method(f.backend, 'prunePendingMcpOAuthClients');
   for (const clientId of [
     'http://claude.ai/oauth/mcp-oauth-client-metadata',
@@ -374,6 +387,7 @@ test('a metadata document URL must be public HTTPS before anything is fetched or
     }
   }
   assert.deepEqual(host.requests, []);
+  assert.equal(throttled, 0, 'a URL refused unfetched spends none of its source\'s registration limit');
   assert.equal(prune.mock.callCount(), 0, 'a URL refused unfetched costs no pending-client write');
   assert.deepEqual(f.clients(), []);
 });
