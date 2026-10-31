@@ -45,7 +45,18 @@ export interface RunReviewRecordV1 {
   agentId: string;
   /** The model the provider reported answering with. */
   model?: string;
-  trigger: { author: RunReviewPseudonym | 'routine'; text: string; files: RunReviewFileNote[] };
+  /**
+   * The request. `text` holds every message of it, one per paragraph;
+   * `followUps`, present when it had more than one message, repeats those
+   * after the first, each with its sender, since a teammate's can be among
+   * them. `author` is the first message's sender.
+   */
+  trigger: {
+    author: RunReviewPseudonym | 'routine';
+    text: string;
+    files: RunReviewFileNote[];
+    followUps?: Array<{ author: RunReviewPseudonym; text: string }>;
+  };
   context: RunReviewContextMessage[];
   steps: RunReviewStep[];
   /** The Agent's delivered text. */
@@ -67,7 +78,13 @@ export interface RunReviewInput {
   surface: RunReviewSurface;
   agentId: string;
   model?: string;
-  trigger: { author: string; text: string; files: readonly RunReviewFileNote[] };
+  trigger: {
+    author: string;
+    text: string;
+    files: readonly RunReviewFileNote[];
+    /** Slack user IDs, as `author`. */
+    followUps?: readonly { author: string; text: string }[];
+  };
   context: readonly {
     /** A person's Slack user ID, or an app's or Agent's label. */
     author: string;
@@ -156,6 +173,14 @@ export function buildRunReviewRecord(
       author: input.trigger.author === 'routine' ? 'routine' : pseudonymOf(input.trigger.author),
       text: field(input.trigger.text),
       files: files(input.trigger.files),
+      ...(input.trigger.followUps?.length
+        ? {
+            followUps: input.trigger.followUps.map((message) => ({
+              author: pseudonymOf(message.author),
+              text: field(message.text),
+            })),
+          }
+        : {}),
     },
     context: input.context.map((message) => ({
       author: message.role === 'human' ? pseudonymOf(message.author) : field(message.author),

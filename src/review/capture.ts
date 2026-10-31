@@ -107,6 +107,9 @@ export function slackRunReviewConversation(
       author: turn.userId,
       text: triggers.length > 0 ? triggers.map((message) => message.text).join('\n\n') : turn.text,
       files: notes(triggers.flatMap((message) => message.files ?? [])),
+      ...(triggers.length > 1
+        ? { followUps: triggers.slice(1).map((message) => ({ author: message.userId, text: message.text })) }
+        : {}),
     },
     context: messages.filter((message) => !message.isTrigger).map((message) => {
       const role = message.role ?? 'human';
@@ -123,10 +126,17 @@ export function slackRunReviewConversation(
 /** Messages a late fold added to the request follow the ones the turn started with, one paragraph each. */
 function withLateFollowUps(
   trigger: RunReviewInput['trigger'],
-  followUps: readonly { text: string }[],
+  followUps: readonly { userId: string; text: string }[],
 ): RunReviewInput['trigger'] {
   if (followUps.length === 0) return trigger;
-  return { ...trigger, text: [trigger.text, ...followUps.map((message) => message.text)].join('\n\n') };
+  return {
+    ...trigger,
+    text: [trigger.text, ...followUps.map((message) => message.text)].join('\n\n'),
+    followUps: [
+      ...trigger.followUps ?? [],
+      ...followUps.map((message) => ({ author: message.userId, text: message.text })),
+    ],
+  };
 }
 
 export function runReviewError(error: unknown): { class: string; message: string } {

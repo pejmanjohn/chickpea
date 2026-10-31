@@ -7,6 +7,7 @@ import {
   compileRuntimePlanV2,
   deriveRuntimePlanInstanceId,
   frozenModelCredential,
+  runtimePlanUsesPersonalAccess,
   type RuntimePlanCodingModelV1,
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
@@ -146,7 +147,12 @@ import type {
 } from './turn-job-types.ts';
 import { slackContextSinceWatermark, threadContinuityNote } from './thread-continuity.ts';
 import { hydrateTurnSlackContext } from './turn-context-reads.ts';
-import { foldActivityStatus, foldedRequestText, type FoldedMessage } from './follow-ups.ts';
+import {
+  foldActivityStatus,
+  foldedInformationOnly,
+  foldedRequestText,
+  type FoldedMessage,
+} from './follow-ups.ts';
 import { listAgentAppBots } from './agent-app-bots.ts';
 import { createSlackReadGate, sharesSlackAppReadBudget } from './read-budget.ts';
 import { resolveSlackContextNames } from './context-names.ts';
@@ -415,6 +421,8 @@ export interface RunTurnOptions {
   turnLatency?: TurnLatencyContext;
   /** Set by `runTurn` itself when `turnLatency` is present. */
   onSlackWrite?: (surface: TurnFirstWrite) => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: the follow-ups the prompt frames as information only. */
+  onFollowUpsInformed?: (count: number) => void;
 }
 
 /** How a stopped turn ends (see RunTurnOptions.stopEnding). */
@@ -504,6 +512,7 @@ export async function runTurn(
     await runTurnAttempt(turn, assignment, platformEnv, {
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
+      onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
         if (outcome === 'stopped') stopped = true;
@@ -534,7 +543,7 @@ async function runTurnAttempt(
 ): Promise<void> {
   // The person's words across the request's messages, for every reader that
   // weighs what was asked rather than which message asked it.
-  const requestText = followUps.length > 0 ? foldedRequestText(turn.text, followUps) : turn.text;
+  const requestText = followUps.length > 0 ? foldedRequestText(turn, followUps) : turn.text;
   const turnWorkspaceId = effectiveTurnSlackInstallationId(turn);
   const installationContext = options.installationContext ?? (
     options.client
@@ -1814,8 +1823,17 @@ async function runTurnAttempt(
     const threadImageManifest = threadImages && runtimePlanDecision
       ? conversationThreadImageInventory(runtimePlanDecision.runtimePlan.conversation, threadImages).manifest
       : '';
+    // The store decides the same when the plan freezes, which is after it
+    // took these messages (TurnJobStoreLogic.decideStartFoldRoles).
+    const usesPersonalAccess = runtimePlanDecision === undefined ||
+      runtimePlanUsesPersonalAccess(runtimePlanDecision.runtimePlan);
+    const requestFollowUps = followUps.map(({ informationOnly: _provisional, ...message }): FoldedMessage =>
+      foldedInformationOnly(message.userId, turn.userId, usesPersonalAccess)
+        ? { ...message, informationOnly: true as const }
+        : message);
+    options.onFollowUpsInformed?.(requestFollowUps.filter((message) => message.informationOnly).length);
     const prompt = assembleSlackPrompt(turn, promptContext, {
-      followUps,
+      followUps: requestFollowUps,
       ...(handoffBlock ? { handoffBlock } : {}),
       ...(preparedMemory?.promptBlock && !memoryRendered
         ? { memoryBlock: preparedMemory.promptBlock }

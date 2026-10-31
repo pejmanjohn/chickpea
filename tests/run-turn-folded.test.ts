@@ -6,6 +6,7 @@ import { after, before, test } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
 
+import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { currentRequestEnvelopeText } from '../src/memory/tool-policy.ts';
@@ -233,6 +234,73 @@ test('the prompt frames the trigger and its follow-ups in order, as one request,
   }
 });
 
+const TEAMMATE_FOLLOW_UPS: FoldedMessage[] = [
+  FOLLOW_UPS[0]!,
+  // The store took it before the head's plan froze: information only, until the plan says otherwise.
+  { turnJobId: 'third', userId: 'U_LEAD', messageTs: THIRD_TS, text: 'Actually, address it to the beta list.', informationOnly: true },
+];
+
+/** A frozen plan for the head; `personal` grants the requester's own CRM account. */
+function frozenPlan(personal: boolean): NonNullable<RunTurnOptions['runtimePlanDecision']> {
+  const runtimePlan = compileRuntimePlanV2({
+    turn: threadTurn(), assignment, instructions: 'Answer directly.', memoryEpoch: 1,
+    ...(personal
+      ? {
+          effectiveConnections: [{
+            account: {
+              id: 'crm_mine', workspaceId: assignment.workspaceId, revision: 1, ownerKind: 'member',
+              ownerMembershipId: 'mem_requester', createdByMembershipId: 'mem_requester', providerId: 'crm',
+              label: 'CRM', secretRefId: 'secret_crm', lifecycle: 'ready', createdAt: 1, updatedAt: 1,
+              policy: {
+                kind: 'api', allowedHosts: ['api.example.com'], pathPrefixes: ['/v1'], headerName: 'authorization',
+                headerValuePrefix: 'Bearer ', allowedMethods: ['GET'], authMode: 'credential',
+              },
+            },
+            binding: {
+              agentId: assignment.agentId, connectionAccountId: 'crm_mine', providerId: 'crm',
+              allowedCapabilities: ['GET'], enabled: true, createdAt: 1, updatedAt: 1,
+            },
+            policy: {
+              kind: 'api', allowedHosts: ['api.example.com'], pathPrefixes: ['/v1'], headerName: 'authorization',
+              headerValuePrefix: 'Bearer ', allowedMethods: ['GET'], authMode: 'credential',
+            },
+            scope: 'personal',
+          }],
+        }
+      : {}),
+  });
+  return { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) };
+}
+
+test('a teammate\'s follow-up joins the request when the run uses only the Agent\'s shared connections', async () => {
+  const h = await harness(threadTurn());
+  try {
+    const [prompt] = await promptOf(h, {
+      claimFold: folding([], TEAMMATE_FOLLOW_UPS), runtimePlanDecision: frozenPlan(false),
+    });
+    assert.match(prompt!, /Current Slack request, sent as 3 messages by <@U_REQUESTER> and <@U_LEAD> \(together/);
+    assert.match(prompt!, /role=human\] U_LEAD: Actually, address it to the beta list\./);
+    assert.doesNotMatch(prompt!, /for information only/);
+  } finally {
+    h.close();
+  }
+});
+
+test('in a run with the requester\'s own connections a teammate\'s follow-up is information only', async () => {
+  const h = await harness(threadTurn());
+  try {
+    const [prompt] = await promptOf(h, {
+      claimFold: folding([], TEAMMATE_FOLLOW_UPS), runtimePlanDecision: frozenPlan(true),
+    });
+    assert.match(prompt!, /Current Slack request, sent as 2 messages by <@U_REQUESTER> \(together/);
+    const section = prompt!.slice(prompt!.indexOf('Sent by teammates while you work with <@U_REQUESTER>\'s own connections'));
+    assert.match(section, /^[^\n]*for information only[^\n]*\n- \[[^\]]*role=human\] U_LEAD: Actually, address it to the beta list\./);
+    assert.equal(occurrences(prompt!, 'Actually, address it to the beta list.'), 1);
+  } finally {
+    h.close();
+  }
+});
+
 test('the context reaches the newest follow-up and nothing after it', async () => {
   const h = await harness(threadTurn());
   try {
@@ -293,6 +361,30 @@ test('the turn_latency record counts the follow-ups, content-free', async () => 
   const latency = records.filter((record) => record.event === 'turn_latency');
   assert.equal(latency.length, 1);
   assert.equal(latency[0]?.folded, 2);
+});
+
+test('the turn_latency record counts the information-only follow-ups apart', async () => {
+  for (const personal of [false, true]) {
+    const h = await harness(threadTurn());
+    const info = console.info;
+    const records: Array<Record<string, unknown>> = [];
+    console.info = (record: unknown) => {
+      if (record && typeof record === 'object') records.push(record as Record<string, unknown>);
+    };
+    try {
+      await promptOf(h, {
+        claimFold: folding([], TEAMMATE_FOLLOW_UPS),
+        runtimePlanDecision: frozenPlan(personal),
+        turnLatency: { lane: 'cloudflare', executor: 'runner' },
+      });
+    } finally {
+      console.info = info;
+      h.close();
+    }
+    const [latency] = records.filter((record) => record.event === 'turn_latency');
+    assert.equal(latency?.folded, 2);
+    assert.equal(latency?.foldedInformed, personal ? 1 : undefined);
+  }
 });
 
 test('a replay never claims follow-ups', async () => {

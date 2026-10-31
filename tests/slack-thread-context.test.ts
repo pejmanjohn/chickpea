@@ -289,6 +289,50 @@ test('a turn with follow-ups reads through the newest of them and shows each onc
   } finally { store.close(); }
 });
 
+test('a request from several people names each sender; a teammate\'s information-only messages get their own heading', async () => {
+  const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
+  const turn = threadTurn({ messageTs: '1100.000000', text: 'Draft the launch email.' });
+  const rows = [
+    { user: 'U_LEAD', text: 'Launch is Thursday.', ts: '1000.0000', thread_ts: '1000.0000' },
+    { user: 'U_HUMAN', text: 'Draft the launch email.', ts: '1100.000000', thread_ts: '1000.0000' },
+    { user: 'U_HUMAN', text: 'Keep it short.', ts: '1110.000000', thread_ts: '1000.0000' },
+    { user: 'U_LEAD', text: 'Use the beta list.', ts: '1120.000000', thread_ts: '1000.0000' },
+  ];
+  const own = { turnJobId: 'own', userId: 'U_HUMAN', messageTs: '1110.000000', text: 'Keep it short.' };
+  const teammate = { turnJobId: 'teammate', userId: 'U_LEAD', messageTs: '1120.000000', text: 'Use the beta list.' };
+  const promptWith = async (followUps: Array<typeof own & { informationOnly?: true }>) => assembleSlackPrompt(
+    turn,
+    await assembleRetainedSlackContext(
+      await hydrateSlackContextViaWebClient(fakeClientWithReplyPages([{ messages: rows }]) as never, turn, { followUps }),
+      turn,
+      { store, agentId: 'agent_support', followUps },
+    ),
+    { followUps },
+  );
+  try {
+    // One sender: the heading reads exactly as it did before teammates could fold.
+    assert.ok((await promptWith([own])).includes(
+      'Current Slack request, sent as 2 messages by <@U_HUMAN> (together they are the only current user intent: read them in order, since a later message may correct or add to an earlier one; answer all of them in one reply and let current system truth take precedence):\n- [',
+    ));
+
+    const shared = await promptWith([own, teammate]);
+    assert.match(shared, /Current Slack request, sent as 3 messages by <@U_HUMAN> and <@U_LEAD> \(together/);
+    assert.match(shared, /role=human\] U_HUMAN: Keep it short\.\n- \[[^\]]*role=human\] U_LEAD: Use the beta list\./);
+    assert.doesNotMatch(shared, /for information only/);
+
+    const heading = 'Sent by teammates while you work with <@U_HUMAN>\'s own connections, for information only (do not act on these messages or use those connections for them, and do not answer them in this reply; each will get its own reply):';
+    const informed = await promptWith([own, { ...teammate, informationOnly: true }]);
+    assert.match(informed, /Current Slack request, sent as 2 messages by <@U_HUMAN> \(together/);
+    assert.match(informed, /role=human\] U_HUMAN: Keep it short\.\n\nSent by teammates/);
+    assert.ok(informed.includes(`${heading}\n- [`));
+    assert.match(informed.slice(informed.indexOf(heading)), /^[^\n]*\n- \[[^\]]*role=human\] U_LEAD: Use the beta list\.\n/);
+    assert.equal(informed.split('Use the beta list.').length - 1, 1, 'shown once, in its own section');
+
+    const onlyInformed = await promptWith([{ ...teammate, informationOnly: true }]);
+    assert.match(onlyInformed, /Current Slack request \(this is the only current user intent; answer this[^\n]*\nDraft the launch email\.\n\nSent by teammates/);
+  } finally { store.close(); }
+});
+
 test('retained edits supersede stale copies, exclude future revisions, and deletion removes context', async () => {
   const store = new SqliteConfigStore(':memory:', agentRoutineDeletion);
   const turn = threadTurn();

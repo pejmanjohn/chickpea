@@ -47,7 +47,12 @@ import { boundedSlackPublicHandoff, type SlackPublicHandoffMessage } from './pub
 import { isSlackContentMessageSubtype } from './message-subtypes.ts';
 import { slackFileSummaries } from './message-text.ts';
 import { AGENT_ASK_SILENT_REPLY } from './agent-asks.ts';
-import { foldedRequestHeading, frameFoldedMessages, type FoldedMessage } from './follow-ups.ts';
+import {
+  foldedRequestHeading,
+  frameFoldedMessages,
+  informationOnlyHeading,
+  type FoldedMessage,
+} from './follow-ups.ts';
 
 export const SLACK_SELF_MENTION_PLACEHOLDER = '[[CHICKPEA_SELF_MENTION]]';
 
@@ -655,12 +660,11 @@ export function assembleSlackPrompt(
   if (options.threadImageManifest) {
     parts.push('', 'Images in this conversation, with the img:N handles for this request:', options.threadImageManifest);
   }
-  if (followUps.length > 0) {
-    parts.push(
-      '',
-      foldedRequestHeading(followUps.length + 1, turn.userId),
-      frameFoldedMessages([{ userId: turn.userId, messageTs: turn.messageTs, text: turn.text }, ...followUps], contextTimezone),
-    );
+  const answered = followUps.filter((message) => !message.informationOnly);
+  const informed = followUps.filter((message) => message.informationOnly);
+  if (answered.length > 0) {
+    const request = [{ userId: turn.userId, messageTs: turn.messageTs, text: turn.text }, ...answered];
+    parts.push('', foldedRequestHeading(request), frameFoldedMessages(request, contextTimezone));
   } else {
     parts.push(
       '',
@@ -671,6 +675,9 @@ export function assembleSlackPrompt(
         : 'Current Slack request (this is the only current user intent; answer this and let current system truth take precedence):',
       turn.text,
     );
+  }
+  if (informed.length > 0) {
+    parts.push('', informationOnlyHeading(turn.userId), frameFoldedMessages(informed, contextTimezone));
   }
   parts.push(
     '',
