@@ -7,6 +7,7 @@ import {
   compileRuntimePlanV2,
   deriveRuntimePlanInstanceId,
   frozenModelCredential,
+  runtimePlanUsesPersonalAccess,
   type RuntimePlanCodingModelV1,
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
@@ -146,7 +147,12 @@ import type {
 } from './turn-job-types.ts';
 import { slackContextSinceWatermark, threadContinuityNote } from './thread-continuity.ts';
 import { hydrateTurnSlackContext } from './turn-context-reads.ts';
-import { foldActivityStatus, foldedRequestText, type FoldedMessage } from './follow-ups.ts';
+import {
+  foldActivityStatus,
+  foldedInformationOnly,
+  foldedRequestText,
+  type FoldedMessage,
+} from './follow-ups.ts';
 import { listAgentAppBots } from './agent-app-bots.ts';
 import { createSlackReadGate, sharesSlackAppReadBudget } from './read-budget.ts';
 import { resolveSlackContextNames } from './context-names.ts';
@@ -1813,8 +1819,15 @@ async function runTurnAttempt(
     const threadImageManifest = threadImages && runtimePlanDecision
       ? conversationThreadImageInventory(runtimePlanDecision.runtimePlan.conversation, threadImages).manifest
       : '';
+    // The store decides the same when the plan freezes, which is after it
+    // took these messages (TurnJobStoreLogic.decideStartFoldRoles).
+    const usesPersonalAccess = runtimePlanDecision === undefined ||
+      runtimePlanUsesPersonalAccess(runtimePlanDecision.runtimePlan);
     const prompt = assembleSlackPrompt(turn, promptContext, {
-      followUps,
+      followUps: followUps.map(({ informationOnly: _provisional, ...message }) =>
+        foldedInformationOnly(message.userId, turn.userId, usesPersonalAccess)
+          ? { ...message, informationOnly: true as const }
+          : message),
       ...(handoffBlock ? { handoffBlock } : {}),
       ...(preparedMemory?.promptBlock && !memoryRendered
         ? { memoryBlock: preparedMemory.promptBlock }
