@@ -793,6 +793,27 @@ test('a client its document last refused never stands in, on a spent budget or a
   assert.equal((await renew()).status, 200, 'a document that answers again restores it');
 });
 
+test('a lookup that fails for a reason Chickpea cannot read lets nothing stand in until a fetch succeeds', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const f = await fixture(t, { fetchClientMetadataResource: claudeHost().fetch });
+  let refreshToken = await claudeRefreshToken(f);
+  const renew = async () => {
+    const response = await f.refresh(CLAUDE, refreshToken);
+    if (response.ok) refreshToken = (await response.clone().json() as { refresh_token: string }).refresh_token;
+    return response;
+  };
+
+  t.mock.timers.tick(6 * 60_000);
+  f.backend.database.exec("CREATE TRIGGER storage_fails BEFORE UPDATE ON oauthClient BEGIN SELECT RAISE(ABORT, 'storage failed'); END;");
+  assert.notEqual((await renew()).status, 200, 'storing the fetched document fails');
+  f.backend.database.exec('DROP TRIGGER storage_fails');
+  t.mock.timers.tick(100);
+  const paused = await renew();
+  assert.equal(paused.status, 429, 'the plugin\'s pause that follows does not stand in for a person who consented');
+  t.mock.timers.tick(2_000);
+  assert.equal((await renew()).status, 200, 'a fetch that succeeds restores it');
+});
+
 test('a spent fetch budget refuses a client no one consented to unless its last fetch could not reach its document', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const served: Record<string, ServedDocument> = { [STRANGER]: strangerDocument, ...uncachedStrangers() };
