@@ -686,7 +686,14 @@ function createNodeThreadDrain(
           ...(state.getThreadContinuation
             ? { getThreadContinuation: state.getThreadContinuation.bind(state) }
             : {}),
-          ...(state.foldTurn ? { claimFold: state.foldTurn.bind(state) } : {}),
+          ...(state.foldTurn
+            ? {
+                claimFold: state.foldTurn.bind(state),
+                recordFollowUpProgress: async (id, patch) => {
+                  await recordSlackInteractionProgress(id, patch);
+                },
+              }
+            : {}),
           flueDispatch,
           ...(presentationState
             ? { presentationState, progressiveAttributionProven: true }

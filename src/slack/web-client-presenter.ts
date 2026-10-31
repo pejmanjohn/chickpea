@@ -7,7 +7,7 @@ import {
   type SemanticActivityTelemetrySink,
   type SemanticActivityTelemetrySurface,
 } from '../activity/telemetry.ts';
-import type { TurnPullRequestProgress } from '../config/state-rpc.ts';
+import type { SlackInteractionProgress, TurnPullRequestProgress } from '../config/state-rpc.ts';
 import {
   canonicalSlackReplyText,
   countOf,
@@ -1588,6 +1588,43 @@ export async function removeSlackReaction(
     if (slackPlatformErrorCode(error) === 'no_reaction') return;
     throw error;
   }
+}
+
+/**
+ * Replace Chickpea's 👀 with 👍 once a run read the message (`read`, R14).
+ * The state store recorded the swap owed before this runs, so a 👍 Slack
+ * already shows here is an earlier attempt's and counts as Chickpea's own.
+ * Returns the receipt that stands afterwards.
+ */
+export async function swapReceiptForRead(
+  client: Pick<WebClient, 'reactions'>,
+  receipt: TurnMidRunReceipt,
+): Promise<NonNullable<SlackInteractionProgress['acknowledgment']>> {
+  await removeSlackReaction(client, receipt.name, receipt);
+  const added = await addSlackReceiptReaction(client, 'read', receipt);
+  return {
+    channelId: receipt.channelId,
+    messageTs: receipt.messageTs,
+    name: added.name,
+    created: true,
+    cleanup: 'pending',
+    reaction: 'read',
+    read: 'done',
+  };
+}
+
+/**
+ * Remove one of Chickpea's receipts. While its 👍 is owed the swap may have
+ * added it before recording it, so both emoji come off.
+ */
+export async function removeSlackReceipt(
+  client: Pick<WebClient, 'reactions'>,
+  receipt: TurnMidRunReceipt & { read?: 'owed' | 'done' },
+): Promise<void> {
+  const names = receipt.read === 'owed'
+    ? new Set([receipt.name, ...reactionFallbacks('read')])
+    : [receipt.name];
+  for (const name of names) await removeSlackReaction(client, name, receipt);
 }
 
 async function addReactionChain(

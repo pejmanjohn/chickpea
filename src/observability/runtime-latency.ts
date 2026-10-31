@@ -241,6 +241,7 @@ export class TurnLatencyTracker {
   private final: { kind: 'delivered' | 'deferred'; at: number } | undefined;
   private folded = 0;
   private foldedInformed = 0;
+  private read = 0;
   private emitted = false;
 
   constructor(
@@ -265,6 +266,11 @@ export class TurnLatencyTracker {
   /** Of those, this many reached it as information only. */
   markFoldedInformed(count: number): void {
     this.foldedInformed = count;
+  }
+
+  /** A 👀 on a message this turn read became 👍. */
+  markRead(): void {
+    this.read += 1;
   }
 
   /** The terminal was delivered, or handed to a durable outbox. */
@@ -305,6 +311,7 @@ export class TurnLatencyTracker {
       attemptMs: end - this.startedAt,
       folded: this.folded > 0 ? this.folded : undefined,
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,
+      read: this.read > 0 ? this.read : undefined,
     }, this.sink);
   }
 }

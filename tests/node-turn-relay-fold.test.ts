@@ -17,7 +17,7 @@ import {
   type SlackStateStore,
 } from '../src/slack/claim-store.ts';
 import { wakeNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
-import type { RunTurnOptions } from '../src/slack/run-turn.ts';
+import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { turnStopThreadKey } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
@@ -74,8 +74,8 @@ function nodeAssignment(): ResolvedAssignment {
   };
 }
 
-/** One Slack thread per test: the relay's per-thread loops are process-wide. */
-function slackThread(rootTs: string) {
+/** One Slack thread per test: the relay's per-thread loops are process-wide. A DM thread's turns run through to the model. */
+function slackThread(rootTs: string, conversation: 'channel' | 'im' = 'channel') {
   const [seconds] = rootTs.split('.');
   const ts = (suffix: string) => `${seconds}.000${suffix}`;
   const job = (id: string, suffix: string): TurnJob => ({
@@ -83,7 +83,10 @@ function slackThread(rootTs: string) {
     turn: {
       workspaceId: 'T_NODEFOLD', channelId: 'C_NODEFOLD', eventId: `Ev_${id}`,
       text: `Message ${suffix}`, userId: 'U_MEMBER', messageTs: ts(suffix), threadTs: rootTs,
-      source: 'implicit_thread_reply', contextMode: 'thread', channelType: 'channel',
+      contextMode: 'thread',
+      ...(conversation === 'im'
+        ? { source: 'dm_message', channelType: 'im' } as const
+        : { source: 'implicit_thread_reply', channelType: 'channel' } as const),
       interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
     },
     assignment: nodeAssignment(),
@@ -142,9 +145,15 @@ function relayHarness() {
       postMessage: async () => ({ ok: true, channel: 'C_NODEFOLD', ts: '1800009999.000001' }),
       postEphemeral: async () => ({ ok: true, message_ts: '1800009998.000001' }),
       update: async () => ({ ok: true }),
+      startStream: async () => ({ ok: true, ts: '1800009999.000002' }),
+      appendStream: async () => ({ ok: true }),
+      stopStream: async () => ({ ok: true }),
     },
     reactions: {
-      add: async () => ({ ok: true }),
+      add: async (value: Record<string, unknown>) => {
+        reactions.push(`add ${String(value.timestamp)}:${String(value.name)}`);
+        return { ok: true };
+      },
       remove: async (value: Record<string, unknown>) => {
         reactions.push(`remove ${String(value.timestamp)}:${String(value.name)}`);
         return { ok: true };
@@ -231,7 +240,12 @@ test('a burst on Node runs once: the follow-ups settle without running, their re
       assert.equal(presentation?.schemaVersion === 3 && presentation.lifecyclePhase, 'settled');
     }
     await h.wake();
-    assert.deepEqual(h.reactions, [`remove ${thread.ts('102')}:eyes`, `remove ${thread.ts('103')}:eyes`]);
+    // The run read both, so each 👍 was owed; this scripted turn swapped none
+    // in, and the sweep takes off whichever is there.
+    assert.deepEqual(h.reactions, [
+      `remove ${thread.ts('102')}:eyes`, `remove ${thread.ts('102')}:+1`,
+      `remove ${thread.ts('103')}:eyes`, `remove ${thread.ts('103')}:+1`,
+    ]);
     assert.deepEqual(await h.state.listPendingSlackInteractionCleanups!(), []);
   } finally { h.close(); }
 });
@@ -259,3 +273,44 @@ test('a failed head on Node releases its follow-ups, which then run once as one 
   } finally { h.close(); }
 });
 
+test('on Node a head and two follow-ups each swap 👀 for 👍, then the reply and the sweep remove each 👍', async () => {
+  const h = relayHarness();
+  const thread = slackThread('1800000900.000100', 'im');
+  try {
+    // A run in progress when the head arrives, so the head has its own 👀.
+    const prior = thread.job('nf3_prior', '101');
+    const head = thread.job('nf3_head', '102');
+    await admit(h.state, thread, prior);
+    await admit(h.state, thread, head, true);
+    await admit(h.state, thread, thread.job('nf3_m1', '103'), true);
+    await admit(h.state, thread, thread.job('nf3_m2', '104'), true);
+    h.scripts.set(head.id, (options, turn) => runTurn(turn, nodeAssignment(), undefined, {
+      ...options,
+      usageRecordingEnabled: false,
+      agentPrompt: async ({ state, turnId }) => {
+        const result = {
+          text: 'Here is the draft.', requestedModel: null, returnedModel: null, reportedUsage: null,
+          usageCompleteness: 'not_reported' as const,
+        };
+        await state.prepare('Do the work', { generation: turnId });
+        await state.recordReceipt({ submissionId: `sub_${turnId}`, acceptedAt: new Date().toISOString(), uid: UID });
+        await state.recordSettlement({ outcome: 'completed', settledAt: Date.now(), result });
+        return result;
+      },
+    }));
+    await h.wake();
+    await h.wake();
+
+    assert.deepEqual(h.runs, [prior.id, head.id]);
+    const [ownTs, firstTs, secondTs] = [thread.ts('102'), thread.ts('103'), thread.ts('104')];
+    assert.deepEqual(h.reactions, [
+      `remove ${ownTs}:eyes`, `remove ${firstTs}:eyes`, `remove ${secondTs}:eyes`,
+      `add ${ownTs}:+1`, `add ${firstTs}:+1`, `add ${secondTs}:+1`,
+      `remove ${ownTs}:+1`,
+      `remove ${firstTs}:+1`,
+      `remove ${secondTs}:+1`,
+    ]);
+    for (const id of [head.id, 'nf3_m1', 'nf3_m2']) assert.equal(await statusOf(h.state, id), 'done', id);
+    assert.deepEqual(await h.state.listPendingSlackInteractionCleanups!(), []);
+  } finally { h.close(); }
+});

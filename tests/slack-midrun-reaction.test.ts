@@ -6,13 +6,13 @@ import { after, before, test } from 'node:test';
 
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
-import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import { processGatewaySlackEnvelope } from '../src/channels/slack.ts';
 import { closeNodeStateStores, resolveStores, type AppStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { SlackInteractionProgress, SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
-import type { ResolvedAssignment } from '../src/config/types.ts';
+import type { ConnectionAccountApiPolicy, ResolvedAssignment } from '../src/config/types.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import type { SlackInteractionIntent } from '../src/slack/interaction-intent.ts';
 import { repairSlackInteractionProgress, runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
@@ -386,6 +386,22 @@ test('a 👀 whose add lands after its turn already cleared the receipt is remov
   });
 });
 
+test('a 👀 whose add lands after the run already swapped it for 👍 comes off, and the 👍 stays the receipt', async () => {
+  await withHarness(async (harness) => {
+    await harness.deliver({ ts: ROOT_TS, text: `${OPS} Investigate the flaky build.` });
+    const state = harness.stores.slackState;
+    const read = { ...RECEIPT, name: '+1', reaction: 'read', read: 'done' } as const;
+    harness.whileAdding(async () => {
+      harness.reactions.react(BOT, MID_TS, '+1');
+      await state.recordSlackInteractionProgress!(MID_ID, { acknowledgment: read });
+    });
+    await harness.deliver({ ts: MID_TS, threadTs: ROOT_TS, user: 'U2', text: 'Also check the nightly job.' });
+    assert.deepEqual(harness.reactions.on(MID_TS), []);
+    assert.deepEqual(harness.reactions.on(MID_TS, '+1'), [BOT]);
+    assert.deepEqual(await harness.receiptOf(MID_ID), read);
+  });
+});
+
 // ── the TurnJob store ──────────────────────────────────────────────────
 
 const NOW = 1_800_000_000_000;
@@ -647,7 +663,12 @@ test('a follow-up keeps its 👀 while the run that took it works; after that ru
       await repairSlackInteractionProgress(row.turn, row.assignment, row.progress.slackInteraction!, client,
         (patch) => { turns.recordSlackInteractionProgress(row.id, patch); });
     }
-    assert.deepEqual(h.reactions.log, ['remove 1800000000.000102:eyes', 'remove 1800000000.000103:eyes']);
+    // The run read both, so each 👍 was owed; this turn never swapped one in,
+    // and the sweep takes off whichever is there.
+    assert.deepEqual(h.reactions.log, [
+      'remove 1800000000.000102:eyes', 'remove 1800000000.000102:+1',
+      'remove 1800000000.000103:eyes', 'remove 1800000000.000103:+1',
+    ]);
     assert.deepEqual(h.reactions.on('1800000000.000103'), ['U_MEMBER'], 'the person\'s 👀 stays');
     assert.deepEqual(turns.listPendingSlackInteractionCleanups(), []);
   } finally { db.close(); }
@@ -808,3 +829,277 @@ test('the classifier\'s `seen` on the same message is its answer, so the 👀 st
   assert.deepEqual(next.on(other), []);
   assert.deepEqual(next.on(other, 'ballot_box_with_check'), [BOT]);
 });
+
+// ── 👍 on read ─────────────────────────────────────────────────────────
+
+function readReceipt(messageTs: string) {
+  return {
+    channelId: 'C_MID', messageTs, name: '+1', created: true, cleanup: 'pending', reaction: 'read', read: 'done',
+  } as const;
+}
+
+/** A queued message in a DM, whose turn runs through to the model. */
+function queuedDmTurn(messageTs: string): NormalizedSlackTurn {
+  return {
+    ...channelTurn(messageTs, 'Draft the launch email.'),
+    channelType: 'im', source: 'dm_message',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+}
+
+/** The head's frozen plan; `personal` grants the requester's own CRM account. */
+function frozenPlan(turn: NormalizedSlackTurn, personal: boolean): NonNullable<RunTurnOptions['runtimePlanDecision']> {
+  const policy: ConnectionAccountApiPolicy = {
+    kind: 'api', allowedHosts: ['api.example.com'], pathPrefixes: ['/v1'], headerName: 'authorization',
+    headerValuePrefix: 'Bearer ', allowedMethods: ['GET'], authMode: 'credential',
+  };
+  const runtimePlan = compileRuntimePlanV2({
+    turn, assignment, instructions: 'Help.', memoryEpoch: 1,
+    ...(personal
+      ? {
+          effectiveConnections: [{
+            account: {
+              id: 'crm_mine', workspaceId: assignment.workspaceId, revision: 1, ownerKind: 'member',
+              ownerMembershipId: 'mem_member', createdByMembershipId: 'mem_member', providerId: 'crm',
+              label: 'CRM', secretRefId: 'secret_crm', lifecycle: 'ready', createdAt: 1, updatedAt: 1, policy,
+            },
+            binding: {
+              agentId: assignment.agentId, connectionAccountId: 'crm_mine', providerId: 'crm',
+              allowedCapabilities: ['GET'], enabled: true, createdAt: 1, updatedAt: 1,
+            },
+            policy,
+            scope: 'personal',
+          }],
+        }
+      : {}),
+  });
+  return { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) };
+}
+
+test('a turn swaps 👀 for 👍 on its own message and the follow-ups it answers, then removes its own 👍', async () => {
+  for (const access of ['shared', 'personal'] as const) {
+    const head = '1800000000.000301';
+    const own = '1800000000.000302';
+    const teammate = '1800000000.000303';
+    const reactions = new Reactions();
+    for (const ts of [head, own, teammate]) reactions.react(BOT, ts, 'eyes');
+    const patches: SlackInteractionProgressPatch[] = [];
+    const followUps: Array<[string, SlackInteractionProgressPatch]> = [];
+    const writes: string[] = [];
+    await runTurn(queuedDmTurn(head), assignment, undefined, {
+      client: queuedTurnClient(reactions),
+      turnId: 'head',
+      runtimePlanDecision: frozenPlan(queuedDmTurn(head), access === 'personal'),
+      interactionProgress: { acknowledgment: midReceipt(head) },
+      onInteractionProgress: (patch) => { patches.push(patch); },
+      recordFollowUpProgress: (id, patch) => { followUps.push([id, patch]); },
+      claimFold: async () => ({
+        messages: [
+          { turnJobId: 'own', userId: 'U_MEMBER', messageTs: own, text: 'Keep it short.' },
+          // Taken before the plan froze: the turn decides it from the plan.
+          { turnJobId: 'teammate', userId: 'U_TEAMMATE', messageTs: teammate, text: 'FYI.', informationOnly: true },
+        ],
+        requesterText: '',
+        receipts: ([['head', head], ['own', own], ['teammate', teammate]] as const).map(([turnJobId, messageTs]) => ({
+          turnJobId, receipt: { channelId: 'C_MID', messageTs, name: 'eyes' },
+        })),
+      }),
+      onSlackWrite: (surface) => { writes.push(surface); },
+      agentPrompt: async () => ({
+        text: 'Here is the draft.', requestedModel: null, returnedModel: null, reportedUsage: null,
+        usageCompleteness: 'not_reported',
+      }),
+      usageRecordingEnabled: false,
+    });
+    const swapped = access === 'shared' ? [head, own, teammate] : [head, own];
+    // The swaps run at once: every 👀 comes off, then every 👍 goes on.
+    assert.deepEqual(reactions.log, [
+      ...swapped.map((ts) => `remove ${ts}:eyes`),
+      ...swapped.map((ts) => `add ${ts}:+1`),
+      `remove ${head}:+1`,
+    ], access);
+    if (access === 'personal') {
+      assert.deepEqual(reactions.on(teammate), [BOT], 'an information-only message keeps its 👀 for its own turn');
+    }
+    assert.deepEqual(reactions.on(own, '+1'), [BOT], 'a follow-up\'s 👍 waits for its row\'s cleanup');
+    assert.deepEqual(followUps, swapped.slice(1).map((ts) => [ts === own ? 'own' : 'teammate', {
+      acknowledgment: readReceipt(ts),
+    }]), access);
+    assert.deepEqual(patches.map((patch) => patch.acknowledgment), [
+      readReceipt(head),
+      { ...readReceipt(head), cleanup: 'done' },
+    ], access);
+    assert.equal(writes.filter((surface) => surface === 'reaction').length, swapped.length, access);
+  }
+});
+
+test('the turn_latency record counts the 👀 the turn swapped for 👍, content-free', async () => {
+  const head = '1800000000.000305';
+  const own = '1800000000.000306';
+  const reactions = new Reactions();
+  for (const ts of [head, own]) reactions.react(BOT, ts, 'eyes');
+  const info = console.info;
+  const records: Array<Record<string, unknown>> = [];
+  console.info = (record: unknown) => {
+    if (record && typeof record === 'object') records.push(record as Record<string, unknown>);
+  };
+  try {
+    await runTurn(queuedDmTurn(head), assignment, undefined, {
+      client: queuedTurnClient(reactions),
+      turnId: 'head',
+      interactionProgress: { acknowledgment: midReceipt(head) },
+      recordFollowUpProgress: () => undefined,
+      claimFold: async () => ({
+        messages: [{ turnJobId: 'own', userId: 'U_MEMBER', messageTs: own, text: 'Keep it short.' }],
+        requesterText: '',
+        receipts: ([['head', head], ['own', own]] as const).map(([turnJobId, messageTs]) => ({
+          turnJobId, receipt: { channelId: 'C_MID', messageTs, name: 'eyes' },
+        })),
+      }),
+      turnLatency: { lane: 'node', executor: 'node' },
+      agentPrompt: async () => ({
+        text: 'Here is the draft.', requestedModel: null, returnedModel: null, reportedUsage: null,
+        usageCompleteness: 'not_reported',
+      }),
+      usageRecordingEnabled: false,
+    });
+  } finally {
+    console.info = info;
+  }
+  const [latency] = records.filter((record) => record.event === 'turn_latency');
+  assert.equal(latency?.read, 2);
+  assert.ok(!JSON.stringify(latency).includes(head) && !JSON.stringify(latency).includes(own), 'no Slack coordinates');
+});
+
+test('a swap that fails stays owed, so the turn\'s finish takes off both emoji', async () => {
+  const head = '1800000000.000304';
+  const reactions = new Reactions();
+  reactions.react(BOT, head, 'eyes');
+  const client = queuedTurnClient(reactions) as unknown as {
+    reactions: { add: (input: Record<string, unknown>) => Promise<unknown> };
+  };
+  // Slack added the 👍 but the reply was lost.
+  client.reactions.add = async (input) => {
+    reactions.add(input, platformError);
+    throw new Error('socket hang up');
+  };
+  const patches: SlackInteractionProgressPatch[] = [];
+  await runTurn(queuedDmTurn(head), assignment, undefined, {
+    client: client as unknown as WebClient,
+    turnId: 'head',
+    interactionProgress: { acknowledgment: midReceipt(head) },
+    onInteractionProgress: (patch) => { patches.push(patch); },
+    claimFold: async () => ({
+      messages: [], requesterText: '',
+      receipts: [{ turnJobId: 'head', receipt: { channelId: 'C_MID', messageTs: head, name: 'eyes' } }],
+    }),
+    agentPrompt: async () => ({
+      text: 'Here is the draft.', requestedModel: null, returnedModel: null, reportedUsage: null,
+      usageCompleteness: 'not_reported',
+    }),
+    usageRecordingEnabled: false,
+  });
+  assert.deepEqual(reactions.log, [
+    `remove ${head}:eyes`, `add ${head}:+1`, `remove ${head}:eyes`, `remove ${head}:+1`,
+  ]);
+  assert.deepEqual(reactions.on(head, '+1'), []);
+  assert.deepEqual(patches.at(-1)?.acknowledgment, { ...midReceipt(head), read: 'owed', cleanup: 'done' });
+});
+
+test('the cleanup sweep removes the receipt the row records: its 👍, its 👀, or both while the 👍 is owed', async () => {
+  const cases = [
+    { ts: '1800000000.000311', acknowledgment: readReceipt('1800000000.000311'), removed: ['+1'] },
+    { ts: '1800000000.000312', acknowledgment: midReceipt('1800000000.000312'), removed: ['eyes'] },
+    {
+      ts: '1800000000.000313', acknowledgment: { ...midReceipt('1800000000.000313'), read: 'owed' } as const,
+      removed: ['eyes', '+1'],
+    },
+  ];
+  for (const { ts, acknowledgment, removed } of cases) {
+    const reactions = new Reactions();
+    for (const name of removed) reactions.react(BOT, ts, name);
+    reactions.react('U_MEMBER', ts, '+1');
+    const patches: SlackInteractionProgressPatch[] = [];
+    await repairSlackInteractionProgress(channelTurn(ts), assignment, { acknowledgment }, queuedTurnClient(reactions),
+      (patch) => { patches.push(patch); });
+    assert.deepEqual(reactions.log, removed.map((name) => `remove ${ts}:${name}`), ts);
+    assert.deepEqual(reactions.on(ts), [], ts);
+    assert.deepEqual(reactions.on(ts, '+1'), ['U_MEMBER'], 'a person\'s 👍 stays');
+    assert.deepEqual(patches, [{ acknowledgment: { ...acknowledgment, cleanup: 'done' } }], ts);
+  }
+});
+
+test('a stop removes a dropped message\'s 👍, or both emoji while its 👍 is owed', async () => {
+  const reactions = new Reactions();
+  reactions.react(BOT, '1800000000.000321', '+1');
+  reactions.react(BOT, '1800000000.000322', 'eyes');
+  const recorded: Array<[string, SlackInteractionProgressPatch]> = [];
+  await removeDroppedReceipts([
+    { id: 'read', receipt: { channelId: 'C_MID', messageTs: '1800000000.000321', name: '+1', read: 'done' } },
+    { id: 'owed', receipt: { channelId: 'C_MID', messageTs: '1800000000.000322', name: 'eyes', read: 'owed' } },
+  ], queuedTurnClient(reactions), (id, patch) => { recorded.push([id, patch]); });
+  assert.deepEqual(reactions.log, [
+    'remove 1800000000.000321:+1',
+    'remove 1800000000.000322:eyes',
+    'remove 1800000000.000322:+1',
+  ]);
+  assert.deepEqual(recorded.map(([id, patch]) => [id, patch.acknowledgment?.cleanup, patch.acknowledgment?.read]), [
+    ['read', 'done', 'done'],
+    ['owed', 'done', 'owed'],
+  ]);
+});
+
+test('on the runner\'s executor a head and two follow-ups each swap 👀 for 👍, then the reply and the sweep remove each 👍', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const rows = [['head', '1800000000.000401'], ['follow_1', '1800000000.000402'], ['follow_2', '1800000000.000403']] as const;
+    for (const [id, ts] of rows) turns.enqueue({ ...job(id, ts), turn: queuedDmTurn(ts) });
+    const h = stopExecutor(turns, async () => undefined);
+    for (const [, ts] of rows) h.reactions.react(BOT, ts, 'eyes');
+    const client = {
+      ...queuedTurnClient(h.reactions),
+      conversations: {
+        info: async () => ({ ok: true, channel: { id: 'C_MID', is_member: true } }),
+        history: async () => ({ ok: true, messages: [] }),
+        replies: async () => ({ ok: true, messages: [] }),
+      },
+    } as unknown as WebClient;
+    Object.assign(h.ports, {
+      resolveInstallation: async () => ({ workspaceId: 'T_MID', client }),
+      runTurn: (turn: NormalizedSlackTurn, assigned: ResolvedAssignment, env: undefined, options: RunTurnOptions) =>
+        runTurn(turn, assigned, env, { ...options, usageRecordingEnabled: false, agentPrompt: dispatchedAnswer }),
+    });
+    assert.equal(await executeTurnJob(pendingOf(turns, 'head'), h.ports, h.options), true);
+    assert.deepEqual(turns.listPendingSlackInteractionCleanups().map(({ id }) => id), ['follow_1', 'follow_2']);
+    for (const row of turns.listPendingSlackInteractionCleanups()) {
+      await repairSlackInteractionProgress(row.turn, row.assignment, row.progress.slackInteraction!, client,
+        (patch) => { turns.recordSlackInteractionProgress(row.id, patch); });
+    }
+
+    const [head, first, second] = rows.map(([, ts]) => ts);
+    assert.deepEqual(h.reactions.log, [
+      `remove ${head}:eyes`, `remove ${first}:eyes`, `remove ${second}:eyes`,
+      `add ${head}:+1`, `add ${first}:+1`, `add ${second}:+1`,
+      `remove ${head}:+1`,
+      `remove ${first}:+1`,
+      `remove ${second}:+1`,
+    ]);
+    for (const [id, ts] of rows) {
+      assert.deepEqual(turns.getProgress(id)?.slackInteraction?.acknowledgment, { ...readReceipt(ts), cleanup: 'done' }, id);
+    }
+    assert.deepEqual(turns.listPendingSlackInteractionCleanups(), []);
+  } finally { db.close(); }
+});
+
+/** The agent as the executor drives it: dispatch, accept, and settle one answer. */
+const dispatchedAnswer: NonNullable<RunTurnOptions['agentPrompt']> = async ({ state, turnId }) => {
+  const result = {
+    text: 'Here is the draft.', requestedModel: null, returnedModel: null, reportedUsage: null,
+    usageCompleteness: 'not_reported' as const,
+  };
+  await state.prepare('Do the work', { generation: turnId });
+  await state.recordReceipt({ submissionId: `sub_${turnId}`, acceptedAt: '2026-10-30T12:00:00.000Z', uid: UID });
+  await state.recordSettlement({ outcome: 'completed', settledAt: NOW, result });
+  return result;
+};
