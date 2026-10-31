@@ -64,6 +64,7 @@ test('readable kinds take a handle by name or Slack type; images and unserved fi
   assert.equal(readableFileKind('brief', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'), 'document');
   assert.equal(readableFileKind('demo.mp4', 'video/mp4'), undefined);
   assert.equal(readableFileKind('archive.tar.gz', 'application/gzip'), undefined);
+  assert.equal(readableFileKind('logo.svg', 'image/svg+xml'), undefined, 'Slack refuses an SVG to both readers');
 });
 
 test('a text file reads in 50,000-character pages, and the token past the first page needs nextOffset', async () => {

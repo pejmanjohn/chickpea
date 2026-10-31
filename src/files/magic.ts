@@ -106,6 +106,8 @@ const DOCUMENT_NAMES = /\.(?:doc|docx|key|keynote|numbers|odp|ods|odt|pages|ppt|
 export type ReadableFileKind = 'archive' | 'pdf' | 'document' | 'text';
 
 export function readableFileKind(name: string, mimeType?: string): ReadableFileKind | undefined {
+  // Slack serves no image as text or a document (an SVG is refused by both readers).
+  if (mimeType?.startsWith('image/')) return undefined;
   if (ARCHIVE_NAMES.test(name)) return 'archive';
   if (mimeType === 'application/pdf' || PDF_NAMES.test(name)) return 'pdf';
   if ((mimeType !== undefined && DOCUMENT_MIME_TYPES.has(mimeType)) || DOCUMENT_NAMES.test(name)) return 'document';

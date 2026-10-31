@@ -666,6 +666,7 @@ export interface SlackPublicContextEntry {
    * Slack. Never rendered into model-facing text.
    */
   images?: SlackPublicContextImage[];
+  /** The message's other files, host-side only, as `images`. Never rendered into model-facing text. */
   fileRefs?: SlackPublicContextFileRef[];
   /**
    * Set on a thread's root row when the record was seeded from a read that
