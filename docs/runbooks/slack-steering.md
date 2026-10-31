@@ -274,7 +274,9 @@ turn), it is released if the run fails, and a stop drops it. In addition:
   that waits for the run to end.
 - Once the Agent starts streaming its answer into Slack, or has posted a
   question (buttons or a form) that ends its reply, nothing more joins that
-  run. A message sent after that waits for the run to end.
+  run. A message sent after that waits for the run to end. A message sent
+  while the Agent composes a question runs as its own turn after the question
+  posts and, like any later reply in the thread, closes that question.
 - While the Agent's file delivery for the reply is unchecked, or after it
   needed a correction in this run, nothing joins.
 - If Chickpea cannot reach its state store for a check, the Agent carries on
