@@ -76,7 +76,7 @@ import {
   semanticDescriptorForManagedCapability,
 } from '../connections/catalog/index.ts';
 
-export const RUNTIME_PLAN_SCHEMA_VERSION = 3 as const;
+export const RUNTIME_PLAN_SCHEMA_VERSION = 4 as const;
 export const DEFAULT_CONTINUITY_POLICY = 'slack-runtime-v3' as const;
 
 export type RuntimePlanSurface = 'channel_thread' | 'direct_message';
@@ -194,8 +194,8 @@ export interface RuntimePlanModelCredentialV3 {
 }
 
 export interface RuntimePlanV2 {
-  /** V2 remains readable for already-admitted TurnJobs; new plans are V3. */
-  schemaVersion: 2 | typeof RUNTIME_PLAN_SCHEMA_VERSION;
+  /** V2 and V3 remain readable for already-admitted TurnJobs; new plans are V4. */
+  schemaVersion: 2 | 3 | typeof RUNTIME_PLAN_SCHEMA_VERSION;
   continuityPolicy: string;
   /** Durable profile identity used only by trusted live resource resolvers. */
   agentId: string;
@@ -210,6 +210,14 @@ export interface RuntimePlanV2 {
   actorMembershipId?: string;
   /** Credential-free account references frozen for this task. */
   connectionAccountIds?: string[];
+  /**
+   * The run may use the requester's own (member-owned) connection accounts,
+   * so a teammate's message reaches it as information only. Website logins
+   * are the Agent's and never count. Required on V4; a V2 or V3 plan lacks it
+   * and reads as true. Not in harnessRevision, which holds the account ids
+   * but not who owns them.
+   */
+  usesPersonalAccess?: boolean;
   /** Same-actor thread routing context, including choices awaiting reconnect. */
   connectionSelections?: ConnectionAccountSelection[];
   /** Actor-safe personal provider options available for inline authorization. */
@@ -478,6 +486,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
       ? { actorMembershipId: input.turn.actorMembershipId }
       : {}),
     connectionAccountIds: effectiveConnections?.map(({ account }) => account.id) ?? [],
+    usesPersonalAccess: effectiveConnections.some(({ scope }) => scope === 'personal'),
     ...(input.connectionSelections
       ? { connectionSelections: input.connectionSelections.map((selection) => ({ ...selection })) }
       : {}),
@@ -563,6 +572,11 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
   // A freshly compiled plan states its artifact thread explicitly; an absent
   // key here means top-level delivery, not a record that predates the field.
   return parseRuntimePlanV2(plan, { legacyArtifactThread: 'none' });
+}
+
+/** Whether a plan's run may use the requester's own connections; a plan from before V4 may. */
+export function runtimePlanUsesPersonalAccess(plan: Pick<RuntimePlanV2, 'usesPersonalAccess'>): boolean {
+  return plan.usesPersonalAccess !== false;
 }
 
 /**
@@ -898,6 +912,7 @@ export function parseRuntimePlanV2(
     'installation',
     'actorMembershipId',
     'connectionAccountIds',
+    'usesPersonalAccess',
     'connectionSelections',
     'connectionAuthorizations',
     'connectionChoices',
@@ -932,6 +947,7 @@ export function parseRuntimePlanV2(
     'configurationRevision',
     'actorMembershipId',
     'connectionAccountIds',
+    'usesPersonalAccess',
     'connectionSelections',
     'connectionAuthorizations',
     'connectionChoices',
@@ -950,8 +966,9 @@ export function parseRuntimePlanV2(
     'modelAttribution',
     'modelCredential',
   ]);
-  if (record.schemaVersion !== 2 && record.schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION) {
-    throw new Error('Runtime plan schemaVersion must be 2 or 3.');
+  if (record.schemaVersion !== 2 && record.schemaVersion !== 3 &&
+      record.schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION) {
+    throw new Error('Runtime plan schemaVersion must be 2, 3 or 4.');
   }
   const schemaVersion = record.schemaVersion;
   const continuityPolicy = boundedString(record.continuityPolicy, 'continuityPolicy', 1, 80);
@@ -970,6 +987,12 @@ export function parseRuntimePlanV2(
       (value) => boundedString(value, 'connectionAccountId', 1, 160),
       128,
     );
+  if (schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION && record.usesPersonalAccess !== undefined) {
+    throw new Error('Runtime plan usesPersonalAccess requires V4.');
+  }
+  const usesPersonalAccess = schemaVersion === RUNTIME_PLAN_SCHEMA_VERSION
+    ? booleanField(record.usesPersonalAccess, 'usesPersonalAccess')
+    : undefined;
   const connectionAuthorizations = record.connectionAuthorizations === undefined
     ? []
     : arrayOf(
@@ -1011,7 +1034,7 @@ export function parseRuntimePlanV2(
   const modelCredential = record.modelCredential === undefined
     ? undefined
     : parseRuntimePlanModelCredential(record.modelCredential);
-  if (schemaVersion === RUNTIME_PLAN_SCHEMA_VERSION && (!ownerIncarnation || !modelAttribution)) {
+  if (schemaVersion !== 2 && (!ownerIncarnation || !modelAttribution)) {
     throw new Error('Runtime plan V3 requires ownerIncarnation and modelAttribution.');
   }
   const conversationRecord = exactRecord(record.conversation, 'conversation', [
@@ -1145,6 +1168,7 @@ export function parseRuntimePlanV2(
     ...(installation ? { installation } : {}),
     ...(actorMembershipId ? { actorMembershipId } : {}),
     ...(record.connectionAccountIds === undefined ? {} : { connectionAccountIds }),
+    ...(usesPersonalAccess === undefined ? {} : { usesPersonalAccess }),
     ...(connectionSelections ? { connectionSelections } : {}),
     ...(record.connectionAuthorizations === undefined ? {} : { connectionAuthorizations }),
     ...(record.connectionChoices === undefined ? {} : { connectionChoices }),

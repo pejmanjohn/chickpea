@@ -13,6 +13,7 @@ import {
   parseRuntimePlanV2,
   runtimePlanConversationKey,
   runtimePlanSandboxConversationKey,
+  runtimePlanUsesPersonalAccess,
 } from '../src/agents/runtime-plan.ts';
 import { genericSemanticDescriptor } from '../src/activity/semantic.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
@@ -321,7 +322,7 @@ test('owner-bound sandbox keys stay provider-safe at maximum runtime-plan bounds
 test('a complete first-turn plan contains policy descriptors but no auth material', () => {
   const plan = compile();
 
-  assert.equal(plan.schemaVersion, 3);
+  assert.equal(plan.schemaVersion, 4);
   assert.equal(plan.agentId, 'agent_runtime');
   assert.equal(plan.conversation.workspaceId, 'T_RUNTIME');
   assert.equal(plan.conversation.threadTs, '1783000000.000100');
@@ -714,6 +715,7 @@ test('persisted RuntimePlan V2 jobs remain readable without new attribution fiel
     ownerIncarnation: _ownerIncarnation,
     modelAttribution: _modelAttribution,
     runtimeModel: _runtimeModel,
+    usesPersonalAccess: _usesPersonalAccess,
     ...legacy
   } = compile();
   const v2 = { ...legacy, schemaVersion: 2 as const };
@@ -724,6 +726,49 @@ test('persisted RuntimePlan V2 jobs remain readable without new attribution fiel
   assert.equal(parsed.model, 'openai/gpt-5.4-mini');
   assert.equal(parsed.modelAttribution, undefined);
   assert.equal(parsed.ownerIncarnation, undefined);
+});
+
+test('a plan freezes whether its run uses the requester\'s own connections; website logins never count', () => {
+  const [team] = structuredClone(EFFECTIVE_CONNECTIONS);
+  const personal: EffectiveConnectionAccount = {
+    ...structuredClone(team!),
+    account: {
+      ...structuredClone(team!.account), id: 'notion-mine', ownerKind: 'member', ownerMembershipId: 'membership_requester',
+    },
+    binding: { ...structuredClone(team!.binding), connectionAccountId: 'notion-mine' },
+    scope: 'personal',
+  };
+  const shared = compile();
+  assert.equal(shared.schemaVersion, 4);
+  assert.equal(shared.usesPersonalAccess, false);
+  assert.equal(runtimePlanUsesPersonalAccess(shared), false);
+  const mine = compile({
+    turn: turn({ actorMembershipId: 'membership_requester' }),
+    effectiveConnections: [team!, personal],
+  });
+  assert.equal(mine.usesPersonalAccess, true);
+  assert.equal(parseRuntimePlanV2(structuredClone(mine)).usesPersonalAccess, true);
+  assert.equal(parseRuntimePlanV2(structuredClone(shared)).usesPersonalAccess, false);
+  // The fact is not part of the revision, which names the accounts already.
+  assert.equal(parseRuntimePlanV2({ ...structuredClone(shared), usesPersonalAccess: true }).harnessRevision, shared.harnessRevision);
+
+  const login = {
+    id: `wl_${'a'.repeat(32)}`, host: 'a.example', label: 'A', level: 'act' as const, method: 'credentials' as const,
+  };
+  const loginsOnly = compile({
+    effectiveConnections: [], browserCapability: { provider: 'browserbase' }, websiteLogins: [login],
+  });
+  assert.deepEqual(loginsOnly.websiteLogins, [login]);
+  assert.equal(loginsOnly.usesPersonalAccess, false);
+
+  const { usesPersonalAccess: _uses, ...current } = structuredClone(shared);
+  assert.throws(() => parseRuntimePlanV2(current), /usesPersonalAccess must be a boolean/);
+  const v3 = { ...current, schemaVersion: 3 as const };
+  v3.harnessRevision = compatibilityHarnessRevision(v3);
+  const parsedV3 = parseRuntimePlanV2(v3);
+  assert.equal(parsedV3.usesPersonalAccess, undefined);
+  assert.equal(runtimePlanUsesPersonalAccess(parsedV3), true, 'a plan from before the fact reads as personal');
+  assert.throws(() => parseRuntimePlanV2({ ...v3, usesPersonalAccess: false }), /requires V4/);
 });
 
 test('a pre-attribution persisted assignment keeps its model and is labeled legacy on retry', () => {
@@ -1356,7 +1401,7 @@ test('the browser capability round-trips, rotates the harness, and never carries
 
   assert.equal(Object.hasOwn(legacy, 'browserCapability'), false);
   assert.equal(parseRuntimePlanV2(structuredClone(legacy)).browserCapability, undefined);
-  assert.equal(legacy.schemaVersion, 3);
+  assert.equal(legacy.schemaVersion, 4);
 
   assert.notEqual(enabled.harnessRevision, legacy.harnessRevision);
   assert.equal(JSON.stringify(enabled).includes('bb_'), false);
