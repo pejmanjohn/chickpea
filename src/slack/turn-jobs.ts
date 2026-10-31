@@ -1839,19 +1839,20 @@ export class TurnJobStoreLogic {
   }
 
   /**
-   * The stored versions of one message, by primary key only: its own row
-   * and its edit rows, delivered ones included while retained, so a late or
-   * repeated edit is recognised after its turn ended. A row this release
-   * cannot read is left out. Plain reads: edit admission's transaction holds
-   * them.
+   * The stored versions of one message, by primary key only: its own row,
+   * its front-desk takeover's, and its edit rows, delivered ones included
+   * while retained, so a late or repeated edit is recognised after its turn
+   * ended. A row this release cannot read is left out. Plain reads: edit
+   * admission's transaction holds them.
    */
   editVersions(channelId: string, messageTs: string): MessageVersionRow[] {
     const edits = editTurnJobIdRange(channelId, messageTs);
     return this.db.all(
       `SELECT id, turn_json, assignment_json, run_id, execution_authority, delivered, status
-       FROM turn_jobs WHERE id = ? OR (id >= ? AND id < ?)
+       FROM turn_jobs WHERE id = ? OR id = ? OR (id >= ? AND id < ?)
        ORDER BY enqueued_at, rowid`,
       `msg:${channelId}:${messageTs}`,
+      `msg:${channelId}:${messageTs}:handoff`,
       edits.from,
       edits.to,
     ).flatMap((row) => {
