@@ -141,8 +141,10 @@
     billing: null,
     billingError: null,
     billingBusy: "",
-    billingPlansOpen: false,
     billingFundingConfirm: false,
+    // The plan size each plan card shows, by card, until the page reopens.
+    billingSelection: {},
+    billingUseBy: "agent",
     planReturnSwitchFailed: false,
     teamError: "",
     teamBusy: "",
@@ -2481,9 +2483,11 @@
 
   // ---- Plan ------------------------------------------------------------------
   // The host keeps the plan and its usage and sells through Stripe. Admin
-  // shows its answer, with every amount already in dollars, and sends an
-  // Owner to the Stripe page it returns.
+  // shows its answer, with every amount and task count already formatted, and
+  // sends an Owner to the Stripe page it returns.
   var BILLING_SECTION = { id: "billing", label: "Plan", action: "open-billing" };
+  var PRICING_QUESTIONS_URL = "https://chickpea.co/pricing#questions";
+  var MODEL_PROVIDERS_PATH = "/admin/settings/providers";
   var billingRequest = null;
 
   function loadBilling() {
@@ -2504,8 +2508,9 @@
     state.view = "billing";
     state.profileScreen = "list";
     state.disableConfirm = false;
-    state.billingPlansOpen = false;
+    state.billingSelection = {};
     state.billingFundingConfirm = false;
+    state.billingUseBy = "agent";
     render();
     loadBilling();
   }
@@ -2525,7 +2530,8 @@
     return refused ? BILLING_REFUSALS[error.message](state.billing) : fallback;
   }
 
-  // The page offers one switch: away from how the workspace pays now.
+  // Each plan card can switch the workspace to its way of paying, away from
+  // how it pays now, once the Owner confirms.
   function switchFunding() {
     if (state.billingBusy) return;
     var next = state.billing.funding === "platform" ? "own_key" : "platform";
@@ -2535,8 +2541,9 @@
     postJson("/admin/api/billing/funding", "POST", { funding: next }).then(function (body) {
       state.billing = body;
       state.billingFundingConfirm = false;
+      state.billingSelection = {};
     }).catch(function (error) {
-      state.billingError = { at: "switch", text: billingFailureText(error, next === "platform" ? "Could not switch to Chickpea’s models. Try again." : "Could not switch to your own key. Try again.") };
+      state.billingError = { at: "switch", text: billingFailureText(error, next === "platform" ? "Could not switch to models included. Try again." : "Could not switch to your own key. Try again.") };
     }).then(function () {
       state.billingBusy = "";
       render();
@@ -2585,181 +2592,412 @@
     return '<button type="button" class="btn btn-soft' + (primarySection() === "billing" ? " nav-active" : "") + '" data-action="open-billing" data-section-switcher="true">' + BILLING_SECTION.label + '</button>';
   }
 
+  function billingRailMeta(billing) {
+    if (!billing) return "";
+    if (billing.funding === "own_key") return "Own API key";
+    return billing.trial && !billing.plan ? "Free trial" : "Models included";
+  }
+
   function billingRailHtml() {
     return '<nav class="rail primary-shell-sidebar" aria-label="Plan">' + primaryShellBrandHtml() + '<div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Plan</span></div>' +
       '<button type="button" class="chan-item active" data-action="open-billing" aria-current="page"><span class="chan-name">Overview</span><span class="chan-meta">' +
-      (state.billing && state.billing.funding === "own_key" ? "Own API key" : "Usage") + '</span></button>' +
+      billingRailMeta(state.billing) + '</span></button>' +
       '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
-  function billingButtonHtml(action, label, key, busyKey, className) {
+  function billingButtonHtml(action, label, key, busyKey, className, attributes) {
     var busy = state.billingBusy;
-    return '<button type="button" class="btn ' + className + '" data-action="' + action + '"' + (key ? ' data-key="' + esc(key) + '"' : '') + (busy ? ' disabled' : '') + '>' + (busy === busyKey ? 'Opening Stripe&hellip;' : label) + '</button>';
+    return '<button type="button" class="btn ' + className + '" data-action="' + action + '"' + (key ? ' data-key="' + esc(key) + '"' : '') + (attributes || '') +
+      (busy ? ' disabled' : '') + '>' + (busy === busyKey ? 'Opening Stripe&hellip;' : label) + '</button>';
   }
 
-  function billingTrialText(trial) {
-    return esc(trial.remaining) + ' of trial usage left, until ' + esc(trial.until);
+  function billingMonths(count) {
+    return count === 1 ? "one month" : count + " months";
   }
 
-  function billingStatusHtml(billing) {
-    var own = billing.ownKeyWithoutPlan;
-    var notice = own ? '<div class="callout"><span>Your own API key needs the ' + esc(own.minimumPrice) + ' plan or higher.</span></div>' : '';
-    var meter = billing.meter;
-    var card = meter
-      ? '<span class="usage-card-label">Plan usage</span><span class="billing-meter-text">' + esc(meter.used) + ' of ' + esc(meter.included) + ' used, ' + meter.percent + '%, ' + billingMeterEndText(billing) +
-        (meter.onPacePercent == null ? '' : ', on pace for ' + meter.onPacePercent + '%') + '</span>' +
-        '<span class="billing-meter" role="meter" aria-label="Plan usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.min(meter.percent, 100) + '"><span style="width: ' + Math.min(meter.percent, 100) + '%"></span></span>'
-      : billing.planName
-        ? '<span class="usage-card-label">Plan</span><span class="usage-card-value">' + esc(billing.planName) + '</span>'
-        : billing.trial
-          ? '<span class="usage-card-label">Trial</span><span class="billing-meter-text">' + billingTrialText(billing.trial) + '</span>'
-          : billing.funding === "platform"
-            ? '<span class="usage-card-label">Plan</span><span class="usage-card-value">No plan</span><span class="hint">Choose a plan for monthly usage.</span>'
-            : '';
-    var lines = [];
-    if (billing.rollover) lines.push('Carried from last month: ' + esc(billing.rollover));
-    if (billing.extraUsage) {
-      lines.push(billing.extraUsage.frozen
-        ? esc(billing.extraUsage.remaining) + ' of extra usage, available when you renew, until ' + esc(billing.extraUsage.until)
-        : 'Extra usage: ' + esc(billing.extraUsage.remaining));
-    }
-    if (billing.trial && (meter || billing.planName)) lines.push(billingTrialText(billing.trial));
-    return notice +
-      (card ? '<div class="usage-grid billing-grid"><div class="usage-card usage-card-primary">' + card + '</div></div>' : '') +
-      (lines.length ? '<ul class="billing-lines">' + lines.map(function (line) { return '<li>' + line + '</li>'; }).join("") + '</ul>' : '');
-  }
-
-  function billingPlansHtml(billing) {
-    if (!state.billingPlansOpen) return "";
-    var current = billing.plan && billing.plan.key;
-    var ownKey = billing.funding === "own_key";
-    return '<div class="billing-plans" role="group" aria-labelledby="billing-plans-heading"><h3 class="section-title" id="billing-plans-heading">Choose a plan</h3>' +
-      billing.offers.plans.map(function (plan) {
-        var action = plan.key === current
-          ? '<span class="badge badge-on"><span class="dot"></span>Current plan</span>'
-          : ownKey && !plan.ownKeyEligible
-            ? '<span class="hint">Chickpea&rsquo;s models only</span>'
-            : '<button type="button" class="btn btn-soft" data-action="billing-choose-plan" data-key="' + esc(plan.key) + '"' + (state.billingBusy ? ' disabled' : '') + '>Choose</button>';
-        return '<div class="billing-plan"><div><strong>' + esc(plan.name) + '</strong><p class="hint">' + esc(plan.price) + ' a month includes ' + esc(plan.included) + ' of usage</p>' +
-          (plan.ownKeyMinimum ? '<p class="hint">Lowest plan for your own API key</p>' : '') + '</div>' + action + '</div>';
-      }).join("") + '</div>';
-  }
-
-  function billingMeterEndText(billing) {
-    var pending = billing.pendingChange;
-    return pending && pending.kind === "ends" ? 'ends ' + esc(pending.on) : 'resets ' + esc(billing.meter.resets);
-  }
-
-  function billingPeriodEndText(billing) {
-    var pending = billing.pendingChange;
-    if (pending && pending.kind === "ends") return ' Ends ' + esc(pending.on) + '.';
-    if (pending && pending.kind === "plan") return ' Changes to the ' + esc(pending.planName) + ' on ' + esc(pending.on) + '.';
-    return billing.period ? ' Renews ' + esc(billing.period.end) + '.' : '';
-  }
-
-  function billingPlanSectionHtml(billing) {
-    var plan = billing.plan;
-    var summary = plan
-      ? '<p><strong>' + esc(plan.name) + '</strong></p><p class="hint">' + esc(plan.price) + ' a month' + (plan.included ? ' includes ' + esc(plan.included) + ' of usage.' : '.') +
-        billingPeriodEndText(billing) + '</p>'
-      : '<p class="hint">No plan</p>';
-    return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Plan</h2>' + summary + '</div></div>' +
-      '<div class="billing-actions">' + billingButtonHtml("billing-change-plan", plan ? "Change plan" : "Choose a plan", "", "plan", "btn-soft") +
-      (plan ? billingButtonHtml("billing-manage", "Manage billing", "", "portal", "btn-ghost") : '') + '</div>' +
-      billingErrorHtml("plan") + billingPlansHtml(billing) + '</section>';
-  }
-
-  // Extra usage is spent only while a plan is active, so it is sold only then.
-  function billingExtraUsageHtml(billing) {
-    var offers = billing.offers.extraUsage;
-    var body = billing.plan
-      ? '<div class="usage-section-head"><div><h2 class="section-title">Extra usage</h2></div></div>' +
-        '<div class="billing-actions">' + offers.map(function (offer) {
-          return billingButtonHtml("billing-add-extra-usage", "Add " + esc(offer.usage), offer.key, "extra_usage:" + offer.key, "btn-soft");
-        }).join("") + '</div>' +
-        (offers.length ? '<p class="hint">Extra usage is sold at face value and keeps for ' + offers[0].validMonths + ' months. You need a plan to use it.</p>' : '')
-      : '<div class="usage-section-head"><div><h2 class="section-title">Extra usage</h2><p class="hint">Choose a plan to add extra usage.</p></div></div>';
-    return '<section class="usage-section">' + body + billingErrorHtml("extra_usage") + '</section>';
-  }
-
-  function billingUseTableHtml(heading, rows, empty) {
-    var body = rows.length
-      ? rows.map(function (row) {
-        return '<tr><td>' + esc(row.name || "Other") + '</td><td class="number">' + esc(row.used) + '</td></tr>';
-      }).join("")
-      : '<tr><td colspan="2">' + empty + '</td></tr>';
-    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>' + heading + '</th><th class="number">Used</th></tr></thead><tbody>' + body + '</tbody></table></div>';
-  }
-
-  // A host whose ledger records no person sends no person rows, so the Person
-  // table shows only when there are some.
-  function billingUseHtml(billing) {
-    var period = billing.period;
-    var empty = period ? "No usage yet this period." : "No usage yet.";
-    return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">' + (period ? 'Usage this period' : 'Usage') + '</h2>' +
-      (period ? '<p class="hint">Since ' + esc(period.start) + '.</p>' : '') + '</div></div>' +
-      '<div class="billing-use">' + billingUseTableHtml("Agent", billing.use.byAgent, empty) +
-      (billing.use.byPerson.length ? billingUseTableHtml("Person", billing.use.byPerson, empty) : '') + '</div></section>';
-  }
-
-  function billingFundingConfirmHtml(question, confirmLabel) {
-    var busy = state.billingBusy === "funding";
-    return '<div class="callout"><span>' + question + '</span></div>' +
-      '<div class="billing-actions"><button type="button" class="btn btn-soft" data-action="billing-funding-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
-      '<button type="button" class="btn btn-primary" data-action="billing-funding-confirm"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Switching&hellip;' : confirmLabel) + '</button></div>';
-  }
-
-  // An own key needs a plan at or above the lowest one for it, then a key for
-  // the default model's provider, so the way there starts at whichever is missing.
-  function billingSwitchHtml(billing) {
-    var next = billing.switchFunding;
-    var open = state.billingFundingConfirm;
-    var body;
-    if (next.to === "platform") {
-      body = open
-        ? billingFundingConfirmHtml('Switch to Chickpea&rsquo;s models? Replies will stop using your own key.', 'Switch to Chickpea&rsquo;s models')
-        : '<div class="usage-contract"><p>With Chickpea&rsquo;s models, no API key is needed. Replies draw on your plan&rsquo;s usage.</p></div>' +
-          '<div class="billing-actions"><button type="button" class="btn btn-primary" data-action="billing-use-platform">Use Chickpea&rsquo;s models</button></div>';
-    } else if (!next.ready && next.needs === "key") {
-      body = '<div class="billing-actions"><a class="btn btn-ghost" href="/admin/settings/providers?return=plan">Use your own key instead</a></div>' +
-        '<p class="hint">' + (next.provider ? 'Your default model needs an ' + esc(providerMeta(next.provider).name) + ' API key. Add one in Settings first.' : 'Add a provider API key in Settings first.') + '</p>';
-    } else if (!open) {
-      body = '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="billing-use-own-key">Use your own key instead</button></div>';
-    } else if (next.ready) {
-      var stranded = next.agentsWithoutKey;
-      body = billingFundingConfirmHtml('Switch to your own key? Your provider bills you for the model directly, and your plan covers tasks.' +
-        (stranded.length === 1 ? ' This Agent will stop replying until a key is added for its model&rsquo;s provider: ' + esc(stranded[0]) + '.'
-          : stranded.length ? ' These Agents will stop replying until a key is added for their model&rsquo;s provider: ' + stranded.map(esc).join(", ") + '.' : ''),
-        'Switch to your own key');
-    } else {
-      body = '<div class="callout"><span>Your own API key needs the ' + esc(next.minimumPlan.price) + ' plan or higher. Choose it first, then switch to your own key.</span></div>' +
-        '<div class="billing-actions"><button type="button" class="btn btn-soft" data-action="billing-funding-cancel"' + (state.billingBusy ? ' disabled' : '') + '>Cancel</button>' +
-        billingButtonHtml("billing-choose-minimum-plan", "Choose the " + esc(next.minimumPlan.price) + " plan", next.minimumPlan.key, "minimum_plan", "btn-primary") + '</div>';
-    }
-    return '<section class="usage-section">' + body + billingErrorHtml("switch") + '</section>';
+  function billingSentence(text) {
+    return text.charAt(0).toUpperCase() + text.slice(1);
   }
 
   function billingLede(billing) {
-    if (billing.funding === "own_key") return 'Your workspace pays for models with its own API key.' + (billing.planName ? ' Your plan covers tasks.' : '');
-    if (billing.planName) return 'Your plan includes usage for your Agents&rsquo; chat and tasks.';
-    if (billing.trial) return 'Your trial includes usage for your Agents&rsquo; chat and tasks.';
-    return 'Your workspace has no plan. Plans include usage for your Agents&rsquo; chat and tasks.';
+    var plan = billing.plan;
+    if (billing.funding === "own_key") {
+      return plan ? 'Your workspace is on the ' + esc(plan.price) + ' plan with its own API key.' : 'Your workspace pays for models with its own API key, and has no plan yet.';
+    }
+    if (plan) return 'Your workspace is on the ' + esc(plan.price) + ' plan with models included.';
+    if (billing.trial) return 'Your free trial includes ' + esc(billing.trial.granted) + ' of usage, with models included.';
+    return 'Your workspace has no plan yet.';
+  }
+
+  function billingHeadHtml(billing) {
+    var manage = billing && billing.manage && billing.plan
+      ? billingButtonHtml("billing-manage", "Manage billing", "", "portal", "btn-soft plan-manage")
+      : '';
+    return '<div class="plan-head"><div class="plan-head-copy"><span class="section-eyebrow">Billing</span><h1 class="page-title">Plan</h1>' +
+      (billing ? '<p class="plan-lede">' + billingLede(billing) + '</p>' : '') + '</div>' + manage + '</div>' + billingErrorHtml("portal");
+  }
+
+  // ---- Plan: the status card ----
+
+  // When the plan's period ends: it renews, ends, or changes to another plan.
+  function billingPeriodEndText(billing) {
+    var pending = billing.pendingChange;
+    if (pending && pending.kind === "ends") return 'Ends ' + esc(pending.on);
+    if (pending && pending.kind === "plan") return 'Changes to the ' + esc(pending.planName) + ' on ' + esc(pending.on);
+    return billing.meter ? 'Renews ' + esc(billing.meter.resets) : '';
+  }
+
+  function billingSubHtml(parts) {
+    var shown = parts.filter(Boolean);
+    return shown.length
+      ? '<p class="plan-hero-sub">' + shown.map(function (part) { return '<span>' + part + '</span>'; }).join('<span class="plan-hero-sep" aria-hidden="true">&middot;</span>') + '</p>'
+      : '';
+  }
+
+  function billingMeterHtml(label, percent, onPacePercent, out, legend, note) {
+    var fill = Math.max(0, Math.min(percent, 100));
+    var pace = onPacePercent == null ? '' : '<span class="plan-meter-pace" style="left: ' + Math.max(0, Math.min(onPacePercent, 100)) + '%"></span>';
+    return '<div class="plan-meter' + (out ? ' is-out' : '') + '" role="meter" aria-label="' + label + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + fill + '">' +
+      '<span class="plan-meter-fill" style="width: ' + fill + '%"></span>' + pace + '</div>' +
+      '<div class="plan-meter-legend"><span>' + legend + '</span>' + (note ? '<span>' + note + '</span>' : '') + '</div>';
+  }
+
+  // Usage the workspace holds beyond the plan's own: carried over, extra
+  // usage, and trial usage left beside a plan.
+  function billingChipsHtml(billing) {
+    var chips = [];
+    var chip = function (tone, text, until) {
+      return '<li class="plan-chip ' + tone + '"><span class="plan-chip-dot" aria-hidden="true"></span><span>' + text + '</span> <small>until ' + esc(until) + '</small></li>';
+    };
+    if (billing.rollover) chips.push(chip("is-rollover", '+' + esc(billing.rollover.remaining) + ' carried over', billing.rollover.until));
+    if (billing.extraUsage) {
+      chips.push(billing.extraUsage.frozen
+        ? chip("is-extra", esc(billing.extraUsage.remaining) + ' of extra usage waits for a plan', billing.extraUsage.until)
+        : chip("is-extra", '+' + esc(billing.extraUsage.remaining) + ' extra usage', billing.extraUsage.until));
+    }
+    if (billing.trial && billing.plan) chips.push(chip("is-trial", '+' + esc(billing.trial.remaining) + ' trial usage', billing.trial.until));
+    return chips.length ? '<ul class="plan-chips">' + chips.join("") + '</ul>' : '';
+  }
+
+  // Extra usage is spent only while a plan is active, so it is sold only then.
+  function billingAddUsageHtml(billing, out) {
+    if (!billing.manage || !billing.plan || !billing.offers.extraUsage.length) return '';
+    var offers = billing.offers.extraUsage;
+    return '<div class="plan-add" role="group" aria-labelledby="plan-add-label"><span class="plan-add-label" id="plan-add-label">Add usage</span><div class="plan-add-row">' +
+      offers.map(function (offer) {
+        return billingButtonHtml("billing-add-extra-usage", esc(offer.usage), offer.key, "extra_usage:" + offer.key, out ? "btn-primary" : "btn-soft",
+          ' aria-label="Add ' + esc(offer.usage) + ' of extra usage"');
+      }).join("") + '</div><span class="hint">Keeps ' + offers[0].validMonths + ' months</span></div>';
+  }
+
+  // Why Agents stopped, and what starts them again; an Owner is the one who
+  // can add usage.
+  function billingPausedText(billing) {
+    var who = billing.manage ? 'Add usage' : 'An Owner can add usage';
+    var ending = billing.pendingChange && billing.pendingChange.kind === "ends";
+    var renews = !ending && billing.meter ? ', or they start again when your plan renews ' + esc(billing.meter.resets) : '';
+    if (billing.funding === "own_key") return 'Tasks are paused, and your Agents can still chat. ' + who + ' to keep tasks going' + renews + '.';
+    return 'Your Agents are paused. ' + who + ' to keep them working now' + renews + '.';
+  }
+
+  function billingAlertHtml(text) {
+    return '<p class="plan-hero-alert" role="status"><span class="plan-hero-alert-mark" aria-hidden="true">!</span><span>' + text + '</span></p>';
+  }
+
+  function billingHeroHtml(billing) {
+    var balance = billing.balance;
+    var own = billing.funding === "own_key";
+    if (!billing.plan && own) {
+      var minimum = billing.ownKeyWithoutPlan;
+      var choose = billing.manage
+        ? '<div class="plan-hero-actions">' + billingButtonHtml("billing-choose-plan", "Choose the " + esc(minimum.minimumPrice) + " plan", billing.ownKey.minimumPlan.key, "plan:hero", "btn-primary", ' data-at="hero"') + '</div>'
+        : '';
+      return '<section class="plan-hero is-muted" aria-label="Your plan"><span class="section-eyebrow">No plan</span><p class="plan-hero-headline">Tasks are paused</p>' +
+        '<p class="plan-hero-text">Your Agents can still chat. With your own API key, plans start at ' + esc(minimum.minimumPrice) + ' a month, which covers ' + esc(minimum.minimumTasks) + ' tasks.</p>' +
+        choose + billingErrorHtml("plan:hero") + billingChipsHtml(billing) + '</section>';
+    }
+    if (!billing.plan && !billing.trial) {
+      return '<section class="plan-hero is-muted" aria-label="Your plan"><span class="section-eyebrow">No plan</span><p class="plan-hero-headline">Your Agents are paused</p>' +
+        '<p class="plan-hero-text">Choose a plan to get them working again.</p>' + billingChipsHtml(billing) + '</section>';
+    }
+    var out = balance.exhausted;
+    var eyebrow, big, sub, meter = '', alert = '';
+    if (!billing.plan) {
+      var trial = billing.trial;
+      eyebrow = 'Free trial';
+      big = '<b>' + esc(balance.left) + '</b> left';
+      sub = billingSubHtml([out ? '' : billingSentence(esc(balance.tasksLeft)) + ' tasks', 'Ends ' + esc(trial.until)]);
+      meter = billingMeterHtml("Trial usage", trial.percent, null, out, '<b>' + esc(trial.used) + '</b> of ' + esc(trial.granted) + ' used', out ? 'Used up' : 'No card needed');
+      if (out) alert = billingAlertHtml('Your trial&rsquo;s usage is used up. Choose a plan to keep your Agents working.');
+    } else if (!billing.meter) {
+      var plan = billing.plan;
+      eyebrow = 'Each month';
+      big = !plan.included ? '<b>' + esc(plan.price) + '</b> a month'
+        : own ? '<b>' + esc(plan.tasks) + '</b> tasks a month' : '<b>' + esc(plan.included) + '</b> of usage a month';
+      sub = billingSubHtml([
+        !plan.included ? '' : own ? esc(plan.included) + ' of usage a month' : billingSentence(esc(plan.tasks)) + ' tasks',
+        billingPeriodEndText(billing),
+        own ? 'Your provider bills tokens' : ''
+      ]);
+    } else {
+      var used = billing.meter;
+      var note = used.percent >= 100 ? 'Used up' : used.onPacePercent == null ? '' : 'On pace for ' + used.onPacePercent + '% by ' + esc(used.resets);
+      eyebrow = 'This month';
+      if (own) {
+        big = '<b>' + esc(balance.tasksLeft) + '</b> tasks left';
+        sub = billingSubHtml([esc(balance.left) + ' of usage left', billingPeriodEndText(billing), 'Your provider bills tokens']);
+        meter = billingMeterHtml("Plan tasks", used.percent, used.onPacePercent, out, '<b>' + esc(used.tasksUsed) + '</b> of ' + esc(used.tasksIncluded) + ' tasks used', note);
+      } else {
+        big = '<b>' + esc(balance.left) + '</b> left';
+        sub = billingSubHtml([out ? '' : billingSentence(esc(balance.tasksLeft)) + ' tasks', billingPeriodEndText(billing)]);
+        meter = billingMeterHtml("Plan usage", used.percent, used.onPacePercent, out, '<b>' + esc(used.used) + '</b> of ' + esc(used.included) + ' plan usage', note);
+      }
+    }
+    if (out && billing.plan) alert = billingAlertHtml(billingPausedText(billing));
+    return '<section class="plan-hero' + (out ? ' is-out' : '') + '" aria-label="Your usage"><div class="plan-hero-top"><div class="plan-hero-copy">' +
+      '<span class="section-eyebrow">' + eyebrow + '</span><p class="plan-hero-big">' + big + '</p>' + sub + '</div>' +
+      billingAddUsageHtml(billing, out) + '</div>' + billingErrorHtml("extra_usage") + alert + meter + billingChipsHtml(billing) + '</section>';
+  }
+
+  // ---- Plan: the two ways to pay, as cards ----
+
+  var PLAN_CARDS = {
+    platform: {
+      name: "Models included",
+      pitch: "Claude, GPT, and open models through our provider accounts. One bill.",
+      levelLabel: "Plan size with models included"
+    },
+    own_key: {
+      name: "Your own API key",
+      pitch: "Bring your Anthropic, OpenAI, or OpenRouter key.",
+      levelLabel: "Plan size with your own API key"
+    }
+  };
+
+  function planCardPlans(billing, card) {
+    return card === "own_key" ? billing.offers.plans.filter(function (plan) { return plan.ownKeyEligible; }) : billing.offers.plans;
+  }
+
+  // A card opens on the current plan when it fits the card, else on the
+  // lowest plan for an own key, until the Owner picks another size.
+  function planCardSelection(billing, card) {
+    var plans = planCardPlans(billing, card);
+    var keys = [state.billingSelection[card], billing.plan && billing.plan.key, billing.ownKey.minimumPlan.key];
+    for (var index = 0; index < keys.length; index += 1) {
+      var key = keys[index];
+      var found = key && plans.find(function (plan) { return plan.key === key; });
+      if (found) return found;
+    }
+    return plans[0];
+  }
+
+  // The next step toward paying this card's way at the selected size:
+  //   current   the selected size is the plan the workspace pays this way now
+  //   checkout  Stripe Checkout for the selected plan
+  //   add_key   Model providers, for the key the default model needs
+  //   switch    switch how the workspace pays, after the Owner confirms
+  function planCardStep(billing, card, selected) {
+    var current = billing.plan ? billing.plan.key : "";
+    if (card === billing.funding) {
+      return selected.key === current ? { kind: "current" } : { kind: "checkout", key: selected.key, price: selected.price, change: !!billing.plan };
+    }
+    if (card === "platform") return { kind: "switch", to: "platform" };
+    if (selected.key !== current) return { kind: "checkout", key: selected.key, price: selected.price, change: false };
+    if (!billing.ownKey.key.ready) return { kind: "add_key", provider: billing.ownKey.key.provider };
+    return { kind: "switch", to: "own_key" };
+  }
+
+  function planCardTag(billing, card) {
+    if (card !== billing.funding) return "";
+    if (billing.plan) return "Current plan";
+    return card === "platform" ? "Recommended" : "Your setup";
+  }
+
+  function planCardConfirmHtml(billing, to) {
+    var busy = state.billingBusy === "funding";
+    var question;
+    if (to === "platform") {
+      question = 'Switch to models included? Replies will stop using your key and draw on your plan&rsquo;s usage.';
+    } else {
+      var stranded = billing.ownKey.key.ready ? billing.ownKey.key.agentsWithoutKey : [];
+      question = 'Switch to your own key? Your provider bills you for tokens directly, and your plan pays for tasks.' +
+        (stranded.length === 1 ? ' This Agent will stop replying until a key is added for its model&rsquo;s provider: ' + esc(stranded[0]) + '.'
+          : stranded.length ? ' These Agents will stop replying until a key is added for their model&rsquo;s provider: ' + stranded.map(esc).join(", ") + '.' : '');
+    }
+    return '<div class="plan-confirm" role="group" aria-label="Confirm the switch"><p>' + question + '</p><div class="plan-confirm-actions">' +
+      '<button type="button" class="btn btn-soft" data-action="billing-funding-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
+      '<button type="button" class="btn btn-primary" data-action="billing-funding-confirm"' + (busy ? ' disabled' : '') + '>' +
+      (busy ? 'Switching&hellip;' : to === "platform" ? 'Switch to models included' : 'Switch to your own key') + '</button></div></div>';
+  }
+
+  function planCardActionHtml(billing, card, step) {
+    if (step.kind === "current") return '<button type="button" class="btn btn-soft plan-card-action" disabled>Your current plan</button>';
+    if (step.kind === "checkout") {
+      return billingButtonHtml("billing-choose-plan", (step.change ? "Change to the " : "Choose the ") + esc(step.price) + " plan", step.key, "plan:" + card,
+        (card === billing.funding ? "btn-primary" : "btn-soft") + " plan-card-action", ' data-at="' + card + '"');
+    }
+    if (step.kind === "add_key") {
+      return '<a class="btn btn-soft plan-card-action" href="' + MODEL_PROVIDERS_PATH + '?return=plan">' +
+        (step.provider ? 'Add your ' + esc(providerMeta(step.provider).name) + ' key' : 'Add your API key') + '</a>';
+    }
+    if (state.billingFundingConfirm) return planCardConfirmHtml(billing, step.to);
+    return '<button type="button" class="btn btn-soft plan-card-action" data-action="billing-switch-funding"' + (state.billingBusy ? ' disabled' : '') + '>' +
+      (step.to === "platform" ? 'Switch to models included' : 'Switch to your own key') + '</button>';
+  }
+
+  function planCardNote(billing, card, selected) {
+    if (card === "own_key") return 'Your provider bills tokens, so the whole plan goes to tasks, ' + esc(billing.taskFee) + ' each.';
+    if (billing.funding === "own_key") return 'Replies stop using your key, and model tokens draw on your plan&rsquo;s usage at list price.';
+    var bonus = billing.offers.bonusPercent;
+    return esc(selected.included) + ' of usage a month' + (bonus > 0 ? ', ' + bonus + '% more than you pay' : '') + '. Task counts assume a typical mix on the default model.';
+  }
+
+  function planChecksHtml(items) {
+    return '<ul class="plan-checks">' + items.filter(Boolean).map(function (item) {
+      return '<li>' + icon("check") + '<span>' + item + '</span></li>';
+    }).join("") + '</ul>';
+  }
+
+  function planCardChecksHtml(billing, card) {
+    var offers = billing.offers;
+    var rollover = offers.rolloverMonths > 0 ? 'Unused usage rolls over for ' + billingMonths(offers.rolloverMonths) : '';
+    if (card === "platform") {
+      return planChecksHtml(['Model tokens at list price, no markup', offers.bonusPercent > 0 ? offers.bonusPercent + '% bonus usage every month' : '', rollover, 'Every feature and connector']);
+    }
+    var key = billing.ownKey.key;
+    var name = key.provider ? esc(providerMeta(key.provider).name) : '';
+    var keyLine = key.ready
+      ? '<p class="plan-keyline"><span class="plan-keyline-dot" aria-hidden="true"></span><span>' + (name ? 'Using your ' + name + ' key.' : 'Using your own API key.') + '</span> <a class="hint-link" href="' + MODEL_PROVIDERS_PATH + '">Manage keys</a></p>'
+      : '<p class="plan-keyline is-missing"><span class="plan-keyline-dot" aria-hidden="true"></span><span>' + (name ? 'Your default model needs an ' + name + ' API key.' : 'Your workspace needs a model provider API key.') + '</span> <a class="hint-link" href="' + MODEL_PROVIDERS_PATH + '">Add key</a></p>';
+    return planChecksHtml(['Tokens at your own provider rates', offers.chatReplyFee === "$0" ? 'Chat replies included' : '', rollover, 'Every feature and connector']) + keyLine;
+  }
+
+  // What an own key still needs: the selected plan, and a key for the default
+  // model's provider.
+  function planCardChecklistHtml(billing, selected) {
+    var key = billing.ownKey.key;
+    var name = key.provider ? esc(providerMeta(key.provider).name) : '';
+    var addKey = billing.funding === "platform" ? MODEL_PROVIDERS_PATH + '?return=plan' : MODEL_PROVIDERS_PATH;
+    var item = function (done, text) {
+      return '<li class="plan-need' + (done ? ' is-done' : '') + '"><span class="plan-need-mark" aria-hidden="true">' + (done ? icon("check") : '') + '</span>' +
+        '<span><span class="sr-only">' + (done ? 'Done: ' : 'Not yet: ') + '</span>' + text + '</span></li>';
+    };
+    return '<div class="plan-needs"><p class="plan-needs-head">' + (billing.funding === "own_key" ? 'To do tasks' : 'To switch') + '</p><ul>' +
+      item(!!billing.plan && selected.key === billing.plan.key, 'The ' + esc(selected.price) + ' plan') +
+      item(key.ready, (name ? 'An ' + name + ' API key, for your default model' : 'A model provider API key') +
+        (key.ready ? '' : '. <a class="hint-link" href="' + addKey + '">Add key</a>')) +
+      '</ul></div>';
+  }
+
+  function planCardHtml(billing, card) {
+    var meta = PLAN_CARDS[card];
+    var selected = planCardSelection(billing, card);
+    var step = planCardStep(billing, card, selected);
+    var tag = planCardTag(billing, card);
+    var options = planCardPlans(billing, card).map(function (plan) {
+      return '<option value="' + esc(plan.key) + '"' + (plan.key === selected.key ? ' selected' : '') + '>' + esc(plan.price) + ' a month &middot; ' +
+        esc(card === "own_key" ? plan.tasks.ownKey : plan.tasks.platform) + ' tasks</option>';
+    }).join("");
+    var details = card === "platform" || (billing.funding === "own_key" && billing.plan)
+      ? planCardChecksHtml(billing, card)
+      : planCardChecklistHtml(billing, selected);
+    return '<article class="plan-card' + (tag ? ' is-marked' : '') + '" aria-labelledby="plan-card-' + card + '">' +
+      (tag ? '<p class="plan-card-tag">' + tag + '</p>' : '') +
+      '<h3 class="plan-card-name" id="plan-card-' + card + '">' + meta.name + '</h3><p class="plan-card-pitch">' + meta.pitch + '</p>' +
+      '<p class="plan-card-price"><b>' + esc(selected.price) + '</b> / month</p>' +
+      '<select class="plan-card-level" data-action="billing-plan-level" data-card="' + card + '" aria-label="' + meta.levelLabel + '"' + (state.billingBusy ? ' disabled' : '') + '>' + options + '</select>' +
+      '<p class="plan-card-note">' + planCardNote(billing, card, selected) + '</p>' +
+      planCardActionHtml(billing, card, step) + billingErrorHtml("plan:" + card) + (step.kind === "switch" ? billingErrorHtml("switch") : '') +
+      details + '</article>';
+  }
+
+  function billingPlansHtml(billing) {
+    var head = billing.plan
+      ? ['Your plan', 'Change your plan&rsquo;s size, or how your workspace pays for models.']
+      : ['Choose a plan', 'Both include every feature and connector. Pay for models with us, or bring your own key.'];
+    return '<div class="plan-section-head"><div><h2 class="section-title" id="plan-cards-heading">' + head[0] + '</h2><p class="hint">' + head[1] + '</p></div></div>' +
+      '<section class="plan-band" aria-labelledby="plan-cards-heading"><div class="plan-cards">' + planCardHtml(billing, "platform") + planCardHtml(billing, "own_key") + '</div>' +
+      '<p class="plan-band-fine">Prices in US dollars. Tax added where required. <a href="' + PRICING_QUESTIONS_URL + '" target="_blank" rel="noopener">Pricing questions</a></p></section>';
+  }
+
+  // ---- Plan: usage by Agent or person ----
+
+  function billingUseAvatarHtml(row, byPerson) {
+    if (row.name === null) return '<span class="plan-use-avatar is-other" aria-hidden="true"></span>';
+    var agent = !byPerson && row.id ? agentById(row.id) : null;
+    var url = agent ? agentAvatarUrlForAdmin(agent) : "";
+    if (url) return '<span class="plan-use-avatar" aria-hidden="true"><img src="' + esc(url) + '" alt=""></span>';
+    return '<span class="plan-use-avatar is-letter" aria-hidden="true">' + esc((Array.from(row.name)[0] || "").toUpperCase()) + '</span>';
+  }
+
+  // A host whose ledger records no person sends no person rows, so the
+  // toggle shows only when there are some.
+  function billingUseHtml(billing) {
+    var use = billing.use;
+    if (!billing.plan && !use.byAgent.length && !use.byPerson.length) return '';
+    var byPerson = state.billingUseBy === "person" && use.byPerson.length > 0;
+    var rows = byPerson ? use.byPerson : use.byAgent;
+    var period = billing.period;
+    var toggle = use.byPerson.length
+      ? '<div class="plan-use-toggle" role="group" aria-label="Show usage">' +
+        '<button type="button" data-action="billing-use-by" data-by="agent" aria-pressed="' + !byPerson + '">By Agent</button>' +
+        '<button type="button" data-action="billing-use-by" data-by="person" aria-pressed="' + byPerson + '">By person</button></div>'
+      : '';
+    var body = rows.length
+      ? '<ul class="plan-use">' + rows.map(function (row) {
+        return '<li class="plan-use-row">' + billingUseAvatarHtml(row, byPerson) + '<span class="plan-use-name">' + esc(row.name || "Other") + '</span>' +
+          '<span class="plan-use-track" aria-hidden="true"><span style="width: ' + row.bar + '%"></span></span><span class="plan-use-amount">' + esc(row.used) + '</span></li>';
+      }).join("") + '</ul>'
+      : '<p class="plan-use-empty">' + (period ? 'No usage yet this period.' : 'No usage yet.') + '</p>';
+    return '<section class="plan-section" aria-labelledby="plan-use-heading"><div class="plan-section-head"><div><h2 class="section-title" id="plan-use-heading">' +
+      (period ? 'Usage this period' : 'Usage') + '</h2>' + (period ? '<p class="hint">Since ' + esc(period.start) + '.</p>' : '') + '</div>' + toggle + '</div>' + body + '</section>';
+  }
+
+  // ---- Plan: how usage works ----
+
+  function billingPlanRange(plans) {
+    return plans.length ? esc(plans[0].price) + ' to ' + esc(plans[plans.length - 1].price) + ' a month' : '';
+  }
+
+  function billingHowHtml(billing) {
+    var offers = billing.offers;
+    var yours = function (card) { return billing.funding === card ? ' <span class="plan-yours">Yours</span>' : ''; };
+    var fee = esc(billing.taskFee);
+    var chatFree = offers.chatReplyFee === "$0";
+    var row = function (label, platform, ownKey) { return '<tr><th scope="row">' + label + '</th><td>' + platform + '</td><td>' + ownKey + '</td></tr>'; };
+    var facts = [
+      offers.bonusPercent > 0 ? ['is-bonus', offers.bonusPercent + '% bonus usage on every plan'] : null,
+      offers.rolloverMonths > 0 ? ['is-rollover', 'Unused plan usage carries over ' + billingMonths(offers.rolloverMonths)] : null,
+      offers.extraUsage.length ? ['is-extra', 'Extra usage keeps ' + offers.extraUsage[0].validMonths + ' months'] : null
+    ].filter(Boolean);
+    var example = function (ask, counts) { return '<li><span>&ldquo;' + ask + '&rdquo;</span><b>' + counts + '</b></li>'; };
+    return '<section class="plan-section plan-how" aria-labelledby="plan-how-heading"><div class="plan-section-head"><div><h2 class="section-title" id="plan-how-heading">How usage works</h2>' +
+      '<p class="hint">One plan covers your whole workspace. No seats.</p></div></div>' +
+      '<div class="plan-compare"><table><thead><tr><td></td><th scope="col">Models included' + yours("platform") + '</th><th scope="col">Your own API key' + yours("own_key") + '</th></tr></thead><tbody>' +
+      row('Chat reply', chatFree ? 'Model tokens at list price' : 'Model tokens + <b>' + esc(offers.chatReplyFee) + '</b>', chatFree ? '<b>Included</b>' : '<b>' + esc(offers.chatReplyFee) + '</b>') +
+      row('Task', 'Model tokens + <b>' + fee + '</b>', '<b>' + fee + '</b>') +
+      row('Who bills tokens', 'Chickpea, on your plan', 'Your provider, directly') +
+      row('Plan sizes', billingPlanRange(offers.plans), billingPlanRange(planCardPlans(billing, "own_key"))) +
+      '</tbody></table></div>' +
+      '<div class="plan-task"><span class="plan-task-icon" aria-hidden="true">' + icon("gear") + '</span><div class="plan-task-copy"><h3>What counts as a task?</h3>' +
+      '<p>A reply where an Agent works in your tools, like reading channels or documents, using connectors, or writing code. However many steps it takes, it&rsquo;s one task and one ' + fee + ' fee.</p></div>' +
+      '<ul class="plan-task-examples">' + example('Make this reply friendlier', 'Chat') + example('Summarize #support and file the bugs in Linear', '1 task') +
+      example('Research three competitors&rsquo; pricing and write it up', '1 task') + '</ul></div>' +
+      (facts.length ? '<ul class="plan-facts">' + facts.map(function (fact) { return '<li class="' + fact[0] + '"><span class="plan-chip-dot" aria-hidden="true"></span>' + fact[1] + '</li>'; }).join("") + '</ul>' : '') +
+      '</section>';
   }
 
   function billingMainHtml() {
     var billing = state.billing;
-    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Billing</span><h1 class="page-title">Plan</h1>' +
-      (billing ? '<p class="hint">' + billingLede(billing) + '</p>' : '') + '</div></div>';
+    var head = billingHeadHtml(billing);
     if (!billing) {
       if (state.billingError) return head + '<div class="empty"><p class="field-error">' + esc(state.billingError.text) + '</p><button type="button" class="btn btn-ghost" data-action="billing-retry">Retry</button></div>';
       return head + '<div class="empty"><p class="hint">Loading your plan&hellip;</p></div>';
     }
-    var status = billingErrorHtml("load") + billingStatusHtml(billing);
-    if (!billing.manage) return head + status + '<div class="usage-contract"><p>An Owner can change the plan and how your workspace pays for models.</p></div>';
-    return head + status + billingPlanSectionHtml(billing) +
-      (billing.funding === "platform" || billing.plan ? billingExtraUsageHtml(billing) : '') +
-      billingUseHtml(billing) + billingSwitchHtml(billing);
+    var status = billingErrorHtml("load") + billingHeroHtml(billing);
+    if (!billing.manage) return head + status + '<p class="plan-member-note"><span class="plan-chip-dot" aria-hidden="true"></span>An Owner can change the plan, add usage, or switch how your workspace pays for models.</p>';
+    return head + status + billingPlansHtml(billing) + billingUseHtml(billing) + billingHowHtml(billing);
   }
 
   function isOnboardingSlackConnection() {
@@ -3083,7 +3321,7 @@
       return '<main class="main"><div class="main-inner team-main">' + teamMainHtml() + '</div></main>';
     }
     if (state.view === "billing") {
-      return '<main class="main"><div class="main-inner usage-main">' + billingMainHtml() + '</div></main>';
+      return '<main class="main"><div class="main-inner plan-page">' + billingMainHtml() + '</div></main>';
     }
     // Profiles is a first-class main-panel destination (master-detail, per cards
     // 09-12) that takes precedence over the channel chrome — reachable from the
@@ -14738,12 +14976,24 @@
       var extraUsageKey = target.getAttribute("data-key") || "";
       openStripe("/admin/api/billing/checkout", { kind: "extra_usage", key: extraUsageKey }, "extra_usage:" + extraUsageKey, "extra_usage");
     }
-    if (action === "billing-change-plan") { state.billingPlansOpen = !state.billingPlansOpen; render(); }
-    if (action === "billing-choose-plan") openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "plan", "plan");
-    if (action === "billing-choose-minimum-plan") openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "minimum_plan", "switch");
-    if (action === "billing-manage") openStripe("/admin/api/billing/portal", {}, "portal", "plan");
-    if (action === "billing-use-platform" || action === "billing-use-own-key") { state.billingFundingConfirm = true; state.billingError = null; render(); }
-    if (action === "billing-funding-cancel" && !state.billingBusy) { state.billingFundingConfirm = false; state.billingError = null; render(); }
+    if (action === "billing-choose-plan") {
+      var planAt = target.getAttribute("data-at") || "";
+      openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "plan:" + planAt, "plan:" + planAt);
+    }
+    if (action === "billing-manage") openStripe("/admin/api/billing/portal", {}, "portal", "portal");
+    if (action === "billing-switch-funding" && !state.billingBusy) {
+      state.billingFundingConfirm = true;
+      state.billingError = null;
+      render();
+      focusAction("billing-funding-cancel");
+    }
+    if (action === "billing-funding-cancel" && !state.billingBusy) {
+      state.billingFundingConfirm = false;
+      state.billingError = null;
+      render();
+      focusAction("billing-switch-funding");
+    }
+    if (action === "billing-use-by") { state.billingUseBy = target.getAttribute("data-by") === "person" ? "person" : "agent"; render(); }
     if (action === "billing-funding-confirm") switchFunding();
     if (action === "onboarding-platform-retry" && !state.onboardingBusy) { state.onboardingError = ""; render(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
@@ -15841,6 +16091,15 @@
   document.addEventListener("change", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (action === "billing-plan-level" && state.billing && !state.billingBusy) {
+      var levelCard = target.getAttribute("data-card") === "own_key" ? "own_key" : "platform";
+      state.billingSelection[levelCard] = target.value || "";
+      state.billingFundingConfirm = false;
+      if (state.billingError && state.billingError.at !== "load") state.billingError = null;
+      render();
+      var level = document.querySelector('[data-action="billing-plan-level"][data-card="' + levelCard + '"]');
+      if (level && level.focus) level.focus();
+    }
     if (action === "team-role-select" && !state.teamBusy) {
       var roleMembershipId = target.getAttribute("data-membership") || "";
       var roleMember = teamMemberById(roleMembershipId);
