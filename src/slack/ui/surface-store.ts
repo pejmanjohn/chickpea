@@ -55,6 +55,9 @@ export type UiSurfaceRpcRequest =
   | { kind: 'bind_surface_message'; id: string; messageTs: string }
   | { kind: 'close_surface'; id: string; status: 'superseded' | 'expired' | 'failed' }
   | { kind: 'resolve_surface'; id: string; resolution: UiSurfaceResolution }
+  /** First-wins, outside admission: the surface when this call resolved it, else null. */
+  | { kind: 'claim_surface'; id: string; namespace: UiNamespace; resolution: UiSurfaceResolution }
+  | { kind: 'settle_surface'; id: string; resolution: UiSurfaceResolution }
   | {
       kind: 'supersede_surfaces';
       scope: UiSurfaceScope;
@@ -290,6 +293,20 @@ export class UiSurfaceStoreLogic {
     return this.get(id);
   }
 
+  /**
+   * Record how a resolved surface's answer ended, when that is known only
+   * after the claim: a front-desk pick, once its takeover was admitted or not.
+   */
+  settle(id: string, resolution: UiSurfaceResolution): UiSurfaceRecord | undefined {
+    this.db.run(
+      `UPDATE ui_surfaces SET resolution_json = ?, updated_at = ? WHERE id = ? AND status = 'resolved'`,
+      JSON.stringify(resolution),
+      this.now(),
+      id,
+    );
+    return this.get(id);
+  }
+
   /** One RPC entry point, so a remote state owner exposes a single method. */
   execute(request: UiSurfaceRpcRequest): UiSurfaceRpcResponse {
     switch (request.kind) {
@@ -303,6 +320,12 @@ export class UiSurfaceStoreLogic {
         return { kind: 'surface', surface: this.close(request.id, request.status) ?? null };
       case 'resolve_surface':
         return { kind: 'surface', surface: this.resolve(request.id, request.resolution) ?? null };
+      case 'claim_surface': {
+        const claimed = this.claim({ surfaceId: request.id, resolution: request.resolution }, request.namespace);
+        return { kind: 'surface', surface: claimed.claimed ? claimed.surface : null };
+      }
+      case 'settle_surface':
+        return { kind: 'surface', surface: this.settle(request.id, request.resolution) ?? null };
       case 'supersede_surfaces':
         return {
           kind: 'surfaces',

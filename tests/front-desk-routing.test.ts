@@ -12,6 +12,7 @@ import { freezeRuntimePlanForTurn, runTurn } from '../src/slack/run-turn.ts';
 import { uiActionId, uiBlockId, uiSurfaceId, uiValue, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import {
+  FRONT_DESK_CHOICE_SETTLED_LINE,
   FRONT_DESK_MAX_NAME_CHARS,
   clampText,
   compileFrontDeskPlan,
@@ -519,6 +520,60 @@ test('a pick on the card admits the person\'s message for that Agent; anyone els
     assert.equal(lane.jobs.length, 2);
     assert.equal((await read()).resolution?.choice, 0);
     assert.ok(!lane.posts.some(({ ephemeral }) => ephemeral), 'no notice for a repeat click');
+  });
+});
+
+const lastCard = (posts: Array<Record<string, unknown>>) =>
+  posts.filter(({ update }) => update).at(-1) as { text: string; blocks: Array<{ type: string }> } | undefined;
+
+test('two picks at once, of the same Agent or of two, admit one takeover and the card names who took it', async () => {
+  for (const picks of [[0, 0], [0, 1]] as const) {
+    await withFrontDeskLane(async (lane) => {
+      const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
+      const { read, click } = await cardOf(lane, chickpea.id);
+      await Promise.all(picks.map((index) => click(index)));
+      assert.equal(lane.jobs.length, 2, `one takeover for picks ${picks.join(',')}`);
+      const owner = (await lane.stores.config.getAgentThreadRoute('T1', 'D1', ROOT))?.agentId;
+      assert.equal(owner, lane.jobs[1]!.assignment.agentId);
+      const card = await read();
+      assert.equal(card.spec.kind === 'agent_choice' && card.spec.options[card.resolution!.takenBy!]?.agentId, owner);
+      assert.equal(lastCard(lane.posts)?.text, owner === 'agent_support' ? 'Support Desk is taking this.' : 'Research is taking this.');
+      assert.ok(!lane.posts.some(({ ephemeral }) => ephemeral), 'the second pick says nothing');
+    });
+  }
+});
+
+test('a pick after another takeover of the message names the Agent that has it', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
+    await processSlackFrontDeskHandoff({
+      turn: chickpea.turn, fromAgentId: CHICKPEA_AGENT_ID, agentId: 'agent_research', agentName: 'Research',
+    }, undefined, { stores: lane.stores, gatewayClient: lane.gateway, enqueueTurn: lane.enqueueTurn });
+    const { read, click } = await cardOf(lane, chickpea.id);
+    await click(0);
+    assert.equal(lane.jobs.length, 2, 'Support Desk is not admitted');
+    assert.equal((await read()).resolution?.takenBy, 1);
+    assert.equal(lastCard(lane.posts)?.text, 'Research is taking this.');
+  });
+});
+
+test('a click on a card whose pick never settled leaves no live buttons', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
+    const { read, click } = await cardOf(lane, chickpea.id);
+    // The host claimed the card and admitted the takeover, then stopped before settling it.
+    const card = await read();
+    await lane.stores.slackState.executeUiSurface!({
+      kind: 'claim_surface', id: card.id, namespace: 'host', resolution: { byUserId: 'U1', at: Date.now(), choice: 0 },
+    });
+    await processSlackFrontDeskHandoff({
+      turn: chickpea.turn, fromAgentId: CHICKPEA_AGENT_ID, agentId: 'agent_support', agentName: 'Support Desk',
+    }, undefined, { stores: lane.stores, gatewayClient: lane.gateway, enqueueTurn: lane.enqueueTurn });
+    await click(1);
+    assert.equal(lane.jobs.length, 2, 'the click admits nothing');
+    const redrawn = lastCard(lane.posts);
+    assert.equal(redrawn?.text, FRONT_DESK_CHOICE_SETTLED_LINE);
+    assert.ok(!redrawn?.blocks.some(({ type }) => type === 'actions'), 'no buttons left');
   });
 });
 

@@ -311,7 +311,12 @@ import {
   retireApprovalSurfacesForTypedAnswer,
   uiSurfaceRecord,
 } from '../slack/ui/host-surfaces.ts';
-import { parseUiControl, type HostAgentChoiceSpec, type UiSurfaceRecord } from '../slack/ui/surface.ts';
+import {
+  parseUiControl,
+  type HostAgentChoiceSpec,
+  type UiSurfaceRecord,
+  type UiSurfaceResolution,
+} from '../slack/ui/surface.ts';
 import type {
   GatewayUiActionDelivery,
   GatewayViewSubmissionDelivery,
@@ -2405,10 +2410,11 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
 
 /**
  * A pick on the front desk's card. Only the person whose message it is may
- * pick, and anyone else's click does nothing; so does a click on a card that
- * already resolved. The pick admits that message for the chosen Agent as a
- * takeover, checked live again, and the card resolves only once admission
- * returns: to the chosen Agent, or to the failure line when it was refused.
+ * pick, and anyone else's click does nothing. The first pick claims the
+ * card, so a later click admits nothing and only redraws it. The claim then
+ * admits that message for the chosen Agent as a takeover, checked live
+ * again, and the card settles to what admission did: that Agent taking it,
+ * the thread's owner when another takeover came first, or the failure line.
  */
 async function handleAgentChoiceClick(input: SlackUiContext & {
   action: SlackUiAction;
@@ -2417,15 +2423,20 @@ async function handleAgentChoiceClick(input: SlackUiContext & {
   choice: number | undefined;
   redraw: (surface: UiSurfaceRecord | undefined) => Promise<void>;
 }): Promise<void> {
-  const { action, surface, spec, stores } = input;
+  const { action, surface, spec, stores, choice } = input;
   const state = stores.slackState as UiSurfaceState;
   if (action.userId !== spec.requesterUserId) return;
   if (surface.status !== 'open' && surface.status !== 'pending_delivery') return input.redraw(surface);
   if (surface.expiresAt <= Date.now()) {
     return input.redraw(await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'expired' }));
   }
-  const option = input.choice === undefined ? undefined : spec.options[input.choice];
-  if (!option) return;
+  const option = choice === undefined ? undefined : spec.options[choice];
+  if (choice === undefined || !option) return;
+  const claim: UiSurfaceResolution = { byUserId: action.userId, at: Date.now(), choice };
+  // Another pick claimed the card first; it settles and redraws it.
+  if (!(await uiSurfaceRecord(state, { kind: 'claim_surface', id: surface.id, namespace: 'host', resolution: claim }))) {
+    return;
+  }
   const outcome = await admitFrontDeskTakeover({
     origin: {
       workspaceId: surface.workspaceId,
@@ -2446,19 +2457,32 @@ async function handleAgentChoiceClick(input: SlackUiContext & {
     platformEnv: input.platformEnv,
     execution: input.execution,
   });
-  // Another pick took this message first; its own redraw names the Agent.
-  if (outcome === 'duplicate') return input.redraw(await uiSurfaceRecord(state, { kind: 'get_surface', id: surface.id }));
   if (outcome === 'admitted') emitUiInteraction('resolved');
+  const takenBy = outcome === 'admitted'
+    ? choice
+    : outcome === 'duplicate'
+      ? await agentChoiceOwner(stores.config, surface, spec)
+      : undefined;
   await input.redraw(await uiSurfaceRecord(state, {
-    kind: 'resolve_surface',
+    kind: 'settle_surface',
     id: surface.id,
     resolution: {
-      byUserId: action.userId,
-      at: Date.now(),
-      choice: input.choice!,
-      ...(outcome === 'admitted' ? {} : { refused: true as const }),
+      ...claim,
+      ...(takenBy === undefined ? {} : { takenBy }),
+      ...(outcome === 'refused' || outcome === 'failed' ? { refused: true as const } : {}),
     },
   }));
+}
+
+/** The card's option for whoever answers the thread now, when that is one of them. */
+async function agentChoiceOwner(
+  config: Pick<ConfigStore, 'getAgentThreadRoute'>,
+  surface: UiSurfaceRecord,
+  spec: HostAgentChoiceSpec,
+): Promise<number | undefined> {
+  const route = await config.getAgentThreadRoute(surface.workspaceId, surface.channelId, surface.threadTs);
+  const index = spec.options.findIndex(({ agentId }) => agentId === route?.agentId);
+  return index >= 0 ? index : undefined;
 }
 
 /**

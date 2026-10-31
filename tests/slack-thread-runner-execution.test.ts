@@ -1328,6 +1328,7 @@ test('a write that is not idempotent is never replayed after a disconnect; a rea
     ['workExecute', 'create_execution'], ['workExecute', 'admit_shadow_run'],
     ['routinesExecute', 'claim_delivery'], ['claim', undefined], ['admitSlackTurn', undefined],
     ['configCreateAgent', undefined], ['slackInteractionProgressRecord', undefined],
+    ['uiSurfaceExecute', 'claim_surface'],
   ] as const) {
     assert.equal(replaySafeStateRpc(method, op), false, `${method} ${op ?? ''}`);
   }
@@ -1335,7 +1336,7 @@ test('a write that is not idempotent is never replayed after a disconnect; a rea
     ['workExecute', 'get_execution'], ['memoryExecute', 'put_agent_memory'],
     ['identityExecute', 'find_invitation'], ['configGetAgent', undefined],
     ['threadActiveWorkSet', undefined], ['slackFlueSettlementRecord', undefined],
-    ['slackTurnFold', undefined],
+    ['slackTurnFold', undefined], ['uiSurfaceExecute', 'settle_surface'],
   ] as const) {
     assert.equal(replaySafeStateRpc(method, op), true, `${method} ${op ?? ''}`);
   }

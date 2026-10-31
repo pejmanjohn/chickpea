@@ -113,6 +113,12 @@ export interface UiSurfaceResolution {
   typed?: true;
   /** The chosen Agent could not take the message; the card says so. */
   refused?: true;
+  /**
+   * The option now answering the message, set once the pick's takeover
+   * settled. Absent, the card names nobody: the takeover never settled, or
+   * the thread's owner is not on the card.
+   */
+  takenBy?: number;
 }
 
 export interface UiSurfaceRecord {

@@ -16,6 +16,7 @@ import {
 } from './surface.ts';
 import {
   FRONT_DESK_CHOICE_EXPIRED_LINE,
+  FRONT_DESK_CHOICE_SETTLED_LINE,
   frontDeskChoiceResolvedLine,
   frontDeskFailureLine,
 } from '../front-desk.ts';
@@ -123,9 +124,11 @@ function renderAgentChoice(record: UiSurfaceRecord, spec: HostAgentChoiceSpec): 
     blocks: [{ type: 'section', block_id: uiBlockId('host', record.id, 0), text: mrkdwn(escapeMrkdwn(text)) }],
   });
   if (record.status === 'resolved' && record.resolution) {
-    const option = spec.options[record.resolution.choice];
-    if (!option) return line(FRONT_DESK_CHOICE_EXPIRED_LINE);
-    return line(record.resolution.refused ? frontDeskFailureLine(option.name) : frontDeskChoiceResolvedLine(option));
+    const { choice, refused, takenBy } = record.resolution;
+    const picked = spec.options[choice];
+    if (refused && picked) return line(frontDeskFailureLine(picked.name));
+    const taking = takenBy === undefined ? undefined : spec.options[takenBy];
+    return line(taking ? frontDeskChoiceResolvedLine(taking) : FRONT_DESK_CHOICE_SETTLED_LINE);
   }
   if (record.status !== 'open' && record.status !== 'pending_delivery') return line(FRONT_DESK_CHOICE_EXPIRED_LINE);
   return {

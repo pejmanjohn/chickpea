@@ -373,8 +373,9 @@ const REPLAY_SAFE_EXECUTE_KINDS = new Set([
   'summarize', 'retention_status', 'export_summary',
   'put_agent_memory', // gated on the expected revision
   // Interactive surfaces: write-once inserts and status moves out of `open`.
+  // A claim is not: a replay would tell the claimer it lost.
   'put_surface', 'bind_surface_message', 'close_surface', 'resolve_surface', 'supersede_surfaces',
-  'open_surface',
+  'open_surface', 'settle_surface',
 ]);
 
 /**
