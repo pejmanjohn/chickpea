@@ -8,6 +8,7 @@ import { WEB_TOOL_NAMES } from '../web/names.ts';
 import { POST_ARTIFACT_TOOL_NAME } from '../sandbox/artifact-tool.ts';
 import { GENERATE_IMAGE_TOOL_NAME } from '../sandbox/image-tool.ts';
 import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
+import { READ_ARCHIVE_FILE_TOOL_NAME } from '../slack/archive-attachments.ts';
 import { COMPLETE_FILE_DELIVERY_TOOL } from '../slack/file-delivery-completion.ts';
 import { SLACK_REPLY_IN_THREAD_TOOL_NAME } from '../slack/follow-ups.ts';
 import type { SLACK_LIST_TOOL_NAMES } from '../slack/lists/tools.ts';
@@ -86,6 +87,8 @@ const NON_QUALIFYING_TOOLS: readonly string[] = [
   // The sandbox these work in holds only the current message's files and the
   // reply's staged files, which are absorbed or are artifacts.
   'read', 'write', 'edit', 'grep', 'glob', 'task',
+  // Reads a file inside an archive on the current message, like the attachment analysis.
+  READ_ARCHIVE_FILE_TOOL_NAME,
 ];
 
 /** Repository work starts in the shell, the sandbox's only way to reach a granted repository. */

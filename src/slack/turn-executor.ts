@@ -56,6 +56,7 @@ import type {
   FlueDispatchReceiptV1,
   FlueSettlementCheckpointV1,
   FlueTurnObservationV1,
+  TurnEndedRow,
   TurnStopFinish,
 } from './turn-job-types.ts';
 import type { NormalizedSlackTurn } from './types.ts';
@@ -446,7 +447,7 @@ export async function executeTurnJob(
           return undefined;
         }
         if (finished.outcome === 'dropped') {
-          await removeDroppedReceipts(finished.rows, client, (id, patch) =>
+          await removeEndedReceipts(finished.rows, client, (id, patch) =>
             ports.turnJobs.recordSlackInteractionProgress(id, patch));
         }
         // Dropped rows never ran: they made no Slack effect and hold no Work
@@ -563,11 +564,14 @@ export async function executeTurnJob(
         delivered = true;
         // A stop that reached a run which finished first (R22).
         const raced = outcome !== 'stopped' && await stopKnown();
-        await ports.turnJobs.markDelivered(job.id);
+        const settled = await ports.turnJobs.markDelivered(job.id);
         // Coding work a stop could not confirm keeps its marker until it expires.
         if (activeWorkKey && !keepCodingActiveWork) {
           await ports.slack.setActiveWork(activeWorkKey, job.id, false);
         }
+        // The follow-ups this reply answered, before the thread's next turn.
+        await removeEndedReceipts(settled, client, (id, patch) =>
+          ports.turnJobs.recordSlackInteractionProgress(id, patch));
         if (outcome) {
           ports.telemetry.capture({
             event: 'run_completed',
@@ -797,17 +801,18 @@ export function stopRefusedDispatch(refusal: unknown): AgentPromptFailure {
 }
 
 /**
- * The 👀 of the messages a stop dropped (KTD3, KTD9), or the 👍 that replaced
- * it once the stopped run read one: a dropped row never runs, so the receipt
+ * The 👀 of messages that ended without a turn of their own (KTD3, KTD9), or
+ * the 👍 that replaced it once a run read one: the rows a stop dropped, and
+ * the follow-ups a delivered reply answered (removed as the reply posts, so
+ * none still shows unread while the thread's next turn runs). Each receipt
  * Chickpea added when its message arrived mid-run comes off that message
- * here, and its receipt is finished. Only receipts Chickpea recorded as its
- * own are listed (TurnStopFinish rows). Best effort and
- * content-free: a failure leaves the delivered row's receipt pending for the
- * durable interaction cleanup. Released rows keep theirs for their own turn.
- * Shared with the Node relay (KTD16).
+ * here, and is finished. Only receipts Chickpea recorded as its own are
+ * listed (TurnEndedRow). Best effort and content-free: a failure leaves the
+ * row's receipt pending for the durable interaction cleanup. Rows a stop
+ * released keep theirs for their own turn. Shared with the Node relay (KTD16).
  */
-export async function removeDroppedReceipts(
-  rows: TurnStopFinish['rows'],
+export async function removeEndedReceipts(
+  rows: readonly TurnEndedRow[],
   client: Pick<SlackInstallationExecutionContext['client'], 'reactions'>,
   recordProgress: (id: string, patch: SlackInteractionProgressPatch) => MaybePromise<unknown>,
 ): Promise<void> {
@@ -819,7 +824,7 @@ export async function removeDroppedReceipts(
         acknowledgment: { ...row.receipt, created: true, cleanup: 'done' },
       });
     } catch {
-      console.warn('[chickpea] a dropped message kept its mid-run reaction for now');
+      console.warn('[chickpea] a message that ended without its own turn kept its reaction for now');
     }
   }
 }

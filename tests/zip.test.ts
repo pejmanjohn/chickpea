@@ -1,0 +1,215 @@
+import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+import { test, type TestContext } from 'node:test';
+
+import {
+  createByteBudget,
+  isZipSignature,
+  openZip,
+  ZipArchiveError,
+  type ZipErrorCode,
+} from '../src/files/zip.ts';
+import { buildZip } from './helpers/zip.ts';
+
+const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+const open = (bytes: Uint8Array, maxEntryBytes = 1024 * 1024, budget = createByteBudget(16 * 1024 * 1024)) =>
+  openZip(bytes, { maxEntryBytes, budget });
+
+async function refusal(promise: Promise<unknown>): Promise<ZipErrorCode> {
+  try {
+    await promise;
+  } catch (error) {
+    assert.ok(error instanceof ZipArchiveError, `expected a ZipArchiveError, got ${String(error)}`);
+    return error.code;
+  }
+  assert.fail('expected a refusal');
+}
+
+test('lists files by path with their declared sizes, leaving out directories and archive-tool droppings', async () => {
+  const archive = open(buildZip([
+    { path: 'kit/' },
+    { path: 'kit/notes.md', content: '# Plan\n' },
+    { path: 'kit/data.csv', content: 'a,b\n1,2\n', method: 0 },
+    { path: '__MACOSX/kit/._notes.md', content: 'resource fork' },
+    { path: 'kit/.DS_Store', content: 'Bud1' },
+    { path: 'kit\\windows.txt', content: 'backslash' },
+  ]));
+  assert.deepEqual(archive.entries.map(({ path, size }) => `${path} ${size}`), [
+    'kit/notes.md 7',
+    'kit/data.csv 8',
+    'kit/windows.txt 9',
+  ]);
+  assert.equal(text(await archive.entry('kit/notes.md')!.read()), '# Plan\n');
+  assert.equal(text(await archive.entry('kit/data.csv')!.read()), 'a,b\n1,2\n');
+  assert.equal(archive.entry('kit/.DS_Store'), undefined);
+});
+
+test('skipJunk false keeps directories and droppings for a caller that filters itself', () => {
+  const archive = openZip(buildZip([{ path: 'kit/' }, { path: '__MACOSX/._a', content: 'x' }]), {
+    maxEntryBytes: 1024, budget: createByteBudget(1024), skipJunk: false,
+  });
+  assert.deepEqual(archive.entries.map(({ path }) => path), ['kit/', '__MACOSX/._a']);
+});
+
+test('an entry over the per-entry limit is refused before any byte is inflated', async () => {
+  // The data is not valid deflate, so only a refusal that never inflates says entry_too_large.
+  const archive = open(buildZip([{ path: 'big.txt', content: 'not deflate', method: 8, declaredSize: 4096, rawBody: true }]), 1024);
+  assert.equal(await refusal(archive.entry('big.txt')!.read()), 'entry_too_large');
+});
+
+test('one budget bounds every read across archives, and a refused read takes nothing from it', async () => {
+  const budget = createByteBudget(10);
+  const first = open(buildZip([{ path: 'a.txt', content: '123456' }]), 1024, budget);
+  const second = open(buildZip([{ path: 'b.txt', content: '12345' }, { path: 'c.txt', content: '1234' }]), 1024, budget);
+  await first.entry('a.txt')!.read();
+  assert.equal(budget.remaining, 4);
+  assert.equal(await refusal(second.entry('b.txt')!.read()), 'budget_exceeded');
+  assert.equal(budget.remaining, 4);
+  assert.equal(text(await second.entry('c.txt')!.read()), '1234');
+  assert.equal(budget.remaining, 0);
+});
+
+/** Records what the reader writes into the inflater and what comes out, for the length of one test. */
+function watchInflation(t: TestContext): { written: number[]; inflated: () => number } {
+  const Native = globalThis.DecompressionStream;
+  const written: number[] = [];
+  let inflated = 0;
+  globalThis.DecompressionStream = class extends Native {
+    constructor(format: CompressionFormat) {
+      super(format);
+      const input = new TransformStream<BufferSource, BufferSource>({
+        transform(chunk, controller) {
+          written.push(chunk.byteLength);
+          controller.enqueue(chunk);
+        },
+      });
+      void input.readable.pipeTo(this.writable).catch(() => undefined);
+      const output = this.readable.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          inflated += chunk.byteLength;
+          controller.enqueue(chunk);
+        },
+      }));
+      Object.defineProperty(this, 'writable', { value: input.writable });
+      Object.defineProperty(this, 'readable', { value: output });
+    }
+  };
+  t.after(() => { globalThis.DecompressionStream = Native; });
+  return { written, inflated: () => inflated };
+}
+
+test('an entry that inflates past its declared size stops early and is refused', async (t) => {
+  const watch = watchInflation(t);
+  const archive = open(buildZip([{ path: 'liar.txt', content: new Uint8Array(32 * 1024 * 1024), declaredSize: 16 }]));
+  assert.equal(await refusal(archive.entry('liar.txt')!.read()), 'size_mismatch');
+  assert.ok(watch.inflated() < 1024 * 1024, `inflated ${watch.inflated()} bytes for a 16-byte entry`);
+});
+
+test('compressed bytes go to the inflater 16 KiB at a time, so no runtime inflates a whole entry in one write', async (t) => {
+  const watch = watchInflation(t);
+  const content = new Uint8Array(randomBytes(100_000));
+  const archive = open(buildZip([{ path: 'noise.bin', content }]));
+  assert.deepEqual(await archive.entry('noise.bin')!.read(), content);
+  assert.ok(watch.written.length > 1, `${watch.written.length} write(s)`);
+  assert.ok(watch.written.every((size) => size <= 16 * 1024), `writes of ${watch.written.join(', ')} bytes`);
+});
+
+test('whole-archive refusals carry a code and neutral wording', () => {
+  const valid = { path: 'ok.txt', content: 'fine' };
+  const cases: Array<[Uint8Array, ZipErrorCode]> = [
+    [new TextEncoder().encode('not a zip at all'), 'not_a_zip'],
+    [buildZip([valid, { path: 'locked.txt', content: 'x', flags: 1 }]), 'encrypted'],
+    [buildZip([valid, { path: 'wide.txt', content: 'x', zip64: true }]), 'zip64'],
+    [buildZip([valid, { path: '../outside.txt', content: 'x' }]), 'unsafe_path'],
+    [buildZip([valid, { path: 'C:/rooted.txt', content: 'x' }]), 'unsafe_path'],
+    [buildZip(Array.from({ length: 4 }, (_, index) => ({ path: `f${index}.txt`, method: 0 }))), 'too_many_entries'],
+  ];
+  for (const [bytes, code] of cases) {
+    assert.throws(() => openZip(bytes, { maxEntries: 3, maxEntryBytes: 1024, budget: createByteBudget(1024) }), (error: unknown) => {
+      assert.ok(error instanceof ZipArchiveError);
+      assert.equal(error.code, code);
+      assert.doesNotMatch(error.message, /upload/i);
+      return true;
+    });
+  }
+});
+
+test('per-entry read refusals take nothing from the budget and leave the rest of the archive readable', async () => {
+  const budget = createByteBudget(1024);
+  const archive = open(buildZip([
+    { path: 'bzip.txt', content: 'x', method: 12 },
+    { path: 'moved.txt', content: 'x', localPath: 'other.txt' },
+    { path: 'fine.txt', content: 'fine', method: 0 },
+  ]), 1024, budget);
+  assert.equal(await refusal(archive.entry('bzip.txt')!.read()), 'unsupported_method');
+  assert.equal(await refusal(archive.entry('moved.txt')!.read()), 'header_mismatch');
+  assert.equal(budget.remaining, 1024);
+  assert.equal(text(await archive.entry('fine.txt')!.read()), 'fine');
+});
+
+test('the zip signature is a local file header or the end record of an empty archive', () => {
+  assert.equal(isZipSignature(Uint8Array.of(0x50, 0x4b, 0x03, 0x04)), true);
+  assert.equal(isZipSignature(Uint8Array.of(0x50, 0x4b, 0x05, 0x06)), true);
+  assert.equal(isZipSignature(Uint8Array.of(0x50, 0x4b, 0x07, 0x08)), false);
+  assert.equal(isZipSignature(new Uint8Array()), false);
+  assert.deepEqual(open(buildZip([])).entries, []);
+});
+
+test('a record repeated under the same name is refused, so the repeated-entry bomb inflates its kernel once', async () => {
+  const kernel = { path: 'kernel.bin', content: new Uint8Array(4 * 1024 * 1024) };
+  const bytes = buildZip([kernel, { ...kernel, localOffset: 0 }, { ...kernel, localOffset: 0 }]);
+  assert.ok(bytes.byteLength < 16 * 1024);
+  const budget = createByteBudget(64 * 1024 * 1024);
+  const archive = open(bytes, 8 * 1024 * 1024, budget);
+  assert.deepEqual(archive.refused, [
+    { path: 'kernel.bin', code: 'duplicate_path' },
+    { path: 'kernel.bin', code: 'duplicate_path' },
+  ]);
+  for (const entry of archive.entries) await entry.read();
+  assert.equal(64 * 1024 * 1024 - budget.remaining, 4 * 1024 * 1024);
+});
+
+test('an entry whose local record lies inside an earlier entry\'s data is refused; the first is kept', async () => {
+  const inner = buildZip([{ path: 'b.txt', content: 'payload', method: 0 }]).subarray(0, 30 + 'b.txt'.length + 'payload'.length);
+  const archive = open(buildZip([
+    { path: 'a.bin', content: inner, method: 0 },
+    { path: 'b.txt', content: 'payload', method: 0, localOffset: 30 + 'a.bin'.length },
+  ]));
+  assert.deepEqual(archive.entries.map(({ path }) => path), ['a.bin']);
+  assert.deepEqual(archive.refused, [{ path: 'b.txt', code: 'overlapping_data' }]);
+  assert.equal(archive.entry('b.txt'), undefined);
+  assert.deepEqual(await archive.entry('a.bin')!.read(), inner);
+});
+
+test('a duplicate path keeps the first copy and reports the rest', async () => {
+  const archive = open(buildZip([
+    { path: 'notes.md', content: 'first' },
+    { path: 'notes.md', content: 'second' },
+  ]));
+  assert.equal(text(await archive.entry('notes.md')!.read()), 'first');
+  assert.deepEqual(archive.entries.map(({ path }) => path), ['notes.md']);
+  assert.deepEqual(archive.refused, [{ path: 'notes.md', code: 'duplicate_path' }]);
+});
+
+test('a path with bidi or zero-width characters is kept; its refusal reports and display form replace them', () => {
+  const archive = open(buildZip([
+    { path: 'invoice\u202efdp.exe', content: 'one' },
+    { path: 'invoice\u202efdp.exe', content: 'two' },
+  ]));
+  assert.deepEqual(archive.entries.map(({ path }) => path), ['invoice\u202efdp.exe']);
+  assert.deepEqual(archive.refused, [{ path: 'invoice\ufffdfdp.exe', code: 'duplicate_path' }]);
+});
+
+test('a name with control characters is refused and reported printably; the macOS folder icon file is junk', () => {
+  const archive = open(buildZip([
+    { path: 'ok.txt', content: 'fine' },
+    { path: 'bad\u0007name.txt', content: 'bell' },
+    { path: 'line\nbreak.md', content: 'newline' },
+    { path: 'kit/Icon\r', content: '' },
+  ]));
+  assert.deepEqual(archive.entries.map(({ path }) => path), ['ok.txt']);
+  assert.deepEqual(archive.refused, [
+    { path: 'bad�name.txt', code: 'invalid_name' },
+    { path: 'line�break.md', code: 'invalid_name' },
+  ]);
+});
