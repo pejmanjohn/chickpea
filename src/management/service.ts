@@ -2882,6 +2882,7 @@ export class WorkspaceManagementService {
             disposition: 'setup_required',
             setupOperationId: setup.record.setupOperationId,
             setupUrl: setup.url,
+            ...setupWakeInstruction(setup.record),
           });
         } else {
           const mutation = await this.executeProgressiveItem(

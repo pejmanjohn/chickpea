@@ -293,7 +293,10 @@ export function createManagementSetupRoutes(
         return page
           ? c.html(c.req.query('poll') === '1' && session && CAPABILITY_PATTERN.test(session)
               ? renderManagedConnectionWaitingPage(page)
-              : renderManagedConnectionSuccessPage(page))
+              : renderManagedConnectionSuccessPage({
+                  ...page,
+                  continuing: await wakeQueued(setup, dependencies.management),
+                }))
           : managedUnavailablePage(c);
       }
       if (principal && !authorized) return managedUnavailablePage(c);
@@ -319,7 +322,12 @@ export function createManagementSetupRoutes(
       if (setup.status === 'completed') {
         if (!authorized) return unavailablePage(c);
         const page = await catalogConnectionPageInput(c, setup, dependencies);
-        return page ? c.html(renderManagedConnectionSuccessPage(page)) : unavailablePage(c);
+        return page
+          ? c.html(renderManagedConnectionSuccessPage({
+              ...page,
+              continuing: await wakeQueued(setup, dependencies.management),
+            }))
+          : unavailablePage(c);
       }
       if (principal && !authorized) return unavailablePage(c);
       const browserMatches = Boolean(
@@ -329,7 +337,7 @@ export function createManagementSetupRoutes(
         return c.html(renderSetupClaimPage({ setupId, reusable: false }));
       }
       if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
-        return terminalPage(c, setup);
+        return terminalPage(c, setup, dependencies.management);
       }
       const page = await catalogConnectionPageInput(c, setup, dependencies, principal);
       return page
@@ -348,7 +356,7 @@ export function createManagementSetupRoutes(
       ? principalMatchesSetup(principal, setup) && sessionMatches(setup, session)
       : false;
     if (setup?.status === 'completed' && principalMatchesSetup(principal, setup)) {
-      return terminalPage(c, setup);
+      return terminalPage(c, setup, dependencies.management);
     }
     if (setup && principal && !principalMatchesSetup(principal, setup)) {
       return unavailablePage(c);
@@ -357,7 +365,7 @@ export function createManagementSetupRoutes(
       return c.html(renderSetupClaimPage({ setupId, reusable: false }));
     }
     if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
-      return terminalPage(c, setup);
+      return terminalPage(c, setup, dependencies.management);
     }
     return c.html(await renderSetupSummary(setup, { destination: await setupDestination(setup, dependencies) }));
   });
@@ -3156,21 +3164,38 @@ async function renderSetupSummary(
   });
 }
 
-function terminalPage(c: Context, setup: ManagementSetupRecord): Response {
+async function terminalPage(
+  c: Context,
+  setup: ManagementSetupRecord,
+  management: ManagementStore,
+): Promise<Response> {
   if (setup.action === 'managed_connection') {
     return managedUnavailablePage(c);
   }
   if (setup.status === 'completed') {
-    const saved = keySavedText(c.req.query('check'));
+    const agent = await wakeQueued(setup, management) ? setupWakeAgent(setup)?.agentName : undefined;
+    const check = c.req.query('check');
+    const saved = check !== undefined && Object.hasOwn(KEY_SAVED_TEXT, check)
+      ? KEY_SAVED_TEXT[check as KeySavedCheck]
+      : undefined;
+    const next = agent
+      ? `${escapeHtml(agent)} is ${saved ? 'trying it' : 'testing it'} in Slack now.`
+      : saved?.alone ?? 'Chickpea checked it, and it works.';
     return c.html(renderSetupPanelPage({
       title: 'Setup complete',
       surface: 'setup-complete',
-      content: saved
-        ? `<h1>Key saved</h1><p>${escapeHtml(saved)} You can close this window.</p>`
-        : '<h1>Connected</h1><p>This setup is complete. You can close this window.</p>',
+      content: setup.action === 'api_credential' || setup.action === 'mcp_credentials'
+        ? `<h1>Key saved</h1><p>${saved ? `${escapeHtml(saved.finding)} ` : ''}${next ? `${next} ` : ''}You can close this window.</p>`
+        : `<h1>Connected</h1><p>${agent ? `${escapeHtml(agent)} is continuing in Slack.` : 'This setup is complete.'} You can close this window.</p>`,
     }));
   }
   return unavailablePage(c);
+}
+
+/** Whether this finished setup's receipt woke its Agent instead of posting (wakeInsteadOfReceipt). */
+async function wakeQueued(setup: ManagementSetupRecord, management: ManagementStore): Promise<boolean> {
+  const outbox = await management.getOutboxForOperation(setup.setupOperationId).catch(() => undefined);
+  return outbox?.status === 'delivered' && outbox.deliveryRef?.startsWith('wake:') === true;
 }
 
 function managedUnavailablePage(c: Context): Response {
@@ -3201,19 +3226,29 @@ const SETUP_FAILED_TEXT = 'Setup did not complete. Secret fields were cleared; f
 
 type KeySavedCheck = Exclude<ApiConnectionCheck['kind'], 'ok' | 'key_rejected'>;
 
-/** What the completed page says when an API key was saved but its check did not show it working. */
-const KEY_SAVED_TEXT: Record<KeySavedCheck, string> = {
-  not_permitted: 'The API refused the request Chickpea tried, which usually means your key works but lacks a permission. Some requests may be refused.',
-  path_not_found: 'This API has no page at the address Chickpea tests, so Chickpea could not test the key there. To check it, ask your Agent in Slack to try a request.',
-  unreachable: 'Chickpea could not reach the API to confirm that your key works.',
-  inconclusive: 'Chickpea could not confirm that your key works.',
+/**
+ * What the completed page says when an API key was saved but Chickpea's one
+ * check did not show it working: what the check found, then the next step
+ * when no Agent is testing the key in Slack.
+ */
+const KEY_SAVED_TEXT: Record<KeySavedCheck, { finding: string; alone: string }> = {
+  not_permitted: {
+    finding: 'The API turned down Chickpea\'s check, which usually means the key works but is missing a permission.',
+    alone: 'Some requests may be refused until you add it.',
+  },
+  path_not_found: {
+    finding: 'Chickpea\'s check landed on an address this API doesn\'t serve, which says nothing about the key.',
+    alone: 'Ask your Agent in Slack to read something to test it.',
+  },
+  unreachable: {
+    finding: 'Chickpea couldn\'t reach the API to check it.',
+    alone: 'Your Agent will use it on its next request.',
+  },
+  inconclusive: {
+    finding: 'Chickpea couldn\'t confirm it with its check.',
+    alone: 'Your Agent will use it on its next request.',
+  },
 };
-
-function keySavedText(check: string | undefined): string | undefined {
-  return check !== undefined && Object.hasOwn(KEY_SAVED_TEXT, check)
-    ? KEY_SAVED_TEXT[check as KeySavedCheck]
-    : undefined;
-}
 
 class SetupKeyRejectedError extends Error {
   constructor(host: string) {

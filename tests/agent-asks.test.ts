@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  admitSetupWake,
   processGatewaySlackEnvelope,
   processSlackAgentAsks,
+  setupWakeTurnJobId,
 } from '../src/channels/slack.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { agentTeammateHandles, agentTeammateInstructions } from '../src/config/effective-config.ts';
@@ -18,8 +20,10 @@ import {
   createAgentAskCollector,
   mentionedHandleWords,
   personRequestText,
+  personRequestTextSource,
   type SlackAgentAskRequest,
 } from '../src/slack/agent-asks.ts';
+import { foldableTurn } from '../src/slack/follow-ups.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import { ensureTriggerMessage, slackContextWatermark } from '../src/slack/thread-context.ts';
@@ -1168,4 +1172,76 @@ test('only a person\'s own message is requester text: an ask and a hand-back car
     text: '@finance here is the Q3 total',
     agentAsk: { ...ask, threadOwnerAgentId: 'agent_finance', handedBack: true },
   })), undefined);
+});
+
+test('a finished setup wakes the Agent that asked for it once, in its thread, as the person, with Chickpea\'s note', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, enqueueTurn }) => {
+    // The lane's queue is the state store's, so a retried wake finds its turn there.
+    const state = stores.slackState as unknown as { enqueueTurn(job: TurnJob): Promise<boolean> };
+    const queue = async (job: TurnJob) => {
+      await state.enqueueTurn(job);
+      return enqueueTurn(job);
+    };
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev5000', eventTime: 5000,
+      event: {
+        type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '5000.000100',
+        text: '<!subteam^SSUPPORT|@support> Connect our Tasks API, I have a key.',
+      },
+    }, undefined, gateway, { stores, enqueueTurn: queue });
+    assert.equal(jobs.length, 1);
+    const wake = {
+      agentId: 'agent_support',
+      slackUserId: 'U1',
+      conversationKind: 'channel' as const,
+      note: 'Chickpea note, not typed by Owner: Owner saved the key for Tasks on its setup page.',
+    };
+    const request = {
+      setupOperationId: 'setup_tasks', workspaceId: 'T1', channelId: 'C1', threadTs: '5000.000100',
+      wake, notice: '✅ Tasks is now connected to Support.',
+    };
+    const admit = (patch: Partial<typeof request> = {}) =>
+      admitSetupWake({ ...request, ...patch }, undefined, { stores, gatewayClient: gateway, enqueueTurn: queue });
+
+    assert.equal(await admit(), 'queued');
+    assert.equal(jobs.length, 2);
+    const woken = jobs[1]!;
+    assert.equal(woken.id, setupWakeTurnJobId('C1', 'setup_tasks'));
+    assert.equal(woken.assignment.agentId, 'agent_support');
+    assert.equal(woken.turn.userId, 'U1', 'the wake runs as the person who finished the setup');
+    assert.equal(woken.turn.threadTs, '5000.000100');
+    assert.equal(woken.turn.text, wake.note);
+    assert.deepEqual(woken.turn.setupWake, { setupOperationId: 'setup_tasks', notice: request.notice });
+    assert.equal(woken.turn.interactionIntent?.disposition, 'reply', 'a wake has no message to react to');
+    assert.match(woken.turn.messageTs, /^\d+\.\d{6}$/);
+    assert.ok(Number(woken.turn.messageTs) > 5000, 'the wake comes after the thread\'s messages');
+    assert.equal(personRequestTextSource(woken.turn), 'setup', 'the note is Chickpea\'s text, never typed');
+    assert.equal(foldableTurn(woken.turn), false, 'a wake never folds into a person\'s turn');
+
+    assert.equal(await admit(), 'queued', 'a retried wake finds its turn');
+    assert.equal(jobs.length, 2, 'and queues nothing more');
+
+    assert.equal(await admit({ setupOperationId: 'setup_reports' }), 'queued');
+    assert.equal(jobs.length, 3, 'a second setup from the same thread wakes the Agent again');
+
+    assert.equal(await admit({ setupOperationId: 'setup_legal', wake: { ...wake, agentId: 'agent_legal' } }), 'refused',
+      'an Agent the person cannot reach in this Channel is not woken');
+    assert.equal(jobs.length, 3);
+  });
+});
+
+test('a wake\'s note reads as Chickpea\'s, not the person\'s', () => {
+  const wakeTurn = turn({
+    messageTs: '100.900000',
+    text: 'Chickpea note, not typed by Owner: Owner signed in to Notion.',
+    setupWake: { setupOperationId: 'setup_notion', notice: '✅ Notion is now connected.' },
+  });
+  const [trigger] = ensureTriggerMessage([], wakeTurn);
+  assert.equal(trigger?.role, 'app');
+  assert.equal(trigger?.authorName, 'Chickpea');
+  const prompt = assembleSlackPrompt(wakeTurn, {
+    mode: 'thread', messages: [trigger!], truncated: false, degradations: [],
+  });
+  assert.match(prompt, /Current request, a note from Chickpea that <@U1> finished a setup you asked for \(not their words/);
+  assert.equal(personRequestText(wakeTurn), wakeTurn.text);
 });

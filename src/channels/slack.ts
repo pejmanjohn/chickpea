@@ -1792,6 +1792,13 @@ export async function admitSetupWake(
 ): Promise<'queued' | 'refused'> {
   const stores = provided?.stores ?? resolveStores(platformEnv);
   const { wake } = request;
+  const messageKey = setupWakeTurnJobId(request.channelId, request.setupOperationId);
+  let enqueued = false;
+  const enqueueTurn = provided?.enqueueTurn && (async (job: TurnJob) => {
+    const result = await provided.enqueueTurn!(job);
+    if (result.ok && job.id === messageKey) enqueued = true;
+    return result;
+  });
   const installation = await stores.config.getWorkspaceInstallation(request.workspaceId);
   if (
     !installation || installation.health === 'revoked' ||
@@ -1812,10 +1819,9 @@ export async function admitSetupWake(
       client: createGatewaySlackWebClient(gateway),
       botUserId: installation.botUserId,
       stores,
-      ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
+      ...(enqueueTurn ? { enqueueTurn } : {}),
     };
   }
-  const messageKey = setupWakeTurnJobId(request.channelId, request.setupOperationId);
   const messageTs = receiptSlackTs();
   const turn: NormalizedSlackTurn = {
     workspaceId: request.workspaceId,
@@ -1851,8 +1857,9 @@ export async function admitSetupWake(
     turn,
     targetAgentId: wake.agentId,
     messageKey,
-    ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
+    ...(enqueueTurn ? { enqueueTurn } : {}),
   });
+  if (enqueued) return 'queued';
   const view = await stores.slackState.turnJobView?.(messageKey);
   return view !== undefined && view.status !== 'missing' ? 'queued' : 'refused';
 }

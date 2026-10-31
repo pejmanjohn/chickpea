@@ -121,10 +121,13 @@ async function outOfCreditsTurn(
   t: TestContext,
   env: PlatformEnv | undefined,
   requester: string,
-  options: { streamRejected?: boolean; failure?: AgentPromptFailure } = {},
+  options: { streamRejected?: boolean; failure?: AgentPromptFailure; setupWake?: NormalizedSlackTurn['setupWake'] } = {},
 ) {
   turnCount += 1;
-  const turn = dmTurn(`18000000${String(turnCount).padStart(2, '0')}.000100`, requester);
+  const turn: NormalizedSlackTurn = {
+    ...dmTurn(`18000000${String(turnCount).padStart(2, '0')}.000100`, requester),
+    ...(options.setupWake ? { setupWake: options.setupWake } : {}),
+  };
   const work = new SqliteWorkStore(':memory:');
   const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
     turn, assignment: ASSIGNMENT, sourceVisibility: 'private', admittedAt: Date.now(),
@@ -254,6 +257,18 @@ test('a hosted Owner\'s out-of-credits reply has no button, only the Owner hint'
   assert.ok(contextTexts(blocks).includes(
     "You're an Owner, so you can add extra usage or change the plan in Chickpea.",
   ), JSON.stringify(blocks));
+});
+
+test('a setup\'s wake that runs out of credits still says the connection is connected', async (t) => {
+  const identity = await turnState(t);
+  await createSlackOwner(identity, { teamId: TEAM, userId: 'UOWNER1' });
+  const notice = '✅ Knowledge Base is now connected to Credits Agent.';
+  const calls = await outOfCreditsTurn(t, HOSTED_ENV, 'UOWNER1', {
+    setupWake: { setupOperationId: 'setup_kb', notice },
+  });
+  assert.ok(visibleTexts(calls).includes(`${notice}\n\n${CREDITS_EXHAUSTED_TEXT}`), JSON.stringify(visibleTexts(calls)));
+  const plain = await outOfCreditsTurn(t, HOSTED_ENV, 'UOWNER1');
+  assert.ok(!visibleTexts(plain).some((text) => String(text).includes(notice)), 'a person\'s own turn carries no notice');
 });
 
 test('a standalone out-of-credits reply shows neither the button nor the Owner hint', async (t) => {

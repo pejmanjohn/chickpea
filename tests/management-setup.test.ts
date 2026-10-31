@@ -49,7 +49,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { CONNECTOR_PAGE_FONTS, fontFaceCss } from '../src/assets/fonts.ts';
-import { formatManagementSetupReceipt } from '../src/management/receipts.ts';
+import { formatManagementSetupReceipt, type SetupWakeRequest } from '../src/management/receipts.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { applyWorkspaceChangesValibotSchema, applyWorkspaceChangesZodSchema } from '../src/management/schemas.ts';
 import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
@@ -1737,7 +1737,8 @@ test('a credential API connection added over MCP is ready to run once its setup 
     assert.equal(completed.status, 303, await completed.clone().text());
     assert.equal(completed.headers.get('location'), `/setup/${setupId}`);
     const done = await (await app.request(`http://localhost${completed.headers.get('location')}`)).text();
-    assert.match(done, /<h1>Connected<\/h1>/);
+    assert.match(done, /<h1>Key saved<\/h1><p>Chickpea checked it, and it works\. You can close this window\.<\/p>/,
+      'a setup started over MCP wakes no Agent, so the page closes the loop itself');
 
     const [account] = await f.config.listConnectionAccounts('T_SETUP');
     assert.ok(account);
@@ -1821,7 +1822,7 @@ test('a setup link needs authority over its connection account, not only the Age
 });
 
 /** A pending team Tasks connection, the service that issues its setup links, and routes whose check uses the stubbed network. */
-async function tasksSetupStores(suffix: string) {
+async function tasksSetupStores(suffix: string, routes: Partial<Parameters<typeof createManagementSetupRoutes>[0]> = {}) {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix });
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
@@ -1855,6 +1856,7 @@ async function tasksSetupStores(suffix: string) {
     authenticatePrincipal: async () => browserPrincipal(owner),
     deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
     connectionCheck: { cloudflare: true },
+    ...routes,
   });
   return {
     app, service, owner, agent, tasks, config, management, settings,
@@ -1928,7 +1930,7 @@ test('the setup page shows where the key goes, and saves a key the API answers 4
     assert.equal((await currentAccount(f.config, f.tasks)).lifecycle, 'ready');
     const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`)).text();
     assert.match(done, /<h1>Key saved<\/h1>/);
-    assert.match(done, /The API refused the request Chickpea tried, which usually means your key works but lacks a permission\./);
+    assert.match(done, /The API turned down Chickpea&#39;s check, which usually means the key works but is missing a permission\. Some requests may be refused until you add it\./);
     assert.doesNotMatch(done, /accepted/);
   } finally {
     f.close();
@@ -1947,8 +1949,113 @@ test('a key the setup page saves where the API answers 404 is never called accep
     assert.equal(await storedSecret(f.settings, f.tasks), 'sk-unchecked', 'the person typed this key on purpose');
     const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`)).text();
     assert.match(done, /<h1>Key saved<\/h1>/);
-    assert.match(done, /This API has no page at the address Chickpea tests, so Chickpea could not test the key there\. To check it, ask your Agent in Slack to try a request\./);
+    assert.match(done, /Chickpea&#39;s check landed on an address this API doesn&#39;t serve, which says nothing about the key\. Ask your Agent in Slack to read something to test it\./);
     assert.doesNotMatch(done, /accepted/);
+  } finally {
+    f.close();
+  }
+});
+
+/** The Tasks setup link the Agent issued from its Slack thread with the owner, claimed in the browser. */
+async function slackTasksSetup(suffix: string, wake: 'queued' | 'refused') {
+  const woken: SetupWakeRequest[] = [];
+  const posted: string[] = [];
+  const f = await tasksSetupStores(suffix, {
+    wakeAgent: async (request) => {
+      woken.push(request);
+      return wake;
+    },
+    deliverReceipt: async (record) => {
+      posted.push(formatManagementSetupReceipt(record.receipt));
+      return { deliveryRef: 'slack:D1:1' };
+    },
+  });
+  const result = await f.service.applyWorkspaceChanges({
+    context: {
+      userId: f.owner.user.id,
+      membershipId: f.owner.membership.id,
+      organizationId: f.owner.membership.organizationId,
+      actingAgentId: f.agent.id,
+      origin: {
+        kind: 'slack', workspaceId: f.owner.user.slackTeamId, channelId: 'D1', threadTs: '100.000100',
+        messageTs: '100.000200', conversationKind: 'im', agentId: f.agent.id, requestText: 'send me the Tasks setup link',
+      },
+    },
+    idempotencyKey: `slack-setup-${suffix}`,
+    operations: [{ itemId: 'setup', kind: 'request_setup', target: { kind: 'api_connection', agentId: f.agent.id, connectionId: 'tasks' } }],
+  });
+  requireMutationResult(result);
+  const [outcome] = result.outcomes;
+  assert.equal(outcome?.disposition, 'setup_required', JSON.stringify(result));
+  assert.match(outcome?.instruction ?? '', /you will continue as soon as they finish; do not ask them to message you/,
+    'the Agent promises to carry on by itself');
+  const setupId = outcome!.setupOperationId!;
+  return { ...f, setupId, cookie: await claimSetup(f.app, setupId), woken, posted };
+}
+
+test('a key saved on the page wakes the Agent that asked from Slack, and the page says it is testing it', async () => {
+  const f = await slackTasksSetup('setup-wake-key', 'queued');
+  try {
+    const saved = await withConnectionNetwork(() => Response.json({ tasks: [] }), async () =>
+      postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-wake-123' }));
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.equal(f.woken.length, 1);
+    const [request] = f.woken;
+    assert.equal(request?.setupOperationId, f.setupId);
+    assert.deepEqual([request?.workspaceId, request?.channelId, request?.threadTs], [f.owner.user.slackTeamId, 'D1', '100.000100']);
+    assert.deepEqual([request?.wake.agentId, request?.wake.slackUserId, request?.wake.conversationKind],
+      [f.agent.id, f.owner.user.slackUserId, 'im']);
+    assert.match(request?.wake.note ?? '', /saved the key for Tasks on its setup page\. Chickpea checked it with one request, and the service accepted it\./);
+    for (const secretOrId of ['sk-wake-123', f.setupId, f.agent.id, f.owner.user.slackUserId]) {
+      assert.ok(!request?.wake.note.includes(secretOrId), `the note holds no ${secretOrId}`);
+    }
+    assert.equal(request?.notice, '✅ Tasks is now connected to Tasks helper.');
+    assert.deepEqual(f.posted, [], 'no notice posts while the Agent continues');
+    assert.equal((await f.management.getOutboxForOperation(f.setupId))?.deliveryRef, `wake:${f.setupId}`);
+    const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`, {
+      headers: { cookie: f.cookie },
+    })).text();
+    assert.match(done, /<h1>Key saved<\/h1><p>Tasks helper is testing it in Slack now\. You can close this window\.<\/p>/);
+  } finally {
+    f.close();
+  }
+});
+
+test('a setup whose wake cannot run posts its plain notice, and the page closes the loop itself', async () => {
+  const f = await slackTasksSetup('setup-wake-refused', 'refused');
+  try {
+    const saved = await withConnectionNetwork(() => new Response(null, { status: 404 }), async () =>
+      postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-wake-456' }));
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.equal(f.woken.length, 1);
+    assert.match(f.woken[0]!.wake.note, /Chickpea's check got a 404 at the address it tried, which says nothing about the key\./);
+    assert.deepEqual(f.posted, ['✅ Tasks is now connected to Tasks helper.']);
+    const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`, {
+      headers: { cookie: f.cookie },
+    })).text();
+    assert.match(done, /doesn&#39;t serve, which says nothing about the key\. Ask your Agent in Slack to read something to test it\./);
+    assert.doesNotMatch(done, /in Slack now/);
+  } finally {
+    f.close();
+  }
+});
+
+test('a setup started over MCP wakes no Agent and posts its notice', async () => {
+  const woken: SetupWakeRequest[] = [];
+  const f = await tasksSetupStores('setup-wake-mcp', {
+    wakeAgent: async (request) => {
+      woken.push(request);
+      return 'queued';
+    },
+  });
+  try {
+    const setupId = await requestConnectionSetup(f.service, f.owner, { kind: 'api_connection', agentId: f.agent.id, connectionId: 'tasks' });
+    const cookie = await claimSetup(f.app, setupId);
+    const saved = await withConnectionNetwork(() => Response.json({ tasks: [] }), async () =>
+      postSetupForm(f.app, setupId, 'complete', cookie, { credential: 'sk-wake-789' }));
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.deepEqual(woken, []);
+    assert.equal((await f.management.getOutboxForOperation(setupId))?.deliveryRef, 'mcp:receipt');
   } finally {
     f.close();
   }

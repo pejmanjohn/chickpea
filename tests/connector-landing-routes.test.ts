@@ -28,6 +28,7 @@ import { notionPageHandle, readAgentPageChoice, type NotionId } from '../src/con
 import { signInMixRefusal, signInOtherKindNotice } from '../src/connections/sign-in-mix.ts';
 import { escapeHtml } from '../src/security/html-escape.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import type { SetupWakeRequest } from '../src/management/receipts.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { createManagementSetupRoutes, replaceCatalogConnection } from '../src/management/setup-routes.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
@@ -1603,14 +1604,23 @@ async function managedReconnectHarness(
     },
   }, { agentId: agent.id, connector, ownerKind: 'team' });
   const setupId = new URL(prepared.handoffUrl).pathname.split('/').at(-1)!;
+  const woken: SetupWakeRequest[] = [];
+  const posted: string[] = [];
   const app = createManagementSetupRoutes({
     identity, config, management, settings, now: () => NOW,
     managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
     authenticatePrincipal: async () => principal,
-    deliverReceipt: async () => ({ deliveryRef: 'slack:D_SALES:receipt.1' }),
+    wakeAgent: async (request) => {
+      woken.push(request);
+      return 'queued';
+    },
+    deliverReceipt: async (record) => {
+      posted.push(record.outboxId);
+      return { deliveryRef: 'slack:D_SALES:receipt.1' };
+    },
   });
   return {
-    identity, config, management, settings, owner, agent, account, binding, authorized, app, setupId,
+    identity, config, management, settings, owner, agent, account, binding, authorized, app, setupId, prepared, woken, posted,
     close() {
       identity.close();
       config.close();
@@ -1641,6 +1651,15 @@ test('a Slack reconnect link re-authorizes a managed connection that needs atten
       'authorization_hubspot_reconnect');
     assert.deepEqual(await h.config.listAgentConnectionBindings(h.agent.id), [h.binding], 'the Agent binding is unchanged');
     assert.equal((await h.management.getSetup(h.setupId))?.connectionAccountId, h.account.id);
+
+    assert.match(h.prepared.instruction ?? '', /you will continue as soon as they finish/, 'the Agent promises to carry on by itself');
+    assert.equal(h.woken.length, 1, 'the sign-in wakes Sales once');
+    assert.equal(h.woken[0]?.wake.agentId, h.agent.id);
+    assert.match(h.woken[0]?.wake.note ?? '', /signed in to HubSpot, granting read-only access\.\s+Test it now with one real read with HubSpot's tools/);
+    assert.equal(h.woken[0]?.notice.startsWith('✅ HubSpot is now connected.'), true);
+    assert.deepEqual(h.posted, [], 'no "when you ask me here" notice posts while Sales continues');
+    const done = await (await h.app.request(`http://localhost/setup/${h.setupId}`, { headers: { cookie } })).text();
+    assert.match(done, /Your team connection is ready\. Sales is continuing in Slack\./);
   } finally {
     h.close();
   }
