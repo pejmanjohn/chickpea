@@ -184,6 +184,14 @@ test('hosted Settings shows the setting with its approved copy, its Learn more l
   assert.deepEqual(settingRequests(page.requests), [['GET', undefined]]);
 });
 
+test('choosing it from another Settings page reads the host\'s state', async (t) => {
+  const page = await harness(t, { path: '/admin/settings/providers', offered: true, enabled: true });
+  assert.deepEqual(settingRequests(page.requests), []);
+  await page.click('settings-section', { 'data-section': 'help-improve' });
+  assert.deepEqual(settingRequests(page.requests), [['GET', undefined]]);
+  assert.equal(switchState(page.html()), 'on');
+});
+
 test('turning it off writes the change; a refusal says so and leaves the switch as the host has it', async (t) => {
   const page = await harness(t, { path: '/admin/settings/help-improve', offered: true, refuseChange: true });
   await page.toggle(false);
