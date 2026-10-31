@@ -284,7 +284,8 @@ import {
 } from '../slack/artifact-receipts.ts';
 import { stageArtifactWithReceipt, reuseImageWithReceipt } from '../slack/artifact-staging.ts';
 import { FILE_COMPLETION_INSTRUCTION, useFileDeliveryCompletion, type FileDeliveryCompletion } from '../slack/file-delivery-completion.ts';
-import { useSlackFollowUpFold } from '../slack/follow-up-fold.ts';
+import { useSlackFollowUpFold, type SlackFollowUps } from '../slack/follow-up-fold.ts';
+import { useSlackMidRunReplyTool } from '../slack/midrun-reply.ts';
 import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
 import {
   conversationThreadImageInventory,
@@ -991,13 +992,14 @@ export function useChickpeaSlackRuntimeCapabilities(
       turn: webTurn,
       ...(signal ? { request: webRequest(signal.requesterText, signal.requesterTextSource) } : {}),
     },
-    mountBeforeTenantTools: () => {
+    mountBeforeTenantTools: (followUps) => {
       useAgentAuthoringSkill();
       mountSkillUpload = useWorkspaceManagementSlackTools(
         plan, resolveAgentPlatformEnv, webTurn.pageRead, writeAgentCreationTerminal, writeMemoryUpdate,
       );
       useSlackListsTools(plan, resolveAgentPlatformEnv);
       useSlackReadingTools(plan, resolveAgentPlatformEnv);
+      useSlackMidRunReplyTool(followUps);
       useTool(createSlackPresentTableTool(writeTablePresentation));
       useSlackInteractiveComponents(plan, writeInteractiveQuestion, writeDisplayComponent);
       if (presentationIntent) {
@@ -1302,8 +1304,9 @@ export function useRuntimePlanAgent(
      * Mounts the tools every turn of the caller shares, after post_artifact
      * and complete_file_delivery and before any tool that differs by
      * workspace, Agent, or turn, so the shared tools form a cacheable prefix.
+     * `followUps`: what the response read mid-run.
      */
-    mountBeforeTenantTools?: () => void;
+    mountBeforeTenantTools?: (followUps: SlackFollowUps) => void;
   } = {},
 ): void {
   assertRuntimePlanInstallation(plan, id);
@@ -1543,7 +1546,7 @@ export function useRuntimePlanAgent(
   for (const tool of universalTools) useTool(tool);
   // The same on every turn of a deployment, so they belong to the shared prompt prefix.
   for (const tool of webTools) useTool(tool);
-  options.mountBeforeTenantTools?.();
+  options.mountBeforeTenantTools?.(followUps);
   for (const tool of tenantTools) useTool(tool);
 }
 

@@ -224,6 +224,7 @@ export type TurnFirstWrite =
   | 'activity_status'
   | 'reaction'
   | 'stream'
+  | 'midrun_reply'
   | 'final';
 
 export interface TurnLatencyContext {
@@ -242,6 +243,7 @@ export class TurnLatencyTracker {
   private folded = 0;
   private foldedInformed = 0;
   private read = 0;
+  private midRunReplies = 0;
   private emitted = false;
 
   constructor(
@@ -271,6 +273,11 @@ export class TurnLatencyTracker {
   /** A 👀 on a message this turn read became 👍. */
   markRead(): void {
     this.read += 1;
+  }
+
+  /** The Agent posted a reply mid-run (KTD14). */
+  markMidRunReply(): void {
+    this.midRunReplies += 1;
   }
 
   /** The terminal was delivered, or handed to a durable outbox. */
@@ -312,6 +319,7 @@ export class TurnLatencyTracker {
       folded: this.folded > 0 ? this.folded : undefined,
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,
       read: this.read > 0 ? this.read : undefined,
+      midRunReplies: this.midRunReplies > 0 ? this.midRunReplies : undefined,
     }, this.sink);
   }
 }

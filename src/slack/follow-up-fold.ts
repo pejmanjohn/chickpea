@@ -12,6 +12,7 @@ import { publishActivityStatus } from './activity-publisher.ts';
 import {
   foldActivityStatus, followUpSignalBody, MAX_FOLD_CYCLES, MAX_TURN_FOLD_CYCLES, TOOL_BOUNDARY_PULL_INTERVAL_MS,
 } from './follow-ups.ts';
+import type { MidRunReadMessage } from './midrun-reply.ts';
 import { endsResponseWork } from './presentation-tool-policy.ts';
 import type { TurnFoldClaim, TurnFoldRequest } from './turn-job-types.ts';
 
@@ -23,6 +24,20 @@ interface FollowUpFoldState {
   cycles: number;
   /** Of them, would-stop folds; absent where an older release wrote the state, when every fold was one. */
   finishes?: number;
+  /** The messages they carried, which reply_in_thread may answer; absent where an older release wrote the state. */
+  read?: MidRunReadMessage[];
+}
+
+/** What a Slack response reads mid-run; nothing where it cannot (no v2 Slack signal). */
+export interface SlackFollowUps {
+  /**
+   * Whether messages this response has not read wait to join it at its next
+   * tool boundary. Claims them for that boundary; throws when the state
+   * store cannot be reached.
+   */
+  waiting(): Promise<boolean>;
+  /** The messages its model read mid-run so far. */
+  read(): readonly MidRunReadMessage[];
 }
 
 export type LateFoldRequest = Exclude<TurnFoldRequest, { phase: 'start' }>;
@@ -52,7 +67,8 @@ export type LateFoldRequest = Exclude<TurnFoldRequest, { phase: 'start' }>;
  *
  * A single long tool step (a coding job's wait) asks `waiting` meanwhile and
  * returns early when it answers yes, which makes the step's end the
- * boundary where the messages join.
+ * boundary where the messages join. `read` is what the model read mid-run
+ * so far: reply_in_thread answers only those (see midrun-reply.ts).
  */
 export function useSlackFollowUpFold(input: {
   instanceId: string;
@@ -60,16 +76,23 @@ export function useSlackFollowUpFold(input: {
   blocked: () => boolean;
   /** The state store's fold (TurnJobStoreLogic.fold); undefined where the store has none. */
   fold: (request: LateFoldRequest) => Promise<TurnFoldClaim | undefined>;
-}): SlackFollowUpCheck {
+}): SlackFollowUps {
   const delivery = useDelivery();
   const dispatch = useDispatchMessage();
   const [, update] = usePersistentState<FollowUpFoldState>(SLACK_FOLLOW_UP_STATE_NAME, { cycles: 0, finishes: 0 });
-  useResponseStart(() => { update({ cycles: 0, finishes: 0 }); });
+  useResponseStart(() => { update({ cycles: 0, finishes: 0, read: [] }); });
   const current = (): Required<FollowUpFoldState> => {
     let state: FollowUpFoldState = { cycles: 0 };
     update((previous) => { state = previous; return previous; });
-    return { cycles: state.cycles, finishes: state.finishes ?? state.cycles };
+    return { cycles: state.cycles, finishes: state.finishes ?? state.cycles, read: state.read ?? [] };
   };
+  const reading = (read: readonly MidRunReadMessage[], claimed: TurnFoldClaim): MidRunReadMessage[] => [
+    ...read,
+    ...claimed.messages.map(({ messageTs, informationOnly }) => ({
+      messageTs,
+      ...(informationOnly ? { informationOnly } : {}),
+    })),
+  ];
   const signal = delivery.kind === 'signal' ? delivery : undefined;
   const attributes = signal?.attributes ?? {};
   const envelope = signal && currentRequestEnvelopeText(signal.body);
@@ -120,19 +143,19 @@ export function useSlackFollowUpFold(input: {
 
   // Nothing to confirm here when the gate is shut: the would-stop call does.
   bindToolBoundaryFold(async () => {
-    const { cycles, finishes } = current();
+    const { cycles, finishes, read } = current();
     if (!framing || cycles >= MAX_TURN_FOLD_CYCLES || input.blocked()) return;
     const claimed = await claim('turn', cycles, true);
     if (!claimed?.messages.length) return;
     // Counted only once dispatched: a lost dispatch is claimed again, never confirmed unread.
     await dispatch(followUp(claimed, 'turn', framing));
-    update({ cycles: cycles + 1, finishes });
+    update({ cycles: cycles + 1, finishes, read: reading(read, claimed) });
     publishActivityStatus(input.instanceId, foldActivityStatus(claimed.messages.length, 'turn'));
   });
 
   useAgentFinish(async ({ append, response, log }) => {
     if (!signal) return;
-    const { cycles, finishes } = current();
+    const { cycles, finishes, read } = current();
     const take = framing !== undefined && finishes < MAX_FOLD_CYCLES &&
       !response.toolCalls.some((call) => endsResponseWork(call.tool) && !call.isError) &&
       !input.blocked();
@@ -141,23 +164,14 @@ export function useSlackFollowUpFold(input: {
       const claimed = await claim('finish', cycles, take);
       if (!claimed?.messages.length || !framing) return;
       append(followUp(claimed, 'finish', framing));
-      update({ cycles: cycles + 1, finishes: finishes + 1 });
+      update({ cycles: cycles + 1, finishes: finishes + 1, read: reading(read, claimed) });
       publishActivityStatus(input.instanceId, foldActivityStatus(claimed.messages.length, 'finish'));
     } catch {
       log.warn('Could not check for follow-up messages; the reply answers what the Agent has read');
     }
   });
 
-  return { waiting };
-}
-
-export interface SlackFollowUpCheck {
-  /**
-   * Whether messages this response has not read wait to join it at its next
-   * tool boundary. Claims them for that boundary; throws when the state
-   * store cannot be reached.
-   */
-  waiting(): Promise<boolean>;
+  return { waiting, read: () => current().read };
 }
 
 interface ToolBoundary {

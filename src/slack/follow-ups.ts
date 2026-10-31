@@ -159,6 +159,7 @@ export function followUpSignalBody(input: {
       ? [informationOnlyHeading(input.requesterId), frameFoldedMessages(informed, input.timezone)]
       : []),
     FOLLOW_UP_INSTRUCTIONS[input.phase][answered.length > 0 ? 'answered' : 'informed'],
+    ...(input.phase === 'turn' && answered.length > 0 ? [MID_RUN_REPLY_GUIDANCE] : []),
     input.envelope,
   ].join('\n\n');
 }
@@ -173,6 +174,12 @@ const FOLLOW_UP_INSTRUCTIONS = {
     informed: 'Your draft reply has not been sent. Write your next message as the complete reply to the request above.',
   },
 } as const;
+
+/** The tool that answers a message read mid-run (see midrun-reply.ts), mounted wherever these folds can happen. */
+export const SLACK_REPLY_IN_THREAD_TOOL_NAME = 'reply_in_thread';
+
+/** When the model may answer a message now. */
+export const MID_RUN_REPLY_GUIDANCE = `If one of these messages asks you something worth answering before you finish, you may answer it now with ${SLACK_REPLY_IN_THREAD_TOOL_NAME} and keep working. Do not post progress updates unless someone in this thread asked for one. Your final message still answers everything.`;
 
 function followUpSignalHeading(messages: readonly Pick<FoldedMessage, 'userId'>[]): string {
   const count = messages.length;

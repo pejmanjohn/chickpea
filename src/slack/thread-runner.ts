@@ -41,6 +41,7 @@ import {
 } from './installation-execution.ts';
 import { resolveSlackPublicUrl } from './credentials.ts';
 import { abortSlackThreadAgent } from './flue-dispatch.ts';
+import { parseMidRunReplyRequest, type MidRunReplyOutcome, type MidRunReplyRequest } from './midrun-reply.ts';
 import { drainSlackPresentationRepairs } from './presentation-repair.ts';
 import {
   SlackPresentationStateError,
@@ -268,6 +269,26 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       // A dropped status update never fails a turn.
     }
     return { ok: true, value: null };
+  }
+
+  /**
+   * A reply the Agent wrote mid-run for one of this runner's turns, posted
+   * by the turn's presenter through the registry it registered in.
+   */
+  async midRunReply(
+    instanceId: string,
+    submissionId: string,
+    request: MidRunReplyRequest,
+  ): Promise<MidRunReplyOutcome> {
+    const parsed = parseMidRunReplyRequest(request);
+    if (!parsed) return { posted: false, refusal: 'unavailable' };
+    try {
+      const target = await this.stateStore().matchFlueObservation(instanceId, submissionId);
+      if (!target) return { posted: false, refusal: 'unavailable' };
+      return await this.registry.midRunReply(instanceId, target.generation, parsed);
+    } catch {
+      return { posted: false, refusal: 'failed' };
+    }
   }
 
   /**

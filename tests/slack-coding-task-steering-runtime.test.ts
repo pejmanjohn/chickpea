@@ -27,6 +27,9 @@ import {
 } from '../src/sandbox/workspace-task.ts';
 import { promptSlackThreadAgent, type SlackFlueDispatchState } from '../src/slack/flue-dispatch.ts';
 import { slackToolBoundaryFoldInterceptor, useSlackFollowUpFold, type LateFoldRequest } from '../src/slack/follow-up-fold.ts';
+import { SLACK_REPLY_IN_THREAD_TOOL_NAME } from '../src/slack/follow-ups.ts';
+import { createMidRunReplyHandler, useSlackMidRunReplyTool } from '../src/slack/midrun-reply.ts';
+import type { SlackPresentationMidRunReply } from '../src/slack/run-presentations.ts';
 import { registerSlackStatusTurn } from '../src/slack/status-registry.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
@@ -38,7 +41,8 @@ import { createWorkModelInvocationInterceptor } from '../src/work/model-invocati
  * Steering C5 through the real Flue harness: a message the person sends
  * while the Agent waits on a coding job pauses the wait, reaches the model
  * at that tool boundary through the state store's own fold, and the model
- * relays it to the job and waits again. The job is never aborted.
+ * relays it to the job and waits again. The job is never aborted. A message
+ * read at a pause is read mid-run, so reply_in_thread may answer it there.
  */
 
 const MODEL = 'faux/coding-task-steering';
@@ -77,6 +81,8 @@ let scenario: Scenario;
 let worker: Worker;
 let responseState: WorkspaceTaskResponseState;
 let requests: Array<{ late: number; toolResults: string[]; reminded: boolean }> = [];
+/** The threaded replies posted mid-run, with the job's state when each posted. */
+let replies: Array<{ text: string; dispatched: number; observations: number }> = [];
 
 function workspace(): WorkspaceSession {
   const stub = {
@@ -151,6 +157,7 @@ function SteerProbe({ id }: AgentProps) {
   useTool(createWorkspaceTaskResumeTool(options));
   useTool(createWorkspaceTaskSteerTool(options));
   useWorkspaceTaskFinishGuard(createWorkspaceTaskFinishCheck(options));
+  useSlackMidRunReplyTool(followUps);
 }
 
 let thread = 0;
@@ -261,10 +268,25 @@ test('a message sent during a coding job reaches the Agent at a pause, and the j
     requests = [];
     responseState = emptyWorkspaceTaskResponseState();
     faux.setResponses(responses);
+    replies = [];
     const statuses: string[] = [];
+    const recorded: SlackPresentationMidRunReply[] = [];
     const statusTurn = registerSlackStatusTurn(scenario.instanceId, {
       setStatus: async (update) => { statuses.push(update.text); return true; },
-    }, { generation: GENERATION, observedMinIntervalMs: 0 });
+    }, {
+      generation: GENERATION,
+      observedMinIntervalMs: 0,
+      midRunReply: createMidRunReplyHandler({
+        presentation: {
+          midRunReplies: async () => recorded,
+          reserveMidRunReply: async (messageTs) => { recorded.push({ messageTs, at: Date.now() }); },
+          recordMidRunReplyPosted: async () => {},
+        },
+        post: async (text) => {
+          replies.push({ text, dispatched: worker.dispatched.length, observations: worker.observations });
+        },
+      }),
+    });
     try {
       const result = await promptSlackThreadAgent({
         handle: init(SteerProbe, { id: scenario.instanceId }),
@@ -346,6 +368,39 @@ test('a message sent during a coding job reaches the Agent at a pause, and the j
         assert.equal(result.text, 'Opened https://github.com/acme/app/pull/9.');
         assert.deepEqual(requests.map((request) => request.late), [0, 0, 1, 1], 'the paused wait\'s boundary reads it');
         assert.equal(responseState.pauses, 1);
+      } finally {
+        scenario.close();
+      }
+    });
+
+    await t.test('a reply to the message read at the pause posts while the job runs, then the job resumes and finishes', async () => {
+      scenario = openScenario();
+      worker = {
+        dispatched: [], aborted: 0, observations: 0,
+        onObserve: async (n) => {
+          if (n === 1) { await sleep(25); scenario.arrive('late', LATE); return undefined; }
+          await sleep(10);
+          return JOB_DONE;
+        },
+      };
+      try {
+        const lateTs = () => scenario.turns.runnerView('late').job!.turn.messageTs;
+        const { result } = await run([
+          startTask(),
+          () => call(SLACK_REPLY_IN_THREAD_TOOL_NAME, { message_ts: lateTs(), text: 'Switching to Postgres.' }),
+          call('workspace_task_steer', { guidance: 'Use Postgres instead of SQLite for the storage.' }),
+          call('workspace_task_resume', {}),
+          answer('Opened https://github.com/acme/app/pull/9 with Postgres storage.'),
+        ]);
+        assert.equal(result.text, 'Opened https://github.com/acme/app/pull/9 with Postgres storage.', 'one final reply');
+        assert.deepEqual(replies, [{ text: 'Switching to Postgres.', dispatched: 1, observations: 1 }],
+          'one threaded reply, posted while the paused job ran and before the guidance');
+        assert.match(requests[2]!.toolResults.at(-1)!, /Posted in the thread/);
+        assert.equal(worker.aborted, 0, 'the job was never aborted');
+        assert.equal(worker.dispatched.length, 2, 'the job, then the guidance');
+        assert.equal(worker.observations, 2, 'the resume observed the same job again');
+        assert.match(requests.at(-1)!.toolResults.at(-1)!, /pull\/9/);
+        assert.equal(responseState.pauses, 1, 'the reply\'s boundary read nothing new and the resume never paused');
       } finally {
         scenario.close();
       }
