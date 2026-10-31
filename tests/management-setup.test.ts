@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
 import type { Hono } from 'hono';
+import * as v from 'valibot';
 
 import {
   connectionAccountSecretSettingKey,
@@ -50,6 +51,7 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { CONNECTOR_PAGE_FONTS, fontFaceCss } from '../src/assets/fonts.ts';
 import { formatManagementSetupReceipt } from '../src/management/receipts.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
+import { applyWorkspaceChangesValibotSchema, applyWorkspaceChangesZodSchema } from '../src/management/schemas.ts';
 import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import {
@@ -59,7 +61,7 @@ import {
   type ManagementSetupRecord,
 } from '../src/management/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
-import { withConnectionNetwork } from './helpers/connection-network.ts';
+import { withConnectionNetwork, type StubbedRequest } from './helpers/connection-network.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { unstyledClasses } from './helpers/unstyled-classes.ts';
@@ -148,7 +150,8 @@ function receiptAccountLabel(setup: ManagementSetupRecord | undefined): string |
 async function requestConnectionSetup(
   service: WorkspaceManagementService,
   owner: IdentityResolution,
-  target: { kind: 'api_connection' | 'mcp_connection'; agentId: string; connectionId: string },
+  target: { kind: 'api_connection'; agentId: string; connectionId: string; path?: string }
+    | { kind: 'mcp_connection'; agentId: string; connectionId: string },
 ): Promise<string> {
   const result = await service.applyWorkspaceChanges({
     context: {
@@ -1817,8 +1820,8 @@ test('a setup link needs authority over its connection account, not only the Age
   }
 });
 
-/** A pending team Tasks connection with a claimed setup link, served by routes whose check uses the stubbed network. */
-async function claimedTasksSetup(suffix: string) {
+/** A pending team Tasks connection, the service that issues its setup links, and routes whose check uses the stubbed network. */
+async function tasksSetupStores(suffix: string) {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix });
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
@@ -1843,9 +1846,6 @@ async function claimedTasksSetup(suffix: string) {
     identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
     randomId: () => suffix, randomCapability: () => CAPABILITY,
   });
-  const setupId = await requestConnectionSetup(service, owner, {
-    kind: 'api_connection', agentId: agent.id, connectionId: 'tasks',
-  });
   const app = createManagementSetupRoutes({
     management,
     config,
@@ -1856,9 +1856,8 @@ async function claimedTasksSetup(suffix: string) {
     deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
     connectionCheck: { cloudflare: true },
   });
-  const cookie = await claimSetup(app, setupId);
   return {
-    app, setupId, cookie, tasks, config, management, settings,
+    app, service, owner, agent, tasks, config, management, settings,
     close() {
       identity.close();
       config.close();
@@ -1866,6 +1865,15 @@ async function claimedTasksSetup(suffix: string) {
       settings.close();
     },
   };
+}
+
+/** The Tasks connection's setup link, issued with `path` when given, and claimed in the browser. */
+async function claimedTasksSetup(suffix: string, path?: string) {
+  const f = await tasksSetupStores(suffix);
+  const setupId = await requestConnectionSetup(f.service, f.owner, {
+    kind: 'api_connection', agentId: f.agent.id, connectionId: 'tasks', ...(path === undefined ? {} : { path }),
+  });
+  return { ...f, setupId, cookie: await claimSetup(f.app, setupId) };
 }
 
 test('the setup page refuses a key the API rejects, saves nothing, and names the host', async () => {
@@ -1941,6 +1949,158 @@ test('a key the setup page saves where the API answers 404 is never called accep
     assert.match(done, /<h1>Key saved<\/h1>/);
     assert.match(done, /This API has no page at the address Chickpea tests, so Chickpea could not test the key there\. To check it, ask your Agent in Slack to try a request\./);
     assert.doesNotMatch(done, /accepted/);
+  } finally {
+    f.close();
+  }
+});
+
+/** A Tasks API that answers 404 at its bare prefix whatever the key, as many APIs do, and lists tasks for `key`. */
+function tasksApi(key: string) {
+  return (request: StubbedRequest) => {
+    if (new URL(request.url).pathname !== '/v1/tasks') return new Response(null, { status: 404 });
+    return request.headers.get('authorization') === `Bearer ${key}`
+      ? Response.json({ tasks: [] })
+      : Response.json({ message: 'Invalid token' }, { status: 401 });
+  };
+}
+
+/** Completes the setup with `credential` and returns the page's answer and every URL the check sent. */
+async function completeTasksSetup(
+  f: { app: Hono; setupId: string; cookie: string },
+  credential: string,
+): Promise<{ response: Response; sent: string[] }> {
+  return withConnectionNetwork(tasksApi(credential), async (requests) => ({
+    response: await postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential }),
+    sent: requests.map(({ method, url }) => `${method} ${url}`),
+  }));
+}
+
+test('both doors take a check path on an API connection setup only', () => {
+  const setup = (target: Record<string, string>) => ({
+    idempotencyKey: 'setup-path',
+    operations: [{ itemId: 'setup', kind: 'request_setup', target: { agentId: 'agent_tasks', ...target } }],
+  });
+  const api = setup({ kind: 'api_connection', connectionId: 'tasks', path: '/v1/tasks' });
+  const mcp = setup({ kind: 'mcp_connection', connectionId: 'linear', path: '/v1/tasks' });
+  assert.ok(applyWorkspaceChangesZodSchema.safeParse(api).success);
+  assert.ok(v.safeParse(applyWorkspaceChangesValibotSchema, api).success);
+  assert.equal(applyWorkspaceChangesZodSchema.safeParse(mcp).success, false);
+  assert.equal(v.safeParse(applyWorkspaceChangesValibotSchema, mcp).success, false);
+  const bare = setup({ kind: 'api_connection', connectionId: 'tasks', path: 'v1/tasks' });
+  assert.equal(applyWorkspaceChangesZodSchema.safeParse(bare).success, false, 'a path starts with one slash');
+  assert.equal(v.safeParse(applyWorkspaceChangesValibotSchema, bare).success, false);
+});
+
+test('a setup link issued with a read endpoint checks the key there, not at the bare prefix', async () => {
+  const f = await claimedTasksSetup('setup-check-path', '/v1/tasks');
+  try {
+    assert.equal((await f.management.getSetup(f.setupId))?.target.checkPath, '/v1/tasks');
+    const { response, sent } = await completeTasksSetup(f, 'sk-right');
+    assert.deepEqual(sent, ['GET https://api.example.com/v1/tasks']);
+    assert.equal(response.status, 303, await response.clone().text());
+    assert.equal(response.headers.get('location'), `/setup/${f.setupId}`, 'the check found the key works');
+    assert.equal(await storedSecret(f.settings, f.tasks), 'sk-right');
+    assert.equal((await currentAccount(f.config, f.tasks)).lifecycle, 'ready');
+  } finally {
+    f.close();
+  }
+});
+
+test('request_setup refuses a check path outside the connection and issues no link', async () => {
+  for (const [index, path] of ['/v2/tasks', '/v10', '/v1/../admin'].entries()) {
+    const f = await tasksSetupStores(`setup-check-path-outside-${index}`);
+    try {
+      const result = await f.service.applyWorkspaceChanges({
+        context: {
+          userId: f.owner.user.id,
+          membershipId: f.owner.membership.id,
+          organizationId: f.owner.membership.organizationId,
+          origin: { kind: 'mcp', clientId: 'codex' },
+        },
+        idempotencyKey: 'setup-outside',
+        operations: [{
+          itemId: 'setup',
+          kind: 'request_setup',
+          target: { kind: 'api_connection', agentId: f.agent.id, connectionId: 'tasks', path },
+        }],
+      });
+      requireMutationResult(result);
+      const [outcome] = result.outcomes;
+      assert.deepEqual([outcome?.disposition, outcome?.code, outcome?.instruction, outcome?.setupUrl], [
+        'failed',
+        'invalid_request',
+        'path must be inside the connection on its first host: https://api.example.com/v1.',
+        undefined,
+      ], path);
+      assert.equal(await f.management.getSetup(`setup_setup-check-path-outside-${index}`), undefined);
+    } finally {
+      f.close();
+    }
+  }
+});
+
+test('a setup record without a check path still renders and checks the first prefix', async () => {
+  const f = await claimedTasksSetup('setup-check-path-absent');
+  try {
+    const record = await f.management.getSetup(f.setupId);
+    assert.ok(record);
+    assert.equal('checkPath' in record.target, false, 'stored as records were before the field existed');
+    const page = await f.app.request(`http://localhost/setup/${f.setupId}`, { headers: { cookie: f.cookie } });
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /<dt>Key sent only to<\/dt><dd>https:\/\/api\.example\.com\/v1<\/dd>/);
+    const { response, sent } = await completeTasksSetup(f, 'sk-right');
+    assert.deepEqual(sent, ['GET https://api.example.com/v1']);
+    assert.equal(response.headers.get('location'), `/setup/${f.setupId}?check=path_not_found`);
+  } finally {
+    f.close();
+  }
+});
+
+test('a connection edited after its link was issued refuses the link and sends the key nowhere', async () => {
+  const f = await claimedTasksSetup('setup-check-path-edited', '/v1/tasks');
+  try {
+    const current = await currentAccount(f.config, f.tasks);
+    await f.config.putConnectionAccount({ ...current, policy: { ...TASKS_POLICY, pathPrefixes: ['/v2'] } }, current.revision);
+    const { response, sent } = await completeTasksSetup(f, 'sk-right');
+    assert.deepEqual(sent, [], 'neither the stale path nor the new prefix got the key');
+    assert.equal(response.status, 422, await response.clone().text());
+    assert.equal((await f.management.getSetup(f.setupId))?.failureCode, 'target_changed');
+    assert.equal(await storedSecret(f.settings, f.tasks), undefined);
+  } finally {
+    f.close();
+  }
+});
+
+test('a stored check path outside the connection as it is now is never sent; the first prefix is checked', async () => {
+  const f = await tasksSetupStores('setup-check-path-stale');
+  try {
+    const issued = await f.management.getSetup(await requestConnectionSetup(f.service, f.owner, {
+      kind: 'api_connection', agentId: f.agent.id, connectionId: 'tasks', path: '/v1/tasks',
+    }));
+    assert.ok(issued);
+    // The edit fence keeps an issued path inside its connection, so only a record written another way holds one outside it.
+    const stale = await f.management.putSetup({
+      record: {
+        ...issued,
+        setupOperationId: `${issued.setupOperationId}_stale`,
+        target: { ...issued.target, checkPath: '/v2/tasks' },
+      },
+    });
+    const setup = { app: f.app, setupId: stale.setupOperationId, cookie: await claimSetup(f.app, stale.setupOperationId) };
+    const { response, sent } = await completeTasksSetup(setup, 'sk-right');
+    assert.deepEqual(sent, ['GET https://api.example.com/v1']);
+    assert.equal(response.status, 303, await response.clone().text());
+  } finally {
+    f.close();
+  }
+});
+
+test('a check path that holds the typed key is never sent; the first prefix is checked', async () => {
+  const f = await claimedTasksSetup('setup-check-path-key', '/v1/tasks?token=sk-typed');
+  try {
+    const { response, sent } = await completeTasksSetup(f, 'sk-typed');
+    assert.deepEqual(sent, ['GET https://api.example.com/v1']);
+    assert.equal(response.status, 303, await response.clone().text());
   } finally {
     f.close();
   }

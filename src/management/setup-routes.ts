@@ -120,6 +120,8 @@ import { MANAGED_CONNECTOR_CATALOG, type ManagedConnectorCatalog } from '../conn
 import {
   checkConnection,
   connectionUrlPrefixes,
+  keyInPath,
+  pathInsideConnection,
   type ApiConnectionCheck,
   type ApiConnectionScope,
   type ConnectionCheckOptions,
@@ -2483,10 +2485,15 @@ async function completeFormAction(
       throw new Error('target_changed');
     }
     const credential = requiredField(fields, 'credential', 16_384);
+    const { checkPath } = setup.target;
+    // A stored path outside the connection as it is now, or one holding the key, is never sent.
+    const path = checkPath !== undefined && pathInsideConnection(policy, checkPath) &&
+      !keyInPath(checkPath, credential) ? checkPath : undefined;
     const check = await checkConnection({
       kind: 'api',
       connection: policy,
       credential,
+      ...(path === undefined ? {} : { path }),
       authorize: async () => (await currentSetupConnection(setup, dependencies)
         .catch(() => undefined))?.account.revision === entry.account.revision,
     }, options.connectionCheck);

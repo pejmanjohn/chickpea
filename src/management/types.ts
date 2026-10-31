@@ -319,6 +319,8 @@ type ManagementSetupRequestTarget =
       agentId?: string;
       agentClientRef?: string;
       connectionId: string;
+      /** A read endpoint inside the connection that the setup page checks the key with. */
+      path?: string;
     }
   | {
       kind: 'mcp_connection';
@@ -512,6 +514,11 @@ export interface ManagementSetupTarget {
   ownerKind?: ConnectionAccountOwnerKind;
   accessLane?: 'read' | 'write';
   presetId?: string;
+  /**
+   * An `api_credential` setup's request_setup `path`, inside the connection
+   * when issued. Without it the page checks the key at the first prefix.
+   */
+  checkPath?: string;
 }
 
 export interface ManagementSetupReceipt {
