@@ -12,6 +12,7 @@ import {
 } from '../src/slack/slack-file-tool.ts';
 import { fileHandleIds } from '../src/slack/thread-files.ts';
 import { createSlackAttachmentAnalysis, formatSlackAttachmentSignal } from '../src/slack/attachment-context.ts';
+import { MAX_SLACK_ATTACHMENTS } from '../src/slack/attachment-file-ids.ts';
 import { MAX_SLACK_ATTACHMENT_CHARACTERS, normalizeSlackAttachments } from '../src/slack/attachment-normalization.ts';
 import type { GatewayAttachmentClient, GatewayAttachmentRead } from '../src/slack/gateway/client.ts';
 import type { GatewayAttachmentRepresentation } from '../src/slack/gateway/protocol.ts';
@@ -128,7 +129,7 @@ test('the manifest names the archive handle and how to read a file, and a listin
   });
   const body = formatSlackAttachmentSignal(result).body;
   assert.match(body, /- ordinal=1 \| filename="kit\.zip" \| representation=zip_original \| handle=file:1 \| status=success \| code=listed \| next_action="Only the file list was read\. To read a file inside, call read_slack_file with file \\"file:1\\" and the file's exact path\."/);
-  assert.match(body, /- ordinal=2 \| filename="locked\.zip" \| status=failure \| code=archive_encrypted \| next_action="Re-create the zip without a password using standard compression, or attach the files directly \(up to four per message\), then retry\."/);
+  assert.ok(body.includes(`- ordinal=2 | filename="locked.zip" | status=failure | code=archive_encrypted | next_action="Re-create the zip without a password using standard compression, or attach the files directly (up to ${MAX_SLACK_ATTACHMENTS} per message), then retry."`), body);
   assert.ok(body.includes(listing), 'the file list reaches the Agent verbatim');
   assert.doesNotMatch(body, /Convert the file/);
 });

@@ -3,6 +3,7 @@ import { getResolvedPDFJS } from 'unpdf';
 import { isTextMimeType, sniffFileKind } from '../files/magic.ts';
 import { ZipArchiveError } from '../files/zip.ts';
 import { archiveListing } from './archive-attachments.ts';
+import { MAX_SLACK_ATTACHMENTS } from './attachment-file-ids.ts';
 import { type FileHandle, fileHandle, fileHandleIds } from './thread-files.ts';
 import type {
   GatewayAttachmentClient,
@@ -14,7 +15,6 @@ import {
   type GatewayAttachmentRepresentation,
 } from './gateway/protocol.ts';
 
-export const MAX_SLACK_ATTACHMENTS = 4;
 export const MAX_SLACK_ATTACHMENT_BYTES = 8 * 1_024 * 1_024;
 export const MAX_SLACK_ATTACHMENT_TOTAL_BYTES = 12 * 1_024 * 1_024;
 export const MAX_SLACK_PDF_PAGES = 100;

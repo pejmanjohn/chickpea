@@ -688,7 +688,7 @@ use the [release checklist](docs/runbooks/releasing.md).
 <details>
 <summary><strong>Attachment limits</strong></summary>
 
-Per turn: 4 files, 8 MiB each, 12 MiB total, 100 PDF pages, 64,000 characters per file and 128,000 total. Images use Slack's bounded thumbnails when available. Anything over a limit, or without a safe conversion, gets a file-specific next action instead of a quiet partial read. Slack installations predating the `files:read` scope must reconnect once.
+Per turn: 10 files, 8 MiB each, 12 MiB total, 100 PDF pages, 64,000 characters per file and 128,000 total. Images use Slack's bounded thumbnails when available. Anything over a limit, or without a safe conversion, gets a file-specific next action instead of a quiet partial read. Slack installations predating the `files:read` scope must reconnect once.
 
 Reading a file on request: the newest 20 files in a conversation, 8 MiB per download, 20 reads per turn, and 50,000 characters per page. A zip holds at most 2,000 files, and a file inside unpacks to at most 8 MiB.
 
