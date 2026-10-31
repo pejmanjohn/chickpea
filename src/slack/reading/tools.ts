@@ -173,6 +173,7 @@ export async function slackReadingService(
     authority,
     self: { botUserId: reader.botUserId, ...(siblingBotUserIds.length ? { siblingBotUserIds } : {}) },
     record: config,
+    readThrough: async () => getSlackStateStore(env).turnReadThrough?.(signal.turnJobId),
   });
 }
 

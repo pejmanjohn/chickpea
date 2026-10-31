@@ -75,6 +75,12 @@ export interface SlackReadingServiceOptions {
   self: SlackContextSelf;
   /** The thread record, for the current thread only: fallback and seeding. */
   record?: ThreadRecordPort;
+  /**
+   * The newest message this turn has read, when it took follow-ups newer
+   * than its trigger (TurnJobStoreLogic.readThrough); asked once per read of
+   * the current conversation.
+   */
+  readThrough?: () => Promise<string | undefined>;
 }
 
 /**
@@ -127,8 +133,9 @@ export class SlackReadingService {
     let messages = toContextMessages(raw, this.options.self);
     let withheld = 0;
     if (conversation.current && rootTs === current.threadTs) {
-      // Newer messages in this very thread are queued requests of their own.
-      const visible = messages.filter((row) => atOrBeforeSlackWatermark(row.ts, current.messageTs));
+      // Messages newer than any this turn read are queued requests of their own.
+      const readThrough = await this.readThrough();
+      const visible = messages.filter((row) => atOrBeforeSlackWatermark(row.ts, readThrough));
       withheld = messages.length - visible.length;
       messages = visible;
       // Only the first page starts at the root and says what lies before its replies.
@@ -155,10 +162,10 @@ export class SlackReadingService {
     const slackCursor = decodeCursor(input.cursor, 'channel', target.channelId, undefined);
     const oldest = input.oldest !== undefined ? slackTimestamp(input.oldest) : undefined;
     let latest = input.latest !== undefined ? slackTimestamp(input.latest) : undefined;
-    // This conversation's newer messages are queued requests of their own.
-    const current = this.options.authority.current;
-    if (conversation.current && (latest === undefined || !atOrBeforeSlackWatermark(latest, current.messageTs))) {
-      latest = current.messageTs;
+    // This conversation's messages newer than any this turn read are queued requests of their own.
+    if (conversation.current) {
+      const readThrough = await this.readThrough();
+      if (latest === undefined || !atOrBeforeSlackWatermark(latest, readThrough)) latest = readThrough;
     }
     const limit = this.pageLimit(input.limit);
     const response = await this.slackRead('conversations.history', () => this.options.client.conversations.history({
@@ -291,6 +298,19 @@ export class SlackReadingService {
     return namesCurrentThread ? entries : undefined;
   }
 
+  /** The newest message this turn read: its trigger, or a newer follow-up its run took. */
+  private async readThrough(): Promise<string> {
+    const trigger = this.options.authority.current.messageTs;
+    let newest: string | undefined;
+    try {
+      newest = await this.options.readThrough?.();
+    } catch {
+      // The trigger still bounds the read; only follow-ups stay withheld.
+      console.warn('[chickpea] the newest message this turn read is unavailable');
+    }
+    return newest !== undefined && compareSlackTs(newest, trigger) > 0 ? newest : trigger;
+  }
+
   /** A budget-refused read of the current thread answers from the thread record. */
   private async recordFallback(
     conversation: AuthorizedSlackConversation,
@@ -298,8 +318,9 @@ export class SlackReadingService {
     retryAt: number | undefined,
   ): Promise<JsonResult> {
     const current = this.options.authority.current;
+    const readThrough = await this.readThrough();
     const messages = entries
-      .filter((entry) => atOrBeforeSlackWatermark(entry.messageTs, current.messageTs))
+      .filter((entry) => atOrBeforeSlackWatermark(entry.messageTs, readThrough))
       .map((entry) => retainedContextMessage(entry, undefined));
     return this.result('partial', {
       conversation: conversationSummary(conversation),

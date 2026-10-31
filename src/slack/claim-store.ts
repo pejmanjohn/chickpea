@@ -239,6 +239,8 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   finishTurnStop?(headId: string, outcome: 'dropped' | 'released'): Promise<TurnStopFinish | undefined>;
   /** Claim a head's follow-ups (TurnJobStoreLogic.fold); a replay returns the same rows. */
   foldTurn?(request: TurnFoldRequest): Promise<TurnFoldClaim>;
+  /** The newest message a head's run has read (TurnJobStoreLogic.readThrough). */
+  turnReadThrough?(headId: string): Promise<string | undefined>;
   /**
    * The sender's threads of one DM channel whose run is undelivered (stop
    * thread keys, at most two), for a top-level stop or check-in in a DM.
