@@ -1,7 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
 
 import { D1BetterAuthBackend } from '../../../src/auth/better-auth-cloudflare.ts';
-import { createBetterAuthPublicHandler } from '../../../src/auth/better-auth-routes.ts';
+import { serveHostedSharedAuth } from '../../../src/auth/hosted-routing.ts';
 
 interface Env {
   AUTH_DB: D1Database;
@@ -33,10 +33,11 @@ export default {
       ).all();
       return Response.json(results);
     }
-    return createBetterAuthPublicHandler({
-      backend: new D1BetterAuthBackend(env.AUTH_DB),
-      baseURL: url.origin,
-      secret: SECRET,
-    })(request);
+    const response = await serveHostedSharedAuth(request, {
+      environment: { backend: new D1BetterAuthBackend(env.AUTH_DB), baseURL: url.origin, secret: SECRET },
+      installationEnv: () => Promise.reject(new Error('no installation serves this probe')),
+      throttleRegistration: async () => undefined,
+    });
+    return response ?? new Response('Not Found', { status: 404 });
   },
 };

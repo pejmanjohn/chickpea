@@ -16,8 +16,9 @@ const WRANGLER = join(ROOT, 'node_modules', '.bin', 'wrangler');
 const WORKER_FIXTURE = join(ROOT, 'tests', 'fixtures', 'mcp-client-metadata', 'document-worker.ts');
 const MIGRATIONS = join(ROOT, 'migrations', 'better-auth');
 const CLAUDE = CLAUDE_DOCUMENTS.claude.url;
+const CLAUDE_CODE = CLAUDE_DOCUMENTS.claudeCode.url;
 const DOCUMENT_PATH = new URL(CLAUDE).pathname;
-const MOVED_PATH = '/oauth/moved-client-metadata';
+const MOVED_PATH = new URL(CLAUDE_CODE).pathname;
 const CLAUDE_CALLBACK = 'https://claude.ai/api/mcp/auth_callback';
 
 /**
@@ -25,7 +26,7 @@ const CLAUDE_CALLBACK = 'https://claude.ai/api/mcp/auth_callback';
  * `redirect: "error"`, a mode Node accepts and workerd refuses with a throw
  * the plugin reports as a network failure, so only workerd shows the sign-in.
  */
-test('Claude\'s metadata document resolves under workerd, and a redirecting document is refused', {
+test('Claude\'s metadata document resolves under workerd through hosted shared auth, and a redirecting document is refused', {
   timeout: 120_000,
 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'chickpea-cimd-workerd-'));
@@ -76,7 +77,7 @@ test('Claude\'s metadata document resolves under workerd, and a redirecting docu
       { clientId: CLAUDE, clientDiscoveryId: 'cimd', name: 'Claude' },
     ]);
 
-    const moved = await authorize(origin, `https://claude.ai${MOVED_PATH}`);
+    const moved = await authorize(origin, CLAUDE_CODE);
     assert.equal(moved.status, 400);
     assert.deepEqual(JSON.parse(moved.body), {
       error: 'invalid_client',

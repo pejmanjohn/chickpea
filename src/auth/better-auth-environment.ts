@@ -18,6 +18,8 @@ export interface BetterAuthEnvironment {
   baseURL: string;
   secret: string;
   cloudflareEnv?: CloudflareBetterAuthEnv;
+  /** Client ID metadata document sign-in, which only serveHostedSharedAuth turns on. */
+  clientMetadataDocuments?: boolean;
   /** Replaces the guarded transport for client metadata documents, as a test does. */
   fetchClientMetadataResource?: ClientMetadataFetch;
 }

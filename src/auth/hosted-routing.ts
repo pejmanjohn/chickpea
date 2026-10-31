@@ -103,7 +103,8 @@ export function isHostedSharedAuthPath(pathname: string): boolean {
  * one origin, secret and database), or returns undefined for the host to
  * route; every token it issues waits for the user's installation to admit
  * them. Run it before routeHostedRequest. A new MCP client passes the host's
- * `throttleRegistration`: no installation's limiter applies here.
+ * `throttleRegistration`: no installation's limiter applies here. Only here
+ * does Claude sign in by its client ID metadata document.
  */
 export async function serveHostedSharedAuth<E extends PlatformEnv>(
   request: Request,
@@ -112,15 +113,17 @@ export async function serveHostedSharedAuth<E extends PlatformEnv>(
   const { pathname } = new URL(request.url);
   if (!isHostedSharedAuthPath(pathname)) return undefined;
   const logins = hostedLogins(routing.environment, routing.readLogin);
+  // The consent pages resolve the client too, so they need the same switch.
+  const environment = { ...routing.environment, clientMetadataDocuments: true };
   const handler = createBetterAuthPublicHandler({
-    ...routing.environment,
+    ...environment,
     throttleRegistration: routing.throttleRegistration.bind(routing),
     mayIssueTokens: (betterAuthUserId) => mayIssueHostedTokens(routing, logins, betterAuthUserId),
     ...(routing.mcpRegistrationPolicy ? { mcpRegistrationPolicy: routing.mcpRegistrationPolicy } : {}),
   });
   const app = new Hono();
   app.route('/', betterAuthPublicRoutes((c) => handler(c.req.raw)));
-  mountMcpOAuthBrowserRoutes(app, async () => routing.environment);
+  mountMcpOAuthBrowserRoutes(app, async () => environment);
   return app.fetch(request);
 }
 

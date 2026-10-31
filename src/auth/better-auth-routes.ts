@@ -7,7 +7,7 @@ import {
   type CreateBetterAuthInput,
   type PublicOAuthClientApi,
 } from './better-auth.ts';
-import { clientMetadataHost } from './mcp-client-metadata.ts';
+import { ACCEPTED_CLIENT_METADATA_DOCUMENTS } from './mcp-client-metadata.ts';
 import {
   isLoopbackHost,
   MCP_OFFLINE_SCOPE,
@@ -83,7 +83,10 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
 
     auth ??= createBetterAuth({ ...input, baseURL });
     if (url.pathname === '/api/auth/oauth2/authorize') {
-      const renewable = await withOfflineAccessForRenewableClient(withConsentOnLoopback(request), auth);
+      const documentClient = input.clientMetadataDocuments === true &&
+        ACCEPTED_CLIENT_METADATA_DOCUMENTS.has(url.searchParams.get('client_id') ?? '');
+      if (documentClient) request = withConsentOnLoopback(request);
+      const renewable = await withOfflineAccessForRenewableClient(request, auth, documentClient);
       if (renewable instanceof Response) return renewable;
       request = renewable;
     }
@@ -137,9 +140,8 @@ async function revocationResponse(response: Response): Promise<Response> {
  */
 function withConsentOnLoopback(request: Request): Request {
   const url = new URL(request.url);
-  const clientId = url.searchParams.get('client_id');
   const redirect = URL.parse(url.searchParams.get('redirect_uri') ?? '');
-  if (!clientId || !clientMetadataHost(clientId) || !redirect || !isLoopbackHost(redirect.hostname)) return request;
+  if (!redirect || !isLoopbackHost(redirect.hostname)) return request;
   const prompts = new Set(url.searchParams.get('prompt')?.split(' ').filter(Boolean)).add('consent');
   url.searchParams.set('prompt', [...prompts].join(' '));
   return new Request(url, request);
@@ -159,6 +161,7 @@ interface RegisteredClient {
 async function withOfflineAccessForRenewableClient(
   request: Request,
   auth: ReturnType<typeof createBetterAuth>,
+  documentClient: boolean,
 ): Promise<Request | Response> {
   const url = new URL(request.url);
   const scopes = url.searchParams.get('scope')?.split(/\s+/).filter(Boolean) ?? [];
@@ -170,7 +173,7 @@ async function withOfflineAccessForRenewableClient(
     where: [{ field: 'clientId', value: clientId }],
   });
   let client = await stored();
-  if (!client && clientMetadataHost(clientId)) {
+  if (!client && documentClient) {
     // Better Auth stores a client known by its metadata document inside the
     // authorization, after this check, so store it first. A refused document
     // answers here, since asking again within a second is refused for pacing.

@@ -93,6 +93,12 @@ export interface CreateBetterAuthInput {
    * stored client never does. Without one only the pending bound applies.
    */
   throttleRegistration?: McpRegistrationThrottle;
+  /**
+   * Signs Claude in by its client ID metadata document. Off unless
+   * serveHostedSharedAuth turns it on: a self-hosted deployment registers
+   * every client dynamically.
+   */
+  clientMetadataDocuments?: boolean;
   /** Fetches client metadata documents; the guarded public-HTTPS transport by default. */
   fetchClientMetadataResource?: ClientMetadataFetch;
 }
@@ -284,13 +290,15 @@ function createOptions(
         clientRegistrationDefaultScopes: [...MCP_OAUTH_SCOPES],
         clientRegistrationAllowedScopes: [],
         clientRegistrationRequirePKCE: true,
-        extensions: [{
-          clientDiscovery: clientMetadataDiscovery(input.fetchClientMetadataResource, {
-            throttle: input.throttleRegistration,
-            admitPending: () =>
-              admitPendingMcpOAuthClient(input.backend, { ...DEFAULT_MCP_REGISTRATION_POLICY, ...input.mcpRegistrationPolicy }),
-          }),
-        }],
+        ...(input.clientMetadataDocuments === true ? {
+          extensions: [{
+            clientDiscovery: clientMetadataDiscovery(input.fetchClientMetadataResource, {
+              throttle: input.throttleRegistration,
+              admitPending: () =>
+                admitPendingMcpOAuthClient(input.backend, { ...DEFAULT_MCP_REGISTRATION_POLICY, ...input.mcpRegistrationPolicy }),
+            }),
+          }],
+        } : {}),
         ...(input.mayIssueTokens ? { customTokenResponseFields: tokenIssuanceGate(input.mayIssueTokens) } : {}),
       }) as unknown as BetterAuthPlugin,
       createPrivateSessionPlugin(input.privateSeam, internalMarker),
