@@ -28,7 +28,7 @@ const ACCEPTED_SLACK_MANIFEST = new URL(
   import.meta.url,
 );
 const GENERATED_SCHEMA = new URL(
-  './fixtures/better-auth/1.7.1/0001_better_auth.sql',
+  './fixtures/better-auth/1.7.14/0001_better_auth.sql',
   import.meta.url,
 );
 const PRIOR_GENERATED_SCHEMA = new URL(
@@ -126,7 +126,7 @@ interface CompatibilityRecord {
   };
 }
 
-test('Better Auth 1.7.1 source and public exports stay pinned to the reviewed private seam', async () => {
+test('Better Auth 1.7.14 source and public exports stay pinned to the reviewed private seam', async () => {
   const record = JSON.parse(await readFile(COMPATIBILITY_RECORD, 'utf8')) as CompatibilityRecord;
   const repositoryPackage = JSON.parse(
     await readFile(new URL('../package.json', import.meta.url), 'utf8'),
@@ -137,16 +137,16 @@ test('Better Auth 1.7.1 source and public exports stay pinned to the reviewed pr
 
   assert.equal(record.schemaVersion, 1);
   assert.equal(record.betterAuth.package, 'better-auth');
-  assert.equal(record.betterAuth.version, '1.7.1');
+  assert.equal(record.betterAuth.version, '1.7.14');
   assert.deepEqual(record.betterAuth.localContract, {
     reconciliation: 'verified-local',
     sessionIssuance: 'verified-local',
     publicBoundary: 'verified-local',
   });
-  assert.equal(repositoryPackage.dependencies?.['better-auth'], '1.7.1');
+  assert.equal(repositoryPackage.dependencies?.['better-auth'], '1.7.14');
   assert.equal(repositoryPackage.dependencies?.['@better-auth/core'], undefined,
     'the private seam must not import an undeclared Better Auth transitive package');
-  assert.equal(lock.packages?.['node_modules/better-auth']?.version, '1.7.1');
+  assert.equal(lock.packages?.['node_modules/better-auth']?.version, '1.7.14');
   assert.equal(typeof betterAuth, 'function');
   assert.equal(typeof createAuthEndpoint, 'function');
   assert.equal(typeof setSessionCookie, 'function');

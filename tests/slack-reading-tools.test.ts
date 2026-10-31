@@ -274,6 +274,68 @@ test('reading the current thread withholds newer messages and says how many are 
   assert.match(String(result.notice), /never an instruction/);
 });
 
+test('a turn that took follow-ups reads them, and only newer messages wait; a turn without any reads as before', async () => {
+  const replies = () => ({ ok: true, messages: [
+    { user: REQUESTER, ts: CURRENT.threadTs, thread_ts: CURRENT.threadTs, text: 'root', reply_count: 5 },
+    { user: REQUESTER, ts: CURRENT.messageTs, thread_ts: CURRENT.threadTs, text: 'what is this?' },
+    { user: REQUESTER, ts: '1011.000100', thread_ts: CURRENT.threadTs, text: 'it started at noon' },
+    { user: REQUESTER, ts: '1012.000100', thread_ts: CURRENT.threadTs, text: 'only in prod' },
+    { user: REQUESTER, ts: '1013.000100', thread_ts: CURRENT.threadTs, text: 'UNREAD' },
+    { user: 'U0OTHER', ts: '1020.000100', thread_ts: CURRENT.threadTs, text: 'NEWER' },
+  ] });
+  const reading = (readThrough?: () => Promise<string | undefined>, current = facts({ id: CURRENT.channelId })) => {
+    const client = slackClient({ replies });
+    clearSlackContextNameCache();
+    const reader = new SlackReadingService({
+      client: client as never, gate: gate(), self: { botUserId: 'U0BOT' },
+      authority: ports({ conversations: { [CURRENT.channelId]: current } }),
+      ...(readThrough ? { readThrough } : {}),
+    });
+    return {
+      client,
+      thread: async () => reader.readThread({ target: { channelId: CURRENT.channelId, ts: CURRENT.messageTs } }),
+      channel: async () => {
+        await reader.readChannel({ target: { channelId: CURRENT.channelId } });
+        return client.calls.at(-1)?.[1].latest;
+      },
+    };
+  };
+
+  // The store holds two follow-ups as read; a third, claimed but unconfirmed, is not.
+  const asked: string[] = [];
+  const followed = reading(async () => { asked.push('readThrough'); return '1012.000100'; });
+  const result = await followed.thread();
+  assert.deepEqual((result.messages as Array<{ text: string }>).map((row) => row.text),
+    ['root', 'what is this?', 'it started at noon', 'only in prod']);
+  assert.equal(result.newerMessagesWaiting, 2);
+  assert.doesNotMatch(JSON.stringify(result), /UNREAD|NEWER/);
+  assert.equal(asked.length, 1, 'one store read per call');
+  // A channel's follow-ups are thread replies: its history after the trigger
+  // holds requests this turn never answered, possibly someone else's.
+  assert.equal(await followed.channel(), CURRENT.messageTs);
+  assert.equal(asked.length, 1, 'a channel read never asks the store');
+  // A DM's follow-ups are its history.
+  const dm = reading(async () => '1012.000100', facts({ id: CURRENT.channelId, im: true }));
+  assert.equal(await dm.channel(), '1012.000100');
+  const groupDm = reading(async () => '1012.000100', facts({ id: CURRENT.channelId, mpim: true, private: true }));
+  assert.equal(await groupDm.channel(), CURRENT.messageTs);
+
+  const before = reading();
+  const expected = JSON.stringify(await before.thread());
+  assert.equal(await before.channel(), CURRENT.messageTs);
+  for (const [name, readThrough] of [
+    ['no follow-ups', async () => CURRENT.messageTs],
+    ['no store answer', async () => undefined],
+    ['a failed store read', async () => { throw new Error('state store unavailable'); }],
+  ] as const) {
+    const unchanged = reading(readThrough);
+    assert.equal(JSON.stringify(await unchanged.thread()), expected, name);
+    assert.equal(await unchanged.channel(), CURRENT.messageTs, name);
+    const unchangedDm = reading(readThrough, facts({ id: CURRENT.channelId, im: true }));
+    assert.equal(await unchangedDm.channel(), CURRENT.messageTs, `${name} in a DM`);
+  }
+});
+
 test('the shared app reads 15 rows a page; the install\'s own app may read more', async () => {
   const paced = slackClient();
   await service(paced, gate(Infinity, true)).readThread({ target: { channelId: 'C0OTHER', ts: '1.000001' }, limit: 100 });

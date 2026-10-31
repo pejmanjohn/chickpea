@@ -274,3 +274,20 @@ async function mcpCall(
     : body.split('\n').find((line) => line.startsWith('data: '))!.slice('data: '.length);
   return (JSON.parse(json) as { result: unknown }).result;
 }
+
+test('a receipt names one added skill and one more left-out file in the singular', () =>
+  withManagementAdapterFixture('upload-singular', async (f) => {
+    const agent = await createFixtureAgent(f, 'agent_upload', { skills: KEPT });
+    const notes = Array.from({ length: 11 }, (_, index) => ({ path: `notes-${index}.md`, content: '# Notes\nNot a skill.\n' }));
+    const result = await upload(f, {
+      agentId: agent.id,
+      files: [
+        { name: 'notes.zip', base64: Buffer.from(buildZip(notes)).toString('base64') },
+        { name: 'SKILL.md', text: skillMarkdown('gamma', 'Third skill.') },
+      ],
+      idempotencyKey: 'singular',
+    });
+    assert.deepEqual(names(result.added), ['gamma']);
+    assert.match(result.presentation.markdown, /^1 more file was left out\.$/m);
+    assert.match(result.presentation.markdown, /^The skill is active from the next message\. You can undo this change\.$/m);
+  }));

@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { D1BetterAuthBackend } from '../src/auth/better-auth-cloudflare.ts';
 import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
 import { createBetterAuthRuntimeRoutes } from '../src/auth/better-auth-runtime.ts';
-import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
+import { applyBetterAuthMigrations, NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { CLAUDE_DOCUMENTS, metadataDocumentServer } from './helpers/client-metadata-documents.ts';
+import { sqliteD1 } from './helpers/d1-sqlite.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const ORIGIN = 'https://chickpea.example';
@@ -215,6 +220,55 @@ test('runtime DCR rate limits persist across fresh per-request handlers', async 
     backend.close();
     identity.close();
   }
+});
+
+test('a self-hosted deployment, on Workers or Node, offers no metadata-document sign-in: Claude registers dynamically', async (t) => {
+  const identity = new SqliteIdentityStore(':memory:');
+  const node = new NodeBetterAuthBackend(':memory:');
+  const d1 = new DatabaseSync(':memory:');
+  t.after(() => {
+    node.close();
+    d1.close();
+    identity.close();
+  });
+  d1.exec('PRAGMA foreign_keys = ON;');
+  applyBetterAuthMigrations(d1);
+  await createSlackOwner(identity, { suffix: 'runtime-cimd' });
+  const control = await identity.getAuthControl();
+  assert.ok(control);
+  await identity.updateAuthControl({ expectedRevision: control.revision, canonicalAdminOrigin: ORIGIN });
+  const { claude, claudeCode } = CLAUDE_DOCUMENTS;
+  const documents = metadataDocumentServer({ [claude.url]: claude.body, [claudeCode.url]: claudeCode.body });
+  const shapes = [
+    { shape: 'Node', backend: node, database: node.database },
+    { shape: 'Workers', backend: new D1BetterAuthBackend(sqliteD1(d1)), database: d1 },
+  ];
+
+  for (const { shape, backend, database } of shapes) {
+    const app = createBetterAuthRuntimeRoutes({
+      identity,
+      environment: { backend, baseURL: ORIGIN, secret: SECRET, fetchClientMetadataResource: documents.fetch },
+    });
+    for (const path of ['/.well-known/oauth-authorization-server/api/auth', '/api/auth/.well-known/oauth-authorization-server']) {
+      const metadata = await (await app.request(`${ORIGIN}${path}`)).json() as Record<string, unknown>;
+      assert.equal(metadata.client_id_metadata_document_supported, undefined, `${shape} ${path}`);
+      assert.equal(metadata.registration_endpoint, `${ORIGIN}/api/auth/oauth2/register`, `${shape} ${path}`);
+    }
+    for (const [clientId, redirect] of [
+      [claude.url, 'https://claude.ai/api/mcp/auth_callback'],
+      [claudeCode.url, 'http://localhost:53682/callback'],
+    ] as const) {
+      const response = await app.request(`${ORIGIN}/api/auth/oauth2/authorize?${new URLSearchParams({
+        response_type: 'code', client_id: clientId, redirect_uri: redirect, scope: 'chickpea:workspace', state: 's',
+        code_challenge: createHash('sha256').update('verifier').digest('base64url'), code_challenge_method: 'S256',
+      })}`);
+      const location = new URL(response.headers.get('location') ?? '/', ORIGIN);
+      assert.equal(location.searchParams.get('error'), 'invalid_client', `${shape} ${clientId}: an unknown client`);
+    }
+    const { count } = database.prepare('SELECT count(*) AS count FROM oauthClient').get() as { count: number };
+    assert.equal(count, 0, shape);
+  }
+  assert.deepEqual(documents.requests, []);
 });
 
 test('runtime DCR survives request-clone garbage collection', { timeout: 30_000 }, () => {

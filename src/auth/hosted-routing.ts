@@ -9,7 +9,7 @@ import {
   createBetterAuthSessionReader,
   requireSupportedOrigin,
 } from './better-auth.ts';
-import type { BetterAuthMembershipRecord } from './better-auth-backend.ts';
+import type { BetterAuthMembershipRecord, McpRegistrationThrottle } from './better-auth-backend.ts';
 import { hostBetterAuthBackend, type BetterAuthEnvironment } from './better-auth-environment.ts';
 import { BetterAuthDirectory } from './better-auth-principal.ts';
 import { createBetterAuthPublicHandler, type BetterAuthPublicHandlerInput } from './better-auth-routes.ts';
@@ -53,11 +53,12 @@ export interface HostedRouting<E extends PlatformEnv> {
   /** The installation's identity store; by default its TagStateStore. */
   identity?: (env: E) => IdentityStore;
   /**
-   * The host's per-source limit on client registration: a response that
-   * refuses this request, or undefined to let it through. Core keeps no
-   * per-source state on the shared path, so every host supplies one.
+   * The host's per-source limit on new MCP clients, a dynamic registration
+   * or the first sign-in of a client known by its metadata document: a
+   * response that refuses this request, or undefined to let it through. Core
+   * keeps no per-source state on the shared path, so every host supplies one.
    */
-  throttleRegistration(request: Request): Promise<Response | undefined>;
+  throttleRegistration: McpRegistrationThrottle;
   mcpRegistrationPolicy?: BetterAuthPublicHandlerInput['mcpRegistrationPolicy'];
 }
 
@@ -81,7 +82,6 @@ export type HostedRoute<E extends PlatformEnv> =
   | { kind: 'refused'; response?: Response };
 
 const MCP_PATH = '/mcp';
-const REGISTRATION_PATH = '/api/auth/oauth2/register';
 const SLACK_ACCOUNT = /^slack:([A-Za-z0-9]+):([A-Za-z0-9]+)$/;
 const SHARED_PATHS = new Set([
   '/api/auth',
@@ -102,8 +102,9 @@ export function isHostedSharedAuthPath(pathname: string): boolean {
  * Answers a request that belongs to no installation (Better Auth is shared:
  * one origin, secret and database), or returns undefined for the host to
  * route; every token it issues waits for the user's installation to admit
- * them. Run it before routeHostedRequest. Client registration passes the
- * host's `throttleRegistration` first: no installation's limiter applies here.
+ * them. Run it before routeHostedRequest. A new MCP client passes the host's
+ * `throttleRegistration`: no installation's limiter applies here. Only here
+ * does Claude sign in by its client ID metadata document.
  */
 export async function serveHostedSharedAuth<E extends PlatformEnv>(
   request: Request,
@@ -111,19 +112,18 @@ export async function serveHostedSharedAuth<E extends PlatformEnv>(
 ): Promise<Response | undefined> {
   const { pathname } = new URL(request.url);
   if (!isHostedSharedAuthPath(pathname)) return undefined;
-  if (request.method.toUpperCase() === 'POST' && pathname === REGISTRATION_PATH) {
-    const refused = await routing.throttleRegistration(request);
-    if (refused) return refused;
-  }
   const logins = hostedLogins(routing.environment, routing.readLogin);
+  // The consent pages resolve the client too, so they need the same switch.
+  const environment = { ...routing.environment, clientMetadataDocuments: true };
   const handler = createBetterAuthPublicHandler({
-    ...routing.environment,
+    ...environment,
+    throttleRegistration: routing.throttleRegistration.bind(routing),
     mayIssueTokens: (betterAuthUserId) => mayIssueHostedTokens(routing, logins, betterAuthUserId),
     ...(routing.mcpRegistrationPolicy ? { mcpRegistrationPolicy: routing.mcpRegistrationPolicy } : {}),
   });
   const app = new Hono();
   app.route('/', betterAuthPublicRoutes((c) => handler(c.req.raw)));
-  mountMcpOAuthBrowserRoutes(app, async () => routing.environment);
+  mountMcpOAuthBrowserRoutes(app, async () => environment);
   return app.fetch(request);
 }
 
