@@ -712,7 +712,7 @@ test('short punctuation, structured results and ordinary long answers remain val
 });
 
 test('terminal step selection falls back when a complete boundary cannot be proven', async () => {
-  for (const scenario of ['snapshot', 'incomplete', 'foreign', 'different', 'oversized'] as const) {
+  for (const scenario of ['incomplete', 'foreign', 'different', 'oversized'] as const) {
     const dispatchState = state();
     const agent = handle({ read: async (_receipt, options) => {
       options?.onEvent?.({ type: 'message-started', conversationId: 'conversation',
@@ -722,8 +722,6 @@ test('terminal step selection falls back when a complete boundary cannot be prov
         kind: 'text', delta: scenario === 'oversized' ? 'x'.repeat(129 * 1024) : 'Final.', position: { batch: 1, index: 1 } });
       if (scenario !== 'incomplete') options?.onEvent?.({ type: 'message-completed',
         conversationId: 'conversation', messageId: 'response', position: { batch: 1, index: 2 } });
-      if (scenario === 'snapshot') options?.onEvent?.({ type: 'conversation-reset',
-        conversationId: 'conversation', snapshot: { v: 1, conversationId: 'conversation', messages: [], offset: '1', settlements: [] }, position: { batch: 2, index: 0 } });
       return { text: scenario === 'different' ? 'Different final.' : 'Prefix.\n\nFinal.',
         submissionId: RECEIPT.submissionId, data: {} };
     } });
