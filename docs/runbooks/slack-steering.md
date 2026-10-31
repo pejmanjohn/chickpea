@@ -311,9 +311,9 @@ What the Agent reads depends on whether it has read the message yet:
   read before. The status line shows `Reading 1 edited message…`.
 - An edit that comes too late for the running reply (the answer is already
   streaming, a question ended the reply, or the checks are used up) is
-  answered after that reply, as a turn of its own. The Agent is told that its
-  earlier reply answered the previous version. It answers the edited version,
-  or says in one short line that the edit changes nothing that matters.
+  answered after that reply, as a turn of its own. The Agent is told that any
+  reply above was to the previous version. It answers the edited version, or
+  says in one short line that a reply above already answers it.
   Several edits of one message wait together and get one reply.
 
 An edit keeps its message's Agent, sender and place: it never routes work to
