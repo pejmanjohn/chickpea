@@ -1157,7 +1157,11 @@ export class SlackRunPresentationStoreLogic {
     return presentation ? upgradeSlackRunPresentation(presentation) : undefined;
   }
 
-  /** Exact durable generation fence for shared lifecycle effects in one Slack thread. */
+  /**
+   * Exact durable generation fence for shared lifecycle effects in one Slack
+   * thread: a turn counts once it has shown or intended a Slack effect, so one
+   * that only queued (or closed without running) never fences an older turn.
+   */
   getLatestThreadSessionGeneration(
     root: Pick<SlackPresentationRoot, 'workspaceId' | 'channelId' | 'threadTs'>,
   ): number | undefined {
@@ -1170,7 +1174,15 @@ export class SlackRunPresentationStoreLogic {
        FROM slack_run_presentations
        WHERE workspace_id = ? AND channel_id = ?
          AND json_extract(presentation_json, '$.schemaVersion') = 3
-         AND json_extract(presentation_json, '$.root.threadTs') = ?`,
+         AND json_extract(presentation_json, '$.root.threadTs') = ?
+         AND (
+           json_extract(presentation_json, '$.lifecyclePhase')
+             IN ('active', 'terminal_intended', 'recovery_required')
+           OR json_extract(presentation_json, '$.terminalDelivery.state') = 'intended'
+           OR json_extract(presentation_json, '$.activityProjection.surface') <> 'unselected'
+           OR json_type(presentation_json, '$.agentSession.operation') IS NOT NULL
+           OR json_extract(presentation_json, '$.stream.state') <> 'absent'
+         )`,
       root.workspaceId,
       root.channelId,
       root.threadTs,

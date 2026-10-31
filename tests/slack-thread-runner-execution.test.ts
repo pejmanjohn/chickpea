@@ -1373,7 +1373,15 @@ test("a turn's first generation check uses the value its begin round trip read",
     await presentation.state.getLatestThreadSessionGeneration({ ...ROOT, threadTs: '1800000000.000002' });
     assert.equal(generationReads, 2);
     // A thread with no V3 generation yet is cached as none.
-    local.create({ ...v3Input('run_none', 'turn_none'), root: { ...ROOT, threadTs: '1800000000.000003' } });
+    const none = local.create({ ...v3Input('run_none', 'turn_none'), root: { ...ROOT, threadTs: '1800000000.000003' } });
+    local.transition({
+      runId: none.runId,
+      workBindingGeneration: none.workBindingGeneration,
+      runFencingToken: none.runFencingToken,
+      expectedProjectionVersion: none.projectionVersion,
+      expectedStreamState: none.stream.state,
+      mutation: { kind: 'set_agent_session_desired', desired: 'processing', operationId: 'session_run_none_1' },
+    });
     presentation.seedLatestThreadSessionGeneration('run_none', null);
     assert.equal(
       await presentation.state.getLatestThreadSessionGeneration({ ...ROOT, threadTs: '1800000000.000003' }),

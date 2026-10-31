@@ -1,5 +1,6 @@
 import {
   SEMANTIC_TARGET_FAMILIES,
+  isSafeTypedActivityStatus,
   type SemanticActivityPhase,
   type SemanticTargetFamily,
   type TypedActivityStatus,
@@ -25,7 +26,9 @@ type SemanticActivityTransportOutcome =
   | 'acknowledged'
   | 'rejected'
   | 'ambiguous'
-  | 'latched_off';
+  | 'latched_off'
+  /** Refused before Slack: a newer turn that started owns the thread's status. */
+  | 'fenced';
 
 type SemanticActivityClearOutcome =
   | 'acknowledged'
@@ -107,7 +110,7 @@ const QUEUE_DISPOSITIONS = new Set<SemanticActivityQueueDisposition>([
   'terminal_dropped', 'throttled', 'relay_failed',
 ]);
 const TRANSPORT_OUTCOMES = new Set<SemanticActivityTransportOutcome>([
-  'acknowledged', 'rejected', 'ambiguous', 'latched_off',
+  'acknowledged', 'rejected', 'ambiguous', 'latched_off', 'fenced',
 ]);
 const CLEAR_OUTCOMES = new Set<SemanticActivityClearOutcome>([
   'acknowledged', 'rejected', 'ambiguous', 'skipped',
@@ -226,6 +229,15 @@ export function semanticTelemetryForStatus(
   status: TypedActivityStatus,
 ): { family: SemanticTargetFamily; phase: SemanticActivityTelemetryPhase } {
   return { family: status.family, phase: status.phase };
+}
+
+/** The same facts for any status write; one not safely typed reads `unknown`, `working`. */
+export function semanticTelemetryForUpdate(
+  update: unknown,
+): { family: SemanticTargetFamily; phase: SemanticActivityTelemetryPhase } {
+  return isSafeTypedActivityStatus(update)
+    ? semanticTelemetryForStatus(update)
+    : { family: 'unknown', phase: 'working' };
 }
 
 function telemetrySurface(value: unknown): SemanticActivityTelemetrySurface {
