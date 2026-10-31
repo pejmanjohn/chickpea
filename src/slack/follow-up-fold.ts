@@ -10,7 +10,7 @@ import { validTurnJobId } from '../agents/turn-input.ts';
 import { currentRequestEnvelopeText, parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 import { publishActivityStatus } from './activity-publisher.ts';
 import { foldActivityStatus, followUpSignalBody, MAX_FOLD_CYCLES, MAX_TURN_FOLD_CYCLES } from './follow-ups.ts';
-import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
+import { endsResponseWork } from './presentation-tool-policy.ts';
 import type { TurnFoldClaim, TurnFoldRequest } from './turn-job-types.ts';
 
 /** Late folds this response's model read; written in the same durable batch as each fold. */
@@ -38,13 +38,15 @@ export type LateFoldRequest = Exclude<TurnFoldRequest, { phase: 'start' }>;
  * would-stop asks once more and appends what arrived. Both count one
  * sequence of folds, so neither takes the other's messages again.
  *
- * The gate shuts after a successful `stream_answer` (answer text may already
- * be in Slack), on a v1 envelope (it streams without one), past each phase's
- * cap, and while file delivery is unchecked or repairing. A shut would-stop
- * gate still tells the store how many folds the model read, which is how a
- * fold's messages come to end with this reply: the store counts a fold as
- * read only when a later call confirms it. A failed call leaves the response
- * as it was; any message the model never saw then runs as its own turn.
+ * The gate shuts once the response can do no more work (a successful
+ * `stream_answer`, whose answer may already be in Slack, or a posted
+ * question, which ends the reply), on a v1 envelope (it streams without
+ * one), past each phase's cap, and while file delivery is unchecked or
+ * repairing. A shut would-stop gate still tells the store how many folds the
+ * model read, which is how a fold's messages come to end with this reply:
+ * the store counts a fold as read only when a later call confirms it. A
+ * failed call leaves the response as it was; any message the model never
+ * saw then runs as its own turn.
  */
 export function useSlackFollowUpFold(input: {
   instanceId: string;
@@ -112,7 +114,7 @@ export function useSlackFollowUpFold(input: {
     if (!signal) return;
     const { cycles, finishes } = current();
     const take = framing !== undefined && finishes < MAX_FOLD_CYCLES &&
-      !response.toolCalls.some((call) => call.tool === SLACK_STREAM_ANSWER_TOOL_NAME && !call.isError) &&
+      !response.toolCalls.some((call) => endsResponseWork(call.tool) && !call.isError) &&
       !input.blocked();
     if (!take && cycles === 0) return;
     try {
@@ -130,8 +132,8 @@ export function useSlackFollowUpFold(input: {
 interface ToolBoundary {
   /** Model tool calls running now: Pi runs a batch's calls in parallel. */
   running: number;
-  /** A successful stream_answer: its answer may already be in Slack. */
-  answerDeclared: boolean;
+  /** A successful stream_answer or posted question: the response does no more work (endsResponseWork). */
+  workEnded: boolean;
   /** The latest render's check (useSlackFollowUpFold). */
   pull?: () => Promise<void>;
   /** The check in progress, so two never claim the same cycle. */
@@ -150,24 +152,25 @@ function bindToolBoundaryFold(pull: () => Promise<void>): void {
  * other call of its batch is still running, the Agent checks for new
  * messages before the batch's results go back to the model. Every model
  * tool passes through here (its own, MCP and sandbox tools alike). Mounted
- * inside the presentation policy, so a tool that policy refuses after an
- * answer was declared never reaches it. The check never fails the tool.
+ * inside the presentation policy, so a tool that policy refuses once the
+ * response can do no more work never reaches it. The check never fails the
+ * tool.
  */
 export const slackToolBoundaryFoldInterceptor: FlueExecutionInterceptor = async (operation, context, next) => {
   const boundary = toolBoundaries.getStore();
   if (operation.type === 'agent' && context.agentName === CHICKPEA_SLACK_AGENT_NAME && boundary === undefined) {
-    return toolBoundaries.run({ running: 0, answerDeclared: false, pulling: Promise.resolve() }, next);
+    return toolBoundaries.run({ running: 0, workEnded: false, pulling: Promise.resolve() }, next);
   }
   if (operation.type !== 'tool' || boundary === undefined) return next();
   boundary.running += 1;
   try {
     const result = await next();
-    if (operation.toolName === SLACK_STREAM_ANSWER_TOOL_NAME) boundary.answerDeclared = true;
+    if (endsResponseWork(operation.toolName)) boundary.workEnded = true;
     return result;
   } finally {
     boundary.running -= 1;
     const pull = boundary.pull;
-    if (boundary.running === 0 && !boundary.answerDeclared && pull) {
+    if (boundary.running === 0 && !boundary.workEnded && pull) {
       boundary.pulling = boundary.pulling.then(pull).catch(() => {
         console.warn('[chickpea] Could not check for follow-up messages after a tool batch');
       });

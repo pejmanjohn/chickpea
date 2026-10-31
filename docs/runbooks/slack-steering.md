@@ -255,11 +255,12 @@ information only, and a message that joins ends the same way: its 👀 goes
 when the reply posts (an information-only message keeps it for its own
 turn), it is released if the run fails, and a stop drops it. In addition:
 
-- The Agent takes new messages after at most 12 tool steps in one run, and
-  before its reply at most three times. A message that arrives after that
-  waits for the run to end.
-- Once the Agent starts streaming its answer into Slack, nothing more joins
-  that run. A message sent after that waits for the run to end.
+- The Agent takes new messages at most 12 times after tool steps in one run,
+  and at most three times before its reply. A message that arrives after
+  that waits for the run to end.
+- Once the Agent starts streaming its answer into Slack, or has posted a
+  question (buttons or a form) that ends its reply, nothing more joins that
+  run. A message sent after that waits for the run to end.
 - While the Agent's file delivery for the reply is unchecked, or after it
   needed a correction in this run, nothing joins.
 - If Chickpea cannot reach its state store for a check, the Agent carries on

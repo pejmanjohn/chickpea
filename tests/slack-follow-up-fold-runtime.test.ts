@@ -27,6 +27,7 @@ import { followUpSignalMessages } from '../src/slack/follow-ups.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../src/slack/presentation-intent.ts';
 import { registerSlackStatusTurn } from '../src/slack/status-registry.ts';
 import type { FlueDispatchEnvelopeV1, TurnFoldClaim, TurnJob } from '../src/slack/turn-job-types.ts';
+import { SLACK_ASK_USER_TOOL_NAME } from '../src/slack/ui/presentation-tools.ts';
 import { TurnJobStoreLogic, turnJobGate } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -84,6 +85,12 @@ function FoldProbe({ id }: AgentProps) {
     description: 'Declare that the final answer streams to Slack.',
     input: v.strictObject({}),
     run: () => ({ output: 'streaming' }),
+  });
+  useTool({
+    name: SLACK_ASK_USER_TOOL_NAME,
+    description: 'Ask the person a question; the answer arrives as the next message.',
+    input: v.strictObject({}),
+    run: () => ({ output: 'asked' }),
   });
 }
 
@@ -371,6 +378,22 @@ test('messages sent while the Agent works join its response before the reply', {
           arrivesDuring('late', 'Also mention the pricing change.', answer('A launch note.')),
         ]);
         assert.equal(result.text, 'A launch note.');
+        assert.deepEqual(scenario.calls, []);
+        assert.equal(scenario.turns.runnerView('late').job!.fold, undefined);
+        assert.equal(folds().length, 0);
+      } finally {
+        scenario.close();
+      }
+    });
+
+    await t.test('a posted question shuts the gate: the reply is finished, so the message waits for its own turn', async () => {
+      scenario = openScenario();
+      try {
+        const { result } = await run([
+          call(SLACK_ASK_USER_TOOL_NAME, {}),
+          arrivesDuring('late', 'Also mention the pricing change.', answer('Which launch do you mean?')),
+        ]);
+        assert.equal(result.text, 'Which launch do you mean?');
         assert.deepEqual(scenario.calls, []);
         assert.equal(scenario.turns.runnerView('late').job!.fold, undefined);
         assert.equal(folds().length, 0);

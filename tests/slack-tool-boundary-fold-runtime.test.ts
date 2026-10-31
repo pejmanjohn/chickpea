@@ -27,6 +27,7 @@ import {
 import { followUpSignalMessages, MAX_TURN_FOLD_CYCLES } from '../src/slack/follow-ups.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../src/slack/presentation-intent.ts';
 import { registerSlackStatusTurn } from '../src/slack/status-registry.ts';
+import { SLACK_ASK_USER_TOOL_NAME } from '../src/slack/ui/presentation-tools.ts';
 import type { TurnFoldClaim, TurnJob } from '../src/slack/turn-job-types.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
@@ -94,6 +95,15 @@ function PullProbe({ id }: AgentProps) {
     async run() {
       await onTool(0);
       return { output: 'streaming' };
+    },
+  });
+  useTool({
+    name: SLACK_ASK_USER_TOOL_NAME,
+    description: 'Ask the person a question; the answer arrives as the next message.',
+    input: v.strictObject({}),
+    async run() {
+      await onTool(0);
+      return { output: 'asked' };
     },
   });
 }
@@ -175,6 +185,8 @@ const work = (...steps: number[]) => fauxAssistantMessage(
 );
 const streamAnswer = () =>
   fauxAssistantMessage([fauxToolCall(SLACK_STREAM_ANSWER_TOOL_NAME, {})], { stopReason: 'toolUse' });
+const askUser = () =>
+  fauxAssistantMessage([fauxToolCall(SLACK_ASK_USER_TOOL_NAME, {})], { stopReason: 'toolUse' });
 const providerError = () => fauxAssistantMessage('', { stopReason: 'error', errorMessage: '503 service unavailable' });
 /** A model step that runs as the person sends `text`. */
 function arrivesDuring(id: string, text: string, step: ReturnType<typeof fauxAssistantMessage>): FauxResponseStep {
@@ -332,6 +344,24 @@ test('messages sent while the Agent runs tools reach the model after that tool b
         assert.deepEqual(scenario.calls, []);
         assert.deepEqual(lateSeen(), [0, 0]);
         assert.equal(scenario.turns.runnerView('late').job!.fold, undefined);
+      } finally {
+        scenario.close();
+      }
+    });
+
+    await t.test('after a posted question neither check takes a message: the reply is finished and can do no more work', async () => {
+      scenario = openScenario();
+      try {
+        onTool = (step) => { if (step === 0) scenario.arrive('during_question', LATE); };
+        const { result } = await run([
+          askUser(),
+          arrivesDuring('while_answering', 'Use the new logo.', answer('Which launch do you mean?')),
+        ]);
+        assert.equal(result.text, 'Which launch do you mean?');
+        assert.deepEqual(scenario.calls, [], 'no tool-boundary call after the question, and no would-stop call');
+        assert.deepEqual(lateSeen(), [0, 0]);
+        assert.deepEqual(['during_question', 'while_answering'].map((id) => scenario.turns.runnerView(id).job!.fold), [undefined, undefined],
+          'both wait for a turn of their own');
       } finally {
         scenario.close();
       }
