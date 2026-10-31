@@ -68,7 +68,7 @@ export interface ZipEntry {
 
 /** A central-directory record left out of `entries`; the rest of the archive still reads. */
 export interface RefusedZipEntry {
-  /** Control characters are replaced, so the path is safe to show. */
+  /** Unprintable characters are replaced, so the path is safe to show. */
   readonly path: string;
   readonly code: 'invalid_name' | 'duplicate_path' | 'overlapping_data';
 }
@@ -98,6 +98,8 @@ export function isZipJunkPath(path: string): boolean {
 }
 
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
+/** Control characters, and format characters such as bidi overrides and zero-width joiners. */
+const UNPRINTABLE = /[\p{Cc}\p{Cf}]/gu;
 
 const EOCD_SIGNATURE = 0x06054b50;
 const EOCD_SIZE = 22;
@@ -108,6 +110,7 @@ const LOCAL_SIGNATURE = 0x04034b50;
 const LOCAL_SIZE = 30;
 const UINT16_MAX = 0xffff;
 const UINT32_MAX = 0xffffffff;
+const INFLATE_WRITE_BYTES = 16 * 1024;
 
 export function openZip(bytes: Uint8Array, options: ZipOpenOptions): ZipArchive {
   const maxEntries = options.maxEntries ?? DEFAULT_MAX_ZIP_ENTRIES;
@@ -160,35 +163,35 @@ export function openZip(bytes: Uint8Array, options: ZipOpenOptions): ZipArchive 
     if (flags & 1) throw new ZipArchiveError({ code: 'encrypted' });
     const path = names.decode(rawName).replace(/\\/g, '/');
     if (path.startsWith('/') || /^[a-z]:/i.test(path) || path.split('/').includes('..')) {
-      throw new ZipArchiveError({ code: 'unsafe_path', path: printable(path) });
+      throw new ZipArchiveError({ code: 'unsafe_path', path: printableZipPath(path) });
     }
     offset = end;
     if (skipJunk && isZipJunkPath(path)) continue;
     // Paths are shown to people and models, so a name that could break a line or a terminal is refused.
     if (CONTROL_CHARACTER.test(path)) {
-      refused.push({ path: printable(path), code: 'invalid_name' });
+      refused.push({ path: printableZipPath(path), code: 'invalid_name' });
       continue;
     }
     if (byPath.has(path)) {
-      refused.push({ path, code: 'duplicate_path' });
+      refused.push({ path: printableZipPath(path), code: 'duplicate_path' });
       continue;
     }
     const local = localRecord(bytes, view, { rawName, method, compressedSize, centralOffset, localOffset });
     // Many records pointing at one compressed body would inflate it once per record.
     if (local && !claimRange(claimed, localOffset, local.dataEnd)) {
-      refused.push({ path, code: 'overlapping_data' });
+      refused.push({ path: printableZipPath(path), code: 'overlapping_data' });
       continue;
     }
     const entry: ZipEntry = {
       path,
       size,
       read: async () => {
+        if (method !== 0 && method !== 8) throw new ZipArchiveError({ code: 'unsupported_method', method });
+        if (!local) throw new ZipArchiveError({ code: 'header_mismatch' });
         if (size > options.maxEntryBytes) {
           throw new ZipArchiveError({ code: 'entry_too_large', size, limit: options.maxEntryBytes });
         }
         if (!options.budget.take(size)) throw new ZipArchiveError({ code: 'budget_exceeded' });
-        if (method !== 0 && method !== 8) throw new ZipArchiveError({ code: 'unsupported_method', method });
-        if (!local) throw new ZipArchiveError({ code: 'header_mismatch' });
         const data = bytes.subarray(local.dataStart, local.dataEnd);
         const content = method === 0 ? data : await inflateRaw(data, size);
         if (content.byteLength !== size) throw new ZipArchiveError({ code: 'size_mismatch' });
@@ -247,11 +250,17 @@ function claimRange(claimed: Array<readonly [start: number, end: number]>, start
   return true;
 }
 
-/** Stops as soon as the output passes `limit`, so a zip bomb costs at most one chunk more. */
+/**
+ * Stops as soon as the output passes `limit`, so a zip bomb costs at most one
+ * chunk more. Input goes in small writes because a runtime may inflate a whole
+ * write before emitting any output: 16 KiB inflates to at most about 16 MiB.
+ */
 async function inflateRaw(data: Uint8Array, limit: number): Promise<Uint8Array> {
   const stream = new DecompressionStream('deflate-raw');
   const writer = stream.writable.getWriter();
-  writer.write(data as Uint8Array<ArrayBuffer>).catch(() => undefined);
+  for (let offset = 0; offset < data.byteLength; offset += INFLATE_WRITE_BYTES) {
+    writer.write(data.subarray(offset, offset + INFLATE_WRITE_BYTES) as Uint8Array<ArrayBuffer>).catch(() => undefined);
+  }
   writer.close().catch(() => undefined);
   const reader = stream.readable.getReader();
   const chunks: Uint8Array[] = [];
@@ -280,8 +289,9 @@ async function inflateRaw(data: Uint8Array, limit: number): Promise<Uint8Array> 
   return content;
 }
 
-function printable(path: string): string {
-  return path.replace(new RegExp(CONTROL_CHARACTER.source, 'g'), '\ufffd');
+/** A path safe to show: unprintable characters become U+FFFD. Lookups still use the exact path. */
+export function printableZipPath(path: string): string {
+  return path.replace(UNPRINTABLE, '\ufffd');
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {

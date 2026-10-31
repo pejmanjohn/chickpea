@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { randomBytes } from 'node:crypto';
+import { test, type TestContext } from 'node:test';
 
 import {
   createByteBudget,
@@ -68,26 +69,49 @@ test('one budget bounds every read across archives, and a refused read takes not
   assert.equal(budget.remaining, 0);
 });
 
-test('an entry that inflates past its declared size stops early and is refused', async (t) => {
-  // Count what the inflater emits: a lying header must cost about one chunk, not the real size.
+/** Records what the reader writes into the inflater and what comes out, for the length of one test. */
+function watchInflation(t: TestContext): { written: number[]; inflated: () => number } {
   const Native = globalThis.DecompressionStream;
+  const written: number[] = [];
   let inflated = 0;
   globalThis.DecompressionStream = class extends Native {
     constructor(format: CompressionFormat) {
       super(format);
-      const counted = this.readable.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      const input = new TransformStream<BufferSource, BufferSource>({
+        transform(chunk, controller) {
+          written.push(chunk.byteLength);
+          controller.enqueue(chunk);
+        },
+      });
+      void input.readable.pipeTo(this.writable).catch(() => undefined);
+      const output = this.readable.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
         transform(chunk, controller) {
           inflated += chunk.byteLength;
           controller.enqueue(chunk);
         },
       }));
-      Object.defineProperty(this, 'readable', { value: counted });
+      Object.defineProperty(this, 'writable', { value: input.writable });
+      Object.defineProperty(this, 'readable', { value: output });
     }
   };
   t.after(() => { globalThis.DecompressionStream = Native; });
+  return { written, inflated: () => inflated };
+}
+
+test('an entry that inflates past its declared size stops early and is refused', async (t) => {
+  const watch = watchInflation(t);
   const archive = open(buildZip([{ path: 'liar.txt', content: new Uint8Array(32 * 1024 * 1024), declaredSize: 16 }]));
   assert.equal(await refusal(archive.entry('liar.txt')!.read()), 'size_mismatch');
-  assert.ok(inflated < 1024 * 1024, `inflated ${inflated} bytes for a 16-byte entry`);
+  assert.ok(watch.inflated() < 1024 * 1024, `inflated ${watch.inflated()} bytes for a 16-byte entry`);
+});
+
+test('compressed bytes go to the inflater 16 KiB at a time, so no runtime inflates a whole entry in one write', async (t) => {
+  const watch = watchInflation(t);
+  const content = new Uint8Array(randomBytes(100_000));
+  const archive = open(buildZip([{ path: 'noise.bin', content }]));
+  assert.deepEqual(await archive.entry('noise.bin')!.read(), content);
+  assert.ok(watch.written.length > 1, `${watch.written.length} write(s)`);
+  assert.ok(watch.written.every((size) => size <= 16 * 1024), `writes of ${watch.written.join(', ')} bytes`);
 });
 
 test('whole-archive refusals carry a code and neutral wording', () => {
@@ -110,14 +134,16 @@ test('whole-archive refusals carry a code and neutral wording', () => {
   }
 });
 
-test('per-entry read refusals leave the rest of the archive readable', async () => {
+test('per-entry read refusals take nothing from the budget and leave the rest of the archive readable', async () => {
+  const budget = createByteBudget(1024);
   const archive = open(buildZip([
     { path: 'bzip.txt', content: 'x', method: 12 },
     { path: 'moved.txt', content: 'x', localPath: 'other.txt' },
     { path: 'fine.txt', content: 'fine', method: 0 },
-  ]));
+  ]), 1024, budget);
   assert.equal(await refusal(archive.entry('bzip.txt')!.read()), 'unsupported_method');
   assert.equal(await refusal(archive.entry('moved.txt')!.read()), 'header_mismatch');
+  assert.equal(budget.remaining, 1024);
   assert.equal(text(await archive.entry('fine.txt')!.read()), 'fine');
 });
 
@@ -163,6 +189,15 @@ test('a duplicate path keeps the first copy and reports the rest', async () => {
   assert.equal(text(await archive.entry('notes.md')!.read()), 'first');
   assert.deepEqual(archive.entries.map(({ path }) => path), ['notes.md']);
   assert.deepEqual(archive.refused, [{ path: 'notes.md', code: 'duplicate_path' }]);
+});
+
+test('a path with bidi or zero-width characters is kept; its refusal reports and display form replace them', () => {
+  const archive = open(buildZip([
+    { path: 'invoice\u202efdp.exe', content: 'one' },
+    { path: 'invoice\u202efdp.exe', content: 'two' },
+  ]));
+  assert.deepEqual(archive.entries.map(({ path }) => path), ['invoice\u202efdp.exe']);
+  assert.deepEqual(archive.refused, [{ path: 'invoice\ufffdfdp.exe', code: 'duplicate_path' }]);
 });
 
 test('a name with control characters is refused and reported printably; the macOS folder icon file is junk', () => {
