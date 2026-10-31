@@ -67,7 +67,7 @@ data, and explain that problem rather than telling the user to wait indefinitely
 
 Some releases add Durable Object migrations; v0.1.27 adds two, on every
 installation: `v10` for coding workers and `v11` for per-thread Slack turn
-runners. v0.1.28 through v0.1.40 add none; an update from v0.1.26 or
+runners. v0.1.28 through v0.1.41 add none; an update from v0.1.26 or
 earlier straight to any of them still applies `v10` and `v11`. Once the deploy applies them,
 Cloudflare refuses `wrangler rollback` and dashboard rollbacks to any version
 from before that release. Recovery from a bad update then means deploying a newer or fixed
@@ -151,6 +151,22 @@ failed replies on v0.1.33 until you update again. Prefer deploying a fixed
 release forward to rolling back across v0.1.34.
 
 ## 3. Deploy to the same Worker
+
+v0.1.41 lets an Agent read up to 10 files attached to one Slack message, up
+from 4; a message with more still reads none of its files. Editing a message
+while an Agent is answering it, or before its turn starts, now steers that
+turn: the Agent reads the new text, at its next step if it had already read
+the message, and an edit that comes too late for the reply in progress gets
+its own reply afterward. An edit of a message with files, a command, or an
+approval steers nothing. In Admin, each row under **Usage → Recent activity**
+links to the Slack message that started it, or for a routine, the message the
+routine posted. On the shared Chickpea
+Slack app the link opens in whichever Slack workspace your browser has open.
+**Settings → MCP** now loads when you open it from another Settings page. On
+its first start the usage store adds two nullable columns for the Slack
+message and thread; the storage contract is unchanged, so `release.json`'s
+`configuration` digest stays the same. Updating needs no other step. There is
+no rollback path: recovery means deploying a fixed release forward.
 
 v0.1.40 lets a person install skills by attaching `SKILL.md` files or `.zip`
 and `.skill` archives to a Slack message, and lets a coding agent upload skill
