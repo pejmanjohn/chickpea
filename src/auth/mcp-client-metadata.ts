@@ -11,8 +11,7 @@ export type ClientMetadataFetch = CimdOptions['fetchClientMetadataResource'];
 
 /**
  * The only client ID metadata documents Chickpea signs a client in by,
- * matched as exact strings: Claude's and Codex's, as claude.ai and
- * chatgpt.com publish them. Any other client ID is an unknown client.
+ * matched as exact strings. Any other client ID is an unknown client.
  */
 export const ACCEPTED_CLIENT_METADATA_DOCUMENTS: ReadonlySet<string> = new Set([
   // claude.ai, Claude Desktop and Cowork
@@ -21,6 +20,10 @@ export const ACCEPTED_CLIENT_METADATA_DOCUMENTS: ReadonlySet<string> = new Set([
   'https://claude.ai/oauth/claude-code-client-metadata',
   // Codex: the CLI, the IDE extension, and Codex in the ChatGPT desktop app
   'https://chatgpt.com/oauth/codex/client.json',
+  'https://vscode.dev/oauth/client-metadata.json',
+  'https://insiders.vscode.dev/oauth/client-metadata.json',
+  'https://zed.dev/oauth/client-metadata.json',
+  'https://goose-docs.ai/oauth/client-metadata.json',
 ]);
 
 /** One transport's discovery, and the stored clients whose last fetch could not reach their document. */
