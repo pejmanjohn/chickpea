@@ -12,6 +12,7 @@ import * as v from 'valibot';
 
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
 import { compileRuntimePlanV2, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { RunReviewCollector } from '../src/review/collector.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { parseSlackManagementSignal } from '../src/management/slack-tools.ts';
 import {
@@ -197,6 +198,7 @@ test('messages sent while the Agent works join its response before the reply', {
     faux.setResponses(responses);
     const callsBefore = faux.state.callCount;
     const statuses: string[] = [];
+    let review: RunReviewCollector | undefined;
     const { instanceId } = scenario;
     const statusTurn = registerSlackStatusTurn(instanceId, {
       setStatus: async (update) => { statuses.push(update.text); return true; },
@@ -207,9 +209,13 @@ test('messages sent while the Agent works join its response before the reply', {
       const result = await promptSlackThreadAgent({
         handle: init(FoldProbe, { id: instanceId }), state, message: 'Draft the launch note.',
         turnId: 'head', conversationKey: instanceId, requestedModel: MODEL,
+        onConversationChunk: (chunk, submissionId) => {
+          review ??= new RunReviewCollector(submissionId);
+          review.ingest(chunk);
+        },
       });
       await statusTurn.drain();
-      return { result, statuses, modelCalls: faux.state.callCount - callsBefore };
+      return { result, statuses, review, modelCalls: faux.state.callCount - callsBefore };
     } finally {
       statusTurn.close();
     }
@@ -223,7 +229,7 @@ test('messages sent while the Agent works join its response before the reply', {
     await t.test('one fold, then one reply that answers both messages', async () => {
       scenario = openScenario();
       try {
-        const { result, statuses, modelCalls } = await run([
+        const { result, statuses, review, modelCalls } = await run([
           arrivesDuring('late', 'Also mention the pricing change.', answer('A launch note.')),
           answer('A launch note that mentions the pricing change.'),
         ]);
@@ -236,6 +242,9 @@ test('messages sent while the Agent works join its response before the reply', {
         assert.deepEqual(statuses, ['Reading 1 new message…']);
 
         const late = scenario.turns.runnerView('late').job!;
+        assert.deepEqual(review?.followUps(), [
+          { userId: PERSON, messageTs: late.turn.messageTs, text: 'Also mention the pricing change.' },
+        ], 'the help-improve copy reads what the fold appended');
         assert.equal(late.fold?.headId, 'head');
         assert.equal(late.fold?.received, true, 'confirmed: it ends with this reply');
         assert.equal(turnJobGate(late), 'hold');
