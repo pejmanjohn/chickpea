@@ -198,7 +198,8 @@
     "node-liblzma@2.2.0": false
   },
   "dependencies": {
-    "@better-auth/mcp": "1.7.1",
+    "@better-auth/cimd": "1.7.14",
+    "@better-auth/mcp": "1.7.14",
     "@cfworker/json-schema": "4.1.1",
     "@cloudflare/sandbox": "0.12.14",
     "@composio/core": "0.17.0",
@@ -210,7 +211,7 @@
     "@modelcontextprotocol/server": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@slack/web-api": "^8.0.0",
-    "better-auth": "1.7.1",
+    "better-auth": "1.7.14",
     "croner": "10.0.1",
     "hono": "^4.13.13",
     "image-in-browser": "3.6.0",

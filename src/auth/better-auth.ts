@@ -1,11 +1,17 @@
 import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin } from 'better-auth';
 import { APIError, createAuthEndpoint, createAuthMiddleware } from 'better-auth/api';
 import { setSessionCookie } from 'better-auth/cookies';
-import { createLocalAccountIssuer } from 'better-auth/db';
 import { getOrgAdapter, jwt, organization } from 'better-auth/plugins';
 import { mcp } from '@better-auth/mcp';
 
-import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
+import {
+  admitPendingMcpOAuthClient,
+  DEFAULT_MCP_REGISTRATION_POLICY,
+  type BetterAuthDatabaseBackend,
+  type McpRegistrationPolicy,
+  type McpRegistrationThrottle,
+} from './better-auth-backend.ts';
+import { clientMetadataDiscovery, type ClientMetadataFetch } from './mcp-client-metadata.ts';
 import {
   MCP_OAUTH_SCOPES,
   mcpResourceForOrigin,
@@ -78,6 +84,29 @@ export interface CreateBetterAuthInput {
    * still check.
    */
   mayIssueTokens?: (betterAuthUserId: string) => Promise<boolean>;
+  /** Bounds both dynamic registrations and clients first seen by their metadata document. */
+  mcpRegistrationPolicy?: Partial<McpRegistrationPolicy>;
+  /**
+   * The per-source limit on new MCP clients: a response refusing this
+   * request, or undefined to let it through. A dynamic registration and the
+   * first sign-in of a client known by its metadata document pass it; a
+   * stored client never does. Without one only the pending bound applies.
+   */
+  throttleRegistration?: McpRegistrationThrottle;
+  /**
+   * Signs Claude in by its client ID metadata document. Off unless
+   * serveHostedSharedAuth turns it on: a self-hosted deployment registers
+   * every client dynamically.
+   */
+  clientMetadataDocuments?: boolean;
+  /** Fetches client metadata documents; the guarded public-HTTPS transport by default. */
+  fetchClientMetadataResource?: ClientMetadataFetch;
+}
+
+/** Better Auth's public client read, which the `mcp()` plugin cast hides from `auth.api`'s type. */
+export interface PublicOAuthClientApi {
+  getOAuthClientPublic(input: { query: { client_id: string }; headers: Headers }):
+    Promise<{ client_name?: unknown } | null | undefined>;
 }
 
 export function createBetterAuth(input: CreateBetterAuthInput) {
@@ -132,6 +161,19 @@ export function createBetterAuthOptions(input: CreateBetterAuthInput): BetterAut
   return createOptions({ ...input, baseURL }, Object.freeze({}));
 }
 
+/**
+ * Better Auth 1.7.0 to 1.7.2 keyed an account by `issuer`; 1.7.3 returned to
+ * `providerId` and stopped writing it. Chickpea's databases keep the column,
+ * NOT NULL under a unique index, so Chickpea writes the value 1.7.1 wrote for
+ * its one provider, and an older release still reads every row.
+ */
+const ACCOUNT_ISSUER_FIELD = {
+  type: 'string',
+  required: true,
+  input: false,
+  defaultValue: `local:${BETTER_AUTH_SLACK_PROVIDER_ID}`,
+} as const;
+
 const JWT_OPTIONS = {
   jwks: {
     keyPairConfig: { alg: 'EdDSA', crv: 'Ed25519' },
@@ -157,6 +199,7 @@ function createOptions(
       disableSignUp: true,
     },
     account: {
+      additionalFields: { issuer: ACCOUNT_ISSUER_FIELD },
       accountLinking: {
         enabled: false,
         disableImplicitLinking: true,
@@ -213,7 +256,13 @@ function createOptions(
     },
     rateLimit: { enabled: false },
     advanced: {
-      database: { generateId: 'uuid', ...(input.backend.nativeJoins ? { joins: true } : {}) },
+      database: {
+        generateId: 'uuid',
+        ...(input.backend.nativeJoins ? { joins: true } : {}),
+        // Chickpea builds Better Auth per request, and the check reads every
+        // table's shape again each time. Reviewed migrations own the schema.
+        validateSchema: false,
+      },
       ipAddress: { ipAddressHeaders: ['cf-connecting-ip', 'x-forwarded-for'] },
       useSecureCookies: secureCookies,
     },
@@ -241,6 +290,15 @@ function createOptions(
         clientRegistrationDefaultScopes: [...MCP_OAUTH_SCOPES],
         clientRegistrationAllowedScopes: [],
         clientRegistrationRequirePKCE: true,
+        ...(input.clientMetadataDocuments === true ? {
+          extensions: [{
+            clientDiscovery: clientMetadataDiscovery(input.fetchClientMetadataResource, {
+              throttle: input.throttleRegistration,
+              admitPending: () =>
+                admitPendingMcpOAuthClient(input.backend, { ...DEFAULT_MCP_REGISTRATION_POLICY, ...input.mcpRegistrationPolicy }),
+            }),
+          }],
+        } : {}),
         ...(input.mayIssueTokens ? { customTokenResponseFields: tokenIssuanceGate(input.mayIssueTokens) } : {}),
       }) as unknown as BetterAuthPlugin,
       createPrivateSessionPlugin(input.privateSeam, internalMarker),
@@ -289,7 +347,7 @@ function createPrivateSessionPlugin(
           }
 
           const account = await ctx.context.internalAdapter.findAccountByKey({
-            issuer: createLocalAccountIssuer(BETTER_AUTH_SLACK_PROVIDER_ID),
+            providerId: BETTER_AUTH_SLACK_PROVIDER_ID,
             accountId: slackAccountId(admission.slackTeamId, admission.slackUserId),
           });
           const user = await ctx.context.internalAdapter.findUserById(admission.betterAuthUserId);
@@ -321,9 +379,9 @@ async function reconcileSlackIdentity(
   input: ReconcileSlackIdentityInput,
 ): Promise<ReconciledSlackIdentity> {
   const accountId = slackAccountId(input.slackTeamId, input.slackUserId);
-  const issuer = createLocalAccountIssuer(BETTER_AUTH_SLACK_PROVIDER_ID);
+  const accountKey = { providerId: BETTER_AUTH_SLACK_PROVIDER_ID, accountId };
   const context = await auth.$context;
-  let account = await context.internalAdapter.findAccountByKey({ issuer, accountId });
+  let account = await context.internalAdapter.findAccountByKey(accountKey);
   let user = account
     ? await context.internalAdapter.findUserById(account.userId)
     : null;
@@ -349,14 +407,9 @@ async function reconcileSlackIdentity(
     }
 
     try {
-      account = await context.internalAdapter.createAccount({
-        accountId,
-        issuer,
-        providerId: BETTER_AUTH_SLACK_PROVIDER_ID,
-        userId: user.id,
-      });
+      account = await context.internalAdapter.createAccount({ ...accountKey, userId: user.id });
     } catch (error) {
-      const winner = await context.internalAdapter.findAccountByKey({ issuer, accountId });
+      const winner = await context.internalAdapter.findAccountByKey(accountKey);
       if (!input.expectedUserId) await context.internalAdapter.deleteUser(user.id).catch(() => {});
       if (!winner) throw error;
       if (input.expectedUserId && winner.userId !== input.expectedUserId) {

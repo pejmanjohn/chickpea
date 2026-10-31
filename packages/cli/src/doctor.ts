@@ -126,11 +126,15 @@ export async function runDoctor(origin: string, options: DoctorOptions = {}): Pr
       if (!scopes.includes('offline_access')) problems.push('scopes_supported lacks offline_access; clients cannot obtain refresh tokens');
       const grants = Array.isArray(body.grant_types_supported) ? body.grant_types_supported : [];
       if (!grants.includes('refresh_token')) problems.push('grant_types_supported lacks refresh_token');
+      // Optional: without it, Claude registers dynamically instead.
+      const metadataDocuments = body.client_id_metadata_document_supported === true ? ', client ID metadata documents' : '';
       checks.push({
         id: 'authorization_server',
         label: 'authorization server metadata',
         ok: problems.length === 0,
-        detail: problems.length ? problems.join('; ') : 'PKCE S256, refresh-token support, dynamic registration, token and revocation endpoints published',
+        detail: problems.length
+          ? problems.join('; ')
+          : `PKCE S256, refresh-token support, dynamic registration${metadataDocuments}, token and revocation endpoints published`,
       });
     }
   }

@@ -71,6 +71,22 @@ test('doctor rejects an authorization server that cannot issue renewable credent
   }
 });
 
+test('doctor names client ID metadata documents when advertised, and passes a server without them', async () => {
+  const detail = (report: Awaited<ReturnType<typeof runDoctor>>) =>
+    report.checks.find((check) => check.id === 'authorization_server')?.detail ?? '';
+  assert.match(detail(await runDoctor(deployments.ready.url)), /dynamic registration, client ID metadata documents,/);
+  const older = await runDoctor(deployments.ready.url, {
+    fetch: async (input, init) => {
+      const response = await fetch(input, init);
+      if (!String(input).includes('/.well-known/oauth-authorization-server/')) return response;
+      const { client_id_metadata_document_supported: _, ...metadata } = await response.json() as Record<string, unknown>;
+      return Response.json(metadata);
+    },
+  });
+  assert.equal(older.ok, true);
+  assert.doesNotMatch(detail(older), /metadata documents/);
+});
+
 test('doctor fails when the metadata names a different origin than the one used', async () => {
   const report = await runDoctor(deployments.wrongOrigin.url);
   assert.equal(report.ok, false);

@@ -1,11 +1,15 @@
-import type { DBAdapter } from 'better-auth';
-import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
+import { isAPIError } from 'better-auth/api';
+
+import { admitPendingMcpOAuthClient, DEFAULT_MCP_REGISTRATION_POLICY } from './better-auth-backend.ts';
 import {
   createBetterAuth,
   requireSupportedOrigin,
-  type BetterAuthPrivateSeam,
+  type CreateBetterAuthInput,
+  type PublicOAuthClientApi,
 } from './better-auth.ts';
+import { ACCEPTED_CLIENT_METADATA_DOCUMENTS } from './mcp-client-metadata.ts';
 import {
+  isLoopbackHost,
   MCP_OFFLINE_SCOPE,
   MCP_WORKSPACE_SCOPE,
   validatePublicMcpClientRegistration,
@@ -26,7 +30,6 @@ const PUBLIC_ROUTES = new Map<string, PublicRoute>([
   ['GET /api/auth/get-session', 'read'],
   ['GET /api/auth/jwks', 'read'],
   ['GET /api/auth/oauth2/authorize', 'read'],
-  ['POST /api/auth/oauth2/authorize', 'protocol-mutation'],
   ['POST /api/auth/oauth2/consent', 'browser-mutation'],
   ['POST /api/auth/oauth2/continue', 'browser-mutation'],
   ['POST /api/auth/oauth2/register', 'registration'],
@@ -40,30 +43,7 @@ const AUTHORIZATION_SERVER_METADATA_PATHS = new Set([
   '/api/auth/.well-known/oauth-authorization-server',
 ]);
 
-export interface BetterAuthPublicHandlerInput {
-  backend: BetterAuthDatabaseBackend;
-  baseURL: string;
-  secret: string;
-  privateSeam?: BetterAuthPrivateSeam;
-  mayIssueTokens?: (betterAuthUserId: string) => Promise<boolean>;
-  mcpRegistrationPolicy?: Partial<McpRegistrationPolicy>;
-}
-
-interface McpRegistrationPolicy {
-  maxPendingClients: number;
-  pendingClientRetentionMs: number;
-  consentWindowMs: number;
-  now: () => number;
-}
-
-const DEFAULT_MCP_REGISTRATION_POLICY: McpRegistrationPolicy = {
-  maxPendingClients: 1_000,
-  pendingClientRetentionMs: 30 * 24 * 60 * 60_000,
-  // Outlasts the 10-minute sign-in continuation and authorization code, and
-  // holds a full cap no longer than the durable limiter's 15-minute window.
-  consentWindowMs: 15 * 60_000,
-  now: () => Date.now(),
-};
+export type BetterAuthPublicHandlerInput = CreateBetterAuthInput;
 
 /**
  * A deny-by-default public boundary around Better Auth. Setup, enrollment,
@@ -86,6 +66,8 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
     }
 
     if (route === 'registration') {
+      const throttled = await input.throttleRegistration?.(request);
+      if (throttled) return throttled;
       const validation = await validateRegistrationRequest(request);
       if (typeof validation === 'string') {
         emitManagementMetric('oauth.dcr', { stage: 'validation', outcome: 'denied', reason: validation });
@@ -93,23 +75,20 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
         return Response.json({ error: validation }, { status: tooLarge ? 413 : 400 });
       }
       request = validation;
-      const { maxPendingClients, pendingClientRetentionMs, consentWindowMs, now } = registrationPolicy;
-      const at = now();
-      const pending = await input.backend.prunePendingMcpOAuthClients({
-        expiredBefore: new Date(at - pendingClientRetentionMs),
-        evictableBefore: new Date(at - consentWindowMs),
-        keep: Math.max(0, maxPendingClients - 1),
-      });
-      if (pending >= maxPendingClients) {
+      if (!(await admitPendingMcpOAuthClient(input.backend, registrationPolicy))) {
         emitManagementMetric('oauth.dcr', { stage: 'quota', outcome: 'denied', reason: 'http_429' });
         return Response.json({ error: 'registration_quota_exceeded' }, { status: 429 });
       }
     }
 
     auth ??= createBetterAuth({ ...input, baseURL });
-    const context = await auth.$context;
-    if (route === 'read' && url.pathname === '/api/auth/oauth2/authorize') {
-      request = await withOfflineAccessForRenewableClient(request, context.adapter);
+    if (url.pathname === '/api/auth/oauth2/authorize') {
+      const documentClient = input.clientMetadataDocuments === true &&
+        ACCEPTED_CLIENT_METADATA_DOCUMENTS.has(url.searchParams.get('client_id') ?? '');
+      if (documentClient) request = withConsentOnLoopback(request);
+      const renewable = await withOfflineAccessForRenewableClient(request, auth, documentClient);
+      if (renewable instanceof Response) return renewable;
+      request = renewable;
     }
     const response = await auth.handler(request);
     if (route === 'registration') {
@@ -153,6 +132,21 @@ async function revocationResponse(response: Response): Promise<Response> {
     : response;
 }
 
+/**
+ * A native client's published client ID and a loopback redirect say nothing
+ * about which app on the machine is asking (RFC 8252 section 8.6), so a
+ * client known by its metadata document that redirects to loopback is asked
+ * for consent every time. Asking with prompt=none gets an error, not a code.
+ */
+function withConsentOnLoopback(request: Request): Request {
+  const url = new URL(request.url);
+  const redirect = URL.parse(url.searchParams.get('redirect_uri') ?? '');
+  if (!redirect || !isLoopbackHost(redirect.hostname)) return request;
+  const prompts = new Set(url.searchParams.get('prompt')?.split(' ').filter(Boolean)).add('consent');
+  url.searchParams.set('prompt', [...prompts].join(' '));
+  return new Request(url, request);
+}
+
 interface RegisteredClient {
   grantTypes?: string[] | null;
   scopes?: string[] | null;
@@ -164,15 +158,36 @@ interface RegisteredClient {
  * follows them asks for the workspace scope alone, and Better Auth issues a
  * refresh token only for offline_access.
  */
-async function withOfflineAccessForRenewableClient(request: Request, adapter: DBAdapter): Promise<Request> {
+async function withOfflineAccessForRenewableClient(
+  request: Request,
+  auth: ReturnType<typeof createBetterAuth>,
+  documentClient: boolean,
+): Promise<Request | Response> {
   const url = new URL(request.url);
   const scopes = url.searchParams.get('scope')?.split(/\s+/).filter(Boolean) ?? [];
   const clientId = url.searchParams.get('client_id');
   if (!clientId || !scopes.includes(MCP_WORKSPACE_SCOPE) || scopes.includes(MCP_OFFLINE_SCOPE)) return request;
-  const client = await adapter.findOne<RegisteredClient>({
+  const { adapter } = await auth.$context;
+  const stored = () => adapter.findOne<RegisteredClient>({
     model: 'oauthClient',
     where: [{ field: 'clientId', value: clientId }],
   });
+  let client = await stored();
+  if (!client && documentClient) {
+    // Better Auth stores a client known by its metadata document inside the
+    // authorization, after this check, so store it first. A refused document
+    // answers here, since asking again within a second is refused for pacing.
+    // Signed out, this read needs a session; the authorization resumed after
+    // sign-in finds the client.
+    const refusal = await (auth.api as unknown as PublicOAuthClientApi)
+      .getOAuthClientPublic({ query: { client_id: clientId }, headers: request.headers })
+      .then(() => undefined, (error: unknown) => error);
+    if (refusal !== undefined && !isAPIError(refusal)) throw refusal;
+    if (refusal && refusal.status !== 'UNAUTHORIZED') {
+      return Response.json(refusal.body, { status: refusal.statusCode, headers: refusal.headers });
+    }
+    client = await stored();
+  }
   if (!client || !registeredForRenewal(client)) return request;
   url.searchParams.set('scope', [...scopes, MCP_OFFLINE_SCOPE].join(' '));
   return new Request(url, request);
