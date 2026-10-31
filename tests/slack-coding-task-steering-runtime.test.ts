@@ -325,6 +325,32 @@ test('a message sent during a coding job reaches the Agent at a pause, and the j
       }
     });
 
+    await t.test('a pause right after another tool step still reads the message at its boundary', async () => {
+      scenario = openScenario();
+      worker = {
+        dispatched: [], aborted: 0, observations: 0,
+        onObserve: async (n) => {
+          if (n === 1) { await sleep(25); scenario.arrive('late', LATE); return undefined; }
+          await sleep(10);
+          return JOB_DONE;
+        },
+      };
+      try {
+        // The steer finds no task: a quick step whose boundary checked just before the job starts.
+        const { result } = await run([
+          call('workspace_task_steer', { guidance: 'Nothing yet.' }),
+          startTask(),
+          call('workspace_task_resume', {}),
+          answer('Opened https://github.com/acme/app/pull/9.'),
+        ]);
+        assert.equal(result.text, 'Opened https://github.com/acme/app/pull/9.');
+        assert.deepEqual(requests.map((request) => request.late), [0, 0, 1, 1], 'the paused wait\'s boundary reads it');
+        assert.equal(responseState.pauses, 1);
+      } finally {
+        scenario.close();
+      }
+    });
+
     await t.test('a reply that would end with the job unobserved is sent back to wait for it', async () => {
       scenario = openScenario();
       worker = {

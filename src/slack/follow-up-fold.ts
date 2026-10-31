@@ -111,7 +111,11 @@ export function useSlackFollowUpFold(input: {
   const waiting = async () => {
     const { cycles } = current();
     if (!framing || cycles >= MAX_TURN_FOLD_CYCLES || input.blocked()) return false;
-    return ((await claim('turn', cycles, true))?.messages.length ?? 0) > 0;
+    if (!(await claim('turn', cycles, true))?.messages.length) return false;
+    // The step returns for these messages, so its boundary pulls whenever the last check was.
+    const boundary = toolBoundaries.getStore();
+    if (boundary) delete boundary.pulledAt;
+    return true;
   };
 
   // Nothing to confirm here when the gate is shut: the would-stop call does.
