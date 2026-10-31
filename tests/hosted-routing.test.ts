@@ -989,7 +989,7 @@ test('Claude, and an app no list names, sign in to a hosted installation by thei
     }));
     const callback: URL = new URL(/url=([^"]+)"/.exec(await allowed.text())![1]!.replaceAll('&amp;', '&'));
     assert.equal(`${callback.origin}${callback.pathname}`, callbackUrl);
-    assert.equal(throttleChecks, checked + 2, 'and so does its approval');
+    assert.equal(throttleChecks, checked + 1, 'its approval does not: Better Auth writes the consent before it looks the client up');
     const exchanged = await hosted.token({
       grant_type: 'authorization_code', client_id: clientId, code: callback.searchParams.get('code')!,
       code_verifier: verifier, redirect_uri: callbackUrl, resource: RESOURCE,
