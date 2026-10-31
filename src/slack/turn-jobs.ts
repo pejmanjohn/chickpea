@@ -1135,7 +1135,13 @@ export class TurnJobStoreLogic {
     ).flatMap((row) => {
       const record = parseTurnFoldRecord(row.fold_json);
       if (!record) return [];
-      const turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
+      let turn: NormalizedSlackTurn;
+      try {
+        turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
+      } catch {
+        // An unreadable member must not block its head's tombstone.
+        return [];
+      }
       return [{
         record,
         message: { turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text },

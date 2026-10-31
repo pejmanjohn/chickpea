@@ -303,6 +303,25 @@ test('the head\'s delivery after a completed run settles its members with it, ðŸ
   }
 });
 
+test('a member whose stored turn is unreadable is skipped, so its head still settles', () => {
+  const s = store();
+  try {
+    enqueueAll(s, [job('head', '101'), job('second', '102'), job('third', '103')]);
+    claimed(s.turns, 'head');
+    dispatch(s.turns, job('head', '101'));
+    s.db.run("UPDATE turn_jobs SET turn_json = 'not json' WHERE id = 'third'");
+    s.turns.recordFlueSettlement('head', COMPLETED);
+    s.turns.markDelivered('head');
+
+    assert.equal(view(s.turns, 'head').status, 'done');
+    assert.equal(view(s.turns, 'second').status, 'done');
+    assert.equal(view(s.turns, 'third').status, 'recovery_required', 'the unreadable row reads as it did');
+    assert.deepEqual(s.turns.settledFoldMembers('head').map((row) => row.id), ['second']);
+  } finally {
+    s.db.close();
+  }
+});
+
 test('a head that fails, or delivers without a completed run, releases its members to run once as one turn', () => {
   for (const end of ['error', 'failed settlement', 'recovery'] as const) {
     const s = store();
