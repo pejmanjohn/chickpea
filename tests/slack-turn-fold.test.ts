@@ -7,8 +7,10 @@ import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import {
   foldableTurn,
   foldedRequestText,
+  MAX_FOLD_CYCLES,
   MAX_FOLDED_MESSAGES,
   MAX_FOLDED_TEXT_CHARS,
+  MAX_TURN_FOLD_CYCLES,
 } from '../src/slack/follow-ups.ts';
 import type { FlueSettlementCheckpointV1, TurnJob } from '../src/slack/turn-job-types.ts';
 import {
@@ -749,7 +751,7 @@ test('a confirmation that rolls back counts nothing', (t) => {
   }
 });
 
-test('a late fold needs the head\'s own dispatched instance and stops after three cycles', () => {
+test('a late fold needs the head\'s own dispatched instance', () => {
   const s = store();
   try {
     const head = job('head', '101');
@@ -771,12 +773,144 @@ test('a late fold needs the head\'s own dispatched instance and stops after thre
       [],
       'another instance',
     );
+  } finally {
+    s.db.close();
+  }
+});
+
+// ── tool-boundary folds (steering C) ──────────────────────────────────
+
+test('tool-boundary folds and the would-stop fold share one cycle sequence, each confirmed by the next call', () => {
+  const s = store();
+  try {
+    const head = job('head', '101');
+    enqueueAll(s, [head]);
+    dispatch(s.turns, head);
+    const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
+    const taken = (request: Parameters<TurnJobStoreLogic['fold']>[0]) =>
+      s.turns.fold(request).messages.map((message) => message.turnJobId);
+
+    enqueueAll(s, [job('tool_1', '102')]);
+    assert.deepEqual(taken({ phase: 'turn', headId: 'head', instanceId, received: 0, take: true }), ['tool_1']);
+    assert.deepEqual(taken({ phase: 'turn', headId: 'head', instanceId, received: 0, take: true }), ['tool_1'],
+      'a lost reply: the same call returns the same rows');
+    assert.equal(view(s.turns, 'tool_1').job!.fold?.received, false);
+    assert.equal(turnJobGate(view(s.turns, 'tool_1').job!), 'hold');
+
+    enqueueAll(s, [job('tool_2', '103')]);
+    assert.deepEqual(taken({ phase: 'turn', headId: 'head', instanceId, received: 1, take: true }), ['tool_2']);
+    assert.equal(view(s.turns, 'tool_1').job!.fold?.received, true, 'the next boundary confirms the first');
+
+    enqueueAll(s, [job('would_stop', '104')]);
+    const late = s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 2, take: true });
+    assert.deepEqual(late.messages.map((message) => message.turnJobId), ['would_stop'], 'the would-stop fold continues the count');
+    assert.equal(late.requesterText, [101, 102, 103, 104].map((n) => `Message 1800000000.000${n}`).join('\n\n'));
+    assert.deepEqual(['tool_1', 'tool_2', 'would_stop'].map((id) => view(s.turns, id).job!.fold?.cycle), [1, 2, 3]);
+    assert.equal(view(s.turns, 'tool_2').job!.fold?.received, true);
+
+    assert.deepEqual(taken({ phase: 'finish', headId: 'head', instanceId, received: 3, take: false }), []);
+    assert.equal(s.turns.readThrough('head'), '1800000000.000104');
+    s.turns.recordFlueSettlement('head', COMPLETED);
+    s.turns.markDelivered('head');
+    assert.deepEqual(['tool_1', 'tool_2', 'would_stop'].map((id) => view(s.turns, id).status), ['done', 'done', 'done']);
+  } finally {
+    s.db.close();
+  }
+});
+
+test('a tool-boundary fold takes what a would-stop fold would: the head\'s own instance, a teammate as information only', () => {
+  const s = store();
+  try {
+    const head = job('head', '101');
+    const elsewhere = job('elsewhere', '101', { threadTs: '1800000001.000100' });
+    enqueueAll(s, [head, elsewhere]);
+    dispatch(s.turns, elsewhere);
+    const otherInstance = s.turns.getFrozenRuntimePlan('elsewhere')!.instanceId;
+    enqueueAll(s, [job('teammate', '102', { userId: 'U_TEAMMATE' })]);
     assert.deepEqual(
-      s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 3, take: true }).messages,
+      s.turns.fold({ phase: 'turn', headId: 'head', instanceId: otherInstance, received: 0, take: true }).messages,
       [],
-      'past the cycle cap',
+      'not dispatched yet',
     );
-    assert.throws(() => s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 4, take: true }));
+    dispatch(s.turns, head, 'personal');
+    assert.deepEqual(
+      s.turns.fold({ phase: 'turn', headId: 'head', instanceId: otherInstance, received: 0, take: true }).messages,
+      [],
+      'another instance',
+    );
+    const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
+    const claim = s.turns.fold({ phase: 'turn', headId: 'head', instanceId, received: 0, take: true });
+    assert.deepEqual(claim.messages.map(({ turnJobId, informationOnly }) => ({ turnJobId, informationOnly })), [
+      { turnJobId: 'teammate', informationOnly: true },
+    ]);
+    assert.equal(claim.requesterText, 'Message 1800000000.000101', 'a teammate\'s words never choose connections');
+    assert.equal(view(s.turns, 'teammate').job!.fold?.role, 'informed');
+  } finally {
+    s.db.close();
+  }
+});
+
+test(`tool-boundary folds stop at ${MAX_TURN_FOLD_CYCLES} cycles; the would-stop phase keeps its own ${MAX_FOLD_CYCLES} after them`, () => {
+  const s = store();
+  try {
+    const head = job('head', '101');
+    enqueueAll(s, [head]);
+    dispatch(s.turns, head);
+    const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
+    enqueueAll(s, [job('late', '102')]);
+    const ids = (claim: { messages: { turnJobId: string }[] }) => claim.messages.map((message) => message.turnJobId);
+    const sequenceEnd = MAX_TURN_FOLD_CYCLES + MAX_FOLD_CYCLES;
+    assert.deepEqual(
+      ids(s.turns.fold({ phase: 'turn', headId: 'head', instanceId, received: MAX_TURN_FOLD_CYCLES, take: true })),
+      [],
+      'past the tool-boundary cap',
+    );
+    assert.deepEqual(
+      ids(s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: sequenceEnd, take: true })),
+      [],
+      'past the whole sequence',
+    );
+    assert.deepEqual(
+      ids(s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: sequenceEnd - 1, take: true })),
+      ['late'],
+      'a would-stop fold still has room after every tool-boundary fold',
+    );
+    for (const phase of ['turn', 'finish'] as const) {
+      assert.throws(
+        () => s.turns.fold({ phase, headId: 'head', instanceId, received: sequenceEnd + 1, take: true }),
+        /Fold cycle count is invalid/,
+        phase,
+      );
+    }
+    assert.throws(
+      () => s.turns.fold({ phase: 'later', headId: 'head', instanceId, received: 0, take: true } as never),
+      /Fold phase is invalid/,
+    );
+  } finally {
+    s.db.close();
+  }
+});
+
+test('turn_fold counts how many of the confirmed messages a tool boundary took', (t) => {
+  const records: Array<Record<string, unknown>> = [];
+  t.mock.method(console, 'info', (record: Record<string, unknown>) => {
+    if (record.event === 'turn_fold') records.push(record);
+  });
+  const s = store();
+  try {
+    const head = job('head', '101');
+    enqueueAll(s, [head]);
+    dispatch(s.turns, head);
+    const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
+    enqueueAll(s, [job('tool_1', '102'), job('tool_2', '103')]);
+    s.turns.fold({ phase: 'turn', headId: 'head', instanceId, received: 0, take: true });
+    enqueueAll(s, [job('would_stop', '104')]);
+    s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 1, take: true });
+    s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 2, take: false });
+    assert.deepEqual(records, [
+      { component: 'runtime', event: 'turn_fold', turnRef: opaqueTurnRef('head'), late: 2, turn: 2 },
+      { component: 'runtime', event: 'turn_fold', turnRef: opaqueTurnRef('head'), late: 1 },
+    ]);
   } finally {
     s.db.close();
   }
@@ -844,24 +978,27 @@ test('an information-only member keeps its 👀 for its own turn; one the frozen
   }
 });
 
-test('a late fold owes 👍 once a later claim confirms the run read it, never for information only', () => {
-  for (const access of ['shared', 'personal'] as const) {
-    const s = store();
-    try {
-      const head = job('head', '101');
-      enqueueAll(s, [head]);
-      dispatch(s.turns, head, access);
-      const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
-      enqueueAll(s, [seen('own', '102'), seen('teammate', '103', { userId: 'U_TEAMMATE' })]);
-      const late = s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 0, take: true });
-      assert.deepEqual(late.messages.map((message) => message.turnJobId), ['own', 'teammate'], access);
-      assert.equal(late.receipts, undefined, 'a late fold lists none');
-      for (const id of ['own', 'teammate']) assert.equal(receiptOf(s.turns, id)?.read, undefined, `${access} ${id} unconfirmed`);
-      s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 1, take: false });
-      assert.equal(receiptOf(s.turns, 'own')?.read, 'owed', access);
-      assert.equal(receiptOf(s.turns, 'teammate')?.read, access === 'shared' ? 'owed' : undefined, access);
-    } finally {
-      s.db.close();
+test('a late fold, at a tool boundary or before the reply, owes 👍 once a later claim confirms it, never for information only', () => {
+  for (const phase of ['turn', 'finish'] as const) {
+    for (const access of ['shared', 'personal'] as const) {
+      const label = `${phase} ${access}`;
+      const s = store();
+      try {
+        const head = job('head', '101');
+        enqueueAll(s, [head]);
+        dispatch(s.turns, head, access);
+        const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
+        enqueueAll(s, [seen('own', '102'), seen('teammate', '103', { userId: 'U_TEAMMATE' })]);
+        const late = s.turns.fold({ phase, headId: 'head', instanceId, received: 0, take: true });
+        assert.deepEqual(late.messages.map((message) => message.turnJobId), ['own', 'teammate'], label);
+        assert.equal(late.receipts, undefined, 'a late fold lists none');
+        for (const id of ['own', 'teammate']) assert.equal(receiptOf(s.turns, id)?.read, undefined, `${label} ${id} unconfirmed`);
+        s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 1, take: false });
+        assert.equal(receiptOf(s.turns, 'own')?.read, 'owed', label);
+        assert.equal(receiptOf(s.turns, 'teammate')?.read, access === 'shared' ? 'owed' : undefined, label);
+      } finally {
+        s.db.close();
+      }
     }
   }
 });
@@ -1027,6 +1164,33 @@ test('a late fold through the Node store ends with the reply: confirmed members 
     assert.equal(c.work.getRun(unread)?.status, 'admitted');
     assert.equal(c.work.getRun(runs.head)?.status, 'admitted', 'the head\'s own lifecycle settles its Run');
     assert.equal(records.length, 1, 'each late member counts once');
+  } finally {
+    c.db.close();
+  }
+});
+
+test('a tool-boundary fold through the Node store ends with the reply once the would-stop call confirms it', async () => {
+  const c = canonicalStore();
+  try {
+    const head = job('head', '101');
+    admitCanonical(c, head);
+    dispatch(c.turns, head);
+    const instanceId = c.turns.getFrozenRuntimePlan('head')!.instanceId;
+    const run = admitCanonical(c, job('during_tools', '102'));
+    const state = localSlackStateStore({
+      slack: c.slack, work: c.work, turnJobs: c.turns, presentations: c.presentations,
+    });
+    const claim = await state.foldTurn!({ phase: 'turn', headId: 'head', instanceId, received: 0, take: true });
+    assert.deepEqual(claim.messages.map((message) => message.turnJobId), ['during_tools']);
+    assert.equal(await state.turnReadThrough!('head'), '1800000000.000101', 'claimed, not yet confirmed');
+    // A streamed answer shut the gate; the would-stop call still confirms.
+    await state.foldTurn!({ phase: 'finish', headId: 'head', instanceId, received: 1, take: false });
+    assert.equal(await state.turnReadThrough!('head'), '1800000000.000102');
+    c.turns.recordFlueSettlement('head', COMPLETED);
+    await state.markTurnDelivered!('head');
+    assert.equal(view(c.turns, 'during_tools').status, 'done');
+    assert.deepEqual(c.turns.settledFoldMembers('head').map((row) => row.id), ['during_tools']);
+    assert.equal(c.work.getRun(run)?.terminalDisposition, 'superseded');
   } finally {
     c.db.close();
   }

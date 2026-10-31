@@ -8,7 +8,8 @@ rollback, and turning on Slack's Stop button for the shared Chickpea app.
 This release covers stopping, check-ins, the status line, a 👀 on messages
 posted during a run that becomes 👍 once the Agent reads them, and follow-ups: when people's messages queue in a
 thread, the turn that starts next reads them all and replies once, and a
-message sent while the Agent works joins the running reply before it posts.
+message sent while the Agent works reaches it after its current tool step, or
+at the latest before its reply posts.
 Everyone in the thread steers, except where the run uses the requester's own
 connections: there a teammate's message is information only.
 
@@ -181,8 +182,8 @@ Once a turn reads the message, Chickpea replaces the 👀 with 👍. A queued
 message that starts the next turn, or that turn takes as a follow-up, gets 👍
 when the turn starts, as soon as its plan says which messages it answers. An
 information-only message keeps its 👀 until its own turn starts. A message
-that joins the running reply keeps its 👀: the run counts it read only at the
-Agent's next check, and the reply follows that check. When the reply posts,
+that joins the running reply, after a tool step or before the reply, keeps its
+👀 until the reply posts. When the reply posts,
 Chickpea removes the 👍 or the 👀, whichever the message has, as it removed
 the 👀 before. If Slack fails partway through the swap, the removal takes off
 both. Only the thread runner and the Node relay swap; the emergency alarm
@@ -245,11 +246,24 @@ connection choice or memory lookup; only the requester's own messages do.
 
 ### Messages sent while the Agent works
 
-When the Agent is about to finish, before its reply posts, it checks whether
-the person sent more messages since the turn started. If so, it reads them
-as part of the same request, does any extra work they need, and writes one
-reply to everything. Its draft is never posted. While it reads them, the
-status line shows `Reading 2 new messages…` (only the new ones count).
+While the Agent works through tool steps (web searches, browser actions,
+connection calls), it checks for new messages after each step. A message
+sent during a step reaches the Agent before it decides what to do next, so a
+correction can change course before more of the wrong work. The Agent reads
+it as part of the same request, takes it into account, and still writes one
+reply to everything. When several tools run at once, the check waits until
+the last of them ends. A single long step, such as a coding job, is one step:
+a message sent during it is read when it ends. The Agent checks at most once
+every 3 seconds, so after a run of quick steps a message waits for the first
+step that ends 3 seconds or more after the previous check, or for the check
+before the reply.
+
+When the Agent is about to finish, before its reply posts, it checks once
+more. If the person sent more messages, it reads them, does any extra work
+they need, and writes one reply to everything. Its draft is never posted.
+
+Either way, the status line shows `Reading 2 new messages…` while it reads
+them (only the new ones count).
 
 The same rules as for follow-ups decide which messages join and which are
 information only, and a message that joins ends the same way: its 👀 goes
@@ -259,14 +273,18 @@ joined late lose their reaction when the reply posts, even when the thread's
 next turn starts at once, so a message the reply answered never shows 👀
 while that next turn runs. In addition:
 
-- The Agent checks at most three times in one run. A message that arrives
-  after the third check waits for the run to end.
-- Once the Agent starts streaming its answer into Slack, nothing more joins
-  that run. A message sent after that waits for the run to end.
+- The Agent takes new messages at most 12 times after tool steps in one run,
+  and at most three times before its reply. A message that arrives after
+  that waits for the run to end.
+- Once the Agent starts streaming its answer into Slack, or has posted a
+  question (buttons or a form) that ends its reply, nothing more joins that
+  run. A message sent after that waits for the run to end. A message sent
+  while the Agent composes a question runs as its own turn after the question
+  posts and, like any later reply in the thread, closes that question.
 - While the Agent's file delivery for the reply is unchecked, or after it
   needed a correction in this run, nothing joins.
-- If Chickpea cannot reach its state store for the check, the reply posts as
-  it is.
+- If Chickpea cannot reach its state store for a check, the Agent carries on
+  with what it has; the step's own result is unchanged.
 
 A message that waits starts the next turn when the run ends, and that turn
 takes any later messages with it.
@@ -295,7 +313,7 @@ user, channel, or workspace IDs.
 | `thread_runner_alarm` field `dropped` | Runtime event, Cloudflare runners | Turns that stopped runs' endings dropped since the runner's previous record. |
 | `turn_latency` field `folded` | Runtime event | How many follow-ups the turn read with its own message (both lanes); `foldedInformed` counts those that were information only. |
 | `turn_latency` field `read` | Runtime event | How many 👀 the turn replaced with 👍 (both lanes). |
-| `turn_fold` | Runtime event | Messages a running turn read before its reply (`late`, both lanes); `informed` counts those that were information only. |
+| `turn_fold` | Runtime event | Messages a running turn read after a tool step or before its reply (`late`, both lanes); `informed` counts those that were information only, `turn` those read after a tool step. |
 | `run_completed` with `outcome: stopped` | [Product telemetry](../../TELEMETRY.md) | An anonymous stopped-run count. |
 
 See [runtime observability](runtime-observability.md#turn-latency-and-relay-alarm-logs)
@@ -309,10 +327,11 @@ for the runtime events. Other records a stop leaves:
   `held`, `dropped` or `released` marker on each held turn. The runner keeps
   its side in `runner_stops`.
 - `turn_jobs.fold_json` holds a follow-up's fold record: the turn that took
-  it, whether at its start (`cycle` 0) or before its reply (`cycle` 1 to 3),
+  it, whether at its start (`cycle` 0) or later (`cycle` 1 to 15, one
+  sequence for the run; `toolBoundary` marks one taken after a tool step),
   whether its run read it, and `settled` once that run's reply posted. A
-  message taken before the reply counts as read once the Agent's next check
-  confirms it was shown to the model. A teammate's information-only message
+  message taken later counts as read once the Agent's next check confirms it
+  was shown to the model. A teammate's information-only message
   is `informed` and is never settled: once its turn ends it reads as
   released and runs on its own. Before the taking turn's plan is frozen, a
   teammate's message taken at its start is `informed`; the freeze decides it.
@@ -432,6 +451,10 @@ The live journeys:
 - A request, then a correction about 10 seconds later while the Agent works:
   the status line shows `Reading 1 new message…`, one reply honors the
   correction, and the correction's 👀 goes when that reply posts.
+- A request that needs several web searches, then a correction during the
+  first one: the status line shows `Reading 1 new message…` before the next
+  step, the following searches follow the correction, and one reply answers
+  both.
 - A teammate's correction in a run with only shared connections joins the
   reply. In a run with the requester's personal connection, the teammate's
   message is not acted on in that reply and gets its own reply afterwards.

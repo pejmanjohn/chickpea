@@ -41,8 +41,22 @@ export function foldedInformationOnly(
 export const MAX_FOLDED_MESSAGES = 8;
 /** The person's words one fold group may hold; a claim's first row is always taken whole. */
 export const MAX_FOLDED_TEXT_CHARS = 40_000;
-/** Late folds per response. Leftovers run as their own turn, which takes them at its start. */
+/** Would-stop folds per response. Leftovers run as their own turn, which takes them at its start. */
 export const MAX_FOLD_CYCLES = 3;
+/**
+ * Tool-boundary folds per response, counted in the same cycle sequence as
+ * the would-stop folds. Up to eight messages each, which covers a person who
+ * keeps adding to a long turn; past it their messages wait for a turn of
+ * their own, so a long run cannot keep taking on new work.
+ */
+export const MAX_TURN_FOLD_CYCLES = 12;
+/**
+ * The least time between two tool-boundary checks of one response. A state
+ * store call costs about 100 ms at the median, so a burst of quick tool
+ * steps checks once. A message the skipped boundaries would have read waits
+ * for the first boundary past the interval, or the would-stop check.
+ */
+export const TOOL_BOUNDARY_PULL_INTERVAL_MS = 3_000;
 
 const FOLDABLE_SOURCES: ReadonlySet<NormalizedSlackTurn['source']> = new Set([
   'app_mention',
@@ -122,15 +136,18 @@ const INFORMATION_ONLY_REQUESTER = /^Sent by teammates while you work with <@([^
 
 /**
  * What a late fold tells the running model: the messages that arrived while
- * it worked, those it answers first and then those it only reads, then the
- * head's current-request envelope verbatim, so tool policy still reads this
- * turn's envelope as the last one.
+ * it worked, those it answers first and then those it only reads, what to do
+ * with them at this point of its run, then the head's current-request
+ * envelope verbatim, so tool policy still reads this turn's envelope as the
+ * last one. `turn`: after a tool batch, while it still works; `finish`: it
+ * was about to reply, and that draft was held back.
  */
 export function followUpSignalBody(input: {
   messages: readonly Pick<FoldedMessage, 'userId' | 'messageTs' | 'text' | 'informationOnly'>[];
   requesterId: string;
   timezone: string;
   envelope: string;
+  phase: 'turn' | 'finish';
 }): string {
   const answered = input.messages.filter((message) => !message.informationOnly);
   const informed = input.messages.filter((message) => message.informationOnly);
@@ -141,12 +158,21 @@ export function followUpSignalBody(input: {
     ...(informed.length > 0
       ? [informationOnlyHeading(input.requesterId), frameFoldedMessages(informed, input.timezone)]
       : []),
-    answered.length > 0
-      ? 'Your draft reply has not been sent. Read these with the request above, in order, since a later message may correct or add to an earlier one. Do any extra work they need, then write your next message as the complete reply to the whole request, not only to these messages.'
-      : 'Your draft reply has not been sent. Write your next message as the complete reply to the request above.',
+    FOLLOW_UP_INSTRUCTIONS[input.phase][answered.length > 0 ? 'answered' : 'informed'],
     input.envelope,
   ].join('\n\n');
 }
+
+const FOLLOW_UP_INSTRUCTIONS = {
+  turn: {
+    answered: 'These arrived while you were working. Read them with the request above, in order, since a later message may correct or add to an earlier one, and take them into account before you continue. When you finish, your final message is still the one complete reply to the whole request, not only to these messages.',
+    informed: 'Continue with the request above. When you finish, your final message is still the complete reply to it.',
+  },
+  finish: {
+    answered: 'Your draft reply has not been sent. Read these with the request above, in order, since a later message may correct or add to an earlier one. Do any extra work they need, then write your next message as the complete reply to the whole request, not only to these messages.',
+    informed: 'Your draft reply has not been sent. Write your next message as the complete reply to the request above.',
+  },
+} as const;
 
 function followUpSignalHeading(messages: readonly Pick<FoldedMessage, 'userId'>[]): string {
   const count = messages.length;
@@ -209,7 +235,7 @@ function signalRows(block: string | undefined): Pick<FoldedMessage, 'userId' | '
  * The status while a turn reads its request's messages: at its start
  * `count` includes the head; a late fold counts only the new messages.
  */
-export function foldActivityStatus(count: number, phase: 'start' | 'finish'): TypedActivityStatus {
+export function foldActivityStatus(count: number, phase: 'start' | 'turn' | 'finish'): TypedActivityStatus {
   if (phase === 'start') return activityStatus('reading', 'Reading', `${count} messages`);
   return activityStatus('reading', 'Reading', count === 1 ? '1 new message' : `${count} new messages`);
 }

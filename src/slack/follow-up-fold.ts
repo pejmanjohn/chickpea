@@ -1,35 +1,54 @@
-import { useAgentFinish, useDelivery, usePersistentState, useResponseStart } from '@flue/runtime';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
+import {
+  useAgentFinish, useDelivery, useDispatchMessage, usePersistentState, useResponseStart,
+  type DeliveredMessageInput, type FlueExecutionInterceptor,
+} from '@flue/runtime';
+
+import { CHICKPEA_SLACK_AGENT_NAME } from '../agents/names.ts';
 import { validTurnJobId } from '../agents/turn-input.ts';
 import { currentRequestEnvelopeText, parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 import { publishActivityStatus } from './activity-publisher.ts';
-import { foldActivityStatus, followUpSignalBody, MAX_FOLD_CYCLES } from './follow-ups.ts';
-import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
+import {
+  foldActivityStatus, followUpSignalBody, MAX_FOLD_CYCLES, MAX_TURN_FOLD_CYCLES, TOOL_BOUNDARY_PULL_INTERVAL_MS,
+} from './follow-ups.ts';
+import { endsResponseWork } from './presentation-tool-policy.ts';
 import type { TurnFoldClaim, TurnFoldRequest } from './turn-job-types.ts';
 
-/** Late folds this response appended; written in the same durable batch as each append. */
+/** Late folds this response's model read; written in the same durable batch as each fold. */
 const SLACK_FOLLOW_UP_STATE_NAME = 'chickpeaSlackFollowUps';
 
 interface FollowUpFoldState {
+  /** Every late fold: the store's cycle sequence for this head. */
   cycles: number;
+  /** Of them, would-stop folds; absent where an older release wrote the state, when every fold was one. */
+  finishes?: number;
 }
 
-export type LateFoldRequest = Extract<TurnFoldRequest, { phase: 'finish' }>;
+export type LateFoldRequest = Exclude<TurnFoldRequest, { phase: 'start' }>;
 
 /**
- * Steering B: when the reply is about to settle, messages the same person
- * sent since the turn started join it before anything posts. The model reads
- * them as the same Slack turn (a `slack_message` signal with the head's
- * identity and envelope) and writes one reply to everything.
+ * Steering B and C: messages people send while the Agent works join its
+ * response. The model reads them as the same Slack turn (a `slack_message`
+ * signal with the head's identity and envelope) and writes one reply to
+ * everything.
  *
- * Every would-stop of a Slack turn asks the state store once. The gate shuts
- * after a successful `stream_answer` (answer text may already be in Slack),
- * on a v1 envelope (it streams without one), after MAX_FOLD_CYCLES, and while
- * file delivery is unchecked or repairing. A shut gate still tells the store
- * how many folds were appended, which is how a fold's messages come to end
- * with this reply: the store counts a fold as read only when a later call
- * confirms it. A failed call ends the response unfolded; any message the
- * model never saw then runs as its own turn.
+ * After each tool batch (see slackToolBoundaryFoldInterceptor) the Agent
+ * asks the state store for new messages and dispatches them into its own
+ * response, which Flue joins before the next model call, so the model can
+ * change course before more work. When the reply is about to settle, every
+ * would-stop asks once more and appends what arrived. Both count one
+ * sequence of folds, so neither takes the other's messages again.
+ *
+ * The gate shuts once the response can do no more work (a successful
+ * `stream_answer`, whose answer may already be in Slack, or a posted
+ * question, which ends the reply), on a v1 envelope (it streams without
+ * one), past each phase's cap, and while file delivery is unchecked or
+ * repairing. A shut would-stop gate still tells the store how many folds the
+ * model read, which is how a fold's messages come to end with this reply:
+ * the store counts a fold as read only when a later call confirms it. A
+ * failed call leaves the response as it was; any message the model never
+ * saw then runs as its own turn.
  */
 export function useSlackFollowUpFold(input: {
   instanceId: string;
@@ -39,46 +58,136 @@ export function useSlackFollowUpFold(input: {
   fold: (request: LateFoldRequest) => Promise<TurnFoldClaim | undefined>;
 }): void {
   const delivery = useDelivery();
-  const [, update] = usePersistentState<FollowUpFoldState>(SLACK_FOLLOW_UP_STATE_NAME, { cycles: 0 });
-  useResponseStart(() => { update({ cycles: 0 }); });
+  const dispatch = useDispatchMessage();
+  const [, update] = usePersistentState<FollowUpFoldState>(SLACK_FOLLOW_UP_STATE_NAME, { cycles: 0, finishes: 0 });
+  useResponseStart(() => { update({ cycles: 0, finishes: 0 }); });
+  const current = (): Required<FollowUpFoldState> => {
+    let state: FollowUpFoldState = { cycles: 0 };
+    update((previous) => { state = previous; return previous; });
+    return { cycles: state.cycles, finishes: state.finishes ?? state.cycles };
+  };
+  const signal = delivery.kind === 'signal' ? delivery : undefined;
+  const attributes = signal?.attributes ?? {};
+  const envelope = signal && currentRequestEnvelopeText(signal.body);
+  const requesterId = attributes.slackUserId;
+  const framing = requesterId !== undefined && envelope !== undefined &&
+    signal?.type === 'slack.message' && signal.tagName === 'slack_message' &&
+    parseCurrentRequestEnvelope(envelope)?.schemaVersion === 2
+    ? { requesterId, envelope }
+    : undefined;
+  const claim = (phase: LateFoldRequest['phase'], received: number, take: boolean) => input.fold({
+    phase,
+    headId: validTurnJobId(attributes.turnJobId),
+    instanceId: input.instanceId,
+    received,
+    take,
+  });
+  const followUp = (
+    claimed: TurnFoldClaim,
+    phase: LateFoldRequest['phase'],
+    { requesterId, envelope }: NonNullable<typeof framing>,
+  ) => ({
+    kind: 'signal',
+    type: 'slack.message',
+    tagName: 'slack_message',
+    attributes: { ...attributes, requesterText: claimed.requesterText },
+    body: followUpSignalBody({
+      messages: claimed.messages,
+      requesterId,
+      timezone: attributes.requesterTimezone ?? 'UTC',
+      envelope,
+      phase,
+    }),
+  } satisfies DeliveredMessageInput);
+
+  // Nothing to confirm here when the gate is shut: the would-stop call does.
+  bindToolBoundaryFold(async () => {
+    const { cycles, finishes } = current();
+    if (!framing || cycles >= MAX_TURN_FOLD_CYCLES || input.blocked()) return;
+    const claimed = await claim('turn', cycles, true);
+    if (!claimed?.messages.length) return;
+    // Counted only once dispatched: a lost dispatch is claimed again, never confirmed unread.
+    await dispatch(followUp(claimed, 'turn', framing));
+    update({ cycles: cycles + 1, finishes });
+    publishActivityStatus(input.instanceId, foldActivityStatus(claimed.messages.length, 'turn'));
+  });
+
   useAgentFinish(async ({ append, response, log }) => {
-    if (delivery.kind !== 'signal') return;
-    let cycles = 0;
-    update((previous) => { cycles = previous.cycles; return previous; });
-    const envelope = currentRequestEnvelopeText(delivery.body);
-    const requesterId = delivery.attributes?.slackUserId;
-    const take = cycles < MAX_FOLD_CYCLES && requesterId !== undefined &&
-      delivery.type === 'slack.message' && delivery.tagName === 'slack_message' &&
-      envelope !== undefined && parseCurrentRequestEnvelope(envelope)?.schemaVersion === 2 &&
-      !response.toolCalls.some((call) => call.tool === SLACK_STREAM_ANSWER_TOOL_NAME && !call.isError) &&
+    if (!signal) return;
+    const { cycles, finishes } = current();
+    const take = framing !== undefined && finishes < MAX_FOLD_CYCLES &&
+      !response.toolCalls.some((call) => endsResponseWork(call.tool) && !call.isError) &&
       !input.blocked();
     if (!take && cycles === 0) return;
     try {
-      const claim = await input.fold({
-        phase: 'finish',
-        headId: validTurnJobId(delivery.attributes?.turnJobId),
-        instanceId: input.instanceId,
-        received: cycles,
-        take,
-      });
-      if (!claim?.messages.length || envelope === undefined || requesterId === undefined) return;
-      const attributes = delivery.attributes ?? {};
-      append({
-        kind: 'signal',
-        type: 'slack.message',
-        tagName: 'slack_message',
-        attributes: { ...attributes, requesterText: claim.requesterText },
-        body: followUpSignalBody({
-          messages: claim.messages,
-          requesterId,
-          timezone: attributes.requesterTimezone ?? 'UTC',
-          envelope,
-        }),
-      });
-      update({ cycles: cycles + 1 });
-      publishActivityStatus(input.instanceId, foldActivityStatus(claim.messages.length, 'finish'));
+      const claimed = await claim('finish', cycles, take);
+      if (!claimed?.messages.length || !framing) return;
+      append(followUp(claimed, 'finish', framing));
+      update({ cycles: cycles + 1, finishes: finishes + 1 });
+      publishActivityStatus(input.instanceId, foldActivityStatus(claimed.messages.length, 'finish'));
     } catch {
       log.warn('Could not check for follow-up messages; the reply answers what the Agent has read');
     }
   });
 }
+
+interface ToolBoundary {
+  /** Model tool calls running now: Pi runs a batch's calls in parallel. */
+  running: number;
+  /** A successful stream_answer or posted question: the response does no more work (endsResponseWork). */
+  workEnded: boolean;
+  /** The latest render's check (useSlackFollowUpFold). */
+  pull?: () => Promise<void>;
+  /** The check in progress, so two never claim the same cycle. */
+  pulling: Promise<void>;
+  /**
+   * When the latest check started (`performance.now()`), for
+   * TOOL_BOUNDARY_PULL_INTERVAL_MS. In memory: a monotonic time means
+   * nothing in another process, and a restarted response that checks at its
+   * first boundary again costs one call.
+   */
+  pulledAt?: number;
+}
+
+const toolBoundaries = new AsyncLocalStorage<ToolBoundary>();
+
+function bindToolBoundaryFold(pull: () => Promise<void>): void {
+  const boundary = toolBoundaries.getStore();
+  if (boundary) boundary.pull = pull;
+}
+
+/**
+ * The tool boundary of a Slack response: when a model tool call ends and no
+ * other call of its batch is still running, the Agent checks for new
+ * messages before the batch's results go back to the model, unless the
+ * previous check started under TOOL_BOUNDARY_PULL_INTERVAL_MS ago. Every model
+ * tool passes through here (its own, MCP and sandbox tools alike). Mounted
+ * inside the presentation policy, so a tool that policy refuses once the
+ * response can do no more work never reaches it. The check never fails the
+ * tool.
+ */
+export const slackToolBoundaryFoldInterceptor: FlueExecutionInterceptor = async (operation, context, next) => {
+  const boundary = toolBoundaries.getStore();
+  if (operation.type === 'agent' && context.agentName === CHICKPEA_SLACK_AGENT_NAME && boundary === undefined) {
+    return toolBoundaries.run({ running: 0, workEnded: false, pulling: Promise.resolve() }, next);
+  }
+  if (operation.type !== 'tool' || boundary === undefined) return next();
+  boundary.running += 1;
+  try {
+    const result = await next();
+    if (endsResponseWork(operation.toolName)) boundary.workEnded = true;
+    return result;
+  } finally {
+    boundary.running -= 1;
+    const pull = boundary.pull;
+    const now = performance.now();
+    if (boundary.running === 0 && !boundary.workEnded && pull &&
+      (boundary.pulledAt === undefined || now - boundary.pulledAt >= TOOL_BOUNDARY_PULL_INTERVAL_MS)) {
+      boundary.pulledAt = now;
+      boundary.pulling = boundary.pulling.then(pull).catch(() => {
+        console.warn('[chickpea] Could not check for follow-up messages after a tool batch');
+      });
+      await boundary.pulling;
+    }
+  }
+};
