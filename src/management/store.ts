@@ -2107,9 +2107,9 @@ function changeSetProposalFromRow(
 }
 
 /**
- * The host's approval stamp and the requester's message hold for one turn,
- * so no stored record keeps them: the message can hold a key the person
- * pasted.
+ * The host's approval stamp and the requester's message and attachments hold
+ * for one turn, so no stored record keeps them: the message can hold a key
+ * the person pasted.
  */
 function storedOrigin(origin: ManagementOrigin): StoredManagementOrigin {
   if (origin.kind !== 'slack') return origin;
@@ -2117,6 +2117,7 @@ function storedOrigin(origin: ManagementOrigin): StoredManagementOrigin {
     approvedProposalId: _approval,
     requestText: _message,
     requestTextSource: _messageSource,
+    attachmentFileIds: _files,
     ...stored
   } = origin;
   return stored;

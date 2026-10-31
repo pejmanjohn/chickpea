@@ -152,7 +152,7 @@ function hasSkillHeader(markdown: string): boolean {
 }
 
 const NOT_A_SKILL = 'Not a skill. To upload a markdown file as a skill, give it a YAML header with a name and a description.';
-const UNSUPPORTED_FILE = 'Left out. Upload SKILL.md files, other markdown files, or .zip and .skill archives.';
+export const UNSUPPORTED_FILE = 'Not a skill file. Upload SKILL.md files, other markdown files, or .zip and .skill archives.';
 
 function uploadEntries(file: UploadedSkillFile, issues: SkillUploadIssue[]): UploadEntry[] {
   const name = basename(file.name.replace(/\\/g, '/'));

@@ -145,7 +145,7 @@ function UploadTurnProbe() {
   };
   renders.push(record);
 
-  useWorkspaceManagementSlackTools(PLAN, async () => undefined, () => false);
+  const mountSkillUpload = useWorkspaceManagementSlackTools(PLAN, async () => undefined, () => false);
   useSlackListsTools(PLAN, async () => undefined);
   useTool(createSlackPresentTableTool(() => {}));
   const presentationIntent = slackPresentationIntentCapability(parseCurrentRequestEnvelope(delivery.body));
@@ -162,6 +162,7 @@ function UploadTurnProbe() {
       };
     },
   }));
+  mountSkillUpload?.();
   return 'Answer the request.';
 }
 
@@ -196,7 +197,7 @@ let probeRun = 0;
 const toolNames = (context: Context): string[] => getCurrentTools(context.messages).map((tool) => tool.name).sort();
 const conversationOf = (context: Context | undefined) => (context?.messages ?? []).filter((message) => message.role !== 'system');
 
-test('an upload turn keeps the normal tool set', async () => {
+test('an upload turn keeps the normal tool set and adds upload_skills', async () => {
   const upload = await turnRenders(true);
   const plain = await turnRenders(false);
 
@@ -210,11 +211,13 @@ test('an upload turn keeps the normal tool set', async () => {
     { management: true, presentation: true },
   );
 
-  // The tools the model actually receives on the answer are the same ones
-  // the identical request receives with no file attached (AE11).
+  // The answer gets every tool the identical request gets with no file
+  // attached (AE11), plus the skill upload that reads this message's files.
   const uploadTools = toolNames(upload.captures.at(-1)!);
   const plainTools = toolNames(plain.captures.at(-1)!);
-  assert.deepEqual(uploadTools, plainTools);
+  assert.deepEqual(uploadTools, [...plainTools, 'upload_skills'].sort());
+  assert.match(getCurrentSystemPrompt(upload.captures.at(-1)?.messages ?? []), /call upload_skills, which reads the files itself/);
+  assert.doesNotMatch(getCurrentSystemPrompt(plain.captures.at(-1)?.messages ?? []), /upload_skills/);
   for (const tool of SLACK_LIST_TOOL_NAMES) assert.ok(uploadTools.includes(tool), `${tool} survives attachment analysis`);
   for (const name of ['manage_scheduled_work', 'update_agent_memory', 'present_table', 'stream_answer']) {
     assert.ok(uploadTools.includes(name), name);
@@ -270,6 +273,7 @@ test('the attachment analysis call reaches the provider tool-free while the uplo
     // of a retry request, and it still has its tools.
     assert.match(JSON.stringify(conversationOf(upload.captures.at(-1))), /attachmentStatus=\\"complete\\"/);
     assert.ok(toolNames(upload.captures.at(-1)!).includes('present_table'));
+    assert.ok(toolNames(upload.captures.at(-1)!).includes('upload_skills'), 'the answer after the analysis still reads the files');
   } finally {
     readableFile = undefined;
   }

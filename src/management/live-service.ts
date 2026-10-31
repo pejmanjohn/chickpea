@@ -57,6 +57,7 @@ import {
   type SlackCredentialDependencies,
 } from '../slack/installation-credentials.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
+import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
 import { ownerUserGroupToken } from '../slack/user-group-authority.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import type { SlackTransport } from '../slack/transport/types.ts';
@@ -192,6 +193,12 @@ export function createLiveWorkspaceManagementService(
         return config.getAgent(agent.id);
       }
     },
+    slackAttachments: createSlackAttachmentClient(env, {
+      settings,
+      config: config as ConfigStore,
+      identity: slackCredentials.state,
+      keyring: slackCredentials.keyring,
+    }),
     discoverSlackChannels: async (actor) => {
       const organization = await identity.getOrganization();
       if (!organization?.slackTeamId) {

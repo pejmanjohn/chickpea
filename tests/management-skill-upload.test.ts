@@ -36,7 +36,7 @@ const archive = Buffer.from(buildZip([
   { path: 'NOTES.md', content: '# Notes\nNot a skill.\n' },
 ])).toString('base64');
 
-function uploadFiles(): UploadArgs['files'] {
+function uploadFiles(): NonNullable<UploadArgs['files']> {
   return [
     { name: 'skills.zip', base64: archive },
     { name: 'SKILL.md', text: skillMarkdown('gamma', 'Third skill.') },
@@ -163,10 +163,15 @@ test('a retry with the same key returns the first receipt without writing again'
 
     const reused = await call(f, { ...args, files: [{ name: 'SKILL.md', text: skillMarkdown('delta', 'Fourth skill.') }] });
     assert.equal(reused.ok ? undefined : reused.error.code, 'idempotency_conflict');
+    const sameNames = uploadFiles().map((file) => file.name === 'SKILL.md'
+      ? { ...file, text: skillMarkdown('epsilon', 'Fifth skill, in the same file name.') }
+      : file);
+    const edited = await call(f, { ...args, files: sameNames });
+    assert.equal(edited.ok ? undefined : edited.error.code, 'idempotency_conflict', 'the same names with other bytes are another upload');
     assert.deepEqual(await f.config.getAgent(agent.id), written);
   }));
 
-test('upload_skills keeps edit authority, refuses bad input whole, and has no Slack door yet', () =>
+test('upload_skills keeps edit authority, refuses bad input whole, and takes no file content in Slack', () =>
   withManagementAdapterFixture('upload-refusals', async (f) => {
     const agent = await createFixtureAgent(f, 'agent_upload', { skills: KEPT });
     const member = (await f.identity.provisionSlackMember({
@@ -199,7 +204,7 @@ test('upload_skills keeps edit authority, refuses bad input whole, and has no Sl
       'forbidden: The Agent is not available to this member.',
       'invalid_request: skills.zip is not valid base64. No change was made.',
       'invalid_request: Upload up to 50 files at a time. No change was made.',
-      'invalid_request: Skill upload is not available in Slack. No change was made.',
+      'invalid_request: In Slack, upload_skills reads the files attached to the person\'s message and takes no file content. No change was made.',
       'invalid_request: empty.md must carry text or base64, not both. No change was made.',
       `invalid_request: ${full.name} would have 101 skills; an Agent holds at most 100. Remove some first, or upload fewer. No change was made.`,
     ]);

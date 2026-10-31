@@ -79,10 +79,13 @@ import {
   MAX_UPLOAD_CANDIDATES,
   resolveUploadedSkills,
   SkillUploadError,
+  type SkillUploadIssue,
   type SkillUploadResolution,
   type UploadedSkillCandidate,
   type UploadedSkillFile,
 } from '../config/skill-upload.ts';
+import { readSlackSkillFiles } from './slack-skill-files.ts';
+import type { GatewayAttachmentClient } from '../slack/gateway/client.ts';
 import { isValidRepositoryFullName } from '../config/github-app.ts';
 import { newAgentCredentialIncarnation } from '../config/connection-credential-binding.ts';
 import {
@@ -504,6 +507,8 @@ export interface WorkspaceManagementServiceInput {
   models?: ManagementModelSources;
   /** Test seam for the public, bounded GitHub skill resolver. */
   resolveSkillImport?: (source: ParsedSkillSource) => Promise<SkillResolution>;
+  /** Reads a Slack message's files for upload_skills: the gateway when bound, else the bot grant. */
+  slackAttachments?: GatewayAttachmentClient;
   publishAgentPresence?: (input: {
     actor: LiveManagementActor;
     agentId: string;
@@ -967,17 +972,16 @@ export class WorkspaceManagementService {
 
   /**
    * Installs skills from uploaded files: the same reader as Admin upload, then
-   * the same direct-apply, revision, undo and audit path as import_skill.
+   * the same direct-apply, revision, undo and audit path as import_skill. On
+   * Slack the files are the ones attached to the person's current message,
+   * which the host names in the origin; no tool argument can name or carry one.
    */
-  async uploadSkills(input: UploadSkillsInput): Promise<UploadSkillsResult> {
-    const actor = await this.requireLiveActor(input.context);
-    // A Slack door needs what import_skill does there: proof from the
-    // requester's message, a turn-scoped key, and a proposal on an Agent's ask.
-    if (actor.origin.kind === 'slack') {
-      throw new ManagementError('invalid_request', 'Skill upload is not available in Slack. No change was made.');
-    }
-    const { agentId } = input;
-    if (!isAgentId(agentId)) {
+  async uploadSkills(request: UploadSkillsInput): Promise<UploadSkillsResult> {
+    const actor = await this.requireLiveActor(request.context);
+    const input = { ...request, idempotencyKey: turnIdempotencyKey(actor, request.idempotencyKey) };
+    const slackFileIds = actor.origin.kind === 'slack' ? slackSkillUploadFileIds(actor, input) : undefined;
+    const agentId = input.agentId ?? (actor.origin.kind === 'slack' ? actor.origin.agentId : undefined);
+    if (!agentId || !isAgentId(agentId)) {
       throw new ManagementError('invalid_request', 'Choose a valid Agent for the skill upload.');
     }
     this.assertActingAgentScope(actor, {
@@ -987,9 +991,16 @@ export class WorkspaceManagementService {
       target: { kind: 'agent', id: agentId },
     });
     const agent = await this.requireEditableAgent(actor, agentId);
-    const resolution = await readSkillUpload(input.files);
-    const replaceExisting = input.replaceExisting === true;
-    const operationId = skillUploadOperationId(actor, input);
+    const { files, issues } = slackFileIds
+      ? await this.readSlackMessageFiles(slackFileIds)
+      : { files: decodeUploadFiles(input.files ?? []), issues: [] };
+    const resolution = await resolveSkillUpload(files, issues);
+    // A reply asking to replace them would carry no files, so Slack replaces
+    // in place, as Admin does, and the receipt offers undo.
+    const replaceExisting = slackFileIds !== undefined || input.replaceExisting === true;
+    const operationId = skillUploadOperationId(actor, {
+      agentId, idempotencyKey: input.idempotencyKey, replaceExisting, files,
+    });
     const replay = await this.stores.management.getRequest(operationId);
     if (replay) return await this.replaySkillUpload(actor, agent, replay, resolution, replaceExisting);
 
@@ -1034,6 +1045,15 @@ export class WorkspaceManagementService {
       activation: applied.activation,
       undoAvailable: outcome.undoAvailable === true,
     }, outcome.links);
+  }
+
+  private async readSlackMessageFiles(
+    fileIds: readonly string[],
+  ): Promise<{ files: UploadedSkillFile[]; issues: SkillUploadIssue[] }> {
+    if (!this.stores.slackAttachments) {
+      throw new ManagementError('invalid_request', 'Skill upload from Slack is unavailable. No change was made.');
+    }
+    return readSlackSkillFiles(this.stores.slackAttachments, fileIds);
   }
 
   /**
@@ -8658,6 +8678,7 @@ export function slackManagementOrigin(
     ...(signal.requesterTextSource ? { requestTextSource: signal.requesterTextSource } : {}),
     ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
     ...(signal.publicDocRead ? { publicDocRead: true } : {}),
+    ...(signal.attachmentFileIds ? { attachmentFileIds: signal.attachmentFileIds } : {}),
     agentId: signal.agentId,
   };
 }
@@ -9268,9 +9289,10 @@ function skillImportOperationId(
   return `management_skill_import_${digest}`;
 }
 
+/** Each file by name and SHA-256, so the ID does not canonicalize megabytes of content. */
 function skillUploadOperationId(
   actor: LiveManagementActor,
-  input: UploadSkillsInput,
+  input: { agentId: string; idempotencyKey: string; replaceExisting: boolean; files: readonly UploadedSkillFile[] },
 ): string {
   const digest = createHash('sha256').update(canonicalJson({
     organizationId: actor.organizationId,
@@ -9278,14 +9300,41 @@ function skillUploadOperationId(
     originKey: managementActorOriginKey(actor),
     agentId: input.agentId,
     idempotencyKey: input.idempotencyKey,
-    files: input.files,
-    replaceExisting: input.replaceExisting === true,
+    files: input.files.map(({ name, bytes }) => ({
+      name,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    })),
+    replaceExisting: input.replaceExisting,
   })).digest('hex').slice(0, 32);
   return `management_skill_upload_${digest}`;
 }
 
-async function readSkillUpload(files: readonly UploadSkillsFile[]): Promise<SkillUploadResolution> {
-  const uploaded = files.map((file): UploadedSkillFile => {
+/**
+ * The proof import_skill's Slack door rests on, applied to files: the
+ * person's own message to this Agent, whose attachments the host listed.
+ */
+function slackSkillUploadFileIds(actor: LiveManagementActor, input: UploadSkillsInput): readonly string[] {
+  if (startedByAgentAsk(actor)) {
+    throw new ManagementError('invalid_request', 'Skill files install only from a person\'s own message. Ask the person to attach the files to a message to this Agent. No change was made.');
+  }
+  if (input.files !== undefined) {
+    throw new ManagementError('invalid_request', 'In Slack, upload_skills reads the files attached to the person\'s message and takes no file content. No change was made.');
+  }
+  if (requestAddressedHere(actor) === undefined) {
+    throw new ManagementError('invalid_request', 'The message with the skill files must be addressed only to this Agent. No change was made.');
+  }
+  const fileIds = actor.origin.kind === 'slack' ? actor.origin.attachmentFileIds : undefined;
+  if (!fileIds?.length) {
+    throw new ManagementError('invalid_request', 'Attach up to four SKILL.md, .zip or .skill files to the message that asks to add them. For more, put them in one .zip. No change was made.');
+  }
+  return fileIds;
+}
+
+function decodeUploadFiles(files: readonly UploadSkillsFile[]): UploadedSkillFile[] {
+  if (files.length === 0) {
+    throw new ManagementError('invalid_request', 'Send at least one file to upload. No change was made.');
+  }
+  return files.map((file): UploadedSkillFile => {
     if ((file.text === undefined) === (file.base64 === undefined)) {
       throw new ManagementError('invalid_request', `${file.name} must carry text or base64, not both. No change was made.`);
     }
@@ -9296,8 +9345,16 @@ async function readSkillUpload(files: readonly UploadSkillsFile[]): Promise<Skil
       throw new ManagementError('invalid_request', `${file.name} is not valid base64. No change was made.`);
     }
   });
+}
+
+/** Files that could not be read lead the issues, so the receipt names them first. */
+async function resolveSkillUpload(
+  files: readonly UploadedSkillFile[],
+  readIssues: readonly SkillUploadIssue[],
+): Promise<SkillUploadResolution> {
   try {
-    return await resolveUploadedSkills(uploaded);
+    const resolution = await resolveUploadedSkills(files);
+    return { ...resolution, issues: [...readIssues, ...resolution.issues] };
   } catch (error) {
     if (!(error instanceof SkillUploadError)) throw error;
     throw new ManagementError('invalid_request', `${error.message} No change was made.`);

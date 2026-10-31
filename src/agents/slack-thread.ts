@@ -954,6 +954,7 @@ export function useChickpeaSlackRuntimeCapabilities(
 ): void {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   const webTurn = useWebTurn(signal?.turnJobId);
+  let mountSkillUpload: (() => void) | undefined;
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
     ...(turn ? { turn } : {}),
@@ -978,7 +979,7 @@ export function useChickpeaSlackRuntimeCapabilities(
     },
     mountBeforeTenantTools: () => {
       useAgentAuthoringSkill();
-      useWorkspaceManagementSlackTools(
+      mountSkillUpload = useWorkspaceManagementSlackTools(
         plan, resolveAgentPlatformEnv, webTurn.pageRead, writeAgentCreationTerminal, writeMemoryUpdate,
       );
       useSlackListsTools(plan, resolveAgentPlatformEnv);
@@ -992,6 +993,7 @@ export function useChickpeaSlackRuntimeCapabilities(
     },
   });
   usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
+  mountSkillUpload?.();
 }
 
 /**
