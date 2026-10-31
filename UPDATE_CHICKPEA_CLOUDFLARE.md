@@ -157,11 +157,12 @@ from 4; a message with more still reads none of its files. Editing a message
 while an Agent is answering it, or before its turn starts, now steers that
 turn: the Agent reads the new text, at its next step if it had already read
 the message, and an edit that comes too late for the reply in progress gets
-its own reply afterward. An edit of a message with files, a command, or an
-approval steers nothing. In Admin, each row under **Usage → Recent activity**
-links to the Slack message that started it, or for a routine, the message the
-routine posted. On the shared Chickpea
-Slack app the link opens in whichever Slack workspace your browser has open.
+its own reply afterward. An edit of a message with files, a command, an
+approval, or a mention of more than one Agent steers nothing, and neither does
+an edit that turns a plain message into a command. In Admin, a row under
+**Usage → Recent activity** links to the Slack message that started it, or for
+a routine, to the message the routine posted. On the shared Chickpea Slack app
+the link opens in whichever Slack workspace your browser has open.
 **Settings → MCP** now loads when you open it from another Settings page. On
 its first start the usage store adds two nullable columns for the Slack
 message and thread; the storage contract is unchanged, so `release.json`'s
