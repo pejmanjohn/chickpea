@@ -221,6 +221,22 @@ export function frontDeskFailureLine(name: string): string {
   return `I couldn't hand this to ${name}. Mention the Agent you want to try again.`;
 }
 
+/**
+ * Chickpea's reply for a hand-off, composed by the host: Agent names come
+ * from the frozen list, never from the model. Undefined when the record names
+ * an Agent outside the list.
+ */
+export function frontDeskReplyText(
+  handoff: FrontDeskHandoff,
+  plan: Pick<RuntimePlanFrontDeskV1, 'agents'>,
+): string | undefined {
+  const options = agentChoiceOptions(handoff.agentIds, plan);
+  if (options.length !== handoff.agentIds.length || options.length === 0) return undefined;
+  if (options.length > 1) return frontDeskChoiceLine(handoff.note);
+  const [only] = options;
+  return only!.agentId === CHICKPEA_AGENT_ID ? undefined : frontDeskHandoffLine(only!.name, handoff.note);
+}
+
 function withNote(line: string, note: string): string {
   return note ? `${line} ${note}` : line;
 }

@@ -196,6 +196,8 @@ import { answerScreenshotQuestion } from '../browser/look.ts';
 import { createLazyBrowserProvider, useBrowserSession } from '../browser/runtime.ts';
 import { recordBrowserSessionUsage, resolveBrowserProvider } from '../browser/settings.ts';
 import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
+import { FRONT_DESK_TOOL_NAME, SLACK_FRONT_DESK_HANDOFF_DATA_NAME } from '../slack/front-desk.ts';
+import { FrontDeskHandoffSchema, createFrontDeskTool } from '../slack/front-desk-tool.ts';
 import { browserSkillForPlan } from '../browser/skill.ts';
 import { listWebsiteLogins, websiteLoginDependencies } from '../browser/logins.ts';
 import { createSlackRequesterNotifier, type SlackRequester } from '../browser/requester.ts';
@@ -1020,6 +1022,11 @@ export function useChickpeaSlackRuntimeCapabilities(
     imageHandle: (fileId) => threadImageHandle(imageInventory, fileId),
     client: async () => createSlackAttachmentClient(await resolveAgentPlatformEnv()),
   });
+  // Last, so it is the shared prefix's final segment.
+  if (plan.frontDesk) {
+    const writeHandoff = useDataWriter(SLACK_FRONT_DESK_HANDOFF_DATA_NAME, { schema: FrontDeskHandoffSchema });
+    useTool(createFrontDeskTool({ plan: plan.frontDesk, write: writeHandoff }));
+  }
 }
 
 /**
@@ -1584,6 +1591,9 @@ function slackActivityToolDescriptors(input: {
         descriptor: genericSemanticDescriptor('connection_setup'),
       });
     }
+  }
+  if (input.plan.frontDesk) {
+    descriptors.push({ toolName: FRONT_DESK_TOOL_NAME, descriptor: semanticDescriptorForCoreTool(FRONT_DESK_TOOL_NAME) });
   }
   if (input.presentationToolName) {
     descriptors.push({

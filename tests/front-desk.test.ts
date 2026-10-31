@@ -9,11 +9,18 @@ import type {
   CustomAgentConfig,
   FrontDeskAgent,
   FrontDeskDirectory,
+  ResolvedAssignment,
 } from '../src/config/types.ts';
+import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
+import { createFrontDeskTool } from '../src/slack/front-desk-tool.ts';
+import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import {
   FRONT_DESK_MAX_BLOCK_CHARS,
   FRONT_DESK_RECENT_WINDOW_MS,
+  SLACK_FRONT_DESK_HANDOFF_DATA_NAME,
+  type FrontDeskHandoff,
   agentChoiceSpec,
   compileFrontDeskPlan,
   frontDeskChoiceLine,
@@ -307,4 +314,86 @@ test('several Agents are offered only when the message fits on the card', () => 
     userId: 'U1', messageTs: '1793440000.000100', text: 'Check my order status on the portal.',
     attachments: [{ fileId: 'F1' }], requesterTimezone: 'UTC',
   });
+});
+
+const PLAN = {
+  agents: [
+    { id: 'agent_support', name: 'Support Desk', handle: 'support-desk' },
+    { id: 'agent_research', name: 'Research', handle: 'research' },
+  ],
+  choices: true as const,
+};
+
+test('the hand-off tool records one hand-off and ends the run; a refusal records nothing', () => {
+  const written: FrontDeskHandoff[] = [];
+  const tool = createFrontDeskTool({ plan: PLAN, write: (handoff) => written.push(handoff) });
+  assert.throws(() => tool.run({ data: { agents: ['payroll'], note: 'x' } }), (error: Error) =>
+    !error.message.includes('payroll'));
+  assert.deepEqual(written, []);
+  assert.deepEqual(tool.run({ data: { agents: ['support-desk'], note: 'It has the <https://portal.example.test|portal> login.' } }),
+    { output: 'Handed off.', terminate: true });
+  assert.deepEqual(written, [{ agentIds: ['agent_support'], note: 'It has the login.' }]);
+  assert.throws(() => tool.run({ data: { agents: ['research'], note: '' } }), /already handed off/);
+  assert.equal(written.length, 1, 'one hand-off per turn');
+});
+
+function handoffReply(data: Record<string, unknown[]>, text = '') {
+  return { text, data, metadata: {}, submissionId: 'submission_front_desk', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' };
+}
+
+test('a hand-off\'s reply is the host\'s line, named from the frozen list, never the model\'s draft', () => {
+  const single = resultFromAgentReply(handoffReply({
+    [SLACK_FRONT_DESK_HANDOFF_DATA_NAME]: [{ agentIds: ['agent_support'], note: 'It has the portal login.' }],
+  }, 'Model draft that is never posted.'), null, PLAN);
+  assert.equal(single.text, 'Support Desk is taking this. It has the portal login.');
+  assert.deepEqual(single.frontDeskHandoff, { agentIds: ['agent_support'], note: 'It has the portal login.' });
+
+  const several = resultFromAgentReply(handoffReply({
+    [SLACK_FRONT_DESK_HANDOFF_DATA_NAME]: [{ agentIds: ['agent_support', CHICKPEA_AGENT_ID], note: 'Both can help.' }],
+  }), null, PLAN);
+  assert.equal(several.text, 'Which Agent should take this? Both can help.');
+
+  // A record naming an Agent outside the list, or one on a turn with no front desk, is ignored.
+  assert.throws(() => resultFromAgentReply(handoffReply({
+    [SLACK_FRONT_DESK_HANDOFF_DATA_NAME]: [{ agentIds: ['agent_hr'], note: '' }],
+  }), null, PLAN), /no result text/);
+  assert.throws(() => resultFromAgentReply(handoffReply({
+    [SLACK_FRONT_DESK_HANDOFF_DATA_NAME]: [{ agentIds: ['agent_support'], note: '' }],
+  }), null), /no result text/);
+});
+
+test('a settled hand-off survives the durable checkpoint, and a plan with a front desk parses back', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const jobs = new TurnJobStoreLogic(db);
+    const turn = rootDm();
+    const assignment: ResolvedAssignment = {
+      workspaceId: 'T1', channelId: 'D1', agentId: CHICKPEA_AGENT_ID, model: 'local-stub/chickpea',
+      runtimeContract: 'chickpea-v1', ownerIncarnation: 1,
+      frontDesk: { agents: [deskAgent('agent_support', 'Support Desk')], omitted: 0, incomplete: false },
+      agent: {
+        id: CHICKPEA_AGENT_ID, kind: 'system', revision: 1, name: 'Chickpea', instructions: 'Help.', enabled: true,
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      },
+    };
+    const id = `msg:D1:${turn.messageTs}`;
+    jobs.enqueue({ id, evtKey: 'evt:Ev1', msgKey: id, turn, assignment });
+    const frontDesk = compileFrontDeskPlan(turn, assignment)!;
+    const frozen = jobs.freezeRuntimePlan(id, compileRuntimePlanV2({ turn, assignment, instructions: 'Help.', memoryEpoch: 1, frontDesk }));
+    assert.deepEqual(frozen.runtimePlan.frontDesk, frontDesk);
+    jobs.prepareFlueDispatch(id, turn.text, { generation: id });
+    jobs.recordFlueReceipt(id, { submissionId: 'sub_1', acceptedAt: '2026-10-31T12:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' });
+    const handoff = { agentIds: ['agent_support'], note: 'It has the portal login.' };
+    jobs.recordFlueSettlement(id, {
+      outcome: 'completed', settledAt: 1,
+      result: {
+        text: 'Support Desk is taking this. It has the portal login.', frontDeskHandoff: handoff,
+        requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported',
+      },
+    });
+    const settled = jobs.getFlueSettlement(id);
+    assert.equal(settled?.outcome === 'completed' && settled.result.frontDeskHandoff?.agentIds[0], 'agent_support');
+  } finally {
+    db.close();
+  }
 });

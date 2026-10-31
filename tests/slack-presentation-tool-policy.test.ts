@@ -438,6 +438,7 @@ for (const toolName of [
   'update_agent_memory',
   'apply_workspace_changes',
   'undo_workspace_change',
+  'hand_off_to_agent',
 ]) {
   test(`a declaration after ${toolName} is refused, live and on resume`, async () => {
     for (const mode of ['early', 'final_answer'] as const) {

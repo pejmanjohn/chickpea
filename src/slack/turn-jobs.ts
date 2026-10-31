@@ -1,3 +1,4 @@
+import { parseFrontDeskHandoff } from './front-desk-tool.ts';
 import { parseSlackMemoryUpdate } from './memory-update-terminal.ts';
 import type {
   SlackInteractionProgressPatch,
@@ -3669,6 +3670,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
     'artifacts',
     'agentCreationTerminal',
     'memoryUpdate',
+    'frontDeskHandoff',
     'codingModel',
     'codingWorkerUsage',
     'requestedModel',
@@ -3683,6 +3685,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
     record.artifacts === undefined ? undefined : [record.artifacts],
   );
   const memoryUpdate = parseSlackMemoryUpdate(record.memoryUpdate === undefined ? undefined : [record.memoryUpdate]);
+  const frontDeskHandoff = record.frontDeskHandoff === undefined ? undefined : parseFrontDeskHandoff(record.frontDeskHandoff);
   const agentCreationTerminal = parseSlackAgentCreationTerminalIntents(
     record.agentCreationTerminal === undefined ? undefined : [record.agentCreationTerminal],
   )[0];
@@ -3738,6 +3741,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
     ...(artifacts.length > 0 ? { artifacts } : {}),
     ...(agentCreationTerminal ? { agentCreationTerminal } : {}),
     ...(memoryUpdate ? { memoryUpdate } : {}),
+    ...(frontDeskHandoff ? { frontDeskHandoff } : {}),
     ...(codingModel ? { codingModel } : {}),
     ...(codingWorkerUsage.length > 0 ? { codingWorkerUsage } : {}),
     requestedModel,
