@@ -160,7 +160,7 @@ export const AGENT_AUTHORING_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonly [fr
   ],
   // Slack reads attached files itself; the MCP door's upload_skills sentence is in the import_skill paragraph above.
   [
-    '\n\nWhen the person\'s current message has SKILL.md, `.zip` or `.skill` files attached and asks to add them as skills, call `upload_skills`. It reads the attached files itself, installs their instructions on this Agent or another Agent the person names, replaces a same-name skill in place, and returns a receipt with undo. Show its `presentation.slack` verbatim. Never copy an attached file\'s text into a skill or a proposal yourself.',
+    '\n\nWhen the person\'s current message has SKILL.md, `.zip` or `.skill` files attached and asks to add them as skills, call `upload_skills`. It reads the attached files itself, installs their instructions on this Agent or another Agent the person names, replaces a same-name skill only when that message asks to replace it, and returns a receipt with undo. Show its `presentation.slack` verbatim. Never copy an attached file\'s text into a skill or a proposal yourself.',
     '',
   ],
 ];

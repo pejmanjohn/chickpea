@@ -509,6 +509,8 @@ export interface WorkspaceManagementServiceInput {
   resolveSkillImport?: (source: ParsedSkillSource) => Promise<SkillResolution>;
   /** Reads a Slack message's files for upload_skills: the gateway when bound, else the bot grant. */
   slackAttachments?: GatewayAttachmentClient;
+  /** Judges whether a person's own Slack message asks to replace the named skills; runs on `model`. */
+  judgeSkillReplacement?: (input: { text: string; skillNames: string[]; model: string }) => Promise<boolean>;
   publishAgentPresence?: (input: {
     actor: LiveManagementActor;
     agentId: string;
@@ -995,16 +997,20 @@ export class WorkspaceManagementService {
       ? await this.readSlackMessageFiles(slackFileIds)
       : { files: decodeUploadFiles(input.files ?? []), issues: [] };
     const resolution = await resolveSkillUpload(files, issues);
-    // A reply asking to replace them would carry no files, so Slack replaces
-    // in place, as Admin does, and the receipt offers undo.
-    const replaceExisting = slackFileIds !== undefined || input.replaceExisting === true;
+    const slack = slackFileIds !== undefined;
+    const replaceExisting = input.replaceExisting === true;
     const operationId = skillUploadOperationId(actor, {
       agentId, idempotencyKey: input.idempotencyKey, replaceExisting, files,
     });
     const replay = await this.stores.management.getRequest(operationId);
-    if (replay) return await this.replaySkillUpload(actor, agent, replay, resolution, replaceExisting);
+    // A Slack replay replans both ways rather than judging the message again.
+    if (replay) return await this.replaySkillUpload(actor, agent, replay, resolution, slack ? [false, true] : [replaceExisting], slack);
 
-    const plan = planSkillUpload(agent.skills, resolution, replaceExisting);
+    let plan = planSkillUpload(agent.skills, resolution, replaceExisting);
+    if (slack && plan.conflicts.length > 0 &&
+        await this.slackMessageAsksToReplace(actor, plan.conflicts.map(({ name }) => name))) {
+      plan = planSkillUpload(agent.skills, resolution, true);
+    }
     if (plan.skills.length > MAX_UPLOAD_CANDIDATES) {
       throw new ManagementError('invalid_request', `${agent.name} would have ${plan.skills.length} skills; an Agent holds at most ${MAX_UPLOAD_CANDIDATES}. Remove some first, or upload fewer. No change was made.`);
     }
@@ -1014,6 +1020,7 @@ export class WorkspaceManagementService {
         agent.name,
         { status: 'unchanged', undoAvailable: false },
         await this.agentResultLinks(actor, agentId),
+        slack,
       );
     }
     const itemId = 'skill-upload';
@@ -1044,7 +1051,29 @@ export class WorkspaceManagementService {
       operationId: applied.operationId,
       activation: applied.activation,
       undoAvailable: outcome.undoAvailable === true,
-    }, outcome.links);
+    }, outcome.links, slack);
+  }
+
+  /**
+   * Slack replaces an installed skill only when the person's own addressed
+   * message asks for it. A host call judges that message and the skill names,
+   * never file contents or thread history; any failure leaves the skills as
+   * they are.
+   */
+  private async slackMessageAsksToReplace(actor: LiveManagementActor, skillNames: string[]): Promise<boolean> {
+    const text = requestAddressedHere(actor);
+    if (!text || actor.origin.kind !== 'slack' || !this.stores.judgeSkillReplacement) return false;
+    const routed = actor.origin.agentId && actor.origin.agentId !== CHICKPEA_AGENT_ID
+      ? await optionalAgent(this.stores.config, actor.origin.agentId)
+      : undefined;
+    const model = routed?.model ??
+      (await this.stores.config.getWorkspaceModelDefault(actor.origin.workspaceId))?.modelId;
+    if (!model) return false;
+    try {
+      return await this.stores.judgeSkillReplacement({ text, skillNames, model });
+    } catch {
+      return false;
+    }
   }
 
   private async readSlackMessageFiles(
@@ -1065,17 +1094,20 @@ export class WorkspaceManagementService {
     agent: CustomAgentConfig,
     request: ManagementRequestRecord,
     resolution: SkillUploadResolution,
-    replaceExisting: boolean,
+    replaceOptions: boolean[],
+    slack: boolean,
   ): Promise<UploadSkillsResult> {
     const operation = request.operations[0];
     const result = request.result;
     const outcome = result?.outcomes.find(({ itemId }) => itemId === 'skill-upload');
     const undo = await this.stores.management.getUndo(request.operationId);
     const before = undo?.inverse.kind === 'update_agent' ? undo.inverse.patch.skills : undefined;
-    const plan = before ? planSkillUpload(before, resolution, replaceExisting) : undefined;
+    const plan = before && operation?.kind === 'update_agent'
+      ? replaceOptions.map((replace) => planSkillUpload(before, resolution, replace))
+        .find((candidate) => canonicalJson(candidate.skills) === canonicalJson(operation.patch.skills))
+      : undefined;
     if (request.status !== 'completed' || result?.status !== 'completed' ||
-        outcome?.disposition !== 'applied' || operation?.kind !== 'update_agent' || !plan ||
-        canonicalJson(plan.skills) !== canonicalJson(operation.patch.skills)) {
+        outcome?.disposition !== 'applied' || !plan) {
       throw new ManagementError(
         'invalid_state',
         `The skill upload receipt is unavailable (operation ${request.operationId}). Inspect the Agent before retrying.`,
@@ -1086,7 +1118,7 @@ export class WorkspaceManagementService {
       operationId: result.operationId,
       activation: result.activation,
       undoAvailable: outcome.undoAvailable === true && undo?.status === 'available',
-    }, await this.agentResultLinks(actor, agent.id));
+    }, await this.agentResultLinks(actor, agent.id), slack);
   }
 
   async manageAgentSkill(
@@ -9412,19 +9444,24 @@ function skillUploadResult(
   agentName: string,
   application: UploadSkillsApplication,
   links: ManagementResultLinks | undefined,
+  slack: boolean,
 ): UploadSkillsResult {
   const { skills: _skills, ...receipt } = plan;
+  const conflictNames = plan.conflicts.map(({ name }) => name).join(', ');
+  const them = plan.conflicts.length === 1 ? 'it' : 'them';
   return {
     ...application,
     ...receipt,
     ...(plan.conflicts.length
       ? {
-          instruction: `${plan.conflicts.map(({ name }) => name).join(', ')} already ${plan.conflicts.length === 1 ? 'exists' : 'exist'} on the Agent with different content. If the person wants ${plan.conflicts.length === 1 ? 'it' : 'them'} replaced, call upload_skills again with the same files, replaceExisting true, and a new idempotencyKey.`,
+          instruction: slack
+            ? `${conflictNames} ${plan.conflicts.length === 1 ? 'was' : 'were'} left unchanged because the person's message did not ask to replace ${them}. Show presentation.slack, which tells the person how to replace ${them}.`
+            : `${conflictNames} already ${plan.conflicts.length === 1 ? 'exists' : 'exist'} on the Agent with different content. If the person wants ${them} replaced, call upload_skills again with the same files, replaceExisting true, and a new idempotencyKey.`,
         }
       : {}),
     presentation: {
-      slack: formatSkillUploadReceipt(plan, agentName, application, escapeSlackControlCharacters),
-      markdown: formatSkillUploadReceipt(plan, agentName, application, plainPresentationText),
+      slack: formatSkillUploadReceipt(plan, agentName, application, escapeSlackControlCharacters, slack),
+      markdown: formatSkillUploadReceipt(plan, agentName, application, plainPresentationText, slack),
     },
     ...(links ? { links } : {}),
   };
@@ -9437,6 +9474,7 @@ function formatSkillUploadReceipt(
   agentName: string,
   application: UploadSkillsApplication,
   escape: PresentationEscape,
+  slack: boolean,
 ): string {
   const names = (skills: UploadedSkillReceipt[]) => skills.map(({ name }) => `\`${escape(name)}\``).join(', ');
   const count = (skills: UploadedSkillReceipt[]) => `${skills.length} skill${skills.length === 1 ? '' : 's'}`;
@@ -9452,6 +9490,10 @@ function formatSkillUploadReceipt(
   if (off.length) lines.push(`Still turned off: ${names(off)}. Turn ${off.length === 1 ? 'it' : 'them'} on in Admin to use ${off.length === 1 ? 'it' : 'them'}.`);
   if (plan.conflicts.length) {
     lines.push(`Left unchanged because ${agent} already has a skill with the same name and different content: ${names(plan.conflicts)}.`);
+    if (slack) {
+      const them = plan.conflicts.length === 1 ? 'it' : 'them';
+      lines.push(`To replace ${them}, send the files again in a message that asks to replace ${them}.`);
+    }
   }
   for (const skill of [...plan.added, ...plan.replaced]) {
     const notes = [
