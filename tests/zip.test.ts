@@ -128,3 +128,53 @@ test('the zip signature is a local file header or the end record of an empty arc
   assert.equal(isZipSignature(new Uint8Array()), false);
   assert.deepEqual(open(buildZip([])).entries, []);
 });
+
+test('a record repeated under the same name is refused, so the repeated-entry bomb inflates its kernel once', async () => {
+  const kernel = { path: 'kernel.bin', content: new Uint8Array(4 * 1024 * 1024) };
+  const bytes = buildZip([kernel, { ...kernel, localOffset: 0 }, { ...kernel, localOffset: 0 }]);
+  assert.ok(bytes.byteLength < 16 * 1024);
+  const budget = createByteBudget(64 * 1024 * 1024);
+  const archive = open(bytes, 8 * 1024 * 1024, budget);
+  assert.deepEqual(archive.refused, [
+    { path: 'kernel.bin', code: 'duplicate_path' },
+    { path: 'kernel.bin', code: 'duplicate_path' },
+  ]);
+  for (const entry of archive.entries) await entry.read();
+  assert.equal(64 * 1024 * 1024 - budget.remaining, 4 * 1024 * 1024);
+});
+
+test('an entry whose local record lies inside an earlier entry\'s data is refused; the first is kept', async () => {
+  const inner = buildZip([{ path: 'b.txt', content: 'payload', method: 0 }]).subarray(0, 30 + 'b.txt'.length + 'payload'.length);
+  const archive = open(buildZip([
+    { path: 'a.bin', content: inner, method: 0 },
+    { path: 'b.txt', content: 'payload', method: 0, localOffset: 30 + 'a.bin'.length },
+  ]));
+  assert.deepEqual(archive.entries.map(({ path }) => path), ['a.bin']);
+  assert.deepEqual(archive.refused, [{ path: 'b.txt', code: 'overlapping_data' }]);
+  assert.equal(archive.entry('b.txt'), undefined);
+  assert.deepEqual(await archive.entry('a.bin')!.read(), inner);
+});
+
+test('a duplicate path keeps the first copy and reports the rest', async () => {
+  const archive = open(buildZip([
+    { path: 'notes.md', content: 'first' },
+    { path: 'notes.md', content: 'second' },
+  ]));
+  assert.equal(text(await archive.entry('notes.md')!.read()), 'first');
+  assert.deepEqual(archive.entries.map(({ path }) => path), ['notes.md']);
+  assert.deepEqual(archive.refused, [{ path: 'notes.md', code: 'duplicate_path' }]);
+});
+
+test('a name with control characters is refused and reported printably; the macOS folder icon file is junk', () => {
+  const archive = open(buildZip([
+    { path: 'ok.txt', content: 'fine' },
+    { path: 'bad\u0007name.txt', content: 'bell' },
+    { path: 'line\nbreak.md', content: 'newline' },
+    { path: 'kit/Icon\r', content: '' },
+  ]));
+  assert.deepEqual(archive.entries.map(({ path }) => path), ['ok.txt']);
+  assert.deepEqual(archive.refused, [
+    { path: 'bad�name.txt', code: 'invalid_name' },
+    { path: 'line�break.md', code: 'invalid_name' },
+  ]);
+});

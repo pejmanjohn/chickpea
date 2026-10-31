@@ -66,8 +66,17 @@ export interface ZipEntry {
   read(): Promise<Uint8Array>;
 }
 
+/** A central-directory record left out of `entries`; the rest of the archive still reads. */
+export interface RefusedZipEntry {
+  /** Control characters are replaced, so the path is safe to show. */
+  readonly path: string;
+  readonly code: 'invalid_name' | 'duplicate_path' | 'overlapping_data';
+}
+
 export interface ZipArchive {
   readonly entries: readonly ZipEntry[];
+  /** Records refused while listing; the first of each duplicate or overlap is kept. */
+  readonly refused: readonly RefusedZipEntry[];
   entry(path: string): ZipEntry | undefined;
 }
 
@@ -77,12 +86,18 @@ export function isZipSignature(bytes: Uint8Array): boolean {
     ((bytes[2] === 0x03 && bytes[3] === 0x04) || (bytes[2] === 0x05 && bytes[3] === 0x06));
 }
 
-/** Directories and what archive tools add beside content: `__MACOSX/`, `._*`, `.DS_Store`. */
+/**
+ * Directories and what archive tools add beside content: `__MACOSX/`, `._*`,
+ * `.DS_Store`, and the `Icon\r` file macOS keeps for a custom folder icon.
+ */
 export function isZipJunkPath(path: string): boolean {
   const parts = path.split('/');
   const name = parts[parts.length - 1]!;
-  return name === '' || parts.includes('__MACOSX') || name.startsWith('._') || name === '.DS_Store';
+  return name === '' || parts.includes('__MACOSX') || name.startsWith('._') || name === '.DS_Store' ||
+    name === 'Icon\r';
 }
+
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
 
 const EOCD_SIGNATURE = 0x06054b50;
 const EOCD_SIZE = 22;
@@ -120,6 +135,9 @@ export function openZip(bytes: Uint8Array, options: ZipOpenOptions): ZipArchive 
 
   const names = new TextDecoder();
   const entries: ZipEntry[] = [];
+  const refused: RefusedZipEntry[] = [];
+  const byPath = new Map<string, ZipEntry>();
+  const claimed: Array<readonly [start: number, end: number]> = [];
   let offset = centralOffset;
   for (let index = 0; index < count; index += 1) {
     if (offset + CENTRAL_SIZE > centralOffset + centralSize || view.getUint32(offset, true) !== CENTRAL_SIGNATURE) {
@@ -142,12 +160,26 @@ export function openZip(bytes: Uint8Array, options: ZipOpenOptions): ZipArchive 
     if (flags & 1) throw new ZipArchiveError({ code: 'encrypted' });
     const path = names.decode(rawName).replace(/\\/g, '/');
     if (path.startsWith('/') || /^[a-z]:/i.test(path) || path.split('/').includes('..')) {
-      throw new ZipArchiveError({ code: 'unsafe_path', path });
+      throw new ZipArchiveError({ code: 'unsafe_path', path: printable(path) });
     }
     offset = end;
     if (skipJunk && isZipJunkPath(path)) continue;
-    const record = { rawName, method, compressedSize, size, localOffset, centralOffset };
-    entries.push({
+    // Paths are shown to people and models, so a name that could break a line or a terminal is refused.
+    if (CONTROL_CHARACTER.test(path)) {
+      refused.push({ path: printable(path), code: 'invalid_name' });
+      continue;
+    }
+    if (byPath.has(path)) {
+      refused.push({ path, code: 'duplicate_path' });
+      continue;
+    }
+    const local = localRecord(bytes, view, { rawName, method, compressedSize, centralOffset, localOffset });
+    // Many records pointing at one compressed body would inflate it once per record.
+    if (local && !claimRange(claimed, localOffset, local.dataEnd)) {
+      refused.push({ path, code: 'overlapping_data' });
+      continue;
+    }
+    const entry: ZipEntry = {
       path,
       size,
       read: async () => {
@@ -155,13 +187,18 @@ export function openZip(bytes: Uint8Array, options: ZipOpenOptions): ZipArchive 
           throw new ZipArchiveError({ code: 'entry_too_large', size, limit: options.maxEntryBytes });
         }
         if (!options.budget.take(size)) throw new ZipArchiveError({ code: 'budget_exceeded' });
-        return readEntry(bytes, view, record);
+        if (method !== 0 && method !== 8) throw new ZipArchiveError({ code: 'unsupported_method', method });
+        if (!local) throw new ZipArchiveError({ code: 'header_mismatch' });
+        const data = bytes.subarray(local.dataStart, local.dataEnd);
+        const content = method === 0 ? data : await inflateRaw(data, size);
+        if (content.byteLength !== size) throw new ZipArchiveError({ code: 'size_mismatch' });
+        return content;
       },
-    });
+    };
+    entries.push(entry);
+    byPath.set(path, entry);
   }
-  const byPath = new Map<string, ZipEntry>();
-  for (const entry of entries) if (!byPath.has(entry.path)) byPath.set(entry.path, entry);
-  return { entries, entry: (path) => byPath.get(path) };
+  return { entries, refused, entry: (path) => byPath.get(path) };
 }
 
 function findEndOfCentralDirectory(view: DataView): number {
@@ -173,32 +210,41 @@ function findEndOfCentralDirectory(view: DataView): number {
   return -1;
 }
 
-async function readEntry(bytes: Uint8Array, view: DataView, entry: {
+/** Where an entry's compressed bytes sit, when its local header agrees with the central record. */
+function localRecord(bytes: Uint8Array, view: DataView, entry: {
   rawName: Uint8Array;
   method: number;
   compressedSize: number;
-  size: number;
-  localOffset: number;
   centralOffset: number;
-}): Promise<Uint8Array> {
-  if (entry.method !== 0 && entry.method !== 8) {
-    throw new ZipArchiveError({ code: 'unsupported_method', method: entry.method });
-  }
+  localOffset: number;
+}): { dataStart: number; dataEnd: number } | undefined {
   const local = entry.localOffset;
-  if (local + LOCAL_SIZE > entry.centralOffset || view.getUint32(local, true) !== LOCAL_SIGNATURE) {
-    throw new ZipArchiveError({ code: 'header_mismatch' });
-  }
+  if (local + LOCAL_SIZE > entry.centralOffset || view.getUint32(local, true) !== LOCAL_SIGNATURE) return undefined;
   const nameLength = view.getUint16(local + 26, true);
   const dataStart = local + LOCAL_SIZE + nameLength + view.getUint16(local + 28, true);
   const localName = bytes.subarray(local + LOCAL_SIZE, local + LOCAL_SIZE + nameLength);
   if (view.getUint16(local + 8, true) !== entry.method || !sameBytes(localName, entry.rawName) ||
-      dataStart + entry.compressedSize > entry.centralOffset) {
-    throw new ZipArchiveError({ code: 'header_mismatch' });
+      dataStart + entry.compressedSize > entry.centralOffset) return undefined;
+  return { dataStart, dataEnd: dataStart + entry.compressedSize };
+}
+
+/**
+ * Claims `[start, end)` from `claimed`, a start-ordered list of disjoint
+ * ranges, and reports whether it was free. Every local record is at least a
+ * header long, so a repeated record always overlaps itself.
+ */
+function claimRange(claimed: Array<readonly [start: number, end: number]>, start: number, end: number): boolean {
+  let low = 0;
+  let high = claimed.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (claimed[middle]![0] < start) low = middle + 1;
+    else high = middle;
   }
-  const data = bytes.subarray(dataStart, dataStart + entry.compressedSize);
-  const content = entry.method === 0 ? data : await inflateRaw(data, entry.size);
-  if (content.byteLength !== entry.size) throw new ZipArchiveError({ code: 'size_mismatch' });
-  return content;
+  if (low > 0 && claimed[low - 1]![1] > start) return false;
+  if (low < claimed.length && claimed[low]![0] < end) return false;
+  claimed.splice(low, 0, [start, end]);
+  return true;
 }
 
 /** Stops as soon as the output passes `limit`, so a zip bomb costs at most one chunk more. */
@@ -232,6 +278,10 @@ async function inflateRaw(data: Uint8Array, limit: number): Promise<Uint8Array> 
     offset += chunk.byteLength;
   }
   return content;
+}
+
+function printable(path: string): string {
+  return path.replace(new RegExp(CONTROL_CHARACTER.source, 'g'), '\ufffd');
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {

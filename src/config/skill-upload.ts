@@ -16,6 +16,7 @@ import {
   createByteBudget,
   isZipJunkPath,
   openZip,
+  type RefusedZipEntry,
   ZipArchiveError,
   type ZipProblem,
 } from '../files/zip.ts';
@@ -183,6 +184,12 @@ function zipIssue(problem: ZipProblem): Omit<SkillUploadIssue, 'path'> {
   }
 }
 
+const REFUSED_ENTRY_MESSAGES: Record<RefusedZipEntry['code'], string> = {
+  invalid_name: 'This file name has control characters, so it was left out.',
+  duplicate_path: 'This archive lists this path more than once. Only the first copy was read.',
+  overlapping_data: 'This file shares its bytes with another file in the archive, so it was left out.',
+};
+
 function uploadEntries(file: UploadedSkillFile, budget: ByteBudget, issues: SkillUploadIssue[]): UploadEntry[] {
   const name = basename(file.name.replace(/\\/g, '/'));
   if (!/\.(zip|skill)$/i.test(name)) {
@@ -196,7 +203,11 @@ function uploadEntries(file: UploadedSkillFile, budget: ByteBudget, issues: Skil
     } }];
   }
   try {
-    return openZip(file.bytes, { maxEntryBytes: MAX_SKILL_DOCUMENT_BYTES, budget }).entries
+    const archive = openZip(file.bytes, { maxEntryBytes: MAX_SKILL_DOCUMENT_BYTES, budget });
+    for (const { path, code } of archive.refused) {
+      issues.push({ path: `${name}/${path}`, code: 'invalid_archive', message: REFUSED_ENTRY_MESSAGES[code] });
+    }
+    return archive.entries
       .map((entry) => ({ path: `${name}/${entry.path}`, innerPath: entry.path, archive: name, read: entry.read }));
   } catch (error) {
     if (!(error instanceof ZipArchiveError)) throw error;

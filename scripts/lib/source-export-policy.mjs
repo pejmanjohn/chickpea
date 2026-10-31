@@ -228,6 +228,7 @@ export const forbiddenBinaryExtensions = new Set([
   '.png',
   '.webp',
   '.woff2',
+  '.zip',
 ]);
 
 export const allowedBinaryFiles = new Map([
@@ -478,6 +479,14 @@ export const allowedBinaryFiles = new Map([
     exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-responsive-phone-channel.png'),
     '3ada83213e769030cab6525eb67b6b28e171dd8c9df8ba054d89435bf41d7978',
   ],
+  // Synthetic archives from real tools; regenerate with scripts/build-zip-fixtures.mjs, which prints these lines.
+  [exportPath('tests', 'fixtures', 'zip', 'ditto.zip'), '67934b4887449fbb62eef9bb4a1ee9365bd98bf8fdbae108afa636b2298d7813'],
+  [exportPath('tests', 'fixtures', 'zip', 'python-comment.zip'), 'ced772f7828f0590992acb4ef7906a0228ac7bc2ec629d97bc8682a252714cdc'],
+  [exportPath('tests', 'fixtures', 'zip', 'python-deflated.zip'), 'ffed4645c598b91cb03508dfc4a522daa86fae72cbe05c9cf9a43d251777a5f9'],
+  [exportPath('tests', 'fixtures', 'zip', 'python-empty.zip'), '8739c76e681f900923b900c9df0ef75cf421d39cabb54650c4b9ad19b6a76d85'],
+  [exportPath('tests', 'fixtures', 'zip', 'python-stored.zip'), 'fc033dc97a8cace0c1fc8f367de2d79c5d1b5507c7c94d396b2b1975e95fb426'],
+  [exportPath('tests', 'fixtures', 'zip', 'zip-encrypted.zip'), '851e8d397c8e431731b39c1ce6d18238c76ac5701f34c7757236a556bd4105eb'],
+  [exportPath('tests', 'fixtures', 'zip', 'zip-r.zip'), '055c319dfcfcaea9750c251bc44a1b4228a937d8dcbdd5ce0fd30d25e550a8e4'],
 ]);
 
 export const allowedLargeTextFiles = new Map();
