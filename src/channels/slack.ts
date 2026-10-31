@@ -3242,12 +3242,14 @@ async function processSlackEvent(
           ...(fallbackContext.length ? { handoffContext: fallbackContext } : {}),
         };
       }
+      // Routing writes the route before admission, so a redelivered root finds
+      // it: the thread is still Chickpea's own, from this very message.
       if (
-        !ask && !ui && routed.source === 'default_agent' && turn.source === 'dm_message' &&
-        installation.runtimeContract === 'chickpea-v1' && routedAssignment.agentId === CHICKPEA_AGENT_ID &&
-        frontDeskConversation(turn)
+        !ask && !ui && (routed.source === 'default_agent' || routed.source === 'thread_owner') &&
+        turn.source === 'dm_message' && installation.runtimeContract === 'chickpea-v1' &&
+        routedAssignment.agentId === CHICKPEA_AGENT_ID && frontDeskConversation(turn)
       ) {
-        // Frozen with the turn, so a retry offers the same Agents.
+        // Frozen with the turn, so the turn's own retries offer the same Agents.
         const frontDesk = await readFrontDeskDirectory({
           workspaceId: turn.workspaceId,
           channelId: turn.channelId,

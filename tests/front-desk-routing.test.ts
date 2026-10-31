@@ -129,6 +129,9 @@ export async function withFrontDeskLane(scenario: (lane: FrontDeskLane) => Promi
   }
 }
 
+const ROOT = '1793440000.000100';
+const LINE_TS = '1793440000.000200';
+
 export function directMessage(eventId: string, ts: string, text: string, patch: Record<string, unknown> = {}) {
   return {
     workspaceId: 'T1', eventId, eventTime: Math.floor(Number(ts)),
@@ -153,6 +156,25 @@ test('an untagged root DM reaches Chickpea with the Agents this person may use, 
   });
 });
 
+test('a root DM delivered again after its admission failed still reaches Chickpea with its list', async () => {
+  await withFrontDeskLane(async ({ stores, gateway, jobs, enqueueTurn }) => {
+    let failed = false;
+    const flaky = async (job: TurnJob) => {
+      if (!failed) {
+        failed = true;
+        return { ok: false as const, error: { code: 'unavailable', message: 'state store unavailable' } };
+      }
+      return enqueueTurn(job);
+    };
+    const envelope = directMessage('Ev1', ROOT, 'Check order 4821 on the portal.');
+    await assert.rejects(processGatewaySlackEnvelope(envelope, undefined, gateway, { stores, enqueueTurn: flaky as never }));
+    await processGatewaySlackEnvelope(envelope, undefined, gateway, { stores, enqueueTurn: flaky as never });
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0]!.assignment.agentId, CHICKPEA_AGENT_ID);
+    assert.equal(jobs[0]!.assignment.frontDesk?.agents.length, 2);
+  });
+});
+
 test('a mention of an Agent or of Chickpea, and a DM thread reply, get no front desk', async () => {
   await withFrontDeskLane(async ({ stores, gateway, jobs, enqueueTurn }) => {
     const deliver = (envelope: Parameters<typeof processGatewaySlackEnvelope>[0]) =>
@@ -169,9 +191,6 @@ test('a mention of an Agent or of Chickpea, and a DM thread reply, get no front 
     ]);
   });
 });
-
-const ROOT = '1793440000.000100';
-const LINE_TS = '1793440000.000200';
 
 /** Chickpea's root DM turn, delivered with its hand-off line, then the takeover the line announced. */
 async function handOff(lane: FrontDeskLane, agentId: string, agentName: string, text = 'Check order 4821 on the portal.') {
