@@ -21,6 +21,7 @@ const SLACK_ORIGIN = {
 
 function setup(patch: Partial<Pick<ManagementSetupRecord, 'action' | 'origin' | 'target'>> = {}) {
   return {
+    actorUserId: 'user_asker',
     action: 'api_credential' as ManagementSetupRecord['action'],
     origin: SLACK_ORIGIN as ManagementSetupRecord['origin'],
     target: {
@@ -44,6 +45,9 @@ test('a connection setup the Agent asked for from a Slack thread wakes it; every
     'another Agent asked for it, so this one has no turn to continue');
   const { agentId: _agentId, ...noAgentOrigin } = SLACK_ORIGIN;
   assert.equal(setupWakeAgent(setup({ origin: noAgentOrigin })), undefined, 'an origin with no routed Agent');
+  assert.deepEqual(setupWakeAgent(setup({ action: 'managed_connection' }), 'user_asker'), { agentId: 'agent_support', agentName: 'Support' });
+  assert.equal(setupWakeAgent(setup({ action: 'managed_connection' }), 'user_teammate'), undefined,
+    'a teammate who finished the link with their own account is not woken as in the asker\'s thread');
 });
 
 test('the wake\'s note says who finished which setup, how, and what to do, and never holds a key or an ID', () => {

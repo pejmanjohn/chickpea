@@ -21,25 +21,31 @@ const WAKING_ACTIONS: ReadonlySet<ManagementSetupRecord['action']> = new Set([
  * The Agent a finished setup wakes, or undefined when it posts its notice
  * instead. Only an Agent that asked for its own connection from a Slack
  * thread continues there; a setup started in Admin or over MCP, or for
- * another Agent, has no turn to continue.
+ * another Agent, has no turn to continue. Someone other than the person who
+ * asked may finish a catalog or managed link with their own account; the
+ * Agent is not woken as them in the asker's thread.
  */
 export function setupWakeAgent(
-  setup: Pick<ManagementSetupRecord, 'action' | 'origin' | 'target'>,
+  setup: Pick<ManagementSetupRecord, 'action' | 'origin' | 'target' | 'actorUserId'>,
+  completedByUserId: string = setup.actorUserId,
 ): { agentId: string; agentName: string } | undefined {
   const { origin, target } = setup;
   if (!WAKING_ACTIONS.has(setup.action) || origin.kind !== 'slack') return undefined;
   if (!target.agentId || origin.agentId !== target.agentId) return undefined;
+  if (completedByUserId !== setup.actorUserId) return undefined;
   return { agentId: target.agentId, agentName: target.agentName ?? target.targetLabel };
 }
 
+/** What Chickpea's check of a saved key found; a rejected key is never saved. */
+export type SavedKeyCheck = Exclude<ApiConnectionCheck['kind'], 'key_rejected'>;
+
 /** How the person finished the setup, as the wake's note tells the Agent. */
 export type SetupWakeCompletion =
-  | { kind: 'key'; check?: ApiConnectionCheck['kind'] }
+  | { kind: 'key'; check?: SavedKeyCheck }
   | { kind: 'sign_in'; access?: 'read' | 'write' };
 
-const KEY_CHECK_FINDING: Record<ApiConnectionCheck['kind'], string> = {
+const KEY_CHECK_FINDING: Record<SavedKeyCheck, string> = {
   ok: 'Chickpea checked it with one request, and the service accepted it.',
-  key_rejected: 'Chickpea\'s check was refused as unauthorized.',
   not_permitted: 'Chickpea\'s check got a 403, so the key may lack a permission or scope.',
   path_not_found: 'Chickpea\'s check got a 404 at the address it tried, which says nothing about the key.',
   unreachable: 'Chickpea could not reach the service to check it.',

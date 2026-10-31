@@ -259,7 +259,7 @@ import {
 import type { AuthPrincipal } from '../auth/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
 import { resolveTypedSlackManagementApproval } from '../management/slack-approval.ts';
-import type { ManagementSetupWake } from '../management/types.ts';
+import type { SetupWakeRequest } from '../management/receipts.ts';
 import { admitSlackBrowserActionReply } from '../slack/browser-action-admission.ts';
 import {
   authorizeUiResponse,
@@ -1598,6 +1598,8 @@ interface SlackAgentAskAdmission {
   targetAgentId: string;
   /** The turn's claim key and job id, when the message and Agent alone do not name it (a setup's wake). */
   messageKey?: string;
+  /** Called once the turn is durably queued, before anything else can fail. */
+  onQueued?(): void;
   /**
    * The queue of the host that admits the ask, when that host runs inside
    * the state store: it must never enqueue through its own stub.
@@ -1612,6 +1614,44 @@ interface SlackAgentAskAdmission {
 
 /** Attempts of one host-addressed turn's admission when a dependency fails transiently. */
 const AGENT_ASK_ADMISSION_ATTEMPTS = 3;
+
+/**
+ * The installation a host-addressed turn (an ask or a setup's wake) runs on,
+ * and, on a gateway installation, the gateway execution it is admitted
+ * through. Undefined when the workspace cannot run a turn now: no healthy
+ * chickpea-v1 installation, or a gateway binding that no longer matches it.
+ */
+async function hostAddressedExecution(
+  workspaceId: string,
+  stores: AppStores,
+  platformEnv: PlatformEnv | undefined,
+  provided: { gatewayClient?: GatewayDeploymentClient; enqueueTurn?: SlackEventExecution['enqueueTurn'] } | undefined,
+): Promise<{ installation: WorkspaceInstallation; execution: SlackEventExecution | undefined } | undefined> {
+  const installation = await stores.config.getWorkspaceInstallation(workspaceId);
+  if (
+    !installation || installation.health === 'revoked' ||
+    installation.runtimeContract !== 'chickpea-v1'
+  ) return undefined;
+  if (installation.transportMode !== 'gateway') return { installation, execution: undefined };
+  if (!installation.gatewayBindingId || !installation.appId || !installation.botUserId) return undefined;
+  const gateway = provided?.gatewayClient ?? createGatewayDeploymentClient(platformEnv);
+  const binding = await gateway.loadBinding();
+  if (
+    !binding || binding.bindingId !== installation.gatewayBindingId ||
+    binding.workspaceId !== workspaceId || binding.appId !== installation.appId ||
+    binding.botUserId !== installation.botUserId
+  ) return undefined;
+  return {
+    installation,
+    execution: {
+      transport: createGatewaySlackTransport(gateway),
+      client: createGatewaySlackWebClient(gateway),
+      botUserId: installation.botUserId,
+      stores,
+      ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
+    },
+  };
+}
 
 /**
  * Admit the asks one delivered Agent reply made: each Agent whose handle it
@@ -1636,11 +1676,9 @@ export async function processSlackAgentAsks(
 ): Promise<void> {
   const stores = provided?.stores ?? resolveStores(platformEnv);
   const { turn: asking } = request;
-  const installation = await stores.config.getWorkspaceInstallation(asking.workspaceId);
-  if (
-    !installation || installation.health === 'revoked' ||
-    installation.runtimeContract !== 'chickpea-v1'
-  ) return;
+  const host = await hostAddressedExecution(asking.workspaceId, stores, platformEnv, provided);
+  if (!host) return;
+  const { installation, execution } = host;
   const agents = await stores.config.listAgents();
   const from = agents.find((agent) => agent.id === request.fromAgentId);
   if (!from) return;
@@ -1677,24 +1715,6 @@ export async function processSlackAgentAsks(
   }
   if (targets.length === 0) return;
 
-  let execution: SlackEventExecution | undefined;
-  if (installation.transportMode === 'gateway') {
-    if (!installation.gatewayBindingId || !installation.appId || !installation.botUserId) return;
-    const gateway = provided?.gatewayClient ?? createGatewayDeploymentClient(platformEnv);
-    const binding = await gateway.loadBinding();
-    if (
-      !binding || binding.bindingId !== installation.gatewayBindingId ||
-      binding.workspaceId !== asking.workspaceId || binding.appId !== installation.appId ||
-      binding.botUserId !== installation.botUserId
-    ) return;
-    execution = {
-      transport: createGatewaySlackTransport(gateway),
-      client: createGatewaySlackWebClient(gateway),
-      botUserId: installation.botUserId,
-      stores,
-      ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
-    };
-  }
   const originMessageTs = agentAskOrigin(asking);
   const fromHandle = agentSlackHandle(from)?.handle;
   for (const { agent, delivery } of targets) {
@@ -1775,14 +1795,7 @@ export function setupWakeTurnJobId(channelId: string, setupOperationId: string):
  * admitted, and the setup's notice posts instead.
  */
 export async function admitSetupWake(
-  request: {
-    setupOperationId: string;
-    workspaceId: string;
-    channelId: string;
-    threadTs: string;
-    wake: ManagementSetupWake;
-    notice: string;
-  },
+  request: SetupWakeRequest,
   platformEnv?: PlatformEnv,
   provided?: {
     stores?: AppStores;
@@ -1792,36 +1805,10 @@ export async function admitSetupWake(
 ): Promise<'queued' | 'refused'> {
   const stores = provided?.stores ?? resolveStores(platformEnv);
   const { wake } = request;
+  const host = await hostAddressedExecution(request.workspaceId, stores, platformEnv, provided);
+  if (!host) return 'refused';
+  const { installation, execution } = host;
   const messageKey = setupWakeTurnJobId(request.channelId, request.setupOperationId);
-  let enqueued = false;
-  const enqueueTurn = provided?.enqueueTurn && (async (job: TurnJob) => {
-    const result = await provided.enqueueTurn!(job);
-    if (result.ok && job.id === messageKey) enqueued = true;
-    return result;
-  });
-  const installation = await stores.config.getWorkspaceInstallation(request.workspaceId);
-  if (
-    !installation || installation.health === 'revoked' ||
-    installation.runtimeContract !== 'chickpea-v1'
-  ) return 'refused';
-  let execution: SlackEventExecution | undefined;
-  if (installation.transportMode === 'gateway') {
-    if (!installation.gatewayBindingId || !installation.appId || !installation.botUserId) return 'refused';
-    const gateway = provided?.gatewayClient ?? createGatewayDeploymentClient(platformEnv);
-    const binding = await gateway.loadBinding();
-    if (
-      !binding || binding.bindingId !== installation.gatewayBindingId ||
-      binding.workspaceId !== request.workspaceId || binding.appId !== installation.appId ||
-      binding.botUserId !== installation.botUserId
-    ) return 'refused';
-    execution = {
-      transport: createGatewaySlackTransport(gateway),
-      client: createGatewaySlackWebClient(gateway),
-      botUserId: installation.botUserId,
-      stores,
-      ...(enqueueTurn ? { enqueueTurn } : {}),
-    };
-  }
   const messageTs = receiptSlackTs();
   const turn: NormalizedSlackTurn = {
     workspaceId: request.workspaceId,
@@ -1853,13 +1840,16 @@ export async function admitSetupWake(
       ...(turn.channelType ? { channel_type: turn.channelType } : {}),
     },
   };
+  let queued = false;
   await admitHostAddressedTurn(payload, platformEnv, execution, {
     turn,
     targetAgentId: wake.agentId,
     messageKey,
-    ...(enqueueTurn ? { enqueueTurn } : {}),
+    onQueued: () => { queued = true; },
+    ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
   });
-  if (enqueued) return 'queued';
+  if (queued) return 'queued';
+  // A retry finds the claims an earlier delivery of this wake took: its turn is already queued.
   const view = await stores.slackState.turnJobView?.(messageKey);
   return view !== undefined && view.status !== 'missing' ? 'queued' : 'refused';
 }
@@ -3906,6 +3896,7 @@ async function processSlackEvent(
       console.error('[chickpea] enqueue turn failed:', enqueued.error.message);
       throw new SlackDurableEnqueueError(enqueued.error.message);
     }
+    ask?.onQueued?.();
     if (midRunReceipt && slackClient) {
       await addMidRunReaction({ client: slackClient, state, jobId: job.id, receipt: midRunReceipt });
     }
@@ -3948,6 +3939,7 @@ async function processSlackEvent(
       return;
     }
   }
+  ask?.onQueued?.();
   if (midRunReceipt && slackClient) {
     await addMidRunReaction({ client: slackClient, state, jobId: msgKey, receipt: midRunReceipt });
   }

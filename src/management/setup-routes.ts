@@ -176,8 +176,7 @@ import {
   failAgentWelcomeDelivery,
   type SetupWakeRequest,
 } from './receipts.ts';
-import { setupWakeAgent, setupWakeNote, type SetupWakeCompletion } from './setup-wake.ts';
-import { admitSetupWake } from '../channels/slack.ts';
+import { setupWakeAgent, setupWakeNote, type SavedKeyCheck, type SetupWakeCompletion } from './setup-wake.ts';
 import type { ManagementStore } from './store.ts';
 import {
   ManagementError,
@@ -220,8 +219,11 @@ interface ManagementSetupRoutesOptions {
   randomCapability?: () => string;
   validateProviderKey?: typeof validateProviderApiKey;
   deliverReceipt?: typeof deliverManagementReceiptToSlack;
-  /** Test seam for waking the Agent that asked for a finished setup; production admits it in Slack. */
-  wakeAgent?: (request: SetupWakeRequest) => Promise<'queued' | 'refused'>;
+  /**
+   * Wakes the Agent that asked for a finished setup (admitSetupWake, which
+   * the app passes). Without it every finished setup posts its notice.
+   */
+  wakeAgent?: (request: SetupWakeRequest, platformEnv?: PlatformEnv) => Promise<'queued' | 'refused'>;
   managedConnectionProviders?: ManagedConnectionProviderRegistry;
   managedConnectorCatalog?: ManagedConnectorCatalog;
   /** Test seams for native connector setup without live provider traffic. */
@@ -2450,7 +2452,7 @@ async function completeFormAction(
   dependencies: SetupDependencies,
   options: ManagementSetupRoutesOptions,
   at: number,
-): Promise<{ connector?: string; accountLabel?: string; check?: ApiConnectionCheck['kind'] }> {
+): Promise<{ connector?: string; accountLabel?: string; check?: SavedKeyCheck }> {
   await assertExactTarget(setup, dependencies);
   if (setup.action === 'provider_credential') {
     const providerId = setup.target.provider as ProviderKeyId;
@@ -2572,19 +2574,22 @@ async function completeFormAction(
   throw new Error(`wrong_action:${setup.action}:${at}`);
 }
 
+/** What finishing a setup produced, as each setup kind's route reports it. */
+interface SetupCompletion {
+  connector?: string;
+  accountLabel?: string;
+  connectionAccountId?: string;
+  completedByUserId?: string;
+  completedByMembershipId?: string;
+  ownerKind?: 'member' | 'team';
+  accessLane?: 'read' | 'write';
+  check?: SavedKeyCheck;
+}
+
 async function finishSetup(
   c: Context,
   setup: ManagementSetupRecord,
-  result: {
-    connector?: string;
-    accountLabel?: string;
-    connectionAccountId?: string;
-    completedByUserId?: string;
-    completedByMembershipId?: string;
-    ownerKind?: 'member' | 'team';
-    accessLane?: 'read' | 'write';
-    check?: ApiConnectionCheck['kind'];
-  },
+  result: SetupCompletion,
   dependencies: SetupDependencies,
   options: ManagementSetupRoutesOptions,
   at: number,
@@ -2650,6 +2655,7 @@ async function finishSetup(
       }
     : undefined;
   const work = getWorkStore(dependencies.platformEnv);
+  const { wakeAgent } = options;
   await drainManagementReceiptOutbox({
     management: dependencies.management,
     onDeliveredSettled: (record) => completeSettledAgentWelcomeHandoff(
@@ -2658,7 +2664,7 @@ async function finishSetup(
       dependencies.management,
     ),
     onTerminalFailure: (record) => failAgentWelcomeDelivery(record, presentation, work),
-    wake: options.wakeAgent ?? ((request) => admitSetupWake(request, dependencies.platformEnv)),
+    ...(wakeAgent ? { wake: (request: SetupWakeRequest) => wakeAgent(request, dependencies.platformEnv) } : {}),
     deliver: (record) => (options.deliverReceipt ?? deliverManagementReceiptToSlack)(record, {
       identity: dependencies.identity,
       ...(dependencies.platformEnv ? { env: dependencies.platformEnv } : {}),
@@ -2683,12 +2689,12 @@ async function finishSetup(
  */
 async function setupWakeFor(
   setup: ManagementSetupRecord,
-  result: Parameters<typeof finishSetup>[2],
+  result: SetupCompletion,
   dependencies: SetupDependencies,
 ): Promise<ManagementSetupWake | undefined> {
-  const agent = setupWakeAgent(setup);
+  const agent = setupWakeAgent(setup, result.completedByUserId);
   if (!agent || setup.origin.kind !== 'slack') return undefined;
-  const person = await dependencies.identity.getUser(result.completedByUserId ?? setup.actorUserId);
+  const person = await dependencies.identity.getUser(setup.actorUserId);
   if (!person || person.slackTeamId !== setup.origin.workspaceId) return undefined;
   const keyed = setup.action === 'api_credential' || setup.action === 'mcp_credentials';
   // An MCP key is saved only once the server answered with it.
@@ -2712,7 +2718,7 @@ async function setupWakeFor(
 /** The access a sign-in granted: the managed lane, or what an API connection's methods allow. */
 async function signInAccess(
   setup: ManagementSetupRecord,
-  result: Parameters<typeof finishSetup>[2],
+  result: SetupCompletion,
   dependencies: SetupDependencies,
 ): Promise<{ access?: 'read' | 'write' }> {
   const lane = result.accessLane ?? setup.target.accessLane;
@@ -3187,7 +3193,7 @@ async function terminalPage(
       title: 'Setup complete',
       surface: 'setup-complete',
       content: setup.action === 'api_credential' || setup.action === 'mcp_credentials'
-        ? `<h1>Key saved</h1><p>${saved ? `${escapeHtml(saved.finding)} ` : ''}${next ? `${next} ` : ''}You can close this window.</p>`
+        ? `<h1>Key saved</h1><p>${saved ? `${escapeHtml(saved.finding)} ` : ''}${next} You can close this window.</p>`
         : `<h1>Connected</h1><p>${agent ? `${escapeHtml(agent)} is continuing in Slack.` : 'This setup is complete.'} You can close this window.</p>`,
     }));
   }

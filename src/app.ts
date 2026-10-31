@@ -57,7 +57,7 @@ import {
   observeResponseMetadata,
   responseMetadataInterceptor,
 } from './usage/response-metadata.ts';
-import { answerSlackRecoveryEventsProof, channel, serveAgentAppSlackDelivery } from './channels/slack.ts';
+import { admitSetupWake, answerSlackRecoveryEventsProof, channel, serveAgentAppSlackDelivery } from './channels/slack.ts';
 import { SLACK_EVENTS_PATH } from './slack/app-manifest.ts';
 import {
   bootstrapRuntimeProviders,
@@ -253,6 +253,7 @@ app.route('/', createBetterAuthRuntimeRoutes());
 app.route('/', createMcpOAuthRuntimeRoutes({ productTelemetry: productTelemetryForRequest }));
 app.route('/', createManagementSetupRoutes({
   productTelemetry: productTelemetryForRequest,
+  wakeAgent: admitSetupWake,
 }));
 app.route('/', createConnectRoutes());
 app.route('/', createAdminRoutes({

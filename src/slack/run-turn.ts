@@ -638,7 +638,7 @@ async function runTurnAttempt(
         ? { onPublicDelivery: options.onPublicMessageDelivered }
         : {}),
     });
-    await repairPresenter.deliverFinal(WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT, 'plain_text', 'error');
+    await repairPresenter.deliverFinal(failureFinalText(turn, WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT), 'plain_text', 'error');
     await options.onDelivered?.();
     await repairPresenter.markCanonicalPresentationFinalized();
     return;
@@ -1545,7 +1545,7 @@ async function runTurnAttempt(
       // status cleared, and a terminal delivery outcome.
       logMemoryLeaseFailure('before_run', assignment.agentId, preparedMemory.quarantined === true);
       await statusTurn.prepareFinal();
-      await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
+      await presenter.deliverFinal(failureFinalText(turn, AGENT_FAILURE_TEXT), 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
       return;
@@ -1556,7 +1556,7 @@ async function runTurnAttempt(
       presenter.setFooterModelRepair();
       agentViewPresentation?.setFooterModelRepair();
       await statusTurn.prepareFinal();
-      await presenter.deliverFinal(modelRepairText, 'plain_text', 'error');
+      await presenter.deliverFinal(failureFinalText(turn, modelRepairText), 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
       return;
@@ -2167,8 +2167,7 @@ async function runTurnAttempt(
           ),
         ));
         await statusTurn.prepareFinal();
-        // A setup's wake that fails before it replies still tells the person the setup finished.
-        const shownText = turn.setupWake ? `${turn.setupWake.notice}\n\n${failureText}` : failureText;
+        const shownText = failureFinalText(turn, failureText);
         // A plain_text final drops its text when it carries blocks; this text has no markdown syntax.
         await (components
           ? presenter.deliverFinal(shownText, 'markdown', 'error', { components })
@@ -2338,7 +2337,7 @@ async function runTurnAttempt(
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
       logMemoryLeaseFailure('after_run', assignment.agentId, preparedMemory.quarantined === true);
       await statusTurn.prepareFinal();
-      await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
+      await presenter.deliverFinal(failureFinalText(turn, AGENT_FAILURE_TEXT), 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
       return;
@@ -3198,7 +3197,12 @@ export async function deliverAgentFailureFinal(
       ? { onPublicDelivery: onPublicMessageDelivered }
       : {}),
   });
-  await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text');
+  await presenter.deliverFinal(failureFinalText(turn, AGENT_FAILURE_TEXT), 'plain_text');
+}
+
+/** A setup's wake that fails before it replies still tells the person the setup finished. */
+function failureFinalText(turn: Pick<NormalizedSlackTurn, 'setupWake'>, text: string): string {
+  return turn.setupWake ? `${turn.setupWake.notice}\n\n${text}` : text;
 }
 
 function resolvedAssignmentModel(assignment: ResolvedAssignment): string | undefined {
