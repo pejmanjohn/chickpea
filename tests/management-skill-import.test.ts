@@ -718,7 +718,7 @@ function heldForPerson(result: Awaited<ReturnType<typeof invokeSlackWorkspaceMan
   const value = result.result as { status?: string; proposalId?: string; instruction?: string; presentation?: { slack?: string } };
   assert.equal(value.status, 'pending');
   assert.match(value.proposalId ?? '', /^changeset_/);
-  assert.match(value.instruction ?? '', /Another Agent's ask started this turn/);
+  assert.match(value.instruction ?? '', /Another Agent's ask or Chickpea's setup note started this turn, not a message from the person/);
   assert.ok(value.presentation?.slack?.includes(source), 'the preview names the exact source');
 }
 

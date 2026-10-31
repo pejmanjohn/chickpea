@@ -3194,10 +3194,16 @@ async function terminalPage(
   return unavailablePage(c);
 }
 
-/** Whether this finished setup's receipt woke its Agent instead of posting (wakeInsteadOfReceipt). */
+/**
+ * Whether this finished setup's Agent is continuing in Slack: its receipt
+ * carries a wake that is queued, or still on its way because another drain
+ * holds it, and has not fallen back to posting the notice.
+ */
 async function wakeQueued(setup: ManagementSetupRecord, management: ManagementStore): Promise<boolean> {
   const outbox = await management.getOutboxForOperation(setup.setupOperationId).catch(() => undefined);
-  return outbox?.status === 'delivered' && outbox.deliveryRef?.startsWith('wake:') === true;
+  if (outbox?.destination.kind !== 'thread' || !outbox.destination.wake) return false;
+  if (outbox.status === 'failed') return false;
+  return outbox.status !== 'delivered' || outbox.deliveryRef?.startsWith('wake:') === true;
 }
 
 function managedUnavailablePage(c: Context): Response {

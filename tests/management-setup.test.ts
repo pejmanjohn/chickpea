@@ -1822,7 +1822,11 @@ test('a setup link needs authority over its connection account, not only the Age
 });
 
 /** A pending team Tasks connection, the service that issues its setup links, and routes whose check uses the stubbed network. */
-async function tasksSetupStores(suffix: string, routes: Partial<Parameters<typeof createManagementSetupRoutes>[0]> = {}) {
+async function tasksSetupStores(
+  suffix: string,
+  routes: Partial<Parameters<typeof createManagementSetupRoutes>[0]> = {},
+  routeManagement: (management: SqliteManagementStore) => SqliteManagementStore = (management) => management,
+) {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix });
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
@@ -1848,7 +1852,7 @@ async function tasksSetupStores(suffix: string, routes: Partial<Parameters<typeo
     randomId: () => suffix, randomCapability: () => CAPABILITY,
   });
   const app = createManagementSetupRoutes({
-    management,
+    management: routeManagement(management),
     config,
     settings,
     identity,
@@ -1957,7 +1961,7 @@ test('a key the setup page saves where the API answers 404 is never called accep
 });
 
 /** The Tasks setup link the Agent issued from its Slack thread with the owner, claimed in the browser. */
-async function slackTasksSetup(suffix: string, wake: 'queued' | 'refused') {
+async function slackTasksSetup(suffix: string, wake: 'queued' | 'refused', options: { otherDrainHolds?: boolean } = {}) {
   const woken: SetupWakeRequest[] = [];
   const posted: string[] = [];
   const f = await tasksSetupStores(suffix, {
@@ -1969,7 +1973,7 @@ async function slackTasksSetup(suffix: string, wake: 'queued' | 'refused') {
       posted.push(formatManagementSetupReceipt(record.receipt));
       return { deliveryRef: 'slack:D1:1' };
     },
-  });
+  }, options.otherDrainHolds ? drainHeldElsewhere : undefined);
   const result = await f.service.applyWorkspaceChanges({
     context: {
       userId: f.owner.user.id,
@@ -2016,6 +2020,34 @@ test('a key saved on the page wakes the Agent that asked from Slack, and the pag
       headers: { cookie: f.cookie },
     })).text();
     assert.match(done, /<h1>Key saved<\/h1><p>Tasks helper is testing it in Slack now\. You can close this window\.<\/p>/);
+  } finally {
+    f.close();
+  }
+});
+
+/** The setup route's own drain finds nothing due, as when the state store's alarm drain already holds the receipt. */
+function drainHeldElsewhere(management: SqliteManagementStore): SqliteManagementStore {
+  return new Proxy(management, {
+    get(target, property) {
+      if (property === 'claimDueOutbox') return async () => [];
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+test('the page says the Agent is testing the key while another drain still holds its wake', async () => {
+  const f = await slackTasksSetup('setup-wake-held', 'queued', { otherDrainHolds: true });
+  try {
+    const saved = await withConnectionNetwork(() => Response.json({ tasks: [] }), async () =>
+      postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-wake-held' }));
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.deepEqual([f.woken.length, f.posted.length], [0, 0], 'this drain left the receipt to the one holding it');
+    assert.equal((await f.management.getOutboxForOperation(f.setupId))?.status, 'pending');
+    const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`, {
+      headers: { cookie: f.cookie },
+    })).text();
+    assert.match(done, /Tasks helper is testing it in Slack now\./);
   } finally {
     f.close();
   }
