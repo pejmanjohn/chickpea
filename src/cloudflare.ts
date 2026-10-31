@@ -258,7 +258,7 @@ import {
   oauthResumeTurnJobId,
   type PendingTurnJob,
 } from './slack/turn-jobs.ts';
-import type { TurnSteeringDecision } from './slack/turn-job-types.ts';
+import type { TurnFoldRequest, TurnSteeringDecision } from './slack/turn-job-types.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { buildTagStateStores, type TagStateStores } from './state/tag-state-stores.ts';
 import type {
@@ -2105,6 +2105,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       stores.work,
       stores.presentations,
     ) ?? null);
+  }
+
+  /**
+   * The alarm executor runs rows it listed before the turns ahead of them
+   * ran, so a follow-up its head took could run again: only a head its
+   * thread runner runs, which reads each row again first, takes any.
+   */
+  async slackTurnFold(request: TurnFoldRequest): ReturnType<TagStateRpc['slackTurnFold']> {
+    return this.call((stores) => stores.turnJobs.runnerView(request.headId).job?.executor === 'runner'
+      ? stores.turnJobs.fold(request)
+      : { messages: [], requesterText: '' });
   }
 
   async slackTurnDirectThreads(

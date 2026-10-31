@@ -1205,7 +1205,7 @@ async function runTurnAttempt(
   // A reattached turn showed it on its first attempt.
   const readingFollowUps = followUps.length > 0 && !options.flueDispatch?.dispatchReceipt;
   if (readingFollowUps) {
-    await statusTurn.setStatus(foldActivityStatus(followUps.length + 1)).catch(() => false);
+    await statusTurn.setStatus(foldActivityStatus(followUps.length + 1, 'start')).catch(() => false);
   }
   // Once per turn; a failed hint never holds back the task's progress.
   let codingTaskSignalled = false;

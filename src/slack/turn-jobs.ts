@@ -66,6 +66,7 @@ import {
 import { parseAdmittedSlackListIds, serializeAdmittedSlackListIds } from './lists/admission.ts';
 import { renderSlackMarkdownActionLink, slackActionLink } from './message-format.ts';
 import { parseTurnEnvelope, type TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
+import { emitTurnFold } from '../observability/runtime-latency.ts';
 import {
   foldableTurn,
   foldedRequestText,
@@ -1040,10 +1041,13 @@ export class TurnJobStoreLogic {
       return { messages: [], requesterText: '' };
     }
     if (request.phase === 'finish') {
+      let confirmed = 0;
       for (const { record, message } of this.foldMembers(threadKey, request.headId)) {
         if (record.cycle < 1 || record.cycle > request.received || record.received) continue;
         this.writeFoldRecord(message.turnJobId, { ...record, received: true });
+        confirmed += 1;
       }
+      if (confirmed > 0) emitTurnFold({ turnJobId: request.headId, late: confirmed });
     }
     const cycle = request.phase === 'start' ? 0 : request.received + 1;
     const claim = (messages: FoldedMessage[]): TurnFoldClaim => ({
