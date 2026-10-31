@@ -5,9 +5,13 @@ import { processGatewaySlackEnvelope, processSlackFrontDeskHandoff } from '../sr
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
+import type { WebClient } from '@slack/web-api';
+import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
+import { runTurn } from '../src/slack/run-turn.ts';
+import { uiSurfaceId } from '../src/slack/ui/surface.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
-import { frontDeskFailureLine } from '../src/slack/front-desk.ts';
+import { compileFrontDeskPlan, frontDeskFailureLine, type SlackFrontDeskHandoffRequest } from '../src/slack/front-desk.ts';
 import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
 import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
@@ -273,5 +277,80 @@ test('the takeover seed hands over only Chickpea\'s own root DM thread', async (
     assert.equal(retried.kind === 'routed' && retried.route.ownerIncarnation, 2, 'the retry does not hand over twice');
     // Once Support Desk owns it, no other Agent may take it from the front desk.
     assert.equal((await route(chickpea.turn, 'agent_research')).kind, 'denied');
+  });
+});
+
+/** Chickpea's root DM turn run to delivery, with the model's run replaced by a hand-off to `agentIds`. */
+async function runHandOff(lane: FrontDeskLane, agentIds: string[], note: string) {
+  const { stores, gateway, jobs, enqueueTurn } = lane;
+  await processGatewaySlackEnvelope(directMessage('Ev1', ROOT, 'Check order 4821 on the portal.'),
+    undefined, gateway, { stores, enqueueTurn });
+  const chickpea = jobs[0]!;
+  // A model that needs no provider key, so the run reaches delivery.
+  const assignment = {
+    ...chickpea.assignment, model: 'local-stub/chickpea',
+    modelAttribution: { source: 'pinned' as const, providerId: 'local-stub' },
+  };
+  const frontDesk = compileFrontDeskPlan(chickpea.turn, assignment)!;
+  const runtimePlan = compileRuntimePlanV2({ turn: chickpea.turn, assignment, instructions: 'Help.', memoryEpoch: 1, frontDesk });
+  const posts: Array<Record<string, unknown>> = [];
+  const client = {
+    conversations: { replies: async () => ({ ok: true, messages: [] }), history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      postMessage: async (args: Record<string, unknown>) => {
+        posts.push(args);
+        return { ok: true, ts: `1793440000.00090${posts.length}` };
+      },
+      update: async () => ({ ok: true }),
+    },
+  } as unknown as WebClient;
+  const handoffs: SlackFrontDeskHandoffRequest[] = [];
+  let delivered: string | undefined;
+  await runTurn(chickpea.turn, assignment, undefined, {
+    client, usageRecordingEnabled: false, turnId: chickpea.id,
+    runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) },
+    appStores: stores,
+    agentPrompt: async (input) => {
+      const { resultFromAgentReply } = await import('../src/slack/flue-dispatch.ts');
+      return resultFromAgentReply({
+        text: 'A draft the person never sees.', metadata: {},
+        data: { slackFrontDeskHandoff: [{ agentIds, note }] }, submissionId: 'sub_front_desk', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      }, null, input.runtimePlan?.frontDesk);
+    },
+    onFrontDeskHandoff: (request) => { handoffs.push(request); },
+    onDelivered: (outcome) => { delivered = outcome; },
+  });
+  return { chickpea, posts, handoffs, delivered };
+}
+
+test('Chickpea\'s hand-off to one Agent posts the host\'s line, then asks the executor to admit the takeover', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { chickpea, posts, handoffs, delivered } = await runHandOff(lane, ['agent_support'], 'It has the portal login.');
+    assert.equal(delivered, 'succeeded');
+    assert.deepEqual(posts.map(({ text }) => text), ['Support Desk is taking this. It has the portal login.']);
+    assert.ok(!JSON.stringify(posts).includes('A draft the person never sees.'));
+    assert.deepEqual(handoffs, [{
+      turn: chickpea.turn, fromAgentId: CHICKPEA_AGENT_ID, agentId: 'agent_support', agentName: 'Support Desk',
+    }]);
+  });
+});
+
+test('a hand-off to several Agents posts the line and a card with one button per Agent, and admits nothing yet', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { chickpea, posts, handoffs } = await runHandOff(lane, ['agent_support', 'agent_research', CHICKPEA_AGENT_ID], 'Both can look.');
+    assert.deepEqual(handoffs, []);
+    assert.equal(posts[0]?.text, 'Which Agent should take this? Both can look.');
+    const card = posts[1] as { text: string; blocks: Array<{ elements?: Array<{ text: { text: string } }> }> };
+    assert.equal(card.text, 'Which Agent should take this?');
+    assert.deepEqual(card.blocks.flatMap((block) => block.elements ?? []).map((button) => button.text.text),
+      ['Support Desk', 'Research', 'Chickpea']);
+    const surface = await lane.stores.slackState.executeUiSurface!({
+      kind: 'get_surface', id: uiSurfaceId(chickpea.id, 'host-agent-choice'),
+    });
+    const record = surface.kind === 'surface' ? surface.surface : null;
+    assert.equal(record?.namespace, 'host');
+    assert.equal(record?.requesterUserId, 'U1');
+    assert.ok(record && record.expiresAt - record.createdAt <= 24 * 60 * 60_000, 'the card lives a day');
+    assert.deepEqual(record?.spec.kind === 'agent_choice' && record.spec.origin.text, 'Check order 4821 on the portal.');
   });
 });

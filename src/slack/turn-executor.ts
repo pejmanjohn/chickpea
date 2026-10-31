@@ -39,6 +39,7 @@ import {
 } from './presentation-repair.ts';
 import { recordDeliveredSlackAgentMessage } from './public-context.ts';
 import { createAgentAskCollector, type SlackAgentAskDispatcher } from './agent-asks.ts';
+import type { SlackFrontDeskHandoffDispatcher, SlackFrontDeskHandoffRequest } from './front-desk.ts';
 import {
   deliverAgentFailureFinal,
   sanitizeError,
@@ -126,6 +127,11 @@ export interface TurnExecutionPorts {
    * absent only where a caller admits none.
    */
   dispatchAgentAsks?: SlackAgentAskDispatcher;
+  /**
+   * Admits the takeover a delivered front-desk hand-off asked for, the way
+   * `dispatchAgentAsks` admits asks; absent only where a caller admits none.
+   */
+  dispatchFrontDeskHandoff?: SlackFrontDeskHandoffDispatcher;
   presentationState: SlackPresentationStatePort;
   /**
    * Local stores when the turn runs inside the shared state store. A thread
@@ -262,6 +268,7 @@ export async function executeTurnJob(
   });
   let delivered = false;
   let deferredTerminal = false;
+  let frontDeskHandoff: SlackFrontDeskHandoffRequest | undefined;
   let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
     ? slackAgentThreadKey(job.turn, job.assignment)
     : undefined;
@@ -553,6 +560,7 @@ export async function executeTurnJob(
         agentAsks.note(delivery);
         return recordDeliveredSlackAgentMessage(ports.config, job.turn, job.assignment, delivery);
       },
+      onFrontDeskHandoff: (request) => { frontDeskHandoff = request; },
       ...(replayText === undefined ? {} : { replayText }),
       stopEnding: stoppedEnding,
       ...(job.previousStop ? { previousStop: job.previousStop } : {}),
@@ -589,6 +597,11 @@ export async function executeTurnJob(
         // Teammates this reply asked, once it is recorded as delivered. A
         // stopped run, or one someone tried to stop, asks nobody.
         if (outcome !== 'stopped' && !raced) await agentAsks.flush(outcome);
+        if (outcome === 'succeeded' && !raced && frontDeskHandoff && ports.dispatchFrontDeskHandoff) {
+          await ports.dispatchFrontDeskHandoff(frontDeskHandoff).catch((error: unknown) => {
+            console.warn('[chickpea] front desk hand-off dispatch failed:', error instanceof Error ? error.name : 'unknown');
+          });
+        }
         const scope = installationScopeOf(ports.env);
         if (outcome === 'succeeded' && scope) await reportInteractiveDelivery(scope.installationId);
       },

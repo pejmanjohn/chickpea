@@ -306,6 +306,7 @@ import {
   processGatewayViewSubmission,
   processGatewaySlackEnvelope,
   processSlackAgentAsks,
+  processSlackFrontDeskHandoff,
 } from './channels/slack.ts';
 import {
   SlackGatewaySession,
@@ -325,6 +326,7 @@ import { createLiveWorkspaceManagementService } from './management/live-service.
 import { createPlatformProductTelemetry } from './telemetry/platform.ts';
 import type { ProductTelemetryCapture } from './telemetry/client.ts';
 import type { SlackAgentAskDispatcher } from './slack/agent-asks.ts';
+import type { SlackFrontDeskHandoffDispatcher } from './slack/front-desk.ts';
 import { createWaitUntilTelemetryLifecycle } from './telemetry/runtime.ts';
 import {
   invokeSlackWorkspaceManagementTool,
@@ -2552,6 +2554,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       resolveInstallation,
       sandboxes: sandboxTurnReaders(this.env as PlatformEnv),
       dispatchAgentAsks: localAgentAskDispatcher(stores, this.env as PlatformEnv, productTelemetry),
+      dispatchFrontDeskHandoff: localFrontDeskDispatcher(stores, this.env as PlatformEnv, productTelemetry),
       runTurn,
     };
     const runJob = (
@@ -3385,18 +3388,38 @@ function localAgentAskDispatcher(
   productTelemetry: ProductTelemetryCapture,
 ): SlackAgentAskDispatcher {
   return async (request) => {
-    const appStores = localGatewayAppStores(stores);
-    let gatewayClient: GatewayDeploymentClient | undefined;
-    try {
-      gatewayClient = localGatewayDeploymentClient(appStores, platformEnv, productTelemetry);
-    } catch {
-      // A direct installation needs no gateway client.
-    }
-    await processSlackAgentAsks(request, platformEnv, {
-      stores: appStores,
-      ...(gatewayClient ? { gatewayClient } : {}),
-      enqueueTurn: localTurnEnqueue(stores),
-    });
+    await processSlackAgentAsks(request, platformEnv, localHostAddressedExecution(stores, platformEnv, productTelemetry));
+  };
+}
+
+/** A front-desk hand-off made by a turn this state store runs itself, admitted like its asks. */
+function localFrontDeskDispatcher(
+  stores: TagStateStores,
+  platformEnv: PlatformEnv,
+  productTelemetry: ProductTelemetryCapture,
+): SlackFrontDeskHandoffDispatcher {
+  return async (request) => {
+    await processSlackFrontDeskHandoff(request, platformEnv, localHostAddressedExecution(stores, platformEnv, productTelemetry));
+  };
+}
+
+/** The local stores and queue a host-addressed turn is admitted against inside this state store. */
+function localHostAddressedExecution(
+  stores: TagStateStores,
+  platformEnv: PlatformEnv,
+  productTelemetry: ProductTelemetryCapture,
+) {
+  const appStores = localGatewayAppStores(stores);
+  let gatewayClient: GatewayDeploymentClient | undefined;
+  try {
+    gatewayClient = localGatewayDeploymentClient(appStores, platformEnv, productTelemetry);
+  } catch {
+    // A direct installation needs no gateway client.
+  }
+  return {
+    stores: appStores,
+    ...(gatewayClient ? { gatewayClient } : {}),
+    enqueueTurn: localTurnEnqueue(stores),
   };
 }
 

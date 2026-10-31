@@ -247,6 +247,7 @@ for (const withPendingTurn of [false, true]) {
       localGatewayAppStores: () => ({ config: {} }),
       localUsageStore: () => ({}),
       localAgentAskDispatcher: () => undefined,
+      localFrontDeskDispatcher: () => undefined,
       localSlackPresentationState: () => ({}),
       runTurn: async () => { throw new Error('the preflight fails first'); },
       drainGatewayInbox: async () => false,
@@ -454,6 +455,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     installationScopeOf,
     reportInteractiveDelivery,
     localAgentAskDispatcher: () => undefined,
+    localFrontDeskDispatcher: () => undefined,
     earliestDefined: (...values: Array<number | undefined>) =>
       values.filter((value): value is number => value !== undefined).sort((a, b) => a - b)[0],
     runTurn: async (_turn: unknown, _assignment: unknown, _env: unknown, options: {

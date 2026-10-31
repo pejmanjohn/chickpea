@@ -166,6 +166,7 @@ import {
 import { normalizeSlackTurn, parseSlackMessageEdit } from '../slack/turn-normalization.ts';
 import {
   registerNodeAgentAskDispatcher,
+  registerNodeFrontDeskDispatcher,
   wakeNodeTurnRelay,
 } from '../slack/node-turn-relay.ts';
 import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
@@ -1590,8 +1591,9 @@ export async function processGatewaySlackEnvelope(
   return 'accepted';
 }
 
-// The Node relay runs turns in this process and admits their asks here.
+// The Node relay runs turns in this process and admits their asks and hand-offs here.
 registerNodeAgentAskDispatcher(processSlackAgentAsks);
+registerNodeFrontDeskDispatcher((request, env) => processSlackFrontDeskHandoff(request, env));
 
 /**
  * A turn the host addressed to an Agent: an ask, one of the later Agents a

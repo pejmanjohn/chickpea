@@ -596,6 +596,35 @@ test('a delivered Channel reply hands its teammate asks over after the row is se
   }
 });
 
+test('a delivered front-desk hand-off is admitted once its line is settled; a stopped, raced, or failed run hands nothing over', async () => {
+  const cases = [
+    ['succeeded', 1, false],
+    ['stopped', 0, false],
+    ['failed', 0, false],
+    ['succeeded', 0, true],
+  ] as const;
+  for (const [outcome, expected, raced] of cases) {
+    const h = fakePorts(async (options) => {
+      options.onFrontDeskHandoff?.({
+        turn: pendingJob().turn, fromAgentId: 'chickpea', agentId: 'agent_support', agentName: 'Support Desk',
+      });
+      await options.onDelivered?.(outcome);
+    });
+    const dispatched: string[] = [];
+    h.ports.dispatchFrontDeskHandoff = async (request) => {
+      dispatched.push(`${request.fromAgentId}->${request.agentId}`);
+      h.calls.push('dispatchFrontDeskHandoff');
+    };
+    const options = raced ? { ...h.options, stopRecorded: async () => true } : h.options;
+    assert.equal(await executeTurnJob(pendingJob(), h.ports, options), true);
+    assert.equal(dispatched.length, expected, `${outcome}${raced ? ' (raced stop)' : ''}`);
+    if (expected) {
+      assert.deepEqual(dispatched, ['chickpea->agent_support']);
+      assert.ok(h.calls.indexOf('markDelivered("turn_1")') < h.calls.indexOf('dispatchFrontDeskHandoff'));
+    }
+  }
+});
+
 test('a succeeded delivery on an installation tells its host once, after the row is settled; other outcomes and standalone tell nobody', async (t) => {
   t.after(() => resetHostedActivityForTests());
   const scoped = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_executor' });

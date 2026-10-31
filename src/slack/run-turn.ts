@@ -41,6 +41,7 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import {
   abandonTurnSurfaces,
+  deliverAgentChoiceSurface,
   deliverHostApprovalSurfaces,
   deliverInteractiveSurfaces,
   markDisplaySurfacesDelivered,
@@ -57,7 +58,12 @@ import {
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
-import { compileFrontDeskPlan, renderFrontDeskBlock } from './front-desk.ts';
+import {
+  agentChoiceOptions,
+  compileFrontDeskPlan,
+  renderFrontDeskBlock,
+  type SlackFrontDeskHandoffRequest,
+} from './front-desk.ts';
 import { browserCapabilityForTurn, runGrantsWebsiteLogins, websiteLoginsForTurn } from '../browser/capability.ts';
 import { webSearchConfigured } from '../web/exa.ts';
 import type {
@@ -315,6 +321,12 @@ export interface RunTurnOptions {
   onDeferredTerminal?: () => void | Promise<void>;
   /** Record a confirmed Slack-visible final for future owner handoffs. */
   onPublicMessageDelivered?: (input: SlackPublicDelivery) => void | Promise<void>;
+  /**
+   * The front desk handed the person's message to one Agent, and its line is
+   * about to be delivered. The executor admits the takeover once the line is
+   * recorded as delivered.
+   */
+  onFrontDeskHandoff?: (request: SlackFrontDeskHandoffRequest) => void;
   /** Stable ID for one actual model invocation; persistence retries reuse it. */
   usageExecutionId?: string;
   /** Observational canonical Run correlation; legacy remains authoritative. */
@@ -1900,10 +1912,10 @@ async function runTurnAttempt(
     // An information-only member keeps its 👀: its own turn reads it next.
     await swapReadReceipts(receipts.filter(({ turnJobId }) =>
       !requestFollowUps.some((message) => message.informationOnly && message.turnJobId === turnJobId)));
-    const frontDeskPlan = runtimePlanDecision?.runtimePlan.frontDesk;
+    const promptFrontDesk = runtimePlanDecision?.runtimePlan.frontDesk;
     const prompt = assembleSlackPrompt(turn, promptContext, {
       followUps: requestFollowUps,
-      ...(frontDeskPlan && assignment.frontDesk
+      ...(promptFrontDesk && assignment.frontDesk
         ? { frontDeskBlock: renderFrontDeskBlock(assignment.frontDesk, Date.now()) }
         : {}),
       ...(handoffBlock ? { handoffBlock } : {}),
@@ -2252,6 +2264,42 @@ async function runTurnAttempt(
         return;
       }
       await options.onDeferredTerminal?.();
+      return;
+    }
+    const frontDeskPlan = runtimePlanDecision?.runtimePlan.frontDesk;
+    if (agentResult?.frontDeskHandoff && frontDeskPlan) {
+      // The host's line, never the model's draft: one Agent takes the
+      // message once the line is delivered, or the person picks on a card.
+      const choices = agentChoiceOptions(agentResult.frontDeskHandoff.agentIds, frontDeskPlan);
+      await preparedMemory?.confirmInjection();
+      review.answer = agentResult.text;
+      await statusTurn.prepareFinal();
+      await presenter.deliverFinal(agentResult.text, 'plain_text', 'complete');
+      const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+      if (choices.length === 1) {
+        options.onFrontDeskHandoff?.({
+          turn,
+          fromAgentId: assignment.agentId,
+          agentId: choices[0]!.agentId,
+          agentName: choices[0]!.name,
+        });
+      } else {
+        await deliverAgentChoiceSurface({
+          turn,
+          assignment,
+          turnJobId,
+          state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
+          messenger: {
+            post: (rendered) => presenter.postSurfaceMessage(rendered),
+            update: (messageTs, rendered) => presenter.updateSurfaceMessage(messageTs, rendered),
+          },
+          options: choices,
+        }).catch(() => {
+          console.warn('[chickpea] Slack Agent choice buttons were not posted');
+        });
+      }
+      await finishStatus('answer');
+      await finishDelivery('succeeded');
       return;
     }
     const recoveredText = await options.beforeDelivery?.(
