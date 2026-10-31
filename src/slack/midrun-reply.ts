@@ -191,7 +191,7 @@ export function createSlackMidRunReplyTool(input: {
   const post = input.post ?? relayMidRunReply;
   return {
     name: SLACK_REPLY_IN_THREAD_TOOL_NAME,
-    description: 'Post a short reply in this Slack thread now, as yourself, while you keep working: answer a question in a message that arrived while you worked, or give a progress update someone in the thread asked for. Never post progress updates nobody asked for. Your final reply still answers everything.',
+    description: 'Post a short reply in this Slack thread now, as yourself, while you keep working, to a message that arrived while you worked: answer its question, or give the progress update it asked for. Never post progress updates nobody asked for. Your final reply still answers everything.',
     input: ReplyInThreadInput,
     output: v.string(),
     run: async ({ data }: { data: v.InferOutput<typeof ReplyInThreadInput> }) => {
