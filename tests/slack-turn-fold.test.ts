@@ -17,6 +17,7 @@ import {
 } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import type { StateDb } from '../src/state/state-db.ts';
 import { SlackStateLogic, slackSessionGenerationFromTimestamp } from '../src/slack/claim-store.ts';
 import { localSlackStateStore } from '../src/slack/local-state-store.ts';
 import { SlackRunPresentationStoreLogic, type SlackRunPresentationV3 } from '../src/slack/run-presentations.ts';
@@ -527,6 +528,41 @@ test('a late fold claims its cycle once, replays it until confirmed, and release
     assert.equal(turnJobGate(view(s.turns, 'late_2').job!), 'run', 'never confirmed: it runs as its own turn');
   } finally {
     s.db.close();
+  }
+});
+
+test('a confirmation that rolls back counts nothing', (t) => {
+  const db = openStateDb(':memory:');
+  let failCommit = false;
+  const failing: StateDb = Object.assign(Object.create(db) as StateDb, {
+    transaction: <T>(fn: () => T): T => db.transaction(() => {
+      const result = fn();
+      if (failCommit) throw new Error('commit failed');
+      return result;
+    }),
+  });
+  const clock = { now: NOW };
+  const s = { db, turns: new TurnJobStoreLogic(failing, () => clock.now), clock };
+  const records: Array<Record<string, unknown>> = [];
+  t.mock.method(console, 'info', (record: Record<string, unknown>) => {
+    if (record.event === 'turn_fold') records.push(record);
+  });
+  try {
+    const head = job('head', '101');
+    enqueueAll(s, [head]);
+    dispatch(s.turns, head);
+    const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
+    enqueueAll(s, [job('late', '102')]);
+    s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 0, take: true });
+    failCommit = true;
+    assert.throws(() => s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 1, take: true }));
+    assert.equal(view(s.turns, 'late').job!.fold?.received, false);
+    assert.deepEqual(records, []);
+    failCommit = false;
+    s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 1, take: true });
+    assert.deepEqual(records.map(({ late }) => late), [1]);
+  } finally {
+    db.close();
   }
 });
 

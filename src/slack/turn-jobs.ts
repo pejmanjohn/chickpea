@@ -1020,10 +1020,13 @@ export class TurnJobStoreLogic {
    */
   fold(request: TurnFoldRequest): TurnFoldClaim {
     validateFoldRequest(request);
-    return this.db.transaction(() => this.claimFold(request));
+    const { claim, confirmed } = this.db.transaction(() => this.claimFold(request));
+    if (confirmed > 0) emitTurnFold({ turnJobId: request.headId, late: confirmed });
+    return claim;
   }
 
-  private claimFold(request: TurnFoldRequest): TurnFoldClaim {
+  /** The claim, and how many late members this call confirmed as read. */
+  private claimFold(request: TurnFoldRequest): { claim: TurnFoldClaim; confirmed: number } {
     const head = this.db.get(
       `SELECT rowid AS row_order, id, turn_json, assignment_json, delivered, status, execution_authority,
          dispatch_started_at, agent_instance_id, stop_json, fold_json, thread_key, enqueued_at
@@ -1031,32 +1034,35 @@ export class TurnJobStoreLogic {
       request.headId,
     );
     const threadKey = typeof head?.thread_key === 'string' ? head.thread_key : undefined;
-    if (!head || !threadKey) return { messages: [], requesterText: '' };
+    const none = { claim: { messages: [], requesterText: '' }, confirmed: 0 };
+    if (!head || !threadKey) return none;
     let headTurn: NormalizedSlackTurn;
     let headAssignment: ResolvedAssignment;
     try {
       headTurn = JSON.parse(String(head.turn_json)) as NormalizedSlackTurn;
       headAssignment = JSON.parse(String(head.assignment_json)) as ResolvedAssignment;
     } catch {
-      return { messages: [], requesterText: '' };
+      return none;
     }
+    let confirmed = 0;
     if (request.phase === 'finish') {
-      let confirmed = 0;
       for (const { record, message } of this.foldMembers(threadKey, request.headId)) {
         if (record.cycle < 1 || record.cycle > request.received || record.received) continue;
         this.writeFoldRecord(message.turnJobId, { ...record, received: true });
         confirmed += 1;
       }
-      if (confirmed > 0) emitTurnFold({ turnJobId: request.headId, late: confirmed });
     }
     const cycle = request.phase === 'start' ? 0 : request.received + 1;
-    const claim = (messages: FoldedMessage[]): TurnFoldClaim => ({
-      messages,
-      requesterText: foldedRequestText(
-        headTurn.text,
-        this.foldMembers(threadKey, request.headId)
-          .filter(({ record }) => record.cycle <= cycle).map(({ message }) => message),
-      ),
+    const claim = (messages: FoldedMessage[]) => ({
+      claim: {
+        messages,
+        requesterText: foldedRequestText(
+          headTurn.text,
+          this.foldMembers(threadKey, request.headId)
+            .filter(({ record }) => record.cycle <= cycle).map(({ message }) => message),
+        ),
+      },
+      confirmed,
     });
     if (request.phase === 'finish' && !request.take) return claim([]);
     const stamped = this.foldMembers(threadKey, request.headId)
