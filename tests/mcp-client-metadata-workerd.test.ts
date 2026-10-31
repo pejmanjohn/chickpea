@@ -22,8 +22,9 @@ const MOVED_PATH = new URL(CLAUDE_CODE).pathname;
 const CLAUDE_CALLBACK = 'https://claude.ai/api/mcp/auth_callback';
 const STRANGER = 'https://apps.example.org/oauth/client.json';
 const STRANGER_PATH = new URL(STRANGER).pathname;
+const STRANGER_CALLBACK = 'https://apps.example.org/callback';
 const STRANGER_DOCUMENT = JSON.stringify({
-  client_id: STRANGER, client_name: 'Example App', redirect_uris: [CLAUDE_CALLBACK],
+  client_id: STRANGER, client_name: 'Example App', redirect_uris: [STRANGER_CALLBACK],
   grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none',
 });
 
@@ -93,7 +94,7 @@ test('Claude\'s and an unlisted app\'s metadata documents resolve under workerd 
       'the redirect is not followed');
     assert.equal((await (await fetch(`${origin}/test/clients`)).json() as unknown[]).length, 1);
 
-    const stranger = await authorize(origin, STRANGER);
+    const stranger = await authorize(origin, STRANGER, STRANGER_CALLBACK);
     assert.equal(stranger.status, 302, stranger.body);
     assert.equal(new URL(stranger.location!, origin).pathname, '/auth/mcp/login');
     assert.deepEqual(documents.requests.slice(2), [{ path: STRANGER_PATH, accept: 'application/json' }]);
@@ -113,9 +114,9 @@ test('Claude\'s and an unlisted app\'s metadata documents resolve under workerd 
 });
 
 /** A signed-out browser navigation to authorize; Node's fetch would announce itself as a script. */
-function authorize(origin: string, clientId: string) {
+function authorize(origin: string, clientId: string, redirectUri = CLAUDE_CALLBACK) {
   const query = new URLSearchParams({
-    response_type: 'code', client_id: clientId, redirect_uri: CLAUDE_CALLBACK,
+    response_type: 'code', client_id: clientId, redirect_uri: redirectUri,
     scope: 'chickpea:workspace', state: 'client-state', resource: `${origin}/mcp`,
     code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM', code_challenge_method: 'S256',
   });

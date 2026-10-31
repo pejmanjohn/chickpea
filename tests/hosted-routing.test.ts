@@ -682,14 +682,14 @@ test('the host\'s registration throttle and client cap reach Core\'s registratio
   assert.equal((await refused.json() as { error: string }).error, 'temporarily_unavailable');
   assert.deepEqual(documents.requests, []);
   assert.equal((await authorize(false)).status, 302);
-  assert.equal((await authorize(true)).status, 302, 'a stored client never does');
-  assert.equal(checks, 2);
+  assert.equal((await authorize(true)).status, 429, 'and so does a stored client no one consented to');
+  assert.equal(checks, 3);
 
   const unknown = await authorize(false, internal);
   assert.equal(new URL(unknown.headers.get('location') ?? '/', ORIGIN).searchParams.get('error'), 'invalid_client',
     'a document URL on a private address is an unknown client');
   assert.deepEqual(documents.requests, [claude]);
-  assert.equal(checks, 2, 'refused before the host\'s throttle');
+  assert.equal(checks, 3, 'refused before the host\'s throttle');
   const rows = await hosted.backend.pool.query('SELECT 1 FROM "oauthClient" WHERE "clientId" = $1', [internal]);
   assert.equal(rows.rowCount, 0);
 });

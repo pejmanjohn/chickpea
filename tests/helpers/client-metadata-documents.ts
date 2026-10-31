@@ -47,12 +47,10 @@ export const PUBLIC_CLIENT_DOCUMENTS = {
     served: { body: fixture('goose.json'), headers: { 'content-type': JSON_UTF8, 'cache-control': 'max-age=600' } },
     redirect: onPort('http://[::1]/oauth_callback', 50114),
   },
-  cursor: {
-    url: 'https://cursor.com/oauth/mcp-client.json',
-    served: { body: fixture('cursor.json'), headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=3600' } },
-    redirect: 'https://www.cursor.com/agents/mcp/oauth/callback',
-  },
 } as const;
+
+/** Cursor's document, which lists a redirect on grok.com beside its own. */
+export const CURSOR_DOCUMENT = { url: 'https://cursor.com/oauth/mcp-client.json', body: fixture('cursor.json') } as const;
 
 export type ServedDocument = string | { body: string; status?: number; headers?: Record<string, string> } | (() => never);
 

@@ -10,7 +10,7 @@ import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import type { ClientMetadataFetch } from '../src/auth/mcp-client-metadata.ts';
 import { mountMcpOAuthBrowserRoutes, renderMcpConsentPage } from '../src/auth/mcp-oauth-routes.ts';
 import {
-  CHATGPT_DOCUMENT, CLAUDE_DOCUMENTS, CODEX_DOCUMENT, PUBLIC_CLIENT_DOCUMENTS, metadataDocumentServer, type ServedDocument,
+  CHATGPT_DOCUMENT, CLAUDE_DOCUMENTS, CODEX_DOCUMENT, CURSOR_DOCUMENT, PUBLIC_CLIENT_DOCUMENTS, metadataDocumentServer, type ServedDocument,
 } from './helpers/client-metadata-documents.ts';
 
 const ORIGIN = 'https://chickpea.example.test';
@@ -31,6 +31,16 @@ const strangerDocument = JSON.stringify({
   client_id: STRANGER, client_name: 'Example App', redirect_uris: [STRANGER_CALLBACK],
   grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none',
 });
+
+/** A public client's document at `url`, redirecting to `/callback` on its own host. */
+const documentAt = (url: string, fields: Record<string, unknown> = {}) => JSON.stringify({
+  ...JSON.parse(strangerDocument), client_id: url, redirect_uris: [`${new URL(url).origin}/callback`], ...fields,
+});
+
+const OWN_HOST_REDIRECTS_ONLY = {
+  error: 'invalid_client',
+  error_description: 'metadata document redirect_uris must be on the client ID\'s host or a subdomain of it, or on a loopback host',
+};
 
 /** Every public client's document this suite serves, each with a redirect its app signs in on. */
 const PUBLIC_CLIENTS: ReadonlyArray<{ url: string; served: string | { body: string; headers: Record<string, string> }; redirect: string }> = [
@@ -511,6 +521,39 @@ test('a metadata document may list only the redirects dynamic registration accep
   assert.deepEqual(f.clients(), [], 'a refused document leaves no client behind');
 });
 
+test('a metadata document may redirect only to its own host, a subdomain of it, or loopback', async (t) => {
+  const elsewhere = 'https://apps.example.org/oauth/elsewhere.json';
+  const parent = 'https://apps.example.org/oauth/parent.json';
+  const subdomain = 'https://apps.example.org/oauth/subdomain.json';
+  const host = metadataDocumentServer({
+    [CURSOR_DOCUMENT.url]: CURSOR_DOCUMENT.body,
+    [elsewhere]: documentAt(elsewhere, { redirect_uris: ['https://elsewhere.example.net/callback'] }),
+    [parent]: documentAt(parent, { redirect_uris: ['https://example.org/callback'] }),
+    [subdomain]: documentAt(subdomain, { redirect_uris: ['https://login.apps.example.org/callback', 'http://127.0.0.1/callback'] }),
+  });
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  for (const [clientId, redirect] of [
+    // Cursor lists a redirect on grok.com beside its own.
+    [CURSOR_DOCUMENT.url, 'https://www.cursor.com/agents/mcp/oauth/callback'],
+    [elsewhere, 'https://elsewhere.example.net/callback'],
+    [parent, 'https://example.org/callback'],
+  ] as const) {
+    for (const signedIn of [false, true]) {
+      const response = await f.authorize(clientId, redirect, { signedIn });
+      assert.equal(response.status, 400, `${clientId} signed ${signedIn ? 'in' : 'out'}`);
+      assert.deepEqual(await response.json(), OWN_HOST_REDIRECTS_ONLY, clientId);
+    }
+  }
+  assert.deepEqual(f.clients(), [], 'a refused document leaves no client behind');
+
+  for (const redirect of ['https://login.apps.example.org/callback', 'http://127.0.0.1:50115/callback']) {
+    const consent = new URL((await f.authorize(subdomain, redirect)).headers.get('location')!, ORIGIN);
+    assert.equal(consent.pathname, '/auth/mcp/consent', redirect);
+    const callback = await f.approve(consent.toString());
+    assert.equal(`${callback.origin}${callback.pathname}`, redirect);
+  }
+});
+
 test('a stored client whose document turns to key authentication is refused before any key is fetched, even standing in', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const jwksUri = 'https://claude.ai/oauth/jwks';
@@ -625,13 +668,27 @@ test('a stored client stands in for an unreachable document for a day after its 
   assert.equal((await renew()).status, 200);
 });
 
-test('a spent fetch budget refuses a stored client unless its last fetch could not reach the document', async (t) => {
+/** Signs in by each URL in turn, signed out, until the plugin's fetch budget refuses one. */
+async function spendFetchBudget(f: Awaited<ReturnType<typeof fixture>>, urls: readonly string[]) {
+  // 120 fetches a minute per isolate and 30 per origin.
+  for (let attempt = 0; attempt <= 120; attempt++) {
+    const url = urls[attempt % urls.length]!;
+    const response = await f.authorize(url, `${new URL(url).origin}/callback`, { signedIn: false });
+    if (response.status === 429) return;
+    assert.equal(response.status, 302, url);
+  }
+  assert.fail('the budget was not spent');
+}
+
+/** Four origins whose documents no one consented to, served uncached so each sign-in fetches again. */
+const UNCACHED_STRANGERS = [0, 1, 2, 3].map((n) => `https://s${n}.example.org/oauth/client.json`);
+const uncachedStrangers = () => Object.fromEntries(UNCACHED_STRANGERS.map((url) =>
+  [url, { body: documentAt(url), headers: { 'cache-control': 'no-store' } }]));
+const BUSY = { error: 'temporarily_unavailable', error_description: 'global metadata fetch rate limit exceeded' };
+
+test('strangers who spend the fetch budget cannot sign out a client someone consented to, for a day after its document last answered', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
-  const served: Record<string, ServedDocument> = {
-    [CLAUDE]: CLAUDE_DOCUMENTS.claude.body,
-    [CLAUDE_CODE]: { body: CLAUDE_DOCUMENTS.claudeCode.body, headers: { 'cache-control': 'no-store' } },
-  };
-  const host = metadataDocumentServer(served);
+  const host = metadataDocumentServer({ [CLAUDE]: CLAUDE_DOCUMENTS.claude.body, ...uncachedStrangers() });
   const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
   let refreshToken = await claudeRefreshToken(f);
   const renew = async () => {
@@ -639,37 +696,48 @@ test('a spent fetch budget refuses a stored client unless its last fetch could n
     if (response.ok) refreshToken = (await response.clone().json() as { refresh_token: string }).refresh_token;
     return response;
   };
-  const spendFetchBudget = async () => {
-    // 30 fetches a minute per origin; served uncached, Claude Code's document is fetched on every sign-in.
-    for (let attempt = 0; attempt <= 30; attempt++) {
-      const response = await f.authorize(CLAUDE_CODE, 'http://localhost:53682/callback', { signedIn: false });
-      if (response.status === 429) return;
-      assert.equal(response.status, 302);
-    }
-    assert.fail('the budget was not spent');
-  };
-  const busy = { error: 'temporarily_unavailable', error_description: 'metadata fetch rate limit exceeded for client origin' };
 
   t.mock.timers.tick(6 * 60_000);
-  await spendFetchBudget();
-  const declined = await renew();
-  assert.equal(declined.status, 429, 'nothing known against the document, but nothing fetched either');
-  assert.deepEqual(await declined.json(), busy);
-
-  t.mock.timers.tick(61_000);
-  served[CLAUDE] = { body: 'Service Unavailable', status: 503, headers: { 'content-type': 'text/plain' } };
-  assert.equal((await renew()).status, 200);
-  t.mock.timers.tick(1_000);
-  await spendFetchBudget();
+  await spendFetchBudget(f, UNCACHED_STRANGERS);
   const fetched = host.requests.length;
-  assert.equal((await renew()).status, 200, 'after a fetch that could not reach the document, a spent budget stands in for it');
+  assert.equal((await renew()).status, 200, 'the stored client stands in for its document');
   assert.equal(host.requests.length, fetched);
 
   t.mock.timers.tick(24 * 60 * 60_000);
-  await spendFetchBudget();
+  await spendFetchBudget(f, UNCACHED_STRANGERS);
   const stale = await renew();
+  assert.equal(stale.status, 429, 'but only for a day after its document last answered');
+  assert.deepEqual(await stale.json(), BUSY);
+});
+
+test('a spent fetch budget refuses a client no one consented to unless its last fetch could not reach its document', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const served: Record<string, ServedDocument> = { [STRANGER]: strangerDocument, ...uncachedStrangers() };
+  const host = metadataDocumentServer(served);
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  const signIn = () => f.authorize(STRANGER, STRANGER_CALLBACK, { signedIn: false });
+  assert.equal((await signIn()).status, 302);
+
+  t.mock.timers.tick(6 * 60_000);
+  await spendFetchBudget(f, UNCACHED_STRANGERS);
+  const declined = await signIn();
+  assert.equal(declined.status, 429, 'nothing known against the document, but nothing fetched either');
+  assert.deepEqual(await declined.json(), BUSY);
+
+  t.mock.timers.tick(61_000);
+  served[STRANGER] = { body: 'Service Unavailable', status: 503, headers: { 'content-type': 'text/plain' } };
+  assert.equal((await signIn()).status, 302);
+  t.mock.timers.tick(1_000);
+  await spendFetchBudget(f, UNCACHED_STRANGERS);
+  const fetched = host.requests.length;
+  assert.equal((await signIn()).status, 302, 'after a fetch that could not reach the document, a spent budget stands in for it');
+  assert.equal(host.requests.length, fetched);
+
+  t.mock.timers.tick(24 * 60 * 60_000);
+  await spendFetchBudget(f, UNCACHED_STRANGERS);
+  const stale = await signIn();
   assert.equal(stale.status, 429, 'but only for a day after the last good fetch');
-  assert.deepEqual(await stale.json(), busy);
+  assert.deepEqual(await stale.json(), BUSY);
 });
 
 test('first sign-ins by metadata document share the pending-client bound with dynamic registration', async (t) => {
@@ -702,11 +770,11 @@ test('first sign-ins by metadata document share the pending-client bound with dy
   assert.deepEqual(f.clients().map((client) => client.clientId), [CLAUDE, CLAUDE_CODE]);
 });
 
-test('a first sign-in by metadata document passes the registration throttle; a stored client never does', async (t) => {
+test('a document client passes the registration throttle until someone consents to it, and never after', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const host = metadataDocumentServer({ [CLAUDE]: CLAUDE_DOCUMENTS.claude.body, [STRANGER]: strangerDocument });
   const sources: Array<string | null> = [];
-  let refuse = false;
+  let refuse = true;
   const f = await fixture(t, {
     fetchClientMetadataResource: host.fetch,
     async throttleRegistration(request) {
@@ -716,37 +784,47 @@ test('a first sign-in by metadata document passes the registration throttle; a s
         : undefined;
     },
   });
-  const first = await f.authorize(CLAUDE, CLAUDE_CALLBACK, { headers: { 'cf-connecting-ip': '203.0.113.7' } });
-  const callback = await f.approve(first.headers.get('location')!);
-  const exchanged = await f.exchange(CLAUDE, CLAUDE_CALLBACK, callback.searchParams.get('code')!);
-  const { refresh_token: refreshToken } = await exchanged.json() as { refresh_token: string };
-  assert.deepEqual(sources, ['203.0.113.7'], 'one throttle check, for the request that stores the client');
+  const fromHere = { 'cf-connecting-ip': '203.0.113.9' };
+  const assertThrottled = async (response: Response, message: string) => {
+    assert.equal(response.status, 429, message);
+    assert.equal(response.headers.get('retry-after'), '120');
+    assert.deepEqual(await response.json(), {
+      error: 'temporarily_unavailable', error_description: 'Too many new apps are signing in from here. Try again later.',
+    });
+  };
 
-  refuse = true;
   const prune = t.mock.method(f.backend, 'prunePendingMcpOAuthClients');
   for (const signedIn of [false, true]) {
     t.mock.timers.tick(1_000);
-    const refused = await f.authorize(STRANGER, STRANGER_CALLBACK, {
-      signedIn, headers: { 'cf-connecting-ip': '203.0.113.9' },
-    });
-    assert.equal(refused.status, 429);
-    assert.equal(refused.headers.get('retry-after'), '120');
-    assert.deepEqual(await refused.json(), {
-      error: 'temporarily_unavailable', error_description: 'Too many new apps are signing in from here. Try again later.',
-    });
+    await assertThrottled(await f.authorize(STRANGER, STRANGER_CALLBACK, { signedIn, headers: fromHere }), 'a first sign-in');
   }
-  assert.deepEqual(sources, ['203.0.113.7', '203.0.113.9', '203.0.113.9']);
+  assert.deepEqual(sources, ['203.0.113.9', '203.0.113.9'], 'asked with the source of the request that would store the client');
   assert.equal(prune.mock.callCount(), 0, 'a throttled sign-in writes nothing');
   assert.ok(!host.requests.includes(STRANGER), 'and fetches nothing');
 
-  assert.equal((await f.authorize(CLAUDE, CLAUDE_CALLBACK)).status, 302);
+  refuse = false;
+  assert.equal((await f.authorize(STRANGER, STRANGER_CALLBACK, { signedIn: false, headers: fromHere })).status, 302);
+  refuse = true;
+  t.mock.timers.tick(6 * 60_000);
+  const fetched = host.requests.length;
+  await assertThrottled(await f.authorize(STRANGER, STRANGER_CALLBACK, { signedIn: false, headers: fromHere }),
+    'a stored client no one consented to');
+  assert.equal(host.requests.length, fetched, 'is asked before its document is fetched again');
+
+  refuse = false;
+  const first = await f.authorize(CLAUDE, CLAUDE_CALLBACK);
+  const callback = await f.approve(first.headers.get('location')!);
+  const exchanged = await f.exchange(CLAUDE, CLAUDE_CALLBACK, callback.searchParams.get('code')!);
+  const { refresh_token: refreshToken } = await exchanged.json() as { refresh_token: string };
+  refuse = true;
+  const asked = sources.length;
   t.mock.timers.tick(6 * 60_000);
   assert.equal((await f.refresh(CLAUDE, refreshToken)).status, 200);
-  assert.equal(sources.length, 3, 'a stored client is never throttled');
-  assert.deepEqual(f.clients().map((client) => client.clientId), [CLAUDE]);
+  assert.equal((await f.authorize(CLAUDE, CLAUDE_CALLBACK)).status, 302);
+  assert.equal(sources.length, asked, 'a client someone consented to is never throttled');
 
   const registration = await f.handler(new Request(`${ORIGIN}/api/auth/oauth2/register`, {
-    method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.9' },
+    method: 'POST', headers: { 'content-type': 'application/json', ...fromHere },
     body: JSON.stringify({
       application_type: 'native', client_name: 'Registered', grant_types: ['authorization_code'],
       redirect_uris: ['http://127.0.0.1:47321/callback'], response_types: ['code'], token_endpoint_auth_method: 'none',
@@ -758,8 +836,8 @@ test('a first sign-in by metadata document passes the registration throttle; a s
 
 test('consent names the port of a document served on a non-default one', async (t) => {
   const url = 'https://apps.example.org:8443/client';
-  const f = await fixture(t, { fetchClientMetadataResource: metadataDocumentServer({ [url]: lookalike(url) }).fetch });
-  const consent = new URL((await f.authorize(url, CLAUDE_CALLBACK)).headers.get('location')!, ORIGIN);
+  const f = await fixture(t, { fetchClientMetadataResource: metadataDocumentServer({ [url]: documentAt(url, { client_name: 'Claude' }) }).fetch });
+  const consent = new URL((await f.authorize(url, 'https://apps.example.org:8443/callback')).headers.get('location')!, ORIGIN);
   assert.equal(consent.pathname, '/auth/mcp/consent');
   const page = await (await f.browser.request(`${ORIGIN}${consent.pathname}${consent.search}`, {
     headers: { cookie: f.cookie },
