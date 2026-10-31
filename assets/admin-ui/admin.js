@@ -11827,6 +11827,10 @@
     return ["slack", "connectors", "providers", "github", "sandbox", "browser", "agents-clients"].includes(section) ? section : "providers";
   }
 
+  // These sections fetch their own data when opened, so switching to or from
+  // one goes through openSettings; the rest share the general Settings load.
+  var SETTINGS_SECTIONS_WITH_OWN_LOAD = ["connectors", "browser", "updates", "help-improve", "agents-clients"];
+
   function settingsLoadIsCurrent(generation) {
     return generation === undefined || generation === state.settingsLoadGeneration;
   }
@@ -15051,7 +15055,7 @@
     if (action === "settings-section") {
       var nextSettingsSection = normalizeSettingsSection(target.getAttribute("data-section") || "providers");
       if (nextSettingsSection === "slack") openDestination("connection");
-      else if (state.view !== "settings" || nextSettingsSection === "connectors" || state.settingsSection === "connectors" || nextSettingsSection === "browser" || state.settingsSection === "browser" || nextSettingsSection === "updates" || state.settingsSection === "updates" || nextSettingsSection === "help-improve" || state.settingsSection === "help-improve") openSettings(nextSettingsSection);
+      else if (state.view !== "settings" || SETTINGS_SECTIONS_WITH_OWN_LOAD.includes(nextSettingsSection) || SETTINGS_SECTIONS_WITH_OWN_LOAD.includes(state.settingsSection)) openSettings(nextSettingsSection);
       else {
         state.settingsSection = nextSettingsSection;
         render();

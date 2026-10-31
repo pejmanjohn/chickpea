@@ -19805,6 +19805,19 @@ test('a member deep-linked to an owner Settings page lands on Coding agents', as
   assert.ok(!fetchedPaths.includes('/admin/api/egress'));
 });
 
+test('choosing MCP from another Settings page loads its client table', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/settings/providers' });
+  await flushAsync();
+  const before = harness.fetchCalls.filter(({ path }) => path === '/admin/api/mcp-clients').length;
+
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'agents-clients' }) });
+  await flushAsync();
+
+  assert.equal(harness.fetchCalls.filter(({ path }) => path === '/admin/api/mcp-clients').length, before + 1);
+  assert.doesNotMatch(harness.app.innerHTML, /Couldn’t load client settings/);
+  assert.match(harness.app.innerHTML, /data-action="mcp-copy-prompt"/);
+});
+
 test('Coding agents offers a retry when its client table cannot be read', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/settings/agents-clients',
