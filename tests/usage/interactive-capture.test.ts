@@ -4,7 +4,8 @@ import { test } from 'node:test';
 import type { ResolvedAssignment } from '../../src/config/types.ts';
 import type { AgentDispatchResult } from '../../src/slack/flue-dispatch.ts';
 import type { NormalizedSlackTurn } from '../../src/slack/types.ts';
-import { SqliteUsageStore } from '../../src/usage/store.ts';
+import { openStateDb } from '../../src/state/node-state-db.ts';
+import { SqliteUsageStore, UsageStoreLogic } from '../../src/usage/store.ts';
 import {
   InteractiveUsageRecorder,
   type UsagePersistenceEvent,
@@ -561,5 +562,113 @@ test('a stopped run is recorded interrupted with no reported usage, never failed
     assert.equal(detail?.measurements[0]?.totalTokens, null);
   } finally {
     store.close();
+  }
+});
+
+test('an interactive turn records the Slack message it answers, and a reaction records the reacted message', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const record = async (operationId: string, slackTurn: NormalizedSlackTurn) => {
+      const recorder = new InteractiveUsageRecorder({
+        turn: slackTurn,
+        assignment,
+        requestedModel: assignment.model!,
+        operationId,
+        executionId: `exec:${operationId}:1`,
+        store,
+        processEnv: { CHICKPEA_INSTALLATION_ID: 'installation_usage' },
+      });
+      await recorder.admit();
+      return (await store.getOperation(operationId))?.operation.slackMessageTs;
+    };
+
+    assert.equal(await record('msg:C_USAGE:1000.0001', turn), '1000.0001');
+    assert.equal(
+      await record('msg:C_USAGE:1000.0009', {
+        ...turn,
+        source: 'reaction_added',
+        messageTs: '1000.0009',
+        threadTs: '1000.0002',
+        reactionTargetTs: '1000.0002',
+      }),
+      '1000.0002',
+    );
+    assert.equal(
+      await record('oauthresume:usage', { ...turn, messageTs: 'resumed' }),
+      null,
+      'a turn without a Slack timestamp is still admitted, with no message to link',
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('a usage row admitted before the Slack message column existed accepts a replay that carries it', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const admission = {
+      operationId: 'msg:C_USAGE:1000.0001',
+      operationKind: 'interactive_turn' as const,
+      sourceId: 'msg:C_USAGE:1000.0001',
+      startedAt: 1_000_000,
+      installationId: 'installation_usage',
+      workspaceId: 'T_USAGE',
+      agentId: 'agent_usage',
+      agentLabel: 'Usage profile',
+      channelId: 'C_USAGE',
+      channelLabel: 'usage-lab',
+      conversationKind: 'named_channel' as const,
+      requestedProvider: 'openai',
+      requestedModel: 'gpt-4.1-mini',
+      credentialRefId: null,
+      credentialVersion: null,
+    };
+    await store.admitOperation(admission);
+    const replayed = await store.admitOperation({ ...admission, slackMessageTs: '1000.0001' });
+    assert.equal(replayed.slackMessageTs, null, 'a replay does not rewrite the admitted row');
+
+    await store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0002', sourceId: 'msg:C_USAGE:1000.0002', slackMessageTs: '1000.0002' });
+    await assert.rejects(
+      store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0002', sourceId: 'msg:C_USAGE:1000.0002', slackMessageTs: '1000.0003' }),
+      /different work/,
+    );
+    await assert.rejects(
+      store.admitOperation({ ...admission, operationId: 'op_bad_ts', sourceId: 'op_bad_ts', slackMessageTs: 'not-a-ts' }),
+      /Slack message timestamp is invalid/,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('an existing usage database gains the Slack message column, and its old rows read with none', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const original = new UsageStoreLogic(db);
+    original.admitOperation({
+      operationId: 'msg:C_USAGE:1000.0001',
+      operationKind: 'interactive_turn',
+      sourceId: 'msg:C_USAGE:1000.0001',
+      startedAt: 1_000_000,
+      installationId: 'installation_usage',
+      workspaceId: 'T_USAGE',
+      agentId: 'agent_usage',
+      agentLabel: 'Usage profile',
+      channelId: 'C_USAGE',
+      channelLabel: 'usage-lab',
+      conversationKind: 'named_channel',
+      requestedProvider: 'openai',
+      requestedModel: 'gpt-4.1-mini',
+      credentialRefId: null,
+      credentialVersion: null,
+    });
+    db.exec('ALTER TABLE usage_operations DROP COLUMN slack_message_ts');
+
+    const upgraded = new UsageStoreLogic(db);
+    const column = db.all('PRAGMA table_info(usage_operations)').find((row) => row.name === 'slack_message_ts');
+    assert.deepEqual([column?.type, column?.notnull, column?.dflt_value], ['TEXT', 0, null], 'added nullable, with no default');
+    assert.equal(upgraded.getOperation('msg:C_USAGE:1000.0001')?.operation.slackMessageTs, null);
+  } finally {
+    db.close();
   }
 });

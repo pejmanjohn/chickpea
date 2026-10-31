@@ -80,6 +80,8 @@ export interface AdmitUsageOperationInput {
   channelId: string | null;
   channelLabel: string | null;
   conversationKind: UsageConversationKind;
+  /** Slack ts of the message that started an interactive turn. */
+  slackMessageTs?: string | null;
   routineId?: string | null;
   routineLabel?: string | null;
   routineRunId?: string | null;
@@ -109,6 +111,7 @@ export interface UsageOperation {
   channelId: string | null;
   channelLabel: string | null;
   conversationKind: UsageConversationKind;
+  slackMessageTs: string | null;
   routineId: string | null;
   routineLabel: string | null;
   routineRunId: string | null;

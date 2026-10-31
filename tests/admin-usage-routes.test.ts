@@ -5,12 +5,15 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import { createUsageAdminApi, type SlackMessage } from '../src/admin/usage-api.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
+import type { RoutineStore } from '../src/routines/types.ts';
 import { RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
 import { usageEstimatesEnabled } from '../src/usage/pricing/estimate.ts';
 import { usageRuntimeRecordingEnabled } from '../src/usage/runtime-recorder.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
+import type { AdmitUsageOperationInput } from '../src/usage/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import type { BindingId, RunId, WorkId, WorkStore } from '../src/work/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
@@ -416,6 +419,182 @@ test('Usage activity names a renamed Channel by its current label without rewrit
   } finally {
     usage.close();
     work.close();
+    config.close();
+  }
+});
+
+
+function slackUsageRow(overrides: Partial<AdmitUsageOperationInput> & { operationId: string }): AdmitUsageOperationInput {
+  return {
+    operationKind: 'interactive_turn',
+    sourceId: overrides.operationId,
+    startedAt: 1_000,
+    installationId: 'installation',
+    workspaceId: 'T0SLACK',
+    agentId: 'agent_default',
+    agentLabel: 'Default',
+    channelId: 'C0NEW',
+    channelLabel: 'support',
+    conversationKind: 'named_channel',
+    requestedProvider: 'openai',
+    requestedModel: 'gpt-5.6-sol',
+    credentialRefId: null,
+    credentialVersion: null,
+    ...overrides,
+  };
+}
+
+async function seedSlackUsageRows(usage: SqliteUsageStore): Promise<void> {
+  await usage.admitOperation(slackUsageRow({ operationId: 'op_new', slackMessageTs: '1793425408.462389' }));
+  await usage.admitOperation(slackUsageRow({ operationId: 'msg:C0OLD:1793425396.721899', channelId: 'C0OLD' }));
+  await usage.admitOperation(slackUsageRow({
+    operationId: 'msg:C0OLD:1793425400.000100:ask-agent_peer',
+    channelId: 'C0OLD',
+  }));
+  await usage.admitOperation(slackUsageRow({ operationId: 'msg:C0ELSEWHERE:1793425401.000100', channelId: 'C0OLD' }));
+  await usage.admitOperation(slackUsageRow({ operationId: 'oauthresume:resume_1' }));
+  await usage.admitOperation(slackUsageRow({
+    operationId: 'routine_run_posted',
+    operationKind: 'routine_run',
+    channelId: 'C0ROUTINE',
+    routineId: 'routine_daily',
+    routineLabel: 'Daily digest',
+    routineRunId: 'routine_run_posted',
+  }));
+  await usage.admitOperation(slackUsageRow({
+    operationId: 'routine_run_quiet',
+    operationKind: 'routine_run',
+    channelId: 'C0ROUTINE',
+    routineId: 'routine_daily',
+    routineLabel: 'Daily digest',
+    routineRunId: 'routine_run_quiet',
+  }));
+  await usage.admitOperation(slackUsageRow({
+    operationId: 'routine_run_private',
+    operationKind: 'routine_run',
+    channelId: 'D0PRIVATE',
+    channelLabel: null,
+    conversationKind: 'direct_message',
+    routineId: 'routine_private',
+    routineLabel: 'Private reminder',
+    routineRunId: 'routine_run_private',
+  }));
+}
+
+const POSTED_ROUTINE_MESSAGES: Record<string, { channelId: string; messageTs: string }> = {
+  routine_run_posted: { channelId: 'C0ROUTINE', messageTs: '1793425500.000200' },
+  routine_run_private: { channelId: 'D0PRIVATE', messageTs: '1793425600.000300' },
+};
+
+test('each Usage row links to the Slack message that started it, and Slack supplies the permalink', async () => {
+  const usage = new SqliteUsageStore(':memory:');
+  const asked: SlackMessage[] = [];
+  let permalink: (message: SlackMessage) => Promise<string | undefined> = async (message) =>
+    `https://acme.slack.com/archives/${message.channelId}/p${message.messageTs.replace('.', '')}?thread_ts=1793425300.000001&cid=${message.channelId}`;
+  try {
+    await seedSlackUsageRows(usage);
+    const app = createUsageAdminApi({
+      store: () => usage,
+      routineMessage: async (_c, routineRunId) => POSTED_ROUTINE_MESSAGES[routineRunId],
+      slackPermalink: async (_c, message) => {
+        asked.push(message);
+        return permalink(message);
+      },
+    });
+
+    const page = await (await app.request('/usage/operations?from=1&to=3000&limit=20')).json() as Record<string, any>;
+    const paths = Object.fromEntries(page.items.map((item: Record<string, any>) =>
+      [item.operation.operationId, item.operation.slackMessagePath]));
+    assert.deepEqual(paths, {
+      op_new: '/admin/api/usage/operations/op_new/slack-message',
+      'msg:C0OLD:1793425396.721899': '/admin/api/usage/operations/msg%3AC0OLD%3A1793425396.721899/slack-message',
+      'msg:C0OLD:1793425400.000100:ask-agent_peer':
+        '/admin/api/usage/operations/msg%3AC0OLD%3A1793425400.000100%3Aask-agent_peer/slack-message',
+      'msg:C0ELSEWHERE:1793425401.000100': null,
+      'oauthresume:resume_1': null,
+      routine_run_posted: '/admin/api/usage/operations/routine_run_posted/slack-message',
+      routine_run_quiet: null,
+    }, 'private routines stay off the page; a row links only when its message is known');
+
+    const opened = await app.request('/usage/operations/op_new/slack-message');
+    assert.equal(opened.status, 302);
+    assert.equal(
+      opened.headers.get('location'),
+      'https://acme.slack.com/archives/C0NEW/p1793425408462389?thread_ts=1793425300.000001&cid=C0NEW',
+    );
+    asked.length = 0;
+    await app.request('/usage/operations/msg%3AC0OLD%3A1793425396.721899/slack-message');
+    await app.request('/usage/operations/msg%3AC0OLD%3A1793425400.000100%3Aask-agent_peer/slack-message');
+    await app.request('/usage/operations/routine_run_posted/slack-message');
+    assert.deepEqual(asked, [
+      { workspaceId: 'T0SLACK', channelId: 'C0OLD', messageTs: '1793425396.721899' },
+      { workspaceId: 'T0SLACK', channelId: 'C0OLD', messageTs: '1793425400.000100' },
+      { workspaceId: 'T0SLACK', channelId: 'C0ROUTINE', messageTs: '1793425500.000200' },
+    ], 'rows from before the column existed resolve from their recorded message');
+
+    const fallback = 'https://slack.com/archives/C0NEW/p1793425408462389';
+    for (const unsafe of [
+      'https://acme.slack.com.attacker.example/archives/C0NEW/p1793425408462389',
+      'http://acme.slack.com/archives/C0NEW/p1793425408462389',
+      'javascript:alert(1)',
+      undefined,
+    ]) {
+      permalink = async () => unsafe;
+      const response = await app.request('/usage/operations/op_new/slack-message');
+      assert.equal(response.headers.get('location'), fallback, `refuses ${String(unsafe)}`);
+    }
+    permalink = async () => { throw new Error('channel_not_found'); };
+    assert.equal(
+      (await app.request('/usage/operations/op_new/slack-message')).headers.get('location'),
+      fallback,
+      'a Slack failure still opens the message link built from the stored coordinate',
+    );
+
+    for (const operationId of ['oauthresume%3Aresume_1', 'routine_run_quiet', 'routine_run_private', 'op_missing']) {
+      const missing = await app.request(`/usage/operations/${operationId}/slack-message`);
+      assert.equal(missing.status, 404, operationId);
+      assert.deepEqual(await missing.json(), { error: 'slack_message_not_found' });
+    }
+  } finally {
+    usage.close();
+  }
+});
+
+test('the Usage Slack link route is authenticated and reads routine posts from the routine store', async () => {
+  const usage = new SqliteUsageStore(':memory:');
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  try {
+    await seedSlackUsageRows(usage);
+    const routines = {
+      getRun: async (id: string) => id === 'routine_run_posted'
+        ? { deliveryChannelId: 'C0ROUTINE', deliveryMessageTs: '1793425500.000200' }
+        : { deliveryChannelId: 'C0ROUTINE', deliveryMessageTs: null },
+    } as unknown as RoutineStore;
+    const app = createAdminRoutes({
+      store: config,
+      usage,
+      routines,
+      ...testAdminAuthority('usage-slack-link-token'),
+    });
+    const headers = testAdminHeaders('usage-slack-link-token');
+
+    const anonymous = await app.request('/admin/api/usage/operations/op_new/slack-message');
+    assert.notEqual(anonymous.status, 302);
+    assert.equal(anonymous.headers.get('location'), null);
+
+    const opened = await app.request('/admin/api/usage/operations/op_new/slack-message', { headers });
+    assert.equal(opened.status, 302);
+    assert.equal(
+      opened.headers.get('location'),
+      'https://slack.com/archives/C0NEW/p1793425408462389',
+      'with no Slack installation to ask, the stored coordinate still opens the message',
+    );
+    const routine = await app.request('/admin/api/usage/operations/routine_run_posted/slack-message', { headers });
+    assert.equal(routine.headers.get('location'), 'https://slack.com/archives/C0ROUTINE/p1793425500000200');
+    const quiet = await app.request('/admin/api/usage/operations/routine_run_quiet/slack-message', { headers });
+    assert.equal(quiet.status, 404);
+  } finally {
+    usage.close();
     config.close();
   }
 });

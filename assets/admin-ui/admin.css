@@ -3197,6 +3197,8 @@ button.capability-pill { cursor: pointer; }
 .usage-row-action { background: none; border: 0; color: var(--ember-press); cursor: pointer; font-weight: 700; padding: 0; text-align: left; }
 .usage-row-action:hover { text-decoration: underline; }
 .usage-work-label { color: var(--text); display: block; font-weight: 700; }
+.usage-work-link { color: var(--ember-press); text-decoration: none; }
+.usage-work-link:hover { text-decoration: underline; }
 .usage-term-help, .usage-token-total {
   cursor: help;
   display: inline-block;

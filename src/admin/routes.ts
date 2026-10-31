@@ -626,6 +626,7 @@ import {
 } from '../slack/app-creation.ts';
 import { missingRequiredSlackBotScopes } from '../slack/scopes.ts';
 import { slackInstallationCredentialId } from '../slack/hosted-slack-app.ts';
+import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import {
   evaluateSlackPermissions,
   hostedSlackPermissionsUpdatePath,
@@ -6783,6 +6784,29 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     work,
     channelLabels: async (c) => new Map((await store(c).listChannels()).flatMap((channel) =>
       channel.label ? [[channelLabelKey(channel.workspaceId, channel.channelId), channel.label]] : [])),
+    routineMessage: async (c, routineRunId) => {
+      const run = await routines(c).getRun(routineRunId);
+      return run?.deliveryChannelId && run.deliveryMessageTs
+        ? { channelId: run.deliveryChannelId, messageTs: run.deliveryMessageTs }
+        : undefined;
+    },
+    slackPermalink: async (c, message) => {
+      const credentialDependencies = slackCredentialResolutionDependencies(c);
+      const slack = await resolveSlackInstallationExecutionContext(
+        message.workspaceId,
+        c.env as PlatformEnv | undefined,
+        {
+          config: store(c),
+          ...(options.settings ? { settings: options.settings } : {}),
+          ...(credentialDependencies ? { credentialDependencies } : {}),
+        },
+      );
+      const result = await slack.client.chat.getPermalink({
+        channel: message.channelId,
+        message_ts: message.messageTs,
+      });
+      return result.permalink;
+    },
   }));
   app.route('/admin/api', createRunReviewAdminApi({ identity }));
   app.route('/admin/api', createBillingAdminApi({
