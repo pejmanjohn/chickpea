@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { MAX_SLACK_ATTACHMENTS } from '../src/slack/attachment-file-ids.ts';
 import { computeHistoryWindow } from '../src/slack/thread-context.ts';
 import {
   parseSlackThreadKey,
@@ -299,21 +300,32 @@ test('a human Slack file share remains runnable and retains bounded attachment r
   assert.deepEqual(normalized.turn.attachmentIntake, { status: 'ok', count: 1 });
 });
 
-test('attachment intake rejects a fifth file instead of silently dropping it', () => {
-  const payload = channelThreadMessage({
-    event_id: 'Ev_MSG_TOO_MANY_FILES',
-    event: { text: 'Compare every attachment.' },
-  });
-  Object.assign(payload.event, {
-    files: Array.from({ length: 5 }, (_, index) => ({ id: `F_FILE_${index + 1}` })),
-  });
+test('attachment intake admits Slack\'s maximum file count and rejects one more instead of silently dropping it', () => {
+  const withFiles = (count: number) => {
+    const payload = channelThreadMessage({
+      event_id: `Ev_MSG_FILES_${count}`,
+      event: { text: 'Compare every attachment.' },
+    });
+    Object.assign(payload.event, {
+      files: Array.from({ length: count }, (_, index) => ({ id: `F_FILE_${index + 1}` })),
+    });
+    return normalizeSlackTurn(payload, { botUserId: 'UBOT' });
+  };
 
-  const normalized = normalizeSlackTurn(payload, { botUserId: 'UBOT' });
+  const exact = withFiles(MAX_SLACK_ATTACHMENTS);
+  assert.equal(exact.status, 'runnable');
+  if (exact.status !== 'runnable') return;
+  assert.deepEqual(
+    exact.turn.attachments,
+    Array.from({ length: MAX_SLACK_ATTACHMENTS }, (_, index) => ({ fileId: `F_FILE_${index + 1}` })),
+  );
+  assert.deepEqual(exact.turn.attachmentIntake, { status: 'ok', count: MAX_SLACK_ATTACHMENTS });
 
-  assert.equal(normalized.status, 'runnable');
-  if (normalized.status !== 'runnable') return;
-  assert.equal(normalized.turn.attachments, undefined);
-  assert.deepEqual(normalized.turn.attachmentIntake, { status: 'too_many', count: 5 });
+  const over = withFiles(MAX_SLACK_ATTACHMENTS + 1);
+  assert.equal(over.status, 'runnable');
+  if (over.status !== 'runnable') return;
+  assert.equal(over.turn.attachments, undefined);
+  assert.deepEqual(over.turn.attachmentIntake, { status: 'too_many', count: MAX_SLACK_ATTACHMENTS + 1 });
 });
 
 test('attachment intake rejects malformed metadata without persisting adjacent filenames', () => {

@@ -16,7 +16,7 @@ Docs: `/slack/conversations/`, `/slack/replies/`, `/slack/handles-and-channels/`
 - A reply is one message under the Agent's name and avatar, ending with the footer `Agent name | model | Configure`. Up to six rows render as a Markdown table, a native table needs at least seven, and very long answers continue in follow-up messages.
 - Streaming: the model may declare `stream_answer`, and only complete lines and finished words stream. Agents with connections or repositories stream only the final answer, after their last tool settles.
 - Model-written `@here`, `@channel`, workspace and user-group mentions never notify anyone. Only the handles of Agents working in the channel render as live mentions.
-- Files in: images, PDFs, text, Slack's document conversions and zips, up to 4 files and 12 MiB per message, read-only. A zip arrives as its file list; `read_slack_file` reads a file inside it, or an earlier file in the conversation, on request. Files out: generated files appear as attachments inside the Agent's own reply.
+- Files in: images, PDFs, text, Slack's document conversions and zips, up to 10 files and 12 MiB per message, read-only. A zip arrives as its file list; `read_slack_file` reads a file inside it, or an earlier file in the conversation, on request. Files out: generated files appear as attachments inside the Agent's own reply.
 - Block Kit: `ask_user`, `offer_actions` and `request_form` end the reply and wait for a click or submission; `present_cards`, `present_chart`, `present_details` and native tables decorate it. Workspace-change proposals carry **Approve** and **Cancel**.
 
 ## How a person reaches it

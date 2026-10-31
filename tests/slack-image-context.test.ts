@@ -19,6 +19,7 @@ import {
   isSlackAttachmentContextDelivery,
   type SlackAttachmentIntake,
 } from '../src/slack/attachment-context.ts';
+import { MAX_SLACK_ATTACHMENTS } from '../src/slack/attachment-file-ids.ts';
 import {
   parseThreadImageRecords,
   serializeThreadImageRecords,
@@ -151,9 +152,9 @@ test('no attachments are a no-op while explicit intake failures remain actionabl
 
   assert.deepEqual(parseSlackAttachmentIntake(delivery({
     attachmentIntakeStatus: 'too_many',
-    attachmentCount: '5',
+    attachmentCount: String(MAX_SLACK_ATTACHMENTS + 1),
     attachmentFileIds: '',
-  }), plan), { kind: 'rejected', status: 'too_many', count: 5 });
+  }), plan), { kind: 'rejected', status: 'too_many', count: MAX_SLACK_ATTACHMENTS + 1 });
   assert.deepEqual(parseSlackAttachmentIntake(delivery({
     attachmentIntakeStatus: 'invalid_metadata',
     attachmentCount: '2',
@@ -465,7 +466,7 @@ test('model-emitted directives cannot close the untrusted durable evidence block
 });
 
 test('explicit too-many and invalid-metadata intake failures never call retrieval or analysis', async () => {
-  for (const [status, count] of [['too_many', 5], ['invalid_metadata', 2]] as const) {
+  for (const [status, count] of [['too_many', MAX_SLACK_ATTACHMENTS + 1], ['invalid_metadata', 2]] as const) {
     let touched = false;
     const result = await createSlackAttachmentAnalysis({
       intake: { kind: 'rejected', status, count },
@@ -475,7 +476,7 @@ test('explicit too-many and invalid-metadata intake failures never call retrieva
     assert.equal(touched, false);
     assert.equal(result.failureCount, 1);
     const body = formatSlackAttachmentSignal(result).body;
-    assert.match(body, status === 'too_many' ? /up to four attachments/i : /re-upload/i);
+    assert.match(body, status === 'too_many' ? new RegExp(`up to ${MAX_SLACK_ATTACHMENTS} attachments`, 'i') : /re-upload/i);
   }
 });
 

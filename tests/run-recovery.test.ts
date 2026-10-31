@@ -19,6 +19,7 @@ import {
   createLedgerSlackRunHandler,
   type LedgerSlackTurnExecutor,
 } from '../src/slack/ledger-turn-driver.ts';
+import { MAX_SLACK_ATTACHMENTS, parseAttachmentFileIds } from '../src/slack/attachment-file-ids.ts';
 import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
 import { MAX_POST_DISPATCH_ATTEMPTS, replayTextForTurnProgress, TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
@@ -376,6 +377,56 @@ test('Flue Slack signals retain trusted attachment file ids without durable byte
   }
 });
 
+test('Flue Slack signals carry Slack\'s maximum file count at the longest file id, and refuse one more file', () => {
+  assert.equal(MAX_SLACK_ATTACHMENTS, 10, 'Slack\'s own per-message file maximum');
+  const longestIds = (count: number) =>
+    Array.from({ length: count }, (_, index) => `F${String(index).padStart(255, '0')}`);
+  const exact = longestIds(MAX_SLACK_ATTACHMENTS);
+  const over = longestIds(MAX_SLACK_ATTACHMENTS + 1);
+  assert.ok(exact.every((fileId) => fileId.length === 256));
+  assert.deepEqual(parseAttachmentFileIds(exact.join(',')), exact);
+  assert.equal(parseAttachmentFileIds(over.join(',')), undefined);
+
+  const prepare = (fileIds: string[]) => {
+    const db = openStateDb(':memory:');
+    try {
+      const turns = new TurnJobStoreLogic(db, () => NOW);
+      const filesTurn: NormalizedSlackTurn = {
+        ...turn(),
+        attachments: fileIds.map((fileId) => ({ fileId })),
+        attachmentIntake: { status: 'ok', count: fileIds.length },
+      };
+      const filesAssignment = assignment();
+      turns.enqueue({
+        id: 'turn_longest-files',
+        evtKey: 'evt_longest-files',
+        msgKey: 'msg_longest-files',
+        turn: filesTurn,
+        assignment: filesAssignment,
+      });
+      turns.freezeRuntimePlan('turn_longest-files', compileRuntimePlanV2({
+        turn: filesTurn,
+        assignment: filesAssignment,
+        instructions: 'Frozen attachment instructions.',
+        memoryEpoch: 1,
+      }));
+      return turns.prepareFlueDispatch(
+        'turn_longest-files',
+        'Read every attachment.',
+        { generation: 'longest-files-generation' },
+      );
+    } finally {
+      db.close();
+    }
+  };
+
+  const envelope = prepare(exact);
+  if (envelope.schemaVersion !== 2) throw new Error('expected a signal dispatch');
+  assert.equal(envelope.message.attributes.attachmentFileIds, exact.join(','));
+  assert.equal(envelope.message.attributes.attachmentCount, String(MAX_SLACK_ATTACHMENTS));
+  assert.throws(() => prepare(over), /^Error: Slack attachment file ids are invalid\.$/);
+});
+
 test('Flue Slack signals carry the turn thread image inventory, and omit it when empty', () => {
   const db = openStateDb(':memory:');
   try {
@@ -473,7 +524,7 @@ test('Flue Slack signals retain explicit attachment intake failures without file
     const turns = new TurnJobStoreLogic(db, () => NOW);
     const failedTurn: NormalizedSlackTurn = {
       ...turn(),
-      attachmentIntake: { status: 'too_many', count: 5 },
+      attachmentIntake: { status: 'too_many', count: MAX_SLACK_ATTACHMENTS + 1 },
     };
     const failedAssignment = assignment();
     turns.enqueue({
@@ -500,7 +551,7 @@ test('Flue Slack signals retain explicit attachment intake failures without file
     if (envelope.schemaVersion !== 2) throw new Error('expected a signal dispatch');
     assert.equal(envelope.message.attributes.attachmentFileIds, undefined);
     assert.equal(envelope.message.attributes.attachmentIntakeStatus, 'too_many');
-    assert.equal(envelope.message.attributes.attachmentCount, '5');
+    assert.equal(envelope.message.attributes.attachmentCount, String(MAX_SLACK_ATTACHMENTS + 1));
   } finally {
     db.close();
   }

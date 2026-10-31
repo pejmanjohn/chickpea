@@ -1,4 +1,5 @@
-export const MAX_SLACK_ATTACHMENTS = 4;
+/** Slack's own per-message file maximum; the byte and character budgets bound the cost. */
+export const MAX_SLACK_ATTACHMENTS = 10;
 
 const SLACK_ATTACHMENT_FILE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 /** Every id at its 256-character maximum, joined by commas. */
