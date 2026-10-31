@@ -298,6 +298,30 @@ test('a metadata document must describe a public client, as dynamic registration
   assert.ok(!host.requests.includes('https://evil.example/jwks'));
 });
 
+test('a metadata document may list only the redirects dynamic registration accepts', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const documents: Record<string, string> = {
+    'https://evil.example/reverse-domain': 'com.example.app:/callback',
+    'https://evil.example/custom-scheme': 'myapp://callback/done',
+    'https://evil.example/wildcard': 'https://evil.example/callback/*',
+  };
+  const host = metadataDocumentServer(Object.fromEntries(Object.entries(documents).map(([url, redirect]) =>
+    [url, lookalike(url, { redirect_uris: [redirect, CLAUDE_CALLBACK] })])));
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  for (const [clientId, redirect] of Object.entries(documents)) {
+    for (const signedIn of [false, true]) {
+      t.mock.timers.tick(1_000);
+      const response = await f.authorize(clientId, redirect, { signedIn });
+      assert.equal(response.status, 400, `${clientId} signed ${signedIn ? 'in' : 'out'}`);
+      assert.deepEqual(await response.json(), {
+        error: 'invalid_client',
+        error_description: 'metadata document redirect_uris must be HTTPS, or HTTP on a loopback host, with no wildcard, credentials or fragment',
+      }, clientId);
+    }
+  }
+  assert.deepEqual(f.clients(), [], 'a refused document leaves no client behind');
+});
+
 test('a stored client whose document turns to key authentication is refused before any key is fetched', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const jwksUri = 'https://claude.ai/oauth/jwks';
