@@ -9,12 +9,8 @@ import {
   hasDisallowedControlCharacter,
 } from '../security/content-validation.ts';
 import type { FlueDispatchReceiptV1, FlueObservationTarget } from './turn-job-types.ts';
-import {
-  activityStatus,
-  isSafeTypedActivityStatus,
-  type ActivityStatus,
-} from '../activity/status.ts';
-import { emitSemanticActivityTelemetry, semanticTelemetryForStatus } from '../activity/telemetry.ts';
+import { activityStatus, type ActivityStatus } from '../activity/status.ts';
+import { emitSemanticActivityTelemetry, semanticTelemetryForUpdate } from '../activity/telemetry.ts';
 import {
   appendSlackReplyFooter,
   canonicalSlackReplyText,
@@ -343,9 +339,7 @@ export class SlackAgentViewPresentation {
         event: 'activity.transport',
         surface: surface === 'message' ? 'legacy_message' : 'assistant_status',
         outcome: 'fenced',
-        ...(isSafeTypedActivityStatus(update)
-          ? semanticTelemetryForStatus(update)
-          : { family: 'unknown', phase: 'working' }),
+        ...semanticTelemetryForUpdate(update),
       });
       return undefined;
     }

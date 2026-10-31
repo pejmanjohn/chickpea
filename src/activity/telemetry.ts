@@ -1,5 +1,6 @@
 import {
   SEMANTIC_TARGET_FAMILIES,
+  isSafeTypedActivityStatus,
   type SemanticActivityPhase,
   type SemanticTargetFamily,
   type TypedActivityStatus,
@@ -228,6 +229,15 @@ export function semanticTelemetryForStatus(
   status: TypedActivityStatus,
 ): { family: SemanticTargetFamily; phase: SemanticActivityTelemetryPhase } {
   return { family: status.family, phase: status.phase };
+}
+
+/** The same facts for any status write; one not safely typed reads `unknown`, `working`. */
+export function semanticTelemetryForUpdate(
+  update: unknown,
+): { family: SemanticTargetFamily; phase: SemanticActivityTelemetryPhase } {
+  return isSafeTypedActivityStatus(update)
+    ? semanticTelemetryForStatus(update)
+    : { family: 'unknown', phase: 'working' };
 }
 
 function telemetrySurface(value: unknown): SemanticActivityTelemetrySurface {
