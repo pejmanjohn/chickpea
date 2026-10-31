@@ -51,18 +51,18 @@ each file's path, kind, and size. Folders, `__MACOSX/`, `._` files,
 `.DS_Store`, and macOS `Icon` files are left out. Nothing inside is unpacked
 until the Agent reads it.
 
-`read_slack_file` mounts when the conversation holds a readable file. A
-readable file is a zip or `.skill` archive, a PDF, a UTF-8 text or source
-file, or a Word, Excel, or PowerPoint file. Chickpea reads an Office file
-through Slack's PDF copy, so its layout and formulas may be missing. Images
-keep their `img:N` handles for the image tool. Other files, deleted files, and
-external files get no `file:N` handle.
+`read_slack_file` mounts when the conversation holds a readable file or the
+request carries a file. A readable file is a zip or `.skill` archive, a PDF, a
+UTF-8 text or source file, or a Word, Excel, or PowerPoint file. Chickpea
+reads an Office file through Slack's PDF copy, so its layout and formulas may
+be missing. Images keep their `img:N` handles for the image tool. Other files,
+deleted files, and external files get no `file:N` handle.
 
 The handles number the newest 20 readable files in the conversation, in the
 order they were first shared, then the request's own files. Files from people,
 apps, and Agents all count. A handle stays the same across turns while the
-conversation holds 20 or fewer readable files, and every result names its
-file.
+conversation holds 20 or fewer readable files and none is deleted, and every
+result names its file.
 
 - One read downloads one file of up to 8 MiB.
 - Text comes back in pages of 50,000 characters. A result with `nextOffset`
