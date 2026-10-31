@@ -63,6 +63,8 @@ export type ManagementOrigin =
       agentId?: string;
       /** Web content entered this conversation, so text the model writes may be that content's. */
       publicDocRead?: true;
+      /** Files attached to the requester's current message, from the host's normalized turn. Never model-written. */
+      attachmentFileIds?: readonly string[];
     }
   | {
       kind: 'mcp';
@@ -73,10 +75,10 @@ export type ManagementOrigin =
       sessionId: string;
     };
 
-/** A setup record's origin, without the turn-only approval stamp and requester message. */
+/** A setup record's origin, without the turn-only approval stamp, requester message and attachments. */
 export type StoredManagementOrigin =
   | Exclude<ManagementOrigin, { kind: 'slack' }>
-  | Omit<Extract<ManagementOrigin, { kind: 'slack' }>, 'requestText' | 'requestTextSource' | 'approvedProposalId'>;
+  | Omit<Extract<ManagementOrigin, { kind: 'slack' }>, 'requestText' | 'requestTextSource' | 'approvedProposalId' | 'attachmentFileIds'>;
 
 /** Trusted adapter context. It is never part of a model-selected operation. */
 export interface ManagementActorContext {
@@ -1361,9 +1363,11 @@ export interface UploadSkillsFile {
 
 export interface UploadSkillsInput {
   context: ManagementActorContext;
-  agentId: string;
-  files: UploadSkillsFile[];
-  /** Same meaning as import_skill's: replace same-name skills whose content differs. */
+  /** Required on MCP; Slack defaults to the routed Agent. */
+  agentId?: string;
+  /** Required on MCP and refused on Slack, which reads the requester message's attachments. */
+  files?: UploadSkillsFile[];
+  /** MCP only, with import_skill's meaning: replace same-name skills whose content differs. Slack refuses it. */
   replaceExisting?: boolean;
   idempotencyKey: string;
 }

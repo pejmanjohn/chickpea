@@ -171,14 +171,16 @@ test('an attachment turn carries the triggering message identity and its envelop
     body: `What does the ROAS report say?\n${envelope}`,
   });
 
-  // Only trusted routing identity crosses; the file ids and intake status do
-  // not, so the rerender cannot re-enter attachment retrieval.
+  // Trusted routing identity and the file IDs cross, so the skill upload tool
+  // still reads this message's files; the intake status does not, so the
+  // rerender cannot re-enter attachment retrieval.
   assert.deepEqual(turn.attributes, {
     slackUserId: 'U_HUMAN',
     eventId: 'Ev_ATTACHMENT',
     messageTs: '1782770401.000200',
     turnJobId: 'turn_attachment',
     requesterText: 'What does the ROAS report say?',
+    attachmentFileIds: 'F_FILE_1,F_FILE_2',
   });
   assert.equal(turn.currentRequestEnvelope, envelope);
 
@@ -189,8 +191,9 @@ test('an attachment turn carries the triggering message identity and its envelop
   assert.equal(signal.attributes.slackUserId, 'U_HUMAN');
   assert.equal(signal.attributes.messageTs, '1782770401.000200');
   assert.equal(signal.attributes.attachmentStatus, 'complete');
-  assert.equal(signal.attributes.attachmentFileIds, undefined);
+  assert.equal(signal.attributes.attachmentFileIds, 'F_FILE_1,F_FILE_2');
   assert.equal(signal.attributes.attachmentIntakeStatus, undefined);
+  assert.equal(parseSlackAttachmentIntake(signal, plan).kind, 'none', 'the analysis signal never starts another analysis');
   // The envelope is terminal: after the evidence end marker, nothing else.
   assert.ok(signal.body.endsWith(`\n${envelope}`));
   assert.ok(signal.body.indexOf('===== END UNTRUSTED DERIVED ATTACHMENT EVIDENCE =====') <
@@ -562,9 +565,7 @@ test('the thread image inventory survives the attachment re-render unchanged', (
   const turn = slackAttachmentTurnContext(delivery({ threadImages, admittedListIds }));
   assert.equal(turn.attributes.threadImages, threadImages);
   assert.equal(turn.attributes.admittedListIds, admittedListIds);
-  // The attachment file ids still stop at the first render; only the image
-  // inventory crosses, so the re-render addresses the same `img:N` handles.
-  assert.equal(turn.attributes.attachmentFileIds, undefined);
+  // The image inventory crosses, so the re-render addresses the same `img:N` handles.
 
   const signal = formatSlackAttachmentSignal(
     { attachmentCount: 1, successCount: 1, failureCount: 0, manifest: [] },

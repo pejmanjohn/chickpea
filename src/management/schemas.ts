@@ -778,6 +778,10 @@ export const importSkillValibotSchema = v.strictObject({
   idempotencyKey: vt(256),
   guideVersion: v.literal(AGENT_AUTHORING_GUIDE_VERSION),
 });
+/** Slack's door names no files and carries no content: the service reads the message's own attachments. */
+export const slackUploadSkillsValibotSchema = v.strictObject({
+  agentId: v.optional(v.pipe(vAgentId, v.description('Only for another Agent the person names. Omit to install on this Agent.'))),
+});
 export const manageAgentSkillValibotSchema = v.strictObject({
   agentId: v.optional(vAgentId),
   action: v.picklist(['enable', 'disable', 'remove']),
