@@ -84,7 +84,10 @@ export class InteractiveUsageRecorder {
       channelId: options.turn.channelId,
       channelLabel: direct ? null : (options.assignment.channelLabel ?? options.turn.channelId),
       conversationKind: direct ? 'direct_message' : 'named_channel',
-      ...(validSlackTs(sourceMessageTs) ? { slackMessageTs: sourceMessageTs } : {}),
+      ...(validSlackTs(sourceMessageTs) ? {
+        slackMessageTs: sourceMessageTs,
+        ...(validSlackTs(options.turn.threadTs) ? { slackThreadTs: options.turn.threadTs } : {}),
+      } : {}),
       requesterMembershipId: options.turn.actorMembershipId ?? null,
       executionPrincipalId: options.assignment.agentId,
       ...modelPolicyUsage(options.assignment.modelAttribution),

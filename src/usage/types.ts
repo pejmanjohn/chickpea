@@ -82,6 +82,8 @@ export interface AdmitUsageOperationInput {
   conversationKind: UsageConversationKind;
   /** Slack ts of the message that started an interactive turn. */
   slackMessageTs?: string | null;
+  /** Slack ts of that message's thread root; equal to the message ts at the top level. */
+  slackThreadTs?: string | null;
   routineId?: string | null;
   routineLabel?: string | null;
   routineRunId?: string | null;
@@ -112,6 +114,7 @@ export interface UsageOperation {
   channelLabel: string | null;
   conversationKind: UsageConversationKind;
   slackMessageTs: string | null;
+  slackThreadTs: string | null;
   routineId: string | null;
   routineLabel: string | null;
   routineRunId: string | null;

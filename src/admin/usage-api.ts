@@ -35,6 +35,7 @@ export interface SlackMessage {
   workspaceId: string;
   channelId: string;
   messageTs: string;
+  threadTs?: string;
 }
 
 // Turns admitted before `slackMessageTs` existed carry the message ts in their ID.
@@ -262,7 +263,15 @@ async function slackMessage(
     return posted ? { workspaceId, ...posted } : undefined;
   }
   if (operation.operationKind !== 'interactive_turn' || !channelId) return undefined;
-  const messageTs = operation.slackMessageTs ?? earlierTurnMessageTs(operation.operationId, channelId);
+  if (operation.slackMessageTs) {
+    return {
+      workspaceId,
+      channelId,
+      messageTs: operation.slackMessageTs,
+      ...(operation.slackThreadTs ? { threadTs: operation.slackThreadTs } : {}),
+    };
+  }
+  const messageTs = earlierTurnMessageTs(operation.operationId, channelId);
   return messageTs ? { workspaceId, channelId, messageTs } : undefined;
 }
 
@@ -280,7 +289,12 @@ function slackMessageUrl(permalink: string | undefined, message: SlackMessage): 
       // Fall through to the link built from the stored coordinate.
     }
   }
-  return `https://slack.com/archives/${encodeURIComponent(message.channelId)}/p${message.messageTs.replace('.', '')}`;
+  const channel = encodeURIComponent(message.channelId);
+  const link = `https://slack.com/archives/${channel}/p${message.messageTs.replace('.', '')}`;
+  // A reply's link opens its thread only when it names the thread root.
+  return message.threadTs && message.threadTs !== message.messageTs
+    ? `${link}?thread_ts=${message.threadTs}&cid=${channel}`
+    : link;
 }
 
 async function currentChannelLabels(

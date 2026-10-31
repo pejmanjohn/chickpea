@@ -64,6 +64,7 @@ export function normalizeAdmitUsageOperation(input: AdmitUsageOperationInput): A
     channelLabel,
     conversationKind,
     slackMessageTs: optionalSlackTs(input.slackMessageTs ?? null),
+    slackThreadTs: optionalSlackTs(input.slackThreadTs ?? null),
     routineId: optionalId(input.routineId ?? null, 'routine ID'),
     routineLabel: optionalLabel(input.routineLabel ?? null, 'routine label'),
     routineRunId: optionalId(input.routineRunId ?? null, 'routine run ID'),

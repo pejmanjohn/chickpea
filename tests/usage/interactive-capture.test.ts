@@ -579,11 +579,17 @@ test('an interactive turn records the Slack message it answers; a reaction or a 
         processEnv: { CHICKPEA_INSTALLATION_ID: 'installation_usage' },
       });
       await recorder.admit();
-      return (await store.getOperation(operationId))?.operation.slackMessageTs;
+      const operation = (await store.getOperation(operationId))?.operation;
+      return [operation?.slackMessageTs, operation?.slackThreadTs];
     };
 
-    assert.equal(await record('msg:C_USAGE:1000.0001', turn), '1000.0001');
-    assert.equal(
+    assert.deepEqual(await record('msg:C_USAGE:1000.0001', turn), ['1000.0001', '1000.0001']);
+    assert.deepEqual(
+      await record('msg:C_USAGE:1000.0004', { ...turn, messageTs: '1000.0004' }),
+      ['1000.0004', '1000.0001'],
+      'a thread reply keeps its thread root',
+    );
+    assert.deepEqual(
       await record('msg:C_USAGE:1000.0009', {
         ...turn,
         source: 'reaction_added',
@@ -591,21 +597,21 @@ test('an interactive turn records the Slack message it answers; a reaction or a 
         threadTs: '1000.0002',
         reactionTargetTs: '1000.0002',
       }),
-      '1000.0002',
+      ['1000.0002', '1000.0002'],
     );
-    assert.equal(
+    assert.deepEqual(
       await record('msg:C_USAGE:1000.0007', {
         ...turn,
         messageTs: '1000.0007',
         threadTs: '1000.0003',
         uiResponse: { surfaceId: 'surface_usage', namespace: 'ui', kind: 'choice', choice: 0 },
       }),
-      '1000.0003',
+      ['1000.0003', '1000.0003'],
       'a UI answer\'s ts is its receipt time, so the row links to the surface\'s thread',
     );
-    assert.equal(
+    assert.deepEqual(
       await record('oauthresume:usage', { ...turn, messageTs: 'resumed' }),
-      null,
+      [null, null],
       'a turn without a Slack timestamp is still admitted, with no message to link',
     );
   } finally {
@@ -613,7 +619,7 @@ test('an interactive turn records the Slack message it answers; a reaction or a 
   }
 });
 
-test('a usage row admitted before the Slack message column existed accepts a replay that carries it', async () => {
+test('a usage row admitted before the Slack message columns existed accepts a replay that carries them', async () => {
   const store = new SqliteUsageStore(':memory:');
   try {
     const admission = {
@@ -634,12 +640,17 @@ test('a usage row admitted before the Slack message column existed accepts a rep
       credentialVersion: null,
     };
     await store.admitOperation(admission);
-    const replayed = await store.admitOperation({ ...admission, slackMessageTs: '1000.0001' });
-    assert.equal(replayed.slackMessageTs, null, 'a replay does not rewrite the admitted row');
+    const replayed = await store.admitOperation({ ...admission, slackMessageTs: '1000.0001', slackThreadTs: '1000.0001' });
+    assert.deepEqual([replayed.slackMessageTs, replayed.slackThreadTs], [null, null], 'a replay does not rewrite the admitted row');
 
     await store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0002', sourceId: 'msg:C_USAGE:1000.0002', slackMessageTs: '1000.0002' });
     await assert.rejects(
       store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0002', sourceId: 'msg:C_USAGE:1000.0002', slackMessageTs: '1000.0003' }),
+      /different work/,
+    );
+    await store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0005', sourceId: 'msg:C_USAGE:1000.0005', slackMessageTs: '1000.0005', slackThreadTs: '1000.0001' });
+    await assert.rejects(
+      store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0005', sourceId: 'msg:C_USAGE:1000.0005', slackMessageTs: '1000.0005', slackThreadTs: '1000.0002' }),
       /different work/,
     );
     await assert.rejects(
@@ -651,7 +662,7 @@ test('a usage row admitted before the Slack message column existed accepts a rep
   }
 });
 
-test('an existing usage database gains the Slack message column, and its old rows read with none', () => {
+test('an existing usage database gains the Slack message columns, and its old rows read with none', () => {
   const db = openStateDb(':memory:');
   try {
     const original = new UsageStoreLogic(db);
@@ -673,11 +684,15 @@ test('an existing usage database gains the Slack message column, and its old row
       credentialVersion: null,
     });
     db.exec('ALTER TABLE usage_operations DROP COLUMN slack_message_ts');
+    db.exec('ALTER TABLE usage_operations DROP COLUMN slack_thread_ts');
 
     const upgraded = new UsageStoreLogic(db);
-    const column = db.all('PRAGMA table_info(usage_operations)').find((row) => row.name === 'slack_message_ts');
-    assert.deepEqual([column?.type, column?.notnull, column?.dflt_value], ['TEXT', 0, null], 'added nullable, with no default');
-    assert.equal(upgraded.getOperation('msg:C_USAGE:1000.0001')?.operation.slackMessageTs, null);
+    for (const name of ['slack_message_ts', 'slack_thread_ts']) {
+      const column = db.all('PRAGMA table_info(usage_operations)').find((row) => row.name === name);
+      assert.deepEqual([column?.type, column?.notnull, column?.dflt_value], ['TEXT', 0, null], `${name} added nullable, with no default`);
+    }
+    const operation = upgraded.getOperation('msg:C_USAGE:1000.0001')?.operation;
+    assert.deepEqual([operation?.slackMessageTs, operation?.slackThreadTs], [null, null]);
   } finally {
     db.close();
   }

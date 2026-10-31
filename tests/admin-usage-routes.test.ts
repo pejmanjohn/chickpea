@@ -17,6 +17,7 @@ import type { AdmitUsageOperationInput } from '../src/usage/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import type { BindingId, RunId, WorkId, WorkStore } from '../src/work/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { withDirectSlackInstall } from './helpers/direct-slack-install.ts';
 
 test('committed deployment internalizes Usage defaults and keeps independent kill switches', async () => {
   const config = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
@@ -445,7 +446,16 @@ function slackUsageRow(overrides: Partial<AdmitUsageOperationInput> & { operatio
 }
 
 async function seedSlackUsageRows(usage: SqliteUsageStore): Promise<void> {
-  await usage.admitOperation(slackUsageRow({ operationId: 'op_new', slackMessageTs: '1793425408.462389' }));
+  await usage.admitOperation(slackUsageRow({
+    operationId: 'op_new',
+    slackMessageTs: '1793425408.462389',
+    slackThreadTs: '1793425300.000001',
+  }));
+  await usage.admitOperation(slackUsageRow({
+    operationId: 'op_top_level',
+    slackMessageTs: '1793425300.000001',
+    slackThreadTs: '1793425300.000001',
+  }));
   await usage.admitOperation(slackUsageRow({ operationId: 'msg:C0OLD:1793425396.721899', channelId: 'C0OLD' }));
   await usage.admitOperation(slackUsageRow({
     operationId: 'msg:C0OLD:1793425400.000100:ask-agent_peer',
@@ -507,6 +517,7 @@ test('each Usage row links to the Slack message that started it, and Slack suppl
       [item.operation.operationId, item.operation.slackMessagePath]));
     assert.deepEqual(paths, {
       op_new: '/admin/api/usage/operations/op_new/slack-message',
+      op_top_level: '/admin/api/usage/operations/op_top_level/slack-message',
       'msg:C0OLD:1793425396.721899': '/admin/api/usage/operations/msg%3AC0OLD%3A1793425396.721899/slack-message',
       'msg:C0OLD:1793425400.000100:ask-agent_peer':
         '/admin/api/usage/operations/msg%3AC0OLD%3A1793425400.000100%3Aask-agent_peer/slack-message',
@@ -532,7 +543,7 @@ test('each Usage row links to the Slack message that started it, and Slack suppl
       { workspaceId: 'T0SLACK', channelId: 'C0ROUTINE', messageTs: '1793425500.000200' },
     ], 'rows from before the column existed resolve from their recorded message');
 
-    const fallback = 'https://slack.com/archives/C0NEW/p1793425408462389';
+    const fallback = 'https://slack.com/archives/C0NEW/p1793425408462389?thread_ts=1793425300.000001&cid=C0NEW';
     for (const unsafe of [
       'https://acme.slack.com.attacker.example/archives/C0NEW/p1793425408462389',
       'http://acme.slack.com/archives/C0NEW/p1793425408462389',
@@ -547,7 +558,17 @@ test('each Usage row links to the Slack message that started it, and Slack suppl
     assert.equal(
       (await app.request('/usage/operations/op_new/slack-message')).headers.get('location'),
       fallback,
-      'a Slack failure still opens the message link built from the stored coordinate',
+      'a Slack failure still opens the reply in its thread from the stored coordinate',
+    );
+    assert.equal(
+      (await app.request('/usage/operations/op_top_level/slack-message')).headers.get('location'),
+      'https://slack.com/archives/C0NEW/p1793425300000001',
+      'a top-level message needs no thread parameters',
+    );
+    assert.equal(
+      (await app.request('/usage/operations/msg%3AC0OLD%3A1793425396.721899/slack-message')).headers.get('location'),
+      'https://slack.com/archives/C0OLD/p1793425396721899',
+      'an earlier row has no recorded thread, so only Slack\'s permalink can open its thread',
     );
 
     for (const operationId of ['oauthresume%3Aresume_1', 'routine_run_quiet', 'routine_run_private', 'op_missing']) {
@@ -586,8 +607,8 @@ test('the Usage Slack link route is authenticated and reads routine posts from t
     assert.equal(opened.status, 302);
     assert.equal(
       opened.headers.get('location'),
-      'https://slack.com/archives/C0NEW/p1793425408462389',
-      'with no Slack installation to ask, the stored coordinate still opens the message',
+      'https://slack.com/archives/C0NEW/p1793425408462389?thread_ts=1793425300.000001&cid=C0NEW',
+      'with no Slack installation to ask, the stored coordinate still opens the reply in its thread',
     );
     const routine = await app.request('/admin/api/usage/operations/routine_run_posted/slack-message', { headers });
     assert.equal(routine.headers.get('location'), 'https://slack.com/archives/C0ROUTINE/p1793425500000200');
@@ -597,6 +618,47 @@ test('the Usage Slack link route is authenticated and reads routine posts from t
     usage.close();
     config.close();
   }
+});
+
+
+test('a direct install asks Slack for the permalink with its own bot token', async () => {
+  const permalink = 'https://team-one.slack.com/archives/C1/p1793425408462389?thread_ts=1793425300.000001&cid=C1';
+  await withDirectSlackInstall({
+    answer: (method) => {
+      if (method === 'auth.test') return { ok: true, team_id: 'T1', user_id: 'UBOT', app_id: 'A1', team: 'Team One', user: 'chickpea' };
+      if (method === 'chat.getPermalink') return { ok: true, channel: 'C1', permalink };
+      return undefined;
+    },
+  }, async (install) => {
+    const usage = new SqliteUsageStore(':memory:');
+    try {
+      await usage.admitOperation(slackUsageRow({
+        operationId: 'op_direct',
+        workspaceId: 'T1',
+        channelId: 'C1',
+        slackMessageTs: '1793425408.462389',
+        slackThreadTs: '1793425300.000001',
+      }));
+      const app = createAdminRoutes({
+        store: install.stores.config,
+        usage,
+        ...testAdminAuthority('usage-direct-token'),
+      });
+      const opened = await app.request('/admin/api/usage/operations/op_direct/slack-message', {
+        headers: testAdminHeaders('usage-direct-token'),
+      });
+      assert.equal(opened.status, 302);
+      assert.equal(opened.headers.get('location'), permalink);
+      const asked = install.calls.filter((call) => call.method === 'chat.getPermalink');
+      assert.equal(asked.length, 1);
+      assert.deepEqual(
+        [asked[0]!.body.get('channel'), asked[0]!.body.get('message_ts')],
+        ['C1', '1793425408.462389'],
+      );
+    } finally {
+      usage.close();
+    }
+  });
 });
 
 async function seedUsageRun(
