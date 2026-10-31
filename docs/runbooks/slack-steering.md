@@ -261,7 +261,12 @@ Limits:
 - With the emergency alarm executor (`SLACK_TAG_TURN_EXECUTOR=alarm`), the
   state store aborts the run in its own process. There is no coding stop
   cascade, so the note for a run that did coding work says it may still be
-  winding down, and `thread_runner_alarm` reports no `dropped` count.
+  winding down, and `thread_runner_alarm` reports no `dropped` count. The
+  alarm executor takes no follow-ups. If the executor mode changes to `alarm`
+  while runner turns are in flight, a runner turn may still take as a
+  follow-up a row the alarm executor had already listed; the alarm's run of
+  that row stops at dispatch, which refuses a follow-up, and retries once the
+  turn that took it has ended.
 - Stops and check-ins see turns on the standard execution path only. A Run
   owned by the ledger canary in [agent runtime rollout](agent-runtime-rollout.md)
   is not stopped, and a stop phrase in its thread is an ordinary message.
