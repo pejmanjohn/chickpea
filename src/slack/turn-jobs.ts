@@ -1153,7 +1153,7 @@ export class TurnJobStoreLogic {
       headTurn.messageTs,
       ...members.flatMap(({ message }) => isEditTurn(message) ? [] : [message.messageTs]),
     ]);
-    // A replayed cycle takes no new message, but it still takes edits.
+    // A cycle that already holds a message is a replay: it takes no new message, but it still takes edits.
     if (!members.some(({ record, message }) => record.cycle === cycle && !isEditTurn(message))) {
       this.takeFoldMessages({ head, headTurn, headAssignment, threadKey, cycle, phase: request.phase, group, usesPersonalAccess });
     }
