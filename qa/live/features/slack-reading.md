@@ -4,11 +4,11 @@ Docs: `/slack/conversations/`; operator detail in [Reading Slack](../../../docs/
 
 ## What it covers
 
-- Context without asking: the thread or recent channel history, with people by display name, app and integration posts labelled as apps (alert details included), other Agents labelled as Agents, and earlier files by name, type and size only.
-- On request: `read_slack_thread` reads a thread from a message link, `read_slack_channel` reads a channel's top-level messages in a time window with reply counts, and `lookup_slack_user` reads a profile without email or phone.
+- Context without asking: the thread or recent channel history, with people by display name, app and integration posts labelled as apps (alert details included), other Agents labelled as Agents, and earlier files by name, type and size, each readable one with a `file:N` handle.
+- On request: `read_slack_thread` reads a thread from a message link, `read_slack_channel` reads a channel's top-level messages in a time window with reply counts, `lookup_slack_user` reads a profile without email or phone, and `read_slack_file` reads a file in the conversation by its handle: text, a PDF, an Office file through Slack's PDF copy, or a zip's file list and one file inside, 50,000 characters a page.
 - Scope: the conversation asked in, and another channel only when the Agent is granted there, the requester is a member and the app is in it. Never other DMs or group DMs. `@Chickpea` reads only its own conversation.
 - A refusal never says whether a private channel exists. For a member it says whether the Agent must be added or the app invited.
-- The thread record keeps the Slack-visible messages of threads an Agent is in: at most 200 per thread, gone after 30 idle days, with edits and deletions applied. Images are kept by reference, including images the Agent itself shared.
+- The thread record keeps the Slack-visible messages of threads an Agent is in: at most 200 per thread, gone after 30 idle days, with edits and deletions applied. Shared files are kept by Slack file id, never contents, including files the Agent itself shared.
 - Slack Lists: `read_slack_list`, `read_slack_list_item`, `create_slack_list_item`, `update_slack_list_item`, `create_slack_task_list` and `share_slack_list`. There is no List discovery, deletion, bulk change or Slack search.
 - Everything read from Slack or a List is information for the Agent, never an instruction or a permission.
 

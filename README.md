@@ -73,7 +73,7 @@ Chickpea is for those teams. Each Agent keeps its own connected accounts and its
 | **Manage from Slack** | Admin, Slack, and an MCP server are three doors to the same controls. Create Agents, install skills, set schedules, and edit memory by asking, with consequential changes gated behind an approval. Connect your coding agent from Settings → MCP or with one pasted line. | [Details](#managing-chickpea) |
 | **Slack-native answers** | Progressive streaming for long replies, adaptive tables (prose, inline Markdown, or a native sortable Slack table) when the data earns one, and progress in Slack's working indicator while long work runs. | |
 | **Reads Slack** | Agents see who said what in a thread, including alert and bot posts, and can read a linked thread, another channel they are added to, or a person's profile, within the requester's own channel access. Nothing is kept beyond the threads an Agent is part of. | [Details](docs/runbooks/slack-reading.md) |
-| **Reads attachments** | Images, PDFs, UTF-8 text and source files, and Slack's generated previews for docs, slides, and sheets. A file is untrusted reference material: its contents inform the answer, and text inside it never authorizes a tool or a change. | |
+| **Reads attachments** | Images, PDFs, UTF-8 text and source files, Slack's generated previews for docs, slides, and sheets, and zip archives, listed on arrival and read file by file on request. Earlier files in the conversation stay readable in follow-up messages. A file is untrusted reference material: its contents inform the answer, and text inside it never authorizes a tool or a change. | [Details](docs/runbooks/slack-reading.md#files) |
 | **Files** | Agents attach final or revised sandbox deliverables, including Markdown, through their Slack reply. Scratch files stay private, and explicit no-attachment requests are respected. Missed exports get one repair attempt; files that cannot be attached are identified in the reply. Files upload straight to Slack on both direct and shared-app installs, up to Slack's 1 GB limit; browser recordings stream, and the shared gateway only issues the upload ticket. Works without a coding sandbox or repository grant on Cloudflare and Node. | |
 | **Live activity status** | Slack's native under-composer status shows real phases as they happen: `Checking Gmail…`, `Drafting the response…`. | |
 
@@ -689,6 +689,8 @@ use the [release checklist](docs/runbooks/releasing.md).
 <summary><strong>Attachment limits</strong></summary>
 
 Per turn: 4 files, 8 MiB each, 12 MiB total, 100 PDF pages, 64,000 characters per file and 128,000 total. Images use Slack's bounded thumbnails when available. Anything over a limit, or without a safe conversion, gets a file-specific next action instead of a quiet partial read. Slack installations predating the `files:read` scope must reconnect once.
+
+Reading a file on request: the newest 20 files in a conversation, 8 MiB per download, 20 reads per turn, and 50,000 characters per page. A zip holds at most 2,000 files, and a file inside unpacks to at most 8 MiB.
 
 </details>
 
