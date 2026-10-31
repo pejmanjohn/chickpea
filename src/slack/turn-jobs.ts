@@ -1134,10 +1134,10 @@ export class TurnJobStoreLogic {
         validSlackTs(turn.messageTs) && compareSlackTs(turn.messageTs, lastTs) > 0;
       if (!eligible || taken.length >= MAX_FOLDED_MESSAGES) break;
       if (taken.length > 0 && chars + turn.text.length > MAX_FOLDED_TEXT_CHARS) break;
-      const informed = foldedInformationOnly(turn.userId, headTurn.userId, usesPersonalAccess);
+      const informationOnly = foldedInformationOnly(turn.userId, headTurn.userId, usesPersonalAccess);
       this.writeFoldRecord(String(row.id), {
         schemaVersion: 1,
-        role: informed ? 'informed' : 'absorbed',
+        role: informationOnly ? 'informed' : 'absorbed',
         headId: request.headId,
         cycle,
         received: cycle === 0,
@@ -1145,7 +1145,7 @@ export class TurnJobStoreLogic {
       });
       taken.push({
         turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text,
-        ...(informed ? { informationOnly: true as const } : {}),
+        ...(informationOnly ? { informationOnly: true as const } : {}),
       });
       lastTs = turn.messageTs;
       chars += turn.text.length;
