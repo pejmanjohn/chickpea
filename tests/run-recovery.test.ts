@@ -438,6 +438,35 @@ test('Flue Slack signals checkpoint the admitted List set across replay', () => 
   }
 });
 
+test('Flue Slack signals carry the conversation\'s archive file IDs in handle order, and refuse a malformed list', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    for (const [id, archives] of [
+      ['turn_archives', ['F0SECOND001', 'F0FIRST0001']],
+      ['turn_no-archives', undefined],
+      ['turn_repeated-archive', ['F0FIRST0001', 'F0FIRST0001']],
+    ] as const) {
+      const archiveTurn = turn();
+      const archiveAssignment = assignment();
+      turns.enqueue({ id, evtKey: `evt_${id}`, msgKey: `msg_${id}`, turn: archiveTurn, assignment: archiveAssignment });
+      turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+        turn: archiveTurn, assignment: archiveAssignment, instructions: 'Frozen archive instructions.', memoryEpoch: 1,
+      }));
+      const prepare = () => turns.prepareFlueDispatch(id, 'Open the Q3 file.', { generation: id }, undefined, undefined, undefined, archives);
+      if (id === 'turn_repeated-archive') {
+        assert.throws(prepare, /Slack thread archive file ids are invalid/);
+        continue;
+      }
+      const envelope = prepare();
+      if (envelope.schemaVersion !== 2) throw new Error('expected a signal dispatch');
+      assert.equal(envelope.message.attributes.threadArchiveFileIds, archives?.join(','));
+    }
+  } finally {
+    db.close();
+  }
+});
+
 test('Flue Slack signals retain explicit attachment intake failures without file metadata', () => {
   const db = openStateDb(':memory:');
   try {

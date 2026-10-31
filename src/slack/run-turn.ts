@@ -1,5 +1,6 @@
 import { planAllowsConnectionFileUpload } from '../connections/file-upload-tool.ts';
 import { conversationThreadImageInventory } from './thread-images.ts';
+import { threadArchiveManifest } from './thread-archives.ts';
 import { verifyMemoryUpdateAcknowledgement } from './memory-update-terminal.ts';
 import { WebClient } from '@slack/web-api';
 
@@ -80,6 +81,7 @@ import {
 } from '../routines/commands.ts';
 import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import { replyFooterModelLabel } from './message-format.ts';
+import { createMidRunReplyHandler } from './midrun-reply.ts';
 import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import {
@@ -430,6 +432,8 @@ export interface RunTurnOptions {
   onFollowUpsInformed?: (count: number) => void;
   /** Set by `runTurn` itself when `turnLatency` is present: a 👀 on a message the turn read became 👍. */
   onRead?: () => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: the Agent posted a reply mid-run. */
+  onMidRunReply?: () => void;
 }
 
 /** How a stopped turn ends (see RunTurnOptions.stopEnding). */
@@ -523,6 +527,7 @@ export async function runTurn(
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
       onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
       onRead: () => tracker.markRead(),
+      onMidRunReply: () => tracker.markMidRunReply(),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
         if (outcome === 'stopped') stopped = true;
@@ -984,6 +989,18 @@ async function runTurnAttempt(
   const registerStatusTurn = (statusInstanceId: string) => {
     const registration = statusRegistry.registerTurn(statusInstanceId, activityPresenter, {
       generation: statusGeneration,
+      ...(agentViewPresentation
+        ? {
+            midRunReply: createMidRunReplyHandler({
+              presentation: agentViewPresentation,
+              post: (text) => presenter.postMidRunReply(text),
+              onPosted: () => {
+                options.onSlackWrite?.('midrun_reply');
+                options.onMidRunReply?.();
+              },
+            }),
+          }
+        : {}),
       ...(frozenPresentation?.schemaVersion === 3
         ? {
             sessionGeneration: frozenPresentation.sessionGeneration,
@@ -1488,8 +1505,9 @@ async function runTurnAttempt(
     });
     await usageRecorder?.recordStopped();
     await statusTurn.prepareFinal();
+    const midRunReplies = await agentViewPresentation?.midRunReplies().catch(() => undefined) ?? [];
     await presenter.deliverFinal(
-      slackStopNoteText(facts),
+      slackStopNoteText({ ...facts, repliesPosted: midRunReplies.filter((reply) => reply.posted).length }),
       'markdown',
       'complete',
       undefined,
@@ -1865,6 +1883,8 @@ async function runTurnAttempt(
     const threadImageManifest = threadImages && runtimePlanDecision
       ? conversationThreadImageInventory(runtimePlanDecision.runtimePlan.conversation, threadImages).manifest
       : '';
+    const threadArchives = context.archives ?? [];
+    const archiveManifest = threadArchiveManifest(threadArchives, turn.messageTs);
     // The store decides the same when the plan freezes, which is after it
     // took these messages (TurnJobStoreLogic.decideStartFoldRoles).
     const usesPersonalAccess = runtimePlanDecision === undefined ||
@@ -1897,6 +1917,7 @@ async function runTurnAttempt(
       // guest reads it as a question.
       ...(turn.agentAsk ? { askedAsThreadOwner: assignment.threadGuest !== true } : {}),
       ...(threadImageManifest ? { threadImageManifest } : {}),
+      ...(archiveManifest ? { threadArchiveManifest: archiveManifest } : {}),
       ...(installationContext
         ? {
             slackApp: {
@@ -1998,6 +2019,7 @@ async function runTurnAttempt(
               ? { memoryBlock: preparedMemory.promptBlock }
               : {}),
             ...(threadImages ? { threadImages } : {}),
+            ...(threadArchives.length ? { threadArchiveFileIds: threadArchives.map(({ fileId }) => fileId) } : {}),
             ...(admittedListIds.length ? { admittedListIds } : {}),
             ...turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv),
             ...(platformEnv ? { env: platformEnv } : {}),

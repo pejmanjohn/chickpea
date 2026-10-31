@@ -2,7 +2,7 @@ import { getResolvedPDFJS } from 'unpdf';
 
 import { sniffFileKind } from '../files/magic.ts';
 import { ZipArchiveError } from '../files/zip.ts';
-import { type ArchiveHandle, archiveHandle, archiveListing } from './archive-attachments.ts';
+import { type ArchiveHandle, archiveFileIds, archiveHandle, archiveListing } from './archive-attachments.ts';
 import type {
   GatewayAttachmentClient,
   GatewayAttachmentRead,
@@ -110,6 +110,7 @@ export interface SlackAttachmentNormalizationResult {
 
 export interface SlackAttachmentNormalizationInput {
   fileIds: readonly string[];
+  threadArchiveFileIds?: readonly string[];
   gateway: GatewayAttachmentClient;
   signal?: AbortSignal;
   deadlineAt?: number;
@@ -142,6 +143,7 @@ export async function normalizeSlackAttachments(
     };
   }
 
+  const handleFileIds = archiveFileIds(input.threadArchiveFileIds ?? [], input.fileIds);
   for (let index = 0; index < input.fileIds.length; index += 1) {
     const ordinal = index + 1;
     const fileId = input.fileIds[index]!;
@@ -198,6 +200,7 @@ export async function normalizeSlackAttachments(
       const normalized = await normalizeReadAttachment({
         read,
         ordinal,
+        archiveHandle: archiveHandle(handleFileIds.indexOf(fileId) + 1),
         ...(input.signal ? { signal: input.signal } : {}),
         deadlineAt,
         now,
@@ -252,6 +255,7 @@ async function readForAnalysis(
 async function normalizeReadAttachment(input: {
   read: GatewayAttachmentRead;
   ordinal: number;
+  archiveHandle: ArchiveHandle;
   signal?: AbortSignal;
   deadlineAt: number;
   now: () => number;
@@ -283,7 +287,7 @@ async function normalizeReadAttachment(input: {
     };
   }
   if (input.read.representation === 'zip_original') {
-    const handle = archiveHandle(input.ordinal);
+    const handle = input.archiveHandle;
     try {
       return { kind: 'archive', ...identity, handle, text: archiveListing(input.read.bytes, handle) };
     } catch (error) {

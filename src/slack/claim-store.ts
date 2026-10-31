@@ -297,6 +297,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
     threadImages?: readonly import('./thread-images.ts').ThreadImageRecord[],
     admittedListIds?: readonly string[],
     turnEnvelope?: import('../agents/turn-envelope.ts').TurnEnvelopeV1,
+    threadArchiveFileIds?: readonly string[],
   ): Promise<import('./turn-job-types.ts').FlueDispatchEnvelopeV1>;
   /** The settings envelope frozen with this turn's dispatch, if any. */
   getTurnEnvelope?(id: string): Promise<import('../agents/turn-envelope.ts').TurnEnvelopeV1 | undefined>;

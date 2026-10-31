@@ -1,3 +1,4 @@
+import type { ThreadArchiveRecord } from './thread-archives.ts';
 import type { ThreadImageRecord } from './thread-images.ts';
 import type { SlackPublicContextEntry } from '../config/types.ts';
 import type { NormalizedSlackTurn, SlackContextMode } from './types.ts';
@@ -68,6 +69,7 @@ export interface SlackTurnContext {
    * no prompt text is derived from this field.
    */
   images?: ThreadImageRecord[];
+  archives?: ThreadArchiveRecord[];
   /**
    * Host-only: the thread-record rows this hydration already listed, so
    * assembling the prompt does not list them again.

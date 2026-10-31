@@ -12,6 +12,7 @@ import {
   canonicalSlackReplyText,
   countOf,
   renderSlackMarkdownActionLink,
+  renderSlackMessage,
   renderSlackReplyFooterBlock,
   slackActionLink,
   type SlackLiveAgentHandles,
@@ -110,7 +111,7 @@ export interface SlackStopNoteFacts {
   pullRequests: readonly TurnPullRequestProgress[];
   /** A coding job's stop could not be confirmed: it may still be winding down. */
   windingDown: boolean;
-  /** Replies the Agent already posted mid-run (none are recorded before release 2). */
+  /** Replies the Agent posted mid-run, from the run presentation (run-turn adds them). */
   repliesPosted?: number;
 }
 
@@ -577,6 +578,22 @@ export class WebClientPresenter {
       ...this.persona(),
     } as unknown as Parameters<WebClient['chat']['postMessage']>[0]);
     return typeof posted.ts === 'string' && posted.ts ? posted.ts : undefined;
+  }
+
+  /**
+   * A reply the Agent wrote mid-run (KTD14): one threaded message under the
+   * same sender as the final, with no footer or files. It mentions no
+   * teammate Agent live, so it never starts an ask.
+   */
+  async postMidRunReply(text: string): Promise<void> {
+    await this.client.chat.postMessage({
+      channel: this.target.channelId,
+      thread_ts: this.target.threadTs,
+      ...renderSlackMessage(text, 'markdown'),
+      unfurl_links: false,
+      unfurl_media: false,
+      ...this.persona(),
+    } as unknown as Parameters<WebClient['chat']['postMessage']>[0]);
   }
 
   /** Redraw a surface message from stored state; the sender is kept by Slack. */

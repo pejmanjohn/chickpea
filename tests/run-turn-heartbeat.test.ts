@@ -235,6 +235,56 @@ test('runTurn withholds the thread images when the frozen plan has no image capa
   }
 });
 
+test('runTurn lists the thread\'s earlier archives in the request and sends their file IDs with any plan', async () => {
+  const f = await createManagementAdapterFixture('thread-archives');
+  try {
+    const agent = await f.config.createAgent({ ...assignment.agent,
+      creatorMembershipId: f.admin.membership.id, editPolicy: 'creator_and_admins' });
+    const workspaceId = f.admin.binding.slackTeamId;
+    await f.config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', defaultAgentId: agent.id });
+    const turn: NormalizedSlackTurn = {
+      ...workTurn('Ev_THREAD_ARCHIVES'), workspaceId, userId: f.admin.binding.slackUserId,
+      actorMembershipId: f.admin.membership.id, contextMode: 'thread', text: 'Now open the Q3 file.',
+      threadTs: '1785509000.000100', messageTs: '1785509201.000100',
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    };
+    const bound: ResolvedAssignment = { ...assignment, workspaceId, agent, runtimeContract: 'chickpea-v1' };
+    const client = {
+      conversations: { replies: async () => ({ ok: true, messages: [
+        { user: turn.userId, ts: '1785509100.000100', thread_ts: turn.threadTs, text: 'The quarter packs.',
+          files: [{ id: 'F0Q3PACK001', name: 'q3-pack.zip', mimetype: 'application/zip', size: 2_048 }] },
+        { user: turn.userId, ts: turn.messageTs, thread_ts: turn.threadTs, text: turn.text,
+          files: [{ id: 'F0TODAY0001', name: 'today.zip', mimetype: 'application/zip', size: 1_024 }] },
+      ] }) },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: '1785509300.000100' }),
+        startStream: async () => ({ ok: true, ts: '1785509300.000100' }),
+        stopStream: async () => ({ ok: true }),
+      },
+    } as unknown as WebClient;
+    const runtimePlan = compileRuntimePlanV2({ turn, assignment: bound,
+      instructions: agent.instructions, memoryEpoch: 1,
+      imageCapability: { role: 'image', filled: false, acceptsImageInput: false } });
+    let dispatched: readonly string[] | undefined;
+    let request = '';
+    await runTurn(turn, bound, undefined, {
+      client, usageRecordingEnabled: false,
+      runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) },
+      appStores: { config: f.config, memory: f.memory, identity: f.identity, management: f.management } as never,
+      agentPrompt: async ({ message, threadArchiveFileIds }) => {
+        dispatched = threadArchiveFileIds;
+        request = message;
+        return { text: '42', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
+      },
+    });
+    assert.deepEqual(dispatched, ['F0Q3PACK001', 'F0TODAY0001']);
+    assert.match(request, /\n- handle=file:1 \| filename=q3-pack\.zip \| size=2 KB\n/);
+    assert.doesNotMatch(request, /today\.zip \|/, 'the current message\'s archive is left to the attachment analysis');
+  } finally {
+    await f.close();
+  }
+});
+
 test('runTurn dispatches thread images to a plan that can send files to a writable connection', async () => {
   const f = await createManagementAdapterFixture('thread-images-upload');
   try {

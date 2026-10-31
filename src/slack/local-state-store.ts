@@ -59,8 +59,11 @@ export function localSlackStateStore(input: {
     },
     getPendingTurnByRunId: async (runId) => turnJobs.getPendingByRunId(runId),
     freezeRuntimePlan: async (id, candidate) => turnJobs.freezeRuntimePlan(id, candidate),
-    prepareFlueDispatch: async (id, message, observation, threadImages, admittedListIds, turnEnvelope) =>
-      turnJobs.prepareFlueDispatch(id, message, observation, threadImages, admittedListIds, turnEnvelope),
+    prepareFlueDispatch: async (
+      id, message, observation, threadImages, admittedListIds, turnEnvelope, threadArchiveFileIds,
+    ) => turnJobs.prepareFlueDispatch(
+      id, message, observation, threadImages, admittedListIds, turnEnvelope, threadArchiveFileIds,
+    ),
     getTurnEnvelope: async (id) => turnJobs.getTurnEnvelope(id),
     reconcileFlueExistingInstance: async (id, uid) =>
       turnJobs.reconcileFlueExistingInstance(id, uid),

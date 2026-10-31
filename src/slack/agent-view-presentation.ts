@@ -74,6 +74,7 @@ import {
   type SlackPresentationActivity,
   type SlackPresentationActivityProjection,
   type SlackPresentationAgentSessionState,
+  type SlackPresentationMidRunReply,
   type SlackPresentationOwner,
   type SlackPresentationRoot,
   type SlackPresentationTaskOutcome,
@@ -548,6 +549,21 @@ export class SlackAgentViewPresentation {
       if (presentation.schemaVersion !== 3 || !presentation.plan) return;
     }
     if (changed.length > 0) await this.projectMilestonesBestEffort(presentation, changed);
+  }
+
+  /** The Agent's mid-run replies so far (KTD14), recorded or posted. */
+  async midRunReplies(): Promise<readonly SlackPresentationMidRunReply[]> {
+    const presentation = await this.requirePresentation();
+    return presentation.schemaVersion === 3 ? presentation.midRunReplies ?? [] : [];
+  }
+
+  /** Record a mid-run reply before it posts; the store refuses it once the final is under way. */
+  async reserveMidRunReply(messageTs: string): Promise<void> {
+    await this.transitionLatest({ kind: 'reserve_midrun_reply', messageTs });
+  }
+
+  async recordMidRunReplyPosted(messageTs: string): Promise<void> {
+    await this.transitionLatest({ kind: 'record_midrun_reply_posted', messageTs });
   }
 
   async recordTerminalDeliveryReceipt(
@@ -2627,6 +2643,18 @@ export class SlackAgentViewPresentation {
       console.warn('[chickpea] Slack Agent View stream age check failed:', safeSlackErrorCode(error));
     }
     return false;
+  }
+
+  /** A row write that does not depend on the stream: a status or milestone write that moved the row first is read again. */
+  private async transitionLatest(mutation: SlackPresentationMutation): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await this.transition(await this.requirePresentation(), mutation);
+        return;
+      } catch (error) {
+        if (attempt >= 3 || !isStaleWriterError(error)) throw error;
+      }
+    }
   }
 
   /** Slack's stream timestamp is its start time; compare it to the bound. */

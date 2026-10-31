@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { archiveListing, MAX_LISTED_ARCHIVE_ENTRIES } from '../src/slack/archive-attachments.ts';
+import { archiveFileIds, archiveListing, MAX_LISTED_ARCHIVE_ENTRIES } from '../src/slack/archive-attachments.ts';
 import {
   ARCHIVE_PAGE_CHARACTERS,
+  type ArchiveToolResult,
   createReadArchiveFileTool,
   MAX_ARCHIVE_READS_PER_TURN,
   readArchiveFile,
-  type ReadArchiveFileResult,
 } from '../src/slack/archive-file-tool.ts';
 import { createSlackAttachmentAnalysis, formatSlackAttachmentSignal } from '../src/slack/attachment-context.ts';
 import { MAX_SLACK_ATTACHMENT_CHARACTERS, normalizeSlackAttachments } from '../src/slack/attachment-normalization.ts';
@@ -253,17 +253,17 @@ test('archive and entry refusals say what the person can do', async () => {
 });
 
 let instance = 0;
-function archiveTool(fileIds: string[], client: GatewayAttachmentClient) {
+function archiveTool(fileIds: readonly string[], client: GatewayAttachmentClient) {
   instance += 1;
   return createReadArchiveFileTool({
     instanceId: `archive-tool-${instance}`,
     turnKey: 'turn_archive',
-    fileIds,
+    fileIds: archiveFileIds([], fileIds),
     client: async () => client,
   });
 }
-async function call(tool: ReturnType<typeof archiveTool>, data: { file: string; path: string; offset?: number }, toolCallId: string) {
-  return JSON.parse(String(await tool.run({ data, toolCallId, log: { info() {}, warn() {}, error() {} } }))) as ReadArchiveFileResult;
+async function call(tool: ReturnType<typeof archiveTool>, data: { file: string; path?: string; offset?: number }, toolCallId: string) {
+  return JSON.parse(String(await tool.run({ data, toolCallId, log: { info() {}, warn() {}, error() {} } }))) as ArchiveToolResult;
 }
 
 test('a handle resolves only to the current message\'s file IDs, and one archive downloads once per turn', async () => {
@@ -274,9 +274,53 @@ test('a handle resolves only to the current message\'s file IDs, and one archive
   assert.ok(notes.ok && table.ok);
   assert.deepEqual(calls, [{ fileId: 'F_KIT', maxBytes: 8 * 1024 * 1024, accept: ['zip_original'] }]);
   assert.deepEqual(await call(tool, { file: 'file:3', path: 'kit/notes.md' }, 'c3'), {
-    ok: false, error: 'file:3 is not a file on the current message. Use a handle from the attachment manifest.',
+    ok: false, error: 'file:3 is not one of this conversation\'s files. Use a handle from the request\'s archive list or the attachment manifest.',
   });
   assert.equal(calls.length, 1);
+});
+
+test('a handle counts the conversation\'s archives first, and only the host\'s list reaches a download', async () => {
+  const calls: ReadCall[] = [];
+  const older = buildZip([{ path: 'q3/summary.md', content: '# Q3\nRevenue up.\n' }]);
+  const tool = archiveTool(archiveFileIds(['F0OLD000001'], ['F_PDF', 'F_KIT']), zipReader({
+    F0OLD000001: zipRead('F0OLD000001', 'q3.zip', older),
+    F_KIT: zipRead('F_KIT', 'kit.zip', KIT),
+    F0ELSEWHERE: zipRead('F0ELSEWHERE', 'other.zip', older),
+  }, calls));
+  assert.deepEqual(await call(tool, { file: 'file:1', path: 'q3/summary.md' }, 'c1'), {
+    ok: true, file: 'file:1', path: 'q3/summary.md', kind: 'text', text: '# Q3\nRevenue up.\n',
+  });
+  assert.equal((await call(tool, { file: 'file:3', path: 'kit/notes.md' }, 'c2')).ok, true);
+  assert.equal((await call(tool, { file: 'file:4', path: 'q3/summary.md' }, 'c3')).ok, false);
+  assert.deepEqual(calls.map(({ fileId }) => fileId), ['F0OLD000001', 'F_KIT']);
+});
+
+test('without a path the tool lists the archive\'s files, as one read that shares the download', async () => {
+  const calls: ReadCall[] = [];
+  const tool = archiveTool(['F_KIT'], zipReader({ F_KIT: zipRead('F_KIT', 'kit.zip', KIT) }, calls));
+  const listed = await call(tool, { file: 'file:1' }, 'list');
+  assert.deepEqual(listed, { ok: true, file: 'file:1', listing: archiveListing(KIT, 'file:1') });
+  assert.equal((await call(tool, { file: 'file:1', path: 'kit/notes.md' }, 'read')).ok, true);
+  assert.equal(calls.length, 1);
+  const locked = archiveTool(['F_LOCKED'], zipReader({ F_LOCKED: zipRead('F_LOCKED', 'locked.zip', fixture('zip-encrypted.zip')) }));
+  assert.deepEqual(await call(locked, { file: 'file:1' }, 'list'), {
+    ok: false,
+    error: 'This archive is password-protected. Ask for it again without a password, or for the files attached directly.',
+  });
+});
+
+test('an archive on the current message takes its handle from the conversation\'s list', async () => {
+  const handles = async (threadArchiveFileIds: string[]) => {
+    const result = await normalizeSlackAttachments({
+      fileIds: ['F_PDF', 'F_KIT'],
+      threadArchiveFileIds,
+      gateway: zipReader({ F_KIT: zipRead('F_KIT', 'kit.zip', KIT) }),
+    });
+    return result.attachments.flatMap((attachment) => attachment.kind === 'archive' ? [attachment.handle] : []);
+  };
+  assert.deepEqual(await handles([]), ['file:2'], 'with no earlier archive, the handle is the attachment position');
+  assert.deepEqual(await handles(['F0OLD000001']), ['file:3']);
+  assert.deepEqual(await handles(['F0OLD000001', 'F_KIT']), ['file:2'], 'a trigger row the host read keeps its thread position');
 });
 
 test('a handle that names a file that is not a zip is refused plainly', async () => {
@@ -296,7 +340,7 @@ test('a new turn on the same Agent instance starts a fresh read count and downlo
   const calls: ReadCall[] = [];
   const client = zipReader({ F_KIT: zipRead('F_KIT', 'kit.zip', KIT) }, calls);
   const turn = (turnKey: string) => createReadArchiveFileTool({
-    instanceId: 'archive-tool-turns', turnKey, fileIds: ['F_KIT'], client: async () => client,
+    instanceId: 'archive-tool-turns', turnKey, fileIds: archiveFileIds([], ['F_KIT']), client: async () => client,
   });
   const first = turn('turn_one');
   for (let index = 0; index < MAX_ARCHIVE_READS_PER_TURN; index += 1) {
