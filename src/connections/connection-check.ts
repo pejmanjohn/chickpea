@@ -1,4 +1,4 @@
-import { createConnectionScopedFetch } from '../config/egress.ts';
+import { createConnectionScopedFetch, matchesEgressPrefix } from '../config/egress.ts';
 import { classifyMcpError, safeMcpFailureText, type McpErrorCode } from '../config/mcp-errors.ts';
 import { McpOAuthError } from '../config/mcp-oauth.ts';
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
@@ -122,6 +122,27 @@ export function connectionCheckUrl(
   const host = connection.allowedHosts[0];
   if (host === undefined) return undefined;
   return path === undefined ? connectionUrlPrefixes(connection)[0] : 'https://' + host + path;
+}
+
+/** Whether `path` on the connection's first host sits inside one of its URL prefixes. */
+export function pathInsideConnection(
+  connection: Pick<ApiConnectionScope, 'allowedHosts' | 'pathPrefixes'>,
+  path: string,
+): boolean {
+  const url = connectionCheckUrl(connection, path);
+  return url !== undefined && connectionUrlPrefixes(connection).some((prefix) => matchesEgressPrefix(url, prefix));
+}
+
+/** Whether a path carries the key, as typed, percent-encoded or as Basic credentials. */
+export function keyInPath(path: string, key: string): boolean {
+  let decoded = path;
+  try {
+    decoded = decodeURIComponent(path);
+  } catch {
+    // A malformed escape leaves the raw path to check.
+  }
+  return [key, connectionHeaderCredential(key, 'basic_username')].some((form) =>
+    path.includes(form) || decoded.includes(form));
 }
 
 /** The credential part of the header value: the key, or for `basic_username` base64 of `key:`. */

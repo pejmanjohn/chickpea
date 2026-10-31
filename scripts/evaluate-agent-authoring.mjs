@@ -559,7 +559,7 @@ function useEvaluationTools() {
   });
   useTool({
     name: 'apply_workspace_changes',
-    description: 'Create one sufficiently understood base Agent immediately with one standalone create_agent operation, or apply another explicit reversible edit when policy allows. Do not propose Agent creation. Keep generated, inferred, skill-bearing, compound follow-on, and consequential edits on their existing policy paths. A request_setup operation returns a setup link for the person.',
+    description: 'Create one sufficiently understood base Agent immediately with one standalone create_agent operation, or apply another explicit reversible edit when policy allows. Do not propose Agent creation. Keep generated, inferred, skill-bearing, compound follow-on, and consequential edits on their existing policy paths. A request_setup operation returns a setup link for the person; for an API connection, set its path to the read endpoint the setup page checks the key at.',
     input: applyWorkspaceChangesValibotSchema,
     output: v.string(),
     run: ({ data }) => ({ output: JSON.stringify(evalApplyWorkspaceChanges(data)) }),
@@ -949,7 +949,7 @@ async function runConnectionTrialSmoke(corpus, faux) {
   faux.setResponses([
     call('activate_skill', { name: 'agent-authoring' }),
     connect(statusboard('X-Api-Key'), [
-      { itemId: 'key', kind: 'request_setup', dependsOn: ['connect'], target: { kind: 'api_connection', agentId: 'agent_support', connectionId: 'statusboard' } },
+      { itemId: 'key', kind: 'request_setup', dependsOn: ['connect'], target: { kind: 'api_connection', agentId: 'agent_support', connectionId: 'statusboard', path: '/v2/incidents' } },
     ]),
     finish(`I can't use a key someone else posted. Add your own key on this secure Chickpea page: ${EVAL_SETUP_URL}`, 'setup_required'),
   ]);
@@ -1491,7 +1491,7 @@ async function runDeterministicSmoke(corpus) {
       fauxToolCall('apply_workspace_changes', { idempotencyKey: 'hubspot-kb', operations }),
     ], { stopReason: 'toolUse' });
     const updateKb = { itemId: 'connect', kind: 'update_agent', agentId: 'agent_support', expectedRevision: 5, patch: { apiConnections: [kbConnection] } };
-    const kbSetup = { itemId: 'key', kind: 'request_setup', dependsOn: ['connect'], target: { kind: 'api_connection', agentId: 'agent_support', connectionId: 'hubspot_kb' } };
+    const kbSetup = { itemId: 'key', kind: 'request_setup', dependsOn: ['connect'], target: { kind: 'api_connection', agentId: 'agent_support', connectionId: 'hubspot_kb', path: '/cms/knowledge-base/2027-03-beta/articles' } };
     faux.setResponses([
       fauxAssistantMessage([fauxToolCall('activate_skill', { name: 'agent-authoring' })], { stopReason: 'toolUse' }),
       connectKb([updateKb]),
@@ -1569,7 +1569,7 @@ async function runDeterministicSmoke(corpus) {
       ...webSteps.map((call) => fauxAssistantMessage([call], { stopReason: 'toolUse' })),
       fauxAssistantMessage([fauxToolCall('apply_workspace_changes', { idempotencyKey: 'statusboard', operations: [
         { itemId: 'connect', kind: 'update_agent', agentId: 'agent_support', expectedRevision: 5, patch: { apiConnections: [statusboard] } },
-        { itemId: 'key', kind: 'request_setup', dependsOn: ['connect'], target: { kind: 'api_connection', agentId: 'agent_support', connectionId: 'statusboard' } },
+        { itemId: 'key', kind: 'request_setup', dependsOn: ['connect'], target: { kind: 'api_connection', agentId: 'agent_support', connectionId: 'statusboard', path: '/v2/incidents' } },
       ] })], { stopReason: 'toolUse' }),
       fauxAssistantMessage([
         { type: 'text', text: `Statusboard is set up to read incidents from api.statusboard.example/v2, per ${EVAL_DOC_URL}. Add the API key on this secure Chickpea page: ${EVAL_SETUP_URL}` },

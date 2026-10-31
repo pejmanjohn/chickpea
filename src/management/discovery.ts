@@ -21,6 +21,7 @@ import {
   connectionHeaderCredential,
   connectionUrlPrefixes,
   mcpCheckFailure,
+  pathInsideConnection,
   type ApiConnectionCheck,
   type ApiConnectionScope,
   type ConnectionAuthShape,
@@ -455,9 +456,8 @@ async function memberApiConnection(
     .find(({ account }) => account.id === input.connectionId);
 }
 
-function assertPathInsideConnection(policy: UrlScope, path: string): void {
-  const url = connectionCheckUrl(policy, path);
-  if (url === undefined || !connectionUrlPrefixes(policy).some((prefix) => matchesEgressPrefix(url, prefix))) {
+export function assertPathInsideConnection(policy: UrlScope, path: string): void {
+  if (!pathInsideConnection(policy, path)) {
     throw new ManagementError(
       'invalid_request',
       `path must be inside the connection on its first host: ${connectionUrlPrefixes(policy).join(', ')}.`,

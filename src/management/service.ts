@@ -205,8 +205,8 @@ import {
 } from './recipes.ts';
 import { matchesEgressPrefix } from '../config/egress.ts';
 import {
-  connectionHeaderCredential,
   connectionUrlPrefixes,
+  keyInPath,
   type ApiConnectionCheck,
   type ApiConnectionScope,
   type ConnectionAuthShape,
@@ -215,6 +215,7 @@ import {
 import type { SlackMessageQuery, SlackTypedMessage } from '../slack/turn-jobs.ts';
 import { approvedNewKeyedApiConnections, CONNECTION_APPROVAL_WINDOW_MS } from './connection-approval.ts';
 import {
+  assertPathInsideConnection,
   assertScopeInsideConnection,
   ConnectionKeyRefusedError,
   urlsOutsideConnection,
@@ -4103,12 +4104,16 @@ export class WorkspaceManagementService {
       };
       if (account.policy.kind === 'api') {
         const oauth = account.policy.authMode === 'oauth';
+        // Only a key is checked on the setup page, so a sign-in keeps no path.
+        const checkPath = !oauth && request.kind === 'api_connection' ? request.path : undefined;
+        if (checkPath !== undefined) assertPathInsideConnection(account.policy, checkPath);
         return {
           action: oauth ? 'api_oauth' : 'api_credential',
           target: {
             ...target,
             provider: account.policy.oauthProvider ?? account.policy.presetId ?? account.label,
             formFields: oauth ? ['clientId', 'clientSecret'] : ['credential'],
+            ...(checkPath === undefined ? {} : { checkPath }),
           },
           scopes: oauth ? [...account.policy.oauthScopes ?? []] : [`header:${account.policy.headerName}`],
         };
@@ -9280,18 +9285,6 @@ const BASIC_PREFIX = 'Basic ';
 
 function sendsBasicCredentials(policy: ApiConnectionScope): boolean {
   return policy.headerName.toLowerCase() === 'authorization' && policy.headerValuePrefix === BASIC_PREFIX;
-}
-
-/** Whether a path carries the key, as typed, percent-encoded or as Basic credentials. */
-function keyInPath(path: string, key: string): boolean {
-  let decoded = path;
-  try {
-    decoded = decodeURIComponent(path);
-  } catch {
-    // A malformed escape leaves the raw path to check.
-  }
-  return [key, connectionHeaderCredential(key, 'basic_username')].some((form) =>
-    path.includes(form) || decoded.includes(form));
 }
 
 /** A typed URL covers `url` when it has the same origin and `url`'s path sits inside the typed path. */

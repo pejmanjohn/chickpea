@@ -20,6 +20,7 @@ import {
 const zText = (max: number) => z.string().min(1).max(max);
 /** One path on a host: a single leading slash, no spaces. */
 const CONNECTION_CHECK_PATH_PATTERN = /^\/(?!\/)\S*$/;
+const setupCheckPathDescription = 'For a connection that takes a key: the read endpoint you plan to use, inside the connection, such as a list endpoint (for example `.../articles`), never the bare prefix. The setup page checks the key with one GET there.';
 /** The longest key the setup page accepts. */
 const CONNECTION_KEY_MAX_LENGTH = 16_384;
 const zOptionalText = (max: number) => z.string().max(max);
@@ -167,6 +168,7 @@ const zSetupTarget = z.discriminatedUnion('kind', [
     kind: z.literal('api_connection'),
     ...zSetupAgentTargetBase,
     connectionId: zId,
+    path: z.string().max(2048).regex(CONNECTION_CHECK_PATH_PATTERN).optional().describe(setupCheckPathDescription),
   }),
   z.strictObject({
     kind: z.literal('mcp_connection'),
@@ -574,6 +576,12 @@ const vSetupTarget = v.variant('kind', [
     kind: v.literal('api_connection'),
     ...vSetupAgentTargetBase,
     connectionId: vid,
+    path: v.optional(v.pipe(
+      v.string(),
+      v.maxLength(2048),
+      v.regex(CONNECTION_CHECK_PATH_PATTERN),
+      v.description(setupCheckPathDescription),
+    )),
   }),
   v.strictObject({
     kind: v.literal('mcp_connection'),
