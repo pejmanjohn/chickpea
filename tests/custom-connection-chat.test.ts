@@ -652,6 +652,68 @@ test('with no key in the message, the same call adds the connection and returns 
   } finally { f.close(); }
 });
 
+test('a setup link the same call asks for with a read endpoint checks the key there, where the bare prefix answers 404', async () => {
+  const f = await fixture();
+  try {
+    const call = await f.update({ apiConnections: [KB_CONNECTION] });
+    const response = await f.slack('apply_workspace_changes', {
+      ...call,
+      operations: [...call.operations, {
+        itemId: 'key',
+        kind: 'request_setup',
+        dependsOn: ['connect'],
+        target: { kind: 'api_connection', agentId: f.agent.id, connectionId: KB_CONNECTION.id, path: `${KB_PATH}/articles` },
+      }],
+    }, `set up the HubSpot Knowledge Base API at ${KB_URL} so you can read articles`);
+    assert.equal(response.ok, true, JSON.stringify(response));
+    const link = new URL(String(((response as { result: ManagementApplyResult }).result.outcomes[1] as { setupUrl?: string }).setupUrl));
+    const setupId = await assertConnectionSetup(f, link);
+    const issued = await f.management.getSetup(setupId);
+    assert.ok(issued);
+    assert.equal(issued.target.checkPath, `${KB_PATH}/articles`);
+    const app = createManagementSetupRoutes({
+      management: f.management,
+      config: f.config,
+      settings: f.settings,
+      identity: f.identity,
+      now: () => issued.createdAt,
+      authenticatePrincipal: async () => ({
+        userId: f.admin.user.id,
+        membershipId: f.admin.membership.id,
+        organizationId: f.admin.membership.organizationId,
+        role: f.admin.membership.role,
+        authenticatorKind: 'better_auth',
+        credentialId: `session_${f.admin.membership.id}`,
+        correlationId: 'custom-connection-chat',
+        machine: false,
+      }),
+      deliverReceipt: async () => ({ deliveryRef: 'slack:receipt' }),
+      connectionCheck: { cloudflare: true },
+    });
+    const claimed = await app.request(`http://localhost/setup/${setupId}/exchange`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ capability: link.hash.slice('#setup='.length) }),
+    });
+    assert.equal(claimed.status, 200, await claimed.clone().text());
+    const completed = await withConnectionNetwork(hubspot(KEY), async (requests) => {
+      const answer = await app.request(`http://localhost/setup/${setupId}/complete`, {
+        method: 'POST',
+        headers: {
+          origin: 'http://localhost',
+          cookie: claimed.headers.get('set-cookie')!,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({ credential: KEY }).toString(),
+      });
+      assert.deepEqual(requests.map(({ method, url }) => `${method} ${url}`), [`GET ${KB_URL}/articles`]);
+      return answer;
+    });
+    assert.equal(completed.headers.get('location'), `/setup/${setupId}`, 'the check found the key works');
+    assert.equal(await f.savedKey(), KEY);
+  } finally { f.close(); }
+});
+
 test('a 403 saves nothing from chat, since some APIs answer 403 to an invalid key', async () => {
   const f = await fixture();
   try {

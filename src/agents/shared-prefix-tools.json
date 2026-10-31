@@ -2882,6 +2882,12 @@
                "type": "string",
                "minLength": 1,
                "maxLength": 128
+              },
+              "path": {
+               "type": "string",
+               "maxLength": 2048,
+               "pattern": "^\\/(?!\\/)\\S*$",
+               "description": "For a connection that takes a key: the read endpoint you plan to use, inside the connection, such as a list endpoint (for example `.../articles`), never the bare prefix. The setup page checks the key with one GET there."
               }
              },
              "required": [
@@ -2991,7 +2997,7 @@
   },
   {
    "name": "apply_workspace_changes",
-   "description": "Apply typed Chickpea workspace configuration changes with durable idempotency and per-item outcomes. It does not execute actions in Slack Lists or connected services. One sufficiently understood base Agent must be created immediately as a standalone create_agent operation when the current request authorizes creation now; do not propose it or ask for confirmation. If the requester asks to preview, draft, or show the new Agent before applying it, or to wait for later approval, do not call this tool or propose creation. Show a textual draft and wait for a later authenticated requester message. Keep capability and follow-on configuration operations separate. Other confirmation-required configuration operations return one bound proposal; never add a separate conversational approval gate around it. A new API or MCP connection that needs a key applies at once when the requester typed its URLs in this message; get its key with request_setup, or, when they pasted it, find a setup that works with try_connection and save it with save_connection_key.",
+   "description": "Apply typed Chickpea workspace configuration changes with durable idempotency and per-item outcomes. It does not execute actions in Slack Lists or connected services. One sufficiently understood base Agent must be created immediately as a standalone create_agent operation when the current request authorizes creation now; do not propose it or ask for confirmation. If the requester asks to preview, draft, or show the new Agent before applying it, or to wait for later approval, do not call this tool or propose creation. Show a textual draft and wait for a later authenticated requester message. Keep capability and follow-on configuration operations separate. Other confirmation-required configuration operations return one bound proposal; never add a separate conversational approval gate around it. A new API or MCP connection that needs a key applies at once when the requester typed its URLs in this message; get its key with request_setup, with path set to a read endpoint you plan to use, such as a list endpoint, never the bare prefix; or, when they pasted it, find a setup that works with try_connection and save it with save_connection_key.",
    "eager_input_streaming": true,
    "input_schema": {
     "type": "object",
@@ -4948,6 +4954,12 @@
                "type": "string",
                "minLength": 1,
                "maxLength": 128
+              },
+              "path": {
+               "type": "string",
+               "maxLength": 2048,
+               "pattern": "^\\/(?!\\/)\\S*$",
+               "description": "For a connection that takes a key: the read endpoint you plan to use, inside the connection, such as a list endpoint (for example `.../articles`), never the bare prefix. The setup page checks the key with one GET there."
               }
              },
              "required": [

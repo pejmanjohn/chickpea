@@ -21,6 +21,7 @@ import {
 import { READ_WEB_PAGE_TOOL_NAME, WEB_SEARCH_TOOL_NAME, type WebToolName } from './names.ts';
 import { searchWebInTurn, WEB_SEARCH_MAX_QUERY_CHARS, type WebSearchProvider } from './search.ts';
 import { WEB_READS_PER_TURN, type WebTurn } from './turn.ts';
+import type { RequesterTextSource } from '../slack/requester-text-source.ts';
 
 export { READ_WEB_PAGE_TOOL_NAME, WEB_SEARCH_TOOL_NAME, WEB_TOOL_NAMES, type WebToolName } from './names.ts';
 export type { WebRefusal } from './page.ts';
@@ -39,9 +40,9 @@ export interface WebRequest {
  * A Slack message's text. A click's text is written by the host, so it
  * names no typed URL, though its words still count.
  */
-export function webRequest(text: string | undefined, source?: 'click'): WebRequest {
+export function webRequest(text: string | undefined, source?: RequesterTextSource): WebRequest {
   return {
-    typed: text && source !== 'click' ? requesterTypedUrls(text) : [],
+    typed: text && source === undefined ? requesterTypedUrls(text) : [],
     tokens: requestTokens(text),
   };
 }

@@ -18,6 +18,7 @@ import {
   drainManagementReceiptOutbox,
   failAgentWelcomeTurn,
   isAgentCreatedWelcome,
+  type SetupWakeRequest,
 } from '../management/receipts.ts';
 import type { SlackStateStore } from './claim-store.ts';
 import type { WorkStore } from '../work/types.ts';
@@ -116,6 +117,15 @@ export function registerNodeAgentAskDispatcher(
   dispatcher: (request: SlackAgentAskRequest, env?: PlatformEnv) => Promise<void>,
 ): void {
   agentAskDispatcher = dispatcher;
+}
+
+/** Admits a finished setup's wake; registered by the Slack channel module, as asks are. */
+let setupWakeAdmitter: ((request: SetupWakeRequest, env?: PlatformEnv) => Promise<'queued' | 'refused'>) | undefined;
+
+export function registerNodeSetupWakeAdmitter(
+  admitter: (request: SetupWakeRequest, env?: PlatformEnv) => Promise<'queued' | 'refused'>,
+): void {
+  setupWakeAdmitter = admitter;
 }
 let shuttingDown = false;
 
@@ -885,6 +895,7 @@ async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promis
           : state.markTurnDelivered?.(turnJobId),
         work,
       ),
+      ...(setupWakeAdmitter ? { wake: (request: SetupWakeRequest) => setupWakeAdmitter!(request, env) } : {}),
       deliver: (record) => deliverManagementReceiptToSlack(record, {
         identity,
         ...(env ? { env } : {}),

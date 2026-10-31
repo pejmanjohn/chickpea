@@ -10,7 +10,7 @@ import {
   resolveSlackManagementActor,
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
-import { startedByAgentAsk } from '../src/management/service.ts';
+import { startedWithoutPerson } from '../src/management/service.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import type {
   ManagementApplyResult,
@@ -360,7 +360,7 @@ test('an empty message is the person\'s turn at the Slack seam and in the servic
     const empty = signal(desk.id, { text: '', eventId: 'Ev_EMPTY', messageTs: PERSON_MESSAGE });
     assert.equal(empty.requesterText, '', 'the delivered signal keeps the person\'s empty text');
     const actor = await resolveSlackManagementActor(empty, f.identity);
-    assert.equal(startedByAgentAsk(actor), false, 'the service sees the person\'s turn the seam saw');
+    assert.equal(startedWithoutPerson(actor), false, 'the service sees the person\'s turn the seam saw');
 
     assert.equal(onlyOutcome(await tool(empty, 'apply_workspace_changes',
       slackMemoryUpdateArguments(empty, { expectedRevision: 0, body: 'Notes are in the thread.' }))).disposition, 'applied');

@@ -29,6 +29,8 @@ export interface ConnectorLandingPageInput {
   signInNotice?: { ownerKind: 'member' | 'team'; message: string };
   /** A reconnect link for a sign-in other Agents use too. */
   sharedSignIn?: boolean;
+  /** The finished setup woke its Agent, which is continuing in Slack. */
+  continuing?: boolean;
   /** Sign-ins the person may use for this Agent without signing in again, per owner kind. */
   reusable?: Record<'member' | 'team', ReusableSetupSignIn[]>;
   accessReview?: {
@@ -400,7 +402,7 @@ export function renderManagedConnectionSuccessPage(input: ConnectorLandingPageIn
           ${connectionPair(input)}
           <div class="success-copy">
             <div class="success-line"><span class="success-check" aria-hidden="true">&#10003;</span><h1 id="flow-title">${escapeHtml(connector)} is now connected to ${escapeHtml(input.agent.name)}</h1></div>
-            <p class="lead success-summary">Your ${scope} connection is ready.</p>
+            <p class="lead success-summary">Your ${scope} connection is ready.${input.continuing ? ` ${escapeHtml(input.agent.name)} is continuing in Slack.` : ''}</p>
             <p class="small-copy">You can close this tab now.</p>
           </div>
         </section>

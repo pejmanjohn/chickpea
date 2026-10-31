@@ -249,13 +249,13 @@ Each Agent's `websiteLogins` lists the website logins granted to it, in Admin's 
 
 When access is missing, add `request_setup` for the exact Agent connection, repository grant, or model provider. Chickpea returns a URL whose fragment contains a one-use capability. It expires after 24 hours and may be revoked or reissued with `revoke_setup_link`; reissue invalidates the prior link.
 
-Anyone who can see the link can complete its exact frozen action without signing into Chickpea. Share it as a credential-bearing capability. The page shows the connector, target, requested scopes, and replacement warning. It cannot change those values. OAuth connections redirect to the provider; multi-field credentials use a Chickpea form. Validation clears submitted fields, activates the connection once, and creates a non-secret receipt such as:
+Anyone who can see the link can complete its exact frozen action without signing into Chickpea. Share it as a credential-bearing capability. The page shows the connector, target, requested scopes, and replacement warning. It cannot change those values. OAuth connections redirect to the provider; multi-field credentials use a Chickpea form. Validation clears submitted fields, activates the connection once, and creates a non-secret receipt. The receipt record holds the target, scopes, initiator, operation ID, and a provider-returned non-secret account label. A connection setup an Agent asked for from a Slack thread wakes that Agent there instead of posting a notice, so it tests the connection and continues. Otherwise the Slack notice shows only one plain line, such as:
 
 ```text
-alex@northstar.example has been connected to Gmail connector.
+✅ Gmail (alex@northstar.example) is now connected to Customer Research.
 ```
 
-The receipt may include the target, scopes, initiator, operation ID, and a provider-returned non-secret account label. It never includes a token, code, key, client secret, header value, or repository installation credential.
+Neither ever includes a token, code, key, client secret, header value, or repository installation credential.
 
 ## Models
 

@@ -304,6 +304,7 @@ import {
   processGatewayViewSubmission,
   processGatewaySlackEnvelope,
   processSlackAgentAsks,
+  admitSetupWake,
 } from './channels/slack.ts';
 import {
   SlackGatewaySession,
@@ -3145,6 +3146,8 @@ async function drainCloudflareManagementReceipts(
       (turnJobId) => stores.turnJobs.markError(turnJobId),
       work,
     ),
+    // Wakes admitted here go into this state store's own queue, as its asks do.
+    wake: (request) => admitSetupWake(request, env, localHostAddressedAdmission(stores, env)),
     deliver: (record) => deliverManagementReceiptToSlack(record, {
       identity: stores.identity as unknown as IdentityStore,
       resolveInstallation,
@@ -3376,19 +3379,33 @@ function localAgentAskDispatcher(
   platformEnv: PlatformEnv,
   productTelemetry: ProductTelemetryCapture,
 ): SlackAgentAskDispatcher {
-  return async (request) => {
-    const appStores = localGatewayAppStores(stores);
-    let gatewayClient: GatewayDeploymentClient | undefined;
-    try {
-      gatewayClient = localGatewayDeploymentClient(appStores, platformEnv, productTelemetry);
-    } catch {
-      // A direct installation needs no gateway client.
-    }
-    await processSlackAgentAsks(request, platformEnv, {
-      stores: appStores,
-      ...(gatewayClient ? { gatewayClient } : {}),
-      enqueueTurn: localTurnEnqueue(stores),
-    });
+  return (request) => processSlackAgentAsks(request, platformEnv, localHostAddressedAdmission(stores, platformEnv, productTelemetry));
+}
+
+/**
+ * What a host-addressed turn (an ask, or a setup's wake) admitted inside this
+ * state store runs on: its own stores, queue and gateway client.
+ */
+function localHostAddressedAdmission(
+  stores: TagStateStores,
+  platformEnv: PlatformEnv,
+  productTelemetry?: ProductTelemetryCapture,
+) {
+  const appStores = localGatewayAppStores(stores);
+  let gatewayClient: GatewayDeploymentClient | undefined;
+  try {
+    gatewayClient = localGatewayDeploymentClient(appStores, platformEnv, productTelemetry ?? createPlatformProductTelemetry({
+      env: platformEnv,
+      settings: appStores.settings,
+      config: appStores.config,
+    }));
+  } catch {
+    // A direct installation needs no gateway client.
+  }
+  return {
+    stores: appStores,
+    ...(gatewayClient ? { gatewayClient } : {}),
+    enqueueTurn: localTurnEnqueue(stores),
   };
 }
 

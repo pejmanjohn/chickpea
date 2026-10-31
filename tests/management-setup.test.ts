@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
 import type { Hono } from 'hono';
+import * as v from 'valibot';
 
 import {
   connectionAccountSecretSettingKey,
@@ -48,8 +49,9 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { CONNECTOR_PAGE_FONTS, fontFaceCss } from '../src/assets/fonts.ts';
-import { formatManagementSetupReceipt } from '../src/management/receipts.ts';
+import { formatManagementSetupReceipt, type SetupWakeRequest } from '../src/management/receipts.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
+import { applyWorkspaceChangesValibotSchema, applyWorkspaceChangesZodSchema } from '../src/management/schemas.ts';
 import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import {
@@ -59,7 +61,7 @@ import {
   type ManagementSetupRecord,
 } from '../src/management/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
-import { withConnectionNetwork } from './helpers/connection-network.ts';
+import { withConnectionNetwork, type StubbedRequest } from './helpers/connection-network.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { unstyledClasses } from './helpers/unstyled-classes.ts';
@@ -148,7 +150,8 @@ function receiptAccountLabel(setup: ManagementSetupRecord | undefined): string |
 async function requestConnectionSetup(
   service: WorkspaceManagementService,
   owner: IdentityResolution,
-  target: { kind: 'api_connection' | 'mcp_connection'; agentId: string; connectionId: string },
+  target: { kind: 'api_connection'; agentId: string; connectionId: string; path?: string }
+    | { kind: 'mcp_connection'; agentId: string; connectionId: string },
 ): Promise<string> {
   const result = await service.applyWorkspaceChanges({
     context: {
@@ -375,8 +378,9 @@ test('the initiating member claims one authenticated browser and completes an ex
     assert.equal(setup?.browserSessionDigest, undefined);
     assert.equal(setup?.receipt?.connector, 'Gmail');
     assert.equal(delivered.length, 1);
-    assert.match(delivered[0]!, /has been connected to Gmail connector/);
-    assert.match(delivered[0]!, /Customer Research/);
+    assert.match(delivered[0]!, /^✅ Gmail( \([^)]*\))? is now connected to Customer Research\.$/);
+    assert.doesNotMatch(delivered[0]!, new RegExp(setupId), 'the notice carries no receipt ID');
+    assert.doesNotMatch(delivered[0]!, /Scopes|Receipt|Initiated by/);
     assert.doesNotMatch(delivered[0]!, new RegExp(credential));
     assert.equal((await management.getOutboxForOperation(setupId))?.status, 'delivered');
 
@@ -1733,7 +1737,8 @@ test('a credential API connection added over MCP is ready to run once its setup 
     assert.equal(completed.status, 303, await completed.clone().text());
     assert.equal(completed.headers.get('location'), `/setup/${setupId}`);
     const done = await (await app.request(`http://localhost${completed.headers.get('location')}`)).text();
-    assert.match(done, /<h1>Connected<\/h1>/);
+    assert.match(done, /<h1>Key saved<\/h1><p>Chickpea checked it, and it works\. You can close this window\.<\/p>/,
+      'a setup started over MCP wakes no Agent, so the page closes the loop itself');
 
     const [account] = await f.config.listConnectionAccounts('T_SETUP');
     assert.ok(account);
@@ -1816,8 +1821,12 @@ test('a setup link needs authority over its connection account, not only the Age
   }
 });
 
-/** A pending team Tasks connection with a claimed setup link, served by routes whose check uses the stubbed network. */
-async function claimedTasksSetup(suffix: string) {
+/** A pending team Tasks connection, the service that issues its setup links, and routes whose check uses the stubbed network. */
+async function tasksSetupStores(
+  suffix: string,
+  routes: Partial<Parameters<typeof createManagementSetupRoutes>[0]> = {},
+  routeManagement: (management: SqliteManagementStore) => SqliteManagementStore = (management) => management,
+) {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix });
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
@@ -1842,11 +1851,8 @@ async function claimedTasksSetup(suffix: string) {
     identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
     randomId: () => suffix, randomCapability: () => CAPABILITY,
   });
-  const setupId = await requestConnectionSetup(service, owner, {
-    kind: 'api_connection', agentId: agent.id, connectionId: 'tasks',
-  });
   const app = createManagementSetupRoutes({
-    management,
+    management: routeManagement(management),
     config,
     settings,
     identity,
@@ -1854,10 +1860,10 @@ async function claimedTasksSetup(suffix: string) {
     authenticatePrincipal: async () => browserPrincipal(owner),
     deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
     connectionCheck: { cloudflare: true },
+    ...routes,
   });
-  const cookie = await claimSetup(app, setupId);
   return {
-    app, setupId, cookie, tasks, config, management, settings,
+    app, service, owner, agent, tasks, config, management, settings,
     close() {
       identity.close();
       config.close();
@@ -1865,6 +1871,15 @@ async function claimedTasksSetup(suffix: string) {
       settings.close();
     },
   };
+}
+
+/** The Tasks connection's setup link, issued with `path` when given, and claimed in the browser. */
+async function claimedTasksSetup(suffix: string, path?: string) {
+  const f = await tasksSetupStores(suffix);
+  const setupId = await requestConnectionSetup(f.service, f.owner, {
+    kind: 'api_connection', agentId: f.agent.id, connectionId: 'tasks', ...(path === undefined ? {} : { path }),
+  });
+  return { ...f, setupId, cookie: await claimSetup(f.app, setupId) };
 }
 
 test('the setup page refuses a key the API rejects, saves nothing, and names the host', async () => {
@@ -1919,7 +1934,7 @@ test('the setup page shows where the key goes, and saves a key the API answers 4
     assert.equal((await currentAccount(f.config, f.tasks)).lifecycle, 'ready');
     const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`)).text();
     assert.match(done, /<h1>Key saved<\/h1>/);
-    assert.match(done, /The API refused the request Chickpea tried, which usually means your key works but lacks a permission\./);
+    assert.match(done, /The API turned down Chickpea&#39;s check, which usually means the key works but is missing a permission\. Some requests may be refused until you add it\./);
     assert.doesNotMatch(done, /accepted/);
   } finally {
     f.close();
@@ -1938,8 +1953,293 @@ test('a key the setup page saves where the API answers 404 is never called accep
     assert.equal(await storedSecret(f.settings, f.tasks), 'sk-unchecked', 'the person typed this key on purpose');
     const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`)).text();
     assert.match(done, /<h1>Key saved<\/h1>/);
-    assert.match(done, /This API has no page at the address Chickpea tests, so Chickpea could not test the key there\. To check it, ask your Agent in Slack to try a request\./);
+    assert.match(done, /Chickpea&#39;s check landed on an address this API doesn&#39;t serve, which says nothing about the key\. Ask your Agent in Slack to read something to test it\./);
     assert.doesNotMatch(done, /accepted/);
+  } finally {
+    f.close();
+  }
+});
+
+/** The Tasks setup link the Agent issued from its Slack thread with the owner, claimed in the browser. */
+async function slackTasksSetup(suffix: string, wake: 'queued' | 'refused', options: { otherDrainHolds?: boolean } = {}) {
+  const woken: SetupWakeRequest[] = [];
+  const posted: string[] = [];
+  const f = await tasksSetupStores(suffix, {
+    wakeAgent: async (request) => {
+      woken.push(request);
+      return wake;
+    },
+    deliverReceipt: async (record) => {
+      posted.push(formatManagementSetupReceipt(record.receipt));
+      return { deliveryRef: 'slack:D1:1' };
+    },
+  }, options.otherDrainHolds ? drainHeldElsewhere : undefined);
+  const result = await f.service.applyWorkspaceChanges({
+    context: {
+      userId: f.owner.user.id,
+      membershipId: f.owner.membership.id,
+      organizationId: f.owner.membership.organizationId,
+      actingAgentId: f.agent.id,
+      origin: {
+        kind: 'slack', workspaceId: f.owner.user.slackTeamId, channelId: 'D1', threadTs: '100.000100',
+        messageTs: '100.000200', conversationKind: 'im', agentId: f.agent.id, requestText: 'send me the Tasks setup link',
+      },
+    },
+    idempotencyKey: `slack-setup-${suffix}`,
+    operations: [{ itemId: 'setup', kind: 'request_setup', target: { kind: 'api_connection', agentId: f.agent.id, connectionId: 'tasks' } }],
+  });
+  requireMutationResult(result);
+  const [outcome] = result.outcomes;
+  assert.equal(outcome?.disposition, 'setup_required', JSON.stringify(result));
+  assert.match(outcome?.instruction ?? '', /you will continue as soon as they finish; do not ask them to message you/,
+    'the Agent promises to carry on by itself');
+  const setupId = outcome!.setupOperationId!;
+  return { ...f, setupId, cookie: await claimSetup(f.app, setupId), woken, posted };
+}
+
+test('a key saved on the page wakes the Agent that asked from Slack, and the page says it is testing it', async () => {
+  const f = await slackTasksSetup('setup-wake-key', 'queued');
+  try {
+    const saved = await withConnectionNetwork(() => Response.json({ tasks: [] }), async () =>
+      postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-wake-123' }));
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.equal(f.woken.length, 1);
+    const [request] = f.woken;
+    assert.equal(request?.setupOperationId, f.setupId);
+    assert.deepEqual([request?.workspaceId, request?.channelId, request?.threadTs], [f.owner.user.slackTeamId, 'D1', '100.000100']);
+    assert.deepEqual([request?.wake.agentId, request?.wake.slackUserId, request?.wake.conversationKind],
+      [f.agent.id, f.owner.user.slackUserId, 'im']);
+    assert.match(request?.wake.note ?? '', /saved the key for Tasks on its setup page\. Chickpea checked it with one request, and the service accepted it\./);
+    for (const secretOrId of ['sk-wake-123', f.setupId, f.agent.id, f.owner.user.slackUserId]) {
+      assert.ok(!request?.wake.note.includes(secretOrId), `the note holds no ${secretOrId}`);
+    }
+    assert.equal(request?.notice, '✅ Tasks is now connected to Tasks helper.');
+    assert.deepEqual(f.posted, [], 'no notice posts while the Agent continues');
+    assert.equal((await f.management.getOutboxForOperation(f.setupId))?.deliveryRef, `wake:${f.setupId}`);
+    const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`, {
+      headers: { cookie: f.cookie },
+    })).text();
+    assert.match(done, /<h1>Key saved<\/h1><p>Tasks helper is testing it in Slack now\. You can close this window\.<\/p>/);
+  } finally {
+    f.close();
+  }
+});
+
+/** The setup route's own drain finds nothing due, as when the state store's alarm drain already holds the receipt. */
+function drainHeldElsewhere(management: SqliteManagementStore): SqliteManagementStore {
+  return new Proxy(management, {
+    get(target, property) {
+      if (property === 'claimDueOutbox') return async () => [];
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+test('the page says the Agent is testing the key while another drain still holds its wake', async () => {
+  const f = await slackTasksSetup('setup-wake-held', 'queued', { otherDrainHolds: true });
+  try {
+    const saved = await withConnectionNetwork(() => Response.json({ tasks: [] }), async () =>
+      postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-wake-held' }));
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.deepEqual([f.woken.length, f.posted.length], [0, 0], 'this drain left the receipt to the one holding it');
+    assert.equal((await f.management.getOutboxForOperation(f.setupId))?.status, 'pending');
+    const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`, {
+      headers: { cookie: f.cookie },
+    })).text();
+    assert.match(done, /Tasks helper is testing it in Slack now\./);
+  } finally {
+    f.close();
+  }
+});
+
+test('a setup whose wake cannot run posts its plain notice, and the page closes the loop itself', async () => {
+  const f = await slackTasksSetup('setup-wake-refused', 'refused');
+  try {
+    const saved = await withConnectionNetwork(() => new Response(null, { status: 404 }), async () =>
+      postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-wake-456' }));
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.equal(f.woken.length, 1);
+    assert.match(f.woken[0]!.wake.note, /Chickpea's check got a 404 at the address it tried, which says nothing about the key\./);
+    assert.deepEqual(f.posted, ['✅ Tasks is now connected to Tasks helper.']);
+    const done = await (await f.app.request(`http://localhost${saved.headers.get('location')}`, {
+      headers: { cookie: f.cookie },
+    })).text();
+    assert.match(done, /doesn&#39;t serve, which says nothing about the key\. Ask your Agent in Slack to read something to test it\./);
+    assert.doesNotMatch(done, /in Slack now/);
+  } finally {
+    f.close();
+  }
+});
+
+test('a setup started over MCP wakes no Agent and posts its notice', async () => {
+  const woken: SetupWakeRequest[] = [];
+  const f = await tasksSetupStores('setup-wake-mcp', {
+    wakeAgent: async (request) => {
+      woken.push(request);
+      return 'queued';
+    },
+  });
+  try {
+    const setupId = await requestConnectionSetup(f.service, f.owner, { kind: 'api_connection', agentId: f.agent.id, connectionId: 'tasks' });
+    const cookie = await claimSetup(f.app, setupId);
+    const saved = await withConnectionNetwork(() => Response.json({ tasks: [] }), async () =>
+      postSetupForm(f.app, setupId, 'complete', cookie, { credential: 'sk-wake-789' }));
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.deepEqual(woken, []);
+    assert.equal((await f.management.getOutboxForOperation(setupId))?.deliveryRef, 'mcp:receipt');
+  } finally {
+    f.close();
+  }
+});
+
+/** A Tasks API that answers 404 at its bare prefix whatever the key, as many APIs do, and lists tasks for `key`. */
+function tasksApi(key: string) {
+  return (request: StubbedRequest) => {
+    if (new URL(request.url).pathname !== '/v1/tasks') return new Response(null, { status: 404 });
+    return request.headers.get('authorization') === `Bearer ${key}`
+      ? Response.json({ tasks: [] })
+      : Response.json({ message: 'Invalid token' }, { status: 401 });
+  };
+}
+
+/** Completes the setup with `credential` and returns the page's answer and every URL the check sent. */
+async function completeTasksSetup(
+  f: { app: Hono; setupId: string; cookie: string },
+  credential: string,
+): Promise<{ response: Response; sent: string[] }> {
+  return withConnectionNetwork(tasksApi(credential), async (requests) => ({
+    response: await postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential }),
+    sent: requests.map(({ method, url }) => `${method} ${url}`),
+  }));
+}
+
+test('both doors take a check path on an API connection setup only', () => {
+  const setup = (target: Record<string, string>) => ({
+    idempotencyKey: 'setup-path',
+    operations: [{ itemId: 'setup', kind: 'request_setup', target: { agentId: 'agent_tasks', ...target } }],
+  });
+  const api = setup({ kind: 'api_connection', connectionId: 'tasks', path: '/v1/tasks' });
+  const mcp = setup({ kind: 'mcp_connection', connectionId: 'linear', path: '/v1/tasks' });
+  assert.ok(applyWorkspaceChangesZodSchema.safeParse(api).success);
+  assert.ok(v.safeParse(applyWorkspaceChangesValibotSchema, api).success);
+  assert.equal(applyWorkspaceChangesZodSchema.safeParse(mcp).success, false);
+  assert.equal(v.safeParse(applyWorkspaceChangesValibotSchema, mcp).success, false);
+  const bare = setup({ kind: 'api_connection', connectionId: 'tasks', path: 'v1/tasks' });
+  assert.equal(applyWorkspaceChangesZodSchema.safeParse(bare).success, false, 'a path starts with one slash');
+  assert.equal(v.safeParse(applyWorkspaceChangesValibotSchema, bare).success, false);
+});
+
+test('a setup link issued with a read endpoint checks the key there, not at the bare prefix', async () => {
+  const f = await claimedTasksSetup('setup-check-path', '/v1/tasks');
+  try {
+    assert.equal((await f.management.getSetup(f.setupId))?.target.checkPath, '/v1/tasks');
+    const { response, sent } = await completeTasksSetup(f, 'sk-right');
+    assert.deepEqual(sent, ['GET https://api.example.com/v1/tasks']);
+    assert.equal(response.status, 303, await response.clone().text());
+    assert.equal(response.headers.get('location'), `/setup/${f.setupId}`, 'the check found the key works');
+    assert.equal(await storedSecret(f.settings, f.tasks), 'sk-right');
+    assert.equal((await currentAccount(f.config, f.tasks)).lifecycle, 'ready');
+  } finally {
+    f.close();
+  }
+});
+
+test('request_setup refuses a check path outside the connection and issues no link', async () => {
+  for (const [index, path] of ['/v2/tasks', '/v10', '/v1/../admin'].entries()) {
+    const f = await tasksSetupStores(`setup-check-path-outside-${index}`);
+    try {
+      const result = await f.service.applyWorkspaceChanges({
+        context: {
+          userId: f.owner.user.id,
+          membershipId: f.owner.membership.id,
+          organizationId: f.owner.membership.organizationId,
+          origin: { kind: 'mcp', clientId: 'codex' },
+        },
+        idempotencyKey: 'setup-outside',
+        operations: [{
+          itemId: 'setup',
+          kind: 'request_setup',
+          target: { kind: 'api_connection', agentId: f.agent.id, connectionId: 'tasks', path },
+        }],
+      });
+      requireMutationResult(result);
+      const [outcome] = result.outcomes;
+      assert.deepEqual([outcome?.disposition, outcome?.code, outcome?.instruction, outcome?.setupUrl], [
+        'failed',
+        'invalid_request',
+        'path must be inside the connection on its first host: https://api.example.com/v1.',
+        undefined,
+      ], path);
+      assert.equal(await f.management.getSetup(`setup_setup-check-path-outside-${index}`), undefined);
+    } finally {
+      f.close();
+    }
+  }
+});
+
+test('a setup record without a check path still renders and checks the first prefix', async () => {
+  const f = await claimedTasksSetup('setup-check-path-absent');
+  try {
+    const record = await f.management.getSetup(f.setupId);
+    assert.ok(record);
+    assert.equal('checkPath' in record.target, false, 'stored as records were before the field existed');
+    const page = await f.app.request(`http://localhost/setup/${f.setupId}`, { headers: { cookie: f.cookie } });
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /<dt>Key sent only to<\/dt><dd>https:\/\/api\.example\.com\/v1<\/dd>/);
+    const { response, sent } = await completeTasksSetup(f, 'sk-right');
+    assert.deepEqual(sent, ['GET https://api.example.com/v1']);
+    assert.equal(response.headers.get('location'), `/setup/${f.setupId}?check=path_not_found`);
+  } finally {
+    f.close();
+  }
+});
+
+test('a connection edited after its link was issued refuses the link and sends the key nowhere', async () => {
+  const f = await claimedTasksSetup('setup-check-path-edited', '/v1/tasks');
+  try {
+    const current = await currentAccount(f.config, f.tasks);
+    await f.config.putConnectionAccount({ ...current, policy: { ...TASKS_POLICY, pathPrefixes: ['/v2'] } }, current.revision);
+    const { response, sent } = await completeTasksSetup(f, 'sk-right');
+    assert.deepEqual(sent, [], 'neither the stale path nor the new prefix got the key');
+    assert.equal(response.status, 422, await response.clone().text());
+    assert.equal((await f.management.getSetup(f.setupId))?.failureCode, 'target_changed');
+    assert.equal(await storedSecret(f.settings, f.tasks), undefined);
+  } finally {
+    f.close();
+  }
+});
+
+test('a stored check path outside the connection as it is now is never sent; the first prefix is checked', async () => {
+  const f = await tasksSetupStores('setup-check-path-stale');
+  try {
+    const issued = await f.management.getSetup(await requestConnectionSetup(f.service, f.owner, {
+      kind: 'api_connection', agentId: f.agent.id, connectionId: 'tasks', path: '/v1/tasks',
+    }));
+    assert.ok(issued);
+    // The edit fence keeps an issued path inside its connection, so only a record written another way holds one outside it.
+    const stale = await f.management.putSetup({
+      record: {
+        ...issued,
+        setupOperationId: `${issued.setupOperationId}_stale`,
+        target: { ...issued.target, checkPath: '/v2/tasks' },
+      },
+    });
+    const setup = { app: f.app, setupId: stale.setupOperationId, cookie: await claimSetup(f.app, stale.setupOperationId) };
+    const { response, sent } = await completeTasksSetup(setup, 'sk-right');
+    assert.deepEqual(sent, ['GET https://api.example.com/v1']);
+    assert.equal(response.status, 303, await response.clone().text());
+  } finally {
+    f.close();
+  }
+});
+
+test('a check path that holds the typed key is never sent; the first prefix is checked', async () => {
+  const f = await claimedTasksSetup('setup-check-path-key', '/v1/tasks?token=sk-typed');
+  try {
+    const { response, sent } = await completeTasksSetup(f, 'sk-typed');
+    assert.deepEqual(sent, ['GET https://api.example.com/v1']);
+    assert.equal(response.status, 303, await response.clone().text());
   } finally {
     f.close();
   }

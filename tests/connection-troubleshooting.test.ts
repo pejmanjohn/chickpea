@@ -134,7 +134,7 @@ async function fixture(options: { memberTries?: number[] } = {}) {
     args: WorkspaceManagementToolArguments[TName],
     requesterText: string,
     by: IdentityResolution = f.admin,
-    source?: 'click' | 'ask',
+    source?: 'click' | 'setup' | 'ask',
     channelId = DM,
   ): Promise<WorkspaceManagementToolResult> => {
     turn += 1;
@@ -151,7 +151,7 @@ async function fixture(options: { memberTries?: number[] } = {}) {
       messageTs,
       turnJobId: `turn_SCRIBE_${turn}`,
       ...(source === 'ask' ? {} : { requesterText }),
-      ...(source === 'click' ? { requesterTextSource: source } : {}),
+      ...(source === 'click' || source === 'setup' ? { requesterTextSource: source } : {}),
     };
     const withBudget = name === 'try_connection' ? { turnTriesLeft: 7, ...args } : args;
     const result = await invokeSlackWorkspaceManagementTool({ signal, identity: f.identity, service: f.service, name, args: withBudget });
@@ -625,6 +625,28 @@ test('the approval admits only its own connection, the person who approved it, f
       connectionId: CONNECTION.id, key: KEY, path: INCIDENTS,
     }, 'save it')));
   }, (f) => next(f), 'the connection already has its key');
+});
+
+test('Chickpea\'s setup note is never the person\'s typed words: it carries no key, and its changes wait for them', async () => {
+  const f = await fixture();
+  try {
+    await approvedConnection(f, KEY_LATER);
+    const note = `Chickpea note, not typed by Admin: Admin finished a setup. ${TYPED}`;
+    await withConnectionNetwork(statusboard, async (requests) => {
+      for (const name of ['try_connection', 'save_connection_key'] as const) {
+        assert.match(refusal(await f.slack(name, { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, note, f.admin, 'setup')).message,
+          /^Nothing was (sent|saved): \w+ takes only a key the requester typed/, name);
+      }
+      assert.deepEqual(requests, [], 'nothing was sent');
+    });
+    assert.equal(await f.savedKey(), undefined);
+    const held = ok<ManagementApplyResult>(await f.slack('apply_workspace_changes',
+      await f.update({ instructions: 'Track incidents closely.' }), note, f.admin, 'setup'));
+    assert.notEqual(held.outcomes[0]?.disposition, 'applied', 'a change made on the note waits for the person');
+    const typed = ok<ManagementApplyResult>(await f.slack('apply_workspace_changes',
+      await f.update({ instructions: 'Track incidents closely.' }), 'make your instructions say to track incidents closely'));
+    assert.equal(typed.outcomes[0]?.disposition, 'applied', 'the same change from the person\'s own message applies');
+  } finally { f.close(); }
 });
 
 test('a receipt that issued a setup link does not offer to test a pasted key', async () => {
