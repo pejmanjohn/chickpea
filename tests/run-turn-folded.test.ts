@@ -330,6 +330,21 @@ test('the first status says how many messages the turn is reading', async () => 
   }
 });
 
+test('an edit of the head that joined its start claim is the request: the run reads only the newest text', async () => {
+  const h = await harness(threadTurn());
+  try {
+    const edited = 'Draft the launch email for partners.';
+    const [prompt] = await promptOf(h, {
+      claimFold: async () => ({ messages: [], requesterText: edited, headText: edited }),
+    });
+    assert.match(prompt!, /Current Slack request \(this is the only current user intent; answer this[^\n]*\nDraft the launch email for partners\./);
+    assert.equal(occurrences(prompt!, 'Draft the launch email.'), 0, 'the admitted text is never read');
+    assert.ok(currentRequestEnvelopeText(prompt!)?.includes(HEAD_TS), 'the request is still the message it edits');
+  } finally {
+    h.close();
+  }
+});
+
 test('a declined claim leaves the single-message prompt exactly as it was', async () => {
   const plain = await harness(threadTurn());
   const declined = await harness(threadTurn());

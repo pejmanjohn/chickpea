@@ -3,7 +3,8 @@ import { parseMemoryCommand } from '../memory/commands.ts';
 import { parseRoutineCommand } from '../routines/commands.ts';
 import { stripUnresolvedSlackCommandAddress } from './command-address.ts';
 import { formatSlackContextRows, SLACK_CONTEXT_CONTINUATION_MARKER } from './context-format.ts';
-import type { NormalizedSlackTurn } from './types.ts';
+import { compareSlackTs } from './thread-context.ts';
+import type { NormalizedSlackTurn, SlackTurnEdit } from './types.ts';
 
 /**
  * Follow-ups: messages people sent after the head turn in the same thread,
@@ -15,14 +16,59 @@ import type { NormalizedSlackTurn } from './types.ts';
  * share.
  */
 
-/** One queued message that the head's run took. */
+/** One queued message that the head's run took, or an edit of one it already read. */
 export interface FoldedMessage {
   turnJobId: string;
   userId: string;
+  /** The message's ts; an edit note's is the edited message's. */
   messageTs: string;
+  /** Its newest text. */
   text: string;
   /** The run reads it but does not answer it (see foldedInformationOnly). */
   informationOnly?: true;
+  /** An edit of a message the run already read, whose text then was `previousText`. */
+  edit?: { previousText: string };
+}
+
+/** A row one claim cycle took, as the store holds it: a message, or an edit of the message at `messageTs`. */
+export type ClaimedFoldRow = Omit<FoldedMessage, 'edit'> & { edit?: SlackTurnEdit };
+
+/**
+ * What a run reads from the rows of one claim cycle. Pure, so a replayed
+ * claim reads the same. A message is read once, with its newest text; at
+ * start an edit of the head becomes `headText`; edits of a message the run
+ * read before this cycle become one note per message, with the newest text
+ * and the earliest edit's previous text. Every claim takes all of a
+ * message's waiting edits, so that is the text the run last read.
+ */
+export function readFoldClaim(input: {
+  headTs: string;
+  phase: 'start' | 'turn' | 'finish';
+  rows: readonly ClaimedFoldRow[];
+}): { messages: FoldedMessage[]; headText?: string } {
+  const edits = new Map<string, Array<ClaimedFoldRow & { edit: SlackTurnEdit }>>();
+  for (const row of input.rows) {
+    if (!row.edit) continue;
+    edits.set(row.messageTs, [...edits.get(row.messageTs) ?? [], { ...row, edit: row.edit }]);
+  }
+  for (const versions of edits.values()) {
+    versions.sort((left, right) => compareSlackTs(left.edit.editedTs, right.edit.editedTs));
+  }
+  const newest = (messageTs: string) => edits.get(messageTs)?.at(-1);
+  const read: Array<{ message: FoldedMessage; at: string }> = input.rows.flatMap(({ edit, ...message }) =>
+    edit ? [] : [{ message: { ...message, text: newest(message.messageTs)?.text ?? message.text }, at: message.messageTs }]);
+  const readNow = new Set(read.map(({ message }) => message.messageTs));
+  if (input.phase === 'start') readNow.add(input.headTs);
+  for (const [messageTs, [earliest, ...later]] of edits) {
+    if (!earliest || readNow.has(messageTs)) continue;
+    const { edit, ...latest } = later.at(-1) ?? earliest;
+    read.push({ message: { ...latest, edit: { previousText: earliest.edit.previousText } }, at: edit.editedTs });
+  }
+  const headText = input.phase === 'start' ? newest(input.headTs)?.text : undefined;
+  return {
+    messages: read.sort((left, right) => compareSlackTs(left.at, right.at)).map(({ message }) => message),
+    ...(headText === undefined ? {} : { headText }),
+  };
 }
 
 /**

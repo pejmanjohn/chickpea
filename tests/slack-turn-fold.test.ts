@@ -11,6 +11,7 @@ import {
   MAX_FOLDED_MESSAGES,
   MAX_FOLDED_TEXT_CHARS,
   MAX_TURN_FOLD_CYCLES,
+  readFoldClaim,
 } from '../src/slack/follow-ups.ts';
 import type { FlueSettlementCheckpointV1, TurnJob } from '../src/slack/turn-job-types.ts';
 import {
@@ -1384,6 +1385,317 @@ test('an edit is admitted once, however often Slack delivers it, and only a newe
       'saving without a change steers nothing');
     const v3 = admitEdit(c, editOf(head, '300', 'v3'));
     assert.equal(v3.outcome === 'admitted' && v3.job.turn.edit?.previousText, 'v2', 'the newest version came before it');
+  } finally {
+    c.db.close();
+  }
+});
+
+// ── edits: what the run reads ─────────────────────────────────────────
+
+function editRowId(target: TurnJob, saved: string): string {
+  return editTurnJobId('C_FOLD', target.turn.messageTs, `1800000000.000${saved}`);
+}
+
+function late(c: CanonicalStore, head: TurnJob, received: number, phase: 'turn' | 'finish' = 'turn', take = true) {
+  const instanceId = c.turns.getFrozenRuntimePlan(head.id)!.instanceId;
+  return c.turns.fold({ phase, headId: head.id, instanceId, received, take });
+}
+
+const read = (claim: { messages: Array<{ turnJobId: string; text: string; edit?: unknown; informationOnly?: true }> }) =>
+  claim.messages.map(({ turnJobId, text, edit, informationOnly }) => ({
+    turnJobId, text, ...(edit ? { edit } : {}), ...(informationOnly ? { informationOnly } : {}),
+  }));
+
+test('a claim reads its messages and edit notes in the order people sent them, each message once', () => {
+  const row = (messageTs: string, text: string, edit?: { editedTs: string; previousText: string }) => ({
+    turnJobId: `${messageTs}:${edit?.editedTs ?? ''}`, userId: 'U_PERSON', messageTs, text, ...(edit ? { edit } : {}),
+  });
+  const rows = [
+    row('1800000000.000105', 'new message'),
+    row('1800000000.000102', 'v3', { editedTs: '1800000000.000106', previousText: 'v2' }),
+    row('1800000000.000102', 'v2', { editedTs: '1800000000.000104', previousText: 'v1' }),
+    row('1800000000.000101', 'head v2', { editedTs: '1800000000.000103', previousText: 'head v1' }),
+  ];
+  assert.deepEqual(readFoldClaim({ headTs: '1800000000.000101', phase: 'turn', rows }).messages.map(({ text, edit }) => [text, edit]), [
+    ['head v2', { previousText: 'head v1' }],
+    ['new message', undefined],
+    ['v3', { previousText: 'v1' }],
+  ]);
+  const start = readFoldClaim({ headTs: '1800000000.000101', phase: 'start', rows });
+  assert.equal(start.headText, 'head v2');
+  assert.deepEqual(start.messages.map(({ text }) => text), ['new message', 'v3'], 'at start the head is read whole, never as a note');
+});
+
+test('an edit of the head joins its start claim wherever it sits, and the members behind it still join', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101', { text: 'deploy to prod' });
+    const first = posted('102', { text: 'and tag it' });
+    enqueueAll(c, [head, first]);
+    admitEdit(c, editOf(head, '150', 'deploy to staging'));
+    const second = posted('103', { text: 'then tell me' });
+    enqueueAll(c, [second]);
+
+    const claim = c.turns.fold({ phase: 'start', headId: head.id });
+    assert.equal(claim.headText, 'deploy to staging', 'the run reads the head\'s newest text');
+    assert.deepEqual(read(claim), [
+      { turnJobId: first.id, text: 'and tag it' },
+      { turnJobId: second.id, text: 'then tell me' },
+    ], 'the edit row neither breaks the run of members nor shows as a message');
+    const editRow = view(c.turns, editRowId(head, '150')).job!;
+    assert.equal(editRow.fold?.headId, head.id);
+    assert.equal(turnJobGate(editRow), 'hold', 'the head answers it');
+    assert.deepEqual(c.turns.fold({ phase: 'start', headId: head.id }), claim, 'a replay reads the same');
+  } finally {
+    c.db.close();
+  }
+});
+
+test('the scan never steps over a message that cannot join, though an edit of the head behind it still joins', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101', { text: 'deploy to prod' });
+    const files = posted('102', { attachments: [{ fileId: 'F1' }] });
+    enqueueAll(c, [head, files]);
+    admitEdit(c, editOf(head, '150', 'deploy to staging'));
+    const after = posted('103');
+    enqueueAll(c, [after]);
+
+    const claim = c.turns.fold({ phase: 'start', headId: head.id });
+    assert.equal(claim.headText, 'deploy to staging');
+    assert.deepEqual(claim.messages, []);
+    assert.equal(view(c.turns, files.id).job!.fold, undefined);
+    assert.equal(view(c.turns, after.id).job!.fold, undefined, 'the message after the file keeps its place');
+  } finally {
+    c.db.close();
+  }
+});
+
+test('an edit row of a message outside the group ends the scan like any row that cannot join', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101');
+    const first = posted('102');
+    const elsewhere = posted('099');
+    const elsewhereEdit: TurnJob = {
+      ...elsewhere,
+      id: editRowId(elsewhere, '150'), msgKey: editRowId(elsewhere, '150'), evtKey: 'evt:EvEdit150',
+      turn: { ...elsewhere.turn, text: 'edited', edit: { editedTs: '1800000000.000150', previousText: elsewhere.turn.text } },
+    };
+    const second = posted('103');
+    enqueueAll(c, [head, first, elsewhereEdit, second]);
+    const claim = c.turns.fold({ phase: 'start', headId: head.id });
+    assert.deepEqual(claim.messages.map((message) => message.turnJobId), [first.id]);
+    assert.equal(claim.headText, undefined);
+    assert.equal(view(c.turns, second.id).job!.fold, undefined);
+    assert.equal(view(c.turns, elsewhereEdit.id).job!.fold, undefined);
+  } finally {
+    c.db.close();
+  }
+});
+
+test('an edit taken with a late member never moves the point the scan reads from', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101');
+    enqueueAll(c, [head]);
+    dispatch(c.turns, head);
+    const first = posted('102', { text: 'v1' });
+    const second = posted('104', { text: 'and this' });
+    enqueueAll(c, [first, second]);
+    admitEdit(c, editOf(first, '150', 'v2'));
+
+    assert.deepEqual(read(late(c, head, 0)), [
+      { turnJobId: first.id, text: 'v2' },
+      { turnJobId: second.id, text: 'and this' },
+    ], 'a member the run has not read yet is read once, with its newest text');
+    // Slack delivers an older message late: it is older than one the run read.
+    const older = posted('103');
+    enqueueAll(c, [older]);
+    assert.deepEqual(late(c, head, 1).messages, []);
+    assert.equal(view(c.turns, older.id).job!.fold, undefined, 'it runs as its own turn rather than reorder the request');
+  } finally {
+    c.db.close();
+  }
+});
+
+test('an edit of the head after its prompt froze reaches the run as an edit note, never as the head\'s text', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101', { text: 'deploy to prod' });
+    enqueueAll(c, [head]);
+    assert.equal(c.turns.fold({ phase: 'start', headId: head.id }).headText, undefined);
+    dispatch(c.turns, head);
+    admitEdit(c, editOf(head, '150', 'deploy to staging'));
+    assert.equal(c.turns.fold({ phase: 'start', headId: head.id }).headText, undefined, 'a start replay never changes the dispatched prompt');
+    assert.deepEqual(read(late(c, head, 0)), [{
+      turnJobId: editRowId(head, '150'), text: 'deploy to staging', edit: { previousText: 'deploy to prod' },
+    }]);
+  } finally {
+    c.db.close();
+  }
+});
+
+test('an edit of the head before its dispatch is read by the start claim\'s replay', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101', { text: 'deploy to prod' });
+    enqueueAll(c, [head]);
+    assert.equal(c.turns.fold({ phase: 'start', headId: head.id }).headText, undefined);
+    // The attempt failed before its dispatch; the person edits; the retry claims again.
+    admitEdit(c, editOf(head, '150', 'deploy to staging'));
+    assert.equal(c.turns.fold({ phase: 'start', headId: head.id }).headText, 'deploy to staging');
+    dispatch(c.turns, head);
+    assert.equal(c.turns.fold({ phase: 'start', headId: head.id }).headText, 'deploy to staging', 'the frozen prompt\'s text, again');
+    assert.deepEqual(late(c, head, 0).messages, [], 'never a note for what the run read');
+  } finally {
+    c.db.close();
+  }
+});
+
+test('a member taken but not yet confirmed is read with its newest text when its cycle is replayed', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101');
+    enqueueAll(c, [head]);
+    dispatch(c.turns, head);
+    const member = posted('102', { text: 'v1' });
+    enqueueAll(c, [member]);
+    assert.deepEqual(read(late(c, head, 0)), [{ turnJobId: member.id, text: 'v1' }]);
+    admitEdit(c, editOf(member, '150', 'v2'));
+    assert.deepEqual(read(late(c, head, 0)), [{ turnJobId: member.id, text: 'v2' }], 'the lost cycle is read again, newest text, no note');
+    assert.deepEqual(late(c, head, 1).messages, []);
+    assert.equal(view(c.turns, editRowId(member, '150')).job!.fold?.received, true);
+    assert.deepEqual(late(c, head, 1).messages, [], 'never offered again');
+  } finally {
+    c.db.close();
+  }
+});
+
+test('an edit of a member whose cycle was dispatched is a note at the next cycle, against the text the run read', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101');
+    enqueueAll(c, [head]);
+    dispatch(c.turns, head);
+    const member = posted('102', { text: 'v1' });
+    enqueueAll(c, [member]);
+    late(c, head, 0);
+    admitEdit(c, editOf(member, '150', 'v2'));
+    assert.deepEqual(read(late(c, head, 1)), [{ turnJobId: editRowId(member, '150'), text: 'v2', edit: { previousText: 'v1' } }]);
+    assert.equal(view(c.turns, member.id).job!.fold?.received, true);
+  } finally {
+    c.db.close();
+  }
+});
+
+test('successive edits taken at one point read as one note with the newest text; later ones diff against what the run read', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101', { text: 'v1' });
+    enqueueAll(c, [head]);
+    dispatch(c.turns, head);
+    const v2 = editOf(head, '150', 'v2');
+    assert.equal(admitEdit(c, v2).outcome, 'admitted');
+    admitEdit(c, editOf(head, '160', 'v3'));
+    assert.equal(admitEdit(c, v2).outcome, 'already_admitted', 'a redelivery adds no row');
+    assert.deepEqual(read(late(c, head, 0)), [{ turnJobId: editRowId(head, '160'), text: 'v3', edit: { previousText: 'v1' } }]);
+    admitEdit(c, editOf(head, '170', 'v4'));
+    assert.deepEqual(read(late(c, head, 1)), [{ turnJobId: editRowId(head, '170'), text: 'v4', edit: { previousText: 'v3' } }]);
+    assert.deepEqual(late(c, head, 2, 'finish', false).messages, []);
+    for (const saved of ['150', '160', '170']) {
+      assert.equal(view(c.turns, editRowId(head, saved)).job!.fold?.received, true, `${saved} read once`);
+    }
+    c.turns.recordFlueSettlement(head.id, COMPLETED);
+    c.slack.endTurn(head.id, c.turns, c.work, c.presentations);
+    assert.deepEqual(['150', '160', '170'].map((saved) => view(c.turns, editRowId(head, saved)).status), ['done', 'done', 'done'],
+      'each edit ends with the reply');
+  } finally {
+    c.db.close();
+  }
+});
+
+test('an edit no claim takes runs as its own turn after the reply, and its start claim takes the later edits', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101', { text: 'v1' });
+    admitCanonical(c, head);
+    dispatch(c.turns, head);
+    // The answer is already streaming: the gate is shut, so the would-stop call takes nothing.
+    admitEdit(c, editOf(head, '150', 'v2'));
+    admitEdit(c, editOf(head, '160', 'v3'));
+    assert.deepEqual(late(c, head, 0, 'finish', false).messages, []);
+    c.turns.recordFlueSettlement(head.id, COMPLETED);
+    c.slack.endTurn(head.id, c.turns, c.work, c.presentations);
+
+    const own = view(c.turns, editRowId(head, '150')).job!;
+    assert.equal(turnJobGate(own), 'run', 'answered after the reply, never lost');
+    const claim = c.turns.fold({ phase: 'start', headId: own.id });
+    assert.equal(claim.headText, 'v3');
+    assert.deepEqual(claim.messages, []);
+    dispatch(c.turns, { ...posted('101'), id: own.id, turn: own.turn });
+    c.turns.recordFlueSettlement(own.id, COMPLETED);
+    c.slack.endTurn(own.id, c.turns, c.work, c.presentations);
+    assert.equal(view(c.turns, editRowId(head, '160')).status, 'done', 'one reply answers both edits');
+  } finally {
+    c.db.close();
+  }
+});
+
+test('past the cycle caps an edit waits for its own turn', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101');
+    enqueueAll(c, [head]);
+    dispatch(c.turns, head);
+    admitEdit(c, editOf(head, '150', 'v2'));
+    assert.deepEqual(late(c, head, MAX_TURN_FOLD_CYCLES).messages, []);
+    assert.deepEqual(late(c, head, MAX_TURN_FOLD_CYCLES + MAX_FOLD_CYCLES, 'finish').messages, []);
+    assert.equal(view(c.turns, editRowId(head, '150')).job!.fold, undefined);
+  } finally {
+    c.db.close();
+  }
+});
+
+test('a teammate\'s edit under the requester\'s own connections is information only, and runs with the teammate\'s turn', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101');
+    enqueueAll(c, [head]);
+    dispatch(c.turns, head, 'personal');
+    const teammate = posted('102', { userId: 'U_TEAMMATE', text: 'v1' });
+    enqueueAll(c, [teammate]);
+    assert.deepEqual(read(late(c, head, 0)), [{ turnJobId: teammate.id, text: 'v1', informationOnly: true }]);
+    admitEdit(c, editOf(teammate, '150', 'v2'));
+    const claim = late(c, head, 1);
+    assert.deepEqual(read(claim), [{
+      turnJobId: editRowId(teammate, '150'), text: 'v2', edit: { previousText: 'v1' }, informationOnly: true,
+    }]);
+    assert.equal(claim.requesterText, head.turn.text, 'a teammate\'s words never choose the requester\'s connections');
+    late(c, head, 2, 'finish', false);
+    c.turns.recordFlueSettlement(head.id, COMPLETED);
+    c.slack.endTurn(head.id, c.turns, c.work, c.presentations);
+    assert.equal(view(c.turns, editRowId(teammate, '150')).status, 'pending', 'never settled with the requester\'s reply');
+    const own = c.turns.fold({ phase: 'start', headId: teammate.id });
+    assert.equal(own.headText, 'v2', 'the teammate\'s own turn reads the newest text');
+  } finally {
+    c.db.close();
+  }
+});
+
+test('a plan freeze that decides start roles again moves an edit row with its message', () => {
+  const c = canonicalStore();
+  try {
+    const head = posted('101');
+    const teammate = posted('102', { userId: 'U_TEAMMATE', text: 'v1' });
+    enqueueAll(c, [head, teammate]);
+    admitEdit(c, editOf(teammate, '150', 'v2'));
+    assert.deepEqual(read(c.turns.fold({ phase: 'start', headId: head.id })), [
+      { turnJobId: teammate.id, text: 'v2', informationOnly: true },
+    ]);
+    freeze(c.turns, head, 'shared');
+    assert.deepEqual([teammate.id, editRowId(teammate, '150')].map((id) => view(c.turns, id).job!.fold?.role),
+      ['absorbed', 'absorbed']);
   } finally {
     c.db.close();
   }

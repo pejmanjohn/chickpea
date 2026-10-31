@@ -251,7 +251,7 @@ export type TurnFoldRequest =
   | { phase: 'turn' | 'finish'; headId: string; instanceId: string; received: number; take: boolean };
 
 export interface TurnFoldClaim {
-  /** This claim's members, oldest first; empty when none was eligible. */
+  /** This claim's members and edit notes in the order they were sent (readFoldClaim); empty when none was eligible. */
   messages: FoldedMessage[];
   /** The requester's own words over the head and its members through this cycle (foldedRequestText). */
   requesterText: string;
@@ -261,6 +261,12 @@ export interface TurnFoldClaim {
    * Absent from an older state store.
    */
   receipts?: TurnReadReceipt[];
+  /**
+   * `start` only: the head's newest text, when an edit of it joined before
+   * the head's prompt froze. Absent from an older state store, which reads
+   * the head's admitted text.
+   */
+  headText?: string;
 }
 
 /** A row's 👀 that its reader swaps for 👍 (see SlackInteractionProgress `read`). */

@@ -510,9 +510,11 @@ export async function runTurn(
       options.stopEnding?.beforeDispatch !== true
     ? await options.claimFold({ phase: 'start', headId: options.turnId })
     : undefined;
+  // An edit of the head that joined before its prompt froze: the run reads only the newest text.
+  const head = claim?.headText === undefined ? turn : { ...turn, text: claim.headText };
   const followUps = claim?.messages ?? [];
   const receipts = claim?.receipts ?? [];
-  if (!options.turnLatency) return runTurnAttempt(turn, assignment, platformEnv, options, followUps, receipts);
+  if (!options.turnLatency) return runTurnAttempt(head, assignment, platformEnv, options, followUps, receipts);
   const tracker = new TurnLatencyTracker(options.turnLatency, {
     ...(options.turnId ? { turnJobId: options.turnId } : {}),
     ...(options.runId ? { runId: options.runId } : {}),
@@ -522,7 +524,7 @@ export async function runTurn(
   const { onDelivered, onDeferredTerminal } = options;
   let stopped = false;
   try {
-    await runTurnAttempt(turn, assignment, platformEnv, {
+    await runTurnAttempt(head, assignment, platformEnv, {
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
       onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
