@@ -2,15 +2,19 @@ import type {
   ResolvedAssignment,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
+  SlackPublicContextFileRef,
   SlackPublicContextImage,
   RecentSlackPublicContextInput,
 } from '../config/types.ts';
 import { MAX_SLACK_PUBLIC_HANDOFF_MESSAGES } from '../config/types.ts';
+import type { CompletedSlackArtifactReceipt } from './artifact-receipts.ts';
+import { safeFilename } from './attachment-context.ts';
+import { SLACK_FILE_ID } from './ids.ts';
 import type { NormalizedSlackTurn, SlackMessageEvent } from './types.ts';
 import type { FoldedMessage } from './follow-ups.ts';
 import { slackReadbackText } from './message-format.ts';
 import { slackFileSummaries, slackMessageText } from './message-text.ts';
-import { slackImageRefs, threadImageRef } from './thread-images.ts';
+import { artifactImageRef, slackImageRef, threadImageRef } from './thread-images.ts';
 import {
   agentContextUserId, atOrBeforeSlackWatermark, DEFAULT_MAX_MESSAGES, ensureTriggerMessage,
   orderMessages, slackContextWatermark, slackTimestampUnits, toContextMessage, type SlackContextMessage,
@@ -49,15 +53,77 @@ type SlackPublicContextLedger = SlackPublicContextWriter & {
   ): boolean | Promise<boolean>;
 };
 
+/**
+ * What the thread record keeps for a message's files besides their labels.
+ * Host-side references only: a later turn that reads the record, not Slack,
+ * rebuilds its `img:N` and `file:N` handles from them.
+ */
+export interface SlackRecordedFiles {
+  images: SlackPublicContextImage[];
+  fileRefs: SlackPublicContextFileRef[];
+}
+
+const NO_RECORDED_FILES: SlackRecordedFiles = { images: [], fileRefs: [] };
+const SLACK_MIME_TYPE = /^[a-z0-9.+-]{1,40}\/[a-z0-9.+-]{1,80}$/;
+
+/**
+ * A Slack message's files, sorted for the thread record. Each file lands in
+ * one list at most: the four image types in `images`, every other file Slack
+ * can still serve in `fileRefs`, readable here or not.
+ */
+export function recordedSlackFiles(files: unknown): SlackRecordedFiles {
+  const recorded: SlackRecordedFiles = { images: [], fileRefs: [] };
+  if (!Array.isArray(files)) return recorded;
+  for (const file of files) {
+    const image = slackImageRef(file);
+    const fileRef = image ? undefined : slackFileRef(file);
+    if (image) recorded.images.push(image);
+    if (fileRef) recorded.fileRefs.push(fileRef);
+  }
+  return recorded;
+}
+
+/** The files an Agent reply shares, sorted the same way from the host's upload receipts. */
+export function recordedArtifactFiles(
+  receipts: readonly CompletedSlackArtifactReceipt[] | undefined,
+): SlackRecordedFiles {
+  const recorded: SlackRecordedFiles = { images: [], fileRefs: [] };
+  for (const receipt of receipts ?? []) {
+    const image = artifactImageRef(receipt);
+    if (image) recorded.images.push(image);
+    else if (SLACK_FILE_ID.test(receipt.fileId)) {
+      recorded.fileRefs.push({ id: receipt.fileId, name: safeFilename(receipt.filename), sizeBytes: receipt.byteLength });
+    }
+  }
+  return recorded;
+}
+
+/** Deleted, over-limit and external files are skipped: Slack serves none of them. */
+function slackFileRef(file: unknown): SlackPublicContextFileRef | undefined {
+  if (!file || typeof file !== 'object' || Array.isArray(file)) return undefined;
+  const { id, name, title, mimetype, size, mode, is_external: isExternal } = file as Record<string, unknown>;
+  if (typeof id !== 'string' || !SLACK_FILE_ID.test(id)) return undefined;
+  if (mode === 'tombstone' || mode === 'hidden_by_limit' || mode === 'external' || isExternal === true) return undefined;
+  const rawName = typeof name === 'string' && name.trim() ? name : typeof title === 'string' ? title : '';
+  const mimeType = typeof mimetype === 'string' ? mimetype.toLowerCase().split(';')[0]!.trim() : '';
+  return {
+    id,
+    name: safeFilename(rawName),
+    ...(SLACK_MIME_TYPE.test(mimeType) ? { mimeType } : {}),
+    ...(typeof size === 'number' && Number.isSafeInteger(size) && size >= 0 ? { sizeBytes: size } : {}),
+  };
+}
+
 export async function recordAcceptedSlackHumanMessage(
   store: SlackPublicContextWriter,
   turn: NormalizedSlackTurn,
   assignment: Pick<ResolvedAssignment, 'runtimeContract'>,
-  /** The Slack event's files: their image references let a later turn read the record, not Slack. */
+  /** The Slack event's files: a later turn that reads the record, not Slack, still sees them. */
   files?: unknown,
 ): Promise<void> {
   if (assignment.runtimeContract !== 'chickpea-v1' || turn.source === 'reaction_added') return;
-  const images = slackImageRefs(files);
+  const labels = slackFileSummaries(files);
+  const { images, fileRefs } = recordedSlackFiles(files);
   await store.putSlackPublicContext({
     workspaceId: turn.workspaceId,
     channelId: turn.channelId,
@@ -66,7 +132,9 @@ export async function recordAcceptedSlackHumanMessage(
     role: 'human',
     text: turn.text,
     authorId: turn.userId,
+    ...(labels.length ? { files: labels } : {}),
     ...(images.length ? { images } : {}),
+    ...(fileRefs.length ? { fileRefs } : {}),
   });
 }
 
@@ -75,10 +143,11 @@ export interface SlackPublicDelivery {
   messageTs: string;
   text: string;
   /**
-   * The images this message shares (the Agent's own uploads), so a later turn
+   * The files this message shares (the Agent's own uploads), so a later turn
    * that reads the record, not Slack, can still offer them. References only.
    */
   images?: SlackPublicContextImage[];
+  fileRefs?: SlackPublicContextFileRef[];
 }
 
 export async function recordDeliveredSlackAgentMessage(
@@ -98,6 +167,7 @@ export async function recordDeliveredSlackAgentMessage(
     // Later turns read this row in place of Slack's copy; quoting it must not ask.
     text: slackReadbackText(delivery.text),
     ...(delivery.images?.length ? { images: delivery.images } : {}),
+    ...(delivery.fileRefs?.length ? { fileRefs: delivery.fileRefs } : {}),
   });
 }
 
@@ -127,7 +197,7 @@ export async function recordSlackThreadEventMessage(
   if (!row || row.role === 'agent') return false;
   if (!(await threadHasAgent(rootTs))) return false;
   await store.putSlackPublicContext(
-    threadRecordInput(workspaceId, event.channel, rootTs, row, slackImageRefs(event.files)),
+    threadRecordInput(workspaceId, event.channel, rootTs, row, recordedSlackFiles(event.files)),
   );
   return true;
 }
@@ -164,7 +234,8 @@ export async function seedSlackThreadRecord(
     .filter((message) => !options.held?.has(message.ts))
     .map((message) => ({
       ...threadRecordInput(
-        turn.workspaceId, turn.channelId, turn.threadTs, message, imageRefsFor(context, message.ts),
+        turn.workspaceId, turn.channelId, turn.threadTs, message,
+        { images: imageRefsFor(context, message.ts), fileRefs: [] },
       ),
       ...(gapBeforeTs && message.ts === turn.threadTs ? { gapBeforeTs } : {}),
     }));
@@ -183,7 +254,7 @@ function threadRecordInput(
   channelId: string,
   rootTs: string,
   message: SlackContextMessage,
-  images: SlackPublicContextImage[] = [],
+  { images, fileRefs }: SlackRecordedFiles = NO_RECORDED_FILES,
 ): SlackPublicContextEntryInput {
   return {
     workspaceId,
@@ -196,6 +267,7 @@ function threadRecordInput(
     ...(message.role === 'app' && message.authorName ? { authorName: message.authorName } : {}),
     ...(message.files?.length ? { files: message.files } : {}),
     ...(images.length ? { images } : {}),
+    ...(fileRefs.length ? { fileRefs } : {}),
     ...(message.contentVersionTs ? { contentVersionTs: message.contentVersionTs } : {}),
   };
 }
@@ -223,6 +295,7 @@ export async function reconcileSlackPublicContextMutation(
   // attachments, or a file share without a caption, survives its own edit.
   const text = message ? slackMessageText(message) : '';
   const files = slackFileSummaries(message?.files);
+  const { images, fileRefs } = recordedSlackFiles(message?.files);
   if (!text && files.length === 0) {
     await store.deleteSlackPublicContextMessage(workspaceId, event.channel, rootTs, messageTs);
     return true;
@@ -249,7 +322,8 @@ export async function reconcileSlackPublicContextMutation(
     ...(existing.authorId ? { authorId: existing.authorId } : {}),
     ...(existing.authorName ? { authorName: existing.authorName } : {}),
     files,
-    images: slackImageRefs(message?.files),
+    images,
+    fileRefs,
   });
   return true;
 }

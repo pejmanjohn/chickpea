@@ -158,13 +158,10 @@ export function collectThreadImageRecords(
   return records;
 }
 
-/** Image references of one raw Slack row, for the thread record. */
-export function slackImageRefs(files: unknown): SlackPublicContextImage[] {
-  if (!Array.isArray(files)) return [];
-  return files.flatMap((file) => {
-    const record = fileRecord(file, { conversationKey: '', origin: 'person', messageTs: '' });
-    return record ? [threadImageRef(record)] : [];
-  });
+/** The thread record's reference for one raw Slack file, or undefined when it is not an image. */
+export function slackImageRef(file: unknown): SlackPublicContextImage | undefined {
+  const record = fileRecord(file, { conversationKey: '', origin: 'person', messageTs: '' });
+  return record ? threadImageRef(record) : undefined;
 }
 
 /** The reference the thread record keeps for an image record. */
@@ -177,14 +174,10 @@ export function threadImageRef(record: ThreadImageRecord): SlackPublicContextIma
   };
 }
 
-/** Image references of the files an Agent reply shares, for its thread-record row. */
-export function artifactImageRefs(
-  receipts: readonly CompletedSlackArtifactReceipt[] | undefined,
-): SlackPublicContextImage[] {
-  return (receipts ?? []).flatMap((receipt) => {
-    const record = receiptRecord(receipt, '');
-    return record ? [threadImageRef(record)] : [];
-  });
+/** The thread record's reference for a file an Agent reply shares, or undefined when it is not an image. */
+export function artifactImageRef(receipt: CompletedSlackArtifactReceipt): SlackPublicContextImage | undefined {
+  const record = receiptRecord(receipt, '');
+  return record ? threadImageRef(record) : undefined;
 }
 
 /**

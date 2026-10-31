@@ -60,8 +60,7 @@ import {
   type CompletedSlackArtifactReceipt,
   type SlackArtifactReceipt,
 } from './artifact-receipts.ts';
-import type { SlackPublicDelivery } from './public-context.ts';
-import { artifactImageRefs } from './thread-images.ts';
+import { recordedArtifactFiles, type SlackPublicDelivery } from './public-context.ts';
 import {
   createSlackFileTransport,
   resolveFileShares,
@@ -1092,15 +1091,17 @@ export class WebClientPresenter {
     }
   }
 
-  /** `files`: the Agent's files this message shares; their images are recorded with it. */
+  /** `files`: the Agent's files this message shares; they are recorded with it. */
   private async notifyPublicDelivery(
     messageTs: string,
     text: string,
     files?: readonly CompletedSlackArtifactReceipt[],
   ): Promise<void> {
     try {
-      const images = artifactImageRefs(files);
-      await this.options.onPublicDelivery?.({ messageTs, text, ...(images.length ? { images } : {}) });
+      const { images, fileRefs } = recordedArtifactFiles(files);
+      await this.options.onPublicDelivery?.({
+        messageTs, text, ...(images.length ? { images } : {}), ...(fileRefs.length ? { fileRefs } : {}),
+      });
     } catch {
       // Slack delivery is the commit point. Ledger repair must never turn a
       // confirmed final into a duplicate-delivery retry.

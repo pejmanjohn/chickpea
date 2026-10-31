@@ -22,7 +22,7 @@
     "config_chickpea_cutovers": 1,
     "config_connection_accounts": 1,
     "config_meta": 1,
-    "config_slack_public_context": 1,
+    "config_slack_public_context": 2,
     "config_workspace_installations": 1,
     "config_workspace_model_defaults": 1,
     "config_workspace_model_roles": 1
@@ -43,6 +43,7 @@
     "config_agents.website_logins_json": 1,
     "config_connection_accounts.identity_json": 1,
     "config_connection_accounts.policy_json": 6,
+    "config_slack_public_context.file_refs_json": 1,
     "config_slack_public_context.files_json": 1,
     "config_slack_public_context.images_json": 1
   },

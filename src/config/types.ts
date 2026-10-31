@@ -627,6 +627,14 @@ export interface SlackPublicContextImage {
   sizeBytes?: number;
 }
 
+/** A non-image file of a recorded message, for the host's file inventory only. */
+export interface SlackPublicContextFileRef {
+  id: string;
+  name: string;
+  mimeType?: string;
+  sizeBytes?: number;
+}
+
 /** A file shared with a recorded message: label, type, size. Never contents. */
 export interface SlackPublicContextFile {
   name: string;
@@ -659,6 +667,13 @@ export interface SlackPublicContextEntry {
    * Slack. Never rendered into model-facing text.
    */
   images?: SlackPublicContextImage[];
+  /**
+   * Every other file of the message, host-side only, readable or not: the
+   * thread file inventory rebuilds its `file:N` handles from the readable ones
+   * when a turn reads the record instead of Slack. Never rendered into
+   * model-facing text. A row written before this field existed has none.
+   */
+  fileRefs?: SlackPublicContextFileRef[];
   /**
    * Set on a thread's root row when the record was seeded from a read that
    * could not reach every reply: replies older than this timestamp (after

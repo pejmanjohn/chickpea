@@ -1,5 +1,5 @@
 {
-  "scenario": "1f415c3646a5f0b09934beef3f466254a2bdcef185e06c3111a7055d241907cc",
+  "scenario": "aede56a7a7169154cad0768efb22ca40a2bbc7cbe0da163079aa738ce264b520",
   "contract": {
     "schemaVersion": 12,
     "schemaMarker": "agent-first-v1",
@@ -24,7 +24,7 @@
       "config_chickpea_cutovers": 1,
       "config_connection_accounts": 1,
       "config_meta": 1,
-      "config_slack_public_context": 1,
+      "config_slack_public_context": 2,
       "config_workspace_installations": 1,
       "config_workspace_model_defaults": 1,
       "config_workspace_model_roles": 1
@@ -45,6 +45,7 @@
       "config_agents.website_logins_json": 1,
       "config_connection_accounts.identity_json": 1,
       "config_connection_accounts.policy_json": 6,
+      "config_slack_public_context.file_refs_json": 1,
       "config_slack_public_context.files_json": 1,
       "config_slack_public_context.images_json": 1
     },
@@ -901,6 +902,7 @@
           "author_name": "TEXT|0|null|0",
           "files_json": "TEXT|0|null|0",
           "images_json": "TEXT|0|null|0",
+          "file_refs_json": "TEXT|0|null|0",
           "gap_before_ts": "TEXT|0|null|0",
           "updated_at": "INTEGER|1|null|0"
         },
@@ -908,7 +910,7 @@
           "config_slack_public_context_root_idx": "0|c|0|workspace_id,channel_id,root_ts,updated_at",
           "sqlite_autoindex_config_slack_public_context_1": "1|pk|0|workspace_id,channel_id,root_ts,message_ts"
         },
-        "sql": "CREATE TABLE config_slack_public_context ( workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL, root_ts TEXT NOT NULL, message_ts TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('human', 'agent')), text TEXT NOT NULL, agent_id TEXT, content_version_ts TEXT, author_kind TEXT, author_id TEXT, author_name TEXT, files_json TEXT, images_json TEXT, gap_before_ts TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel_id, root_ts, message_ts) )",
+        "sql": "CREATE TABLE config_slack_public_context ( workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL, root_ts TEXT NOT NULL, message_ts TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('human', 'agent')), text TEXT NOT NULL, agent_id TEXT, content_version_ts TEXT, author_kind TEXT, author_id TEXT, author_name TEXT, files_json TEXT, images_json TEXT, file_refs_json TEXT, gap_before_ts TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel_id, root_ts, message_ts) )",
         "rows": {
           "[\"\\\"T0SCENARIO\\\"\",\"\\\"C0SCENARIO1\\\"\",\"\\\"1792080000.000100\\\"\",\"\\\"1792080000.000100\\\"\"]": {
             "workspace_id": "\"T0SCENARIO\"",
@@ -924,6 +926,7 @@
             "author_name": "null",
             "files_json": "[{\"name\":\"report-q3.csv\",\"sizeBytes\":2048,\"type\":\"csv\"}]",
             "images_json": "null",
+            "file_refs_json": "[{\"id\":\"F0SCENARIOCSV\",\"mimeType\":\"text/csv\",\"name\":\"report-q3.csv\",\"sizeBytes\":2048}]",
             "gap_before_ts": "null",
             "updated_at": "1792083600000"
           },
@@ -941,6 +944,7 @@
             "author_name": "\"Scenario Jobs\"",
             "files_json": "null",
             "images_json": "null",
+            "file_refs_json": "null",
             "gap_before_ts": "null",
             "updated_at": "1792083600000"
           },
@@ -958,6 +962,7 @@
             "author_name": "\"Scenario Researcher\"",
             "files_json": "null",
             "images_json": "[{\"id\":\"F0SCENARIOIMG\",\"mimeType\":\"image/png\",\"name\":\"chart.png\",\"sizeBytes\":4096}]",
+            "file_refs_json": "null",
             "gap_before_ts": "null",
             "updated_at": "1792083600000"
           },
@@ -975,6 +980,7 @@
             "author_name": "\"Scenario Alerts\"",
             "files_json": "null",
             "images_json": "null",
+            "file_refs_json": "null",
             "gap_before_ts": "\"1792076460.000200\"",
             "updated_at": "1792083600000"
           },
@@ -992,6 +998,7 @@
             "author_name": "null",
             "files_json": "[]",
             "images_json": "null",
+            "file_refs_json": "null",
             "gap_before_ts": "null",
             "updated_at": "1792083600000"
           }
