@@ -170,8 +170,8 @@ test('skill status changes are visible in approval previews', () => {
     missingSetup: [],
   });
 
-  assert.match(presentation, /\*Before\*[\s\S]*\*Status\*\n> Enabled/);
-  assert.match(presentation, /\*After\*[\s\S]*\*Status\*\n> Disabled/);
+  assert.match(presentation, /^\*Writer — Skill: unslop\*\n\*Replace\*\n\*Status\*\n\*Before\*\n> Enabled\n\*After\*\n> Disabled\n\n/m);
+  assert.doesNotMatch(presentation, /Description|Instructions/, 'unchanged parts stay out');
 });
 
 test('blank Agent fields and internal Slack presence state do not create proposal noise', () => {
