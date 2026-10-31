@@ -1,7 +1,7 @@
-import { createCimdClientDiscovery, type CimdOptions } from '@better-auth/cimd';
+import { createCimdClientDiscovery, validateClientIdUrl, type CimdOptions } from '@better-auth/cimd';
 import { APIError, isAPIError } from 'better-auth/api';
 
-import { createMcpGuardedFetch } from '../config/mcp-url.ts';
+import { createMcpGuardedFetch, validateMcpUrl } from '../config/mcp-url.ts';
 import type { McpRegistrationThrottle } from './better-auth-backend.ts';
 import { validRedirectUri } from './mcp-oauth.ts';
 
@@ -10,21 +10,23 @@ type Client = NonNullable<Awaited<ReturnType<ClientDiscovery['resolve']>>>;
 export type ClientMetadataFetch = CimdOptions['fetchClientMetadataResource'];
 
 /**
- * The only client ID metadata documents Chickpea signs a client in by,
- * matched as exact strings. Any other client ID is an unknown client.
+ * Whether a client ID is the URL of a metadata document Chickpea may fetch:
+ * Better Auth's client ID rules (HTTPS, an explicit path, no credentials,
+ * dot segment or fragment, no private or reserved host), the MCP egress
+ * guard's (no internal or bare hostname), a DNS name for the consent page to
+ * show rather than an IP address, and written as URL parsing writes it, so
+ * one document has one client ID and no control character reaches a log.
+ * Any other client ID is an unknown client, before any throttle, fetch
+ * permit, write or fetch.
  */
-export const ACCEPTED_CLIENT_METADATA_DOCUMENTS: ReadonlySet<string> = new Set([
-  // claude.ai, Claude Desktop and Cowork
-  'https://claude.ai/oauth/mcp-oauth-client-metadata',
-  // Claude Code
-  'https://claude.ai/oauth/claude-code-client-metadata',
-  // Codex: the CLI, the IDE extension, and Codex in the ChatGPT desktop app
-  'https://chatgpt.com/oauth/codex/client.json',
-  'https://vscode.dev/oauth/client-metadata.json',
-  'https://insiders.vscode.dev/oauth/client-metadata.json',
-  'https://zed.dev/oauth/client-metadata.json',
-  'https://goose-docs.ai/oauth/client-metadata.json',
-]);
+export function isClientMetadataDocumentUrl(clientId: string): boolean {
+  if (validateClientIdUrl(clientId) !== null || !validateMcpUrl(clientId).ok) return false;
+  const url = new URL(clientId);
+  return url.href === clientId && !IP_ADDRESS_HOST.test(url.hostname);
+}
+
+// URL parsing writes every IPv4 form as dotted decimal and brackets IPv6.
+const IP_ADDRESS_HOST = /^(?:\[.*\]|[\d.]+)$/;
 
 /** One transport's discovery, and the stored clients whose last fetch could not reach their document. */
 interface TransportState {
@@ -32,6 +34,7 @@ interface TransportState {
   unreachable: Set<string>;
 }
 
+const MAX_UNREACHABLE_CLIENTS = 1_000;
 const STORED_CLIENT_STAND_IN_MS = 24 * 60 * 60_000;
 let guardedFetch: ClientMetadataFetch | undefined;
 const transports = new WeakMap<ClientMetadataFetch, TransportState>();
@@ -43,15 +46,16 @@ interface NewClientGate {
 
 /**
  * Sign-in for a client whose `client_id` is the HTTPS URL of its Client ID
- * Metadata Document (MCP 2026-07-28). The discovery
- * matches only ACCEPTED_CLIENT_METADATA_DOCUMENTS, and Better Auth asks it
- * before resolving a client, so any other client ID is an unknown client:
- * never fetched, throttled or stored. Better Auth fetches the document over
- * `fetchClientMetadataResource`, by default the MCP connection guard: public
- * HTTPS hosts only, every DNS answer checked and pinned on Node, no redirect
- * followed. The plugin adds a 5-second timeout, a 5 KB JSON-only body and the
- * MCP profile's required fields. A document client must be public and
- * redirect as a registered one must; a refused new one is not kept.
+ * Metadata Document (MCP 2026-07-28), whoever publishes it. The discovery
+ * matches only a client ID isClientMetadataDocumentUrl accepts, and Better
+ * Auth asks it before resolving a client, so any other client ID is an
+ * unknown client: never fetched, throttled or stored. Better Auth fetches
+ * the document over `fetchClientMetadataResource`, by default the MCP
+ * connection guard: public HTTPS hosts only, every DNS answer checked and
+ * pinned on Node, no redirect followed. The plugin adds a 5-second timeout,
+ * a 5 KB JSON-only body and the MCP profile's required fields. A document
+ * client must be public and redirect as a registered one must; a refused new
+ * one is not kept.
  *
  * Better Auth is built per request, so the discovery, which caches documents
  * and budgets fetches per origin, is kept per transport for the isolate.
@@ -74,11 +78,12 @@ export function clientMetadataDiscovery(
   const { discovery, unreachable } = transports.get(transport) ?? createState(transport);
   return {
     ...discovery,
-    matches: (clientId) => ACCEPTED_CLIENT_METADATA_DOCUMENTS.has(clientId),
+    matches: isClientMetadataDocumentUrl,
     async resolve(ctx, clientId, existing) {
-      // Better Auth asks `matches` first; asking again keeps the throttle and
-      // the pending bound behind the allowlist whatever order it calls in.
-      if (!ACCEPTED_CLIENT_METADATA_DOCUMENTS.has(clientId)) return null;
+      // Better Auth asks `matches` first; asking again keeps the throttle, the
+      // pending bound and the plugin's fetch permit behind the URL check
+      // whatever order it calls in.
+      if (!isClientMetadataDocumentUrl(clientId)) return null;
       if (!existing) {
         await assertNewClientAdmitted(gate, ctx.request ?? new Request(ctx.context.baseURL, { headers: ctx.headers ?? {} }));
         const created = await discovery.resolve(ctx, clientId, null);
@@ -101,7 +106,7 @@ export function clientMetadataDiscovery(
           unreachable.delete(clientId);
           throw error;
         }
-        unreachable.add(clientId);
+        remember(unreachable, clientId);
         // The plugin rewrites updatedAt each time the document answers, changed or not.
         if (Date.now() - (existing.updatedAt?.getTime() ?? 0) > STORED_CLIENT_STAND_IN_MS) {
           ctx.context.logger.warn(`Client metadata document unreachable for over a day; refusing the stored client: ${clientId}`);
@@ -153,6 +158,12 @@ function createState(transport: ClientMetadataFetch): TransportState {
   };
   transports.set(transport, state);
   return state;
+}
+
+function remember(unreachable: Set<string>, clientId: string): void {
+  unreachable.delete(clientId);
+  if (unreachable.size >= MAX_UNREACHABLE_CLIENTS) unreachable.delete(unreachable.values().next().value!);
+  unreachable.add(clientId);
 }
 
 const UNREACHABLE_DOCUMENT = /^(?:Failed to fetch metadata document|Metadata document fetch timed out|Metadata document fetch returned HTTP (?:429|5\d\d)$)/;
