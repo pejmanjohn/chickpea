@@ -12,6 +12,10 @@ import type {
   ResolvedAssignment,
 } from '../src/config/types.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { runtimePlanConnectedServicesInstruction } from '../src/agents/slack-thread.ts';
+import { BROWSER_NO_LOGINS_MESSAGE, chickpeaNoLoginsMessage } from '../src/browser/messages.ts';
+import { browserSkillForPlan } from '../src/browser/skill.ts';
+import { BrowserLoginBinder } from '../src/browser/binding.ts';
 import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
 import { createFrontDeskTool } from '../src/slack/front-desk-tool.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
@@ -396,4 +400,36 @@ test('a settled hand-off survives the durable checkpoint, and a plan with a fron
   } finally {
     db.close();
   }
+});
+
+const WORKSPACE_REFUSALS = /workspace (has|lacks) no|no website logins (in|for) (this|the) workspace|this workspace (has no|lacks)|Chickpea's Websites tab|the Agent's Websites tab/i;
+
+test('Chickpea\'s refusals speak of its own logins and connections, never the workspace\'s; a user Agent\'s are unchanged', async () => {
+  const browserPlan = {
+    browserCapability: { provider: 'browserbase' as const },
+    agentId: CHICKPEA_AGENT_ID,
+  };
+  for (const frontDesk of [PLAN, undefined]) {
+    const plan = { ...browserPlan, ...(frontDesk ? { frontDesk } : {}) };
+    const texts = [chickpeaNoLoginsMessage(frontDesk !== undefined), browserSkillForPlan(plan)!.instructions];
+    for (const text of texts) {
+      assert.match(text, /Chickpea itself has no website logins, but the person's other Agents may\./);
+      assert.doesNotMatch(text, WORKSPACE_REFUSALS);
+    }
+    assert.match(texts[0]!, frontDesk ? /hand_off_to_agent/ : /mention an Agent that has a login/);
+  }
+  const chickpeaTools = new BrowserLoginBinder({} as never, undefined, async () => undefined, Date.now, chickpeaNoLoginsMessage(true));
+  assert.equal(await chickpeaTools.find('login_any', []), chickpeaNoLoginsMessage(true), 'the sign-in tools refuse in Chickpea\'s words');
+  assert.equal(await new BrowserLoginBinder({} as never, undefined, async () => undefined).find('login_any', []),
+    BROWSER_NO_LOGINS_MESSAGE);
+  const userSkill = browserSkillForPlan({ ...browserPlan, agentId: 'agent_support' })!.instructions;
+  assert.match(userSkill, /This Agent has no granted website logins/);
+  assert.equal(BROWSER_NO_LOGINS_MESSAGE, "This Agent has no website logins. An Admin can grant one on the Agent's Websites tab.");
+
+  const none = { apiConnections: [], mcpConnections: [], managedConnections: [], connectionChoices: [] };
+  const chickpea = runtimePlanConnectedServicesInstruction({ ...none, agentId: CHICKPEA_AGENT_ID });
+  assert.match(chickpea, /^Chickpea's own connected-service access for this turn: none\. This is Chickpea's access, not the workspace's/);
+  assert.doesNotMatch(chickpea, WORKSPACE_REFUSALS);
+  assert.match(runtimePlanConnectedServicesInstruction({ ...none, agentId: 'agent_support' }),
+    /^Active connected-service access selected and configured for this turn: none\./);
 });

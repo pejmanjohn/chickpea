@@ -203,7 +203,8 @@ import { listWebsiteLogins, websiteLoginDependencies } from '../browser/logins.t
 import { createSlackRequesterNotifier, type SlackRequester } from '../browser/requester.ts';
 import type { BrowserApprovalOptions } from '../browser/approval.ts';
 import type { BrowserLoginOptions } from '../browser/binding.ts';
-import { BROWSER_APPROVAL_ACTIVITY } from '../browser/messages.ts';
+import { BROWSER_APPROVAL_ACTIVITY, chickpeaNoLoginsMessage } from '../browser/messages.ts';
+import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { createBrowserTools, openRecordingDownload } from '../browser/tools.ts';
 import { createRecordingHandleStore, resolveUploadFile } from '../connections/file-handles.ts';
 import { buildConnectionAccess, type ConnectionAccess } from '../connections/access.ts';
@@ -1120,7 +1121,7 @@ export function runtimePlanConnectedServicesInstruction(
   plan: Pick<
     RuntimePlanV2,
     'apiConnections' | 'mcpConnections' | 'managedConnections' | 'connectionChoices'
-  > & Partial<Pick<RuntimePlanV2, 'repositories' | 'codingWorkspace' | 'teamReconnects'>>,
+  > & Partial<Pick<RuntimePlanV2, 'agentId' | 'repositories' | 'codingWorkspace' | 'teamReconnects'>>,
 ): string {
   const selected = [
     ...plan.apiConnections.map(({ id, displayName }) => ({
@@ -1155,7 +1156,11 @@ export function runtimePlanConnectedServicesInstruction(
   const pendingDeclaration = pendingSelections.length > 0
     ? JSON.stringify(pendingSelections)
     : 'none';
-  return `Active connected-service access selected and configured for this turn: ${activeDeclaration}. ` +
+  // The built-in Chickpea's own access is not the workspace's.
+  const active = plan.agentId === CHICKPEA_AGENT_ID
+    ? `Chickpea's own connected-service access for this turn: ${activeDeclaration}. This is Chickpea's access, not the workspace's: the person's other Agents may have connections of their own. `
+    : `Active connected-service access selected and configured for this turn: ${activeDeclaration}. `;
+  return active +
     `Pending connected-service account selections: ${pendingDeclaration}. ` +
     'Providers marked account_selection_required are pending selection, not unavailable; ask the user to choose. ' +
     'Pending selections and setup or authorization options are not active tools or permissions. The active ' +
@@ -1255,7 +1260,8 @@ function runtimePlanRepositoryOwner(repository: RuntimePlanRepositoryV2): string
  * sandbox-derived workspace skill last so no stored Agent skill can hide it.
  */
 export function runtimePlanSkills(
-  plan: Pick<RuntimePlanV2, 'apiConnections' | 'mcpConnections' | 'repositories' | 'skills' | 'codingWorkspace' | 'browserCapability' | 'websiteLogins'>,
+  plan: Pick<RuntimePlanV2, 'apiConnections' | 'mcpConnections' | 'repositories' | 'skills' | 'codingWorkspace' | 'browserCapability' | 'websiteLogins'> &
+    Partial<Pick<RuntimePlanV2, 'agentId' | 'frontDesk'>>,
   options: { browser?: boolean } = {},
 ): ReturnType<typeof resolveProfileSkills> {
   const agentSkills = plan.skills.map((entry) => ({ ...entry, enabled: true }));
@@ -2142,6 +2148,9 @@ export function createRuntimePlanArtifactTools(
     ? createBrowserTools({
         session: browserSession,
         ...(websiteLogins.length > 0 ? { logins: runtimePlanBrowserLogins(plan, websiteLogins) } : {}),
+        ...(plan.agentId === CHICKPEA_AGENT_ID
+          ? { noLoginsMessage: chickpeaNoLoginsMessage(plan.frontDesk !== undefined) }
+          : {}),
         ...(requester && websiteLogins.length > 0
           ? {
               notifyRequester: createSlackRequesterNotifier({
