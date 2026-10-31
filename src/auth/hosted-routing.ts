@@ -113,13 +113,16 @@ export async function serveHostedSharedAuth<E extends PlatformEnv>(
   const { pathname } = new URL(request.url);
   if (!isHostedSharedAuthPath(pathname)) return undefined;
   const logins = hostedLogins(routing.environment, routing.readLogin);
-  // The consent pages resolve the client too, so they need the same switch.
-  const environment = { ...routing.environment, clientMetadataDocuments: true };
+  // The consent pages resolve the client too, so they need the same switch and limits.
+  const environment = {
+    ...routing.environment,
+    clientMetadataDocuments: true,
+    throttleRegistration: routing.throttleRegistration.bind(routing),
+    ...(routing.mcpRegistrationPolicy ? { mcpRegistrationPolicy: routing.mcpRegistrationPolicy } : {}),
+  };
   const handler = createBetterAuthPublicHandler({
     ...environment,
-    throttleRegistration: routing.throttleRegistration.bind(routing),
     mayIssueTokens: (betterAuthUserId) => mayIssueHostedTokens(routing, logins, betterAuthUserId),
-    ...(routing.mcpRegistrationPolicy ? { mcpRegistrationPolicy: routing.mcpRegistrationPolicy } : {}),
   });
   const app = new Hono();
   app.route('/', betterAuthPublicRoutes((c) => handler(c.req.raw)));

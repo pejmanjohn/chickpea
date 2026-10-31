@@ -14,6 +14,9 @@ export const CLAUDE_DOCUMENTS = {
 /** Codex's published Client ID Metadata Document, byte for byte as chatgpt.com serves it. */
 export const CODEX_DOCUMENT = { url: 'https://chatgpt.com/oauth/codex/client.json', body: fixture('codex.json') } as const;
 
+/** ChatGPT's own document, which authenticates by private_key_jwt. */
+export const CHATGPT_DOCUMENT = { url: 'https://chatgpt.com/oauth/client.json', body: fixture('chatgpt.json') } as const;
+
 const JSON_UTF8 = 'application/json; charset=utf-8';
 
 function onPort(listed: string, port: number): string {
@@ -22,6 +25,7 @@ function onPort(listed: string, port: number): string {
   return url.href;
 }
 
+/** Other published public-client documents, byte for byte and with the headers their hosts send. */
 export const PUBLIC_CLIENT_DOCUMENTS = {
   vscode: {
     url: 'https://vscode.dev/oauth/client-metadata.json',
@@ -44,6 +48,9 @@ export const PUBLIC_CLIENT_DOCUMENTS = {
     redirect: onPort('http://[::1]/oauth_callback', 50114),
   },
 } as const;
+
+/** Cursor's document, which lists a redirect on grok.com beside its own. */
+export const CURSOR_DOCUMENT = { url: 'https://cursor.com/oauth/mcp-client.json', body: fixture('cursor.json') } as const;
 
 export type ServedDocument = string | { body: string; status?: number; headers?: Record<string, string> } | (() => never);
 

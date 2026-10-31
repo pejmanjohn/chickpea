@@ -88,9 +88,10 @@ export interface CreateBetterAuthInput {
   mcpRegistrationPolicy?: Partial<McpRegistrationPolicy>;
   /**
    * The per-source limit on new MCP clients: a response refusing this
-   * request, or undefined to let it through. A dynamic registration and the
-   * first sign-in of a client known by its metadata document pass it; a
-   * stored client never does. Without one only the pending bound applies.
+   * request, or undefined to let it through. A dynamic registration, the
+   * first sign-in of a client known by its metadata document, and every
+   * later lookup of one no one has consented to pass it; any other stored
+   * client never does. Without one only the pending bound applies.
    */
   throttleRegistration?: McpRegistrationThrottle;
   /**
@@ -296,7 +297,7 @@ function createOptions(
               throttle: input.throttleRegistration,
               admitPending: () =>
                 admitPendingMcpOAuthClient(input.backend, { ...DEFAULT_MCP_REGISTRATION_POLICY, ...input.mcpRegistrationPolicy }),
-            }),
+            }, input.baseURL),
           }],
         } : {}),
         ...(input.mayIssueTokens ? { customTokenResponseFields: tokenIssuanceGate(input.mayIssueTokens) } : {}),

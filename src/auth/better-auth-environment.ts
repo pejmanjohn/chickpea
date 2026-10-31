@@ -4,7 +4,12 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { AuthControl } from '../identity/types.ts';
-import type { BetterAuthAccessRevoker, BetterAuthDatabaseBackend } from './better-auth-backend.ts';
+import type {
+  BetterAuthAccessRevoker,
+  BetterAuthDatabaseBackend,
+  McpRegistrationPolicy,
+  McpRegistrationThrottle,
+} from './better-auth-backend.ts';
 import {
   D1BetterAuthBackend,
   type CloudflareBetterAuthEnv,
@@ -20,6 +25,10 @@ export interface BetterAuthEnvironment {
   cloudflareEnv?: CloudflareBetterAuthEnv;
   /** Client ID metadata document sign-in, which only serveHostedSharedAuth turns on. */
   clientMetadataDocuments?: boolean;
+  /** The host's per-source limit on new MCP clients, which serveHostedSharedAuth passes to every page that resolves one. */
+  throttleRegistration?: McpRegistrationThrottle;
+  /** The host's bound on MCP clients no one has consented to. */
+  mcpRegistrationPolicy?: Partial<McpRegistrationPolicy>;
   /** Replaces the guarded transport for client metadata documents, as a test does. */
   fetchClientMetadataResource?: ClientMetadataFetch;
 }

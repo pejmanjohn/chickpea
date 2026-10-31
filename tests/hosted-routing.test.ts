@@ -655,10 +655,10 @@ test('the host\'s registration throttle and client cap reach Core\'s registratio
   assert.deepEqual(await throttled.json(), { error: 'registration_rate_limited' });
 
   const claude = CLAUDE_DOCUMENTS.claude.url;
-  const other = 'https://claude.ai/oauth/other-client-metadata';
+  const internal = 'https://10.0.0.5/oauth/mcp-oauth-client-metadata';
   const documents = metadataDocumentServer({
     [claude]: CLAUDE_DOCUMENTS.claude.body,
-    [other]: CLAUDE_DOCUMENTS.claude.body.replace(claude, other),
+    [internal]: CLAUDE_DOCUMENTS.claude.body.replace(claude, internal),
   });
   hosted.routing.environment.fetchClientMetadataResource = documents.fetch;
   let checks = 0;
@@ -682,15 +682,15 @@ test('the host\'s registration throttle and client cap reach Core\'s registratio
   assert.equal((await refused.json() as { error: string }).error, 'temporarily_unavailable');
   assert.deepEqual(documents.requests, []);
   assert.equal((await authorize(false)).status, 302);
-  assert.equal((await authorize(true)).status, 302, 'a stored client never does');
-  assert.equal(checks, 2);
+  assert.equal((await authorize(true)).status, 429, 'and so does a stored client no one consented to');
+  assert.equal(checks, 3);
 
-  const unknown = await authorize(false, other);
+  const unknown = await authorize(false, internal);
   assert.equal(new URL(unknown.headers.get('location') ?? '/', ORIGIN).searchParams.get('error'), 'invalid_client',
-    'only the published documents Chickpea accepts sign a client in');
+    'a document URL on a private address is an unknown client');
   assert.deepEqual(documents.requests, [claude]);
-  assert.equal(checks, 2);
-  const rows = await hosted.backend.pool.query('SELECT 1 FROM "oauthClient" WHERE "clientId" = $1', [other]);
+  assert.equal(checks, 3, 'refused before the host\'s throttle');
+  const rows = await hosted.backend.pool.query('SELECT 1 FROM "oauthClient" WHERE "clientId" = $1', [internal]);
   assert.equal(rows.rowCount, 0);
 });
 
@@ -935,13 +935,25 @@ test('a streamed response keeps the request database open until its body ends', 
   assert.equal(holdUntilResponseEnds(empty, () => assert.fail('nothing to wait for')), empty);
 });
 
-test('Claude signs in to a hosted installation by its metadata document, through the shared routes only', { timeout: 120_000 }, async (t) => {
+test('Claude, and an app no list names, sign in to a hosted installation by their metadata documents, through the shared routes only', { timeout: 120_000 }, async (t) => {
   const hosted = await hostedDeployment(t);
   if (!hosted) return;
   const claude = CLAUDE_DOCUMENTS.claude.url;
-  const callbackUrl = 'https://claude.ai/api/mcp/auth_callback';
-  const documents = metadataDocumentServer({ [claude]: CLAUDE_DOCUMENTS.claude.body });
+  const stranger = 'https://apps.example.org/oauth/client.json';
+  const apps = [
+    { clientId: claude, callbackUrl: 'https://claude.ai/api/mcp/auth_callback', domain: 'claude.ai' },
+    { clientId: stranger, callbackUrl: 'https://apps.example.org/callback', domain: 'apps.example.org' },
+  ];
+  const documents = metadataDocumentServer({
+    [claude]: CLAUDE_DOCUMENTS.claude.body,
+    [stranger]: JSON.stringify({
+      client_id: stranger, client_name: 'Example App', redirect_uris: [apps[1]!.callbackUrl],
+      grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none',
+    }),
+  });
   hosted.routing.environment.fetchClientMetadataResource = documents.fetch;
+  let throttleChecks = 0;
+  hosted.routing.throttleRegistration = async () => { throttleChecks++; return undefined; };
   const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
 
   const metadata = await (await hosted.shared(new Request(`${ORIGIN}/.well-known/oauth-authorization-server/api/auth`)))
@@ -949,47 +961,54 @@ test('Claude signs in to a hosted installation by its metadata document, through
   assert.equal(metadata.client_id_metadata_document_supported, true);
   assert.ok((metadata.token_endpoint_auth_methods_supported as string[]).includes('none'));
 
-  const verifier = randomBytes(32).toString('base64url');
-  const query = new URLSearchParams({
-    response_type: 'code', client_id: claude, redirect_uri: callbackUrl, scope: 'chickpea:workspace',
-    state: 'claude-state', resource: RESOURCE,
-    code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
-  });
-  const authorize = await hosted.shared(new Request(`${ORIGIN}/api/auth/oauth2/authorize?${query}`, {
-    headers: { cookie: acme.ownerCookie },
-  }));
-  assert.equal(authorize.status, 302);
-  const consent = new URL(authorize.headers.get('location')!, ORIGIN);
-  assert.equal(consent.pathname, '/auth/mcp/consent');
-  assert.equal(consent.searchParams.get('scope'), RENEWABLE_SCOPE);
-  const page = await (await hosted.shared(new Request(consent, { headers: { cookie: acme.ownerCookie } }))).text();
-  assert.ok(page.includes('<dt>Domain</dt><dd>claude.ai</dd>'));
-  const allowed = await hosted.shared(new Request(`${ORIGIN}/auth/mcp/consent`, {
-    method: 'POST',
-    headers: {
-      cookie: acme.ownerCookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin',
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow' }),
-  }));
-  const callback = new URL(/url=([^"]+)"/.exec(await allowed.text())![1]!.replaceAll('&amp;', '&'));
-  assert.equal(`${callback.origin}${callback.pathname}`, callbackUrl);
-  const exchanged = await hosted.token({
-    grant_type: 'authorization_code', client_id: claude, code: callback.searchParams.get('code')!,
-    code_verifier: verifier, redirect_uri: callbackUrl, resource: RESOURCE,
-  });
-  assert.equal(exchanged.status, 200, await exchanged.clone().text());
-  const tokens = await exchanged.json() as { access_token: string; refresh_token: string };
+  for (const { clientId, callbackUrl, domain } of apps) {
+    const verifier = randomBytes(32).toString('base64url');
+    const query = new URLSearchParams({
+      response_type: 'code', client_id: clientId, redirect_uri: callbackUrl, scope: 'chickpea:workspace',
+      state: 'app-state', resource: RESOURCE,
+      code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
+    });
+    const authorize = await hosted.shared(new Request(`${ORIGIN}/api/auth/oauth2/authorize?${query}`, {
+      headers: { cookie: acme.ownerCookie },
+    }));
+    assert.equal(authorize.status, 302, clientId);
+    const consent = new URL(authorize.headers.get('location')!, ORIGIN);
+    assert.equal(consent.pathname, '/auth/mcp/consent', clientId);
+    assert.equal(consent.searchParams.get('scope'), RENEWABLE_SCOPE, clientId);
+    const checked = throttleChecks;
+    const page = await (await hosted.shared(new Request(consent, { headers: { cookie: acme.ownerCookie } }))).text();
+    assert.ok(page.includes(`<dt>Domain</dt><dd>${domain}</dd>`), clientId);
+    assert.equal(throttleChecks, checked + 1, 'the consent page asks the host\'s throttle for a client no one consented to');
+    const allowed: Response = await hosted.shared(new Request(`${ORIGIN}/auth/mcp/consent`, {
+      method: 'POST',
+      headers: {
+        cookie: acme.ownerCookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin',
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow' }),
+    }));
+    const callback: URL = new URL(/url=([^"]+)"/.exec(await allowed.text())![1]!.replaceAll('&amp;', '&'));
+    assert.equal(`${callback.origin}${callback.pathname}`, callbackUrl);
+    assert.equal(throttleChecks, checked + 1, 'its approval does not: Better Auth writes the consent before it looks the client up');
+    const exchanged = await hosted.token({
+      grant_type: 'authorization_code', client_id: clientId, code: callback.searchParams.get('code')!,
+      code_verifier: verifier, redirect_uri: callbackUrl, resource: RESOURCE,
+    });
+    assert.equal(exchanged.status, 200, await exchanged.clone().text());
+    const tokens = await exchanged.json() as { access_token: string; refresh_token: string };
 
-  const { routed, response } = await hosted.serve(hosted.mcpRequest(tokens.access_token));
-  assert.equal(routed.kind === 'installation' && installationScopeOf(routed.env)?.installationId, acme.installationId);
-  assert.equal(response?.status, 200, await response?.clone().text() ?? 'no response');
-  assert.equal((await response!.json() as { clientId: string }).clientId, claude);
-  assert.equal((await hosted.refresh({ clientId: claude, refreshToken: tokens.refresh_token })).status, 200);
-  const clients = await hosted.backend.pool.query('SELECT "clientDiscoveryId", "userId", "clientSecret" FROM "oauthClient"');
-  assert.deepEqual(clients.rows, [{ clientDiscoveryId: 'cimd', userId: null, clientSecret: null }],
-    'one ownerless row on PostgreSQL too');
-  assert.deepEqual(documents.requests, [claude]);
+    const { routed, response } = await hosted.serve(hosted.mcpRequest(tokens.access_token));
+    assert.equal(routed.kind === 'installation' && installationScopeOf(routed.env)?.installationId, acme.installationId);
+    assert.equal(response?.status, 200, await response?.clone().text() ?? 'no response');
+    assert.equal((await response!.json() as { clientId: string }).clientId, clientId);
+    assert.equal((await hosted.refresh({ clientId, refreshToken: tokens.refresh_token })).status, 200, clientId);
+  }
+  const clients = await hosted.backend.pool.query(
+    'SELECT "clientId", "clientDiscoveryId", "userId", "clientSecret" FROM "oauthClient" ORDER BY "createdAt"',
+  );
+  assert.deepEqual(clients.rows, apps.map(({ clientId }) => ({ clientId, clientDiscoveryId: 'cimd', userId: null, clientSecret: null })),
+    'one ownerless row per app on PostgreSQL too');
+  assert.deepEqual(documents.requests, [claude, stranger]);
 });
 
 test('Codex signs in to a hosted installation by its metadata document on a random loopback port, asked for consent every time', { timeout: 120_000 }, async (t) => {

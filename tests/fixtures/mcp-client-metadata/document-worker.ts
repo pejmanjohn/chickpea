@@ -13,12 +13,12 @@ const platformFetch = globalThis.fetch;
 let documentHost: string | undefined;
 
 // The default document transport hands its outbound request to the platform
-// fetch. Only the destination changes: claude.ai is answered by the test's
-// local document server, and every other part of the request goes as built.
+// fetch. Only the destination changes: every document host is answered by the
+// test's local document server, and every other part of the request goes as built.
 globalThis.fetch = async (input, init) => {
   const request = new Request(input, init);
+  if (documentHost === undefined) return platformFetch(request);
   const url = new URL(request.url);
-  if (url.origin !== 'https://claude.ai' || documentHost === undefined) return platformFetch(request);
   return platformFetch(new Request(`${documentHost}${url.pathname}${url.search}`, request));
 };
 
