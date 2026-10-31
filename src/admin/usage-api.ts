@@ -26,18 +26,15 @@ interface UsageAdminApiOptions {
    */
   channelLabels?: (c: Context) => Promise<ReadonlyMap<string, string>>;
   /** The message a delivered routine run posted. */
-  routineMessage?: (c: Context, routineRunId: string) => Promise<RoutineSlackMessage | undefined>;
+  routineMessage?: (c: Context, routineRunId: string) => Promise<Omit<SlackMessage, 'workspaceId'> | undefined>;
   /** Slack's own permalink, which carries the workspace domain and the thread. */
   slackPermalink?: (c: Context, message: SlackMessage) => Promise<string | undefined>;
 }
 
-interface RoutineSlackMessage {
+export interface SlackMessage {
+  workspaceId: string;
   channelId: string;
   messageTs: string;
-}
-
-export interface SlackMessage extends RoutineSlackMessage {
-  workspaceId: string;
 }
 
 // Turns admitted before `slackMessageTs` existed carry the message ts in their ID.
@@ -162,14 +159,13 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
       const page = await options.store(c).listOperations(parseCustomerUsageQuery(c, false));
       const visibility = await usageRunVisibility(options.work?.(c), page.items);
       const channelLabels = await currentChannelLabels(options, c, page.items, visibility);
-      const linked = await Promise.all(page.items.map((detail) => hasSlackMessage(options, c, detail)));
       return c.json({
-        items: page.items.map((detail, index) => usageDetailProjection(
+        items: await Promise.all(page.items.map(async (detail) => usageDetailProjection(
           detail,
           visibility.get(detail.operation.runId ?? '') ?? false,
           channelLabels,
-          linked[index]!,
-        )),
+          await hasSlackMessage(options, c, detail),
+        ))),
         nextCursor: page.nextCursor ? encodeCursor(page.nextCursor) : null,
       });
     } catch (error) {

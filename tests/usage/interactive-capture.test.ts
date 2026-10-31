@@ -565,7 +565,7 @@ test('a stopped run is recorded interrupted with no reported usage, never failed
   }
 });
 
-test('an interactive turn records the Slack message it answers, and a reaction records the reacted message', async () => {
+test('an interactive turn records the Slack message it answers; a reaction or a UI answer records a real message', async () => {
   const store = new SqliteUsageStore(':memory:');
   try {
     const record = async (operationId: string, slackTurn: NormalizedSlackTurn) => {
@@ -592,6 +592,16 @@ test('an interactive turn records the Slack message it answers, and a reaction r
         reactionTargetTs: '1000.0002',
       }),
       '1000.0002',
+    );
+    assert.equal(
+      await record('msg:C_USAGE:1000.0007', {
+        ...turn,
+        messageTs: '1000.0007',
+        threadTs: '1000.0003',
+        uiResponse: { surfaceId: 'surface_usage', namespace: 'ui', kind: 'choice', choice: 0 },
+      }),
+      '1000.0003',
+      'a UI answer\'s ts is its receipt time, so the row links to the surface\'s thread',
     );
     assert.equal(
       await record('oauthresume:usage', { ...turn, messageTs: 'resumed' }),

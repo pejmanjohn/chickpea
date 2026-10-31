@@ -362,7 +362,7 @@ function optionalId(value: unknown, label: string): string | null {
 function optionalSlackTs(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (!validSlackTs(value)) invalid('Slack message timestamp is invalid.');
-  return value as string;
+  return value;
 }
 
 function optionalModelSource(value: unknown): AgentModelSource | null {
