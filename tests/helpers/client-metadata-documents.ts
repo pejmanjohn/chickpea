@@ -14,6 +14,9 @@ export const CLAUDE_DOCUMENTS = {
 /** Codex's published Client ID Metadata Document, byte for byte as chatgpt.com serves it. */
 export const CODEX_DOCUMENT = { url: 'https://chatgpt.com/oauth/codex/client.json', body: fixture('codex.json') } as const;
 
+/** ChatGPT's own document, which authenticates by private_key_jwt. */
+export const CHATGPT_DOCUMENT = { url: 'https://chatgpt.com/oauth/client.json', body: fixture('chatgpt.json') } as const;
+
 const JSON_UTF8 = 'application/json; charset=utf-8';
 
 function onPort(listed: string, port: number): string {
@@ -22,6 +25,7 @@ function onPort(listed: string, port: number): string {
   return url.href;
 }
 
+/** Other published public-client documents, byte for byte and with the headers their hosts send. */
 export const PUBLIC_CLIENT_DOCUMENTS = {
   vscode: {
     url: 'https://vscode.dev/oauth/client-metadata.json',
@@ -42,6 +46,11 @@ export const PUBLIC_CLIENT_DOCUMENTS = {
     url: 'https://goose-docs.ai/oauth/client-metadata.json',
     served: { body: fixture('goose.json'), headers: { 'content-type': JSON_UTF8, 'cache-control': 'max-age=600' } },
     redirect: onPort('http://[::1]/oauth_callback', 50114),
+  },
+  cursor: {
+    url: 'https://cursor.com/oauth/mcp-client.json',
+    served: { body: fixture('cursor.json'), headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=3600' } },
+    redirect: 'https://www.cursor.com/agents/mcp/oauth/callback',
   },
 } as const;
 

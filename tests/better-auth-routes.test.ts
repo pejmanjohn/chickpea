@@ -238,7 +238,12 @@ test('a self-hosted deployment, on Workers or Node, offers no metadata-document 
   assert.ok(control);
   await identity.updateAuthControl({ expectedRevision: control.revision, canonicalAdminOrigin: ORIGIN });
   const { claude, claudeCode } = CLAUDE_DOCUMENTS;
-  const documents = metadataDocumentServer({ [claude.url]: claude.body, [claudeCode.url]: claudeCode.body });
+  const stranger = 'https://apps.example.org/oauth/client.json';
+  const documents = metadataDocumentServer({
+    [claude.url]: claude.body,
+    [claudeCode.url]: claudeCode.body,
+    [stranger]: claude.body.replace(claude.url, stranger),
+  });
   const shapes = [
     { shape: 'Node', backend: node, database: node.database },
     { shape: 'Workers', backend: new D1BetterAuthBackend(sqliteD1(d1)), database: d1 },
@@ -257,6 +262,7 @@ test('a self-hosted deployment, on Workers or Node, offers no metadata-document 
     for (const [clientId, redirect] of [
       [claude.url, 'https://claude.ai/api/mcp/auth_callback'],
       [claudeCode.url, 'http://localhost:53682/callback'],
+      [stranger, 'https://claude.ai/api/mcp/auth_callback'],
     ] as const) {
       const response = await app.request(`${ORIGIN}/api/auth/oauth2/authorize?${new URLSearchParams({
         response_type: 'code', client_id: clientId, redirect_uri: redirect, scope: 'chickpea:workspace', state: 's',

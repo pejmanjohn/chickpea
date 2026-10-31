@@ -10,20 +10,37 @@ import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import type { ClientMetadataFetch } from '../src/auth/mcp-client-metadata.ts';
 import { mountMcpOAuthBrowserRoutes, renderMcpConsentPage } from '../src/auth/mcp-oauth-routes.ts';
 import {
-  CLAUDE_DOCUMENTS, CODEX_DOCUMENT, PUBLIC_CLIENT_DOCUMENTS, metadataDocumentServer, type ServedDocument,
+  CHATGPT_DOCUMENT, CLAUDE_DOCUMENTS, CODEX_DOCUMENT, PUBLIC_CLIENT_DOCUMENTS, metadataDocumentServer, type ServedDocument,
 } from './helpers/client-metadata-documents.ts';
 
 const ORIGIN = 'https://chickpea.example.test';
 const RESOURCE = `${ORIGIN}/mcp`;
 const CLAUDE = CLAUDE_DOCUMENTS.claude.url;
 const CLAUDE_CODE = CLAUDE_DOCUMENTS.claudeCode.url;
-const CODEX = CODEX_DOCUMENT.url;
 const CLAUDE_CALLBACK = 'https://claude.ai/api/mcp/auth_callback';
 const RENEWABLE_SCOPE = 'chickpea:workspace offline_access';
+/** An app no list names, on a host of its own. */
+const STRANGER = 'https://apps.example.org/oauth/client.json';
+const STRANGER_CALLBACK = 'https://apps.example.org/callback';
 
 /** A valid document at `url` that copies Claude's name and redirect. */
 const lookalike = (url: string, fields: Record<string, unknown> = {}) =>
   JSON.stringify({ ...JSON.parse(CLAUDE_DOCUMENTS.claude.body), client_id: url, client_uri: undefined, ...fields });
+
+const strangerDocument = JSON.stringify({
+  client_id: STRANGER, client_name: 'Example App', redirect_uris: [STRANGER_CALLBACK],
+  grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none',
+});
+
+/** Every public client's document this suite serves, each with a redirect its app signs in on. */
+const PUBLIC_CLIENTS: ReadonlyArray<{ url: string; served: string | { body: string; headers: Record<string, string> }; redirect: string }> = [
+  { url: CLAUDE, served: CLAUDE_DOCUMENTS.claude.body, redirect: CLAUDE_CALLBACK },
+  { url: CLAUDE_CODE, served: CLAUDE_DOCUMENTS.claudeCode.body, redirect: 'http://localhost:53682/callback' },
+  // As Codex CLI 0.160.1 asks: a port of its own on a redirect its document lists without one.
+  { url: CODEX_DOCUMENT.url, served: CODEX_DOCUMENT.body, redirect: 'http://127.0.0.1:52247/callback' },
+  ...Object.values(PUBLIC_CLIENT_DOCUMENTS),
+  { url: STRANGER, served: strangerDocument, redirect: STRANGER_CALLBACK },
+];
 
 /** A document client's row as another deployment, or an earlier build of this one, stored it. */
 const storeDocumentClient = (backend: NodeBetterAuthBackend, clientId: string) => backend.database.prepare(
@@ -151,55 +168,52 @@ test('the authorization server advertises client ID metadata documents to public
   }
 });
 
-test('without hosted shared auth no metadata document signs a client in: an accepted URL is an unknown client, never fetched', async (t) => {
-  const host = metadataDocumentServer({
-    [CLAUDE]: CLAUDE_DOCUMENTS.claude.body,
-    [CLAUDE_CODE]: CLAUDE_DOCUMENTS.claudeCode.body,
-    [CODEX]: CODEX_DOCUMENT.body,
-    ...Object.fromEntries(Object.values(PUBLIC_CLIENT_DOCUMENTS).map(({ url, served }) => [url, served])),
-  });
+test('without hosted shared auth no metadata document signs a client in: each document URL is an unknown client, never fetched', async (t) => {
+  const host = metadataDocumentServer(Object.fromEntries(PUBLIC_CLIENTS.map(({ url, served }) => [url, served])));
   const f = await fixture(t, { clientMetadataDocuments: false, fetchClientMetadataResource: host.fetch });
   storeDocumentClient(f.backend, CLAUDE);
   for (const path of ['/.well-known/oauth-authorization-server/api/auth', '/api/auth/.well-known/oauth-authorization-server']) {
     const metadata = await (await f.handler(new Request(`${ORIGIN}${path}`))).json() as Record<string, unknown>;
     assert.equal(metadata.client_id_metadata_document_supported, undefined, path);
   }
-  for (const [clientId, redirect] of [
-    [CLAUDE, CLAUDE_CALLBACK],
-    [CLAUDE_CODE, 'http://localhost:53682/callback'],
-    [CODEX, 'http://127.0.0.1:52247/callback'],
-    ...Object.values(PUBLIC_CLIENT_DOCUMENTS).map(({ url, redirect }) => [url, redirect] as const),
-  ] as const) {
+  for (const { url, redirect } of PUBLIC_CLIENTS) {
     for (const signedIn of [false, true]) {
-      const response = await f.authorize(clientId, redirect, { signedIn });
+      const response = await f.authorize(url, redirect, { signedIn });
       const location = new URL(response.headers.get('location') ?? '/', ORIGIN);
-      assert.equal(location.searchParams.get('error'), 'invalid_client', `${clientId} signed ${signedIn ? 'in' : 'out'}`);
+      assert.equal(location.searchParams.get('error'), 'invalid_client', `${url} signed ${signedIn ? 'in' : 'out'}`);
     }
   }
   assert.deepEqual(host.requests, []);
   assert.deepEqual(f.clients().map((client) => client.clientId), [CLAUDE], 'a stored document client stays unknown');
 });
 
-test('only the accepted published documents sign a client in; any other URL is an unknown client, never fetched, throttled or stored', async (t) => {
-  const others = [
-    'https://evil.example/client',
-    // ChatGPT's own document authenticates by private_key_jwt.
-    'https://chatgpt.com/oauth/client.json',
-    // Cursor's document lists a third-party HTTPS redirect, on grok.com, not yet reviewed.
-    'https://cursor.com/oauth/mcp-client.json',
-    `${CODEX}/`,
-    'https://claude.ai/oauth/other-client-metadata',
-    `${CLAUDE}/`,
-    `${CLAUDE}?client=claude`,
-    'https://claude.ai:443/oauth/mcp-oauth-client-metadata',
-    'https://CLAUDE.AI/oauth/mcp-oauth-client-metadata',
-    'http://claude.ai/oauth/mcp-oauth-client-metadata',
+test('a client ID that is not a public HTTPS document URL is an unknown client, never throttled, fetched or stored', async (t) => {
+  const refused = [
+    'http://apps.example.org/oauth/client.json',
+    'https://localhost/client',
     'https://127.0.0.1/client',
+    'https://[::1]/client',
+    'https://10.0.0.5/client',
     'https://169.254.169.254/latest/meta-data',
+    // A public address names no one the person could recognize on the consent page.
+    'https://8.8.8.8/client',
+    'https://[2606:4700:4700::1111]/client',
+    'https://app:secret@apps.example.org/oauth/client.json',
+    'https://apps.example.org/oauth/client.json#app',
+    'https://apps.example.org',
+    'https://apps.example.org?client=app',
+    'https://apps.example.org/oauth/../client.json',
+    'https://chickpea.internal/client',
+    'https://printer.local/client',
+    'https://intranet/client',
+    // One document, one client ID: only the form URL parsing writes.
+    'https://APPS.example.org/oauth/client.json',
+    'https://apps.example.org:443/oauth/client.json',
+    'https://apps.example.org/oauth/client\n.json',
   ];
   const host = metadataDocumentServer({
-    [CLAUDE_CODE]: CLAUDE_DOCUMENTS.claudeCode.body,
-    ...Object.fromEntries(others.map((url) => [url, lookalike(url)])),
+    [STRANGER]: strangerDocument,
+    ...Object.fromEntries(refused.map((url) => [url, lookalike(url)])),
   });
   let throttled = 0;
   const f = await fixture(t, {
@@ -207,9 +221,9 @@ test('only the accepted published documents sign a client in; any other URL is a
     async throttleRegistration() { throttled += 1; return undefined; },
   });
   const prune = t.mock.method(f.backend, 'prunePendingMcpOAuthClients');
-  const stored = 'https://evil.example/stored-client';
+  const stored = 'https://10.0.0.9/stored-client';
   storeDocumentClient(f.backend, stored);
-  for (const clientId of [...others, stored]) {
+  for (const clientId of [...refused, stored]) {
     for (const signedIn of [false, true]) {
       const response = await f.authorize(clientId, CLAUDE_CALLBACK, { signedIn });
       const location = new URL(response.headers.get('location') ?? '/', ORIGIN);
@@ -217,13 +231,30 @@ test('only the accepted published documents sign a client in; any other URL is a
     }
   }
   assert.deepEqual(host.requests, []);
-  assert.equal(throttled, 0, 'an unknown client spends none of its source\'s registration limit');
+  assert.equal(throttled, 0, 'a refused client ID spends none of its source\'s registration limit');
   assert.equal(prune.mock.callCount(), 0, 'or a pending-client write');
   assert.deepEqual(f.clients().map((client) => client.clientId), [stored]);
 
-  assert.equal((await f.authorize(CLAUDE_CODE, 'http://localhost:53682/callback', { signedIn: false })).status, 302);
-  assert.deepEqual(host.requests, [CLAUDE_CODE]);
+  assert.equal((await f.authorize(STRANGER, STRANGER_CALLBACK, { signedIn: false })).status, 302);
+  assert.deepEqual(host.requests, [STRANGER]);
   assert.equal(throttled, 1);
+});
+
+test('a client ID refused unfetched spends none of the fetch budget', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const host = claudeHost();
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  const refreshToken = await claudeRefreshToken(f);
+  t.mock.timers.tick(6 * 60_000);
+  // The plugin allows 120 fetches a minute per isolate and 30 per origin.
+  for (let attempt = 0; attempt < 150; attempt++) {
+    const response = await f.authorize(`https://10.0.0.${1 + attempt % 4}/client-${attempt}`, CLAUDE_CALLBACK, { signedIn: false });
+    assert.equal(new URL(response.headers.get('location') ?? '/', ORIGIN).searchParams.get('error'), 'invalid_client');
+  }
+  const fetched = host.requests.length;
+  assert.equal((await f.refresh(CLAUDE, refreshToken)).status, 200);
+  assert.equal((await f.authorize(CLAUDE_CODE, 'http://localhost:53682/callback', { signedIn: false })).status, 302);
+  assert.deepEqual(host.requests.slice(fetched), [CLAUDE, CLAUDE_CODE], 'each fetches its document: the budget is untouched');
 });
 
 test('Claude signs in with its published metadata document: Slack sign-in, consent naming its domain, PKCE without a secret', async (t) => {
@@ -272,6 +303,44 @@ test('Claude signs in with its published metadata document: Slack sign-in, conse
     tokenEndpointAuthMethod: 'none', name: 'Claude',
   }], 'one shared, ownerless row for every Claude user; no secret');
   assert.deepEqual(host.requests, [CLAUDE], 'the document is fetched once and then served from cache');
+});
+
+test('any public client signs in by its own metadata document: consent naming its host every time, PKCE, renewal', async (t) => {
+  const host = metadataDocumentServer(Object.fromEntries(PUBLIC_CLIENTS.map(({ url, served }) => [url, served])));
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  for (const { url, served, redirect } of PUBLIC_CLIENTS) {
+    const { client_name: name } = JSON.parse(typeof served === 'string' ? served : served.body) as { client_name: string };
+    const consentFor = async () => {
+      const authorization = await f.authorize(url, redirect);
+      assert.equal(authorization.status, 302, `${url}: ${await authorization.clone().text()}`);
+      const consent = new URL(authorization.headers.get('location')!, ORIGIN);
+      assert.equal(consent.pathname, '/auth/mcp/consent', `${url}: ${consent}`);
+      return consent;
+    };
+    const consent = await consentFor();
+    assert.equal(consent.searchParams.get('scope'), RENEWABLE_SCOPE, url);
+    const page = await (await f.browser.request(`${ORIGIN}${consent.pathname}${consent.search}`, {
+      headers: { cookie: f.cookie },
+    })).text();
+    assert.ok(page.includes(
+      `<dt>App</dt><dd>${name} <span class="note">(name provided by the app)</span></dd><dt>Domain</dt><dd>${new URL(url).host}</dd>`,
+    ), url);
+    const callback = await f.approve(consent.toString());
+    assert.equal(`${callback.origin}${callback.pathname}`, `${new URL(redirect).origin}${new URL(redirect).pathname}`, url);
+    const exchanged = await f.exchange(url, redirect, callback.searchParams.get('code')!);
+    assert.equal(exchanged.status, 200, `${url}: ${await exchanged.clone().text()}`);
+    const tokens = await exchanged.json() as { refresh_token: string; scope: string };
+    assert.equal(tokens.scope, RENEWABLE_SCOPE, url);
+    assert.equal((await f.refresh(url, tokens.refresh_token)).status, 200, url);
+    await consentFor();
+  }
+  const byClientId = (a: Record<string, unknown>, b: Record<string, unknown>) => String(a.clientId).localeCompare(String(b.clientId));
+  assert.deepEqual(
+    f.clients().map(({ name: _, ...client }) => client).sort(byClientId),
+    PUBLIC_CLIENTS.map(({ url }) => ({ clientId: url, clientDiscoveryId: 'cimd', userId: null, clientSecret: null, tokenEndpointAuthMethod: 'none' }))
+      .sort(byClientId),
+    'one ownerless, secretless row per app',
+  );
 });
 
 test('a code from a metadata-document sign-in needs its PKCE verifier', async (t) => {
@@ -392,6 +461,32 @@ test('a metadata document must describe a public client, as dynamic registration
     }
   }
   assert.deepEqual(host.requests, [CLAUDE, CLAUDE, CLAUDE], 'each document is fetched');
+  assert.deepEqual(f.clients(), [], 'a refused document leaves no client behind');
+});
+
+test('ChatGPT\'s published document, and any confidential stranger, is refused and leaves no client behind', async (t) => {
+  const keys = signingKeys();
+  const chatgptKeys = 'https://chatgpt.com/oauth/jwks.json';
+  const confidential = 'https://apps.example.org/oauth/confidential.json';
+  const host = metadataDocumentServer({
+    [CHATGPT_DOCUMENT.url]: CHATGPT_DOCUMENT.body,
+    [chatgptKeys]: JSON.stringify(keys),
+    [confidential]: JSON.stringify({
+      ...JSON.parse(strangerDocument), client_id: confidential, token_endpoint_auth_method: 'private_key_jwt', jwks: keys,
+    }),
+  });
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  for (const [clientId, redirect] of [
+    [CHATGPT_DOCUMENT.url, 'https://chatgpt.com/connector_platform_oauth_redirect'],
+    [confidential, STRANGER_CALLBACK],
+  ] as const) {
+    for (const signedIn of [false, true]) {
+      const response = await f.authorize(clientId, redirect, { signedIn });
+      assert.equal(response.status, 400, `${clientId} signed ${signedIn ? 'in' : 'out'}`);
+      assert.deepEqual(await response.json(), PUBLIC_CLIENTS_ONLY, clientId);
+    }
+  }
+  assert.ok(!host.requests.includes(chatgptKeys), 'no key is fetched for a client Chickpea refuses');
   assert.deepEqual(f.clients(), [], 'a refused document leaves no client behind');
 });
 
@@ -609,7 +704,7 @@ test('first sign-ins by metadata document share the pending-client bound with dy
 
 test('a first sign-in by metadata document passes the registration throttle; a stored client never does', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
-  const host = claudeHost();
+  const host = metadataDocumentServer({ [CLAUDE]: CLAUDE_DOCUMENTS.claude.body, [STRANGER]: strangerDocument });
   const sources: Array<string | null> = [];
   let refuse = false;
   const f = await fixture(t, {
@@ -631,7 +726,7 @@ test('a first sign-in by metadata document passes the registration throttle; a s
   const prune = t.mock.method(f.backend, 'prunePendingMcpOAuthClients');
   for (const signedIn of [false, true]) {
     t.mock.timers.tick(1_000);
-    const refused = await f.authorize(CLAUDE_CODE, 'http://localhost:53682/callback', {
+    const refused = await f.authorize(STRANGER, STRANGER_CALLBACK, {
       signedIn, headers: { 'cf-connecting-ip': '203.0.113.9' },
     });
     assert.equal(refused.status, 429);
@@ -642,7 +737,7 @@ test('a first sign-in by metadata document passes the registration throttle; a s
   }
   assert.deepEqual(sources, ['203.0.113.7', '203.0.113.9', '203.0.113.9']);
   assert.equal(prune.mock.callCount(), 0, 'a throttled sign-in writes nothing');
-  assert.ok(!host.requests.includes(CLAUDE_CODE), 'and fetches nothing');
+  assert.ok(!host.requests.includes(STRANGER), 'and fetches nothing');
 
   assert.equal((await f.authorize(CLAUDE, CLAUDE_CALLBACK)).status, 302);
   t.mock.timers.tick(6 * 60_000);
@@ -659,6 +754,17 @@ test('a first sign-in by metadata document passes the registration throttle; a s
   }));
   assert.equal(registration.status, 429, 'dynamic registration passes the same throttle');
   assert.deepEqual(await registration.json(), { error: 'registration_rate_limited' });
+});
+
+test('consent names the port of a document served on a non-default one', async (t) => {
+  const url = 'https://apps.example.org:8443/client';
+  const f = await fixture(t, { fetchClientMetadataResource: metadataDocumentServer({ [url]: lookalike(url) }).fetch });
+  const consent = new URL((await f.authorize(url, CLAUDE_CALLBACK)).headers.get('location')!, ORIGIN);
+  assert.equal(consent.pathname, '/auth/mcp/consent');
+  const page = await (await f.browser.request(`${ORIGIN}${consent.pathname}${consent.search}`, {
+    headers: { cookie: f.cookie },
+  })).text();
+  assert.ok(page.includes('<dt>App</dt><dd>Claude <span class="note">(name provided by the app)</span></dd><dt>Domain</dt><dd>apps.example.org:8443</dd>'));
 });
 
 test('consent names the domain only for a client known by its metadata document', () => {

@@ -20,13 +20,19 @@ const CLAUDE_CODE = CLAUDE_DOCUMENTS.claudeCode.url;
 const DOCUMENT_PATH = new URL(CLAUDE).pathname;
 const MOVED_PATH = new URL(CLAUDE_CODE).pathname;
 const CLAUDE_CALLBACK = 'https://claude.ai/api/mcp/auth_callback';
+const STRANGER = 'https://apps.example.org/oauth/client.json';
+const STRANGER_PATH = new URL(STRANGER).pathname;
+const STRANGER_DOCUMENT = JSON.stringify({
+  client_id: STRANGER, client_name: 'Example App', redirect_uris: [CLAUDE_CALLBACK],
+  grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none',
+});
 
 /**
  * Better Auth's metadata-document plugin asks its transport for
  * `redirect: "error"`, a mode Node accepts and workerd refuses with a throw
  * the plugin reports as a network failure, so only workerd shows the sign-in.
  */
-test('Claude\'s metadata document resolves under workerd through hosted shared auth, and a redirecting document is refused', {
+test('Claude\'s and an unlisted app\'s metadata documents resolve under workerd through hosted shared auth; a redirecting document and a private address are refused', {
   timeout: 120_000,
 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'chickpea-cimd-workerd-'));
@@ -86,6 +92,19 @@ test('Claude\'s metadata document resolves under workerd through hosted shared a
     assert.deepEqual(documents.requests.slice(1), [{ path: MOVED_PATH, accept: 'application/json' }],
       'the redirect is not followed');
     assert.equal((await (await fetch(`${origin}/test/clients`)).json() as unknown[]).length, 1);
+
+    const stranger = await authorize(origin, STRANGER);
+    assert.equal(stranger.status, 302, stranger.body);
+    assert.equal(new URL(stranger.location!, origin).pathname, '/auth/mcp/login');
+    assert.deepEqual(documents.requests.slice(2), [{ path: STRANGER_PATH, accept: 'application/json' }]);
+
+    const internal = await authorize(origin, 'https://10.0.0.5/oauth/client.json');
+    assert.equal(new URL(internal.location ?? '/', origin).searchParams.get('error'), 'invalid_client', internal.body);
+    assert.equal(documents.requests.length, 3, 'a private address is refused before any fetch');
+    assert.deepEqual(await (await fetch(`${origin}/test/clients`)).json(), [
+      { clientId: CLAUDE, clientDiscoveryId: 'cimd', name: 'Claude' },
+      { clientId: STRANGER, clientDiscoveryId: 'cimd', name: 'Example App' },
+    ]);
   } finally {
     if (worker) await stopWorker(worker);
     await new Promise<void>((resolve) => documents.server.close(() => resolve()));
@@ -112,7 +131,7 @@ function authorize(origin: string, clientId: string) {
   });
 }
 
-/** `requests` lists only the two document paths: other checkouts share the port range, and a stray request can reach it. */
+/** `requests` lists only the document paths: other checkouts share the port range, and a stray request can reach it. */
 async function startDocumentServer(port: number) {
   const requests: Array<{ path: string; accept: IncomingHttpHeaders['accept'] }> = [];
   const server: Server = createServer((request, response) => {
@@ -120,6 +139,9 @@ async function startDocumentServer(port: number) {
     if (path === DOCUMENT_PATH) {
       response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'public, max-age=300' });
       response.end(CLAUDE_DOCUMENTS.claude.body);
+    } else if (path === STRANGER_PATH) {
+      response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'public, max-age=300' });
+      response.end(STRANGER_DOCUMENT);
     } else if (path === MOVED_PATH) {
       response.writeHead(302, { location: DOCUMENT_PATH });
       response.end();
