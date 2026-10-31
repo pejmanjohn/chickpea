@@ -731,19 +731,10 @@ export class SlackAgentViewPresentation {
     await this.transition(presentation, { kind: 'supersede_shared_repair_effects' });
   }
 
-  async prepareActivityCleanup(
-    /**
-     * `stopped`: a stopped run's ending (KTD3). The thread's newer turns were
-     * either dropped by the stop or queued behind this run, so none has shown
-     * a status: this run's own is the one the thread shows, and its cleanup is
-     * not fenced by their newer generations.
-     */
-    ending?: { stopped?: boolean },
-  ): Promise<SlackActivityCleanupPreparation> {
+  async prepareActivityCleanup(): Promise<SlackActivityCleanupPreparation> {
     let presentation = await this.requirePresentation();
     if (presentation.schemaVersion === 3 &&
         presentation.activityProjection.surface === 'assistant_status' &&
-        ending?.stopped !== true &&
         !(await this.ownsLatestThreadGeneration(presentation))) return { kind: 'fenced' };
     if (presentation.schemaVersion === 3 && presentation.cleanup.state === 'required' &&
         presentation.cleanup.operation.certainty === 'unknown') {

@@ -1240,9 +1240,7 @@ async function runTurnAttempt(
         await presenter.clearStatus(late);
         return;
       }
-      const cleanup = await agentViewPresentation.prepareActivityCleanup(
-        stoppedEnding ? { stopped: true } : undefined,
-      );
+      const cleanup = await agentViewPresentation.prepareActivityCleanup();
       if (cleanup.kind === 'already_cleared') {
         // An in-flight native write may have landed after the acknowledged
         // durable cleanup. Re-clear the transport without rewriting receipts.
