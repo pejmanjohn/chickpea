@@ -87,6 +87,7 @@ interface LedgerSlackTurnStore {
     threadImages?: readonly import('./thread-images.ts').ThreadImageRecord[],
     admittedListIds?: readonly string[],
     turnEnvelope?: import('../agents/turn-envelope.ts').TurnEnvelopeV1,
+    threadArchiveFileIds?: readonly string[],
   ): MaybePromise<import('./turn-job-types.ts').FlueDispatchEnvelopeV1>;
   reconcileFlueExistingInstance(
     id: string,
@@ -222,9 +223,9 @@ export function createLedgerSlackRunHandler(
       ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
       ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
       ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
-      prepare: (message, observation, threadImages, admittedListIds, turnEnvelope) =>
+      prepare: (message, observation, threadImages, admittedListIds, turnEnvelope, threadArchiveFileIds) =>
         options.turns.prepareFlueDispatch(
-          job.id, message, observation, threadImages, admittedListIds, turnEnvelope,
+          job.id, message, observation, threadImages, admittedListIds, turnEnvelope, threadArchiveFileIds,
         ),
       reconcileExistingInstance: (uid) =>
         options.turns.reconcileFlueExistingInstance(job.id, uid),

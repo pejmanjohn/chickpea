@@ -24,6 +24,7 @@ import {
   runWithAttachmentModelContext,
 } from './attachment-model-context.ts';
 import { type ArchiveHandle, READ_ARCHIVE_FILE_TOOL_NAME } from './archive-attachments.ts';
+import { parseThreadArchiveFileIds } from './thread-archives.ts';
 import type { GatewayAttachmentClient } from './gateway/client.ts';
 import { createSlackAttachmentClient } from './attachment-client.ts';
 
@@ -48,8 +49,8 @@ const CARRIED_SLACK_TURN_ATTRIBUTE_KEYS = [
   // referenced image still resolves after the analysis.
   'threadImages',
   'admittedListIds',
-  // The skill upload tool reads these files on any render of the turn.
   'attachmentFileIds',
+  'threadArchiveFileIds',
 ] as const;
 
 const MAX_ATTACHMENT_SIGNAL_CHARS = 12_000;
@@ -94,6 +95,7 @@ interface SlackAttachmentPromptOptions {
 
 interface SlackAttachmentAnalysisInput {
   intake: Exclude<SlackAttachmentIntake, { kind: 'none' }>;
+  threadArchiveFileIds?: readonly string[];
   gateway: GatewayAttachmentClient;
   model?: string;
   prompt(
@@ -183,6 +185,7 @@ export async function createSlackAttachmentAnalysis(
   try {
     normalized = await normalize({
       fileIds: intake.fileIds,
+      ...(input.threadArchiveFileIds ? { threadArchiveFileIds: input.threadArchiveFileIds } : {}),
       gateway: input.gateway,
       ...(input.signal ? { signal: input.signal } : {}),
     });
@@ -401,6 +404,7 @@ export function useSlackAttachmentContext(
   // Flue sends the appended signal with the first model request, as its newest
   // user message, without rendering again first.
   const turn = slackAttachmentTurnContext(delivery);
+  const threadArchiveFileIds = parseThreadArchiveFileIds(turn.attributes.threadArchiveFileIds);
 
   useAgentStart(async ({ append, harness, log, signal }) => {
     const env = await resolvePlatformEnv();
@@ -409,6 +413,7 @@ export function useSlackAttachmentContext(
     try {
       result = await createSlackAttachmentAnalysis({
         intake,
+        ...(threadArchiveFileIds ? { threadArchiveFileIds } : {}),
         gateway: createGateway(env),
         ...(model ? { model } : {}),
         signal,

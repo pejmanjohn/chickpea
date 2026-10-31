@@ -1,16 +1,7 @@
-// Zip archives attached to the current Slack message: the listing the
-// attachment analysis reads, the `file:N` handle the Agent reads entries by,
-// and the advice for an archive or entry that cannot be read.
-
 import { sniffFileKind } from '../files/magic.ts';
 import { createByteBudget, openZip, printableZipPath, type ZipProblem } from '../files/zip.ts';
 import { formatBytes } from './message-text.ts';
 
-/**
- * An archive on the current message, numbered by its attachment ordinal. It
- * names a file, never bytes: a read resolves it against the file IDs the host
- * recorded for the message.
- */
 export type ArchiveHandle = `file:${number}`;
 
 export const READ_ARCHIVE_FILE_TOOL_NAME = 'read_archive_file';
@@ -23,10 +14,19 @@ export function archiveHandle(ordinal: number): ArchiveHandle {
   return `file:${ordinal}`;
 }
 
-/** The attachment ordinal a handle names, or undefined for anything else. */
 export function archiveHandleOrdinal(value: string): number | undefined {
   const match = ARCHIVE_HANDLE_PATTERN.exec(value);
   return match ? Number(match[1]) : undefined;
+}
+
+export type ArchiveFileIds = readonly string[] & { readonly __order: 'thread archives, then current message' };
+
+export function archiveFileIds(
+  threadArchiveFileIds: readonly string[],
+  currentFileIds: readonly string[],
+): ArchiveFileIds {
+  const ordered = [...threadArchiveFileIds, ...currentFileIds.filter((fileId) => !threadArchiveFileIds.includes(fileId))];
+  return ordered as readonly string[] as ArchiveFileIds;
 }
 
 /**

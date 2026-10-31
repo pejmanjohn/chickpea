@@ -87,7 +87,6 @@ const NON_QUALIFYING_TOOLS: readonly string[] = [
   // The sandbox these work in holds only the current message's files and the
   // reply's staged files, which are absorbed or are artifacts.
   'read', 'write', 'edit', 'grep', 'glob', 'task',
-  // Reads a file inside an archive on the current message, like the attachment analysis.
   READ_ARCHIVE_FILE_TOOL_NAME,
 ];
 
