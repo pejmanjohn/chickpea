@@ -46,7 +46,8 @@ export function useSlackFollowUpFold(input: {
     let cycles = 0;
     update((previous) => { cycles = previous.cycles; return previous; });
     const envelope = currentRequestEnvelopeText(delivery.body);
-    const take = cycles < MAX_FOLD_CYCLES &&
+    const requesterId = delivery.attributes?.slackUserId;
+    const take = cycles < MAX_FOLD_CYCLES && requesterId !== undefined &&
       delivery.type === 'slack.message' && delivery.tagName === 'slack_message' &&
       envelope !== undefined && parseCurrentRequestEnvelope(envelope)?.schemaVersion === 2 &&
       !response.toolCalls.some((call) => call.tool === SLACK_STREAM_ANSWER_TOOL_NAME && !call.isError) &&
@@ -60,7 +61,7 @@ export function useSlackFollowUpFold(input: {
         received: cycles,
         take,
       });
-      if (!claim?.messages.length || envelope === undefined) return;
+      if (!claim?.messages.length || envelope === undefined || requesterId === undefined) return;
       const attributes = delivery.attributes ?? {};
       append({
         kind: 'signal',
@@ -69,7 +70,7 @@ export function useSlackFollowUpFold(input: {
         attributes: { ...attributes, requesterText: claim.requesterText },
         body: followUpSignalBody({
           messages: claim.messages,
-          userId: claim.messages[0]!.userId,
+          requesterId,
           timezone: attributes.requesterTimezone ?? 'UTC',
           envelope,
         }),

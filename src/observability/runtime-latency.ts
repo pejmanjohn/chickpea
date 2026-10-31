@@ -240,6 +240,7 @@ export class TurnLatencyTracker {
   private firstWrite: { surface: TurnFirstWrite; at: number } | undefined;
   private final: { kind: 'delivered' | 'deferred'; at: number } | undefined;
   private folded = 0;
+  private foldedInformed = 0;
   private emitted = false;
 
   constructor(
@@ -256,9 +257,14 @@ export class TurnLatencyTracker {
     if (!this.firstWrite) this.firstWrite = { surface, at: this.now() };
   }
 
-  /** The turn took this many of its requester's queued messages as follow-ups. */
+  /** The turn took this many queued messages as follow-ups. */
   markFolded(count: number): void {
     this.folded = count;
+  }
+
+  /** Of those, this many reached it as information only. */
+  markFoldedInformed(count: number): void {
+    this.foldedInformed = count;
   }
 
   /** The terminal was delivered, or handed to a durable outbox. */
@@ -298,6 +304,7 @@ export class TurnLatencyTracker {
       receiptToFirstWriteMs: sinceReceipt(this.firstWrite?.at),
       attemptMs: end - this.startedAt,
       folded: this.folded > 0 ? this.folded : undefined,
+      foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,
     }, this.sink);
   }
 }
@@ -306,15 +313,20 @@ export class TurnLatencyTracker {
 // turn_fold: messages a running turn read in its would-stop phase.
 
 /**
- * A running turn's model read `late` more of its requester's messages, sent
- * while it worked; `turn_latency.folded` counts the ones it took at its start.
- * Emitted once per message, when the state store confirms the Agent read it.
+ * A running turn's model read `late` more queued messages, sent while it
+ * worked, `informed` of them as information only; `turn_latency.folded` and
+ * `foldedInformed` count the ones it took at its start. Emitted when the
+ * state store confirms the Agent read them.
  */
 export function emitTurnFold(
-  record: { turnJobId: string; late: number },
+  record: { turnJobId: string; late: number; informed: number },
   sink?: RuntimeLatencySink,
 ): void {
-  emitRuntimeLatency('turn_fold', { turnRef: opaqueTurnRef(record.turnJobId), late: record.late }, sink);
+  emitRuntimeLatency('turn_fold', {
+    turnRef: opaqueTurnRef(record.turnJobId),
+    late: record.late,
+    informed: record.informed > 0 ? record.informed : undefined,
+  }, sink);
 }
 
 // ---------------------------------------------------------------------------

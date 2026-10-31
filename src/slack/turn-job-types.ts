@@ -217,12 +217,16 @@ export interface TurnStopMemberRecordV1 {
  * release ignores the column): the head row whose run took this message.
  * `absorbed` holds the row back while its head is open; the head's delivery
  * settles a received member (`settled`, under the existing `done` status).
- * `released` is never written: a member whose head ended any other way reads
- * as released and runs as an ordinary turn again (see effectiveFold).
+ * `informed`, a teammate's message in a run that uses the requester's own
+ * connections, is held the same way, but the run only reads it: the head's
+ * delivery never settles it, so it runs as its sender's own turn afterwards.
+ * `released` is never written: a member whose head ended any other way, and
+ * an informed member once its head ended, reads as released and runs as an
+ * ordinary turn again (see effectiveFold).
  */
 export interface TurnFoldMemberRecordV1 {
   schemaVersion: 1;
-  role: 'absorbed' | 'settled' | 'released';
+  role: 'absorbed' | 'informed' | 'settled' | 'released';
   headId: string;
   /** 0: taken when the head's turn started; k ≥ 1: the head's k-th late fold. */
   cycle: number;
@@ -245,7 +249,7 @@ export type TurnFoldRequest =
 export interface TurnFoldClaim {
   /** This claim's members, oldest first; empty when none was eligible. */
   messages: FoldedMessage[];
-  /** The person's words over the head and its members through this cycle (foldedRequestText). */
+  /** The requester's own words over the head and its members through this cycle (foldedRequestText). */
   requesterText: string;
 }
 
