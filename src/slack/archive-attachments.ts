@@ -1,33 +1,11 @@
 import { sniffFileKind } from '../files/magic.ts';
 import { createByteBudget, openZip, printableZipPath, type ZipProblem } from '../files/zip.ts';
 import { formatBytes } from './message-text.ts';
+import type { FileHandle } from './thread-files.ts';
 
-export type ArchiveHandle = `file:${number}`;
-
-export const READ_ARCHIVE_FILE_TOOL_NAME = 'read_archive_file';
 export const MAX_LISTED_ARCHIVE_ENTRIES = 200;
 /** Long paths are cut for display; 200 such lines still fit one attachment's character limit. */
 const MAX_DISPLAYED_PATH_CHARACTERS = 255;
-export const ARCHIVE_HANDLE_PATTERN = /^file:([1-9][0-9]{0,2})$/;
-
-export function archiveHandle(ordinal: number): ArchiveHandle {
-  return `file:${ordinal}`;
-}
-
-export function archiveHandleOrdinal(value: string): number | undefined {
-  const match = ARCHIVE_HANDLE_PATTERN.exec(value);
-  return match ? Number(match[1]) : undefined;
-}
-
-export type ArchiveFileIds = readonly string[] & { readonly __order: 'thread archives, then current message' };
-
-export function archiveFileIds(
-  threadArchiveFileIds: readonly string[],
-  currentFileIds: readonly string[],
-): ArchiveFileIds {
-  const ordered: readonly string[] = [...threadArchiveFileIds, ...currentFileIds.filter((fileId) => !threadArchiveFileIds.includes(fileId))];
-  return ordered as ArchiveFileIds;
-}
 
 /**
  * An entry path as models and people see it: unprintable characters replaced
@@ -44,7 +22,7 @@ export function displayPath(path: string): string {
  * The archive's file list for the attachment analysis: path, kind by name, and
  * size for at most 200 files, then a count of the rest. Nothing is inflated.
  */
-export function archiveListing(bytes: Uint8Array, handle: ArchiveHandle): string {
+export function archiveListing(bytes: Uint8Array, handle: FileHandle): string {
   const archive = openZip(bytes, { maxEntryBytes: 0, budget: createByteBudget(0) });
   const lines = [`Zip archive ${handle}: its file list, not file contents.`];
   if (archive.entries.length === 0) lines.push('It has no files.');

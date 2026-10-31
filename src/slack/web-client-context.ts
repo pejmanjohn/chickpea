@@ -41,10 +41,10 @@ import {
   type ThreadImageRecord,
 } from './thread-images.ts';
 import {
-  collectThreadArchiveRecords,
-  retainThreadArchives,
-  type ThreadArchiveRecord,
-} from './thread-archives.ts';
+  collectThreadFileRecords,
+  threadFileRecordsFromRecord,
+  type ThreadFileRecord,
+} from './thread-files.ts';
 import type { SlackPublicContextEntry } from '../config/types.ts';
 import type { AgentAppBot } from './agent-app-bots.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
@@ -155,9 +155,9 @@ export async function hydrateSlackContextViaWebClient(
 
 /**
  * A thread the record already holds: no Slack read. The record fills in the
- * rows when the prompt is assembled; its image references stand in for the
- * raw rows' files. A root seeded from a read that missed older replies keeps
- * saying so.
+ * rows when the prompt is assembled; its image and file references stand in
+ * for the raw rows' files. A root seeded from a read that missed older
+ * replies keeps saying so.
  */
 function recordOnlyThreadContext(
   turn: NormalizedSlackTurn,
@@ -166,13 +166,13 @@ function recordOnlyThreadContext(
 ): SlackTurnContext {
   const gap = record.find((entry) => entry.messageTs === turn.threadTs)?.gapBeforeTs;
   const watermark = slackContextWatermark(turn, followUps);
-  const images = threadImageRecordsFromRecord(
-    record.filter((entry) => entry.rootTs === turn.threadTs),
-    slackThreadImageConversationKey(turn),
-  )
+  const rows = record.filter((entry) => entry.rootTs === turn.threadTs);
+  const images = threadImageRecordsFromRecord(rows, slackThreadImageConversationKey(turn))
     .filter((image) => atOrBeforeSlackWatermark(image.messageTs, watermark))
     .sort((left, right) => compareSlackTs(left.messageTs, right.messageTs))
     .slice(-MAX_THREAD_IMAGE_ENTRIES);
+  const files = threadFileRecordsFromRecord(rows)
+    .filter((file) => atOrBeforeSlackWatermark(file.messageTs, watermark));
   return {
     mode: 'thread',
     messages: ensureTriggerMessage([], turn, undefined, followUps),
@@ -182,6 +182,7 @@ function recordOnlyThreadContext(
     truncated: gap !== undefined,
     degradations: gap !== undefined ? ['slack_context.thread:record_gap'] : [],
     ...(images.length ? { images } : {}),
+    ...(files.length ? { files } : {}),
   };
 }
 
@@ -336,10 +337,10 @@ async function fetchHistory(
     collectThreadImages(windowRows, turn, input.followUps),
     collectThreadImages(triggerRows, turn),
   );
-  const archives = retainThreadArchives([
-    ...collectThreadArchives(windowRows, turn, input.followUps),
-    ...collectThreadArchives(triggerRows, turn),
-  ]);
+  const files = [
+    ...collectThreadFiles(windowRows, turn, input.followUps),
+    ...collectThreadFiles(triggerRows, turn),
+  ];
   const messages = ensureTriggerMessage(
     orderMessages(
       toContextMessages(windowRows, input.self).filter((message) =>
@@ -359,7 +360,7 @@ async function fetchHistory(
     truncated: hasCursor,
     degradations,
     ...(images.length > 0 ? { images } : {}),
-    ...(archives.length > 0 ? { archives } : {}),
+    ...(files.length > 0 ? { files } : {}),
   };
 }
 
@@ -387,7 +388,7 @@ async function fetchThread(
   let replyCount: number | undefined;
   const collected: SlackContextMessage[] = [];
   const images: ThreadImageRecord[] = [];
-  const archives: ThreadArchiveRecord[] = [];
+  const files: ThreadFileRecord[] = [];
   const degradations: string[] = [];
   let cursor: string | undefined;
   let pagesRead = 0;
@@ -434,7 +435,7 @@ async function fetchThread(
     if (images.length > MAX_THREAD_IMAGE_ENTRIES) {
       images.splice(0, images.length - MAX_THREAD_IMAGE_ENTRIES);
     }
-    archives.push(...collectThreadArchives(rawMessages, turn, input.followUps));
+    files.push(...collectThreadFiles(rawMessages, turn, input.followUps));
     for (const raw of rawMessages) {
       if (raw.ts === turn.threadTs && typeof raw.reply_count === 'number') replyCount = raw.reply_count;
       if (!raw.ts || !atOrBeforeSlackWatermark(raw.ts, watermark)) continue;
@@ -476,7 +477,7 @@ async function fetchThread(
     degradations,
     ...(replyCount !== undefined ? { threadReplyCount: replyCount } : {}),
     ...(images.length > 0 ? { images } : {}),
-    ...(archives.length > 0 ? { archives: retainThreadArchives(archives) } : {}),
+    ...(files.length > 0 ? { files } : {}),
   };
 }
 
@@ -531,12 +532,12 @@ function collectThreadImages(
   return withinWatermark(collectThreadImageRecords(rawMessages, slackThreadImageConversationKey(turn)), turn, followUps);
 }
 
-function collectThreadArchives(
+function collectThreadFiles(
   rawMessages: readonly SlackWebApiMessage[],
   turn: NormalizedSlackTurn,
   followUps: readonly FoldedMessage[] = [],
-): ThreadArchiveRecord[] {
-  return withinWatermark(collectThreadArchiveRecords(rawMessages), turn, followUps);
+): ThreadFileRecord[] {
+  return withinWatermark(collectThreadFileRecords(rawMessages), turn, followUps);
 }
 
 function withinWatermark<T extends { messageTs: string }>(
@@ -588,7 +589,7 @@ export function assembleSlackPrompt(
      * thread, so it rides in the request instead of the Agent's system prompt.
      */
     threadImageManifest?: string;
-    threadArchiveManifest?: string;
+    threadFileManifest?: string;
     /** The person's messages queued after the trigger that this turn took as part of its request. */
     followUps?: readonly FoldedMessage[];
   } = {},
@@ -690,8 +691,8 @@ export function assembleSlackPrompt(
   if (options.threadImageManifest) {
     parts.push('', 'Images in this conversation, with the img:N handles for this request:', options.threadImageManifest);
   }
-  if (options.threadArchiveManifest) {
-    parts.push('', options.threadArchiveManifest);
+  if (options.threadFileManifest) {
+    parts.push('', options.threadFileManifest);
   }
   const answered = followUps.filter((message) => !message.informationOnly);
   const informed = followUps.filter((message) => message.informationOnly);

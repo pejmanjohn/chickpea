@@ -535,11 +535,11 @@ function createNodeThreadDrain(
           threadImages: Parameters<typeof prepareFlueDispatch>[3],
           admittedListIds: Parameters<typeof prepareFlueDispatch>[4],
           turnEnvelope: Parameters<typeof prepareFlueDispatch>[5],
-          threadArchiveFileIds: Parameters<typeof prepareFlueDispatch>[6],
+          threadFileIds: Parameters<typeof prepareFlueDispatch>[6],
         ) => {
           try {
             return await prepareFlueDispatch(
-              job.id, message, observation, threadImages, admittedListIds, turnEnvelope, threadArchiveFileIds,
+              job.id, message, observation, threadImages, admittedListIds, turnEnvelope, threadFileIds,
             );
           } catch (error) {
             if (!isTurnJobStopRefusal(error)) throw error;

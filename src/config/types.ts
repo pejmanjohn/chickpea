@@ -627,6 +627,13 @@ export interface SlackPublicContextImage {
   sizeBytes?: number;
 }
 
+export interface SlackPublicContextFileRef {
+  id: string;
+  name: string;
+  mimeType?: string;
+  sizeBytes?: number;
+}
+
 /** A file shared with a recorded message: label, type, size. Never contents. */
 export interface SlackPublicContextFile {
   name: string;
@@ -659,6 +666,8 @@ export interface SlackPublicContextEntry {
    * Slack. Never rendered into model-facing text.
    */
   images?: SlackPublicContextImage[];
+  /** The message's other files, host-side only, as `images`. Never rendered into model-facing text. */
+  fileRefs?: SlackPublicContextFileRef[];
   /**
    * Set on a thread's root row when the record was seeded from a read that
    * could not reach every reply: replies older than this timestamp (after

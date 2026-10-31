@@ -94,10 +94,11 @@ for (const count of [1, 2, 10]) {
     assert.equal(h.observations.filter((event) => event.phase === 'before').length, 1);
     assert.deepEqual(JSON.parse(h.observations[0]!.renderedPayload as string), { method: 'slack_chat_post_message', payload: post });
     assert.equal(h.observations[0]!.approvedOutput, 'GRE: $2,400');
-    // Only the image is recorded, as a reference: never its link or contents.
+    // The files are recorded as references: never their links or contents.
+    const fileRefs = files.slice(1).map(({ fileId, filename }) => ({ id: fileId, name: filename, sizeBytes: 123 }));
     assert.deepEqual(h.handoffs, [{ messageTs: ts, text: 'GRE: $2,400', images: [
       { id: 'F12345670', name: 'bookings.png', mimeType: 'image/png', sizeBytes: 123 },
-    ] }]);
+    ], ...(fileRefs.length ? { fileRefs } : {}) }]);
     assert.equal(h.observations.at(-1)!.outcome, 'delivered');
   });
 }

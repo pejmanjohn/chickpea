@@ -1,6 +1,6 @@
 import { planAllowsConnectionFileUpload } from '../connections/file-upload-tool.ts';
 import { conversationThreadImageInventory } from './thread-images.ts';
-import { threadArchiveManifest } from './thread-archives.ts';
+import { retainThreadFiles, threadFileManifest } from './thread-files.ts';
 import { verifyMemoryUpdateAcknowledgement } from './memory-update-terminal.ts';
 import { WebClient } from '@slack/web-api';
 
@@ -1883,8 +1883,8 @@ async function runTurnAttempt(
     const threadImageManifest = threadImages && runtimePlanDecision
       ? conversationThreadImageInventory(runtimePlanDecision.runtimePlan.conversation, threadImages).manifest
       : '';
-    const threadArchives = context.archives ?? [];
-    const archiveManifest = threadArchiveManifest(threadArchives, turn.messageTs);
+    const threadFiles = retainThreadFiles(context.files ?? []);
+    const fileManifest = threadFileManifest(threadFiles, turn.messageTs);
     // The store decides the same when the plan freezes, which is after it
     // took these messages (TurnJobStoreLogic.decideStartFoldRoles).
     const usesPersonalAccess = runtimePlanDecision === undefined ||
@@ -1917,7 +1917,7 @@ async function runTurnAttempt(
       // guest reads it as a question.
       ...(turn.agentAsk ? { askedAsThreadOwner: assignment.threadGuest !== true } : {}),
       ...(threadImageManifest ? { threadImageManifest } : {}),
-      ...(archiveManifest ? { threadArchiveManifest: archiveManifest } : {}),
+      ...(fileManifest ? { threadFileManifest: fileManifest } : {}),
       ...(installationContext
         ? {
             slackApp: {
@@ -2019,7 +2019,7 @@ async function runTurnAttempt(
               ? { memoryBlock: preparedMemory.promptBlock }
               : {}),
             ...(threadImages ? { threadImages } : {}),
-            ...(threadArchives.length ? { threadArchiveFileIds: threadArchives.map(({ fileId }) => fileId) } : {}),
+            ...(threadFiles.length ? { threadFileIds: threadFiles.map(({ id }) => id) } : {}),
             ...(admittedListIds.length ? { admittedListIds } : {}),
             ...turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv),
             ...(platformEnv ? { env: platformEnv } : {}),

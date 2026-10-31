@@ -386,11 +386,11 @@ function runnerPorts(script: RunTurnScript) {
     ...asyncOf(ports.turnJobs as Record<string, unknown>),
     prepareFlueDispatch: async (
       _id: string, _message: string, observation: unknown,
-      _images: unknown, _lists: unknown, turnEnvelope: unknown, threadArchiveFileIds: unknown,
+      _images: unknown, _lists: unknown, turnEnvelope: unknown, threadFileIds: unknown,
     ) => {
       prepared.push(observation);
       envelopes.push(turnEnvelope);
-      archives.push(threadArchiveFileIds);
+      archives.push(threadFileIds);
       return { instanceId: 'agent' };
     },
   };

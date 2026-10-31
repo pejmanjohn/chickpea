@@ -2,14 +2,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { archiveFileIds, archiveListing, MAX_LISTED_ARCHIVE_ENTRIES } from '../src/slack/archive-attachments.ts';
+import { archiveListing, MAX_LISTED_ARCHIVE_ENTRIES } from '../src/slack/archive-attachments.ts';
 import {
-  ARCHIVE_PAGE_CHARACTERS,
-  type ArchiveToolResult,
-  createReadArchiveFileTool,
-  MAX_ARCHIVE_READS_PER_TURN,
+  FILE_PAGE_CHARACTERS,
+  createReadSlackFileTool,
+  MAX_FILE_READS_PER_TURN,
   readArchiveFile,
-} from '../src/slack/archive-file-tool.ts';
+  type ReadSlackFileResult,
+} from '../src/slack/slack-file-tool.ts';
+import { fileHandleIds } from '../src/slack/thread-files.ts';
 import { createSlackAttachmentAnalysis, formatSlackAttachmentSignal } from '../src/slack/attachment-context.ts';
 import { MAX_SLACK_ATTACHMENT_CHARACTERS, normalizeSlackAttachments } from '../src/slack/attachment-normalization.ts';
 import type { GatewayAttachmentClient, GatewayAttachmentRead } from '../src/slack/gateway/client.ts';
@@ -126,7 +127,7 @@ test('the manifest names the archive handle and how to read a file, and a listin
     prompt: async () => ({ text: `Attachment 1 - kit.zip:\n${listing}` }),
   });
   const body = formatSlackAttachmentSignal(result).body;
-  assert.match(body, /- ordinal=1 \| filename="kit\.zip" \| representation=zip_original \| handle=file:1 \| status=success \| code=listed \| next_action="Only the file list was read\. To read a file inside, call read_archive_file with file \\"file:1\\" and the file's exact path\."/);
+  assert.match(body, /- ordinal=1 \| filename="kit\.zip" \| representation=zip_original \| handle=file:1 \| status=success \| code=listed \| next_action="Only the file list was read\. To read a file inside, call read_slack_file with file \\"file:1\\" and the file's exact path\."/);
   assert.match(body, /- ordinal=2 \| filename="locked\.zip" \| status=failure \| code=archive_encrypted \| next_action="Re-create the zip without a password using standard compression, or attach the files directly \(up to four per message\), then retry\."/);
   assert.ok(body.includes(listing), 'the file list reaches the Agent verbatim');
   assert.doesNotMatch(body, /Convert the file/);
@@ -143,12 +144,12 @@ test('a text file inside an archive reads as text', async () => {
 });
 
 test('long text pages 50,000 characters at a time and never splits a surrogate pair', async () => {
-  const text = `${'a'.repeat(ARCHIVE_PAGE_CHARACTERS - 1)}😀${'b'.repeat(10)}`;
+  const text = `${'a'.repeat(FILE_PAGE_CHARACTERS - 1)}😀${'b'.repeat(10)}`;
   const bytes = buildZip([{ path: 'long.txt', content: text }]);
   const first = await read('long.txt', 0, bytes);
   assert.ok(first.ok && first.kind === 'text');
-  assert.equal(first.text, 'a'.repeat(ARCHIVE_PAGE_CHARACTERS - 1));
-  assert.equal(first.nextOffset, ARCHIVE_PAGE_CHARACTERS - 1);
+  assert.equal(first.text, 'a'.repeat(FILE_PAGE_CHARACTERS - 1));
+  assert.equal(first.nextOffset, FILE_PAGE_CHARACTERS - 1);
   const second = await read('long.txt', first.nextOffset!, bytes);
   assert.ok(second.ok && second.kind === 'text');
   assert.equal(second.text, `😀${'b'.repeat(10)}`);
@@ -173,8 +174,8 @@ test('a PDF with more text than one analyzed attachment still pages', async () =
   const long = buildZip([{ path: 'long.pdf', content: makeTextPdf(Array.from({ length: 40 }, () => page)) }]);
   const first = await read('long.pdf', 0, long);
   assert.ok(first.ok && first.kind === 'pdf', JSON.stringify(first));
-  assert.equal(first.text.length, ARCHIVE_PAGE_CHARACTERS);
-  assert.equal(first.nextOffset, ARCHIVE_PAGE_CHARACTERS);
+  assert.equal(first.text.length, FILE_PAGE_CHARACTERS);
+  assert.equal(first.nextOffset, FILE_PAGE_CHARACTERS);
   const second = await read('long.pdf', first.nextOffset!, long);
   assert.ok(second.ok && second.kind === 'pdf' && second.nextOffset === undefined);
   assert.ok(second.text.endsWith('x'.repeat(80)));
@@ -255,15 +256,15 @@ test('archive and entry refusals say what the person can do', async () => {
 let instance = 0;
 function archiveTool(fileIds: readonly string[], client: GatewayAttachmentClient) {
   instance += 1;
-  return createReadArchiveFileTool({
+  return createReadSlackFileTool({
     instanceId: `archive-tool-${instance}`,
     turnKey: 'turn_archive',
-    fileIds: archiveFileIds([], fileIds),
+    fileIds: fileHandleIds([], fileIds),
     client: async () => client,
   });
 }
 async function call(tool: ReturnType<typeof archiveTool>, data: { file: string; path?: string; offset?: number }, toolCallId: string) {
-  return JSON.parse(String(await tool.run({ data, toolCallId, log: { info() {}, warn() {}, error() {} } }))) as ArchiveToolResult;
+  return JSON.parse(String(await tool.run({ data, toolCallId, log: { info() {}, warn() {}, error() {} } }))) as ReadSlackFileResult;
 }
 
 test('a handle resolves only to the current message\'s file IDs, and one archive downloads once per turn', async () => {
@@ -272,9 +273,12 @@ test('a handle resolves only to the current message\'s file IDs, and one archive
   const notes = await call(tool, { file: 'file:2', path: 'kit/notes.md' }, 'c1');
   const table = await call(tool, { file: 'file:2', path: 'kit/data/table.csv' }, 'c2');
   assert.ok(notes.ok && table.ok);
-  assert.deepEqual(calls, [{ fileId: 'F_KIT', maxBytes: 8 * 1024 * 1024, accept: ['zip_original'] }]);
+  assert.deepEqual(calls, [{
+    fileId: 'F_KIT', maxBytes: 8 * 1024 * 1024,
+    accept: ['image_original', 'text_original', 'pdf_original', 'slack_pdf_conversion', 'zip_original'],
+  }]);
   assert.deepEqual(await call(tool, { file: 'file:3', path: 'kit/notes.md' }, 'c3'), {
-    ok: false, error: 'file:3 is not one of this conversation\'s files. Use a handle from the request\'s archive list or the attachment manifest.',
+    ok: false, error: 'file:3 is not one of this conversation\'s files. Use a handle from the request\'s file list or the attachment manifest.',
   });
   assert.equal(calls.length, 1);
 });
@@ -282,13 +286,13 @@ test('a handle resolves only to the current message\'s file IDs, and one archive
 test('a handle counts the conversation\'s archives first, and only the host\'s list reaches a download', async () => {
   const calls: ReadCall[] = [];
   const older = buildZip([{ path: 'q3/summary.md', content: '# Q3\nRevenue up.\n' }]);
-  const tool = archiveTool(archiveFileIds(['F0OLD000001'], ['F_PDF', 'F_KIT']), zipReader({
+  const tool = archiveTool(fileHandleIds(['F0OLD000001'], ['F_PDF', 'F_KIT']), zipReader({
     F0OLD000001: zipRead('F0OLD000001', 'q3.zip', older),
     F_KIT: zipRead('F_KIT', 'kit.zip', KIT),
     F0ELSEWHERE: zipRead('F0ELSEWHERE', 'other.zip', older),
   }, calls));
   assert.deepEqual(await call(tool, { file: 'file:1', path: 'q3/summary.md' }, 'c1'), {
-    ok: true, file: 'file:1', path: 'q3/summary.md', kind: 'text', text: '# Q3\nRevenue up.\n',
+    ok: true, file: 'file:1', path: 'q3/summary.md', kind: 'text', text: '# Q3\nRevenue up.\n', name: 'q3.zip',
   });
   assert.equal((await call(tool, { file: 'file:3', path: 'kit/notes.md' }, 'c2')).ok, true);
   assert.equal((await call(tool, { file: 'file:4', path: 'q3/summary.md' }, 'c3')).ok, false);
@@ -299,21 +303,22 @@ test('without a path the tool lists the archive\'s files, as one read that share
   const calls: ReadCall[] = [];
   const tool = archiveTool(['F_KIT'], zipReader({ F_KIT: zipRead('F_KIT', 'kit.zip', KIT) }, calls));
   const listed = await call(tool, { file: 'file:1' }, 'list');
-  assert.deepEqual(listed, { ok: true, file: 'file:1', listing: archiveListing(KIT, 'file:1') });
+  assert.deepEqual(listed, { ok: true, file: 'file:1', kind: 'archive', listing: archiveListing(KIT, 'file:1'), name: 'kit.zip' });
   assert.equal((await call(tool, { file: 'file:1', path: 'kit/notes.md' }, 'read')).ok, true);
   assert.equal(calls.length, 1);
   const locked = archiveTool(['F_LOCKED'], zipReader({ F_LOCKED: zipRead('F_LOCKED', 'locked.zip', fixture('zip-encrypted.zip')) }));
   assert.deepEqual(await call(locked, { file: 'file:1' }, 'list'), {
     ok: false,
     error: 'This archive is password-protected. Ask for it again without a password, or for the files attached directly.',
+    name: 'locked.zip',
   });
 });
 
 test('an archive on the current message takes its handle from the conversation\'s list', async () => {
-  const handles = async (threadArchiveFileIds: string[]) => {
+  const handles = async (threadFileIds: string[]) => {
     const result = await normalizeSlackAttachments({
       fileIds: ['F_PDF', 'F_KIT'],
-      threadArchiveFileIds,
+      threadFileIds,
       gateway: zipReader({ F_KIT: zipRead('F_KIT', 'kit.zip', KIT) }),
     });
     return result.attachments.flatMap((attachment) => attachment.kind === 'archive' ? [attachment.handle] : []);
@@ -323,27 +328,37 @@ test('an archive on the current message takes its handle from the conversation\'
   assert.deepEqual(await handles(['F0OLD000001', 'F_KIT']), ['file:2'], 'a trigger row the host read keeps its thread position');
 });
 
-test('a handle that names a file that is not a zip is refused plainly', async () => {
-  const tool = archiveTool(['F_PDF'], zipReader({}));
-  const notZip: GatewayAttachmentClient = {
+test('a handle that names a file that is not a zip reads that file; a path into it, or an unreadable kind, is refused plainly', async () => {
+  const pdf: GatewayAttachmentRead = {
+    fileId: 'F_PDF', filename: 'notes.pdf', representation: 'pdf_original', contentType: 'application/pdf',
+    bytes: makeTextPdf(['Synthetic note: 7 units']),
+  };
+  const tool = archiveTool(['F_PDF'], zipReader({ F_PDF: pdf }));
+  assert.deepEqual(await call(tool, { file: 'file:1' }, 'c1'), {
+    ok: true, file: 'file:1', kind: 'pdf', text: '--- Page 1 of 1 ---\nSynthetic note: 7 units', name: 'notes.pdf',
+  });
+  assert.deepEqual(await call(tool, { file: 'file:1', path: 'a.md' }, 'c2'), {
+    ok: false, error: 'file:1 is not a zip archive. Leave path out to read it.', name: 'notes.pdf',
+  });
+  const video: GatewayAttachmentClient = {
     async readAttachment() { throw Object.assign(new Error('unsupported'), { code: 'unsupported_file_type' }); },
   };
-  assert.deepEqual(await call(archiveTool(['F_PDF'], notZip), { file: 'file:1', path: 'a.md' }, 'c1'), {
-    ok: false, error: 'file:1 is not a zip archive, so files inside it cannot be read.',
+  assert.deepEqual(await call(archiveTool(['F_VIDEO'], video), { file: 'file:1' }, 'c1'), {
+    ok: false, error: 'This kind of file cannot be read here, such as audio, video or another binary file.',
   });
-  assert.deepEqual(await call(tool, { file: 'file:1', path: 'a.md' }, 'c1'), {
-    ok: false, error: 'Chickpea could not download this archive from Slack. Try once more; if it fails again, ask for it attached again.',
+  assert.deepEqual(await call(archiveTool(['F_GONE'], zipReader({})), { file: 'file:1' }, 'c1'), {
+    ok: false, error: 'This file is no longer in Slack. Ask for it attached again.',
   });
 });
 
 test('a new turn on the same Agent instance starts a fresh read count and downloads again', async () => {
   const calls: ReadCall[] = [];
   const client = zipReader({ F_KIT: zipRead('F_KIT', 'kit.zip', KIT) }, calls);
-  const turn = (turnKey: string) => createReadArchiveFileTool({
-    instanceId: 'archive-tool-turns', turnKey, fileIds: archiveFileIds([], ['F_KIT']), client: async () => client,
+  const turn = (turnKey: string) => createReadSlackFileTool({
+    instanceId: 'archive-tool-turns', turnKey, fileIds: fileHandleIds([], ['F_KIT']), client: async () => client,
   });
   const first = turn('turn_one');
-  for (let index = 0; index < MAX_ARCHIVE_READS_PER_TURN; index += 1) {
+  for (let index = 0; index < MAX_FILE_READS_PER_TURN; index += 1) {
     assert.equal((await call(first, { file: 'file:1', path: 'kit/notes.md' }, `one-${index}`)).ok, true);
   }
   assert.equal((await call(first, { file: 'file:1', path: 'kit/notes.md' }, 'one-extra')).ok, false);
@@ -352,13 +367,13 @@ test('a new turn on the same Agent instance starts a fresh read count and downlo
   assert.equal(calls.length, 2);
 });
 
-test(`a turn reads at most ${MAX_ARCHIVE_READS_PER_TURN} times; a replayed call keeps its read`, async () => {
+test(`a turn reads at most ${MAX_FILE_READS_PER_TURN} times; a replayed call keeps its read`, async () => {
   const tool = archiveTool(['F_KIT'], zipReader({ F_KIT: zipRead('F_KIT', 'kit.zip', KIT) }));
-  for (let index = 0; index < MAX_ARCHIVE_READS_PER_TURN; index += 1) {
+  for (let index = 0; index < MAX_FILE_READS_PER_TURN; index += 1) {
     assert.equal((await call(tool, { file: 'file:1', path: 'kit/notes.md' }, `c${index}`)).ok, true);
   }
   assert.equal((await call(tool, { file: 'file:1', path: 'kit/notes.md' }, 'c0')).ok, true);
   assert.deepEqual(await call(tool, { file: 'file:1', path: 'kit/notes.md' }, 'one-too-many'), {
-    ok: false, error: `This turn has used its ${MAX_ARCHIVE_READS_PER_TURN} archive reads. Answer with what has been read, and say what is left.`,
+    ok: false, error: `This turn has used its ${MAX_FILE_READS_PER_TURN} file reads. Answer with what has been read, and say what is left.`,
   });
 });

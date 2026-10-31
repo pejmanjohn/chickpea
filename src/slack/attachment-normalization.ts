@@ -1,8 +1,9 @@
 import { getResolvedPDFJS } from 'unpdf';
 
-import { sniffFileKind } from '../files/magic.ts';
+import { isTextMimeType, sniffFileKind } from '../files/magic.ts';
 import { ZipArchiveError } from '../files/zip.ts';
-import { type ArchiveHandle, archiveFileIds, archiveHandle, archiveListing } from './archive-attachments.ts';
+import { archiveListing } from './archive-attachments.ts';
+import { type FileHandle, fileHandle, fileHandleIds } from './thread-files.ts';
 import type {
   GatewayAttachmentClient,
   GatewayAttachmentRead,
@@ -23,21 +24,8 @@ const MAX_SLACK_PDF_IMAGE_PIXELS = 16_777_216;
 export const DEFAULT_NORMALIZATION_DEADLINE_PER_ATTACHMENT_MS = 13_000;
 /** Everything the analysis can use; a zip arrives as its bytes and is listed. */
 const ANALYSIS_ACCEPT: readonly GatewayAttachmentRepresentation[] = [...DEFAULT_ATTACHMENT_ACCEPT, 'zip_original'];
-const APPROVED_TEXT_APPLICATION_MIME_TYPES = new Set([
-  'application/graphql',
-  'application/javascript',
-  'application/json',
-  'application/ld+json',
-  'application/sql',
-  'application/toml',
-  'application/typescript',
-  'application/x-httpd-php',
-  'application/x-javascript',
-  'application/x-ndjson',
-  'application/x-sh',
-  'application/x-yaml',
-  'application/xml',
-  'application/yaml',
+const READ_TOOL_REPRESENTATIONS: ReadonlySet<GatewayAttachmentRepresentation> = new Set([
+  'text_original', 'pdf_original', 'slack_pdf_conversion', 'zip_original',
 ]);
 
 export type SlackAttachmentNextAction =
@@ -60,6 +48,7 @@ interface NormalizedAttachmentIdentity {
   label: string;
   representation: GatewayAttachmentRepresentation;
   contentType: string;
+  handle?: FileHandle;
 }
 
 interface NormalizedSlackTextAttachment extends NormalizedAttachmentIdentity {
@@ -82,7 +71,7 @@ export interface NormalizedSlackPdfAttachment extends NormalizedAttachmentIdenti
 /** A zip the analysis reads as its file list; the Agent reads files inside by `handle`. */
 export interface NormalizedSlackArchiveAttachment extends NormalizedAttachmentIdentity {
   kind: 'archive';
-  handle: ArchiveHandle;
+  handle: FileHandle;
   text: string;
 }
 
@@ -99,6 +88,7 @@ export interface SlackAttachmentFailure {
   label: string;
   code: string;
   nextAction: SlackAttachmentNextAction;
+  handle?: FileHandle;
 }
 
 export interface SlackAttachmentNormalizationResult {
@@ -110,7 +100,7 @@ export interface SlackAttachmentNormalizationResult {
 
 export interface SlackAttachmentNormalizationInput {
   fileIds: readonly string[];
-  threadArchiveFileIds?: readonly string[];
+  threadFileIds?: readonly string[];
   gateway: GatewayAttachmentClient;
   signal?: AbortSignal;
   deadlineAt?: number;
@@ -143,7 +133,7 @@ export async function normalizeSlackAttachments(
     };
   }
 
-  const handleFileIds = archiveFileIds(input.threadArchiveFileIds ?? [], input.fileIds);
+  const handleFileIds = fileHandleIds(input.threadFileIds ?? [], input.fileIds);
   for (let index = 0; index < input.fileIds.length; index += 1) {
     const ordinal = index + 1;
     const fileId = input.fileIds[index]!;
@@ -186,6 +176,7 @@ export async function normalizeSlackAttachments(
     }
 
     totalBytes += read.bytes.byteLength;
+    const handle = fileHandle(handleFileIds.indexOf(fileId) + 1);
     if (deadlineExceeded(readSignal, deadlineAt, now)) {
       failures.push(failure(
         ordinal,
@@ -200,7 +191,7 @@ export async function normalizeSlackAttachments(
       const normalized = await normalizeReadAttachment({
         read,
         ordinal,
-        archiveHandle: archiveHandle(handleFileIds.indexOf(fileId) + 1),
+        handle,
         ...(input.signal ? { signal: input.signal } : {}),
         deadlineAt,
         now,
@@ -224,24 +215,23 @@ export async function normalizeSlackAttachments(
       const normalizedError = error instanceof AttachmentNormalizationError
         ? error
         : new AttachmentNormalizationError('attachment_parse_failed', 'convert_file');
-      failures.push(failure(
-        ordinal,
-        fileId,
-        normalizedError.code,
-        normalizedError.nextAction,
-        read.filename,
-      ));
+      const pageable = normalizedError.code === 'attachment_character_limit_exceeded' &&
+        read.representation === 'text_original';
+      failures.push({
+        ...failure(ordinal, fileId, normalizedError.code, normalizedError.nextAction, read.filename),
+        ...(pageable ? { handle } : {}),
+      });
     }
   }
 
   return { attachments, failures, totalBytes, totalCharacters };
 }
 
-async function readForAnalysis(
+export async function readForAnalysis(
   gateway: GatewayAttachmentClient,
   fileId: string,
   maxBytes: number,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ): Promise<GatewayAttachmentRead> {
   try {
     return await gateway.readAttachment(fileId, maxBytes, signal, ANALYSIS_ACCEPT);
@@ -255,7 +245,7 @@ async function readForAnalysis(
 async function normalizeReadAttachment(input: {
   read: GatewayAttachmentRead;
   ordinal: number;
-  archiveHandle: ArchiveHandle;
+  handle: FileHandle;
   signal?: AbortSignal;
   deadlineAt: number;
   now: () => number;
@@ -268,6 +258,7 @@ async function normalizeReadAttachment(input: {
     label: attachmentLabel(input.ordinal, filename),
     representation: input.read.representation,
     contentType: input.read.contentType,
+    ...(READ_TOOL_REPRESENTATIONS.has(input.read.representation) ? { handle: input.handle } : {}),
   };
   if (input.read.representation === 'pdf_original' ||
       input.read.representation === 'slack_pdf_conversion') {
@@ -287,7 +278,7 @@ async function normalizeReadAttachment(input: {
     };
   }
   if (input.read.representation === 'zip_original') {
-    const handle = input.archiveHandle;
+    const handle = input.handle;
     try {
       return { kind: 'archive', ...identity, handle, text: archiveListing(input.read.bytes, handle) };
     } catch (error) {
@@ -299,7 +290,7 @@ async function normalizeReadAttachment(input: {
     }
   }
   if (input.read.representation === 'text_original') {
-    if (!approvedTextMimeType(input.read.contentType)) {
+    if (!isTextMimeType(input.read.contentType)) {
       throw new AttachmentNormalizationError(
         'attachment_mime_magic_mismatch',
         'convert_file',
@@ -330,11 +321,6 @@ async function normalizeReadAttachment(input: {
     };
   }
   throw new AttachmentNormalizationError('unsupported_attachment_type', 'convert_file');
-}
-
-function approvedTextMimeType(contentType: string): boolean {
-  return (contentType.startsWith('text/') && contentType !== 'text/rtf') ||
-    APPROVED_TEXT_APPLICATION_MIME_TYPES.has(contentType);
 }
 
 export async function extractPdfTextSequentially(input: {
@@ -506,7 +492,7 @@ function attachmentBytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function validateReadEnvelope(
+export function validateReadEnvelope(
   read: GatewayAttachmentRead,
   expectedFileId: string,
   maxBytes: number,
@@ -520,7 +506,7 @@ function validateReadEnvelope(
   }
 }
 
-function validatePdf(read: GatewayAttachmentRead): void {
+export function validatePdf(read: GatewayAttachmentRead): void {
   if (read.contentType !== 'application/pdf' || sniffFileKind(read.filename, read.bytes).kind !== 'pdf') {
     throw new AttachmentNormalizationError('attachment_mime_magic_mismatch', 'convert_file');
   }

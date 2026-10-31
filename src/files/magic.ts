@@ -2,6 +2,8 @@ import { isZipSignature } from './zip.ts';
 
 export type ImageMimeType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
 
+export const IMAGE_MIME_TYPES: ReadonlySet<string> = new Set<ImageMimeType>(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
 export type FileKind =
   | { readonly kind: 'image'; readonly mimeType: ImageMimeType }
   | { readonly kind: 'pdf' | 'archive' | 'text' | 'other' };
@@ -17,6 +19,8 @@ interface KindRule {
 }
 
 const OFFICE_NAMES = /\.(?:docx|docm|xlsx|xlsm|pptx|pptm|odt|ods|odp|key|numbers|pages)$/i;
+const PDF_NAMES = /\.pdf$/i;
+const ARCHIVE_NAMES = /\.(?:zip|skill)$/i;
 const TEXT_NAMES = /\.(?:md|markdown|txt|text|csv|tsv|json|jsonl|ndjson|yaml|yml|toml|ini|cfg|conf|env|xml|html?|css|scss|less|svg|js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|kts|swift|c|h|cc|cpp|hpp|cs|php|sh|bash|zsh|ps1|sql|graphql|gql|log|rst|tex|r|lua|pl|vue|svelte)$/i;
 /** How many leading bytes the text rule decodes. */
 const TEXT_SNIFF_BYTES = 4_096;
@@ -41,9 +45,9 @@ const KIND_RULES: readonly KindRule[] = [
     bytes: (head) => startsWith(head, [0x52, 0x49, 0x46, 0x46]) && startsWith(head.subarray(8), [0x57, 0x45, 0x42, 0x50]),
     names: /\.webp$/i,
   },
-  { kind: { kind: 'pdf' }, bytes: (head) => startsWith(head, [0x25, 0x50, 0x44, 0x46, 0x2d]), names: /\.pdf$/i },
+  { kind: { kind: 'pdf' }, bytes: (head) => startsWith(head, [0x25, 0x50, 0x44, 0x46, 0x2d]), names: PDF_NAMES },
   { kind: { kind: 'other' }, bytes: (head, name) => isZipSignature(head) && OFFICE_NAMES.test(name), names: OFFICE_NAMES },
-  { kind: { kind: 'archive' }, bytes: isZipSignature, names: /\.(?:zip|skill)$/i },
+  { kind: { kind: 'archive' }, bytes: isZipSignature, names: ARCHIVE_NAMES },
   { kind: { kind: 'text' }, bytes: looksLikeText, names: TEXT_NAMES },
 ];
 
@@ -57,6 +61,58 @@ export function sniffFileKind(name: string, head?: Uint8Array): FileKind {
     if (matches) return rule.kind;
   }
   return { kind: 'other' };
+}
+
+const TEXT_APPLICATION_MIME_TYPES = new Set([
+  'application/graphql',
+  'application/javascript',
+  'application/json',
+  'application/ld+json',
+  'application/sql',
+  'application/toml',
+  'application/typescript',
+  'application/x-httpd-php',
+  'application/x-javascript',
+  'application/x-ndjson',
+  'application/x-sh',
+  'application/x-yaml',
+  'application/xml',
+  'application/yaml',
+]);
+
+export function isTextMimeType(mimeType: string): boolean {
+  return (mimeType.startsWith('text/') && mimeType !== 'text/rtf') || TEXT_APPLICATION_MIME_TYPES.has(mimeType);
+}
+
+/** The gateway's Office list (OFFICE_MIME_TYPES, OFFICE_TYPES): it serves these as Slack's PDF copy. */
+const DOCUMENT_MIME_TYPES = new Set([
+  'application/msword',
+  'application/rtf',
+  'application/vnd.apple.keynote',
+  'application/vnd.apple.numbers',
+  'application/vnd.apple.pages',
+  'application/vnd.ms-excel',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.oasis.opendocument.presentation',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/rtf',
+]);
+const DOCUMENT_NAMES = /\.(?:doc|docx|key|keynote|numbers|odp|ods|odt|pages|ppt|pptx|rtf|xls|xlsx)$/i;
+
+export type ReadableFileKind = 'archive' | 'pdf' | 'document' | 'text';
+
+export function readableFileKind(name: string, mimeType?: string): ReadableFileKind | undefined {
+  // Slack serves no image as text or a document (an SVG is refused by both readers).
+  if (mimeType?.startsWith('image/')) return undefined;
+  if (ARCHIVE_NAMES.test(name)) return 'archive';
+  if (mimeType === 'application/pdf' || PDF_NAMES.test(name)) return 'pdf';
+  if ((mimeType !== undefined && DOCUMENT_MIME_TYPES.has(mimeType)) || DOCUMENT_NAMES.test(name)) return 'document';
+  if ((mimeType !== undefined && isTextMimeType(mimeType)) || TEXT_NAMES.test(name)) return 'text';
+  return undefined;
 }
 
 /** The whole file as text: strict UTF-8 without binary control characters, else undefined. */

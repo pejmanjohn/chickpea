@@ -653,6 +653,7 @@ const PUBLIC_CONTEXT: readonly SlackPublicContextEntryInput[] = [
     text: 'Can someone pull the synthetic quarterly report?',
     authorId: 'U0SCENARIOMEM',
     files: [{ name: 'report-q3.csv', type: 'csv', sizeBytes: 2048 }],
+    fileRefs: [{ id: 'F0SCENARIOCSV', name: 'report-q3.csv', mimeType: 'text/csv', sizeBytes: 2048 }],
   },
   {
     workspaceId: WORKSPACE,

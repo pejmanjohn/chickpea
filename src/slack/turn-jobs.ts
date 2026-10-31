@@ -65,7 +65,7 @@ import {
   serializeThreadImageRecords,
   type ThreadImageRecord,
 } from './thread-images.ts';
-import { parseThreadArchiveFileIds, serializeThreadArchiveFileIds } from './thread-archives.ts';
+import { parseThreadFileIds, serializeThreadFileIds } from './thread-files.ts';
 import { parseAdmittedSlackListIds, serializeAdmittedSlackListIds } from './lists/admission.ts';
 import { renderSlackMarkdownActionLink, slackActionLink } from './message-format.ts';
 import { parseTurnEnvelope, type TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
@@ -1952,7 +1952,7 @@ export class TurnJobStoreLogic {
     threadImages?: readonly ThreadImageRecord[],
     admittedListIds?: readonly string[],
     turnEnvelope?: TurnEnvelopeV1,
-    threadArchiveFileIds?: readonly string[],
+    threadFileIds?: readonly string[],
   ): FlueDispatchEnvelopeV1 {
     if (typeof message !== 'string' || message.length === 0) {
       throw new Error('Flue dispatch message must be non-empty.');
@@ -1999,7 +1999,7 @@ export class TurnJobStoreLogic {
       // bounded attribute: on Cloudflare the turn and the Agent run in
       // different Durable Objects.
       const serializedThreadImages = serializeThreadImageRecords(threadImages);
-      const serializedThreadArchiveFileIds = serializeThreadArchiveFileIds(threadArchiveFileIds);
+      const serializedThreadFileIds = serializeThreadFileIds(threadFileIds);
       const serializedAdmittedListIds = serializeAdmittedSlackListIds(admittedListIds);
       const personText = personRequestText(turn);
       const members = typeof records?.thread_key === 'string'
@@ -2036,7 +2036,7 @@ export class TurnJobStoreLogic {
               ? { attachmentFileIds: turn.attachments.map(({ fileId }) => fileId).join(',') }
               : {}),
             ...(serializedThreadImages ? { threadImages: serializedThreadImages } : {}),
-            ...(serializedThreadArchiveFileIds ? { threadArchiveFileIds: serializedThreadArchiveFileIds } : {}),
+            ...(serializedThreadFileIds ? { threadFileIds: serializedThreadFileIds } : {}),
             ...(serializedAdmittedListIds ? { admittedListIds: serializedAdmittedListIds } : {}),
             ...((turn.attachmentIntake || turn.attachments?.length)
               ? {
@@ -3275,7 +3275,7 @@ function parseSlackSignalMessage(
     'attachmentFileIds',
     'attachmentIntakeStatus', 'attachmentCount',
     'threadImages',
-    'threadArchiveFileIds',
+    'threadFileIds',
     'admittedListIds',
   ]);
   const parsed = {
@@ -3312,9 +3312,9 @@ function parseSlackSignalMessage(
     ...(attributes.threadImages === undefined
       ? {}
       : { threadImages: validateThreadImages(attributes.threadImages) }),
-    ...(attributes.threadArchiveFileIds === undefined
+    ...(attributes.threadFileIds === undefined
       ? {}
-      : { threadArchiveFileIds: validateThreadArchiveFileIds(attributes.threadArchiveFileIds) }),
+      : { threadFileIds: validateThreadFileIds(attributes.threadFileIds) }),
     ...(attributes.admittedListIds === undefined
       ? {}
       : { admittedListIds: validateAdmittedListIds(attributes.admittedListIds) }),
@@ -3394,9 +3394,9 @@ function validateThreadImages(value: unknown): string {
   return encoded;
 }
 
-function validateThreadArchiveFileIds(value: unknown): string {
-  const fileIds = parseThreadArchiveFileIds(value);
-  if (!fileIds) throw new Error('Slack thread archive file ids are invalid.');
+function validateThreadFileIds(value: unknown): string {
+  const fileIds = parseThreadFileIds(value);
+  if (!fileIds) throw new Error('Slack thread file ids are invalid.');
   return fileIds.join(',');
 }
 

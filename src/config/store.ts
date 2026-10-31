@@ -62,6 +62,7 @@ import {
   type SlackPublicContextEntry,
   type SlackPublicContextEntryInput,
   type SlackPublicContextFile,
+  type SlackPublicContextFileRef,
   type SlackPublicContextImage,
   type RecentSlackPublicContextInput,
   MAX_SLACK_PUBLIC_HANDOFF_MESSAGES,
@@ -312,6 +313,7 @@ interface SlackPublicContextRow {
   author_name?: string | null;
   files_json?: string | null;
   images_json?: string | null;
+  file_refs_json?: string | null;
   gap_before_ts?: string | null;
   updated_at: number;
 }
@@ -664,7 +666,7 @@ export class ConfigStoreLogic {
       addColumnIfMissing(this.db, 'config_slack_public_context', 'content_version_ts', 'TEXT');
       // Thread-record authorship: additive and nullable, so older code that
       // never reads them keeps working (an app row reads as a human row there).
-      for (const column of ['author_kind', 'author_id', 'author_name', 'files_json', 'images_json', 'gap_before_ts']) {
+      for (const column of ['author_kind', 'author_id', 'author_name', 'files_json', 'images_json', 'gap_before_ts', 'file_refs_json']) {
         addColumnIfMissing(this.db, 'config_slack_public_context', column, 'TEXT');
       }
       // Additive: older code never reads the column, so no schema-version bump.
@@ -1807,8 +1809,8 @@ export class ConfigStoreLogic {
     this.db.run(
       `INSERT INTO config_slack_public_context (
         workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, content_version_ts,
-        author_kind, author_id, author_name, files_json, images_json, gap_before_ts, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        author_kind, author_id, author_name, files_json, images_json, file_refs_json, gap_before_ts, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_id, channel_id, root_ts, message_ts) DO UPDATE SET
         role = excluded.role,
         text = excluded.text,
@@ -1819,6 +1821,7 @@ export class ConfigStoreLogic {
         author_name = COALESCE(excluded.author_name, config_slack_public_context.author_name),
         files_json = COALESCE(excluded.files_json, config_slack_public_context.files_json),
         images_json = COALESCE(excluded.images_json, config_slack_public_context.images_json),
+        file_refs_json = COALESCE(excluded.file_refs_json, config_slack_public_context.file_refs_json),
         gap_before_ts = COALESCE(config_slack_public_context.gap_before_ts, excluded.gap_before_ts),
         updated_at = excluded.updated_at
       WHERE config_slack_public_context.content_version_ts IS NULL OR
@@ -1868,8 +1871,8 @@ export class ConfigStoreLogic {
         added += this.db.run(
           `INSERT INTO config_slack_public_context (
             workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, content_version_ts,
-            author_kind, author_id, author_name, files_json, images_json, gap_before_ts, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            author_kind, author_id, author_name, files_json, images_json, file_refs_json, gap_before_ts, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(workspace_id, channel_id, root_ts, message_ts) DO NOTHING`,
           ...slackPublicContextValues(input, row),
           now,
@@ -3651,6 +3654,7 @@ export class ConfigStoreLogic {
         author_name TEXT,
         files_json TEXT,
         images_json TEXT,
+        file_refs_json TEXT,
         gap_before_ts TEXT,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (workspace_id, channel_id, root_ts, message_ts)
@@ -4273,6 +4277,7 @@ function requireNonChatModelRole(role: string): NonChatModelRole {
 function rowToSlackPublicContext(row: SlackPublicContextRow): SlackPublicContextEntry {
   const files = parseSlackPublicContextFiles(row.files_json);
   const images = parseSlackPublicContextImages(row.images_json);
+  const fileRefs = parseSlackPublicContextFileRefs(row.file_refs_json);
   return {
     workspaceId: row.workspace_id,
     channelId: row.channel_id,
@@ -4285,6 +4290,7 @@ function rowToSlackPublicContext(row: SlackPublicContextRow): SlackPublicContext
     ...(row.author_name ? { authorName: row.author_name } : {}),
     ...(files.length ? { files } : {}),
     ...(images.length ? { images } : {}),
+    ...(fileRefs.length ? { fileRefs } : {}),
     ...(row.gap_before_ts ? { gapBeforeTs: row.gap_before_ts } : {}),
     ...(row.content_version_ts ? { contentVersionTs: row.content_version_ts } : {}),
     updatedAt: Number(row.updated_at),
@@ -4300,6 +4306,7 @@ interface ValidatedSlackPublicContextRow {
   authorKind: 'person' | 'app' | 'agent';
   filesJson: string | null;
   imagesJson: string | null;
+  fileRefsJson: string | null;
 }
 
 function validatedSlackPublicContextRow(
@@ -4327,6 +4334,9 @@ function validatedSlackPublicContextRow(
     imagesJson: input.images === undefined
       ? null
       : JSON.stringify(input.images.slice(0, MAX_SLACK_PUBLIC_CONTEXT_FILES)),
+    fileRefsJson: input.fileRefs === undefined
+      ? null
+      : JSON.stringify(input.fileRefs.slice(0, MAX_SLACK_PUBLIC_CONTEXT_FILES)),
   };
 }
 
@@ -4348,6 +4358,7 @@ function slackPublicContextValues(
     input.authorName ?? null,
     row.filesJson,
     row.imagesJson,
+    row.fileRefsJson,
     input.gapBeforeTs ?? null,
   ];
 }
@@ -4381,6 +4392,27 @@ function parseSlackPublicContextImages(value: string | null | undefined): SlackP
       const { id, name, mimeType, sizeBytes } = image as Record<string, unknown>;
       if (typeof id !== 'string' || typeof name !== 'string' || typeof mimeType !== 'string') return [];
       return [{ id, name, mimeType, ...(typeof sizeBytes === 'number' ? { sizeBytes } : {}) }];
+    }).slice(0, MAX_SLACK_PUBLIC_CONTEXT_FILES);
+  } catch {
+    return [];
+  }
+}
+
+function parseSlackPublicContextFileRefs(value: string | null | undefined): SlackPublicContextFileRef[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((file) => {
+      if (!file || typeof file !== 'object') return [];
+      const { id, name, mimeType, sizeBytes } = file as Record<string, unknown>;
+      if (typeof id !== 'string' || typeof name !== 'string') return [];
+      return [{
+        id,
+        name,
+        ...(typeof mimeType === 'string' ? { mimeType } : {}),
+        ...(typeof sizeBytes === 'number' ? { sizeBytes } : {}),
+      }];
     }).slice(0, MAX_SLACK_PUBLIC_CONTEXT_FILES);
   } catch {
     return [];

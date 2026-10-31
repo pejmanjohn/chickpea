@@ -1,6 +1,6 @@
 {
-  "release": "0.1.37",
-  "scenario": "1f415c3646a5f0b09934beef3f466254a2bdcef185e06c3111a7055d241907cc",
+  "release": "0.1.39",
+  "scenario": "aede56a7a7169154cad0768efb22ca40a2bbc7cbe0da163079aa738ce264b520",
   "ddl": [
     "CREATE TABLE app_settings (\n        key TEXT PRIMARY KEY,\n        value TEXT NOT NULL,\n        updated_at INTEGER NOT NULL\n      )",
     "CREATE TABLE config_meta (\n          key TEXT PRIMARY KEY,\n          value TEXT NOT NULL\n        )",
@@ -47,7 +47,7 @@
         "id": "agent_chickpea",
         "agent_kind": "system",
         "revision": 1,
-        "credential_incarnation": "agent_f0b70e6388cc40088071b2b34abac231",
+        "credential_incarnation": "agent_355c6a79fb0f40e2832d992515eecac5",
         "name": "Chickpea",
         "description": "Your workspace assistant and Agent administrator.",
         "instructions": "You are Chickpea, the built-in workspace assistant. Help with general questions, explain how Chickpea works, and administer the workspace only through authorized tools. Suggest a user Agent when work should become specialized, reusable, or recurring. Be direct and concise, and never invent facts or expose secrets.",
@@ -83,8 +83,8 @@
         "archived_at": null,
         "model": "anthropic/claude-sonnet-4-5",
         "skills_json": "[{\"name\":\"weekly-digest\",\"description\":\"Write the weekly digest.\",\"instructions\":\"# Weekly digest\\nList three highlights from the week.\",\"enabled\":true,\"suggestedSkillId\":\"suggested_weekly_digest\"},{\"name\":\"imported-checklist\",\"description\":\"Run the imported checklist.\",\"instructions\":\"# Checklist\\nConfirm each item before replying.\",\"enabled\":false,\"importSource\":{\"repository\":\"example-org/scenario-skills\",\"commit\":\"0123456789abcdef0123456789abcdef01234567\",\"path\":\"skills/checklist/SKILL.md\",\"contentSha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}}]",
-        "mcp_servers_json": "[{\"id\":\"mcp_scenario_tracker\",\"displayName\":\"Scenario Tracker\",\"url\":\"https://Tracker.Example.com\",\"transport\":\"streamable-http\",\"authMode\":\"bearer\",\"headerNames\":[\"X-Workspace\"],\"enabled\":true,\"lifecycleStatus\":\"ready\",\"statusText\":\"Connected\",\"discoveredTools\":[{\"name\":\"search_issues\",\"title\":\"Search issues\",\"description\":\"Search synthetic tracker issues.\",\"readOnlyHint\":true,\"inputSchema\":{\"propertyNames\":[\"query\",\"account_id\"],\"accountFields\":[{\"name\":\"account_id\",\"type\":\"string\",\"required\":false}],\"ambiguous\":false,\"fingerprint\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"}},{\"name\":\"create_issue\",\"description\":\"Create a synthetic issue.\"}],\"toolAccessMode\":\"review\",\"toolPolicies\":{\"search_issues\":{\"effect\":\"read\"},\"create_issue\":{\"effect\":\"write\",\"argumentConstraints\":{\"project\":[\"SCN\"]}}},\"allowedTools\":[\"search_issues\",\"create_issue\"],\"lastCheckedAt\":1792080000000,\"identity\":{\"workspaceName\":\"Example Workspace\",\"accountName\":\"scenario-bot\"},\"presetId\":\"preset_scenario_tracker\",\"credentialRef\":\"connection_a451057d064046bcbd177e7a08422e8f\"},{\"id\":\"mcp_scenario_docs\",\"displayName\":\"Scenario Docs\",\"url\":\"https://docs.example.com/mcp/\",\"transport\":\"sse\",\"authMode\":\"oauth\",\"headerNames\":[],\"enabled\":true,\"lifecycleStatus\":\"pending\",\"statusText\":\"Reconnect required\",\"discoveredTools\":[{\"name\":\"read_page\"}],\"allowedTools\":[\"read_page\"],\"oauthScope\":\"docs.read\",\"oauthAttemptId\":\"6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b\",\"credentialRef\":\"connection_30a312991730462b9da9b8c243647fa7\"},{\"id\":\"mcp_scenario_feed\",\"displayName\":\"Scenario Feed\",\"url\":\"https://feed.example.com/mcp\",\"transport\":\"streamable-http\",\"authMode\":\"none\",\"headerNames\":[\"X-Feed-Key\"],\"credentialHeaderName\":\"X-Feed-Key\",\"credentialValuePrefix\":\"Key \",\"credentialOptional\":true,\"enabled\":false,\"lifecycleStatus\":\"pending\",\"statusText\":\"Not tested\",\"discoveredTools\":[],\"toolAccessMode\":\"auto\",\"allowedTools\":[],\"credentialRef\":\"connection_2873985ecdee45ddb3148d7d57d89723\"}]",
-        "api_connections_json": "[{\"id\":\"api_scenario_weather\",\"displayName\":\"Scenario Weather\",\"allowedHosts\":[\"api.weather.example.com\"],\"pathPrefixes\":[\"/v1/\"],\"headerName\":\"Authorization\",\"headerValuePrefix\":\"Bearer \",\"allowedMethods\":[\"GET\"],\"enabled\":true,\"authMode\":\"credential\",\"lifecycleStatus\":\"ready\",\"statusText\":\"Connected\",\"presetId\":\"preset_scenario_weather\",\"credentialRef\":\"connection_09db90a1093b4fc78cb150d1627bcd93\",\"readyRevision\":2},{\"id\":\"api_scenario_calendar\",\"displayName\":\"Scenario Calendar\",\"allowedHosts\":[\"calendar.example.com\"],\"pathPrefixes\":[\"/calendar/v3/\"],\"headerName\":\"Authorization\",\"allowedMethods\":[\"GET\",\"POST\"],\"enabled\":true,\"authMode\":\"oauth\",\"oauthProvider\":\"google\",\"oauthScopes\":[\"https://calendar.example.com/auth/calendar.readonly\"],\"oauthAppType\":\"external\",\"lifecycleStatus\":\"ready\",\"statusText\":\"Connected\",\"identity\":{\"accountName\":\"scenario@example.com\"},\"credentialRef\":\"connection_8c7d8d0051c04c0f9ffb2fa1b3fedbc7\"},{\"id\":\"api_scenario_legacy\",\"displayName\":\"Scenario Legacy\",\"allowedHosts\":[\"legacy.example.com\"],\"pathPrefixes\":[\"/\"],\"headerName\":\"X-Api-Key\",\"allowedMethods\":[\"GET\"],\"enabled\":false,\"credentialRef\":\"connection_3237b8da28394bcc853863a0572f1845\"}]",
+        "mcp_servers_json": "[{\"id\":\"mcp_scenario_tracker\",\"displayName\":\"Scenario Tracker\",\"url\":\"https://Tracker.Example.com\",\"transport\":\"streamable-http\",\"authMode\":\"bearer\",\"headerNames\":[\"X-Workspace\"],\"enabled\":true,\"lifecycleStatus\":\"ready\",\"statusText\":\"Connected\",\"discoveredTools\":[{\"name\":\"search_issues\",\"title\":\"Search issues\",\"description\":\"Search synthetic tracker issues.\",\"readOnlyHint\":true,\"inputSchema\":{\"propertyNames\":[\"query\",\"account_id\"],\"accountFields\":[{\"name\":\"account_id\",\"type\":\"string\",\"required\":false}],\"ambiguous\":false,\"fingerprint\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"}},{\"name\":\"create_issue\",\"description\":\"Create a synthetic issue.\"}],\"toolAccessMode\":\"review\",\"toolPolicies\":{\"search_issues\":{\"effect\":\"read\"},\"create_issue\":{\"effect\":\"write\",\"argumentConstraints\":{\"project\":[\"SCN\"]}}},\"allowedTools\":[\"search_issues\",\"create_issue\"],\"lastCheckedAt\":1792080000000,\"identity\":{\"workspaceName\":\"Example Workspace\",\"accountName\":\"scenario-bot\"},\"presetId\":\"preset_scenario_tracker\",\"credentialRef\":\"connection_f6c4501aca634c66b0c5cff597ff2914\"},{\"id\":\"mcp_scenario_docs\",\"displayName\":\"Scenario Docs\",\"url\":\"https://docs.example.com/mcp/\",\"transport\":\"sse\",\"authMode\":\"oauth\",\"headerNames\":[],\"enabled\":true,\"lifecycleStatus\":\"pending\",\"statusText\":\"Reconnect required\",\"discoveredTools\":[{\"name\":\"read_page\"}],\"allowedTools\":[\"read_page\"],\"oauthScope\":\"docs.read\",\"oauthAttemptId\":\"6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b\",\"credentialRef\":\"connection_569327b219af4b80a8ae75fc4300006f\"},{\"id\":\"mcp_scenario_feed\",\"displayName\":\"Scenario Feed\",\"url\":\"https://feed.example.com/mcp\",\"transport\":\"streamable-http\",\"authMode\":\"none\",\"headerNames\":[\"X-Feed-Key\"],\"credentialHeaderName\":\"X-Feed-Key\",\"credentialValuePrefix\":\"Key \",\"credentialOptional\":true,\"enabled\":false,\"lifecycleStatus\":\"pending\",\"statusText\":\"Not tested\",\"discoveredTools\":[],\"toolAccessMode\":\"auto\",\"allowedTools\":[],\"credentialRef\":\"connection_9b40039f256d4d51b2e153611ef3165a\"}]",
+        "api_connections_json": "[{\"id\":\"api_scenario_weather\",\"displayName\":\"Scenario Weather\",\"allowedHosts\":[\"api.weather.example.com\"],\"pathPrefixes\":[\"/v1/\"],\"headerName\":\"Authorization\",\"headerValuePrefix\":\"Bearer \",\"allowedMethods\":[\"GET\"],\"enabled\":true,\"authMode\":\"credential\",\"lifecycleStatus\":\"ready\",\"statusText\":\"Connected\",\"presetId\":\"preset_scenario_weather\",\"credentialRef\":\"connection_08f75d47585a4f6e9e885f6d5e0ad142\",\"readyRevision\":2},{\"id\":\"api_scenario_calendar\",\"displayName\":\"Scenario Calendar\",\"allowedHosts\":[\"calendar.example.com\"],\"pathPrefixes\":[\"/calendar/v3/\"],\"headerName\":\"Authorization\",\"allowedMethods\":[\"GET\",\"POST\"],\"enabled\":true,\"authMode\":\"oauth\",\"oauthProvider\":\"google\",\"oauthScopes\":[\"https://calendar.example.com/auth/calendar.readonly\"],\"oauthAppType\":\"external\",\"lifecycleStatus\":\"ready\",\"statusText\":\"Connected\",\"identity\":{\"accountName\":\"scenario@example.com\"},\"credentialRef\":\"connection_b07cbdc4a8484044ab0503a06139a5df\"},{\"id\":\"api_scenario_legacy\",\"displayName\":\"Scenario Legacy\",\"allowedHosts\":[\"legacy.example.com\"],\"pathPrefixes\":[\"/\"],\"headerName\":\"X-Api-Key\",\"allowedMethods\":[\"GET\"],\"enabled\":false,\"credentialRef\":\"connection_27fc43e6b85a42749b1a7692f1632ec3\"}]",
         "repositories_json": "[{\"id\":\"repo_scenario_app\",\"installationId\":4242,\"accountLogin\":\"example-org\",\"fullName\":\"example-org/scenario-app\",\"enabled\":true},{\"id\":\"repo_scenario_all\",\"installationId\":null,\"accountLogin\":\"example-user\",\"fullName\":\"example-user/*\",\"allRepos\":true,\"enabled\":false}]",
         "model_effort": "high",
         "website_logins_json": "[{\"loginId\":\"login_scenario_portal\",\"level\":\"act\",\"enabled\":true},{\"loginId\":\"login_scenario_reports\",\"level\":\"check\",\"enabled\":false}]"
@@ -308,7 +308,7 @@
         "label": "Tracker (team)",
         "purpose": null,
         "identity_json": null,
-        "policy_json": "{\"kind\":\"mcp\",\"url\":\"https://Tracker.Example.com\",\"transport\":\"streamable-http\",\"authMode\":\"bearer\",\"headerNames\":[\"Authorization\"],\"credentialHeaderName\":\"Authorization\",\"credentialValuePrefix\":\"Bearer \",\"discoveredTools\":[{\"name\":\"search_issues\",\"readOnlyHint\":true},{\"name\":\"create_issue\",\"title\":\"Create issue\"}],\"toolAccessMode\":\"review\",\"toolPolicies\":{\"create_issue\":{\"effect\":\"write\",\"argumentConstraints\":{\"project\":[\"SCN\"]}}},\"allowedTools\":[\"search_issues\",\"create_issue\"],\"presetId\":\"preset_scenario_tracker\",\"guide\":\"Search by project key, for example SCN.\"}",
+        "policy_json": "{\"kind\":\"mcp\",\"url\":\"https://tracker.example.com/\",\"transport\":\"streamable-http\",\"authMode\":\"bearer\",\"headerNames\":[\"Authorization\"],\"credentialHeaderName\":\"Authorization\",\"credentialValuePrefix\":\"Bearer \",\"discoveredTools\":[{\"name\":\"search_issues\",\"readOnlyHint\":true},{\"name\":\"create_issue\",\"title\":\"Create issue\"}],\"toolAccessMode\":\"review\",\"toolPolicies\":{\"create_issue\":{\"effect\":\"write\",\"argumentConstraints\":{\"project\":[\"SCN\"]}}},\"allowedTools\":[\"search_issues\",\"create_issue\"],\"presetId\":\"preset_scenario_tracker\",\"guide\":\"Search by project key, for example SCN.\"}",
         "secret_ref_id": "secret_scenario_tracker",
         "lifecycle": "ready",
         "created_at": 1792083600000,
@@ -351,7 +351,7 @@
       {
         "id": "connection_scenario_notes",
         "workspace_id": "T0SCENARIO",
-        "revision": 1,
+        "revision": 2,
         "owner_kind": "team",
         "owner_membership_id": null,
         "created_by_membership_id": "membership_scenario_owner",
@@ -359,8 +359,25 @@
         "label": "Notes (managed)",
         "purpose": null,
         "identity_json": null,
-        "policy_json": "{\"kind\":\"managed\",\"adapterId\":\"composio\",\"toolkit\":\"notion\",\"principalRef\":\"principal_scenario\",\"accountRef\":\"account_scenario_notes\",\"signIn\":{\"person\":\"notion:workspace-scenario:user-scenario\",\"accessLane\":\"write\",\"signedBy\":\"membership_scenario_owner\"},\"grantSummary\":{\"items\":[{\"id\":\"5c3e1a2b-7d4f-4e6a-9b8c-0d1e2f3a4b5c\",\"type\":\"database\",\"label\":\"Scenario Notes\"},{\"id\":\"6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d\",\"type\":\"page\",\"label\":\"Scenario Handbook\"}],\"truncated\":true},\"providerGeneration\":3,\"providerLineage\":\"lineage_scenario\",\"allowedCapabilities\":[\"notion.content.search\",\"notion.pages.create\"]}",
+        "policy_json": "{\"kind\":\"managed\",\"allowedCapabilities\":[\"notion.content.search\",\"notion.pages.create\"],\"adapterId\":\"composio\",\"toolkit\":\"notion\",\"principalRef\":\"principal_scenario\",\"accountRef\":\"account_scenario_notes\",\"signIn\":{\"person\":\"notion:workspace-scenario:user-scenario\",\"accessLane\":\"write\",\"signedBy\":\"membership_scenario_owner\"},\"grantSummary\":{\"items\":[{\"id\":\"5c3e1a2b-7d4f-4e6a-9b8c-0d1e2f3a4b5c\",\"type\":\"database\",\"label\":\"Scenario Notes\"},{\"id\":\"6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d\",\"type\":\"page\",\"label\":\"Scenario Handbook\"}],\"truncated\":true},\"providerGeneration\":3,\"providerLineage\":\"lineage_scenario\"}",
         "secret_ref_id": "secret_connection_scenario_notes",
+        "lifecycle": "ready",
+        "created_at": 1792083600000,
+        "updated_at": 1792083600000
+      },
+      {
+        "id": "connection_scenario_notes_shared",
+        "workspace_id": "T0SCENARIO",
+        "revision": 1,
+        "owner_kind": "team",
+        "owner_membership_id": null,
+        "created_by_membership_id": "membership_scenario_member",
+        "provider_id": "notion",
+        "label": "Notes (managed)",
+        "purpose": null,
+        "identity_json": null,
+        "policy_json": "{\"kind\":\"managed\",\"adapterId\":\"composio\",\"toolkit\":\"notion\",\"principalRef\":\"principal_scenario\",\"accountRef\":\"account_scenario_notes\",\"signIn\":{\"person\":\"notion:workspace-scenario:user-scenario\",\"accessLane\":\"write\",\"signedBy\":\"membership_scenario_owner\"},\"grantSummary\":{\"items\":[{\"id\":\"5c3e1a2b-7d4f-4e6a-9b8c-0d1e2f3a4b5c\",\"type\":\"database\",\"label\":\"Scenario Notes\"},{\"id\":\"6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d\",\"type\":\"page\",\"label\":\"Scenario Handbook\"}],\"truncated\":true},\"providerGeneration\":3,\"providerLineage\":\"lineage_scenario\",\"allowedCapabilities\":[\"notion.content.search\"],\"oauthAttemptId\":\"2c3d4e5f-6071-4829-b0c1-d2e3f4a5b6c7\"}",
+        "secret_ref_id": "secret_connection_scenario_notes_shared",
         "lifecycle": "ready",
         "created_at": 1792083600000,
         "updated_at": 1792083600000
@@ -423,6 +440,16 @@
         "provider_id": "notion",
         "allowed_capabilities_json": "[\"notion.content.search\",\"notion.pages.create\"]",
         "resource_constraints_json": "{}",
+        "enabled": 1,
+        "created_at": 1792083600000,
+        "updated_at": 1792083600000
+      },
+      {
+        "agent_id": "agent_scenario_concierge",
+        "connection_account_id": "connection_scenario_notes_shared",
+        "provider_id": "notion",
+        "allowed_capabilities_json": "[\"notion.content.search\"]",
+        "resource_constraints_json": "{\"notionPages\":[\"6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d\"]}",
         "enabled": 1,
         "created_at": 1792083600000,
         "updated_at": 1792083600000
@@ -1517,8 +1544,54 @@
           "toolkit": "notion"
         },
         "providerId": "notion",
-        "revision": 1,
+        "revision": 2,
         "secretRefId": "secret_connection_scenario_notes",
+        "updatedAt": 1792083600000,
+        "workspaceId": "T0SCENARIO"
+      },
+      {
+        "createdAt": 1792083600000,
+        "createdByMembershipId": "membership_scenario_member",
+        "id": "connection_scenario_notes_shared",
+        "label": "Notes (managed)",
+        "lifecycle": "ready",
+        "ownerKind": "team",
+        "policy": {
+          "accountRef": "account_scenario_notes",
+          "adapterId": "composio",
+          "allowedCapabilities": [
+            "notion.content.search"
+          ],
+          "grantSummary": {
+            "items": [
+              {
+                "id": "5c3e1a2b-7d4f-4e6a-9b8c-0d1e2f3a4b5c",
+                "label": "Scenario Notes",
+                "type": "database"
+              },
+              {
+                "id": "6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d",
+                "label": "Scenario Handbook",
+                "type": "page"
+              }
+            ],
+            "truncated": true
+          },
+          "kind": "managed",
+          "oauthAttemptId": "2c3d4e5f-6071-4829-b0c1-d2e3f4a5b6c7",
+          "principalRef": "principal_scenario",
+          "providerGeneration": 3,
+          "providerLineage": "lineage_scenario",
+          "signIn": {
+            "accessLane": "write",
+            "person": "notion:workspace-scenario:user-scenario",
+            "signedBy": "membership_scenario_owner"
+          },
+          "toolkit": "notion"
+        },
+        "providerId": "notion",
+        "revision": 1,
+        "secretRefId": "secret_connection_scenario_notes_shared",
         "updatedAt": 1792083600000,
         "workspaceId": "T0SCENARIO"
       },
@@ -1565,7 +1638,7 @@
             }
           },
           "transport": "streamable-http",
-          "url": "https://Tracker.Example.com"
+          "url": "https://tracker.example.com/"
         },
         "providerId": "scenario-tracker",
         "revision": 1,
@@ -1633,6 +1706,22 @@
         "enabled": false,
         "providerId": "scenario-docs",
         "resourceConstraints": {},
+        "updatedAt": 1792083600000
+      },
+      {
+        "agentId": "agent_scenario_concierge",
+        "allowedCapabilities": [
+          "notion.content.search"
+        ],
+        "connectionAccountId": "connection_scenario_notes_shared",
+        "createdAt": 1792083600000,
+        "enabled": true,
+        "providerId": "notion",
+        "resourceConstraints": {
+          "notionPages": [
+            "6d4f2b3c-8e5a-4f7b-8c9d-1e2f3a4b5c6d"
+          ]
+        },
         "updatedAt": 1792083600000
       },
       {

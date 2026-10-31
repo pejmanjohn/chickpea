@@ -367,7 +367,10 @@ test('a capped first page of the current thread marks the record\'s gap on the s
   const page = () => ({ ok: true, response_metadata: { next_cursor: 'more' }, messages: [
     { user: REQUESTER, ts: CURRENT.threadTs, thread_ts: CURRENT.threadTs, text: 'root', reply_count: 40 },
     { user: 'U0SAM', ts: '1008.000100', thread_ts: CURRENT.threadTs, text: 'newest reply',
-      files: [{ id: 'F0SHOT0001', name: 'shot.png', mimetype: 'image/png' }] },
+      files: [
+        { id: 'F0SHOT0001', name: 'shot.png', mimetype: 'image/png' },
+        { id: 'F0DECK00001', name: 'deck.pdf', mimetype: 'application/pdf', size: 900 },
+      ] },
     { user: REQUESTER, ts: CURRENT.messageTs, thread_ts: CURRENT.threadTs, text: 'what is this?' },
   ] });
   for (const gated of [true, false]) {
@@ -379,6 +382,7 @@ test('a capped first page of the current thread marks the record\'s gap on the s
       assert.deepEqual(rows.map((row) => row.messageTs), [CURRENT.threadTs, '1008.000100']);
       assert.equal(rows[0]?.gapBeforeTs, gated ? '1008.000100' : undefined);
       assert.deepEqual(rows[1]?.images?.map((image) => image.id), ['F0SHOT0001']);
+      assert.deepEqual(rows[1]?.fileRefs, [{ id: 'F0DECK00001', name: 'deck.pdf', mimeType: 'application/pdf', sizeBytes: 900 }]);
     } finally { store.close(); }
   }
 });
