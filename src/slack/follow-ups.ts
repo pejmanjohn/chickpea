@@ -2,7 +2,7 @@ import { activityStatus, type TypedActivityStatus } from '../activity/semantic.t
 import { parseMemoryCommand } from '../memory/commands.ts';
 import { parseRoutineCommand } from '../routines/commands.ts';
 import { stripUnresolvedSlackCommandAddress } from './command-address.ts';
-import { formatSlackContextRows } from './context-format.ts';
+import { formatSlackContextRows, SLACK_CONTEXT_CONTINUATION_MARKER } from './context-format.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 
 /**
@@ -106,6 +106,38 @@ export function followUpSignalBody(input: {
     'Your draft reply has not been sent. Read these with the request above, in order, since a later message may correct or add to an earlier one. Do any extra work they need, then write your next message as the complete reply to the whole request, not only to these messages.',
     input.envelope,
   ].join('\n\n');
+}
+
+const FOLLOW_UP_SIGNAL_HEADING = /^While you were working, <@([^>\s]+)> sent (?:another message|(\d+) more messages) in this thread:$/;
+const FOLLOW_UP_SIGNAL_ROW = /^- \[(?:[^\]]*; )?(\d+\.\d+) role=human\] ([^\s:]+): ([\s\S]*)$/;
+
+/**
+ * The messages a late fold's signal carried, read back from its body
+ * (followUpSignalBody); undefined for any other body. Message text cannot
+ * start a row or end the row block: every later line of it carries the
+ * continuation marker.
+ */
+export function followUpSignalMessages(
+  body: string,
+): Pick<FoldedMessage, 'userId' | 'messageTs' | 'text'>[] | undefined {
+  const [heading, block] = body.split('\n\n', 2);
+  const announced = heading?.match(FOLLOW_UP_SIGNAL_HEADING);
+  if (!announced || block === undefined) return undefined;
+  const rows: string[] = [];
+  for (const line of block.split('\n')) {
+    if (rows.length > 0 && line.startsWith(SLACK_CONTEXT_CONTINUATION_MARKER)) {
+      rows[rows.length - 1] += `\n${line.slice(SLACK_CONTEXT_CONTINUATION_MARKER.length)}`;
+    } else {
+      rows.push(line);
+    }
+  }
+  const messages: Pick<FoldedMessage, 'userId' | 'messageTs' | 'text'>[] = [];
+  for (const row of rows) {
+    const [, messageTs, userId, text] = row.match(FOLLOW_UP_SIGNAL_ROW) ?? [];
+    if (messageTs === undefined || userId === undefined || userId !== announced[1] || text === undefined) return undefined;
+    messages.push({ userId, messageTs, text });
+  }
+  return messages.length === Number(announced[2] ?? 1) ? messages : undefined;
 }
 
 /**

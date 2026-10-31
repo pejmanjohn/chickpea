@@ -1,5 +1,6 @@
 import type { ConversationStreamChunk } from '@flue/runtime';
 
+import { type FoldedMessage, followUpSignalMessages } from '../slack/follow-ups.ts';
 import type { RunReviewStep } from './record.ts';
 
 type ConversationSnapshot = Extract<ConversationStreamChunk, { type: 'conversation-reset' }>['snapshot'];
@@ -7,6 +8,7 @@ type ConversationMessage = ConversationSnapshot['messages'][number];
 type ConversationPart = ConversationMessage['parts'][number];
 type ToolStep = Extract<RunReviewStep, { kind: 'tool' }>;
 type CollectedStep = RunReviewStep & { messageId?: string };
+type RunReviewFollowUp = Pick<FoldedMessage, 'userId' | 'messageTs' | 'text'>;
 
 // Generous enough that the record's own caps, applied after the redactor has
 // seen whole text, always bind first; small enough to bound a long run's memory.
@@ -15,12 +17,14 @@ const TOTAL_CHARS = 1024 * 1024;
 
 /**
  * One submission's steps, from the conversation stream its reply observation
- * reads: model text and reasoning, and each tool call joined to its result.
- * Every observation replays the conversation from its start, so only this
- * submission's messages count, and the trace is cut as it arrives.
+ * reads: model text and reasoning, and each tool call joined to its result,
+ * and the messages late folds appended to it. Every observation replays the
+ * conversation from its start, so only this submission's messages count, and
+ * the trace is cut as it arrives.
  */
 export class RunReviewCollector {
   readonly #messageIds = new Set<string>();
+  readonly #followUps = new Map<string, RunReviewFollowUp[]>();
   readonly #tools = new Map<string, ToolStep>();
   #steps: CollectedStep[] = [];
   #chars = 0;
@@ -42,6 +46,11 @@ export class RunReviewCollector {
 
   steps(): RunReviewStep[] {
     return this.#steps.map(({ messageId: _messageId, ...step }) => step as RunReviewStep);
+  }
+
+  /** What the Agent read of late folds (useSlackFollowUpFold), oldest first. */
+  followUps(): RunReviewFollowUp[] {
+    return [...this.#followUps.values()].flat();
   }
 
   ingest(chunk: ConversationStreamChunk): void {
@@ -70,7 +79,8 @@ export class RunReviewCollector {
         return;
       }
       case 'message-appended':
-        if (this.#owns(chunk.message) && !this.#messageIds.has(chunk.message.id)) this.#addMessage(chunk.message);
+        if (!this.#owns(chunk.message)) this.#addFollowUps(chunk.message);
+        else if (!this.#messageIds.has(chunk.message.id)) this.#addMessage(chunk.message);
         return;
       case 'conversation-reset':
         // A folded snapshot replaces what the stream showed so far.
@@ -87,9 +97,21 @@ export class RunReviewCollector {
   #rebuild(messages: readonly ConversationMessage[]): void {
     this.#messageIds.clear();
     this.#tools.clear();
+    this.#followUps.clear();
     this.#steps = [];
     this.#chars = 0;
-    for (const message of messages) if (this.#owns(message)) this.#addMessage(message);
+    for (const message of messages) {
+      if (this.#owns(message)) this.#addMessage(message);
+      else this.#addFollowUps(message);
+    }
+  }
+
+  #addFollowUps(message: ConversationMessage): void {
+    if (message.role !== 'system' || message.submissionId !== this.submissionId ||
+        message.signal?.tagName !== 'slack_message' || this.#followUps.has(message.id)) return;
+    const [part] = message.parts;
+    const followUps = part?.type === 'text' ? followUpSignalMessages(part.text) : undefined;
+    if (followUps) this.#followUps.set(message.id, followUps);
   }
 
   #addMessage(message: ConversationMessage): void {
