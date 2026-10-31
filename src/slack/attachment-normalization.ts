@@ -1,11 +1,14 @@
 import { getResolvedPDFJS } from 'unpdf';
 
 import { sniffFileKind } from '../files/magic.ts';
+import { ZipArchiveError } from '../files/zip.ts';
+import { type ArchiveHandle, archiveHandle, archiveListing } from './archive-attachments.ts';
 import type {
   GatewayAttachmentClient,
   GatewayAttachmentRead,
 } from './gateway/client.ts';
 import {
+  DEFAULT_ATTACHMENT_ACCEPT,
   GATEWAY_ATTACHMENT_REPRESENTATIONS,
   type GatewayAttachmentRepresentation,
 } from './gateway/protocol.ts';
@@ -17,7 +20,9 @@ export const MAX_SLACK_PDF_PAGES = 100;
 export const MAX_SLACK_ATTACHMENT_CHARACTERS = 64_000;
 export const MAX_SLACK_ATTACHMENT_TOTAL_CHARACTERS = 128_000;
 const MAX_SLACK_PDF_IMAGE_PIXELS = 16_777_216;
-const DEFAULT_NORMALIZATION_DEADLINE_PER_ATTACHMENT_MS = 13_000;
+export const DEFAULT_NORMALIZATION_DEADLINE_PER_ATTACHMENT_MS = 13_000;
+/** Everything the analysis can use; a zip arrives as its bytes and is listed. */
+const ANALYSIS_ACCEPT: readonly GatewayAttachmentRepresentation[] = [...DEFAULT_ATTACHMENT_ACCEPT, 'zip_original'];
 const APPROVED_TEXT_APPLICATION_MIME_TYPES = new Set([
   'application/graphql',
   'application/javascript',
@@ -45,7 +50,8 @@ export type SlackAttachmentNextAction =
   | 'split_file'
   | 'use_text_pdf'
   | 'use_image_model'
-  | 'remove_unsupported_file';
+  | 'remove_unsupported_file'
+  | 'rezip_archive';
 
 interface NormalizedAttachmentIdentity {
   ordinal: number;
@@ -73,10 +79,18 @@ export interface NormalizedSlackPdfAttachment extends NormalizedAttachmentIdenti
   bytes: Uint8Array;
 }
 
+/** A zip the analysis reads as its file list; the Agent reads files inside by `handle`. */
+export interface NormalizedSlackArchiveAttachment extends NormalizedAttachmentIdentity {
+  kind: 'archive';
+  handle: ArchiveHandle;
+  text: string;
+}
+
 export type NormalizedSlackAttachment =
   | NormalizedSlackTextAttachment
   | NormalizedSlackImageAttachment
-  | NormalizedSlackPdfAttachment;
+  | NormalizedSlackPdfAttachment
+  | NormalizedSlackArchiveAttachment;
 
 export interface SlackAttachmentFailure {
   ordinal: number;
@@ -149,7 +163,8 @@ export async function normalizeSlackAttachments(
     let read: GatewayAttachmentRead;
     const readSignal = signalForAttachmentDeadline(input.signal, deadlineAt, now);
     try {
-      read = await input.gateway.readAttachment(
+      read = await readForAnalysis(
+        input.gateway,
         fileId,
         Math.min(MAX_SLACK_ATTACHMENT_BYTES, remainingBytes),
         readSignal,
@@ -219,6 +234,21 @@ export async function normalizeSlackAttachments(
   return { attachments, failures, totalBytes, totalCharacters };
 }
 
+async function readForAnalysis(
+  gateway: GatewayAttachmentClient,
+  fileId: string,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<GatewayAttachmentRead> {
+  try {
+    return await gateway.readAttachment(fileId, maxBytes, signal, ANALYSIS_ACCEPT);
+  } catch (error) {
+    // A gateway older than `accept` refuses the field; without it, text, PDFs and images still read.
+    if (safeFailureCode(error) !== 'gateway_attachment_unsupported') throw error;
+    return gateway.readAttachment(fileId, maxBytes, signal);
+  }
+}
+
 async function normalizeReadAttachment(input: {
   read: GatewayAttachmentRead;
   ordinal: number;
@@ -251,6 +281,18 @@ async function normalizeReadAttachment(input: {
       pdfCompleteness: extracted.everyPageHasText ? 'baseline_complete' : 'native_required',
       bytes: input.read.bytes,
     };
+  }
+  if (input.read.representation === 'zip_original') {
+    const handle = archiveHandle(input.ordinal);
+    try {
+      return { kind: 'archive', ...identity, handle, text: archiveListing(input.read.bytes, handle) };
+    } catch (error) {
+      if (!(error instanceof ZipArchiveError)) throw error;
+      throw new AttachmentNormalizationError(
+        `archive_${error.code}`,
+        error.code === 'too_many_entries' ? 'split_file' : 'rezip_archive',
+      );
+    }
   }
   if (input.read.representation === 'text_original') {
     if (!approvedTextMimeType(input.read.contentType)) {
@@ -291,12 +333,15 @@ function approvedTextMimeType(contentType: string): boolean {
     APPROVED_TEXT_APPLICATION_MIME_TYPES.has(contentType);
 }
 
-async function extractPdfTextSequentially(input: {
+export async function extractPdfTextSequentially(input: {
   bytes: Uint8Array;
   signal?: AbortSignal;
   deadlineAt: number;
   now: () => number;
+  /** Text past this fails the whole extraction. Default: one attachment's character limit. */
+  maxCharacters?: number;
 }): Promise<{ text: string; everyPageHasText: boolean }> {
+  const maxCharacters = input.maxCharacters ?? MAX_SLACK_ATTACHMENT_CHARACTERS;
   assertWithinDeadline(input.signal, input.deadlineAt, input.now);
   const { getDocument } = await awaitAttachmentPdfOperation(
     getResolvedPDFJS(),
@@ -354,8 +399,7 @@ async function extractPdfTextSequentially(input: {
         if (!text) everyPageHasText = false;
         const pageText = `--- Page ${pageNumber} of ${document.numPages} ---${text ? `\n${text}` : ''}`;
         const separatorCharacters = pages.length === 0 ? 0 : 1;
-        const remainingCharacters = MAX_SLACK_ATTACHMENT_CHARACTERS -
-          totalCharacters - separatorCharacters;
+        const remainingCharacters = maxCharacters - totalCharacters - separatorCharacters;
         const pageCharacters = characterCountUpTo(pageText, remainingCharacters);
         if (pageCharacters > remainingCharacters) {
           throw new AttachmentNormalizationError(

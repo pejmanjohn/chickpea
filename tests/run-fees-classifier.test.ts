@@ -222,6 +222,11 @@ before(async () => {
       'run-fees-slack-probe',
       { message: slackMessage() },
     )],
+    ['the Slack agent render for a message with files', await mountedToolNames(
+      SlackCapabilityProbe,
+      'run-fees-slack-probe',
+      { message: slackMessage({ attachmentFileIds: 'F0SKILLS', attachmentIntakeStatus: 'ok', attachmentCount: '1' }) },
+    )],
     ['the routine execution agent render', await mountedToolNames(
       ChickpeaRoutineExecution,
       ChickpeaRoutineExecution.agentName,
@@ -255,7 +260,7 @@ const interactive = (toolName: string, descriptor?: SemanticActivityDescriptor) 
   qualifiesAsTask(CHAT_SANDBOX, tool(toolName, descriptor));
 const withTarget = (target: SemanticTargetFamily): SemanticActivityDescriptor => ({ ...unknownSemanticDescriptor(), target });
 
-test('a turn with files mounts upload_skills after every tool a file-free turn mounts', async () => {
+test('a turn with files mounts upload_skills and read_archive_file after every tool a file-free turn mounts', async () => {
   const [plain, withFiles] = await withLiveAgent(async () => [
     await mountedToolNames(SlackCapabilityProbe, 'run-fees-slack-probe', { message: slackMessage() }),
     await mountedToolNames(SlackCapabilityProbe, 'run-fees-slack-probe', {
@@ -263,7 +268,8 @@ test('a turn with files mounts upload_skills after every tool a file-free turn m
     }),
   ]);
   assert.ok(!plain.includes('upload_skills'));
-  assert.deepEqual(withFiles, [...plain, 'upload_skills'], 'the shared tool prefix and the tenant tools come first, unchanged');
+  assert.ok(!plain.includes('read_archive_file'));
+  assert.deepEqual(withFiles, [...plain, 'upload_skills', 'read_archive_file'], 'the shared tool prefix and the tenant tools come first, unchanged');
 });
 
 test('the table classifies every tool name Core registers', () => {
@@ -339,7 +345,7 @@ test('the shell makes a reply a task when it reaches a granted repository', () =
 });
 
 test('reading or editing files never makes a reply a task, even beside a repository shell', () => {
-  for (const name of ['read', 'write', 'edit', 'grep', 'glob', 'task']) {
+  for (const name of ['read', 'write', 'edit', 'grep', 'glob', 'task', 'read_archive_file']) {
     assert.equal(qualifiesAsTask(REPOSITORY_SANDBOX, tool(name)), false, name);
   }
 });

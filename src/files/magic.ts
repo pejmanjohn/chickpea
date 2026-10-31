@@ -20,6 +20,7 @@ const OFFICE_NAMES = /\.(?:docx|docm|xlsx|xlsm|pptx|pptm|odt|ods|odp|key|numbers
 const TEXT_NAMES = /\.(?:md|markdown|txt|text|csv|tsv|json|jsonl|ndjson|yaml|yml|toml|ini|cfg|conf|env|xml|html?|css|scss|less|svg|js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|kts|swift|c|h|cc|cpp|hpp|cs|php|sh|bash|zsh|ps1|sql|graphql|gql|log|rst|tex|r|lua|pl|vue|svelte)$/i;
 /** How many leading bytes the text rule decodes. */
 const TEXT_SNIFF_BYTES = 4_096;
+const BINARY_CONTROL_CHARACTER = /[\u0000-\u0008\u000b\u000e-\u001f\u007f-\u009f]/;
 
 /** First match wins. Office documents are zips by magic, so they come before archives. */
 const KIND_RULES: readonly KindRule[] = [
@@ -58,15 +59,24 @@ export function sniffFileKind(name: string, head?: Uint8Array): FileKind {
   return { kind: 'other' };
 }
 
-/** Strict UTF-8 without binary control characters; a sequence cut at the sniff boundary is allowed. */
+/** The whole file as text: strict UTF-8 without binary control characters, else undefined. */
+export function decodeText(bytes: Uint8Array): string | undefined {
+  return strictText(bytes, false);
+}
+
+/** The text rule on the leading bytes; a character cut at the sniff boundary is allowed. */
 function looksLikeText(head: Uint8Array): boolean {
+  return strictText(head.subarray(0, TEXT_SNIFF_BYTES), true) !== undefined;
+}
+
+function strictText(bytes: Uint8Array, stream: boolean): string | undefined {
   let text: string;
   try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(head.subarray(0, TEXT_SNIFF_BYTES), { stream: true });
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream });
   } catch {
-    return false;
+    return undefined;
   }
-  return !/[\u0000-\u0008\u000b\u000e-\u001f\u007f-\u009f]/.test(text);
+  return BINARY_CONTROL_CHARACTER.test(text) ? undefined : text;
 }
 
 function startsWith(bytes: Uint8Array, prefix: readonly number[]): boolean {
