@@ -17,9 +17,9 @@ import { SqliteManagementStore } from '../src/management/store.ts';
 import type { ManagementApplyResult, ManagementSetupRecord, UploadSkillsResult } from '../src/management/types.ts';
 import {
   formatSlackAttachmentSignal,
-  parseAttachmentFileIds,
   slackAttachmentTurnContext,
 } from '../src/slack/attachment-context.ts';
+import { MAX_SLACK_ATTACHMENTS, parseAttachmentFileIds } from '../src/slack/attachment-file-ids.ts';
 import type { GatewayAttachmentClient, GatewayAttachmentRead } from '../src/slack/gateway/client.ts';
 import { classifySkillReplacement, skillReplacementMessage } from '../src/slack/interaction-intent.ts';
 import { createSkillReplacementJudge, type SkillReplacementQuestion } from '../src/management/skill-replacement-judge.ts';
@@ -234,9 +234,10 @@ test('Slack takes no model-supplied file ID or file content', async () => {
     const noFiles = personMessage(f, {});
     assert.ok(noFiles);
     assert.equal(noFiles.attachmentFileIds, undefined);
-    assert.match(refusal(await upload(f, noFiles)), /^Attach up to four SKILL\.md, \.zip or \.skill files/);
+    assert.match(refusal(await upload(f, noFiles)), new RegExp(`^Attach up to ${MAX_SLACK_ATTACHMENTS} SKILL\\.md, \\.zip or \\.skill files`));
 
-    for (const attachmentFileIds of ['F0ALPHA,../etc', 'F0ALPHA,', 'F1,F2,F3,F4,F5']) {
+    const oneTooMany = Array.from({ length: MAX_SLACK_ATTACHMENTS + 1 }, (_, index) => `F${index + 1}`).join(',');
+    for (const attachmentFileIds of ['F0ALPHA,../etc', 'F0ALPHA,', oneTooMany]) {
       assert.equal(personMessage(f, { attachmentFileIds }), undefined, `a malformed ${attachmentFileIds} drops the whole signal`);
     }
     assert.deepEqual(slackFiles.reads, [], 'nothing was read from Slack');
@@ -504,13 +505,17 @@ test('an upload over the skill cap is refused before the metered judgment', asyn
   }
 });
 
-test('more than four files never reach the tool', async () => {
-  const { f } = await slackFixture('slack-upload-five');
+test('more files than one message may carry never reach the tool', async () => {
+  const { f } = await slackFixture('slack-upload-too-many');
   try {
-    assert.equal(parseAttachmentFileIds('F1,F2,F3,F4,F5'), undefined);
-    assert.deepEqual(parseAttachmentFileIds('F1,F2,F3,F4'), ['F1', 'F2', 'F3', 'F4']);
-    // The host rejects a fifth file for the whole message and names no file.
-    const tooMany = personMessage(f, { attachmentIntakeStatus: 'too_many', attachmentCount: '5' });
+    const fileIds = Array.from({ length: MAX_SLACK_ATTACHMENTS + 1 }, (_, index) => `F${index + 1}`);
+    assert.equal(parseAttachmentFileIds(fileIds.join(',')), undefined);
+    assert.deepEqual(parseAttachmentFileIds(fileIds.slice(0, -1).join(',')), fileIds.slice(0, -1));
+    // The host rejects the whole message when it carries one file too many, and names no file.
+    const tooMany = personMessage(f, {
+      attachmentIntakeStatus: 'too_many',
+      attachmentCount: String(MAX_SLACK_ATTACHMENTS + 1),
+    });
     assert.ok(tooMany);
     assert.equal(tooMany.attachmentFileIds, undefined);
     assert.match(refusal(await upload(f, tooMany)), /For more, put them in one \.zip\./);

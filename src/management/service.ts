@@ -153,6 +153,7 @@ import {
 } from '../slack/agent-access.ts';
 import { agentStillInSlackRefusal, archiveBeforeDeleting } from '../slack/agent-presence/left-slack.ts';
 import { THREAD_TTL_MS } from '../slack/state-limits.ts';
+import { MAX_SLACK_ATTACHMENTS } from '../slack/attachment-file-ids.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
@@ -9439,7 +9440,7 @@ function slackSkillUploadFileIds(
   }
   const fileIds = origin.attachmentFileIds;
   if (!fileIds?.length) {
-    throw new ManagementError('invalid_request', 'Attach up to four SKILL.md, .zip or .skill files to the message that asks to add them. For more, put them in one .zip. No change was made.');
+    throw new ManagementError('invalid_request', `Attach up to ${MAX_SLACK_ATTACHMENTS} SKILL.md, .zip or .skill files to the message that asks to add them. For more, put them in one .zip. No change was made.`);
   }
   return fileIds;
 }

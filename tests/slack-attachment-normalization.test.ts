@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { keepEventLoopAlive } from './helpers/keep-event-loop-alive.ts';
 
+import { MAX_SLACK_ATTACHMENTS } from '../src/slack/attachment-file-ids.ts';
 import {
   MAX_SLACK_ATTACHMENT_BYTES,
   MAX_SLACK_ATTACHMENT_CHARACTERS,
@@ -216,7 +217,7 @@ test('retrieval is sequential and stops before a later read when 12 MiB is exhau
 });
 
 test('attachment count and per-file byte limits reject one over before unsafe work continues', async () => {
-  const exactIds = ['F_1', 'F_2', 'F_3', 'F_4'];
+  const exactIds = Array.from({ length: MAX_SLACK_ATTACHMENTS }, (_, index) => `F_${index + 1}`);
   const exact = await normalizeSlackAttachments({
     fileIds: exactIds,
     gateway: mapGateway(new Map(exactIds.map((fileId) => [
@@ -229,7 +230,7 @@ test('attachment count and per-file byte limits reject one over before unsafe wo
 
   let countReads = 0;
   const tooMany = await normalizeSlackAttachments({
-    fileIds: ['F_1', 'F_2', 'F_3', 'F_4', 'F_5'],
+    fileIds: [...exactIds, 'F_OVER'],
     gateway: {
       async readAttachment() {
         countReads += 1;
@@ -239,7 +240,7 @@ test('attachment count and per-file byte limits reject one over before unsafe wo
   });
   assert.equal(countReads, 0);
   assert.equal(tooMany.attachments.length, 0);
-  assert.equal(tooMany.failures.length, 5);
+  assert.equal(tooMany.failures.length, MAX_SLACK_ATTACHMENTS + 1);
   assert.ok(tooMany.failures.every(({ code }) => code === 'attachment_count_limit_exceeded'));
 
   const calls: Array<{ fileId: string; maxBytes: number }> = [];
