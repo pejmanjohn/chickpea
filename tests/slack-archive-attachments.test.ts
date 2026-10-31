@@ -205,6 +205,34 @@ test('a path that is not in the archive lists the exact paths to choose from', a
   });
 });
 
+test('paths shown to the model are cut and cleaned, and a read accepts the shown form', async () => {
+  const long = `${'deep/'.repeat(60)}notes.md`;
+  const spoof = 'invoice\u202efdp.md';
+  const family = 'team/\u{1f468}\u200d\u{1f469}.md';
+  const bytes = buildZip([
+    { path: long, content: 'long one' },
+    { path: spoof, content: 'spoofed' },
+    { path: family, content: 'joined' },
+  ]);
+  const listing = archiveListing(bytes, 'file:1');
+  assert.doesNotMatch(listing, /[\u202e\u200d]/u);
+  assert.ok(listing.includes('- invoice\ufffdfdp.md (text, 7 B)'));
+  assert.ok(listing.includes('- team/\u{1f468}\ufffd\u{1f469}.md (text, 6 B)'));
+
+  const missing = await read('nope.md', 0, bytes);
+  assert.ok(!missing.ok && missing.paths);
+  assert.ok(missing.paths.every((path) => Array.from(path).length <= 256 && !/[\u202e\u200d]/u.test(path)));
+  const shownLong = missing.paths[0]!;
+  assert.ok(shownLong.endsWith('…'));
+
+  for (const [path, expected] of [[spoof, 'spoofed'], ['invoice\ufffdfdp.md', 'spoofed'], [shownLong, 'long one'], [missing.paths[2]!, 'joined']]) {
+    const result = await read(path!, 0, bytes);
+    assert.ok(result.ok && result.kind === 'text', `${path} reads`);
+    assert.equal(result.text, expected);
+    assert.doesNotMatch(result.path, /[\u202e\u200d]/u);
+  }
+});
+
 test('archive and entry refusals say what the person can do', async () => {
   const bytes = buildZip([
     { path: 'bzip.txt', content: 'x', method: 12 },
@@ -262,6 +290,22 @@ test('a handle that names a file that is not a zip is refused plainly', async ()
   assert.deepEqual(await call(tool, { file: 'file:1', path: 'a.md' }, 'c1'), {
     ok: false, error: 'Chickpea could not download this archive from Slack. Try once more; if it fails again, ask for it attached again.',
   });
+});
+
+test('a new turn on the same Agent instance starts a fresh read count and downloads again', async () => {
+  const calls: ReadCall[] = [];
+  const client = zipReader({ F_KIT: zipRead('F_KIT', 'kit.zip', KIT) }, calls);
+  const turn = (turnKey: string) => createReadArchiveFileTool({
+    instanceId: 'archive-tool-turns', turnKey, fileIds: ['F_KIT'], client: async () => client,
+  });
+  const first = turn('turn_one');
+  for (let index = 0; index < MAX_ARCHIVE_READS_PER_TURN; index += 1) {
+    assert.equal((await call(first, { file: 'file:1', path: 'kit/notes.md' }, `one-${index}`)).ok, true);
+  }
+  assert.equal((await call(first, { file: 'file:1', path: 'kit/notes.md' }, 'one-extra')).ok, false);
+  assert.equal(calls.length, 1);
+  assert.equal((await call(turn('turn_two'), { file: 'file:1', path: 'kit/notes.md' }, 'two-0')).ok, true);
+  assert.equal(calls.length, 2);
 });
 
 test(`a turn reads at most ${MAX_ARCHIVE_READS_PER_TURN} times; a replayed call keeps its read`, async () => {

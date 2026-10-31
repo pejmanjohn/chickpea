@@ -591,7 +591,8 @@ function failure(
   };
 }
 
-function safeFailureCode(error: unknown): string | undefined {
+/** An error's `code` when it is a short snake_case word, safe to record and show. */
+export function safeFailureCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const code = (error as { code?: unknown }).code;
   return typeof code === 'string' && /^[a-z0-9_]{1,80}$/.test(code) ? code : undefined;

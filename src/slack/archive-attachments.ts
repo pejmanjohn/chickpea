@@ -3,7 +3,7 @@
 // and the advice for an archive or entry that cannot be read.
 
 import { sniffFileKind } from '../files/magic.ts';
-import { createByteBudget, openZip, type ZipProblem } from '../files/zip.ts';
+import { createByteBudget, openZip, printableZipPath, type ZipProblem } from '../files/zip.ts';
 import { formatBytes } from './message-text.ts';
 
 /**
@@ -16,7 +16,8 @@ export type ArchiveHandle = `file:${number}`;
 export const READ_ARCHIVE_FILE_TOOL_NAME = 'read_archive_file';
 export const MAX_LISTED_ARCHIVE_ENTRIES = 200;
 /** Long paths are cut for display; 200 such lines still fit one attachment's character limit. */
-const MAX_LISTED_PATH_CHARACTERS = 255;
+const MAX_DISPLAYED_PATH_CHARACTERS = 255;
+export const ARCHIVE_HANDLE_PATTERN = /^file:([1-9][0-9]{0,2})$/;
 
 export function archiveHandle(ordinal: number): ArchiveHandle {
   return `file:${ordinal}`;
@@ -24,8 +25,19 @@ export function archiveHandle(ordinal: number): ArchiveHandle {
 
 /** The attachment ordinal a handle names, or undefined for anything else. */
 export function archiveHandleOrdinal(value: string): number | undefined {
-  const match = /^file:([1-9][0-9]{0,2})$/.exec(value);
+  const match = ARCHIVE_HANDLE_PATTERN.exec(value);
   return match ? Number(match[1]) : undefined;
+}
+
+/**
+ * An entry path as models and people see it: unprintable characters replaced
+ * and long paths cut. A read accepts this form as well as the exact path.
+ */
+export function displayPath(path: string): string {
+  const characters = Array.from(printableZipPath(path));
+  return characters.length > MAX_DISPLAYED_PATH_CHARACTERS
+    ? `${characters.slice(0, MAX_DISPLAYED_PATH_CHARACTERS).join('')}…`
+    : characters.join('');
 }
 
 /**
@@ -38,11 +50,7 @@ export function archiveListing(bytes: Uint8Array, handle: ArchiveHandle): string
   if (archive.entries.length === 0) lines.push('It has no files.');
   else lines.push(`${archive.entries.length.toLocaleString('en-US')} ${archive.entries.length === 1 ? 'file' : 'files'}:`);
   for (const entry of archive.entries.slice(0, MAX_LISTED_ARCHIVE_ENTRIES)) {
-    const characters = Array.from(entry.path);
-    const path = characters.length > MAX_LISTED_PATH_CHARACTERS
-      ? `${characters.slice(0, MAX_LISTED_PATH_CHARACTERS).join('')}…`
-      : entry.path;
-    lines.push(`- ${path} (${sniffFileKind(entry.path).kind}, ${formatBytes(entry.size)})`);
+    lines.push(`- ${displayPath(entry.path)} (${sniffFileKind(entry.path).kind}, ${formatBytes(entry.size)})`);
   }
   const unlisted = archive.entries.length - MAX_LISTED_ARCHIVE_ENTRIES;
   if (unlisted > 0) lines.push(`${unlisted.toLocaleString('en-US')} more files are not listed.`);
@@ -75,6 +83,6 @@ export function archiveProblemMessage(problem: ZipProblem): string {
     case 'inflate_failed':
       return `This file is damaged inside the archive. ${rezip}`;
     case 'budget_exceeded':
-      return 'This read is over the size limit for one call. Read one file per call.';
+      return 'This file is over the size limit for one read. Ask for it attached directly.';
   }
 }

@@ -18,6 +18,7 @@ import {
   type SlackAttachmentNormalizationResult,
   MAX_SLACK_ATTACHMENTS,
   normalizeSlackAttachments,
+  safeFailureCode,
 } from './attachment-normalization.ts';
 import {
   runWithAttachmentModelContext,
@@ -226,8 +227,8 @@ export async function createSlackAttachmentAnalysis(
     if (!observations) throw new Error('empty_attachment_analysis');
     return resultFromNormalization(normalized, observations);
   } catch (error) {
-    const imageUnsupported = safeErrorCode(error) === 'attachment_image_model_unsupported';
-    if (imageUnsupported || safeErrorCode(error) === 'attachment_native_pdf_required_failed') {
+    const imageUnsupported = safeFailureCode(error) === 'attachment_image_model_unsupported';
+    if (imageUnsupported || safeFailureCode(error) === 'attachment_native_pdf_required_failed') {
       const compatible = normalized.attachments.filter((attachment) =>
         imageUnsupported ? attachment.kind !== 'image' : attachment.kind !== 'pdf' || attachment.pdfCompleteness !== 'native_required'
       );
@@ -455,7 +456,7 @@ function resultFromAnalysisFailure(
   normalized: SlackAttachmentNormalizationResult,
   error: unknown,
 ): SlackAttachmentAnalysisResult {
-  const code = safeErrorCode(error);
+  const code = safeFailureCode(error);
   const analysisFailures: SlackAttachmentFailure[] = normalized.attachments.map((attachment) => {
     if (code === 'attachment_image_model_unsupported' && attachment.kind === 'image') return unsupportedImageFailure(attachment);
     const isNativeFailure = code === 'attachment_native_pdf_required_failed' &&
@@ -651,12 +652,6 @@ export function safeFilename(value: string): string {
 
 function safeManifestCode(value: string): string {
   return /^[a-z0-9_]{1,80}$/.test(value) ? value : 'attachment_processing_failed';
-}
-
-function safeErrorCode(error: unknown): string | undefined {
-  if (!error || typeof error !== 'object') return undefined;
-  const code = (error as { code?: unknown }).code;
-  return typeof code === 'string' && /^[a-z0-9_]{1,80}$/.test(code) ? code : undefined;
 }
 
 function parseAttachmentCount(value: string | undefined): number | undefined {
