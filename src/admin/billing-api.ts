@@ -224,6 +224,7 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStat
   const planOffer = summary.plan && offers.plans.find((offer) => offer.key === summary.plan?.key);
   const pending = summary.plan && summary.pendingChange;
   const ownKeyTasks = (micros: UsageMicros) => funding === 'own_key' ? formatTasks(micros, 'own_key', offers) : null;
+  const trialUsed = Math.max(0, (trial?.grantedMicros ?? 0) - (trial?.remainingMicros ?? 0)) as UsageMicros;
   return {
     funding,
     plan: summary.plan && {
@@ -254,8 +255,8 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStat
     trial: trial && {
       remaining: formatUsageDollars(trial.remainingMicros),
       granted: formatUsageDollars(trial.grantedMicros),
-      used: formatUsageDollars(Math.max(0, trial.grantedMicros - trial.remainingMicros) as UsageMicros, 'down'),
-      percent: usagePercent(Math.max(0, trial.grantedMicros - trial.remainingMicros) as UsageMicros, trial.grantedMicros),
+      used: formatUsageDollars(trialUsed, 'down'),
+      percent: usagePercent(trialUsed, trial.grantedMicros),
       until: SHORT_DATE.format(trial.expiresAt),
     },
     ownKeyWithoutPlan: funding === 'own_key' && summary.plan === null
@@ -366,7 +367,7 @@ function redirect(c: Context, target: { url: string }): Response {
 }
 
 /** Named rows, largest first, then one row gathering the rest; each bar is its share of the largest row. */
-function namedUse(use: readonly UsageRow[], names: ReadonlyMap<string, string>): (NamedUse & { id: string | null })[] {
+function namedUse(use: readonly UsageRow[], names: ReadonlyMap<string, string>): AgentUse[] {
   const named: { id: string | null; name: string | null; micros: number }[] = [];
   let unnamed = 0;
   for (const row of use) {
