@@ -47,6 +47,7 @@ import { boundedSlackPublicHandoff, type SlackPublicHandoffMessage } from './pub
 import { isSlackContentMessageSubtype } from './message-subtypes.ts';
 import { slackFileSummaries } from './message-text.ts';
 import { AGENT_ASK_SILENT_REPLY } from './agent-asks.ts';
+import { foldedRequestHeading, frameFoldedMessages, type FoldedMessage } from './follow-ups.ts';
 
 export const SLACK_SELF_MENTION_PLACEHOLDER = '[[CHICKPEA_SELF_MENTION]]';
 
@@ -95,6 +96,8 @@ interface HydrateSlackContextOptions {
    * the rows and their images.
    */
   threadRecord?: readonly SlackPublicContextEntry[];
+  /** The follow-ups the turn took: rows through the newest are read, and none is context. */
+  followUps?: readonly FoldedMessage[];
 }
 
 /** Slack's page for the shared app's history and replies reads. */
@@ -111,11 +114,12 @@ export async function hydrateSlackContextViaWebClient(
   const maxMessages = options.maxMessages ?? DEFAULT_MAX_MESSAGES;
   const gate = options.readGate ?? UNGATED_SLACK_READS;
   const self = options.self ?? {};
+  const followUps = options.followUps ?? [];
 
   try {
     if (turn.contextMode === 'thread') {
       if (gate.gated && options.threadRecord?.some((entry) => entry.messageTs === turn.threadTs)) {
-        return recordOnlyThreadContext(turn, options.threadRecord);
+        return recordOnlyThreadContext(turn, options.threadRecord, followUps);
       }
       return await fetchThread(client, turn, {
         maxMessages,
@@ -123,12 +127,14 @@ export async function hydrateSlackContextViaWebClient(
         maxPages: gate.gated ? 1 : options.maxPages ?? UNPACED_THREAD_MAX_PAGES,
         gate,
         self,
+        followUps,
       });
     }
     return await fetchHistory(client, turn, {
       maxMessages: gate.gated ? Math.min(maxMessages, PACED_SLACK_READ_LIMIT) : maxMessages,
       gate,
       self,
+      followUps,
     });
   } catch (error) {
     return currentMessageOnlyContext(turn, [
@@ -146,9 +152,10 @@ export async function hydrateSlackContextViaWebClient(
 function recordOnlyThreadContext(
   turn: NormalizedSlackTurn,
   record: readonly SlackPublicContextEntry[],
+  followUps: readonly FoldedMessage[],
 ): SlackTurnContext {
   const gap = record.find((entry) => entry.messageTs === turn.threadTs)?.gapBeforeTs;
-  const watermark = slackContextWatermark(turn);
+  const watermark = slackContextWatermark(turn, followUps);
   const images = threadImageRecordsFromRecord(
     record.filter((entry) => entry.rootTs === turn.threadTs),
     slackThreadImageConversationKey(turn),
@@ -158,7 +165,7 @@ function recordOnlyThreadContext(
     .slice(-MAX_THREAD_IMAGE_ENTRIES);
   return {
     mode: 'thread',
-    messages: ensureTriggerMessage([], turn),
+    messages: ensureTriggerMessage([], turn, undefined, followUps),
     window: {
       mode: 'thread', oldest: turn.threadTs, ...(watermark ? { latest: watermark } : {}), reason: 'thread_record',
     },
@@ -266,12 +273,18 @@ export async function hydrateSlackPublicHandoffFallback(
 async function fetchHistory(
   client: WebClient,
   turn: NormalizedSlackTurn,
-  input: { maxMessages: number; gate: SlackReadGate; self: SlackContextSelf },
+  input: {
+    maxMessages: number;
+    gate: SlackReadGate;
+    self: SlackContextSelf;
+    followUps: readonly FoldedMessage[];
+  },
 ): Promise<SlackTurnContext> {
   // dm_history and channel_history share the same bounded-history policy; only
   // conversations.history is used (never conversations.replies for DMs).
   const mode = turn.contextMode as Exclude<NormalizedSlackTurn['contextMode'], 'thread'>;
-  const window = computeHistoryWindow(mode, turn.text, turn.messageTs);
+  const latest = slackContextWatermark(turn, input.followUps) ?? turn.messageTs;
+  const window = computeHistoryWindow(mode, turn.text, latest);
   const degradations: string[] = [];
   const decision = await reserveRead(input.gate, 'conversations.history', degradations, mode);
   if (!decision.ok) return { ...currentMessageOnlyContext(turn, degradations), window };
@@ -310,17 +323,18 @@ async function fetchHistory(
     : await fetchTriggerRow(client, turn);
   const windowRows = rawMessages.filter((row) => row.ts !== turn.messageTs).slice(0, input.maxMessages);
   const images = mergeThreadImages(
-    collectThreadImages(windowRows, turn),
+    collectThreadImages(windowRows, turn, input.followUps),
     collectThreadImages(triggerRows, turn),
   );
   const messages = ensureTriggerMessage(
     orderMessages(
       toContextMessages(windowRows, input.self).filter((message) =>
-        atOrBeforeSlackWatermark(message.ts, turn.messageTs)
+        atOrBeforeSlackWatermark(message.ts, latest)
       ),
     ),
     turn,
     slackFileSummaries(triggerRows[0]?.files),
+    input.followUps,
   );
   if (hasCursor) degradations.push(`slack_context.${turn.contextMode}:truncated`);
 
@@ -343,6 +357,7 @@ async function fetchThread(
     maxPages: number;
     gate: SlackReadGate;
     self: SlackContextSelf;
+    followUps: readonly FoldedMessage[];
   },
 ): Promise<SlackTurnContext> {
   // The NEWEST rows reached are kept as a rolling tail. When the pages stop
@@ -362,7 +377,7 @@ async function fetchThread(
   let pagesRead = 0;
   let stoppedEarly = false;
   let reachedTrigger = false;
-  const watermark = slackContextWatermark(turn);
+  const watermark = slackContextWatermark(turn, input.followUps);
 
   for (let page = 0; page < input.maxPages; page += 1) {
     const decision = await reserveRead(input.gate, 'conversations.replies', degradations, 'thread');
@@ -399,7 +414,7 @@ async function fetchThread(
     if (rawMessages.some((row) => row.ts === turn.messageTs)) reachedTrigger = true;
     // Collected from the raw rows, before the projection drops system rows
     // and text-less rows; bounded the same way the retained tail is.
-    images.push(...collectThreadImages(rawMessages, turn));
+    images.push(...collectThreadImages(rawMessages, turn, input.followUps));
     if (images.length > MAX_THREAD_IMAGE_ENTRIES) {
       images.splice(0, images.length - MAX_THREAD_IMAGE_ENTRIES);
     }
@@ -433,7 +448,7 @@ async function fetchThread(
 
   return {
     mode: 'thread',
-    messages: ensureTriggerMessage(root ? [root, ...tail] : tail, turn),
+    messages: ensureTriggerMessage(root ? [root, ...tail] : tail, turn, undefined, input.followUps),
     window: {
       mode: 'thread',
       oldest: turn.threadTs,
@@ -493,9 +508,10 @@ function mergeThreadImages(
 function collectThreadImages(
   rawMessages: readonly SlackWebApiMessage[],
   turn: NormalizedSlackTurn,
+  followUps: readonly FoldedMessage[] = [],
 ): ThreadImageRecord[] {
   return collectThreadImageRecords(rawMessages, slackThreadImageConversationKey(turn))
-    .filter((record) => atOrBeforeSlackWatermark(record.messageTs, slackContextWatermark(turn)));
+    .filter((record) => atOrBeforeSlackWatermark(record.messageTs, slackContextWatermark(turn, followUps)));
 }
 
 /**
@@ -538,6 +554,8 @@ export function assembleSlackPrompt(
      * thread, so it rides in the request instead of the Agent's system prompt.
      */
     threadImageManifest?: string;
+    /** The person's messages queued after the trigger that this turn took as part of its request. */
+    followUps?: readonly FoldedMessage[];
   } = {},
 ): string {
   const partition = partitionSlackContext(turn, context);
@@ -603,7 +621,8 @@ export function assembleSlackPrompt(
   if (options.continuityNote) {
     parts.push('', options.continuityNote);
   }
-  const currentTime = slackLocalContextTime(turn.messageTs, contextTimezone);
+  const followUps = options.followUps ?? [];
+  const currentTime = slackLocalContextTime(followUps.at(-1)?.messageTs ?? turn.messageTs, contextTimezone);
   if (currentTime) {
     parts.push(
       '',
@@ -636,15 +655,23 @@ export function assembleSlackPrompt(
   if (options.threadImageManifest) {
     parts.push('', 'Images in this conversation, with the img:N handles for this request:', options.threadImageManifest);
   }
-  parts.push(
-    '',
-    turn.agentAsk
-      ? askedAsThreadOwner
-        ? `Current Slack message, from your teammate ${JSON.stringify(turn.agentAsk.fromAgentName)} (read it as their answer to what you asked; <@${turn.userId}>'s request in this thread is still what you are working on, and current system truth takes precedence):`
-        : `Current Slack request, from the Agent ${JSON.stringify(turn.agentAsk.fromAgentName)} (this is the only current intent; answer this and let current system truth take precedence):`
-      : 'Current Slack request (this is the only current user intent; answer this and let current system truth take precedence):',
-    turn.text,
-  );
+  if (followUps.length > 0) {
+    parts.push(
+      '',
+      foldedRequestHeading(followUps.length + 1, turn.userId),
+      frameFoldedMessages([{ userId: turn.userId, messageTs: turn.messageTs, text: turn.text }, ...followUps], contextTimezone),
+    );
+  } else {
+    parts.push(
+      '',
+      turn.agentAsk
+        ? askedAsThreadOwner
+          ? `Current Slack message, from your teammate ${JSON.stringify(turn.agentAsk.fromAgentName)} (read it as their answer to what you asked; <@${turn.userId}>'s request in this thread is still what you are working on, and current system truth takes precedence):`
+          : `Current Slack request, from the Agent ${JSON.stringify(turn.agentAsk.fromAgentName)} (this is the only current intent; answer this and let current system truth take precedence):`
+        : 'Current Slack request (this is the only current user intent; answer this and let current system truth take precedence):',
+      turn.text,
+    );
+  }
   parts.push(
     '',
     serializeCurrentRequestEnvelope(

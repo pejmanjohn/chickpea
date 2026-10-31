@@ -258,7 +258,7 @@ import {
   oauthResumeTurnJobId,
   type PendingTurnJob,
 } from './slack/turn-jobs.ts';
-import type { TurnSteeringDecision } from './slack/turn-job-types.ts';
+import type { TurnFoldRequest, TurnSteeringDecision } from './slack/turn-job-types.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { buildTagStateStores, type TagStateStores } from './state/tag-state-stores.ts';
 import type {
@@ -2107,6 +2107,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     ) ?? null);
   }
 
+  /**
+   * The alarm executor runs rows it listed before the turns ahead of them
+   * ran, so a follow-up its head took could run again: only a head its
+   * thread runner runs, which reads each row again first, takes any.
+   */
+  async slackTurnFold(request: TurnFoldRequest): ReturnType<TagStateRpc['slackTurnFold']> {
+    return this.call((stores) => stores.turnJobs.runnerView(request.headId).job?.executor === 'runner'
+      ? stores.turnJobs.fold(request)
+      : { messages: [], requesterText: '' });
+  }
+
   async slackTurnDirectThreads(
     query: Parameters<TagStateRpc['slackTurnDirectThreads']>[0],
   ): ReturnType<TagStateRpc['slackTurnDirectThreads']> {
@@ -3004,12 +3015,14 @@ function applyThreadRunnerTurnOp(
       ) ?? null;
     case 'getThreadContinuation':
       return turnJobs.getThreadContinuation(op.continuityKey, op.instanceId, op.beforeMessageTs) ?? null;
+    case 'fold':
+      return turnJobs.fold(op.request);
     case 'recordUsagePersistence':
       return turnJobs.recordUsagePersistence(op.id, op.event) ?? null;
     case 'recordInteractionIntent':
       return turnJobs.recordInteractionIntent(op.id, op.intent) ?? null;
     case 'markDelivered':
-      turnJobs.markDelivered(op.id);
+      stores.slack.endTurn(op.id, turnJobs, stores.work, stores.presentations);
       return null;
     case 'markError':
       turnJobs.markError(op.id);
@@ -3137,7 +3150,9 @@ async function drainCloudflareManagementReceipts(
         } finally {
           if (isAgentCreatedWelcome(deliveredRecord.receipt) &&
               deliveredRecord.receipt.turnJobId) {
-            stores.turnJobs.markDelivered(deliveredRecord.receipt.turnJobId);
+            stores.slack.endTurn(
+              deliveredRecord.receipt.turnJobId, stores.turnJobs, stores.work, stores.presentations,
+            );
           }
         }
       },
@@ -3462,9 +3477,10 @@ function localManagementRuntime(
 
 /**
  * The alarm executor's turn-row port: the state store's own rows, except
- * that the stopped ending also settles the dropped turns' Runs and
- * presentations, as slackTurnStopFinish does. Spelled out like
- * runnerTurnJobsPort, so the one method that differs is visible.
+ * that a delivery and the stopped ending also settle the Runs and
+ * presentations of the turns that ended without running, as the runner's
+ * `markDelivered` and slackTurnStopFinish do. Spelled out like
+ * runnerTurnJobsPort, so the methods that differ are visible.
  */
 function alarmTurnJobsPort(stores: TagStateStores): TurnExecutionPorts['turnJobs'] {
   const rows = stores.turnJobs;
@@ -3482,7 +3498,7 @@ function alarmTurnJobsPort(stores: TagStateStores): TurnExecutionPorts['turnJobs
     recordUsagePersistence: (...args) => rows.recordUsagePersistence(...args),
     recordInteractionIntent: (...args) => rows.recordInteractionIntent(...args),
     recordSlackInteractionProgress: (...args) => rows.recordSlackInteractionProgress(...args),
-    markDelivered: (...args) => rows.markDelivered(...args),
+    markDelivered: (id) => stores.slack.endTurn(id, rows, stores.work, stores.presentations),
     markError: (...args) => rows.markError(...args),
     finishStop: (headId, outcome) =>
       stores.slack.finishTurnStop(headId, outcome, rows, stores.work, stores.presentations),

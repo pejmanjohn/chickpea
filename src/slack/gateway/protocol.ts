@@ -233,10 +233,20 @@ export const GATEWAY_ATTACHMENT_REPRESENTATIONS = [
   'text_original',
   'pdf_original',
   'slack_pdf_conversion',
+  /** The original bytes of a .zip or .skill file; returned only when accepted. */
+  'zip_original',
 ] as const;
 
 export type GatewayAttachmentRepresentation =
   (typeof GATEWAY_ATTACHMENT_REPRESENTATIONS)[number];
+
+/** What a read without `accept` can return: never zip_original. */
+export const DEFAULT_ATTACHMENT_ACCEPT: readonly GatewayAttachmentRepresentation[] = [
+  'image_original',
+  'text_original',
+  'pdf_original',
+  'slack_pdf_conversion',
+];
 
 export interface GatewayAttachmentReadRequest extends GatewaySignedRequest {
   kind: 'slack.attachment.read';
@@ -244,6 +254,13 @@ export interface GatewayAttachmentReadRequest extends GatewaySignedRequest {
   workspaceId: string;
   fileId: string;
   maxBytes: number;
+  /**
+   * The representations the caller can use, one to five distinct names. The
+   * gateway still chooses from Slack's metadata and refuses a choice outside
+   * this set before downloading. A gateway older than this field answers 403
+   * attachment_field_not_allowed.
+   */
+  accept?: GatewayAttachmentRepresentation[];
 }
 
 interface GatewayOperationResponse {

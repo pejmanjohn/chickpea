@@ -7,9 +7,15 @@ import {
   getSlackCredentialDependencies,
   type PlatformEnv,
 } from '../../config/state-backend.ts';
-import { GatewayDeploymentClient } from './client.ts';
+import { GatewayDeploymentClient, type GatewayClientDependencies } from './client.ts';
 import { createPlatformProductTelemetry } from '../../telemetry/platform.ts';
 import type { ProductTelemetryCapture } from '../../telemetry/client.ts';
+import type { IdentityStore } from '../../identity/types.ts';
+
+/** Stores a caller already holds, so the client does not open them from `env`. */
+export type GatewayClientStores = Pick<GatewayClientDependencies, 'settings' | 'config' | 'keyring'> & {
+  identity: IdentityStore;
+};
 
 export const DEFAULT_CHICKPEA_GATEWAY_URL =
   'https://chickpea-slack-gateway.pejmanjohn.workers.dev';
@@ -28,10 +34,10 @@ export function resolveChickpeaGatewayUrl(env?: PlatformEnv): string {
 
 export function createGatewayDeploymentClient(
   env?: PlatformEnv,
-  options: { productTelemetry?: ProductTelemetryCapture | undefined } = {},
+  options: { productTelemetry?: ProductTelemetryCapture | undefined; stores?: GatewayClientStores } = {},
 ): GatewayDeploymentClient {
-  const settings = getSettingsStore(env);
-  const config = getConfigStore(env);
+  const settings = options.stores?.settings ?? getSettingsStore(env);
+  const config = options.stores?.config ?? getConfigStore(env);
   const productTelemetry = options.productTelemetry ?? createPlatformProductTelemetry({
     ...(env ? { env } : {}),
     settings,
@@ -43,8 +49,8 @@ export function createGatewayDeploymentClient(
     settings,
     config,
     ...(versionId && Number.isSafeInteger(issuedAt) && issuedAt > 0 ? {deliveryOwner:{versionId,issuedAt}} : {}),
-    identity: getIdentityStore(env),
-    keyring: getSlackCredentialDependencies(env).keyring,
+    identity: options.stores?.identity ?? getIdentityStore(env),
+    keyring: options.stores?.keyring ?? getSlackCredentialDependencies(env).keyring,
     gatewayBaseUrl: resolveChickpeaGatewayUrl(env),
     productTelemetry,
   });

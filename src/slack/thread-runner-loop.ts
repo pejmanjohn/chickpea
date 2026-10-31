@@ -32,7 +32,7 @@ import type { RunnerTurnBegin } from './thread-runner-rpc.ts';
 import type { TurnExecutionPorts } from './turn-executor.ts';
 import {
   TURN_STOP_HOLD_RETRY_MS,
-  turnJobStopGate,
+  turnJobGate,
   type PendingTurnJob,
   type RunnerTurnJobView,
 } from './turn-jobs.ts';
@@ -444,9 +444,10 @@ async function runOne(
     deps.jobs.settle(local.id, 'released', now());
     return true;
   }
-  // A row a stop holds never runs: it waits, holding its thread, for the
-  // stopped ending to drop it (the row then reads settled) or release it.
-  if (turnJobStopGate(view.job) === 'hold') {
+  // A row a stop holds, or one an earlier run took as a follow-up, never
+  // runs: it waits, holding its thread, for that run's ending to settle it
+  // (the row then reads settled) or release it.
+  if (turnJobGate(view.job) === 'hold') {
     deps.jobs.settle(local.id, 'admitted', now(), now() + TURN_STOP_HOLD_RETRY_MS);
     return false;
   }
@@ -686,7 +687,9 @@ function unavailable(error: unknown): unknown {
  * receipt and settlement are also told to `observer` (the runner's stops),
  * and a stopped ending is kept for the alarm record's dropped-turn count.
  */
-export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
+export function runnerTurnJobsPort<
+  P extends TurnExecutionPorts['turnJobs'] & Required<Pick<TurnExecutionPorts['turnJobs'], 'fold'>>,
+>(
   remote: P,
   jobs: ThreadRunnerJobStore,
   now: () => number = Date.now,
@@ -723,6 +726,7 @@ export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
     freezeRuntimePlan: (...args) => storeCall(() => remote.freezeRuntimePlan(...args)),
     getBoundRuntimePlan: (...args) => storeCall(() => remote.getBoundRuntimePlan(...args)),
     getThreadContinuation: (...args) => storeCall(() => remote.getThreadContinuation(...args)),
+    fold: (...args) => storeCall(() => remote.fold(...args)),
     recordUsagePersistence: (...args) => storeCall(() => remote.recordUsagePersistence(...args)),
     recordInteractionIntent: (...args) => storeCall(() => remote.recordInteractionIntent(...args)),
     recordSlackInteractionProgress: (...args) =>
@@ -824,8 +828,9 @@ export function runnerPresentationState(input: {
       ...runnerSharedBudgets(input.remote, base, now),
       ...(input.sharedSlackReads ? { sharedSlackReads: input.sharedSlackReads } : {}),
       // The shared store sees every presentation of this Slack thread,
-      // including ones other executors own; generations never change, and a
-      // newer one appears only with a new message, so a brief cache is safe.
+      // including ones other executors own. Generations never change, and a
+      // newer one counts only once its turn starts; a turn this runner starts
+      // is in `local`, read uncached below, so a brief cache is safe.
       getLatestThreadSessionGeneration: async (root) => {
         const key = `${root.workspaceId}:${root.channelId}:${root.threadTs}`;
         let cached = generations.get(key);

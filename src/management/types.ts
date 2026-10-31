@@ -23,6 +23,7 @@ import type {
   RoutineState,
 } from '../routines/types.ts';
 import type { WebsiteLoginView } from '../browser/agent-website-logins.ts';
+import type { SkillUploadIssue } from '../config/skill-upload.ts';
 import type { AgentAuthoringReason } from './agent-authoring/index.ts';
 import type {
   ManagementApiConnection,
@@ -62,6 +63,8 @@ export type ManagementOrigin =
       agentId?: string;
       /** Web content entered this conversation, so text the model writes may be that content's. */
       publicDocRead?: true;
+      /** Files attached to the requester's current message, from the host's normalized turn. Never model-written. */
+      attachmentFileIds?: readonly string[];
     }
   | {
       kind: 'mcp';
@@ -72,10 +75,10 @@ export type ManagementOrigin =
       sessionId: string;
     };
 
-/** A setup record's origin, without the turn-only approval stamp and requester message. */
+/** A setup record's origin, without the turn-only approval stamp, requester message and attachments. */
 export type StoredManagementOrigin =
   | Exclude<ManagementOrigin, { kind: 'slack' }>
-  | Omit<Extract<ManagementOrigin, { kind: 'slack' }>, 'requestText' | 'requestTextSource' | 'approvedProposalId'>;
+  | Omit<Extract<ManagementOrigin, { kind: 'slack' }>, 'requestText' | 'requestTextSource' | 'approvedProposalId' | 'attachmentFileIds'>;
 
 /** Trusted adapter context. It is never part of a model-selected operation. */
 export interface ManagementActorContext {
@@ -1350,6 +1353,54 @@ export type ImportSkillResult =
       };
     }
   | Extract<ProposeSkillImportResult, { status: 'selection_required' }>;
+
+/** One uploaded file: a markdown file's exact text, or an archive's bytes in base64. */
+export interface UploadSkillsFile {
+  name: string;
+  text?: string | undefined;
+  base64?: string | undefined;
+}
+
+export interface UploadSkillsInput {
+  context: ManagementActorContext;
+  /** Required on MCP; Slack defaults to the routed Agent. */
+  agentId?: string;
+  /** Required on MCP and refused on Slack, which reads the requester message's attachments. */
+  files?: UploadSkillsFile[];
+  /** MCP only, with import_skill's meaning: replace same-name skills whose content differs. Slack refuses it. */
+  replaceExisting?: boolean;
+  idempotencyKey: string;
+}
+
+export interface UploadedSkillReceipt {
+  name: string;
+  /** Where the upload held it: "<file>" or "<archive>/<directory>". */
+  path: string;
+  /** Package files left out; only the instructions are installed. */
+  omittedPaths?: string[];
+  warnings?: string[];
+  /** An unchanged skill the person had turned off; the upload leaves it off. */
+  disabled?: true;
+}
+
+export type UploadSkillsResult = {
+  added: UploadedSkillReceipt[];
+  replaced: UploadedSkillReceipt[];
+  /** Already on the Agent with the same name, description and instructions. */
+  unchanged: UploadedSkillReceipt[];
+  /** Same name, different content, and replaceExisting was not set; left as they are. */
+  conflicts: UploadedSkillReceipt[];
+  issues: SkillUploadIssue[];
+  /** How to replace the conflicts, when there are any. */
+  instruction?: string;
+  presentation: ManagementPresentation;
+  links?: ManagementResultLinks;
+} & UploadSkillsApplication;
+
+/** Whether the upload changed the Agent; only a change has an operation to undo. */
+export type UploadSkillsApplication =
+  | { status: 'updated'; operationId: string; activation: 'next_turn'; undoAvailable: boolean }
+  | { status: 'unchanged'; undoAvailable: false };
 
 export interface ConfirmWorkspaceChangeInput {
   context: ManagementActorContext;

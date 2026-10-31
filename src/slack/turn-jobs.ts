@@ -23,6 +23,10 @@ import type {
   SlackAgentBinding,
   SlackAgentBindingExpectation,
   SlackThreadContinuation,
+  TurnEndedRow,
+  TurnFoldClaim,
+  TurnFoldMemberRecordV1,
+  TurnFoldRequest,
   TurnJob,
   TurnPreviousStop,
   TurnRunRoute,
@@ -62,6 +66,15 @@ import {
 import { parseAdmittedSlackListIds, serializeAdmittedSlackListIds } from './lists/admission.ts';
 import { renderSlackMarkdownActionLink, slackActionLink } from './message-format.ts';
 import { parseTurnEnvelope, type TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
+import { emitTurnFold } from '../observability/runtime-latency.ts';
+import {
+  foldableTurn,
+  foldedRequestText,
+  MAX_FOLD_CYCLES,
+  MAX_FOLDED_MESSAGES,
+  MAX_FOLDED_TEXT_CHARS,
+  type FoldedMessage,
+} from './follow-ups.ts';
 
 /**
  * Durable queue of Slack turns for the Cloudflare turn-relay (see state-rpc.ts
@@ -133,17 +146,18 @@ export function turnStopThreadKey(
 }
 
 /**
- * What a row's stop record allows now. `hold`: it waits for the stopped
- * ending and never runs. `stopped_before_dispatch`: a stopped row with no
- * Flue receipt, which must never dispatch. `stopped`: a dispatched stopped
- * row, which reattaches to read its aborted settlement. `run`: an ordinary turn.
+ * What a row's stop and fold records allow now. `hold`: it waits, and never
+ * runs, for the stopped ending or for the end of the run that took it as a
+ * follow-up. `stopped_before_dispatch`: a stopped row with no Flue receipt,
+ * which must never dispatch. `stopped`: a dispatched stopped row, which
+ * reattaches to read its aborted settlement. `run`: an ordinary turn.
  */
-export function turnJobStopGate(
-  job: Pick<PendingTurnJob, 'stop' | 'dispatchReceipt'>,
+export function turnJobGate(
+  job: Pick<PendingTurnJob, 'stop' | 'fold' | 'dispatchReceipt'>,
 ): 'run' | 'hold' | 'stopped_before_dispatch' | 'stopped' {
   if (job.stop?.role === 'held') return 'hold';
-  if (job.stop?.role !== 'stopped') return 'run';
-  return job.dispatchReceipt ? 'stopped' : 'stopped_before_dispatch';
+  if (job.stop?.role === 'stopped') return job.dispatchReceipt ? 'stopped' : 'stopped_before_dispatch';
+  return job.fold?.role === 'absorbed' ? 'hold' : 'run';
 }
 
 /** The turn row an OAuth continuation resumes as (idempotent per continuation). */
@@ -209,11 +223,16 @@ export interface PendingTurnJob {
   /** The runner has not yet confirmed admitting this row. */
   handoff?: true;
   /**
-   * The row's stop record (see turnJobStopGate). A hold whose stop no longer
+   * The row's stop record (see turnJobGate). A hold whose stop no longer
    * holds anything (its head settled, an older release delivered it) reads
    * as released.
    */
   stop?: TurnStopRecordV1;
+  /**
+   * The row's fold record (see turnJobGate): `absorbed` while the open run of
+   * its head holds it, read as `released` once that head ended otherwise.
+   */
+  fold?: TurnFoldMemberRecordV1;
   /**
    * The thread's previous run was stopped (see previousThreadStop). Read only
    * for a row whose dispatch has not started, the one prompt it can reach.
@@ -304,6 +323,7 @@ interface TurnJobRow {
   received_at?: number | null;
   executor?: string | null;
   stop_json?: string | null;
+  fold_json?: string | null;
 }
 
 const TURN_JOB_SELECT_COLUMNS = `id, evt_key, msg_key, turn_json, assignment_json, run_id,
@@ -311,7 +331,7 @@ const TURN_JOB_SELECT_COLUMNS = `id, evt_key, msg_key, turn_json, assignment_jso
   agent_instance_id, dispatch_envelope_json,
   dispatch_receipt_json, flue_settlement_json, dispatch_started_at,
   submission_id, observation_json, recovery_reason, enqueued_at, received_at, executor,
-  stop_json`;
+  stop_json, fold_json`;
 
 const PENDING_ROW = "delivered = 0 AND status != 'recovery_required'";
 /**
@@ -381,7 +401,8 @@ export class TurnJobStoreLogic {
         message_ts TEXT,
         stop_json TEXT,
         stop_notice_at INTEGER,
-        stop_notice_attempts INTEGER NOT NULL DEFAULT 0
+        stop_notice_attempts INTEGER NOT NULL DEFAULT 0,
+        fold_json TEXT
       )`,
     );
     const columns = db.all('PRAGMA table_info(turn_jobs)');
@@ -452,6 +473,9 @@ export class TurnJobStoreLogic {
     }
     if (!columns.some((column) => column.name === 'stop_notice_attempts')) {
       db.exec('ALTER TABLE turn_jobs ADD COLUMN stop_notice_attempts INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!columns.some((column) => column.name === 'fold_json')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN fold_json TEXT');
     }
     if (threadColumnsAdded) {
       for (const row of db.all(
@@ -868,25 +892,22 @@ export class TurnJobStoreLogic {
     ).filter((row) => {
       const record = parseTurnStopRecord(row.stop_json);
       return record?.role === role && record.headId === headId;
-    }).map((row) => {
-      const acknowledgment = parseTurnProgress(String(row.progress_json ?? '{}'))
-        .slackInteraction?.acknowledgment;
-      const owed = acknowledgment?.created === true && acknowledgment.cleanup === 'pending';
-      return {
-        id: String(row.id),
-        ...(row.run_id ? { runId: String(row.run_id) } : {}),
-        ...(row.message_ts ? { messageTs: String(row.message_ts) } : {}),
-        ...(owed
-          ? {
-              receipt: {
-                channelId: acknowledgment.channelId,
-                messageTs: acknowledgment.messageTs,
-                name: acknowledgment.name,
-              },
-            }
-          : {}),
-      };
-    });
+    }).map(endedRowOf);
+  }
+
+  /**
+   * Of the rows a stop ended, the follow-ups its stopped run had read: the
+   * head's members, once the head dispatched with them in its prompt.
+   */
+  private readByStoppedRun(headId: string, rows: readonly TurnEndedRow[]): number {
+    const head = this.db.get('SELECT dispatch_started_at FROM turn_jobs WHERE id = ?', headId);
+    if (head?.dispatch_started_at === null || head?.dispatch_started_at === undefined) return 0;
+    return rows.filter((row) => {
+      const record = parseTurnFoldRecord(
+        this.db.get('SELECT fold_json FROM turn_jobs WHERE id = ?', row.id)?.fold_json,
+      );
+      return record?.headId === headId && record.received;
+    }).length;
   }
 
   private writeStopRecord(id: string, record: TurnStopRecordV1): void {
@@ -936,10 +957,12 @@ export class TurnJobStoreLogic {
     if (record?.role !== 'stopped') return undefined;
     const threadKey = head?.thread_key ? String(head.thread_key) : undefined;
     if (record.ending) {
+      const rows = this.stopMembers(threadKey, headId, record.ending.outcome);
       return {
         outcome: record.ending.outcome,
         count: record.ending.count,
-        rows: this.stopMembers(threadKey, headId, record.ending.outcome),
+        read: this.readByStoppedRun(headId, rows),
+        rows,
         record,
       };
     }
@@ -960,7 +983,7 @@ export class TurnJobStoreLogic {
     }
     const ended: TurnStopHeadRecordV1 = { ...record, ending: { outcome, count: rows.length, at } };
     this.db.run('UPDATE turn_jobs SET stop_json = ? WHERE id = ?', JSON.stringify(ended), headId);
-    return { outcome, count: rows.length, rows, record: ended };
+    return { outcome, count: rows.length, read: this.readByStoppedRun(headId, rows), rows, record: ended };
   }
 
   /**
@@ -981,6 +1004,213 @@ export class TurnJobStoreLogic {
     }
     const record = parseTurnStopRecord(row.stop_json);
     if (record?.role === 'stopped' && !record.ending) this.finishStopRows(id, 'released');
+  }
+
+  // ── follow-ups ──────────────────────────────────────────────────────────
+
+  /**
+   * Claim the head's follow-ups (see TurnFoldRequest), in one transaction
+   * with every stop: a stop and a fold can never interleave. The members are
+   * the contiguous run of the head's runner queue after it (or after its
+   * earlier members) that the head's requester typed as plain messages; the
+   * first row that does not qualify ends it, so no one else's reply is ever
+   * reordered behind a later message. A head with a stop, or in a thread with
+   * an unfinished stop, takes none. Rows already stamped for the claim's
+   * cycle are returned again, so every retry and replay converges.
+   */
+  fold(request: TurnFoldRequest): TurnFoldClaim {
+    validateFoldRequest(request);
+    const { claim, confirmed } = this.db.transaction(() => this.claimFold(request));
+    if (confirmed > 0) emitTurnFold({ turnJobId: request.headId, late: confirmed });
+    return claim;
+  }
+
+  /** The claim, and how many late members this call confirmed as read. */
+  private claimFold(request: TurnFoldRequest): { claim: TurnFoldClaim; confirmed: number } {
+    const head = this.db.get(
+      `SELECT rowid AS row_order, id, turn_json, assignment_json, delivered, status, execution_authority,
+         dispatch_started_at, agent_instance_id, stop_json, fold_json, thread_key, enqueued_at
+       FROM turn_jobs WHERE id = ?`,
+      request.headId,
+    );
+    const threadKey = typeof head?.thread_key === 'string' ? head.thread_key : undefined;
+    const none = { claim: { messages: [], requesterText: '' }, confirmed: 0 };
+    if (!head || !threadKey) return none;
+    let headTurn: NormalizedSlackTurn;
+    let headAssignment: ResolvedAssignment;
+    try {
+      headTurn = JSON.parse(String(head.turn_json)) as NormalizedSlackTurn;
+      headAssignment = JSON.parse(String(head.assignment_json)) as ResolvedAssignment;
+    } catch {
+      return none;
+    }
+    let confirmed = 0;
+    if (request.phase === 'finish') {
+      for (const { record, message } of this.foldMembers(threadKey, request.headId)) {
+        if (record.cycle < 1 || record.cycle > request.received || record.received) continue;
+        this.writeFoldRecord(message.turnJobId, { ...record, received: true });
+        confirmed += 1;
+      }
+    }
+    const cycle = request.phase === 'start' ? 0 : request.received + 1;
+    const claim = (messages: FoldedMessage[]) => ({
+      claim: {
+        messages,
+        requesterText: foldedRequestText(
+          headTurn.text,
+          this.foldMembers(threadKey, request.headId)
+            .filter(({ record }) => record.cycle <= cycle).map(({ message }) => message),
+        ),
+      },
+      confirmed,
+    });
+    if (request.phase === 'finish' && !request.take) return claim([]);
+    const stamped = this.foldMembers(threadKey, request.headId)
+      .filter(({ record }) => record.cycle === cycle).map(({ message }) => message);
+    if (stamped.length > 0) return claim(stamped);
+    const dispatched = head.dispatch_started_at !== null && head.dispatch_started_at !== undefined;
+    const headStop = head.stop_json ? this.effectiveStop(parseTurnStopRecord(head.stop_json)) : undefined;
+    const headFold = this.effectiveFold(parseTurnFoldRecord(head.fold_json));
+    const open = Number(head.delivered) === 0 && head.status === 'pending' &&
+      head.execution_authority === 'legacy' &&
+      (headStop === undefined || headStop.role === 'released') &&
+      headFold?.role !== 'absorbed' &&
+      !this.unfinishedStopHead(threadKey) &&
+      foldableTurn(headTurn) &&
+      (request.phase === 'start'
+        ? !dispatched
+        : dispatched && head.agent_instance_id === request.instanceId);
+    if (!open || cycle > MAX_FOLD_CYCLES) return claim([]);
+    const runnerKey = runnerKeyOf({ turn: headTurn, assignment: headAssignment });
+    const taken: FoldedMessage[] = [];
+    let lastTs = headTurn.messageTs;
+    let chars = 0;
+    for (const row of this.db.all(
+      `SELECT id, turn_json, assignment_json, attempts, dispatch_started_at, stop_json, fold_json
+       FROM turn_jobs
+       WHERE thread_key = ? AND ${PENDING_ROW} AND execution_authority = 'legacy'
+         AND (enqueued_at > ? OR (enqueued_at = ? AND rowid > ?))
+       ORDER BY enqueued_at, rowid`,
+      threadKey,
+      Number(head.enqueued_at),
+      Number(head.enqueued_at),
+      Number(head.row_order),
+    )) {
+      let turn: NormalizedSlackTurn;
+      let assignment: ResolvedAssignment;
+      try {
+        turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
+        assignment = JSON.parse(String(row.assignment_json)) as ResolvedAssignment;
+      } catch {
+        break;
+      }
+      if (runnerKeyOf({ turn, assignment }) !== runnerKey) continue;
+      const fold = this.effectiveFold(parseTurnFoldRecord(row.fold_json));
+      if (fold?.role === 'absorbed' && fold.headId === request.headId) {
+        lastTs = turn.messageTs;
+        continue;
+      }
+      const stop = row.stop_json ? this.effectiveStop(parseTurnStopRecord(row.stop_json)) : undefined;
+      const eligible = turn.userId === headTurn.userId &&
+        assignment.agentId === headAssignment.agentId &&
+        foldableTurn(turn) &&
+        Number(row.attempts) === 0 &&
+        (row.dispatch_started_at === null || row.dispatch_started_at === undefined) &&
+        (stop === undefined || stop.role === 'released') &&
+        (fold === undefined || fold.role === 'released') &&
+        validSlackTs(turn.messageTs) && compareSlackTs(turn.messageTs, lastTs) > 0;
+      if (!eligible || taken.length >= MAX_FOLDED_MESSAGES) break;
+      if (taken.length > 0 && chars + turn.text.length > MAX_FOLDED_TEXT_CHARS) break;
+      this.writeFoldRecord(String(row.id), {
+        schemaVersion: 1, role: 'absorbed', headId: request.headId, cycle, received: cycle === 0, at: this.now(),
+      });
+      taken.push({ turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text });
+      lastTs = turn.messageTs;
+      chars += turn.text.length;
+    }
+    return claim(taken);
+  }
+
+  /** Rows whose fold record names `headId`, oldest first, whatever they read as now. */
+  private foldMembers(
+    threadKey: string,
+    headId: string,
+  ): Array<{ record: TurnFoldMemberRecordV1; message: FoldedMessage }> {
+    return this.db.all(
+      `SELECT id, turn_json, fold_json FROM turn_jobs
+       WHERE thread_key = ? AND fold_json IS NOT NULL AND json_extract(fold_json, '$.headId') = ?
+       ORDER BY enqueued_at, rowid`,
+      threadKey,
+      headId,
+    ).flatMap((row) => {
+      const record = parseTurnFoldRecord(row.fold_json);
+      if (!record) return [];
+      let turn: NormalizedSlackTurn;
+      try {
+        turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
+      } catch {
+        // An unreadable member must not block its head's tombstone.
+        return [];
+      }
+      return [{
+        record,
+        message: { turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text },
+      }];
+    });
+  }
+
+  private writeFoldRecord(id: string, record: TurnFoldMemberRecordV1): void {
+    this.db.run('UPDATE turn_jobs SET fold_json = ? WHERE id = ?', JSON.stringify(record), id);
+  }
+
+  /**
+   * An absorbed member is held only while its head is open; once the head
+   * ended any other way than settling it (a failure, a recovery, a delivery
+   * by an older release, a discard), it reads as released and runs as an
+   * ordinary turn, so no message is ever stranded.
+   */
+  private effectiveFold(record: TurnFoldMemberRecordV1 | undefined): TurnFoldMemberRecordV1 | undefined {
+    if (record?.role !== 'absorbed') return record;
+    const head = this.db.get('SELECT delivered, status FROM turn_jobs WHERE id = ?', record.headId);
+    const holding = head !== undefined && Number(head.delivered) === 0 && head.status !== 'recovery_required';
+    return holding ? record : { ...record, role: 'released' };
+  }
+
+  /**
+   * The head delivered: each member its run read ends with it (delivered,
+   * `done`, its fold record `settled`), but only when Flue settled that run
+   * completed, since only then did the reply answer it. Unread members, and
+   * every member of a run that failed or was stopped, read as released.
+   * Plain statements, run before the head's own tombstone, so a repeat
+   * converges. A settled member keeps its 👀 owed: the interaction cleanup
+   * sweeps remove it like a delivered turn's.
+   */
+  private settleFoldMembers(headId: string): void {
+    const head = this.db.get(
+      `SELECT thread_key, json_extract(flue_settlement_json, '$.outcome') AS settled FROM turn_jobs WHERE id = ?`,
+      headId,
+    );
+    if (typeof head?.thread_key !== 'string' || head.settled !== 'completed') return;
+    for (const { record, message } of this.foldMembers(head.thread_key, headId)) {
+      if (record.role !== 'absorbed' || !record.received) continue;
+      this.db.run(
+        `UPDATE turn_jobs SET delivered = 1, status = 'done', fold_json = ?
+         WHERE id = ? AND delivered = 0 AND status = 'pending'`,
+        JSON.stringify({ ...record, role: 'settled', at: this.now() }),
+        message.turnJobId,
+      );
+    }
+  }
+
+  /** The follow-ups that ended with the head's delivery (see settleFoldMembers), oldest first. */
+  settledFoldMembers(headId: string): TurnEndedRow[] {
+    return this.db.all(
+      `SELECT id, run_id, message_ts, progress_json FROM turn_jobs
+       WHERE fold_json IS NOT NULL AND json_extract(fold_json, '$.headId') = ?
+         AND json_extract(fold_json, '$.role') = 'settled'
+       ORDER BY enqueued_at, rowid`,
+      headId,
+    ).map(endedRowOf);
   }
 
   // ── the stop outbox ─────────────────────────────────────────────────────
@@ -1524,7 +1754,7 @@ export class TurnJobStoreLogic {
     const binding = this.getAgentBinding(continuityKey);
     if (!binding || binding.instanceId !== instanceId) return undefined;
     const row = this.db.get(
-      `SELECT runtime_plan_json, json_extract(turn_json, '$.messageTs') AS message_ts,
+      `SELECT id, thread_key, runtime_plan_json, json_extract(turn_json, '$.messageTs') AS message_ts,
          json_extract(turn_json, '$.userId') AS user_id
        FROM turn_jobs
        WHERE agent_instance_id = ? AND runtime_plan_json IS NOT NULL
@@ -1535,8 +1765,15 @@ export class TurnJobStoreLogic {
       beforeMessageTs,
     );
     if (!row?.runtime_plan_json || typeof row.message_ts !== 'string') return undefined;
+    // The previous run read its follow-ups too: the transcript holds them.
+    const read = typeof row.thread_key === 'string'
+      ? this.foldMembers(row.thread_key, String(row.id)).filter(({ record }) => record.received)
+      : [];
     const previous: SlackThreadContinuation = {
-      messageTs: row.message_ts,
+      messageTs: read.reduce(
+        (newest, { message }) => compareSlackTs(message.messageTs, newest) > 0 ? message.messageTs : newest,
+        row.message_ts,
+      ),
       ...(typeof row.user_id === 'string' ? { slackUserId: row.user_id } : {}),
     };
     try {
@@ -1596,10 +1833,13 @@ export class TurnJobStoreLogic {
     return this.db.transaction(() => {
       // A stopped row, or one a stop holds, never dispatches: Flue's abort()
       // does not cover a dispatch that arrives after it (KTD2).
-      const stop = this.effectiveStop(parseTurnStopRecord(
-        this.db.get('SELECT stop_json FROM turn_jobs WHERE id = ?', id)?.stop_json,
-      ));
+      // A follow-up another run took is answered by that run, never by its own.
+      const records = this.db.get('SELECT stop_json, fold_json, thread_key FROM turn_jobs WHERE id = ?', id);
+      const stop = this.effectiveStop(parseTurnStopRecord(records?.stop_json));
       if (stop?.role === 'stopped' || stop?.role === 'held') throw new TurnJobStopRefusal();
+      if (this.effectiveFold(parseTurnFoldRecord(records?.fold_json))?.role === 'absorbed') {
+        throw new TurnJobStopRefusal();
+      }
       const decision = this.getFrozenRuntimePlan(id);
       if (!decision) {
         throw new Error('RuntimePlanV2 must be frozen before Flue dispatch.');
@@ -1624,7 +1864,14 @@ export class TurnJobStoreLogic {
       // different Durable Objects.
       const serializedThreadImages = serializeThreadImageRecords(threadImages);
       const serializedAdmittedListIds = serializeAdmittedSlackListIds(admittedListIds);
-      const requesterText = personRequestText(turn);
+      const personText = personRequestText(turn);
+      const members = typeof records?.thread_key === 'string'
+        ? this.foldMembers(records.thread_key, id)
+          .filter(({ record }) => record.cycle === 0).map(({ message }) => message)
+        : [];
+      const requesterText = personText === undefined || members.length === 0
+        ? personText
+        : foldedRequestText(personText, members);
       const requesterTextSource = personRequestTextSource(turn);
       const envelope: FlueDispatchEnvelopeV1 = {
         schemaVersion: 2,
@@ -2275,9 +2522,13 @@ export class TurnJobStoreLogic {
     ) !== undefined;
   }
 
-  /** Tombstone a delivered job so no later scan re-delivers it. */
+  /**
+   * Tombstone a delivered job so no later scan re-delivers it, ending with it
+   * the follow-ups its run read (settleFoldMembers).
+   */
   markDelivered(id: string): void {
     this.recordTerminalStatus(id, 'success');
+    this.settleFoldMembers(id);
     this.db.run("UPDATE turn_jobs SET delivered = 1, status = 'done' WHERE id = ?", id);
     this.releaseStop(id);
   }
@@ -2427,6 +2678,7 @@ export class TurnJobStoreLogic {
   private decodeRow(row: TurnJobRow, records = parseTurnJobRecords(row)): PendingTurnJob {
     const { turn, assignment, runtimePlan, dispatchEnvelope, dispatchReceipt, flueSettlement } = records;
     const stop = row.stop_json ? this.effectiveStop(parseTurnStopRecord(row.stop_json)) : undefined;
+    const fold = this.effectiveFold(parseTurnFoldRecord(row.fold_json));
     const previousStop = this.previousThreadStop(row, turn, assignment);
     return {
       id: row.id,
@@ -2456,6 +2708,7 @@ export class TurnJobStoreLogic {
       ...(rowExecutor(row) === 'runner' ? { executor: 'runner' as const } : {}),
       ...(row.executor === 'handoff' ? { handoff: true as const } : {}),
       ...(stop ? { stop } : {}),
+      ...(fold ? { fold } : {}),
       ...(previousStop ? { previousStop } : {}),
     };
   }
@@ -2703,6 +2956,60 @@ function parseTurnStopRecord(raw: unknown): TurnStopRecordV1 | undefined {
     // Malformed: treated as absent.
   }
   return undefined;
+}
+
+/** Tolerant like parseTurnStopRecord: a record this release cannot read leaves the row an ordinary turn. */
+function parseTurnFoldRecord(raw: unknown): TurnFoldMemberRecordV1 | undefined {
+  if (typeof raw !== 'string' || raw.length === 0) return undefined;
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    if (!value || typeof value !== 'object' || value.schemaVersion !== 1 ||
+        (value.role !== 'absorbed' && value.role !== 'settled') ||
+        typeof value.headId !== 'string' || typeof value.received !== 'boolean' ||
+        !Number.isSafeInteger(value.cycle) || Number(value.cycle) < 0 ||
+        !Number.isSafeInteger(value.at)) return undefined;
+    return {
+      schemaVersion: 1,
+      role: value.role,
+      headId: value.headId,
+      cycle: Number(value.cycle),
+      received: value.received,
+      at: Number(value.at),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function validateFoldRequest(request: TurnFoldRequest): void {
+  validateBoundedString(request.headId, 'TurnJob id', 256);
+  if (request.phase === 'start') return;
+  if (request.phase !== 'finish') throw new Error('Fold phase is invalid.');
+  validateOpaqueAgentId(request.instanceId, 'instance id');
+  if (!Number.isSafeInteger(request.received) || request.received < 0 || request.received > MAX_FOLD_CYCLES) {
+    throw new Error('Fold cycle count is invalid.');
+  }
+  if (typeof request.take !== 'boolean') throw new Error('Fold take flag is invalid.');
+}
+
+/** A row's coordinates and the 👀 Chickpea added to its message and still owes removing (KTD9). */
+function endedRowOf(row: Record<string, unknown>): TurnEndedRow {
+  const acknowledgment = parseTurnProgress(String(row.progress_json ?? '{}')).slackInteraction?.acknowledgment;
+  const owed = acknowledgment?.created === true && acknowledgment.cleanup === 'pending';
+  return {
+    id: String(row.id),
+    ...(row.run_id ? { runId: String(row.run_id) } : {}),
+    ...(row.message_ts ? { messageTs: String(row.message_ts) } : {}),
+    ...(owed
+      ? {
+          receipt: {
+            channelId: acknowledgment.channelId,
+            messageTs: acknowledgment.messageTs,
+            name: acknowledgment.name,
+          },
+        }
+      : {}),
+  };
 }
 
 function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {

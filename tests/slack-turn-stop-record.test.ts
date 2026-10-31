@@ -31,7 +31,7 @@ import {
   TURN_STOP_HOLD_RETRY_MS,
   TurnJobStopRefusal,
   TurnJobStoreLogic,
-  turnJobStopGate,
+  turnJobGate,
   turnStopThreadKey,
   type PendingTurnJob,
 } from '../src/slack/turn-jobs.ts';
@@ -139,9 +139,9 @@ test('a stop stamps the running row, holds the unread rows before it, and the en
     assert.deepEqual(stopOf(turns, 'running'), result?.record);
     for (const id of ['unread_1', 'unread_2']) {
       assert.deepEqual(stopOf(turns, id), { schemaVersion: 1, role: 'held', headId: 'running', at: NOW });
-      assert.equal(turnJobStopGate(turns.runnerView(id).job!), 'hold');
+      assert.equal(turnJobGate(turns.runnerView(id).job!), 'hold');
     }
-    assert.equal(turnJobStopGate(turns.runnerView('running').job!), 'stopped',
+    assert.equal(turnJobGate(turns.runnerView('running').job!), 'stopped',
       'a dispatched stopped row reattaches to read its aborted settlement');
 
     const finish = turns.finishStop('running', 'dropped');
@@ -195,13 +195,13 @@ test('a message posted after the stop is untouched and runs normally, even when 
     turns.enqueue(job('posted_after', '111'));
     turns.enqueue(job('posted_before', '105'));
     assert.equal(stopOf(turns, 'posted_after'), undefined);
-    assert.equal(turnJobStopGate(turns.runnerView('posted_after').job!), 'run');
+    assert.equal(turnJobGate(turns.runnerView('posted_after').job!), 'run');
     assert.deepEqual(stopOf(turns, 'posted_before'), {
       schemaVersion: 1, role: 'held', headId: 'running', at: NOW,
     });
     assert.equal(turns.finishStop('running', 'dropped')?.count, 1);
     assert.equal(turns.runnerView('posted_after').status, 'pending');
-    assert.equal(turnJobStopGate(turns.runnerView('posted_after').job!), 'run');
+    assert.equal(turnJobGate(turns.runnerView('posted_after').job!), 'run');
   } finally { db.close(); }
 });
 
@@ -234,7 +234,7 @@ test('a stop right after the thread first message is intercepted, never enqueued
     assert.equal(decision.outcome === 'stopped' ? decision.stop.headId : undefined, 'first');
     assert.equal(decision.outcome === 'stopped' ? decision.stop.dispatchEnvelope : 'none', undefined);
     assert.equal(turns.runnerView('stop_message').status, 'missing', 'the stop is not a TurnJob');
-    assert.equal(turnJobStopGate(turns.runnerView('first').job!), 'stopped_before_dispatch');
+    assert.equal(turnJobGate(turns.runnerView('first').job!), 'stopped_before_dispatch');
   } finally { db.close(); }
 });
 
@@ -573,7 +573,7 @@ test('on a completion race the held rows are released and run as ordinary turns'
     for (const id of ['unread_1', 'unread_2']) {
       assert.equal(turns.runnerView(id).status, 'pending');
       assert.equal(stopOf(turns, id)?.role, 'released');
-      assert.equal(turnJobStopGate(turns.runnerView(id).job!), 'run');
+      assert.equal(turnJobGate(turns.runnerView(id).job!), 'run');
     }
     turns.enqueue(job('late', '104'));
     assert.equal(stopOf(turns, 'late'), undefined, 'a released stop holds no late arrival');
@@ -590,7 +590,7 @@ test('a head that settles without the stopped ending releases its held rows, so 
       if (settle === 'markRecoveryRequired') turns.markRecoveryRequired('running', 'flue_receipt_conflict');
       else turns[settle]('running');
       assert.equal(stopOf(turns, 'unread')?.role, 'released', settle);
-      assert.equal(turnJobStopGate(turns.runnerView('unread').job!), 'run', settle);
+      assert.equal(turnJobGate(turns.runnerView('unread').job!), 'run', settle);
       assert.equal(turns.listDueStopNotices(NOW).length, settle === 'markRecoveryRequired' ? 1 : 0,
         `${settle}: a delivered head owes no notice; one held for recovery may still run in Flue`);
     } finally { db.close(); }
@@ -606,7 +606,7 @@ test('a hold whose head was settled by an older release reads as released', () =
     // An older release delivers the head without knowing the stop record.
     db.run("UPDATE turn_jobs SET delivered = 1, status = 'done' WHERE id = 'running'");
     assert.equal(stopOf(turns, 'unread')?.role, 'released');
-    assert.equal(turnJobStopGate(turns.runnerView('unread').job!), 'run');
+    assert.equal(turnJobGate(turns.runnerView('unread').job!), 'run');
   } finally { db.close(); }
 });
 
@@ -1075,7 +1075,7 @@ test('a stop refused at dispatch after the head prepared its execution settles t
     assert.equal(s.turns.steer(stop('110')).outcome, 'stopped');
     assert.throws(() => s.turns.prepareFlueDispatch('running', 'Do the work', { generation: 'running' }),
       (error: unknown) => error instanceof TurnJobStopRefusal);
-    assert.equal(turnJobStopGate(s.turns.runnerView('running').job!), 'stopped_before_dispatch',
+    assert.equal(turnJobGate(s.turns.runnerView('running').job!), 'stopped_before_dispatch',
       'the retry takes the stopped ending, with no Work lifecycle of its own');
     const finished = s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
     assert.equal(finished?.count, 1);
@@ -1114,7 +1114,7 @@ for (const reached of [false, true]) {
       assert.equal(s.turns.steer(stop('110')).outcome, 'stopped');
       const head = s.turns.runnerView('running').job!;
       assert.notEqual(head.dispatchStartedAt, undefined);
-      assert.equal(turnJobStopGate(head), 'stopped_before_dispatch');
+      assert.equal(turnJobGate(head), 'stopped_before_dispatch');
       s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
       const run = s.work.getRun(runId);
       assert.equal(run?.status, 'settled');
@@ -1136,7 +1136,7 @@ test('a dispatched stopped head keeps its Run for its own lifecycle, which settl
     const lifecycle = await prepareHeadExecution(s, runId);
     dispatch(s.turns, job('running', '101'));
     assert.equal(s.turns.steer(stop('110')).outcome, 'stopped');
-    assert.equal(turnJobStopGate(s.turns.runnerView('running').job!), 'stopped');
+    assert.equal(turnJobGate(s.turns.runnerView('running').job!), 'stopped');
     const before = headRecords(s, runId);
     s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
     assert.deepEqual(headRecords(s, runId), before, 'the ending leaves a dispatched head to its lifecycle');

@@ -65,7 +65,7 @@ import {
   MAX_TURN_ATTEMPTS,
   replayTextForTurnProgress,
   TURN_STOP_HOLD_RETRY_MS,
-  turnJobStopGate,
+  turnJobGate,
   type PendingTurnJob,
   type TurnJobStoreLogic,
 } from './turn-jobs.ts';
@@ -111,7 +111,7 @@ export interface TurnExecutionPorts {
     | 'markDelivered'
     | 'markError'
     | 'finishStop'
-  >>;
+  >> & Partial<AsyncCapable<Pick<TurnJobStoreLogic, 'fold'>>>;
   /** Slack claims and the per-thread active-work flag. */
   slack: AsyncCapable<Pick<
     SlackStateLogic,
@@ -209,16 +209,17 @@ export async function executeTurnJob(
   ports: TurnExecutionPorts,
   options: TurnExecutionOptions,
 ): Promise<boolean> {
-  // A row a stop holds waits, without spending an attempt, for the stopped
-  // ending that drops or releases it. A stopped row with no Flue receipt must
-  // never dispatch, because abort() does not cover a later dispatch: it takes
-  // the stopped ending at once (KTD3), with no model call.
-  const stopGate = turnJobStopGate(job);
-  if (stopGate === 'hold') {
+  // A row a stop holds, or one an earlier run took as a follow-up, waits,
+  // without spending an attempt, for that run's ending to settle or release
+  // it. A stopped row with no Flue receipt must never dispatch, because
+  // abort() does not cover a later dispatch: it takes the stopped ending at
+  // once (KTD3), with no model call.
+  const gate = turnJobGate(job);
+  if (gate === 'hold') {
     options.onRetry(TURN_STOP_HOLD_RETRY_MS);
     return false;
   }
-  const stoppedBeforeDispatch = stopGate === 'stopped_before_dispatch';
+  const stoppedBeforeDispatch = gate === 'stopped_before_dispatch';
   if (!job.turn.interactionIntent && job.progress.interactionIntent) {
     job.turn.interactionIntent = job.progress.interactionIntent;
   }
@@ -506,6 +507,10 @@ export async function executeTurnJob(
       },
       getBoundRuntimePlan: (...args) => ports.turnJobs.getBoundRuntimePlan(...args),
       getThreadContinuation: (...args) => ports.turnJobs.getThreadContinuation(...args),
+      // Only an executor that reads each row again before running it may
+      // fold: the alarm executor runs rows it listed earlier, so a follow-up
+      // its own head took could run again.
+      ...(ports.turnJobs.fold ? { claimFold: (request) => ports.turnJobs.fold!(request) } : {}),
       flueDispatch,
       presentationState,
       progressiveAttributionProven: true,
@@ -766,7 +771,7 @@ export function stopNoteFacts(input: {
   return {
     facts: {
       stopperUserId: finished.record.stopperUserId,
-      unread: (finished.outcome === 'dropped' ? finished.count : 0) + (input.beforeDispatch ? 1 : 0),
+      unread: (finished.outcome === 'dropped' ? finished.count - finished.read : 0) + (input.beforeDispatch ? 1 : 0),
       pullRequests,
       windingDown,
     },

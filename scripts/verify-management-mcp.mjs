@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
-const AGENT_AUTHORING_GUIDE_VERSION = '1.0.47';
-const MANAGEMENT_MCP_SERVER_VERSION = '4.1.0';
+const AGENT_AUTHORING_GUIDE_VERSION = '1.0.48';
+const MANAGEMENT_MCP_SERVER_VERSION = '4.2.0';
 const MANAGEMENT_MCP_TOOL_NAMES = [
   'inspect_workspace',
   'prepare_connector_setup',
@@ -18,6 +18,7 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'export_workspace_recipe',
   'preview_workspace_recipe',
   'import_skill',
+  'upload_skills',
   'manage_agent_skill',
   'apply_workspace_changes',
   'confirm_workspace_change',

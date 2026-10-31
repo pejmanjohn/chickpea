@@ -3,11 +3,10 @@ import { ErrorCode, type KnownBlock, type WebClient } from '@slack/web-api';
 import { isRecord } from '../security/content-validation.ts';
 import {
   emitSemanticActivityTelemetry,
-  semanticTelemetryForStatus,
+  semanticTelemetryForUpdate,
   type SemanticActivityTelemetrySink,
   type SemanticActivityTelemetrySurface,
 } from '../activity/telemetry.ts';
-import { isSafeTypedActivityStatus } from '../activity/status.ts';
 import type { TurnPullRequestProgress } from '../config/state-rpc.ts';
 import {
   canonicalSlackReplyText,
@@ -530,14 +529,11 @@ export class WebClientPresenter {
     startedAt: number,
     update: SlackStatusUpdate,
   ): void {
-    const semantic = isSafeTypedActivityStatus(update)
-      ? semanticTelemetryForStatus(update)
-      : { family: 'unknown' as const, phase: 'working' as const };
     emitSemanticActivityTelemetry({
       event: 'activity.transport',
       surface,
       outcome,
-      ...semantic,
+      ...semanticTelemetryForUpdate(update),
       durationMs: Date.now() - startedAt,
     }, this.options.activityTelemetry ?? console);
   }

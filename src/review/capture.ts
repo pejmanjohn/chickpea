@@ -96,11 +96,16 @@ export function slackRunReviewConversation(
   context: SlackTurnContext | undefined,
 ): RunReviewConversation {
   const messages = context?.messages ?? [];
-  const trigger = messages.find((message) => message.isTrigger);
+  // A turn that read follow-ups marks each as a trigger row: its request is all of them, oldest first.
+  const triggers = messages.filter((message) => message.isTrigger);
   const notes = (files: readonly { name: string; sizeBytes?: number }[] | undefined) =>
     (files ?? []).map((file) => ({ name: file.name, ...(file.sizeBytes === undefined ? {} : { size: file.sizeBytes }) }));
   return {
-    trigger: { author: turn.userId, text: trigger?.text ?? turn.text, files: notes(trigger?.files) },
+    trigger: {
+      author: turn.userId,
+      text: triggers.length > 0 ? triggers.map((message) => message.text).join('\n\n') : turn.text,
+      files: notes(triggers.flatMap((message) => message.files ?? [])),
+    },
     context: messages.filter((message) => !message.isTrigger).map((message) => {
       const role = message.role ?? 'human';
       return {
@@ -111,6 +116,15 @@ export function slackRunReviewConversation(
       };
     }),
   };
+}
+
+/** Messages a late fold added to the request follow the ones the turn started with, one paragraph each. */
+function withLateFollowUps(
+  trigger: RunReviewInput['trigger'],
+  followUps: readonly { text: string }[],
+): RunReviewInput['trigger'] {
+  if (followUps.length === 0) return trigger;
+  return { ...trigger, text: [trigger.text, ...followUps.map((message) => message.text)].join('\n\n') };
 }
 
 export function runReviewError(error: unknown): { class: string; message: string } {
@@ -173,7 +187,7 @@ class Session implements RunReviewSession {
       surface: this.start.surface,
       agentId: ending.agentId,
       ...(ending.model === undefined ? {} : { model: ending.model }),
-      trigger: ending.trigger,
+      trigger: withLateFollowUps(ending.trigger, collector?.followUps() ?? []),
       context: ending.context,
       steps: collector?.steps() ?? [],
       ...(ending.answer === undefined ? {} : { answer: ending.answer }),

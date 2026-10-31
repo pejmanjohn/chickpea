@@ -22,6 +22,7 @@ import type { IdentityStore } from '../identity/types.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import {
   slackApplyWorkspaceChangesValibotSchema,
+  slackUploadSkillsValibotSchema,
   importSkillValibotSchema,
   manageAgentSkillValibotSchema,
   proposeSkillImportValibotSchema,
@@ -80,6 +81,7 @@ import {
   slackUpdateAgentMemoryInputSchema,
 } from './slack-memory-actions.ts';
 import { parseAdmittedSlackListIds } from '../slack/lists/admission.ts';
+import { parseAttachmentFileIds } from '../slack/attachment-context.ts';
 
 const SIGNAL_ATTRIBUTE_KEYS = [
   'workspaceId',
@@ -154,6 +156,8 @@ export interface SlackManagementSignal {
   turnJobId: string;
   /** Host-admitted List references for this exact request. */
   admittedListIds?: readonly string[];
+  /** Files attached to the requester's current message, from the host's normalized turn. Never model-written. */
+  attachmentFileIds?: readonly string[];
   /** Trusted current Slack message body, carried outside model-selected tool input. */
   requesterText?: string;
   /** The host wrote requesterText to describe the person's click or form answer. */
@@ -182,6 +186,7 @@ const MUTATING_TOOLS = new Set<WorkspaceManagementToolName>([
   'try_connection',
   'revoke_setup_link',
   'import_skill',
+  'upload_skills',
   'manage_agent_skill',
   'propose_skill_import',
   'propose_workspace_changes',
@@ -624,7 +629,22 @@ export function slackManagementInstruction(agentId: string): string {
   return `${slackManagementRoutingInstruction(agentId)} ${SLACK_MANAGEMENT_GUIDANCE}`;
 }
 
-/** Mount requester-bound management tools only for a verified Slack signal. */
+/**
+ * Names the target Agent whether the model passed its ID or left the routed
+ * default, so one message and target are one upload, judged and metered once.
+ */
+export function slackSkillUploadKey(signal: Pick<SlackManagementSignal, 'agentId'>, agentId?: string): string {
+  return `slack-upload:${agentId ?? signal.agentId}`;
+}
+
+const SLACK_SKILL_UPLOAD_INSTRUCTION = 'The person\'s current message has files attached. If it asks to add them as skills, call upload_skills, which reads the files itself.';
+
+/**
+ * Mount requester-bound management tools only for a verified Slack signal.
+ * Returns the skill upload tool's mount when the person's message has files.
+ * The caller runs it after the tenant tools, so a turn with files keeps the
+ * shared prompt prefix every other turn reads.
+ */
 export function useWorkspaceManagementSlackTools(
   plan: RuntimePlanV2,
   resolvePlatformEnv: PlatformEnvResolver,
@@ -632,9 +652,9 @@ export function useWorkspaceManagementSlackTools(
   pageRead: () => boolean,
   writeAgentCreationTerminal?: (intent: SlackAgentCreationTerminalIntent) => void,
   writeMemoryUpdate?: (receipt: SlackMemoryUpdate) => void,
-): void {
+): (() => void) | undefined {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
-  if (!signal) return;
+  if (!signal) return undefined;
   const turnGuard = useSlackManagementTurnGuard(signal.turnJobId);
   const [creationState, persistCreationState] = usePersistentState<SlackAgentCreationTurnState>(
     SLACK_AGENT_CREATION_TURN_STATE,
@@ -918,6 +938,29 @@ export function useWorkspaceManagementSlackTools(
       ));
     },
   });
+
+  if (!signal.attachmentFileIds) return undefined;
+  return () => {
+    useInstruction(SLACK_SKILL_UPLOAD_INSTRUCTION);
+    useTool({
+      name: 'upload_skills',
+      description: workspaceManagementToolDescription('upload_skills'),
+      input: slackUploadSkillsValibotSchema,
+      async run({ data }) {
+        // The service scopes the key to this Slack event, so a retry in the
+        // turn replays its receipt and a later message is a new upload.
+        const result = await invokeLiveSlackTool(
+          signal,
+          resolvePlatformEnv,
+          'upload_skills',
+          { ...data, idempotencyKey: slackSkillUploadKey(signal, data.agentId) },
+          turnGuard,
+        );
+        creationCoordinator.recordFollowOn(result);
+        return slackToolOutput(result);
+      },
+    });
+  };
 }
 
 export function createSlackChickpeaHandoff(
@@ -970,6 +1013,8 @@ export function parseSlackManagementSignal(
   ) return undefined;
   const admittedListIds = parseAdmittedSlackListIds(delivery.attributes.admittedListIds);
   if (delivery.attributes.admittedListIds !== undefined && !admittedListIds) return undefined;
+  const attachmentFileIds = parseAttachmentFileIds(delivery.attributes.attachmentFileIds);
+  if (delivery.attributes.attachmentFileIds !== undefined && !attachmentFileIds) return undefined;
   return {
     ...values,
     ...(conversationKind ? { conversationKind } : {}),
@@ -981,6 +1026,7 @@ export function parseSlackManagementSignal(
       ? { requesterTimezone: boundedAttribute(delivery.attributes.requesterTimezone, 'requesterTimezone', 64) }
       : {}),
     ...(admittedListIds ? { admittedListIds } : {}),
+    ...(attachmentFileIds ? { attachmentFileIds } : {}),
     agentId: plan.agentId,
   };
 }
@@ -1221,6 +1267,9 @@ function managementWriteReference<TName extends WorkspaceManagementToolName>(
   }
   if (name === 'import_skill') {
     return (args as WorkspaceManagementToolArguments['import_skill']).idempotencyKey;
+  }
+  if (name === 'upload_skills') {
+    return (args as WorkspaceManagementToolArguments['upload_skills']).idempotencyKey;
   }
   if (name === 'manage_agent_skill') {
     return (args as WorkspaceManagementToolArguments['manage_agent_skill']).idempotencyKey;

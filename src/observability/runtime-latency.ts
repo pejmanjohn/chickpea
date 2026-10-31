@@ -17,6 +17,7 @@ import type { GatewaySessionRunnerHealthSnapshot } from '../slack/gateway/sessio
 export type RuntimeLatencyEvent =
   | 'relay_alarm'
   | 'turn_latency'
+  | 'turn_fold'
   | 'state_rpc'
   | 'gateway_delivery'
   | 'thread_runner_alarm'
@@ -238,6 +239,7 @@ export class TurnLatencyTracker {
   private readonly startedAt: number;
   private firstWrite: { surface: TurnFirstWrite; at: number } | undefined;
   private final: { kind: 'delivered' | 'deferred'; at: number } | undefined;
+  private folded = 0;
   private emitted = false;
 
   constructor(
@@ -252,6 +254,11 @@ export class TurnLatencyTracker {
   /** Record an acknowledged Slack write; only the first one is kept. */
   markSlackWrite(surface: TurnFirstWrite): void {
     if (!this.firstWrite) this.firstWrite = { surface, at: this.now() };
+  }
+
+  /** The turn took this many of its requester's queued messages as follow-ups. */
+  markFolded(count: number): void {
+    this.folded = count;
   }
 
   /** The terminal was delivered, or handed to a durable outbox. */
@@ -290,8 +297,24 @@ export class TurnLatencyTracker {
       receiptToAdmissionMs: sinceReceipt(admittedAt),
       receiptToFirstWriteMs: sinceReceipt(this.firstWrite?.at),
       attemptMs: end - this.startedAt,
+      folded: this.folded > 0 ? this.folded : undefined,
     }, this.sink);
   }
+}
+
+// ---------------------------------------------------------------------------
+// turn_fold: messages a running turn read in its would-stop phase.
+
+/**
+ * A running turn's model read `late` more of its requester's messages, sent
+ * while it worked; `turn_latency.folded` counts the ones it took at its start.
+ * Emitted once per message, when the state store confirms the Agent read it.
+ */
+export function emitTurnFold(
+  record: { turnJobId: string; late: number },
+  sink?: RuntimeLatencySink,
+): void {
+  emitRuntimeLatency('turn_fold', { turnRef: opaqueTurnRef(record.turnJobId), late: record.late }, sink);
 }
 
 // ---------------------------------------------------------------------------

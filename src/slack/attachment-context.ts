@@ -46,6 +46,8 @@ const CARRIED_SLACK_TURN_ATTRIBUTE_KEYS = [
   // referenced image still resolves after the analysis.
   'threadImages',
   'admittedListIds',
+  // The skill upload tool reads these files on any render of the turn.
+  'attachmentFileIds',
 ] as const;
 
 const MAX_ATTACHMENT_SIGNAL_CHARS = 12_000;
@@ -143,17 +145,21 @@ export function parseSlackAttachmentIntake(
       count: count ?? 0,
     };
   }
-  if (encodedStatus !== 'ok' || count === undefined || !encodedIds ||
-      encodedIds.length > MAX_ATTACHMENT_FILE_IDS_CHARS) {
+  if (encodedStatus !== 'ok' || count === undefined) {
     return { kind: 'rejected', status: 'invalid_metadata', count: count ?? 0 };
   }
-  const fileIds = encodedIds.split(',');
-  if (fileIds.length !== count || fileIds.length < 1 ||
-      fileIds.length > MAX_SLACK_ATTACHMENTS ||
-      fileIds.some((fileId) => !validAttachmentFileId(fileId))) {
+  const fileIds = parseAttachmentFileIds(encodedIds);
+  if (!fileIds || fileIds.length !== count) {
     return { kind: 'rejected', status: 'invalid_metadata', count };
   }
   return { kind: 'ready', request: delivery.body, count, fileIds };
+}
+
+/** The host's comma-joined `attachmentFileIds` attribute: one to four valid file IDs, else undefined. */
+export function parseAttachmentFileIds(encoded: string | undefined): string[] | undefined {
+  if (!encoded || encoded.length > MAX_ATTACHMENT_FILE_IDS_CHARS) return undefined;
+  const fileIds = encoded.split(',');
+  return fileIds.length <= MAX_SLACK_ATTACHMENTS && fileIds.every(validAttachmentFileId) ? fileIds : undefined;
 }
 
 /**

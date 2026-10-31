@@ -55,7 +55,7 @@ import { executeTurnJob, type TurnExecutionPorts } from '../src/slack/turn-execu
 import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import {
   TurnJobStoreLogic,
-  turnJobStopGate,
+  turnJobGate,
   turnStopThreadKey,
   type PendingTurnJob,
   type RunnerTurnJobView,
@@ -74,6 +74,9 @@ import { createWorkModelInvocationInterceptor } from '../src/work/model-invocati
 import { NOW, turnJob } from './fixtures/state-db/maintenance.ts';
 
 const threadOf = (job: PendingTurnJob) => job.turn.threadTs;
+
+/** The state store's turn rows as a runner's port reaches them. */
+type RunnerRemote = Parameters<typeof runnerTurnJobsPort>[0];
 
 /** The state store's workspace budgets, over one presentation store. */
 function sharedBudgets(store: SlackRunPresentationStoreLogic) {
@@ -532,9 +535,9 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
       rows.calls.push(`finishStop:${id}:${outcome}`);
       const stop = rows.rows.get(id)?.stop;
       if (stop?.role !== 'stopped') return undefined;
-      return { outcome, count: 0, rows: [], record: { ...stop, ending: { outcome, count: 0, at: NOW } } };
+      return { outcome, count: 0, read: 0, rows: [], record: { ...stop, ending: { outcome, count: 0, at: NOW } } };
     },
-  } as unknown as TurnExecutionPorts['turnJobs'], jobs, () => Date.now(), stops);
+  } as unknown as RunnerRemote, jobs, () => Date.now(), stops);
   const ports = {
     env: {},
     turnJobs: port,
@@ -1330,6 +1333,7 @@ test('a write that is not idempotent is never replayed after a disconnect; a rea
     ['workExecute', 'get_execution'], ['memoryExecute', 'put_agent_memory'],
     ['identityExecute', 'find_invitation'], ['configGetAgent', undefined],
     ['threadActiveWorkSet', undefined], ['slackFlueSettlementRecord', undefined],
+    ['slackTurnFold', undefined],
   ] as const) {
     assert.equal(replaySafeStateRpc(method, op), true, `${method} ${op ?? ''}`);
   }
@@ -1369,7 +1373,15 @@ test("a turn's first generation check uses the value its begin round trip read",
     await presentation.state.getLatestThreadSessionGeneration({ ...ROOT, threadTs: '1800000000.000002' });
     assert.equal(generationReads, 2);
     // A thread with no V3 generation yet is cached as none.
-    local.create({ ...v3Input('run_none', 'turn_none'), root: { ...ROOT, threadTs: '1800000000.000003' } });
+    const none = local.create({ ...v3Input('run_none', 'turn_none'), root: { ...ROOT, threadTs: '1800000000.000003' } });
+    local.transition({
+      runId: none.runId,
+      workBindingGeneration: none.workBindingGeneration,
+      runFencingToken: none.runFencingToken,
+      expectedProjectionVersion: none.projectionVersion,
+      expectedStreamState: none.stream.state,
+      mutation: { kind: 'set_agent_session_desired', desired: 'processing', operationId: 'session_run_none_1' },
+    });
     presentation.seedLatestThreadSessionGeneration('run_none', null);
     assert.equal(
       await presentation.state.getLatestThreadSessionGeneration({ ...ROOT, threadTs: '1800000000.000003' }),
@@ -1442,7 +1454,7 @@ test('a store that stays unreachable mid-turn is retried, never answered with a 
     const port = runnerTurnJobsPort({
       recordAttempt: async (_id: string, value: number) => { attempts.push(value); },
       recordFlueSettlement: async () => { throw new StateStoreDisconnectedError(new Error('reset')); },
-    } as unknown as TurnExecutionPorts['turnJobs'], jobs);
+    } as unknown as RunnerRemote, jobs);
     const finals: string[] = [];
     const retries: Array<number | undefined> = [];
     const settled = await executeTurnJob({
@@ -1490,7 +1502,7 @@ test('a store that stays unreachable mid-turn is retried, never answered with a 
       turnJobs: runnerTurnJobsPort({
         recordAttempt: async (_id: string, value: number) => { lateAttempts.push(value); },
         recordFlueSettlement: async () => { throw new StateStoreDisconnectedError(new Error('reset')); },
-      } as unknown as TurnExecutionPorts['turnJobs'], jobs),
+      } as unknown as RunnerRemote, jobs),
       slack: { setActiveWork: async () => {}, release: async () => {}, markCodingActiveWork: async () => {} },
       config: {},
       presentationState: {},
@@ -2102,7 +2114,7 @@ test('a stop before dispatch never calls abort(); the alarm hands the stopped ro
     const gates: string[] = [];
     const execute = h.deps.execute;
     h.deps.execute = (job, ...rest) => {
-      gates.push(`${job.id}:${turnJobStopGate(job)}`);
+      gates.push(`${job.id}:${turnJobGate(job)}`);
       return execute(job, ...rest);
     };
     // Admitted here, never dispatched: the stop transaction stamped its row.
@@ -2770,11 +2782,11 @@ test("the runner alarm record counts turns a stopped ending dropped, once howeve
     const rows = fakeRows([]);
     const h = runnerHarness(db, rows);
     const finish = {
-      outcome: 'dropped' as const, count: 2, rows: [], record: { ...STOP_RECORD, ending: { outcome: 'dropped' as const, count: 2, at: NOW } },
+      outcome: 'dropped' as const, count: 2, read: 0, rows: [], record: { ...STOP_RECORD, ending: { outcome: 'dropped' as const, count: 2, at: NOW } },
     };
     const port = runnerTurnJobsPort({
       finishStop: async () => finish,
-    } as unknown as TurnExecutionPorts['turnJobs'], h.jobs);
+    } as unknown as RunnerRemote, h.jobs);
     assert.deepEqual(await port.finishStop('head', 'dropped'), finish);
     await port.finishStop('head', 'dropped');
     const first = await runThreadRunnerAlarm(h.deps);
@@ -2852,5 +2864,185 @@ test('a malformed stop notice is refused and never persisted', async () => {
       assert.deepEqual(await stops.receive(notice as never), { acknowledged: false, wake: false });
     }
     assert.equal(jobs.stopMarker('x'), undefined);
+  } finally { db.close(); }
+});
+
+// ── follow-ups (steering A) ─────────────────────────────────────────────
+
+const FOLD_THREAD_TS = '1800000500.000100';
+const FOLD_UID = 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+
+function foldJob(id: string, suffix: string) {
+  const job = turnJob(id);
+  return {
+    ...job,
+    turn: {
+      ...job.turn, userId: 'U_PERSON', text: `Message ${suffix}`, threadTs: FOLD_THREAD_TS,
+      messageTs: `1800000500.000${suffix}`, source: 'implicit_thread_reply' as const,
+    },
+    assignment: { ...job.assignment, model: 'local-stub/fold', runtimeContract: 'chickpea-v1' as const, ownerIncarnation: 1 },
+  };
+}
+
+/**
+ * A runner over the real state store's turn rows: the real executor and the
+ * runner's turn port, with `runTurn` scripted as one dispatch per run that
+ * first claims its follow-ups through the executor's forwarded store method.
+ */
+function foldRunnerHarness(
+  db: ReturnType<typeof openStateDb>,
+  ids: Array<[string, string]>,
+  script: {
+    /** The run's Flue submission settles failed: the turn ends with its failure final. */
+    fail?: (id: string) => boolean;
+    /** Inside the head's run, after its dispatch. */
+    whileRunning?: (id: string, store: TurnJobStoreLogic) => void;
+    /** The executor's port has no fold, as on the alarm executor. */
+    withoutFold?: boolean;
+  } = {},
+) {
+  let clock = NOW;
+  const store = new TurnJobStoreLogic(db, () => clock);
+  for (const [id, suffix] of ids) {
+    store.enqueue(foldJob(id, suffix));
+    store.assignRunner(id);
+    store.confirmRunner(id);
+    clock += 1;
+  }
+  const jobs = new ThreadRunnerJobStore(db);
+  for (const [id] of ids) jobs.admit({ id, threadKey: 'fold-thread', payload: {} }, NOW);
+  const runs: string[] = [];
+  const unread: number[] = [];
+  const turns = {
+    view: async (id: string) => store.runnerView(id),
+    begin: async (id: string) => ({ view: store.runnerView(id), settings: {} }),
+    markDelivered: async (id: string) => { store.markDelivered(id); },
+    markError: async (id: string) => { store.markError(id); },
+  };
+  const runnerPort = runnerTurnJobsPort(store as unknown as RunnerRemote, jobs, () => Date.now());
+  const { fold: _fold, ...withoutFold } = runnerPort;
+  const ports = {
+    env: {},
+    turnJobs: script.withoutFold ? withoutFold : runnerPort,
+    slack: { setActiveWork: async () => {}, release: async () => {}, markCodingActiveWork: async () => {} },
+    config: {},
+    presentationState: {},
+    telemetry: { capture() {} },
+    resolveInstallation: async () => ({
+      workspaceId: 'T_TEST',
+      client: {
+        conversations: { info: async () => ({ ok: true, channel: { id: 'C_TEST', is_member: true } }) },
+        chat: { postEphemeral: async () => ({ ok: true }), postMessage: async () => ({ ok: true }) },
+        reactions: { remove: async () => ({ ok: true }) },
+      },
+    }),
+    sandboxes: () => [],
+    runTurn: async (
+      turn: PendingTurnJob['turn'],
+      assignment: PendingTurnJob['assignment'],
+      _env: unknown,
+      options: RunTurnOptions,
+    ) => {
+      const id = options.turnId!;
+      const claim = options.claimFold
+        ? await options.claimFold({ phase: 'start', headId: id })
+        : { messages: [] };
+      runs.push(`${id}:${claim.messages.map((message) => message.turnJobId).join(',')}`);
+      await options.onRuntimePlan!(compileRuntimePlanV2({ turn, assignment, instructions: 'Help.', memoryEpoch: 1 }));
+      await options.flueDispatch!.prepare('Do the work', { generation: id });
+      await options.flueDispatch!.recordReceipt({
+        submissionId: `sub_${id}`, acceptedAt: new Date(NOW).toISOString(), uid: FOLD_UID,
+      });
+      script.whileRunning?.(id, store);
+      if (options.stopEnding && store.runnerView(id).job?.stop?.role === 'stopped') {
+        await options.flueDispatch!.recordSettlement({ outcome: 'aborted', settledAt: NOW, failureKind: 'agent' });
+        unread.push((await options.stopEnding.finish())!.unread);
+        await options.onDelivered?.('stopped');
+        return;
+      }
+      const failed = script.fail?.(id) === true;
+      await options.flueDispatch!.recordSettlement(failed
+        ? { outcome: 'failed', settledAt: NOW, failureKind: 'provider' }
+        : {
+            outcome: 'completed', settledAt: NOW,
+            result: {
+              text: 'Done.', requestedModel: null, returnedModel: null, reportedUsage: null,
+              usageCompleteness: 'not_reported',
+            },
+          });
+      await options.onDelivered?.(failed ? 'failed' : 'succeeded');
+    },
+  } as unknown as TurnExecutionPorts;
+  const deps: ThreadRunnerLoopDeps = {
+    jobs,
+    turns,
+    execute: (job, control, onRetry, threadKey) => executeTurnJob(job, ports, {
+      latency: { lane: 'cloudflare', executor: 'runner' },
+      observationRoute: { executor: 'runner', runnerKey: threadKey },
+      control,
+      onRetry,
+    }),
+    clearActiveWork: async () => {},
+    armBackstop: async () => {},
+    carried: new Map(),
+    failures: { count: 0 },
+    budgetMs: 1_000,
+    hardCapMs: 5_000,
+    recheckMs: 2,
+    sink: { info() {} },
+  };
+  return { store, jobs, runs, unread, deps };
+}
+
+test('a burst runs once: the first turn takes the follow-ups, which settle without running', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const h = foldRunnerHarness(db, [['head', '101'], ['m1', '102'], ['m2', '103']]);
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.runs, ['head:m1,m2'], 'one run, one dispatch');
+    for (const id of ['head', 'm1', 'm2']) assert.equal(h.store.runnerView(id).status, 'done', id);
+    assert.deepEqual(h.jobs.status().jobs, { done: 3 });
+  } finally { db.close(); }
+});
+
+test('a head that fails releases its follow-ups, which then run once as one turn', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const h = foldRunnerHarness(db, [['head', '101'], ['m1', '102'], ['m2', '103']], {
+      fail: (id) => id === 'head',
+    });
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.runs, ['head:m1,m2', 'm1:m2']);
+    for (const id of ['head', 'm1', 'm2']) assert.equal(h.store.runnerView(id).status, 'done', id);
+    assert.deepEqual(h.jobs.status().jobs, { done: 3 });
+  } finally { db.close(); }
+});
+
+test('a stop during a run with follow-ups drops them with it; the stop note counts none unread', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const h = foldRunnerHarness(db, [['head', '101'], ['m1', '102'], ['m2', '103']], {
+      whileRunning: (id, store) => {
+        const head = store.runnerView(id).job!;
+        assert.equal(store.steer({
+          kind: 'stop', threadKey: turnStopThreadKey(head.turn, head.assignment), source: 'typed',
+          stopperUserId: 'U_PERSON', cutoffTs: '1800000500.000110',
+        }).outcome, 'stopped');
+      },
+    });
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.runs, ['head:m1,m2'], 'the follow-ups never run');
+    assert.deepEqual(h.unread, [0], 'the stopped run had read both');
+    for (const id of ['head', 'm1', 'm2']) assert.equal(h.store.runnerView(id).status, 'done', id);
+    assert.deepEqual(h.jobs.status().jobs, { done: 3 });
+  } finally { db.close(); }
+});
+
+test('an executor port without fold, as on the alarm executor, runs each message as its own turn', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const h = foldRunnerHarness(db, [['head', '101'], ['m1', '102'], ['m2', '103']], { withoutFold: true });
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.runs, ['head:', 'm1:', 'm2:']);
   } finally { db.close(); }
 });

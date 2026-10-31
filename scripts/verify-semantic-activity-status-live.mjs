@@ -153,7 +153,7 @@ function validateEvent(event) {
         'schemaVersion', 'event', 'surface', 'outcome', 'family', 'phase', 'durationMs',
       ], ['durationMs']);
       oneOf(event.surface, ['assistant_status', 'legacy_message']);
-      oneOf(event.outcome, ['acknowledged', 'rejected', 'ambiguous', 'latched_off']);
+      oneOf(event.outcome, ['acknowledged', 'rejected', 'ambiguous', 'latched_off', 'fenced']);
       oneOf(event.family, [
         'managed_connector', 'custom_connection', 'skill', 'repository', 'memory',
         'scheduled_work', 'workspace', 'connection_setup', 'agent_authoring',

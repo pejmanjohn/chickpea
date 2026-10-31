@@ -281,6 +281,7 @@ import {
 } from '../slack/artifact-receipts.ts';
 import { stageArtifactWithReceipt, reuseImageWithReceipt } from '../slack/artifact-staging.ts';
 import { FILE_COMPLETION_INSTRUCTION, useFileDeliveryCompletion, type FileDeliveryCompletion } from '../slack/file-delivery-completion.ts';
+import { useSlackFollowUpFold } from '../slack/follow-up-fold.ts';
 import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
 import {
   conversationThreadImageInventory,
@@ -953,6 +954,7 @@ export function useChickpeaSlackRuntimeCapabilities(
 ): void {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   const webTurn = useWebTurn(signal?.turnJobId);
+  let mountSkillUpload: (() => void) | undefined;
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
     ...(turn ? { turn } : {}),
@@ -977,7 +979,7 @@ export function useChickpeaSlackRuntimeCapabilities(
     },
     mountBeforeTenantTools: () => {
       useAgentAuthoringSkill();
-      useWorkspaceManagementSlackTools(
+      mountSkillUpload = useWorkspaceManagementSlackTools(
         plan, resolveAgentPlatformEnv, webTurn.pageRead, writeAgentCreationTerminal, writeMemoryUpdate,
       );
       useSlackListsTools(plan, resolveAgentPlatformEnv);
@@ -991,6 +993,7 @@ export function useChickpeaSlackRuntimeCapabilities(
     },
   });
   usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
+  mountSkillUpload?.();
 }
 
 /**
@@ -1290,6 +1293,11 @@ export function useRuntimePlanAgent(
   const fileCompletion = useFileDeliveryCompletion(plan, (fileIds) => {
     writeArtifactReceipts({ schemaVersion: 1, receipts: artifactAccumulator.remove(fileIds) });
   }, !options.artifactToolsDisabled);
+  useSlackFollowUpFold({
+    instanceId: id,
+    blocked: () => fileCompletion.unresolved() || fileCompletion.state().repairRequested,
+    fold: async (request) => getSlackStateStore(await resolveAgentPlatformEnv()).foldTurn?.(request),
+  });
   const reserveImageCall = useImageCallBudget();
   const writeWorkspaceUse = useDataWriter(CODING_WORKSPACE_USE_DATA_NAME, {
     schema: v.object({ opened: v.literal(true) }),

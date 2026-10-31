@@ -124,6 +124,31 @@ test('Cloudflare Slack management latches an unknown write outcome for the turn'
   assert.equal(calls.length, 1);
 });
 
+test('an upload whose outcome is unknown blocks every later write in the turn', async () => {
+  const calls: unknown[] = [];
+  const persisted: unknown[] = [];
+  const guard = createSlackManagementTurnGuard(SIGNAL.turnJobId, { turnJobId: SIGNAL.turnJobId },
+    (state) => persisted.push(state));
+  const stub = {
+    async workspaceManagementInvoke(request: unknown) {
+      calls.push(request);
+      throw new Error('transport closed after the upload was submitted');
+    },
+  };
+
+  const ambiguous = await invokeCloudflareSlackWorkspaceManagementTool({
+    stub, signal: SIGNAL, name: 'upload_skills', args: { idempotencyKey: 'slack-upload' }, turnGuard: guard,
+  });
+  assert.equal(ambiguous.ok ? undefined : ambiguous.error.code, 'management_outcome_unknown');
+  assert.deepEqual(persisted, [{ turnJobId: SIGNAL.turnJobId, confirmationFailure: { proposalId: 'slack-upload' } }]);
+
+  const blocked = await invokeCloudflareSlackWorkspaceManagementTool({
+    stub, signal: SIGNAL, name: 'upload_skills', args: { idempotencyKey: 'slack-upload' }, turnGuard: guard,
+  });
+  assert.equal(blocked.ok ? undefined : blocked.error.code, 'fresh_approval_required');
+  assert.equal(calls.length, 1);
+});
+
 test('Cloudflare Slack management also latches setup-link transport ambiguity', async () => {
   const calls: unknown[] = [];
   const guard = createSlackManagementTurnGuard(

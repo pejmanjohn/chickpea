@@ -5,6 +5,7 @@
  */
 
 export const MAX_ZIP_ENTRIES = 2000;
+export const NOT_A_ZIP_ARCHIVE = 'This file is not a readable zip archive.';
 
 export interface ZipEntry {
   /** Normalized `/`-separated path; directories end with `/`. */
@@ -35,7 +36,7 @@ const UINT32_MAX = 0xffffffff;
 export function readZipEntries(bytes: Uint8Array): ZipEntry[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const eocd = findEndOfCentralDirectory(view);
-  if (eocd < 0) throw new ZipArchiveError('This file is not a readable zip archive.');
+  if (eocd < 0) throw new ZipArchiveError(NOT_A_ZIP_ARCHIVE);
   const diskNumber = view.getUint16(eocd + 4, true);
   const centralDisk = view.getUint16(eocd + 6, true);
   const diskEntries = view.getUint16(eocd + 8, true);

@@ -1,14 +1,15 @@
 # Slack steering
 
-Operator notes for stopping a run and checking on it from Slack. This page
-covers what people see, what a stop does to durable state, the logs an
-operator reads, rollback, and turning on Slack's Stop button for the shared
-Chickpea app.
+Operator notes for stopping a run, checking on it, and sending several
+messages in a row from Slack. This page covers what people see, what a stop
+or a group of messages does to durable state, the logs an operator reads,
+rollback, and turning on Slack's Stop button for the shared Chickpea app.
 
-This release covers stopping, check-ins, the status line, and a 👀 on
-messages posted during a run. A message posted during a run still runs after
-the current run, as its own turn, exactly as before. The running Agent does
-not read it mid-run.
+This release covers stopping, check-ins, the status line, a 👀 on messages
+posted during a run, and follow-ups: when a person's messages queue in a
+thread, the turn that starts next reads them all and replies once, and a
+message that person sends while the Agent works joins the running reply
+before it posts.
 
 ## Stopping a run
 
@@ -169,19 +170,80 @@ with the Stop button, never both. So:
 
 Each eligible message posted in the thread while its run is in progress gets
 Chickpea's 👀 as soon as it arrives, before any model reads it. Stops,
-check-ins, and a mention of a different Agent do not get one. The message then
-runs as its own turn after the current run, and that turn removes the 👀 when
-it finishes. A stop that drops the message removes it at once. Chickpea only
-ever removes a 👀 it recorded adding.
+check-ins, and a mention of a different Agent do not get one. The message
+either joins the running reply (see [Messages sent while the Agent
+works](#messages-sent-while-the-agent-works)) or waits for the current run to
+end. A stop that drops the message removes its 👀 at once. Chickpea only ever
+removes a 👀 it recorded adding.
+
+### Follow-ups
+
+When a turn starts, it takes the messages the same person sent right after
+it, which are queued behind it in the thread, as part of its request. These
+are its follow-ups. The Agent reads the first message and its follow-ups
+together, in order, and writes one reply. While it reads them, the status
+line shows `Reading 3 messages…` (the count includes the first message).
+
+Only plain messages that person typed to the same Agent join, oldest first.
+The group ends at the first message that is anything else, and that message
+keeps its own turn and its own reply as before:
+
+- a message from another person, or to another Agent in the thread
+- an approval, a click, or a reaction
+- a command such as `!memory` or `!routines`
+- a message with files
+
+One turn takes at most 8 follow-ups and about 40,000 characters of text.
+The rest wait and form the next group.
+
+A follow-up never runs on its own:
+
+- When the reply posts, each follow-up's Run settles `superseded`, and the
+  interaction cleanup removes its 👀 within seconds.
+- If the turn fails, or is held for recovery instead of answered, its
+  follow-ups are released. The first of them runs next and takes the others
+  with it, so no message is lost.
+- A stop of the turn drops its follow-ups with it. The stop note counts only
+  messages the stopped run had not read yet.
+
+A message that arrives after the turn has started is not one of its
+follow-ups. It can still join the running reply, as the next section
+describes; otherwise it waits, then starts the next turn with any later
+messages from the same person.
+
+### Messages sent while the Agent works
+
+When the Agent is about to finish, before its reply posts, it checks whether
+the person sent more messages since the turn started. If so, it reads them
+as part of the same request, does any extra work they need, and writes one
+reply to everything. Its draft is never posted. While it reads them, the
+status line shows `Reading 2 new messages…` (only the new ones count).
+
+The same rules as for follow-ups decide which messages join, and a message
+that joins ends the same way: its 👀 goes when the reply posts, it is
+released if the run fails, and a stop drops it. In addition:
+
+- The Agent checks at most three times in one run. A message that arrives
+  after the third check waits for the run to end.
+- Once the Agent starts streaming its answer into Slack, nothing more joins
+  that run. A message sent after that waits for the run to end.
+- While the Agent's file delivery for the reply is unchecked, or after it
+  needed a correction in this run, nothing joins.
+- If Chickpea cannot reach its state store for the check, the reply posts as
+  it is.
+
+A message that waits starts the next turn when the run ends, and that turn
+takes any later messages from the same person with it.
 
 ## Node installations
 
 Node installs behave the same: the stop phrases, the Stop button (through the
 shared app's outbound connection or a customer-owned app's HTTP events),
-check-ins, the status line, the 👀, and the stop note. The Node relay acts on
-a stop in its own process: it aborts the run and runs the same ending. Node
-has no coding sandbox, so there is no coding stop cascade. Run facts live in
-memory and reset when the process restarts. Logs print to the process log.
+check-ins, the status line, the 👀, follow-ups, and the stop note. The Node
+relay acts on a stop in its own process: it aborts the run and runs the same
+ending. Node has no coding sandbox, so there is no coding stop cascade. Run
+facts live in memory and reset when the process restarts. Logs print to the
+process log.
 
 ## Operator view
 
@@ -195,6 +257,8 @@ user, channel, or workspace IDs.
 | `[chickpea] steering.stop_button` | Worker or Node log | A Stop press that stopped nothing. `outcome` is `invalid` (unreadable event), `no_route` (not an Agent thread), `no_running_job`, or `not_allowed` (no access and not told, a guest for example). |
 | `turn_latency` with `outcome: stopped` | Runtime event | A stopped run's ending (both lanes). |
 | `thread_runner_alarm` field `dropped` | Runtime event, Cloudflare runners | Turns that stopped runs' endings dropped since the runner's previous record. |
+| `turn_latency` field `folded` | Runtime event | How many follow-ups the turn read with its own message (both lanes). |
+| `turn_fold` | Runtime event | Messages a running turn read before its reply (`late`, both lanes). |
 | `run_completed` with `outcome: stopped` | [Product telemetry](../../TELEMETRY.md) | An anonymous stopped-run count. |
 
 See [runtime observability](runtime-observability.md#turn-latency-and-relay-alarm-logs)
@@ -207,6 +271,13 @@ for the runtime events. Other records a stop leaves:
   stopper, cutoff, time, and the ending with its outcome and count) and a
   `held`, `dropped` or `released` marker on each held turn. The runner keeps
   its side in `runner_stops`.
+- `turn_jobs.fold_json` holds a follow-up's fold record: the turn that took
+  it, whether at its start (`cycle` 0) or before its reply (`cycle` 1 to 3),
+  whether its run read it, and `settled` once that run's reply posted. A
+  message taken before the reply counts as read once the Agent's next check
+  confirms it was shown to the model.
+  A follow-up whose turn ended any other way reads as released; nothing is
+  written for that.
 
 These warnings mean a step will retry on its own:
 `stop notice delivery will retry`, `thread runner stop abort will retry`,
@@ -221,7 +292,13 @@ Limits:
 - With the emergency alarm executor (`SLACK_TAG_TURN_EXECUTOR=alarm`), the
   state store aborts the run in its own process. There is no coding stop
   cascade, so the note for a run that did coding work says it may still be
-  winding down, and `thread_runner_alarm` reports no `dropped` count.
+  winding down, and `thread_runner_alarm` reports no `dropped` count. The
+  alarm executor takes no follow-ups, at a turn's start or before its reply.
+  If the executor mode changes to `alarm`
+  while runner turns are in flight, a runner turn may still take as a
+  follow-up a row the alarm executor had already listed; the alarm's run of
+  that row stops at dispatch, which refuses a follow-up, and retries once the
+  turn that took it has ended.
 - Stops and check-ins see turns on the standard execution path only. A Run
   owned by the ledger canary in [agent runtime rollout](agent-runtime-rollout.md)
   is not stopped, and a stop phrase in its thread is an ordinary message.
@@ -229,16 +306,18 @@ Limits:
 ## Rollback
 
 Every durable change is additive. `turn_jobs` gains nullable columns
-(`thread_key`, `message_ts`, `stop_json`, `stop_notice_at`) and
+(`thread_key`, `message_ts`, `stop_json`, `stop_notice_at`, `fold_json`) and
 `stop_notice_attempts` with a default. Dropped turns keep the existing `done`
 status. Presentations record a stop reason beside their existing terminal
 states. Runners add `runner_stops` and run-fact columns on `runner_jobs`.
 Coding task records live in the Sandbox Durable Object's storage. There is no
 Durable Object migration and no schema-generation change.
 
-Rolling back to the previous release is safe with one exception. While a stop
+Rolling back to the previous release is safe with two exceptions. While a stop
 is still holding messages (usually a few seconds), the older release does not
-know they are held and runs them as ordinary turns. A stop the runner had not
+know they are held and runs them as ordinary turns. Likewise, follow-ups a
+running turn took run again as their own turns after a rollback, so their
+person may get a second reply. A stop the runner had not
 acted on yet is ignored, and that run continues. After a rollback, an app
 subscribed to `agent_session_stopped` still shows the Stop button, but the
 older release ignores the press, and a typed `stop` becomes an ordinary
@@ -305,6 +384,12 @@ The live journeys:
   not.
 - Two messages posted during a run are not acted on after a stop, and the note
   says two messages were not read.
+- Two messages posted while a run works: once it ends, the next turn shows
+  `Reading 2 messages…` and one reply answers both; each message's 👀 goes
+  when that reply posts.
+- A request, then a correction about 10 seconds later while the Agent works:
+  the status line shows `Reading 1 new message…`, one reply honors the
+  correction, and the correction's 👀 goes when that reply posts.
 - A person without access presses Stop. The run continues, and only that
   person sees why.
 - A run quiet for more than five minutes shows Slack's working indicator and
