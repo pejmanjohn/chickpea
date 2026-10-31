@@ -17,9 +17,9 @@ import { SqliteManagementStore } from '../src/management/store.ts';
 import type { ManagementApplyResult, ManagementSetupRecord, UploadSkillsResult } from '../src/management/types.ts';
 import {
   formatSlackAttachmentSignal,
-  parseAttachmentFileIds,
   slackAttachmentTurnContext,
 } from '../src/slack/attachment-context.ts';
+import { parseAttachmentFileIds } from '../src/slack/attachment-file-ids.ts';
 import type { GatewayAttachmentClient, GatewayAttachmentRead } from '../src/slack/gateway/client.ts';
 import { classifySkillReplacement, skillReplacementMessage } from '../src/slack/interaction-intent.ts';
 import { createSkillReplacementJudge, type SkillReplacementQuestion } from '../src/management/skill-replacement-judge.ts';

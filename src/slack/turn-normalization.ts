@@ -14,6 +14,7 @@ import {
 import type { SlackInboundEnvelope } from './transport/types.ts';
 import { preserveSlackRichTextLinks } from './rich-text-links.ts';
 import { isSlackContentMessageSubtype } from './message-subtypes.ts';
+import { isSlackAttachmentFileId, MAX_SLACK_ATTACHMENTS } from './attachment-file-ids.ts';
 
 interface SlackTurnNormalizationOptions {
   botUserId?: string;
@@ -60,8 +61,6 @@ interface RunnableTurnInput {
   attachments?: SlackAttachmentReference[];
   attachmentIntake?: SlackAttachmentIntake;
 }
-
-const MAX_SLACK_ATTACHMENTS_PER_TURN = 4;
 
 export function normalizeSlackTurn(
   payload: SlackEventFixture,
@@ -272,13 +271,13 @@ function normalizeSlackAttachments(
 ): { references: SlackAttachmentReference[]; intake?: SlackAttachmentIntake } {
   if (!Array.isArray(event.files) || event.files.length === 0) return { references: [] };
   const count = event.files.length;
-  if (count > MAX_SLACK_ATTACHMENTS_PER_TURN) {
+  if (count > MAX_SLACK_ATTACHMENTS) {
     return { references: [], intake: { status: 'too_many', count } };
   }
   const references: SlackAttachmentReference[] = [];
   for (const file of event.files) {
     if (!file || typeof file !== 'object' || typeof file.id !== 'string' ||
-        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(file.id)) {
+        !isSlackAttachmentFileId(file.id)) {
       return { references: [], intake: { status: 'invalid_metadata', count } };
     }
     references.push({ fileId: file.id });

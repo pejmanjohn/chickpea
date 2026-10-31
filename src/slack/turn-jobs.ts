@@ -66,6 +66,7 @@ import {
   type ThreadImageRecord,
 } from './thread-images.ts';
 import { parseThreadFileIds, serializeThreadFileIds } from './thread-files.ts';
+import { parseAttachmentFileIds } from './attachment-file-ids.ts';
 import { parseAdmittedSlackListIds, serializeAdmittedSlackListIds } from './lists/admission.ts';
 import { renderSlackMarkdownActionLink, slackActionLink } from './message-format.ts';
 import { parseTurnEnvelope, type TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
@@ -3366,12 +3367,8 @@ function validateRequesterTextSource(value: unknown): 'click' {
 }
 
 function validateAttachmentFileIds(value: unknown): string {
-  const encoded = validateBoundedString(value, 'Slack attachment file ids', 1_027);
-  const ids = encoded.split(',');
-  if (ids.length < 1 || ids.length > 4 ||
-      ids.some((id) => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(id))) {
-    throw new Error('Slack attachment file ids are invalid.');
-  }
+  const ids = parseAttachmentFileIds(value);
+  if (!ids) throw new Error('Slack attachment file ids are invalid.');
   return ids.join(',');
 }
 

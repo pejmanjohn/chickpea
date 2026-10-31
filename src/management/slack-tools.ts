@@ -81,7 +81,7 @@ import {
   slackUpdateAgentMemoryInputSchema,
 } from './slack-memory-actions.ts';
 import { parseAdmittedSlackListIds } from '../slack/lists/admission.ts';
-import { parseAttachmentFileIds } from '../slack/attachment-context.ts';
+import { parseAttachmentFileIds } from '../slack/attachment-file-ids.ts';
 import { parseThreadFileIds } from '../slack/thread-files.ts';
 
 const SIGNAL_ATTRIBUTE_KEYS = [

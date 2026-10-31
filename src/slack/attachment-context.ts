@@ -16,10 +16,10 @@ import {
   type SlackAttachmentNextAction,
   type SlackAttachmentNormalizationInput,
   type SlackAttachmentNormalizationResult,
-  MAX_SLACK_ATTACHMENTS,
   normalizeSlackAttachments,
   safeFailureCode,
 } from './attachment-normalization.ts';
+import { parseAttachmentFileIds } from './attachment-file-ids.ts';
 import {
   runWithAttachmentModelContext,
 } from './attachment-model-context.ts';
@@ -54,7 +54,6 @@ const CARRIED_SLACK_TURN_ATTRIBUTE_KEYS = [
 ] as const;
 
 const MAX_ATTACHMENT_SIGNAL_CHARS = 12_000;
-const MAX_ATTACHMENT_FILE_IDS_CHARS = 1_027;
 const MAX_ATTACHMENT_COUNT = 9_999_999;
 const BEGIN_ATTACHMENT_EVIDENCE = '===== BEGIN UNTRUSTED DERIVED ATTACHMENT EVIDENCE =====';
 const END_ATTACHMENT_EVIDENCE = '===== END UNTRUSTED DERIVED ATTACHMENT EVIDENCE =====';
@@ -159,13 +158,6 @@ export function parseSlackAttachmentIntake(
     return { kind: 'rejected', status: 'invalid_metadata', count };
   }
   return { kind: 'ready', request: delivery.body, count, fileIds };
-}
-
-/** The host's comma-joined `attachmentFileIds` attribute: one to four valid file IDs, else undefined. */
-export function parseAttachmentFileIds(encoded: string | undefined): string[] | undefined {
-  if (!encoded || encoded.length > MAX_ATTACHMENT_FILE_IDS_CHARS) return undefined;
-  const fileIds = encoded.split(',');
-  return fileIds.length <= MAX_SLACK_ATTACHMENTS && fileIds.every(validAttachmentFileId) ? fileIds : undefined;
 }
 
 /**
@@ -658,8 +650,4 @@ function parseAttachmentCount(value: string | undefined): number | undefined {
   if (!value || !/^[1-9][0-9]{0,6}$/.test(value)) return undefined;
   const count = Number(value);
   return Number.isSafeInteger(count) && count <= MAX_ATTACHMENT_COUNT ? count : undefined;
-}
-
-function validAttachmentFileId(value: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value);
 }
