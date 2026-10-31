@@ -10,6 +10,7 @@ import {
   type CloudflareBetterAuthEnv,
 } from './better-auth-cloudflare.ts';
 import { getNodeBetterAuthBackend } from './better-auth-node.ts';
+import type { ClientMetadataFetch } from './mcp-client-metadata.ts';
 import { decodeRecoverySecret } from './recovery-secret.ts';
 
 export interface BetterAuthEnvironment {
@@ -17,6 +18,10 @@ export interface BetterAuthEnvironment {
   baseURL: string;
   secret: string;
   cloudflareEnv?: CloudflareBetterAuthEnv;
+  /** Client ID metadata document sign-in, which only serveHostedSharedAuth turns on. */
+  clientMetadataDocuments?: boolean;
+  /** Replaces the guarded transport for client metadata documents, as a test does. */
+  fetchClientMetadataResource?: ClientMetadataFetch;
 }
 
 interface ResolveBetterAuthEnvironmentInput {

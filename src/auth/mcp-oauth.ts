@@ -118,7 +118,7 @@ function stringList(value: unknown): string[] | undefined {
   return value as string[];
 }
 
-function validRedirectUri(value: string): boolean {
+export function validRedirectUri(value: string): boolean {
   if (!value || value.includes('*')) return false;
   try {
     const url = new URL(value);
@@ -130,7 +130,7 @@ function validRedirectUri(value: string): boolean {
   }
 }
 
-function isLoopbackHost(hostname: string): boolean {
+export function isLoopbackHost(hostname: string): boolean {
   if (LOOPBACK_HOSTS.has(hostname)) return true;
   const octets = hostname.split('.');
   return octets.length === 4 && octets[0] === '127' && octets.every((octet) =>

@@ -327,6 +327,27 @@ test('guarded fetch skips Node DNS APIs on Cloudflare while keeping URL guards',
   await assert.rejects(guarded('https://127.0.0.1/mcp'), /blocked url/i);
 });
 
+test('guarded fetch takes a caller redirect mode of error and still hands back an unfollowed redirect', async () => {
+  const sent: Request[] = [];
+  const guarded = createMcpGuardedFetch({
+    cloudflare: true,
+    followRedirects: false,
+    fetch: async (request) => {
+      sent.push(request as Request);
+      return new Response(null, { status: 302, headers: { location: '/moved' } });
+    },
+  });
+
+  const response = await guarded('https://claude.ai/oauth/mcp-oauth-client-metadata', {
+    headers: { accept: 'application/json' }, redirect: 'error', signal: new AbortController().signal,
+  });
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get('location'), '/moved');
+  assert.equal(sent.length, 1, 'the redirect is not followed');
+  assert.equal(sent[0]?.redirect, 'manual');
+  assert.equal(sent[0]?.headers.get('accept'), 'application/json');
+});
+
 test('guarded fetch follows and revalidates bounded same-origin redirects', async () => {
   const fetched: string[] = [];
   let resolutions = 0;
