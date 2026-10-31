@@ -37,6 +37,7 @@ import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import {
   currentMessageOnlyContext,
   partitionSlackContext,
+  slackContextWatermark,
   type SlackContextMessage,
 } from '../src/slack/thread-context.ts';
 import { slackLocalContextTime } from '../src/slack/context-format.ts';
@@ -1264,4 +1265,15 @@ test('an Agent answering after the Agents a person mentioned before it reads the
         await assembleRetainedSlackContext(empty, turn, { store, agentId: 'agent_legal' })), /FINANCE_VIEW/);
     }
   } finally { store.close(); }
+});
+
+test('a request reads up to its newest part: an edit head to its edit, never back to an older member', () => {
+  const head = { messageTs: '1800000000.000100' };
+  const members = [{ messageTs: '1800000000.000300' }, { messageTs: '1800000000.000200' }];
+  assert.equal(slackContextWatermark(head, members), '1800000000.000300', 'the newest member, wherever it sits');
+  const edit = { ...head, edit: { editedTs: '1800000000.000250', previousText: 'before' } };
+  assert.equal(slackContextWatermark(edit), '1800000000.000250', 'an edit running on its own reads the reply before it');
+  assert.equal(slackContextWatermark(edit, [{ messageTs: '1800000000.000200' }]), '1800000000.000250',
+    'a member older than the edit never lowers it');
+  assert.equal(slackContextWatermark(edit, members), '1800000000.000300');
 });

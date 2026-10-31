@@ -79,8 +79,17 @@ import {
   MAX_FOLDED_MESSAGES,
   MAX_FOLDED_TEXT_CHARS,
   MAX_TURN_FOLD_CYCLES,
-  type FoldedMessage,
+  readFoldClaim,
+  type ClaimedFoldRow,
 } from './follow-ups.ts';
+import {
+  EDIT_TURN_JOB_ID_SQL,
+  editTurnJobIdRange,
+  isEditTurn,
+  isEditTurnJobId,
+  type MessageVersionRow,
+} from './edits.ts';
+import { turnRequestTs } from './thread-context.ts';
 
 /**
  * Durable queue of Slack turns for the Cloudflare turn-relay (see state-rpc.ts
@@ -346,6 +355,9 @@ const TURN_JOB_SELECT_COLUMNS = `id, evt_key, msg_key, turn_json, assignment_jso
   stop_json, fold_json`;
 
 const PENDING_ROW = "delivered = 0 AND status != 'recovery_required'";
+/** turnRequestTs over `turn_json`: an edit row's save time, else its message's ts. */
+const TURN_REQUEST_TS =
+  "COALESCE(json_extract(turn_json, '$.edit.editedTs'), json_extract(turn_json, '$.messageTs'))";
 /**
  * Turns a host's operator parked after restoring an installation
  * (`cancelPendingWork`). Neither run nor delivered again, they are left out
@@ -812,7 +824,7 @@ export class TurnJobStoreLogic {
       executor: rowExecutor(row),
       agentId: job.assignment.agentId,
       record,
-      held: this.stopMembers(row.thread_key ?? undefined, headId, 'held').length,
+      held: messageRows(this.stopMembers(row.thread_key ?? undefined, headId, 'held')).length,
       ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
       ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
     };
@@ -908,13 +920,13 @@ export class TurnJobStoreLogic {
   }
 
   /**
-   * Of the rows a stop ended, the follow-ups its stopped run had read: the
-   * head's members, once the head dispatched with them in its prompt.
+   * Of the messages a stop ended, the follow-ups its stopped run had read:
+   * the head's members, once the head dispatched with them in its prompt.
    */
   private readByStoppedRun(headId: string, rows: readonly TurnEndedRow[]): number {
     const head = this.db.get('SELECT dispatch_started_at FROM turn_jobs WHERE id = ?', headId);
     if (head?.dispatch_started_at === null || head?.dispatch_started_at === undefined) return 0;
-    return rows.filter((row) => {
+    return messageRows(rows).filter((row) => {
       const record = parseTurnFoldRecord(
         this.db.get('SELECT fold_json FROM turn_jobs WHERE id = ?', row.id)?.fold_json,
       );
@@ -993,9 +1005,10 @@ export class TurnJobStoreLogic {
         this.db.run('UPDATE turn_jobs SET stop_json = ? WHERE id = ?', member, row.id);
       }
     }
-    const ended: TurnStopHeadRecordV1 = { ...record, ending: { outcome, count: rows.length, at } };
+    const count = messageRows(rows).length;
+    const ended: TurnStopHeadRecordV1 = { ...record, ending: { outcome, count, at } };
     this.db.run('UPDATE turn_jobs SET stop_json = ? WHERE id = ?', JSON.stringify(ended), headId);
-    return { outcome, count: rows.length, read: this.readByStoppedRun(headId, rows), rows, record: ended };
+    return { outcome, count, read: this.readByStoppedRun(headId, rows), rows, record: ended };
   }
 
   /**
@@ -1029,26 +1042,31 @@ export class TurnJobStoreLogic {
    * reordered behind a later message. A teammate's message is `informed`
    * while the head's run may use the requester's own connections (see
    * headUsesPersonalAccess). A head with a stop, or in a thread with an
-   * unfinished stop, takes none. Rows already stamped for the claim's cycle
-   * are returned again, so every retry and replay converges.
+   * unfinished stop, takes none. An edit of the head's message or of a
+   * member joins with them wherever it waits (takeAttachedEdits), and the
+   * claim reads it as readFoldClaim says. Rows already stamped for the
+   * claim's cycle are returned again, so every retry and replay converges.
    */
   fold(request: TurnFoldRequest): TurnFoldClaim {
     validateFoldRequest(request);
-    const { claim, confirmed, informed, toolBoundary } = this.db.transaction(() => this.claimFold(request));
-    if (confirmed > 0) emitTurnFold({ turnJobId: request.headId, late: confirmed, informed, turn: toolBoundary });
+    const { claim, confirmed, informed, toolBoundary, edits } = this.db.transaction(() => this.claimFold(request));
+    if (confirmed > 0 || edits > 0) {
+      emitTurnFold({ turnJobId: request.headId, late: confirmed, informed, turn: toolBoundary, edits });
+    }
     return claim;
   }
 
   /**
    * The claim, and how many late members this call confirmed as read:
    * `informed` of them information only, `toolBoundary` of them taken at a
-   * tool boundary.
+   * tool boundary; `edits` counts confirmed edit rows apart.
    */
   private claimFold(request: TurnFoldRequest): {
     claim: TurnFoldClaim;
     confirmed: number;
     informed: number;
     toolBoundary: number;
+    edits: number;
   } {
     const head = this.db.get(
       `SELECT rowid AS row_order, id, turn_json, assignment_json, delivered, status, execution_authority,
@@ -1057,7 +1075,7 @@ export class TurnJobStoreLogic {
       request.headId,
     );
     const threadKey = typeof head?.thread_key === 'string' ? head.thread_key : undefined;
-    const none = { claim: { messages: [], requesterText: '' }, confirmed: 0, informed: 0, toolBoundary: 0 };
+    const none = { claim: { messages: [], requesterText: '' }, confirmed: 0, informed: 0, toolBoundary: 0, edits: 0 };
     if (!head || !threadKey) return none;
     let headTurn: NormalizedSlackTurn;
     let headAssignment: ResolvedAssignment;
@@ -1070,10 +1088,15 @@ export class TurnJobStoreLogic {
     let confirmed = 0;
     let informed = 0;
     let toolBoundary = 0;
+    let edits = 0;
     if (request.phase !== 'start') {
       for (const { record, message } of this.foldMembers(threadKey, request.headId)) {
         if (record.cycle < 1 || record.cycle > request.received || record.received) continue;
         this.writeFoldRecord(message.turnJobId, { ...record, received: true });
+        if (isEditTurn(message)) {
+          edits += 1;
+          continue;
+        }
         if (record.role === 'absorbed') this.oweReadReceipt(message.turnJobId);
         confirmed += 1;
         if (record.role === 'informed') informed += 1;
@@ -1084,26 +1107,32 @@ export class TurnJobStoreLogic {
       this.oweReadReceipt(request.headId);
     }
     const cycle = request.phase === 'start' ? 0 : request.received + 1;
-    const claim = (messages: FoldedMessage[]) => ({
-      claim: {
-        messages,
-        requesterText: foldedRequestText(
-          headTurn,
-          this.foldMembers(threadKey, request.headId)
-            .filter(({ record }) => record.cycle <= cycle).map(({ message }) => message),
-        ),
-        ...(request.phase === 'start'
-          ? { receipts: this.unreadReceipts([request.headId, ...messages.map(({ turnJobId }) => turnJobId)]) }
-          : {}),
-      },
-      confirmed,
-      informed,
-      toolBoundary,
-    });
-    if (request.phase !== 'start' && !request.take) return claim([]);
-    const stamped = this.foldMembers(threadKey, request.headId)
-      .filter(({ record }) => record.cycle === cycle).map(({ message }) => message);
-    if (stamped.length > 0) return claim(stamped);
+    const claim = (take: boolean) => {
+      const members = this.foldMembers(threadKey, request.headId);
+      const { messages, headText } = readFoldClaim({
+        headTs: headTurn.messageTs,
+        phase: request.phase,
+        rows: take ? members.filter(({ record }) => record.cycle === cycle).map(({ message }) => message) : [],
+      });
+      return {
+        claim: {
+          messages,
+          requesterText: foldedRequestText(
+            headTurn,
+            members.filter(({ record }) => record.cycle <= cycle).map(({ message }) => message),
+          ),
+          ...(request.phase === 'start'
+            ? { receipts: this.unreadReceipts([request.headId, ...messages.map(({ turnJobId }) => turnJobId)]) }
+            : {}),
+          ...(headText === undefined ? {} : { headText }),
+        },
+        confirmed,
+        informed,
+        toolBoundary,
+        edits,
+      };
+    };
+    if (request.phase !== 'start' && !request.take) return claim(false);
     const dispatched = head.dispatch_started_at !== null && head.dispatch_started_at !== undefined;
     const headStop = head.stop_json ? this.effectiveStop(parseTurnStopRecord(head.stop_json)) : undefined;
     const headFold = this.effectiveFold(parseTurnFoldRecord(head.fold_json));
@@ -1116,10 +1145,42 @@ export class TurnJobStoreLogic {
       (request.phase === 'start'
         ? !dispatched
         : dispatched && head.agent_instance_id === request.instanceId);
-    if (!open || cycle > lastFoldCycle(request.phase)) return claim([]);
-    const runnerKey = runnerKeyOf({ turn: headTurn, assignment: headAssignment });
+    if (!open || cycle > lastFoldCycle(request.phase)) return claim(true);
     const usesPersonalAccess = this.headUsesPersonalAccess(request.headId);
-    const taken: FoldedMessage[] = [];
+    const members = this.foldMembers(threadKey, request.headId);
+    // The messages the head's run answers, from every cycle so far.
+    const group = new Set([
+      headTurn.messageTs,
+      ...members.flatMap(({ message }) => isEditTurn(message) ? [] : [message.messageTs]),
+    ]);
+    // A cycle that already holds a message is a replay: it takes no new message, but it still takes edits.
+    if (!members.some(({ record, message }) => record.cycle === cycle && !isEditTurn(message))) {
+      this.takeFoldMessages({ head, headTurn, headAssignment, threadKey, cycle, phase: request.phase, group, usesPersonalAccess });
+    }
+    this.takeAttachedEdits({ headId: request.headId, headTurn, threadKey, cycle, phase: request.phase, group, usesPersonalAccess });
+    return claim(true);
+  }
+
+  /**
+   * The contiguous run of the head's runner queue after it that may join
+   * this cycle (see fold): the first row that cannot join ends it. An edit
+   * of a message in the group is stepped over without moving the order
+   * check, since the attached pass takes it; any other edit ends the run.
+   */
+  private takeFoldMessages(input: {
+    head: Record<string, unknown>;
+    headTurn: NormalizedSlackTurn;
+    headAssignment: ResolvedAssignment;
+    threadKey: string;
+    cycle: number;
+    phase: TurnFoldRequest['phase'];
+    group: Set<string>;
+    usesPersonalAccess: boolean;
+  }): void {
+    const { head, headTurn, headAssignment, threadKey, cycle, group, usesPersonalAccess } = input;
+    const headId = String(head.id);
+    const runnerKey = runnerKeyOf({ turn: headTurn, assignment: headAssignment });
+    let taken = 0;
     let lastTs = headTurn.messageTs;
     let chars = 0;
     for (const row of this.db.all(
@@ -1142,8 +1203,12 @@ export class TurnJobStoreLogic {
         break;
       }
       if (runnerKeyOf({ turn, assignment }) !== runnerKey) continue;
+      if (isEditTurn(turn)) {
+        if (group.has(turn.messageTs)) continue;
+        break;
+      }
       const fold = this.effectiveFold(parseTurnFoldRecord(row.fold_json));
-      if (holdsFold(fold) && fold?.headId === request.headId) {
+      if (holdsFold(fold) && fold?.headId === headId) {
         lastTs = turn.messageTs;
         continue;
       }
@@ -1155,42 +1220,104 @@ export class TurnJobStoreLogic {
         (stop === undefined || stop.role === 'released') &&
         (fold === undefined || fold.role === 'released') &&
         validSlackTs(turn.messageTs) && compareSlackTs(turn.messageTs, lastTs) > 0;
-      if (!eligible || taken.length >= MAX_FOLDED_MESSAGES) break;
-      if (taken.length > 0 && chars + turn.text.length > MAX_FOLDED_TEXT_CHARS) break;
+      if (!eligible || taken >= MAX_FOLDED_MESSAGES) break;
+      if (taken > 0 && chars + turn.text.length > MAX_FOLDED_TEXT_CHARS) break;
       const informationOnly = foldedInformationOnly(turn.userId, headTurn.userId, usesPersonalAccess);
       this.writeFoldRecord(String(row.id), {
         schemaVersion: 1,
         role: informationOnly ? 'informed' : 'absorbed',
-        headId: request.headId,
+        headId,
         cycle,
         received: cycle === 0,
-        ...(request.phase === 'turn' ? { toolBoundary: true as const } : {}),
+        ...(input.phase === 'turn' ? { toolBoundary: true as const } : {}),
         at: this.now(),
       });
       if (cycle === 0 && !informationOnly) this.oweReadReceipt(String(row.id));
-      taken.push({
-        turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text,
-        ...(informationOnly ? { informationOnly: true as const } : {}),
-      });
+      group.add(turn.messageTs);
+      taken += 1;
       lastTs = turn.messageTs;
       chars += turn.text.length;
     }
-    return claim(taken);
   }
 
   /**
-   * The newest message a head's run has read: its own, or the newest
-   * follow-up its model input holds (`received`). Undefined for a row the
-   * store does not hold.
+   * The attached pass: every waiting edit of a message in the group joins
+   * this cycle, wherever it sits in the queue, so the run reads each
+   * message's newest text (readFoldClaim). An edit adds no message, so only
+   * the text cap applies, counting the earlier text a note shows. It owes no
+   * receipt: its message's 👀 is that message's own row's.
+   */
+  private takeAttachedEdits(input: {
+    headId: string;
+    headTurn: NormalizedSlackTurn;
+    threadKey: string;
+    cycle: number;
+    phase: TurnFoldRequest['phase'];
+    group: ReadonlySet<string>;
+    usesPersonalAccess: boolean;
+  }): void {
+    const { headId, headTurn, threadKey, cycle, group } = input;
+    const stamped = this.foldMembers(threadKey, headId)
+      .filter(({ record }) => record.cycle === cycle).map(({ message }) => message);
+    const readNow = new Set(stamped.flatMap((row) => isEditTurn(row) ? [] : [row.messageTs]));
+    if (input.phase === 'start') readNow.add(headTurn.messageTs);
+    const cost = (row: Pick<ClaimedFoldRow, 'messageTs' | 'text' | 'edit'>) =>
+      row.text.length + (row.edit && !readNow.has(row.messageTs) ? row.edit.previousText.length : 0);
+    let chars = stamped.reduce((sum, row) => sum + cost(row), 0);
+    for (const row of this.db.all(
+      `SELECT id, turn_json, attempts, dispatch_started_at, stop_json, fold_json
+       FROM turn_jobs
+       WHERE thread_key = ? AND ${PENDING_ROW} AND execution_authority = 'legacy'
+         AND ${EDIT_TURN_JOB_ID_SQL} AND id != ?
+       ORDER BY enqueued_at, rowid`,
+      threadKey,
+      headId,
+    )) {
+      let turn: NormalizedSlackTurn;
+      try {
+        turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
+      } catch {
+        continue;
+      }
+      if (!isEditTurn(turn) || !group.has(turn.messageTs)) continue;
+      const stop = row.stop_json ? this.effectiveStop(parseTurnStopRecord(row.stop_json)) : undefined;
+      const fold = this.effectiveFold(parseTurnFoldRecord(row.fold_json));
+      if (Number(row.attempts) !== 0 ||
+          (row.dispatch_started_at !== null && row.dispatch_started_at !== undefined) ||
+          (stop !== undefined && stop.role !== 'released') ||
+          (fold !== undefined && fold.role !== 'released')) continue;
+      if (chars > 0 && chars + cost(turn) > MAX_FOLDED_TEXT_CHARS) break;
+      this.writeFoldRecord(String(row.id), {
+        schemaVersion: 1,
+        role: foldedInformationOnly(turn.userId, headTurn.userId, input.usesPersonalAccess) ? 'informed' : 'absorbed',
+        headId,
+        cycle,
+        received: cycle === 0,
+        ...(input.phase === 'turn' ? { toolBoundary: true as const } : {}),
+        at: this.now(),
+      });
+      chars += cost(turn);
+    }
+  }
+
+  /**
+   * The newest message a head's run has read: its own request (an edit
+   * head's reads to its edit, the Agent's reply before it included), or the
+   * newest follow-up its model input holds (`received`). Undefined for a row
+   * the store does not hold.
    */
   readThrough(headId: string): string | undefined {
     validateBoundedString(headId, 'TurnJob id', 256);
-    const row = this.db.get(
-      `SELECT thread_key, json_extract(turn_json, '$.messageTs') AS message_ts FROM turn_jobs WHERE id = ?`,
-      headId,
-    );
-    if (typeof row?.thread_key !== 'string' || typeof row.message_ts !== 'string') return undefined;
-    return this.newestRead(row.thread_key, headId, row.message_ts);
+    const row = this.db.get('SELECT thread_key, turn_json FROM turn_jobs WHERE id = ?', headId);
+    if (typeof row?.thread_key !== 'string') return undefined;
+    let turn: NormalizedSlackTurn;
+    try {
+      turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
+    } catch {
+      return undefined;
+    }
+    if (typeof turn?.messageTs !== 'string') return undefined;
+    return this.newestRead(row.thread_key, headId, turnRequestTs(turn));
   }
 
   private newestRead(threadKey: string, headId: string, headTs: string): string {
@@ -1203,7 +1330,7 @@ export class TurnJobStoreLogic {
   private foldMembers(
     threadKey: string,
     headId: string,
-  ): Array<{ record: TurnFoldMemberRecordV1; message: FoldedMessage }> {
+  ): Array<{ record: TurnFoldMemberRecordV1; message: ClaimedFoldRow }> {
     return this.db.all(
       `SELECT id, turn_json, fold_json FROM turn_jobs
        WHERE thread_key = ? AND fold_json IS NOT NULL AND json_extract(fold_json, '$.headId') = ?
@@ -1225,6 +1352,7 @@ export class TurnJobStoreLogic {
         message: {
           turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text,
           ...(record.role === 'informed' ? { informationOnly: true as const } : {}),
+          ...(isEditTurn(turn) ? { edit: turn.edit } : {}),
         },
       }];
     });
@@ -1710,9 +1838,42 @@ export class TurnJobStoreLogic {
   }
 
   /**
+   * The stored versions of one message, by primary key only: its own row
+   * and its edit rows, delivered ones included while retained, so a late or
+   * repeated edit is recognised after its turn ended. A row this release
+   * cannot read is left out. Plain reads: edit admission's transaction holds
+   * them.
+   */
+  editVersions(channelId: string, messageTs: string): MessageVersionRow[] {
+    const edits = editTurnJobIdRange(channelId, messageTs);
+    return this.db.all(
+      `SELECT id, turn_json, assignment_json, run_id, execution_authority, delivered, status
+       FROM turn_jobs WHERE id = ? OR (id >= ? AND id < ?)
+       ORDER BY enqueued_at, rowid`,
+      `msg:${channelId}:${messageTs}`,
+      edits.from,
+      edits.to,
+    ).flatMap((row) => {
+      try {
+        return [{
+          id: String(row.id),
+          turn: JSON.parse(String(row.turn_json)) as NormalizedSlackTurn,
+          assignment: JSON.parse(String(row.assignment_json)) as ResolvedAssignment,
+          ...(typeof row.run_id === 'string' ? { runId: row.run_id } : {}),
+          executionAuthority: row.execution_authority as RunExecutionAuthority,
+          live: Number(row.delivered) === 0 && row.status !== 'recovery_required',
+        }];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  /**
    * The message that started the latest turn this Agent was given in one
    * conversation, while its row is retained. A row an older release left
-   * without a thread key is not found.
+   * without a thread key is not found, and an edit row is an older
+   * message's later version, never a new turn.
    */
   latestAgentTurnMessageTs(input: SlackLatestAgentTurnQuery): string | undefined {
     for (const part of [input.workspaceId, input.channelId]) {
@@ -1725,6 +1886,7 @@ export class TurnJobStoreLogic {
       ? this.db.get(
           `SELECT message_ts AS messageTs FROM turn_jobs
            WHERE thread_key >= ? AND thread_key < ? AND json_extract(assignment_json, '$.agent.id') = ?
+             AND NOT ${EDIT_TURN_JOB_ID_SQL}
            ORDER BY enqueued_at DESC, rowid DESC LIMIT 1`,
           `${conversation}:`,
           `${conversation};`,
@@ -1733,6 +1895,7 @@ export class TurnJobStoreLogic {
       : this.db.get(
           `SELECT message_ts AS messageTs FROM turn_jobs
            WHERE thread_key = ? AND json_extract(assignment_json, '$.agent.id') = ?
+             AND NOT ${EDIT_TURN_JOB_ID_SQL}
            ORDER BY enqueued_at DESC, rowid DESC LIMIT 1`,
           `${conversation}:${validateBoundedString(input.threadTs, 'Thread timestamp', 128)}`,
           input.agentId,
@@ -1880,8 +2043,9 @@ export class TurnJobStoreLogic {
   /**
    * The thread instance's previous turn, when this turn continues it: the
    * conversation is pinned to `instanceId` and that instance already admitted
-   * an earlier turn. Its trigger is the watermark below which the transcript
-   * already holds the Slack context. Undefined means the dispatch starts a
+   * an earlier turn. Its request time (turnRequestTs: an edit row's edit,
+   * else its message) is the watermark below which the transcript already
+   * holds the Slack context. Undefined means the dispatch starts a
    * transcript (a new thread, an ownership transfer, or a rotation).
    */
   getThreadContinuation(
@@ -1894,22 +2058,22 @@ export class TurnJobStoreLogic {
     const binding = this.getAgentBinding(continuityKey);
     if (!binding || binding.instanceId !== instanceId) return undefined;
     const row = this.db.get(
-      `SELECT id, thread_key, runtime_plan_json, json_extract(turn_json, '$.messageTs') AS message_ts,
+      `SELECT id, thread_key, runtime_plan_json, ${TURN_REQUEST_TS} AS request_ts,
          json_extract(turn_json, '$.userId') AS user_id
        FROM turn_jobs
        WHERE agent_instance_id = ? AND runtime_plan_json IS NOT NULL
          AND dispatch_receipt_json IS NOT NULL
-         AND CAST(json_extract(turn_json, '$.messageTs') AS REAL) < CAST(? AS REAL)
-       ORDER BY CAST(json_extract(turn_json, '$.messageTs') AS REAL) DESC LIMIT 1`,
+         AND CAST(${TURN_REQUEST_TS} AS REAL) < CAST(? AS REAL)
+       ORDER BY CAST(${TURN_REQUEST_TS} AS REAL) DESC LIMIT 1`,
       instanceId,
       beforeMessageTs,
     );
-    if (!row?.runtime_plan_json || typeof row.message_ts !== 'string') return undefined;
+    if (!row?.runtime_plan_json || typeof row.request_ts !== 'string') return undefined;
     // The previous run read its follow-ups too: the transcript holds them.
     const previous: SlackThreadContinuation = {
       messageTs: typeof row.thread_key === 'string'
-        ? this.newestRead(row.thread_key, String(row.id), row.message_ts)
-        : row.message_ts,
+        ? this.newestRead(row.thread_key, String(row.id), row.request_ts)
+        : row.request_ts,
       ...(typeof row.user_id === 'string' ? { slackUserId: row.user_id } : {}),
     };
     try {
@@ -3151,6 +3315,11 @@ function validateFoldRequest(request: TurnFoldRequest): void {
     throw new Error('Fold cycle count is invalid.');
   }
   if (typeof request.take !== 'boolean') throw new Error('Fold take flag is invalid.');
+}
+
+/** The rows that are messages: an edit row is a later version of one, never a message of its own. */
+function messageRows<T extends { id: string }>(rows: readonly T[]): T[] {
+  return rows.filter((row) => !isEditTurnJobId(row.id));
 }
 
 /** A row's coordinates and the 👀 Chickpea added to its message and still owes removing (KTD9). */

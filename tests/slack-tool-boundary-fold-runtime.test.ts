@@ -32,6 +32,7 @@ import { registerSlackStatusTurn } from '../src/slack/status-registry.ts';
 import { SLACK_ASK_USER_TOOL_NAME } from '../src/slack/ui/presentation-tools.ts';
 import type { TurnFoldClaim, TurnJob } from '../src/slack/turn-job-types.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
+import { editTurnJobId } from '../src/slack/edits.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { createWorkModelInvocationInterceptor } from '../src/work/model-invocation.ts';
@@ -56,6 +57,8 @@ interface Scenario {
   calls: LateFoldRequest[];
   /** Admit a message the person sent now, queued behind the running head. */
   arrive(id: string, text: string): void;
+  /** Admit the person's edit of the head's message, as edit admission writes it. */
+  editHead(text: string): void;
   fold(request: LateFoldRequest): Promise<TurnFoldClaim | undefined>;
   close(): void;
 }
@@ -161,6 +164,15 @@ function openScenario(options: { failFold?: boolean } = {}): Scenario {
     turns,
     calls,
     arrive: enqueue,
+    editHead(text) {
+      const editedTs = `${threadTs.split('.')[0]}.000${sequence++}`;
+      const id = editTurnJobId(head.turn.channelId, head.turn.messageTs, editedTs);
+      turns.enqueue({
+        id, evtKey: `evt:Ev_${editedTs}`, msgKey: id, assignment,
+        turn: { ...head.turn, text, eventId: `Ev_${editedTs}`, edit: { editedTs, previousText: head.turn.text } },
+      });
+      clock.now += 1;
+    },
     async fold(request) {
       calls.push(request);
       if (options.failFold) throw new Error('state store unavailable');
@@ -458,6 +470,31 @@ test('messages sent while the Agent runs tools reach the model after that tool b
           { phase: 'finish', received: MAX_TURN_FOLD_CYCLES + 1, take: true },
         ], 'the would-stop takes the last message');
         assert.equal(scenario.turns.runnerView(`late_${batches}`).job!.fold?.cycle, MAX_TURN_FOLD_CYCLES + 1);
+      } finally {
+        scenario.close();
+      }
+    });
+
+    await t.test('an edit of the message the Agent is answering reaches it after the tool batch, as an edit note', async () => {
+      scenario = openScenario();
+      const edited = 'Draft the launch note for partners.';
+      try {
+        onTool = (step) => {
+          pastInterval();
+          if (step === 1) scenario.editHead(edited);
+        };
+        toolDelayMs = () => 20;
+        const { statuses, review } = await run([work(1), work(2), answer('A launch note for partners.')]);
+        assert.deepEqual(statuses, ['Reading 1 edited message…']);
+        assert.equal(folds().length, 1);
+        const [fold] = folds();
+        assert.ok(fold?.kind === 'signal');
+        assert.match(fold.body, /^While you were working, <@U_PERSON> edited a message you already read in this thread \(the edited message keeps its time, and its new text replaces what you read\):\n\n- \[.+ role=human edited\] U_PERSON: Draft the launch note for partners\.\n\nBefore the edit, that message read:\n\n- \[.+ role=human\] U_PERSON: Draft the launch note\.\n\nThese arrived while you were working\./);
+        const headTs = scenario.turns.runnerView('head').job!.turn.messageTs;
+        assert.deepEqual(followUpSignalMessages(fold.body), [
+          { userId: PERSON, messageTs: headTs, text: edited, edit: { previousText: 'Draft the launch note.' } },
+        ]);
+        assert.deepEqual(review?.followUps().map(({ text }) => text), [edited], 'the help-improve copy keeps the new text');
       } finally {
         scenario.close();
       }

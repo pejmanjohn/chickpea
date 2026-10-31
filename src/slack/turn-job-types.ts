@@ -190,7 +190,7 @@ export interface TurnStopHeadRecordV1 {
 
 export interface TurnStopEndingV1 {
   outcome: 'dropped' | 'released';
-  /** Rows the ending dropped or released. */
+  /** Messages the ending dropped or released; an edit row is no message. */
   count: number;
   at: number;
 }
@@ -251,7 +251,7 @@ export type TurnFoldRequest =
   | { phase: 'turn' | 'finish'; headId: string; instanceId: string; received: number; take: boolean };
 
 export interface TurnFoldClaim {
-  /** This claim's members, oldest first; empty when none was eligible. */
+  /** This claim's members and edit notes in the order they were sent (readFoldClaim); empty when none was eligible. */
   messages: FoldedMessage[];
   /** The requester's own words over the head and its members through this cycle (foldedRequestText). */
   requesterText: string;
@@ -261,6 +261,12 @@ export interface TurnFoldClaim {
    * Absent from an older state store.
    */
   receipts?: TurnReadReceipt[];
+  /**
+   * `start` only: the head's newest text, when an edit of it joined before
+   * the head's prompt froze. Absent from an older state store, which reads
+   * the head's admitted text.
+   */
+  headText?: string;
 }
 
 /** A row's 👀 that its reader swaps for 👍 (see SlackInteractionProgress `read`). */
@@ -322,7 +328,7 @@ export interface TurnStopResult {
   executor: 'alarm' | 'runner';
   agentId: string;
   record: TurnStopHeadRecordV1;
-  /** Rows the stop holds now, late arrivals included. */
+  /** Messages the stop holds now, late arrivals included; an edit row is no message. */
   held: number;
   /** The head row's frozen Flue admission, when its dispatch started. */
   dispatchEnvelope?: FlueDispatchEnvelopeV1;
@@ -347,8 +353,9 @@ export type TurnSteeringDecision =
 /** What the stopped ending (or a completion race) did with the held rows. */
 export interface TurnStopFinish {
   outcome: 'dropped' | 'released';
+  /** Messages the ending dropped or released; an edit row is no message. */
   count: number;
-  /** Of those rows, the follow-ups the stopped run had already read (its dispatched fold members). */
+  /** Of those messages, the follow-ups the stopped run had already read (its dispatched fold members). */
   read: number;
   /** Content-free coordinates of those rows, to finalize their records and receipts. */
   rows: TurnEndedRow[];

@@ -30,7 +30,7 @@ export interface SlackMessageEvent {
   channel_type?: string;
   subtype?: string;
   deleted_ts?: string;
-  edited?: { ts: string };
+  edited?: { ts: string; user?: string };
   message?: SlackMessageEvent;
   previous_message?: SlackMessageEvent;
   bot_id?: string;
@@ -258,6 +258,21 @@ export interface NormalizedSlackTurn {
    * Each answers in turn in the thread; the first owns it.
    */
   coAddressed?: SlackCoAddressed;
+  /**
+   * Set only by edit admission (decideEdit): this turn is a later version of
+   * the person's message `messageTs`, saved at `editedTs`. Every other field
+   * is that message's turn as first admitted, except `text` (the new text)
+   * and `eventId` (the edit's delivery). Slack text can never supply it, and
+   * only a row whose id is editTurnJobId(...) carries it.
+   */
+  edit?: SlackTurnEdit;
+}
+
+export interface SlackTurnEdit {
+  /** Slack's `message.edited.ts`. Versions of one message order by it. */
+  editedTs: string;
+  /** The message's newest stored text before this edit. */
+  previousText: string;
 }
 
 export interface SlackCoAddressed {

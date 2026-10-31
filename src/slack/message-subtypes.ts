@@ -1,4 +1,8 @@
-/** Content-bearing messages, excluding mutation wrappers and system events. */
+/**
+ * Content-bearing messages, excluding mutation wrappers and system events. A
+ * person's edit (`message_changed`) is no new message: it steers its
+ * message's queued or running turn (parseSlackMessageEdit).
+ */
 export function isSlackContentMessageSubtype(subtype: string | undefined): boolean {
   // "Also send to channel/direct message" broadcasts the same thread reply.
   return !subtype || subtype === 'file_share' || subtype === 'thread_broadcast';

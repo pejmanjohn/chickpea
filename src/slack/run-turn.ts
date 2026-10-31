@@ -110,7 +110,7 @@ import {
   withCreditedBack,
   type SlackFailureKind,
 } from '../usage/run-settlement.ts';
-import { currentMessageOnlyContext, type SlackTurnContext } from './thread-context.ts';
+import { currentMessageOnlyContext, turnRequestTs, type SlackTurnContext } from './thread-context.ts';
 import {
   runReviewError,
   slackRunReviewConversation,
@@ -510,9 +510,11 @@ export async function runTurn(
       options.stopEnding?.beforeDispatch !== true
     ? await options.claimFold({ phase: 'start', headId: options.turnId })
     : undefined;
+  // An edit of the head that joined before its prompt froze: the run reads only the newest text.
+  const head = claim?.headText === undefined ? turn : { ...turn, text: claim.headText };
   const followUps = claim?.messages ?? [];
   const receipts = claim?.receipts ?? [];
-  if (!options.turnLatency) return runTurnAttempt(turn, assignment, platformEnv, options, followUps, receipts);
+  if (!options.turnLatency) return runTurnAttempt(head, assignment, platformEnv, options, followUps, receipts);
   const tracker = new TurnLatencyTracker(options.turnLatency, {
     ...(options.turnId ? { turnJobId: options.turnId } : {}),
     ...(options.runId ? { runId: options.runId } : {}),
@@ -522,7 +524,7 @@ export async function runTurn(
   const { onDelivered, onDeferredTerminal } = options;
   let stopped = false;
   try {
-    await runTurnAttempt(turn, assignment, platformEnv, {
+    await runTurnAttempt(head, assignment, platformEnv, {
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
       onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
@@ -1243,7 +1245,7 @@ async function runTurnAttempt(
   // A reattached turn showed it on its first attempt.
   const readingFollowUps = followUps.length > 0 && !options.flueDispatch?.dispatchReceipt;
   if (readingFollowUps) {
-    await statusTurn.setStatus(foldActivityStatus(followUps.length + 1, 'start')).catch(() => false);
+    await statusTurn.setStatus(foldActivityStatus(followUps, 'start')).catch(() => false);
   }
   // Once per turn; a failed hint never holds back the task's progress.
   let codingTaskSignalled = false;
@@ -2823,7 +2825,7 @@ async function readThreadContinuation(
     return await options.getThreadContinuation(
       decision.runtimePlan.conversation.continuityKey,
       decision.instanceId,
-      turn.messageTs,
+      turnRequestTs(turn),
     );
   } catch {
     console.warn('[chickpea] thread continuation read failed; sending the full bounded context');
@@ -2880,7 +2882,7 @@ export async function freezeRuntimePlanForTurn(input: {
       : undefined,
     input.turn.actorMembershipId
       ? input.getBoundRuntimePlan?.(
-          opaqueId('agent', slackAgentContinuityKey(input.turn, input.assignment)), input.turn.messageTs,
+          opaqueId('agent', slackAgentContinuityKey(input.turn, input.assignment)), turnRequestTs(input.turn),
           input.turn.actorMembershipId, input.assignment.agentId,
         )
       : undefined,

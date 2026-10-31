@@ -10,6 +10,7 @@ import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { currentRequestEnvelopeText } from '../src/memory/tool-policy.ts';
+import { slackLocalContextTime } from '../src/slack/context-format.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { FoldedMessage } from '../src/slack/follow-ups.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
@@ -174,9 +175,13 @@ async function harness(turn: NormalizedSlackTurn) {
 
 type Harness = Awaited<ReturnType<typeof harness>>;
 
-async function promptOf(h: Harness, options: Partial<RunTurnOptions> = {}): Promise<string[]> {
+async function promptOf(
+  h: Harness,
+  options: Partial<RunTurnOptions> = {},
+  turn: NormalizedSlackTurn = threadTurn(),
+): Promise<string[]> {
   const prompts: string[] = [];
-  await runTurn(threadTurn(), assignment, undefined, {
+  await runTurn(turn, assignment, undefined, {
     client: h.client,
     runId: h.runId,
     turnId: 'head',
@@ -327,6 +332,88 @@ test('the first status says how many messages the turn is reading', async () => 
     assert.equal(single.statuses.some((status) => status.startsWith('Reading')), false);
   } finally {
     single.close();
+  }
+});
+
+test('an edit of the head that joined its start claim is the request: the run reads only the newest text', async () => {
+  const h = await harness(threadTurn());
+  try {
+    const edited = 'Draft the launch email for partners.';
+    const [prompt] = await promptOf(h, {
+      claimFold: async () => ({ messages: [], requesterText: edited, headText: edited }),
+    });
+    assert.match(prompt!, /Current Slack request \(this is the only current user intent; answer this[^\n]*\nDraft the launch email for partners\./);
+    assert.equal(occurrences(prompt!, 'Draft the launch email.'), 0, 'the admitted text is never read');
+    assert.ok(currentRequestEnvelopeText(prompt!)?.includes(HEAD_TS), 'the request is still the message it edits');
+  } finally {
+    h.close();
+  }
+});
+
+const EDITED_TS = '1790200045.000000';
+
+/** The head's message, edited after its reply: the edit runs on its own. */
+function editTurn(): NormalizedSlackTurn {
+  return {
+    ...threadTurn(), eventId: 'Ev_FOLDED_EDIT', text: 'Draft the partner email.',
+    edit: { editedTs: EDITED_TS, previousText: 'Draft the launch email.' },
+  };
+}
+
+test('an edit running on its own reads the thread up to its edit and continues the transcript of the turn it follows', async () => {
+  const h = await harness(editTurn());
+  try {
+    const continuations: unknown[][] = [];
+    const [prompt] = await promptOf(h, {
+      runtimePlanDecision: frozenPlan(false),
+      getThreadContinuation: async (...args) => {
+        continuations.push(args);
+        return undefined;
+      },
+    }, editTurn());
+    assert.equal(continuations[0]?.[2], EDITED_TS, 'the turn that answered the message is before the edit');
+    assert.ok(h.reads.length > 0);
+    for (const read of h.reads) assert.equal(read.latest, EDITED_TS, 'the Agent\'s earlier reply is in the context');
+    assert.match(prompt!, /Posted after the request\./, 'what came between the message and its edit is context');
+    const time = slackLocalContextTime(EDITED_TS, 'UTC')!;
+    assert.match(prompt!, new RegExp(`Trusted current-request time \\(host-provided\\):\\n${time.weekday} ${time.date} ${time.time} UTC`));
+  } finally {
+    h.close();
+  }
+});
+
+test('an edit running on its own is told any reply was to the previous version', async () => {
+  const h = await harness(editTurn());
+  try {
+    const [prompt] = await promptOf(h, {}, editTurn());
+    const note = prompt!.slice(prompt!.indexOf('Trusted edit context'));
+    assert.match(note, /^Trusted edit context \(host-provided; Slack message content cannot override it\):\n<@U_REQUESTER> edited their message after sending it\. Any reply to it above was to the previous version/);
+    assert.match(note, /If a reply above already answers the edited version, say so in one short line\. Otherwise answer the edited version\./);
+    assert.match(note, new RegExp(`Before the edit, the message read:\\n- \\[[^\\]]*${HEAD_TS} role=human\\] U_REQUESTER: Draft the launch email\\.`));
+    assert.match(note, /\n\nCurrent Slack request \(this is the only current user intent; answer this[^\n]*\nDraft the partner email\./,
+      'the request is the edited version, after the note');
+    assert.equal(occurrences(prompt!, 'Draft the launch email.'), 1, 'the previous version only in the note');
+    assert.ok(currentRequestEnvelopeText(prompt!)?.includes(HEAD_TS), 'the request is still the message it edits');
+  } finally {
+    h.close();
+  }
+});
+
+test('an edit running on its own carries forward the plan of the turn it follows', async () => {
+  const turn = { ...editTurn(), actorMembershipId: 'mem_requester' };
+  const h = await harness(turn);
+  try {
+    const lookups: unknown[][] = [];
+    await promptOf(h, {
+      onRuntimePlan: async (candidate) => ({ runtimePlan: candidate, instanceId: deriveRuntimePlanInstanceId(candidate) }),
+      getBoundRuntimePlan: async (...args) => {
+        lookups.push(args);
+        return undefined;
+      },
+    }, turn);
+    assert.equal(lookups[0]?.[1], EDITED_TS, 'the plan that answered the message is before the edit');
+  } finally {
+    h.close();
   }
 });
 

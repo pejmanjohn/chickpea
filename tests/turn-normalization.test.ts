@@ -11,8 +11,10 @@ import {
 import {
   normalizeSlackInboundEnvelope,
   normalizeSlackTurn,
+  parseSlackMessageEdit,
   stripSlackMessageAppContext,
 } from '../src/slack/turn-normalization.ts';
+import type { SlackEventFixture, SlackMessageEvent } from '../src/slack/types.ts';
 import {
   appMention as fixture,
   channelThreadMessage,
@@ -215,6 +217,80 @@ test('accepting thread broadcasts does not admit message mutations or system sub
       status: 'ignored', reason: 'message_subtype',
     });
   }
+});
+
+/** A `message_changed` delivery: Slack's shape for an edit, a link preview, a reply count and a bot's update alike. */
+function messageChanged(
+  message: Partial<SlackMessageEvent>,
+  previous: Partial<SlackMessageEvent> = {},
+): SlackEventFixture {
+  const base = { type: 'message' as const, channel: 'C_EXEC', ts: '1782770400.000200', user: 'U_PERSON' };
+  return {
+    token: '', team_id: 'TDEMO', api_app_id: 'A1', event_id: 'Ev_EDIT', event_time: 1782770500,
+    type: 'event_callback',
+    event: {
+      type: 'message', subtype: 'message_changed', channel: 'C_EXEC', channel_type: 'channel',
+      ts: '1782770500.000300', event_ts: '1782770500.000300',
+      message: { ...base, thread_ts: '1782770400.000100', text: 'deploy to staging', edited: { ts: '1782770500.000000', user: 'U_PERSON' }, ...message },
+      previous_message: { ...base, thread_ts: '1782770400.000100', text: 'deploy to prod', ...previous },
+    },
+  };
+}
+
+function changedEvent(): SlackMessageEvent {
+  return messageChanged({}).event as SlackMessageEvent;
+}
+
+test('a person\'s text edit parses to the edit of their message, its text kept as a new message\'s is', () => {
+  assert.deepEqual(parseSlackMessageEdit(messageChanged({})), {
+    workspaceId: 'TDEMO', channelId: 'C_EXEC', messageTs: '1782770400.000200', editedTs: '1782770500.000000',
+    userId: 'U_PERSON', text: 'deploy to staging', eventId: 'Ev_EDIT',
+  });
+  const url = 'https://acme.example.slack.com/lists/TDEMO/F0LIST123';
+  const blocks = [{
+    type: 'rich_text',
+    elements: [{ type: 'rich_text_section', elements: [
+      { type: 'text', text: 'Use ' },
+      { type: 'list_record', file_id: 'F0LIST123', text: 'the QA list', url },
+    ] }],
+  }];
+  const linked = parseSlackMessageEdit(messageChanged({ text: 'Use the QA list', blocks }));
+  assert.equal(linked?.text, ['Use the QA list', '', 'Links in this Slack message:', `- ${url}`].join('\n'),
+    'the link a new message would keep');
+  assert.equal(
+    parseSlackMessageEdit(messageChanged({ text: 'Use the QA list', blocks }, { text: 'Use the QA list', blocks })),
+    undefined,
+    'the same words with the same link are not an edit',
+  );
+});
+
+test('Slack\'s other message_changed deliveries are not edits', () => {
+  const cases: Array<[string, SlackEventFixture]> = [
+    ['a link preview (no edited)', messageChanged({ edited: undefined, attachments: [{ title: 'preview' }] } as never)],
+    ['a reply count change', messageChanged({ edited: undefined, text: 'deploy to prod', reply_count: 2 } as never)],
+    ['a preview after an earlier edit', messageChanged({ text: 'deploy to prod' })],
+    ['a bot message', messageChanged({ bot_id: 'B1' })],
+    ['an app message', messageChanged({ app_id: 'A9' })],
+    ['an app profile', messageChanged({ bot_profile: { app_id: 'A9' } })],
+    ['Slackbot', messageChanged({ user: 'USLACKBOT' })],
+    ['no author', messageChanged({ user: undefined } as never)],
+    ['an editor who is not the author', messageChanged({ edited: { ts: '1782770500.000000', user: 'U_OTHER' } })],
+    ['a bot_message subtype', messageChanged({ subtype: 'bot_message' })],
+    ['blank new text', messageChanged({ text: '   ' })],
+    ['a deletion', { ...messageChanged({}), event: { ...changedEvent(), subtype: 'message_deleted' } }],
+    ['no previous message', { ...messageChanged({}), event: { ...changedEvent(), previous_message: undefined } as never }],
+    ['an edited ts Slack never sends', messageChanged({ edited: { ts: '1782770500' } })],
+  ];
+  for (const [label, payload] of cases) assert.equal(parseSlackMessageEdit(payload), undefined, label);
+});
+
+test('an edit never carries files: a file change alone is no edit, and a text change with files is text only', () => {
+  const files = [{ id: 'F0ABCDEF1', name: 'a.txt' }];
+  assert.equal(parseSlackMessageEdit(messageChanged({ text: 'deploy to prod', files }, { files: [] })), undefined);
+  const edit = parseSlackMessageEdit(messageChanged({ subtype: 'file_share', files }));
+  assert.equal(edit?.text, 'deploy to staging');
+  assert.equal(Object.hasOwn(edit ?? {}, 'files'), false);
+  assert.equal(Object.hasOwn(edit ?? {}, 'attachments'), false);
 });
 
 test('a suggested prompt click remains an ordinary user-rooted DM turn', () => {

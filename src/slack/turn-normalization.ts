@@ -15,6 +15,7 @@ import type { SlackInboundEnvelope } from './transport/types.ts';
 import { preserveSlackRichTextLinks } from './rich-text-links.ts';
 import { isSlackContentMessageSubtype } from './message-subtypes.ts';
 import { isSlackAttachmentFileId, MAX_SLACK_ATTACHMENTS } from './attachment-file-ids.ts';
+import type { SlackMessageEdit } from './edits.ts';
 
 interface SlackTurnNormalizationOptions {
   botUserId?: string;
@@ -242,6 +243,40 @@ export function normalizeSlackTurn(
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(attachmentSet.intake ? { attachmentIntake: attachmentSet.intake } : {}),
   });
+}
+
+const SLACK_MESSAGE_TS = /^\d{1,12}\.\d{6}$/;
+
+/**
+ * The edit a `message_changed` event carries, or undefined unless it is a
+ * person's real text edit: Slack sends the same subtype for link previews,
+ * reply counts, file changes and bot or stream updates, and a later preview
+ * of a message edited once still carries `edited`. Node's gateway does not
+ * filter Chickpea's own edits, so this does. Files are never read: an edit
+ * changes only text.
+ */
+export function parseSlackMessageEdit(payload: SlackEventFixture): SlackMessageEdit | undefined {
+  const event = payload.event;
+  if (!isSlackMessageEvent(event) || event.subtype !== 'message_changed') return undefined;
+  const { message, previous_message: previous } = event;
+  if (!message || !previous || !event.channel || !payload.team_id || !payload.event_id) return undefined;
+  const editedTs = message.edited?.ts;
+  if (!editedTs || !SLACK_MESSAGE_TS.test(editedTs) || !SLACK_MESSAGE_TS.test(message.ts)) return undefined;
+  const userId = message.user;
+  if (!userId || isSlackSystemUser(userId) || isAppAuthoredMessage(message)) return undefined;
+  if (message.edited?.user !== undefined && message.edited.user !== userId) return undefined;
+  if (!isSlackContentMessageSubtype(message.subtype)) return undefined;
+  const text = preserveSlackRichTextLinks(message.text, message.blocks);
+  if (!text.trim() || text === preserveSlackRichTextLinks(previous.text, previous.blocks)) return undefined;
+  return {
+    workspaceId: payload.team_id,
+    channelId: event.channel,
+    messageTs: message.ts,
+    editedTs,
+    userId,
+    text,
+    eventId: payload.event_id,
+  };
 }
 
 function runnableTurn(input: RunnableTurnInput): SlackTurnNormalization {

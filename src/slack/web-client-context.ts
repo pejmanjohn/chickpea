@@ -13,6 +13,7 @@ import {
   currentMessageOnlyContext,
   DEFAULT_MAX_MESSAGES,
   ensureTriggerMessage,
+  newestRequestTs,
   orderMessages,
   partitionSlackContext,
   toContextMessage,
@@ -53,11 +54,13 @@ import { isSlackContentMessageSubtype } from './message-subtypes.ts';
 import { slackFileSummaries } from './message-text.ts';
 import { AGENT_ASK_SILENT_REPLY } from './agent-asks.ts';
 import {
+  editedRequestNote,
   foldedRequestHeading,
   frameFoldedMessages,
   informationOnlyHeading,
   type FoldedMessage,
 } from './follow-ups.ts';
+import { isEditTurn } from './edits.ts';
 
 export const SLACK_SELF_MENTION_PLACEHOLDER = '[[CHICKPEA_SELF_MENTION]]';
 
@@ -658,7 +661,7 @@ export function assembleSlackPrompt(
     parts.push('', options.continuityNote);
   }
   const followUps = options.followUps ?? [];
-  const currentTime = slackLocalContextTime(followUps.at(-1)?.messageTs ?? turn.messageTs, contextTimezone);
+  const currentTime = slackLocalContextTime(newestRequestTs(turn, followUps), contextTimezone);
   if (currentTime) {
     parts.push(
       '',
@@ -694,6 +697,7 @@ export function assembleSlackPrompt(
   if (options.threadFileManifest) {
     parts.push('', options.threadFileManifest);
   }
+  if (isEditTurn(turn)) parts.push('', editedRequestNote(turn, contextTimezone));
   const answered = followUps.filter((message) => !message.informationOnly);
   const informed = followUps.filter((message) => message.informationOnly);
   if (answered.length > 0) {

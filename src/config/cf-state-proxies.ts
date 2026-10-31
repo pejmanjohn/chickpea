@@ -166,6 +166,7 @@ import type {
   SlackCanonicalAdmissionInput,
   SlackStateStore,
 } from '../slack/claim-store.ts';
+import type { SlackMessageEdit } from '../slack/edits.ts';
 import {
   SlackPresentationStateError,
   type SlackPresentationStateErrorCode,
@@ -352,6 +353,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'slackFlueReceiptRecord', 'slackFlueSettlementRecord', // an equal checkpoint returns the saved one
   'slackTurnStopFinish', // the first stop ending stands and is returned again
   'slackTurnFold', // a cycle's claim is returned again until a later call confirms it
+  'slackTurnAdmitEdit', // a replay finds the committed edit row and reports it already admitted
   'slackTurnDirectThreads', 'slackTurnReadThrough', 'slackRunFacts', // reads (a DM lookup keys old rows idempotently)
   'slackPresentationTransition', // compare-and-swap on the projection version
   // Version-fenced; a replay finds exactly what the committed call wrote and succeeds.
@@ -1995,6 +1997,10 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async admitCanonical(input: SlackCanonicalAdmissionInput) {
     return rpcVia(this.stub,'admitSlackTurn', (stub) => stub.admitSlackTurn(input));
+  }
+
+  async admitEdit(edit: SlackMessageEdit) {
+    return rpcVia(this.stub, 'slackTurnAdmitEdit', (stub) => stub.slackTurnAdmitEdit(edit));
   }
 
   async steerTurn(...args: Parameters<NonNullable<SlackStateStore['steerTurn']>>) {

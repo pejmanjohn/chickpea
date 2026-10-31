@@ -53,6 +53,8 @@ export interface GatewayAdmissionContext {
  *   and finalizes a reply. Chickpea records each public reply's text itself
  *   when the reply is delivered, so the edit adds nothing to the public-context
  *   ledger (and a late stream snapshot can no longer overwrite that record).
+ *   Edit admission never steers with one either: parseSlackMessageEdit
+ *   refuses app-authored edits itself, since Node's gateway has no filter.
  * - `own_reaction`: `reaction_added` by this bot user (the acknowledgement
  *   reaction). Turn normalization ignores it as `self_message`.
  *
@@ -60,7 +62,8 @@ export interface GatewayAdmissionContext {
  * message, and a person removing a reply must still leave the ledger),
  * `member_joined_channel` (the bot joining a channel is exactly what the
  * welcome and private-channel setup flows handle), `app_mention`, and
- * everything authored by people or other apps.
+ * everything authored by people or other apps, a person's edit included: it
+ * steers its message's queued or running turn.
  */
 export type GatewaySelfGeneratedEvent = 'own_message' | 'own_message_changed' | 'own_reaction';
 
