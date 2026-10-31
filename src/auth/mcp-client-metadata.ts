@@ -169,8 +169,8 @@ export function clientMetadataDiscovery(
 }
 
 /**
- * A native app's HTTPS redirect is a page that relays the code to wherever
- * the request's state points. VS Code's `https://vscode.dev/redirect`
+ * In practice a desktop app's HTTPS redirect is a page that relays the code
+ * to wherever the request's state points. VS Code's `https://vscode.dev/redirect`
  * forwards it to vscode.dev and github.dev hosts as well as this computer,
  * and a codespace's `<name>.github.dev` host belongs to whoever made it. So a
  * document that declares a native app signs in only on loopback (RFC 8252
