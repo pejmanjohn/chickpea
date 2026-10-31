@@ -427,6 +427,8 @@ test('a message delivered out of order ends the run rather than reorder the requ
 test('plain typed messages are foldable; asks, co-addressed turns and commands are not', () => {
   assert.equal(foldableTurn(turn('1800000000.000101')), true);
   assert.equal(foldableTurn(turn('1800000000.000101', { source: 'dm_message', channelType: 'im' })), true);
+  assert.equal(foldableTurn(turn('1800000000.000101', { source: 'agent_mention' })), true, 'a turn addressed to an Agent by its handle folds');
+  assert.equal(foldableTurn(turn('1800000000.000101', { source: 'reaction_added' })), false);
   assert.equal(foldableTurn(turn('1800000000.000101', {
     coAddressed: { agents: [{ agentId: 'a', name: 'A', handle: 'a' }], position: 0 },
   })), false);
@@ -576,6 +578,28 @@ test('the next turn continues the transcript after the newest message the previo
       plan.runtimePlan.conversation.continuityKey, plan.instanceId, '1800000000.000110',
     );
     assert.equal(continuation?.messageTs, '1800000000.000103');
+  } finally {
+    s.db.close();
+  }
+});
+
+test('a head reads through the newest follow-up its model holds, a late fold\'s once a later call confirms it', () => {
+  const s = store();
+  try {
+    const head = job('head', '101');
+    enqueueAll(s, [head]);
+    assert.equal(s.turns.readThrough('head'), '1800000000.000101', 'no follow-ups: the head itself');
+    enqueueAll(s, [job('second', '102'), job('third', '103')]);
+    claimed(s.turns, 'head');
+    dispatch(s.turns, head);
+    assert.equal(s.turns.readThrough('head'), '1800000000.000103');
+    const instanceId = s.turns.getFrozenRuntimePlan('head')!.instanceId;
+    enqueueAll(s, [job('late', '104')]);
+    s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 0, take: true });
+    assert.equal(s.turns.readThrough('head'), '1800000000.000103', 'claimed, not yet confirmed');
+    s.turns.fold({ phase: 'finish', headId: 'head', instanceId, received: 1, take: false });
+    assert.equal(s.turns.readThrough('head'), '1800000000.000104');
+    assert.equal(s.turns.readThrough('unknown'), undefined);
   } finally {
     s.db.close();
   }

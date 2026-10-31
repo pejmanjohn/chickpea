@@ -8,7 +8,7 @@ import { getMigrations } from 'better-auth/db/migration';
 import type { BetterAuthDatabaseBackend } from '../src/auth/better-auth-backend.ts';
 import { createBetterAuthOptions } from '../src/auth/better-auth.ts';
 
-export const PINNED_BETTER_AUTH_VERSION = '1.7.1';
+export const PINNED_BETTER_AUTH_VERSION = '1.7.14';
 
 export type BetterAuthBootstrapDialect = 'sqlite' | 'postgres';
 
@@ -36,6 +36,8 @@ function bootstrapSql(dialectLabel: string, generated: string, chickpeaTables: s
     `-- Chickpea natural-key invariants absent from Better Auth ${PINNED_BETTER_AUTH_VERSION} generation.`,
     'CREATE UNIQUE INDEX "account_providerId_accountId_uidx" ON "account" ("providerId", "accountId");',
     'CREATE UNIQUE INDEX "member_organizationId_userId_uidx" ON "member" ("organizationId", "userId");',
+    // Better Auth 1.7.0 to 1.7.2 generated this; Chickpea keeps writing `issuer`.
+    'CREATE UNIQUE INDEX "account_issuer_accountId_uidx" ON "account" ("issuer", "accountId");',
     '',
     ...chickpeaTables,
   ].join('\n');

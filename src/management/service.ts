@@ -9588,10 +9588,11 @@ function formatSkillUploadReceipt(
     lines.push(`Left out ${escape(issue.path)}: ${escape(issue.message)}`);
   }
   if (plan.issues.length > SKILL_UPLOAD_ISSUES_SHOWN) {
-    lines.push(`${plan.issues.length - SKILL_UPLOAD_ISSUES_SHOWN} more files were left out.`);
+    const more = plan.issues.length - SKILL_UPLOAD_ISSUES_SHOWN;
+    lines.push(more === 1 ? '1 more file was left out.' : `${more} more files were left out.`);
   }
   lines.push(application.status === 'updated'
-    ? `The skills are active from the next message.${application.undoAvailable ? ' You can undo this change.' : ''}`
+    ? `${plan.added.length + plan.replaced.length === 1 ? 'The skill is' : 'The skills are'} active from the next message.${application.undoAvailable ? ' You can undo this change.' : ''}`
     : 'No changes were made.');
   return lines.join('\n');
 }

@@ -736,6 +736,8 @@ export interface TagStateRpc {
    * takes any; a repeat returns the same rows.
    */
   slackTurnFold(request: TurnFoldRequest): Promise<StateRpcResult<TurnFoldClaim>>;
+  /** The newest message a head's run has read, for the Slack reading tools; null for an unknown row. */
+  slackTurnReadThrough(headId: string): Promise<StateRpcResult<string | null>>;
   /** The sender's DM threads with an undelivered run (at most two), for a top-level stop or check-in. */
   slackTurnDirectThreads(query: TurnDirectThreadQuery): Promise<StateRpcResult<string[]>>;
   /**

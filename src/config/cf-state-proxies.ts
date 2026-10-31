@@ -352,7 +352,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'slackFlueReceiptRecord', 'slackFlueSettlementRecord', // an equal checkpoint returns the saved one
   'slackTurnStopFinish', // the first stop ending stands and is returned again
   'slackTurnFold', // a cycle's claim is returned again until a later call confirms it
-  'slackTurnDirectThreads', 'slackRunFacts', // reads (a DM lookup keys old rows idempotently)
+  'slackTurnDirectThreads', 'slackTurnReadThrough', 'slackRunFacts', // reads (a DM lookup keys old rows idempotently)
   'slackPresentationTransition', // compare-and-swap on the projection version
   // Version-fenced; a replay finds exactly what the committed call wrote and succeeds.
   'modelCredentialPublish', 'modelCredentialRewrap',
@@ -2010,6 +2010,10 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async foldTurn(request: TurnFoldRequest) {
     return rpcVia(this.stub, 'slackTurnFold', (stub) => stub.slackTurnFold(request));
+  }
+
+  async turnReadThrough(headId: string) {
+    return orUndefined(await rpcVia(this.stub, 'slackTurnReadThrough', (stub) => stub.slackTurnReadThrough(headId)));
   }
 
   /** One TurnJob as a runner reads it (a mid-run 👀 checks its row after adding). */

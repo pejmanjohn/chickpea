@@ -121,7 +121,7 @@ export const SQLITE_ORGANIZATION_ERASURE = {
 
 const SQLITE_PENDING_MCP_CLIENTS = `pending AS (
   SELECT c.clientId, c.createdAt FROM oauthClient AS c
-  WHERE c.tokenEndpointAuthMethod = 'none' AND c.userId IS NULL
+  WHERE (c.tokenEndpointAuthMethod = 'none' OR c.clientDiscoveryId IS NOT NULL) AND c.userId IS NULL
     AND NOT EXISTS (SELECT 1 FROM oauthConsent AS t WHERE t.clientId = c.clientId)
     AND NOT EXISTS (SELECT 1 FROM oauthAccessToken AS t WHERE t.clientId = c.clientId)
     AND NOT EXISTS (SELECT 1 FROM oauthRefreshToken AS t WHERE t.clientId = c.clientId)
@@ -258,6 +258,44 @@ export interface PendingMcpOAuthClientPrune {
   keep: number;
 }
 
+/** A per-source limit on new MCP clients: a response refusing the request, or undefined. */
+export type McpRegistrationThrottle = (request: Request) => Promise<Response | undefined>;
+
+/** How many MCP clients no one has consented to may wait, and for how long. */
+export interface McpRegistrationPolicy {
+  maxPendingClients: number;
+  pendingClientRetentionMs: number;
+  consentWindowMs: number;
+  now: () => number;
+}
+
+export const DEFAULT_MCP_REGISTRATION_POLICY: McpRegistrationPolicy = {
+  maxPendingClients: 1_000,
+  pendingClientRetentionMs: 30 * 24 * 60 * 60_000,
+  // Outlasts the 10-minute sign-in continuation and authorization code, and
+  // holds a full cap no longer than the durable limiter's 15-minute window.
+  consentWindowMs: 15 * 60_000,
+  now: () => Date.now(),
+};
+
+/**
+ * Prunes the pending MCP clients `policy` lets go, then answers whether one
+ * more may be stored: a dynamic registration, or the first sign-in of a client
+ * known by its metadata document.
+ */
+export async function admitPendingMcpOAuthClient(
+  backend: Pick<BetterAuthDatabaseBackend, 'prunePendingMcpOAuthClients'>,
+  policy: McpRegistrationPolicy,
+): Promise<boolean> {
+  const at = policy.now();
+  const pending = await backend.prunePendingMcpOAuthClients({
+    expiredBefore: new Date(at - policy.pendingClientRetentionMs),
+    evictableBefore: new Date(at - policy.consentWindowMs),
+    keep: Math.max(0, policy.maxPendingClients - 1),
+  });
+  return pending < policy.maxPendingClients;
+}
+
 export interface BetterAuthDatabaseBackend {
   database: NonNullable<BetterAuthOptions['database']>;
   /**
@@ -306,7 +344,8 @@ export interface BetterAuthDatabaseBackend {
    */
   eraseOrganization(slug: string): Promise<BetterAuthOrganizationErasure>;
   /**
-   * Deletes the public, ownerless MCP clients that no one has consented to:
+   * Deletes the ownerless MCP clients that no one has consented to, public
+   * registrations and every client known by its metadata document alike:
    * every one registered before `expiredBefore`, then the oldest registered
    * before `evictableBefore` until `keep` remain. A client with a consent or
    * token is in use and stays. Answers how many such clients remain. The cap

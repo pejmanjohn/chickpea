@@ -1142,10 +1142,10 @@ export class TurnJobStoreLogic {
         validSlackTs(turn.messageTs) && compareSlackTs(turn.messageTs, lastTs) > 0;
       if (!eligible || taken.length >= MAX_FOLDED_MESSAGES) break;
       if (taken.length > 0 && chars + turn.text.length > MAX_FOLDED_TEXT_CHARS) break;
-      const informed = foldedInformationOnly(turn.userId, headTurn.userId, usesPersonalAccess);
+      const informationOnly = foldedInformationOnly(turn.userId, headTurn.userId, usesPersonalAccess);
       this.writeFoldRecord(String(row.id), {
         schemaVersion: 1,
-        role: informed ? 'informed' : 'absorbed',
+        role: informationOnly ? 'informed' : 'absorbed',
         headId: request.headId,
         cycle,
         received: cycle === 0,
@@ -1154,12 +1154,33 @@ export class TurnJobStoreLogic {
       if (cycle === 0 && !informed) this.oweReadReceipt(String(row.id));
       taken.push({
         turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text,
-        ...(informed ? { informationOnly: true as const } : {}),
+        ...(informationOnly ? { informationOnly: true as const } : {}),
       });
       lastTs = turn.messageTs;
       chars += turn.text.length;
     }
     return claim(taken);
+  }
+
+  /**
+   * The newest message a head's run has read: its own, or the newest
+   * follow-up its model input holds (`received`). Undefined for a row the
+   * store does not hold.
+   */
+  readThrough(headId: string): string | undefined {
+    validateBoundedString(headId, 'TurnJob id', 256);
+    const row = this.db.get(
+      `SELECT thread_key, json_extract(turn_json, '$.messageTs') AS message_ts FROM turn_jobs WHERE id = ?`,
+      headId,
+    );
+    if (typeof row?.thread_key !== 'string' || typeof row.message_ts !== 'string') return undefined;
+    return this.newestRead(row.thread_key, headId, row.message_ts);
+  }
+
+  private newestRead(threadKey: string, headId: string, headTs: string): string {
+    return this.foldMembers(threadKey, headId)
+      .filter(({ record }) => record.received)
+      .reduce((newest, { message }) => compareSlackTs(message.messageTs, newest) > 0 ? message.messageTs : newest, headTs);
   }
 
   /** Rows whose fold record names `headId`, oldest first, whatever they read as now. */
@@ -1867,14 +1888,10 @@ export class TurnJobStoreLogic {
     );
     if (!row?.runtime_plan_json || typeof row.message_ts !== 'string') return undefined;
     // The previous run read its follow-ups too: the transcript holds them.
-    const read = typeof row.thread_key === 'string'
-      ? this.foldMembers(row.thread_key, String(row.id)).filter(({ record }) => record.received)
-      : [];
     const previous: SlackThreadContinuation = {
-      messageTs: read.reduce(
-        (newest, { message }) => compareSlackTs(message.messageTs, newest) > 0 ? message.messageTs : newest,
-        row.message_ts,
-      ),
+      messageTs: typeof row.thread_key === 'string'
+        ? this.newestRead(row.thread_key, String(row.id), row.message_ts)
+        : row.message_ts,
       ...(typeof row.user_id === 'string' ? { slackUserId: row.user_id } : {}),
     };
     try {
