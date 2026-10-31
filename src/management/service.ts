@@ -2503,7 +2503,7 @@ export class WorkspaceManagementService {
       added.agentId === agentId && added.connectionId === connectionId);
     if (!approved || urlsOutsideConnection(policy, approved).length > 0) return false;
     const current = requestAddressedHere(actor);
-    if (current !== undefined && requesterTextContainsExactKey(current, key)) return true;
+    if (current !== undefined && keyTypedForApprovedConnection(current, key, approved)) return true;
     if (!proposal.proposedMessageTs || !this.stores.typedSlackMessage) return false;
     const [message, user] = await Promise.all([
       this.stores.typedSlackMessage({
@@ -9194,6 +9194,21 @@ function requesterTextContainsExactKey(requestText: string, key: string): boolea
     if (!KEY_CHARACTER.test(text[at - 1] ?? '') && !KEY_CHARACTER.test(text[at + key.length] ?? '')) return true;
   }
   return false;
+}
+
+/**
+ * A key the requester typed whole in their current message, for a connection
+ * they approved: one token, in a message that names no host outside the
+ * approved connection. A phrase is no key, and a message about another
+ * service's URL is about another service's key.
+ */
+function keyTypedForApprovedConnection(
+  requestText: string,
+  key: string,
+  approved: { allowedHosts: readonly string[] },
+): boolean {
+  return !/\s/.test(key) && requesterTextContainsExactKey(requestText, key) &&
+    requesterTypedUrls(requestText).every((url) => approved.allowedHosts.includes(url.host));
 }
 
 /** Why a key pasted in Slack may not go to these URLs on the strength of the current message alone. */

@@ -47,7 +47,7 @@ export const AGENT_AUTHORING_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonly [fr
     'If the person gave you the key, troubleshoot with it until a setup works, then save it with `save_connection_key`.',
   ],
   [
-    'When the docs put the API on a host the requester did not type, add the connection anyway; the person approves where the key goes. No turn follows their Approve click, so for 30 minutes after it, `try_connection` and `save_connection_key` with the connection\'s `connectionId` take a key they typed in the message that proposed it or in a later message of their own.',
+    'When the docs put the API on a host the requester did not type, add the connection anyway; the person approves where the key goes. No turn follows their Approve click, so for 30 minutes after it, `try_connection` and `save_connection_key` with the connection\'s `connectionId` take a key they typed in the message that proposed it or in their current message.',
     'When the docs put the API on another host than the person named, tell them which host the key will go to before you add the connection.',
   ],
   [

@@ -296,7 +296,7 @@ function toolRefusal(message) {
 
 /** Whether a pasted key may go to these hosts: typed with them in this message, or, once this connection was approved, typed in this message or the one that proposed it. */
 function pastedKeyAdmitted(key, hosts, connectionId) {
-  const approvedFrom = connectionId === undefined ? undefined : connectionState.approved.get(connectionId);
+  const approvedFrom = connectionState.approved.get(connectionId);
   return (currentRequesterMessage.includes(key) && hosts.every(typedHere)) ||
     (approvedFrom !== undefined && (approvedFrom.includes(key) || currentRequesterMessage.includes(key)));
 }

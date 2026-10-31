@@ -541,10 +541,19 @@ test('the approval admits only its own connection, the person who approved it, f
       (f) => pasted(f, name, f.admin, undefined, 'D_ELSEWHERE'), `${name}: the key comes in another conversation`);
     await refused(async (f) => { await approvedConnection(f, KEY_LATER); },
       (f) => pasted(f, name, f.admin, 'click'), `${name}: the key is only in a click's host-written text`);
+    await refused(async (f) => { await approvedConnection(f, KEY_LATER); },
+      (f) => f.slack(name, { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, `here is the key ${KEY} <@U99999999>`),
+      `${name}: the current message is addressed to someone else`);
     await refused(async (f) => {
       await approvedConnection(f, KEY_LATER);
       await withConnectionNetwork(statusboard, async () => ok(await pasted(f, 'save_connection_key')));
     }, (f) => pasted(f, name), `${name}: the connection already has its key`);
+    await refused(async (f) => { await approvedConnection(f, KEY_LATER); },
+      (f) => f.slack(name, { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, `my Statuspage key is ${KEY}, at https://api.statuspage.example/v1`),
+      `${name}: the current message is about another service's URL`);
+    await refused(async (f) => { await approvedConnection(f, KEY_LATER); },
+      (f) => f.slack(name, { connectionId: CONNECTION.id, key: `here is the key ${KEY}`, path: INCIDENTS }, `here is the key ${KEY}`),
+      `${name}: a phrase from the current message is no key`);
   }
   await refused(async (f) => { await approvedConnection(f, `${UNTYPED_HOST} <@U99999999>`); }, (f) => next(f),
     'the proposing message was addressed to someone else');
