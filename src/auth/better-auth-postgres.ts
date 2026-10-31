@@ -244,7 +244,7 @@ export class PostgresBetterAuthBackend implements BetterAuthDatabaseBackend {
     const [row] = await this.rows<{ count: number }>(
       `WITH pending AS (
          SELECT c."clientId", c."createdAt" FROM "oauthClient" AS c
-         WHERE c."tokenEndpointAuthMethod" = 'none' AND c."userId" IS NULL
+         WHERE (c."tokenEndpointAuthMethod" = 'none' OR c."clientDiscoveryId" IS NOT NULL) AND c."userId" IS NULL
            AND NOT EXISTS (SELECT 1 FROM "oauthConsent" AS t WHERE t."clientId" = c."clientId")
            AND NOT EXISTS (SELECT 1 FROM "oauthAccessToken" AS t WHERE t."clientId" = c."clientId")
            AND NOT EXISTS (SELECT 1 FROM "oauthRefreshToken" AS t WHERE t."clientId" = c."clientId")

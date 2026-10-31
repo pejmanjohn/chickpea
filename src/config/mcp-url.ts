@@ -137,7 +137,9 @@ export function createMcpGuardedFetch(options: McpGuardedFetchOptions = {}): typ
   }
 
   const guardedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const initial = new Request(input, init);
+    // Redirects are decided below, never by the caller's mode. workerd throws
+    // on `redirect: 'error'`, which Better Auth's document fetch asks for.
+    const initial = new Request(input, { ...init, redirect: 'manual' });
     const originalSignal = initial.signal;
     const body = initial.body === null ? undefined : await initial.clone().arrayBuffer();
     let url = new URL(initial.url);

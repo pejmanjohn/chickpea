@@ -27,6 +27,7 @@ import { activateInstallerOwner } from '../src/auth/installer-owner.ts';
 import { signInSlackMember } from '../src/auth/member-sign-in.ts';
 import { applyGatewaySlackUserChange } from '../src/auth/slack-membership-events.ts';
 import { createMcpOAuthRuntimeRoutes } from '../src/auth/mcp-oauth-routes.ts';
+import { CLAUDE_DOCUMENTS, metadataDocumentServer } from './helpers/client-metadata-documents.ts';
 import {
   resolveInstallationEnv,
   type InstallationKey,
@@ -652,6 +653,45 @@ test('the host\'s registration throttle and client cap reach Core\'s registratio
   });
   assert.equal(throttled.status, 429);
   assert.deepEqual(await throttled.json(), { error: 'registration_rate_limited' });
+
+  const claude = CLAUDE_DOCUMENTS.claude.url;
+  const other = 'https://claude.ai/oauth/other-client-metadata';
+  const documents = metadataDocumentServer({
+    [claude]: CLAUDE_DOCUMENTS.claude.body,
+    [other]: CLAUDE_DOCUMENTS.claude.body.replace(claude, other),
+  });
+  hosted.routing.environment.fetchClientMetadataResource = documents.fetch;
+  let checks = 0;
+  const authorize = (refuse: boolean, clientId: string = claude) => serveHostedSharedAuth(
+    new Request(`${ORIGIN}/api/auth/oauth2/authorize?${new URLSearchParams({
+      response_type: 'code', client_id: clientId, redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+      scope: 'chickpea:workspace', state: 's', code_challenge_method: 'S256',
+      code_challenge: createHash('sha256').update('verifier').digest('base64url'),
+    })}`),
+    {
+      ...hosted.routing,
+      mcpRegistrationPolicy: { maxPendingClients: 10 },
+      async throttleRegistration() {
+        checks++;
+        return refuse ? Response.json({ error: 'registration_rate_limited' }, { status: 429 }) : undefined;
+      },
+    },
+  ) as Promise<Response>;
+  const refused = await authorize(true);
+  assert.equal(refused.status, 429, 'a first sign-in by metadata document passes the host\'s throttle');
+  assert.equal((await refused.json() as { error: string }).error, 'temporarily_unavailable');
+  assert.deepEqual(documents.requests, []);
+  assert.equal((await authorize(false)).status, 302);
+  assert.equal((await authorize(true)).status, 302, 'a stored client never does');
+  assert.equal(checks, 2);
+
+  const unknown = await authorize(false, other);
+  assert.equal(new URL(unknown.headers.get('location') ?? '/', ORIGIN).searchParams.get('error'), 'invalid_client',
+    'only Claude\'s two documents are accepted');
+  assert.deepEqual(documents.requests, [claude]);
+  assert.equal(checks, 2);
+  const rows = await hosted.backend.pool.query('SELECT 1 FROM "oauthClient" WHERE "clientId" = $1', [other]);
+  assert.equal(rows.rowCount, 0);
 });
 
 test('under installation tenancy Core\'s own app leaves the shared auth routes to the host', async () => {
@@ -893,4 +933,61 @@ test('a streamed response keeps the request database open until its body ends', 
   await Promise.all(waits);
   const empty = new Response(null, { status: 204 });
   assert.equal(holdUntilResponseEnds(empty, () => assert.fail('nothing to wait for')), empty);
+});
+
+test('Claude signs in to a hosted installation by its metadata document, through the shared routes only', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  const claude = CLAUDE_DOCUMENTS.claude.url;
+  const callbackUrl = 'https://claude.ai/api/mcp/auth_callback';
+  const documents = metadataDocumentServer({ [claude]: CLAUDE_DOCUMENTS.claude.body });
+  hosted.routing.environment.fetchClientMetadataResource = documents.fetch;
+  const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
+
+  const metadata = await (await hosted.shared(new Request(`${ORIGIN}/.well-known/oauth-authorization-server/api/auth`)))
+    .json() as Record<string, unknown>;
+  assert.equal(metadata.client_id_metadata_document_supported, true);
+  assert.ok((metadata.token_endpoint_auth_methods_supported as string[]).includes('none'));
+
+  const verifier = randomBytes(32).toString('base64url');
+  const query = new URLSearchParams({
+    response_type: 'code', client_id: claude, redirect_uri: callbackUrl, scope: 'chickpea:workspace',
+    state: 'claude-state', resource: RESOURCE,
+    code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
+  });
+  const authorize = await hosted.shared(new Request(`${ORIGIN}/api/auth/oauth2/authorize?${query}`, {
+    headers: { cookie: acme.ownerCookie },
+  }));
+  assert.equal(authorize.status, 302);
+  const consent = new URL(authorize.headers.get('location')!, ORIGIN);
+  assert.equal(consent.pathname, '/auth/mcp/consent');
+  assert.equal(consent.searchParams.get('scope'), RENEWABLE_SCOPE);
+  const page = await (await hosted.shared(new Request(consent, { headers: { cookie: acme.ownerCookie } }))).text();
+  assert.ok(page.includes('<dt>Domain</dt><dd>claude.ai</dd>'));
+  const allowed = await hosted.shared(new Request(`${ORIGIN}/auth/mcp/consent`, {
+    method: 'POST',
+    headers: {
+      cookie: acme.ownerCookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin',
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow' }),
+  }));
+  const callback = new URL(/url=([^"]+)"/.exec(await allowed.text())![1]!.replaceAll('&amp;', '&'));
+  assert.equal(`${callback.origin}${callback.pathname}`, callbackUrl);
+  const exchanged = await hosted.token({
+    grant_type: 'authorization_code', client_id: claude, code: callback.searchParams.get('code')!,
+    code_verifier: verifier, redirect_uri: callbackUrl, resource: RESOURCE,
+  });
+  assert.equal(exchanged.status, 200, await exchanged.clone().text());
+  const tokens = await exchanged.json() as { access_token: string; refresh_token: string };
+
+  const { routed, response } = await hosted.serve(hosted.mcpRequest(tokens.access_token));
+  assert.equal(routed.kind === 'installation' && installationScopeOf(routed.env)?.installationId, acme.installationId);
+  assert.equal(response?.status, 200, await response?.clone().text() ?? 'no response');
+  assert.equal((await response!.json() as { clientId: string }).clientId, claude);
+  assert.equal((await hosted.refresh({ clientId: claude, refreshToken: tokens.refresh_token })).status, 200);
+  const clients = await hosted.backend.pool.query('SELECT "clientDiscoveryId", "userId", "clientSecret" FROM "oauthClient"');
+  assert.deepEqual(clients.rows, [{ clientDiscoveryId: 'cimd', userId: null, clientSecret: null }],
+    'one ownerless row on PostgreSQL too');
+  assert.deepEqual(documents.requests, [claude]);
 });
