@@ -355,6 +355,9 @@ const TURN_JOB_SELECT_COLUMNS = `id, evt_key, msg_key, turn_json, assignment_jso
   stop_json, fold_json`;
 
 const PENDING_ROW = "delivered = 0 AND status != 'recovery_required'";
+/** turnRequestTs over `turn_json`: an edit row's save time, else its message's ts. */
+const TURN_REQUEST_TS =
+  "COALESCE(json_extract(turn_json, '$.edit.editedTs'), json_extract(turn_json, '$.messageTs'))";
 /**
  * Turns a host's operator parked after restoring an installation
  * (`cancelPendingWork`). Neither run nor delivered again, they are left out
@@ -2040,8 +2043,9 @@ export class TurnJobStoreLogic {
   /**
    * The thread instance's previous turn, when this turn continues it: the
    * conversation is pinned to `instanceId` and that instance already admitted
-   * an earlier turn. Its trigger is the watermark below which the transcript
-   * already holds the Slack context. Undefined means the dispatch starts a
+   * an earlier turn. Its request time (turnRequestTs: an edit row's edit,
+   * else its message) is the watermark below which the transcript already
+   * holds the Slack context. Undefined means the dispatch starts a
    * transcript (a new thread, an ownership transfer, or a rotation).
    */
   getThreadContinuation(
@@ -2054,22 +2058,22 @@ export class TurnJobStoreLogic {
     const binding = this.getAgentBinding(continuityKey);
     if (!binding || binding.instanceId !== instanceId) return undefined;
     const row = this.db.get(
-      `SELECT id, thread_key, runtime_plan_json, json_extract(turn_json, '$.messageTs') AS message_ts,
+      `SELECT id, thread_key, runtime_plan_json, ${TURN_REQUEST_TS} AS request_ts,
          json_extract(turn_json, '$.userId') AS user_id
        FROM turn_jobs
        WHERE agent_instance_id = ? AND runtime_plan_json IS NOT NULL
          AND dispatch_receipt_json IS NOT NULL
-         AND CAST(json_extract(turn_json, '$.messageTs') AS REAL) < CAST(? AS REAL)
-       ORDER BY CAST(json_extract(turn_json, '$.messageTs') AS REAL) DESC LIMIT 1`,
+         AND CAST(${TURN_REQUEST_TS} AS REAL) < CAST(? AS REAL)
+       ORDER BY CAST(${TURN_REQUEST_TS} AS REAL) DESC LIMIT 1`,
       instanceId,
       beforeMessageTs,
     );
-    if (!row?.runtime_plan_json || typeof row.message_ts !== 'string') return undefined;
+    if (!row?.runtime_plan_json || typeof row.request_ts !== 'string') return undefined;
     // The previous run read its follow-ups too: the transcript holds them.
     const previous: SlackThreadContinuation = {
       messageTs: typeof row.thread_key === 'string'
-        ? this.newestRead(row.thread_key, String(row.id), row.message_ts)
-        : row.message_ts,
+        ? this.newestRead(row.thread_key, String(row.id), row.request_ts)
+        : row.request_ts,
       ...(typeof row.user_id === 'string' ? { slackUserId: row.user_id } : {}),
     };
     try {

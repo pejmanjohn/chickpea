@@ -1760,6 +1760,13 @@ test('an edit running on its own reads through its edit, so the Agent\'s earlier
       undefined,
       'looked up by the message\'s ts, that turn is not found',
     );
+    // The edit's own turn ran: the next turn continues from the edit, not from the message it edits.
+    dispatch(c.turns, { ...head, id: edit.id, turn: edit.turn });
+    assert.equal(
+      c.turns.getThreadContinuation(plan.runtimePlan.conversation.continuityKey, plan.instanceId, '1800000000.000200')?.messageTs,
+      '1800000000.000150',
+      'the transcript holds the thread through the edit',
+    );
   } finally {
     c.db.close();
   }
