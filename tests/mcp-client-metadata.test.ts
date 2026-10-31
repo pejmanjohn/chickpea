@@ -9,12 +9,13 @@ import { createBetterAuthPublicHandler, type BetterAuthPublicHandlerInput } from
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import type { ClientMetadataFetch } from '../src/auth/mcp-client-metadata.ts';
 import { mountMcpOAuthBrowserRoutes, renderMcpConsentPage } from '../src/auth/mcp-oauth-routes.ts';
-import { CLAUDE_DOCUMENTS, metadataDocumentServer, type ServedDocument } from './helpers/client-metadata-documents.ts';
+import { CLAUDE_DOCUMENTS, CODEX_DOCUMENT, metadataDocumentServer, type ServedDocument } from './helpers/client-metadata-documents.ts';
 
 const ORIGIN = 'https://chickpea.example.test';
 const RESOURCE = `${ORIGIN}/mcp`;
 const CLAUDE = CLAUDE_DOCUMENTS.claude.url;
 const CLAUDE_CODE = CLAUDE_DOCUMENTS.claudeCode.url;
+const CODEX = CODEX_DOCUMENT.url;
 const CLAUDE_CALLBACK = 'https://claude.ai/api/mcp/auth_callback';
 const RENEWABLE_SCOPE = 'chickpea:workspace offline_access';
 
@@ -148,15 +149,23 @@ test('the authorization server advertises client ID metadata documents to public
   }
 });
 
-test('without hosted shared auth no metadata document signs a client in: Claude\'s URL is an unknown client, never fetched', async (t) => {
-  const host = claudeHost();
+test('without hosted shared auth no metadata document signs a client in: an accepted URL is an unknown client, never fetched', async (t) => {
+  const host = metadataDocumentServer({
+    [CLAUDE]: CLAUDE_DOCUMENTS.claude.body,
+    [CLAUDE_CODE]: CLAUDE_DOCUMENTS.claudeCode.body,
+    [CODEX]: CODEX_DOCUMENT.body,
+  });
   const f = await fixture(t, { clientMetadataDocuments: false, fetchClientMetadataResource: host.fetch });
   storeDocumentClient(f.backend, CLAUDE);
   for (const path of ['/.well-known/oauth-authorization-server/api/auth', '/api/auth/.well-known/oauth-authorization-server']) {
     const metadata = await (await f.handler(new Request(`${ORIGIN}${path}`))).json() as Record<string, unknown>;
     assert.equal(metadata.client_id_metadata_document_supported, undefined, path);
   }
-  for (const [clientId, redirect] of [[CLAUDE, CLAUDE_CALLBACK], [CLAUDE_CODE, 'http://localhost:53682/callback']] as const) {
+  for (const [clientId, redirect] of [
+    [CLAUDE, CLAUDE_CALLBACK],
+    [CLAUDE_CODE, 'http://localhost:53682/callback'],
+    [CODEX, 'http://127.0.0.1:52247/callback'],
+  ] as const) {
     for (const signedIn of [false, true]) {
       const response = await f.authorize(clientId, redirect, { signedIn });
       const location = new URL(response.headers.get('location') ?? '/', ORIGIN);
@@ -167,9 +176,12 @@ test('without hosted shared auth no metadata document signs a client in: Claude\
   assert.deepEqual(f.clients().map((client) => client.clientId), [CLAUDE], 'a stored document client stays unknown');
 });
 
-test('only Claude\'s two published documents sign a client in; any other URL is an unknown client, never fetched, throttled or stored', async (t) => {
+test('only the accepted published documents sign a client in; any other URL is an unknown client, never fetched, throttled or stored', async (t) => {
   const others = [
     'https://evil.example/client',
+    // ChatGPT's own document authenticates by private_key_jwt.
+    'https://chatgpt.com/oauth/client.json',
+    `${CODEX}/`,
     'https://claude.ai/oauth/other-client-metadata',
     `${CLAUDE}/`,
     `${CLAUDE}?client=claude`,

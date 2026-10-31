@@ -11,13 +11,17 @@ export const CLAUDE_DOCUMENTS = {
   claudeCode: { url: 'https://claude.ai/oauth/claude-code-client-metadata', body: fixture('claude-code.json') },
 } as const;
 
+/** Codex's published Client ID Metadata Document, byte for byte as chatgpt.com serves it. */
+export const CODEX_DOCUMENT = { url: 'https://chatgpt.com/oauth/codex/client.json', body: fixture('codex.json') } as const;
+
 export type ServedDocument = string | { body: string; status?: number; headers?: Record<string, string> } | (() => never);
 
 /**
- * A metadata-document host: each URL answers its body as claude.ai does
- * (JSON, five minutes fresh) unless the entry says otherwise, or throws as a
- * failed connection does; any other URL answers 404. Entries are read per
- * request, so a test can change them. `requests` lists every URL asked for.
+ * A metadata-document host: each URL answers its body as claude.ai and
+ * chatgpt.com do (JSON, five minutes fresh) unless the entry says otherwise,
+ * or throws as a failed connection does; any other URL answers 404. Entries
+ * are read per request, so a test can change them. `requests` lists every URL
+ * asked for.
  */
 export function metadataDocumentServer(served: Record<string, ServedDocument>) {
   const requests: string[] = [];

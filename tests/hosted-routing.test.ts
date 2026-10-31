@@ -27,7 +27,7 @@ import { activateInstallerOwner } from '../src/auth/installer-owner.ts';
 import { signInSlackMember } from '../src/auth/member-sign-in.ts';
 import { applyGatewaySlackUserChange } from '../src/auth/slack-membership-events.ts';
 import { createMcpOAuthRuntimeRoutes } from '../src/auth/mcp-oauth-routes.ts';
-import { CLAUDE_DOCUMENTS, metadataDocumentServer } from './helpers/client-metadata-documents.ts';
+import { CLAUDE_DOCUMENTS, CODEX_DOCUMENT, metadataDocumentServer } from './helpers/client-metadata-documents.ts';
 import {
   resolveInstallationEnv,
   type InstallationKey,
@@ -687,7 +687,7 @@ test('the host\'s registration throttle and client cap reach Core\'s registratio
 
   const unknown = await authorize(false, other);
   assert.equal(new URL(unknown.headers.get('location') ?? '/', ORIGIN).searchParams.get('error'), 'invalid_client',
-    'only Claude\'s two documents are accepted');
+    'only the published documents Chickpea accepts sign a client in');
   assert.deepEqual(documents.requests, [claude]);
   assert.equal(checks, 2);
   const rows = await hosted.backend.pool.query('SELECT 1 FROM "oauthClient" WHERE "clientId" = $1', [other]);
@@ -990,4 +990,75 @@ test('Claude signs in to a hosted installation by its metadata document, through
   assert.deepEqual(clients.rows, [{ clientDiscoveryId: 'cimd', userId: null, clientSecret: null }],
     'one ownerless row on PostgreSQL too');
   assert.deepEqual(documents.requests, [claude]);
+});
+
+test('Codex signs in to a hosted installation by its metadata document on a random loopback port, asked for consent every time', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  const codex = CODEX_DOCUMENT.url;
+  const documents = metadataDocumentServer({ [codex]: CODEX_DOCUMENT.body });
+  hosted.routing.environment.fetchClientMetadataResource = documents.fetch;
+  const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
+
+  const verifier = randomBytes(32).toString('base64url');
+  // As Codex CLI 0.160.1 asks: a port of its own on a redirect its document lists without one.
+  const authorizeRequest = (redirectUri: string, cookie?: string) => new Request(
+    `${ORIGIN}/api/auth/oauth2/authorize?${new URLSearchParams({
+      response_type: 'code', client_id: codex, redirect_uri: redirectUri, scope: RENEWABLE_SCOPE,
+      state: 'codex-state', resource: RESOURCE,
+      code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
+    })}`,
+    { headers: cookie ? { cookie } : {} },
+  );
+  const callbackUrl = 'http://127.0.0.1:52247/callback';
+
+  const signedOut = await hosted.shared(authorizeRequest(callbackUrl));
+  assert.equal(signedOut.status, 302, await signedOut.clone().text());
+  const login = new URL(signedOut.headers.get('location')!, ORIGIN);
+  assert.equal(login.pathname, '/auth/mcp/login');
+  assert.equal(login.searchParams.get('client_id'), codex);
+  const signIn = new URL((await hosted.shared(new Request(login))).headers.get('location')!, ORIGIN);
+  const resume = new URL(signIn.searchParams.get('destination')!, ORIGIN);
+  const resumed = new URL((await hosted.shared(new Request(resume))).headers.get('location')!, ORIGIN);
+  assert.equal(resumed.pathname, '/api/auth/oauth2/authorize');
+
+  const authorize = await hosted.shared(new Request(resumed, { headers: { cookie: acme.ownerCookie } }));
+  assert.equal(authorize.status, 302);
+  const consent = new URL(authorize.headers.get('location')!, ORIGIN);
+  assert.equal(consent.pathname, '/auth/mcp/consent');
+  assert.equal(consent.searchParams.get('scope'), RENEWABLE_SCOPE);
+  const page = await (await hosted.shared(new Request(consent, { headers: { cookie: acme.ownerCookie } }))).text();
+  assert.ok(page.includes(
+    '<dt>App</dt><dd>Codex <span class="note">(name provided by the app)</span></dd><dt>Domain</dt><dd>chatgpt.com</dd>',
+  ));
+  const allowed = await hosted.shared(new Request(`${ORIGIN}/auth/mcp/consent`, {
+    method: 'POST',
+    headers: {
+      cookie: acme.ownerCookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin',
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow' }),
+  }));
+  const callback = new URL(/url=([^"]+)"/.exec(await allowed.text())![1]!.replaceAll('&amp;', '&'));
+  assert.equal(`${callback.origin}${callback.pathname}`, callbackUrl);
+  assert.equal(callback.searchParams.get('state'), 'codex-state');
+  const exchanged = await hosted.token({
+    grant_type: 'authorization_code', client_id: codex, code: callback.searchParams.get('code')!,
+    code_verifier: verifier, redirect_uri: callbackUrl, resource: RESOURCE,
+  });
+  assert.equal(exchanged.status, 200, await exchanged.clone().text());
+  const tokens = await exchanged.json() as { access_token: string; refresh_token: string; scope: string };
+  assert.equal(tokens.scope, RENEWABLE_SCOPE);
+
+  const { response } = await hosted.serve(hosted.mcpRequest(tokens.access_token));
+  assert.equal(response?.status, 200, await response?.clone().text() ?? 'no response');
+  assert.equal((await response!.json() as { clientId: string }).clientId, codex);
+  assert.equal((await hosted.refresh({ clientId: codex, refreshToken: tokens.refresh_token })).status, 200);
+
+  const again = await hosted.shared(authorizeRequest('http://127.0.0.1:61234/callback', acme.ownerCookie));
+  assert.equal(new URL(again.headers.get('location')!, ORIGIN).pathname, '/auth/mcp/consent',
+    'any local app can claim Codex\'s client ID and a port, so a client already consented to is asked again');
+  const clients = await hosted.backend.pool.query('SELECT "clientId", "userId", "clientSecret", name FROM "oauthClient"');
+  assert.deepEqual(clients.rows, [{ clientId: codex, userId: null, clientSecret: null, name: 'Codex' }]);
+  assert.deepEqual(documents.requests, [codex]);
 });
