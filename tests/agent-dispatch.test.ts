@@ -1266,6 +1266,97 @@ test('a later step after ordinary narration is still the whole answer (no recove
   assert.equal(result.text, 'The answer.');
 });
 
+// --- Conversation resets mid-response ---------------------------------------
+// After a retried provider error, Flue sends a snapshot of the conversation in
+// place of `message-started` for every later step of the response. The
+// snapshot folds all steps into one message, so it carries no step boundaries.
+
+type ChunkBody = Chunk extends infer C ? C extends Chunk ? Omit<C, 'position'> : never : never;
+type StepChunk = { step: string; tool?: true } | { started: true } | { reset: true } | ChunkBody;
+
+function responseStream(script: StepChunk[]): Chunk[] {
+  let tool = 0;
+  const chunks = script.flatMap((item): ChunkBody[] => {
+    if ('step' in item) {
+      const toolCallId = `call_${item.tool ? ++tool : tool}`;
+      return [
+        { type: 'message-delta', conversationId: 'c', messageId: 'response', kind: 'text', delta: item.step },
+        ...(item.tool ? [{ type: 'tool-input' as const, conversationId: 'c', messageId: 'response',
+          toolCallId, toolName: 'work', input: {} }] : []),
+        { type: 'message-completed', conversationId: 'c', messageId: 'response' },
+        ...(item.tool ? [{ type: 'tool-output' as const, conversationId: 'c', toolCallId, output: 'done' }] : []),
+      ];
+    }
+    if ('started' in item) {
+      return [{ type: 'message-started', conversationId: 'c', messageId: 'response', submissionId: RECEIPT.submissionId }];
+    }
+    if ('reset' in item) {
+      return [{ type: 'conversation-reset', conversationId: 'c', snapshot: {
+        v: 1, conversationId: 'c', offset: '1', messages: [], settlements: [] } }];
+    }
+    return [item];
+  });
+  return chunks.map((chunk, index) => ({ ...chunk, position: { batch: 1, index } }) as Chunk);
+}
+
+async function resetAnswer(script: StepChunk[], folded: string) {
+  const logs: unknown[] = [];
+  const info = console.info;
+  console.info = (...args: unknown[]) => { if (args[0] === '[chickpea] interrupted answer recovered') logs.push(args[1]); };
+  try {
+    const agent = handle({ read: async (_receipt, options) => {
+      for (const chunk of responseStream(script)) options?.onEvent?.(chunk);
+      return { text: folded, submissionId: RECEIPT.submissionId, data: {} };
+    } });
+    const result = await promptSlackThreadAgent(promptInput(state(), agent));
+    return { text: result.text, logs };
+  } finally {
+    console.info = info;
+  }
+}
+
+test('steps that start with a conversation reset after a retried provider error still answer with the final step', async () => {
+  const { text, logs } = await resetAnswer([
+    { started: true }, { step: 'Working on step 1.', tool: true },
+    // The failed model call: an empty step, then the retry's reset.
+    { started: true }, { step: '' },
+    { reset: true }, { step: 'Working on step 2.', tool: true },
+    { reset: true }, { step: 'Done.' },
+  ], 'Working on step 1.\n\nWorking on step 2.\n\nDone.');
+  assert.equal(text, 'Done.');
+  assert.deepEqual(logs, []);
+});
+
+test('a reset after the final step keeps that step as the answer', async () => {
+  const { text } = await resetAnswer([
+    { started: true }, { step: 'Checking.', tool: true },
+    { started: true }, { step: 'The answer.' },
+    { reset: true },
+  ], 'Checking.\n\nThe answer.');
+  assert.equal(text, 'The answer.');
+});
+
+test('a reset with no completed step before it proves no boundary: the folded reply is kept', async () => {
+  // A read that opens on a snapshot taken mid-step: the step's start is in the snapshot.
+  const { text } = await resetAnswer([{ reset: true }, { step: 'rest of the answer.' }],
+    'Checking.\n\nThe start of the rest of the answer.');
+  assert.equal(text, 'Checking.\n\nThe start of the rest of the answer.');
+});
+
+test('a continuation that starts with a reset still joins the interrupted partial it continues', async () => {
+  const partial = '## Plan\n\n1. Inventory every consumer of the old col';
+  const continuation = 'umn.\n2. Backfill.';
+  const recovery = recoveredStream(partial, continuation).map(({ position: _, ...chunk }) => chunk);
+  const { text, logs } = await resetAnswer([
+    ...recovery.slice(0, -3),
+    { reset: true },
+    ...recovery.slice(-2),
+  ], `${partial}\n\n${continuation}`);
+  assert.equal(text, partial + continuation);
+  assert.deepEqual(logs, [{ recoveryResolution: 'continued', parts: 2,
+    partialChars: partial.length, continuationChars: continuation.length, trimmedChars: 0 }]);
+});
+
 test('a read that fails with the platform reset after a code-update yield is the same yield, keeping stream and receipt', async () => {
   const controller = new AbortController();
   const relayOperations: string[] = [];
