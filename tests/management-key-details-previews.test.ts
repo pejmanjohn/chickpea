@@ -51,7 +51,7 @@ function skillEdit(before: Partial<typeof BASE_SKILL>, after: Partial<typeof BAS
 }
 
 const KEY_DETAILS =
-  /^((?:[•-] .*\n)*)(?:(?:And (\d+) more changes?|(Only spacing or line breaks change))\. )?Approval applies the full (\w+)\.$/gm;
+  /^((?:[•-] .*\n)*\n?)(?:(?:And (\d+) more changes?|(Only spacing or line breaks change))\. )?Approval applies the full (\w+)\.$/gm;
 
 /** What a person reads: Slack shows `&amp;`, `&lt;` and `&gt;` as the characters. */
 function visible(text: string): string {
@@ -131,6 +131,7 @@ const SKILL_CASES: ReadonlyArray<{
   after: rewordItems(SKILL, [13]),
   lines: [
     `• Under “Step 13: Review area 13”, changes wording to: ${reworded(13)}`,
+    '',
     'Approval applies the full instructions.',
   ],
 }, {
@@ -139,6 +140,7 @@ const SKILL_CASES: ReadonlyArray<{
   after: SKILL.replace('Use this skill', 'Always use this skill'),
   lines: [
     '• At the start, changes wording to: “Always use this skill to prepare…”',
+    '',
     'Approval applies the full instructions.',
   ],
 }, {
@@ -149,6 +151,7 @@ const SKILL_CASES: ReadonlyArray<{
     `• Under “Step 2: Review area 2”, changes wording to: ${reworded(2)}`,
     `• Under “Step 5: Review area 5”, changes wording to: ${reworded(5)}`,
     `• Under “Step 8: Review area 8”, changes wording to: ${reworded(8)}`,
+    '',
     'And 2 more changes. Approval applies the full instructions.',
   ],
 }, {
@@ -158,6 +161,7 @@ const SKILL_CASES: ReadonlyArray<{
   lines: [
     '• Adds a new section, “Step 15: Archive the review”: “Area 15 covers the work that moved since the last ' +
       'review. Read the tracker…” (about 140 words)',
+    '',
     'Approval applies the full instructions.',
   ],
 }, {
@@ -166,6 +170,7 @@ const SKILL_CASES: ReadonlyArray<{
   after: SKILL.replace(syntheticSection(6), ''),
   lines: [
     '• Removes the section “Step 6: Review area 6” (about 140 words)',
+    '',
     'Approval applies the full instructions.',
   ],
 }, {
@@ -174,6 +179,7 @@ const SKILL_CASES: ReadonlyArray<{
   after: SKILL.replace(syntheticParagraph(9), syntheticParagraph(9).replace("last week's", "last month's")),
   lines: [
     "• Under “Step 9: Review area 9”, changes wording to: “…compare it with last month's notes, and write down…”",
+    '',
     'Approval applies the full instructions.',
   ],
 }, {
@@ -187,6 +193,7 @@ const SKILL_CASES: ReadonlyArray<{
   after: DESCRIPTION.replace('It does not send anything', 'It never sends anything'),
   lines: [
     '• Changes wording to: “…the house style. It never sends anything; the person reviews…”',
+    '',
     'Approval applies the full description.',
   ],
 }];
@@ -300,7 +307,7 @@ test('Agent instructions, memory and a schedule task show key details by their o
 
   for (const { preview, heading, noun, before, after, bullet } of cases) {
     const slack = formatSlackChangeSetProposal(preview);
-    assert.ok(slack.includes(`*${heading}*\n${bullet}\nApproval applies the full ${noun}.`), slack);
+    assert.ok(slack.includes(`*${heading}*\n${bullet}\n\nApproval applies the full ${noun}.`), slack);
     assert.doesNotMatch(slack, /\*Before\*|\*After\*/);
     assertAccounted(slack, noun, before, after);
     assertSameFacts(preview);

@@ -1132,7 +1132,8 @@ function isShortText(value: string | undefined): boolean {
  * Where a long text changes, one bullet per change in document order while
  * they fit the budget, then a count of the rest. Every change is listed or
  * counted. The budget measures text before escaping, so every surface lists
- * the same changes.
+ * the same changes. A blank line ends the list: without it, Slack and
+ * Markdown render the closing line inside the last bullet.
  */
 function formatKeyDetails(
   before: string,
@@ -1148,6 +1149,7 @@ function formatKeyDetails(
     return [
       ...changes.slice(0, listed)
         .map((change) => `${dialect.bullet} ${describeTextChange(change, { ...dialect, escape })}`),
+      '',
       `${rest === 0 ? '' : `And ${rest} more ${rest === 1 ? 'change' : 'changes'}. `}${applies}`,
     ].join('\n');
   };
