@@ -17,8 +17,8 @@ const TOTAL_CHARS = 1024 * 1024;
 
 /**
  * One submission's steps, from the conversation stream its reply observation
- * reads: model text and reasoning, and each tool call joined to its result,
- * and the messages late folds appended to it. Every observation replays the
+ * reads: model text and reasoning, each tool call joined to its result, and
+ * the messages late folds appended to it. Every observation replays the
  * conversation from its start, so only this submission's messages count, and
  * the trace is cut as it arrives.
  */
