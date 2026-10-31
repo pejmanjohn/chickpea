@@ -142,6 +142,26 @@ approval. An ask carries no request text from the person: a check that needs
 the person's own words, such as a schedule change or a skill import, does not
 take the asking Agent's words as theirs.
 
+### The front desk
+
+An untagged message at the root of a person's direct message with Chickpea
+goes to Chickpea first. On that turn only, Chickpea is shown the Agents the
+person may use privately. It is the same check as a mention. The list holds
+each Agent's purpose, connection names, website login hosts, and skill
+names. It stops at 12 Agents and 6,000 characters. It never holds
+credentials, usernames, or another member's personal connections.
+
+When one Agent fits, Chickpea calls `hand_off_to_agent`. Chickpea's reply
+names that Agent. The host then admits the person's own message again for
+that Agent, which takes the thread over. The requester, text, message ts and
+files are the same as with a mention, and access is checked again at
+admission. When several Agents fit, Chickpea's reply has one button per
+Agent, and only the person's own click hands the message over. A message is
+handed over at most once: the `msg:<channel>:<ts>:handoff` claim allows one.
+
+Group DMs, Channels, thread replies, and any message that mentions an Agent
+keep the routing described above.
+
 ## In a group DM
 
 A group DM is addressed like a Channel and decided like a direct message. An
