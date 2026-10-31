@@ -952,6 +952,8 @@ test('Claude, and an app no list names, sign in to a hosted installation by thei
     }),
   });
   hosted.routing.environment.fetchClientMetadataResource = documents.fetch;
+  let throttleChecks = 0;
+  hosted.routing.throttleRegistration = async () => { throttleChecks++; return undefined; };
   const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
 
   const metadata = await (await hosted.shared(new Request(`${ORIGIN}/.well-known/oauth-authorization-server/api/auth`)))
@@ -973,8 +975,10 @@ test('Claude, and an app no list names, sign in to a hosted installation by thei
     const consent = new URL(authorize.headers.get('location')!, ORIGIN);
     assert.equal(consent.pathname, '/auth/mcp/consent', clientId);
     assert.equal(consent.searchParams.get('scope'), RENEWABLE_SCOPE, clientId);
+    const checked = throttleChecks;
     const page = await (await hosted.shared(new Request(consent, { headers: { cookie: acme.ownerCookie } }))).text();
     assert.ok(page.includes(`<dt>Domain</dt><dd>${domain}</dd>`), clientId);
+    assert.equal(throttleChecks, checked + 1, 'the consent page asks the host\'s throttle for a client no one consented to');
     const allowed: Response = await hosted.shared(new Request(`${ORIGIN}/auth/mcp/consent`, {
       method: 'POST',
       headers: {

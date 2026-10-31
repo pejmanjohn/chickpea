@@ -230,10 +230,13 @@ test('a client ID that is not a public HTTPS document URL is an unknown client, 
     'https://chickpea.internal/client',
     'https://printer.local/client',
     'https://intranet/client',
+    // Chickpea's own origin, which would fetch itself.
+    `${ORIGIN}/api/auth/oauth2/authorize?client_id=x`,
     // One document, one client ID: only the form URL parsing writes.
     'https://APPS.example.org/oauth/client.json',
     'https://apps.example.org:443/oauth/client.json',
     'https://apps.example.org/oauth/client\n.json',
+    'https://apps.example.org./oauth/client.json',
   ];
   const host = metadataDocumentServer({
     [STRANGER]: strangerDocument,
@@ -757,6 +760,37 @@ test('on a spent fetch budget a stored client stands in only for a person who co
   const orphaned = await renew();
   assert.equal(orphaned.status, 429, 'without the owner\'s own consent, another person\'s does not count');
   assert.deepEqual(await orphaned.json(), BUSY);
+});
+
+test('a client its document last refused never stands in, on a spent budget or an unreachable host', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const served: Record<string, ServedDocument> = { [CLAUDE]: CLAUDE_DOCUMENTS.claude.body, ...uncachedStrangers() };
+  const f = await fixture(t, { fetchClientMetadataResource: metadataDocumentServer(served).fetch });
+  let refreshToken = await claudeRefreshToken(f);
+  const renew = async () => {
+    const response = await f.refresh(CLAUDE, refreshToken);
+    if (response.ok) refreshToken = (await response.clone().json() as { refresh_token: string }).refresh_token;
+    return response;
+  };
+
+  served[CLAUDE] = { body: 'Not Found', status: 404, headers: { 'content-type': 'text/plain' } };
+  t.mock.timers.tick(6 * 60_000);
+  assert.equal((await renew()).status, 400, 'the document refuses the client');
+  t.mock.timers.tick(2_000);
+  await spendFetchBudget(f, UNCACHED_STRANGERS);
+  const spent = await renew();
+  assert.equal(spent.status, 429, 'a spent budget does not bring it back for a person who consented');
+  assert.deepEqual(await spent.json(), BUSY);
+
+  t.mock.timers.tick(61_000);
+  served[CLAUDE] = { body: 'Service Unavailable', status: 503, headers: { 'content-type': 'text/plain' } };
+  const dark = await renew();
+  assert.equal(dark.status, 400, 'nor does its host going dark');
+  assert.deepEqual(await dark.json(), { error: 'invalid_client', error_description: 'Metadata document fetch returned HTTP 503' });
+
+  t.mock.timers.tick(2_000);
+  served[CLAUDE] = CLAUDE_DOCUMENTS.claude.body;
+  assert.equal((await renew()).status, 200, 'a document that answers again restores it');
 });
 
 test('a spent fetch budget refuses a client no one consented to unless its last fetch could not reach its document', async (t) => {
