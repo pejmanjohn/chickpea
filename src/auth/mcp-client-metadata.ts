@@ -67,7 +67,8 @@ interface NewClientGate {
  * pinned on Node, no redirect followed. The plugin adds a 5-second timeout,
  * a 5 KB JSON-only body and the MCP profile's required fields. A document
  * client must be public, redirect as a registered one must, and redirect only
- * to its own host or loopback; a refused new one is not kept.
+ * to its own host or loopback; a refused new one is not kept. A native app
+ * signs in only on loopback.
  *
  * Better Auth is built per request, so the discovery, which caches documents
  * and budgets fetches per origin, is kept per transport for the isolate.
@@ -115,6 +116,7 @@ export function clientMetadataDiscovery(
         }
         unreachable.delete(clientId);
         refused.delete(clientId);
+        assertNativeAppOnLoopback(ctx, created);
         return created;
       }
       const consentedByAnyone = Boolean(await ctx.context.adapter.findOne({
@@ -160,9 +162,30 @@ export function clientMetadataDiscovery(
       }
       const refusal = client && registrationRefusal(client);
       if (refusal) throw refusal;
+      assertNativeAppOnLoopback(ctx, client);
       return client;
     },
   };
+}
+
+/**
+ * A native app's HTTPS redirect is a page that relays the code to wherever
+ * the request's state points. VS Code's `https://vscode.dev/redirect`
+ * forwards it to vscode.dev and github.dev hosts as well as this computer,
+ * and a codespace's `<name>.github.dev` host belongs to whoever made it. So a
+ * document that declares a native app signs in only on loopback (RFC 8252
+ * section 7.3). This refuses the request, not the client, which still signs
+ * in on its loopback port.
+ */
+function assertNativeAppOnLoopback(ctx: ResolveContext, client: Client | null): void {
+  const redirectUri: unknown = (ctx.query as Record<string, unknown> | undefined)?.redirect_uri;
+  if (client?.applicationType !== 'native' || typeof redirectUri !== 'string') return;
+  const url = URL.parse(redirectUri);
+  if (url?.protocol === 'http:' && isLoopbackHost(url.hostname)) return;
+  throw new APIError('BAD_REQUEST', {
+    error: 'invalid_request',
+    error_description: 'a native app signs in only through an HTTP redirect_uri on a loopback host (127.0.0.1, localhost or [::1], any port), not a web page that relays the code',
+  });
 }
 
 /**
