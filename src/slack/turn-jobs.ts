@@ -30,6 +30,7 @@ import type {
   TurnFoldRequest,
   TurnJob,
   TurnPreviousStop,
+  TurnReadReceipt,
   TurnRunRoute,
   TurnSteeringDecision,
   TurnSteeringRequest,
@@ -1060,9 +1061,13 @@ export class TurnJobStoreLogic {
       for (const { record, message } of this.foldMembers(threadKey, request.headId)) {
         if (record.cycle < 1 || record.cycle > request.received || record.received) continue;
         this.writeFoldRecord(message.turnJobId, { ...record, received: true });
+        if (record.role === 'absorbed') this.oweReadReceipt(message.turnJobId);
         confirmed += 1;
         if (record.role === 'informed') informed += 1;
       }
+    } else {
+      // The head's own turn reads it from here on.
+      this.oweReadReceipt(request.headId);
     }
     const cycle = request.phase === 'start' ? 0 : request.received + 1;
     const claim = (messages: FoldedMessage[]) => ({
@@ -1073,6 +1078,9 @@ export class TurnJobStoreLogic {
           this.foldMembers(threadKey, request.headId)
             .filter(({ record }) => record.cycle <= cycle).map(({ message }) => message),
         ),
+        ...(request.phase === 'start'
+          ? { receipts: this.unreadReceipts([request.headId, ...messages.map(({ turnJobId }) => turnJobId)]) }
+          : {}),
       },
       confirmed,
       informed,
@@ -1143,6 +1151,7 @@ export class TurnJobStoreLogic {
         received: cycle === 0,
         at: this.now(),
       });
+      if (cycle === 0 && !informationOnly) this.oweReadReceipt(String(row.id));
       taken.push({
         turnJobId: String(row.id), userId: turn.userId, messageTs: turn.messageTs, text: turn.text,
         ...(informationOnly ? { informationOnly: true as const } : {}),
@@ -1233,8 +1242,40 @@ export class TurnJobStoreLogic {
     for (const { record, message } of this.foldMembers(head.thread_key, headId)) {
       if (record.cycle !== 0 || !holdsFold(record)) continue;
       const role = foldedInformationOnly(message.userId, head.user_id, usesPersonalAccess) ? 'informed' : 'absorbed';
-      if (role !== record.role) this.writeFoldRecord(message.turnJobId, { ...record, role });
+      if (role === record.role) continue;
+      this.writeFoldRecord(message.turnJobId, { ...record, role });
+      if (role === 'absorbed') this.oweReadReceipt(message.turnJobId);
     }
+  }
+
+  /**
+   * A run reads this row's message now: owe the swap of its 👀 for 👍
+   * (`read: 'owed'`), written before any Slack call so every removal knows
+   * the 👍 may be there. Only a 👀 Chickpea added and still owes removing;
+   * a repeat is a no-op. Plain statements: the fold's transaction holds them.
+   */
+  private oweReadReceipt(id: string): void {
+    const progress = this.getProgress(id);
+    const acknowledgment = progress?.slackInteraction?.acknowledgment;
+    if (!progress || !unreadMidRunReceipt(acknowledgment) || acknowledgment.read !== undefined) return;
+    this.db.run(
+      'UPDATE turn_jobs SET progress_json = ? WHERE id = ?',
+      JSON.stringify({
+        ...progress,
+        slackInteraction: { ...progress.slackInteraction, acknowledgment: { ...acknowledgment, read: 'owed' } },
+      }),
+      id,
+    );
+  }
+
+  /** Of these rows, those whose 👀 is still up and not yet swapped for 👍, in order. */
+  private unreadReceipts(ids: string[]): TurnReadReceipt[] {
+    return ids.flatMap((turnJobId) => {
+      const acknowledgment = this.getProgress(turnJobId)?.slackInteraction?.acknowledgment;
+      if (!unreadMidRunReceipt(acknowledgment)) return [];
+      const { channelId, messageTs, name } = acknowledgment;
+      return [{ turnJobId, receipt: { channelId, messageTs, name } }];
+    });
   }
 
   private writeFoldRecord(id: string, record: TurnFoldMemberRecordV1): void {
@@ -1262,8 +1303,10 @@ export class TurnJobStoreLogic {
    * every member of a run that failed or was stopped, read as released, as
    * does an informed member, which the reply did not answer. Plain
    * statements, run before the head's own tombstone, so a repeat converges.
-   * A settled member keeps its 👀 owed: the interaction cleanup sweeps
-   * remove it like a delivered turn's.
+   * A settled member keeps its receipt (👀, or the 👍 that replaced it)
+   * owed: the executor removes it once the reply posted (markDelivered
+   * returns the member), and the interaction cleanup sweeps remove it when
+   * that removal fails, like a delivered turn's.
    */
   private settleFoldMembers(headId: string): void {
     const head = this.db.get(
@@ -2601,13 +2644,15 @@ export class TurnJobStoreLogic {
 
   /**
    * Tombstone a delivered job so no later scan re-delivers it, ending with it
-   * the follow-ups its run read (settleFoldMembers).
+   * the follow-ups its run read (settleFoldMembers). Returns those follow-ups
+   * (settledFoldMembers), so the caller removes their receipts with the reply.
    */
-  markDelivered(id: string): void {
+  markDelivered(id: string): TurnEndedRow[] {
     this.recordTerminalStatus(id, 'success');
     this.settleFoldMembers(id);
     this.db.run("UPDATE turn_jobs SET delivered = 1, status = 'done' WHERE id = ?", id);
     this.releaseStop(id);
+    return this.settledFoldMembers(id);
   }
 
   /** Tombstone a job that exhausted its attempts (terminal failure). */
@@ -2880,6 +2925,14 @@ function midRunReceiptOf(job: TurnJob): NonNullable<TurnProgress['slackInteracti
   };
 }
 
+/** A mid-run 👀 Chickpea added, still up and not yet swapped for 👍. */
+function unreadMidRunReceipt(
+  acknowledgment: NonNullable<TurnProgress['slackInteraction']>['acknowledgment'],
+): acknowledgment is NonNullable<NonNullable<TurnProgress['slackInteraction']>['acknowledgment']> {
+  return acknowledgment?.reaction === 'seen_mid_run' && acknowledgment.created &&
+    acknowledgment.cleanup === 'pending' && acknowledgment.read !== 'done';
+}
+
 /** The stop thread key of a turn, or undefined when its coordinates are unusable. */
 function stopThreadKeyOf(turn: NormalizedSlackTurn, assignment: ResolvedAssignment): string | undefined {
   if (!turn || typeof turn !== 'object' || !assignment || typeof assignment !== 'object') return undefined;
@@ -3083,6 +3136,7 @@ function endedRowOf(row: Record<string, unknown>): TurnEndedRow {
             channelId: acknowledgment.channelId,
             messageTs: acknowledgment.messageTs,
             name: acknowledgment.name,
+            ...(acknowledgment.read ? { read: acknowledgment.read } : {}),
           },
         }
       : {}),
@@ -3724,7 +3778,8 @@ function isValidAcknowledgmentProgress(
     typeof candidate.messageTs === 'string' &&
     typeof candidate.name === 'string' &&
     typeof candidate.created === 'boolean' &&
-    (candidate.cleanup === 'pending' || candidate.cleanup === 'done');
+    (candidate.cleanup === 'pending' || candidate.cleanup === 'done') &&
+    (candidate.read === undefined || candidate.read === 'owed' || candidate.read === 'done');
 }
 
 function isValidChecklistProgress(

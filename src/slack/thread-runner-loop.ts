@@ -29,6 +29,7 @@ import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import { StateStoreUnavailable } from './flue-dispatch.ts';
 import type { RunnerStops, RunnerTurnObserver } from './runner-stops.ts';
 import type { RunnerTurnBegin } from './thread-runner-rpc.ts';
+import type { TurnEndedRow } from './turn-job-types.ts';
 import type { TurnExecutionPorts } from './turn-executor.ts';
 import {
   TURN_STOP_HOLD_RETRY_MS,
@@ -105,7 +106,7 @@ export interface ThreadRunnerTurnRows {
   servingVersion?(): Promise<string | undefined>;
   /** `view` plus what the turn reads before its first Slack status, in one round trip. */
   begin(id: string): Promise<RunnerTurnBegin>;
-  markDelivered(id: string): Promise<void>;
+  markDelivered(id: string): Promise<unknown>;
   markError(id: string): Promise<void>;
 }
 
@@ -695,15 +696,17 @@ export function runnerTurnJobsPort<
   now: () => number = Date.now,
   observer?: RunnerTurnObserver,
 ): TurnExecutionPorts['turnJobs'] {
-  const settle = async (id: string, outcome: 'done' | 'error') => {
+  const settle = async (id: string, outcome: 'done' | 'error'): Promise<TurnEndedRow[]> => {
     jobs.settleTerminal(id, outcome, now());
+    let settled: TurnEndedRow[] = [];
     try {
-      if (outcome === 'done') await remote.markDelivered(id);
+      if (outcome === 'done') settled = await remote.markDelivered(id);
       else await remote.markError(id);
       jobs.terminalSynced(id);
     } catch {
       console.warn('[chickpea] thread runner will record a settled turn later');
     }
+    return settled;
   };
   return {
     recordAttempt: (...args) => storeCall(() => remote.recordAttempt(...args)),
@@ -743,7 +746,7 @@ export function runnerTurnJobsPort<
       return finish;
     },
     markDelivered: (id) => settle(id, 'done'),
-    markError: (id) => settle(id, 'error'),
+    markError: async (id) => { await settle(id, 'error'); },
   };
 }
 

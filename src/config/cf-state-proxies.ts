@@ -2422,7 +2422,7 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
   }
 
   async markDelivered(id: string) {
-    await this.op({ kind: 'markDelivered', id });
+    return (await this.op({ kind: 'markDelivered', id })) ?? [];
   }
 
   async markError(id: string) {
