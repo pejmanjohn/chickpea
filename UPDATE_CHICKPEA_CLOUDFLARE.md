@@ -67,7 +67,7 @@ data, and explain that problem rather than telling the user to wait indefinitely
 
 Some releases add Durable Object migrations; v0.1.27 adds two, on every
 installation: `v10` for coding workers and `v11` for per-thread Slack turn
-runners. v0.1.28 through v0.1.39 add none; an update from v0.1.26 or
+runners. v0.1.28 through v0.1.40 add none; an update from v0.1.26 or
 earlier straight to any of them still applies `v10` and `v11`. Once the deploy applies them,
 Cloudflare refuses `wrangler rollback` and dashboard rollbacks to any version
 from before that release. Recovery from a bad update then means deploying a newer or fixed
@@ -151,6 +151,21 @@ failed replies on v0.1.33 until you update again. Prefer deploying a fixed
 release forward to rolling back across v0.1.34.
 
 ## 3. Deploy to the same Worker
+
+v0.1.40 lets a person install skills by attaching `SKILL.md` files or `.zip`
+and `.skill` archives to a Slack message, and lets a coding agent upload skill
+files over MCP (`upload_skills`) or with `chickpea skills upload`. Agents list
+the files inside an attached zip, read files inside it, and read an earlier
+file in the thread with `read_slack_file`. On the shared Chickpea Slack app, a
+file attached to a thread before this update has no handle. A message sent
+while an Agent is working now reaches it at its next step, including during a
+coding job, and the Agent can answer a question in the thread before its final
+reply. A message that waits for the Agent's next turn keeps 👀 until that turn
+reads it, then shows 👍 until the reply posts. On its first start the
+configuration store adds a nullable column for thread file references, and the
+storage contract records it, so `release.json`'s `configuration` digest
+changes. Updating needs no other step. There is no rollback path: recovery means
+deploying a fixed release forward.
 
 v0.1.39 lets an Agent's author upload `SKILL.md` files and `.zip` or `.skill`
 archives on the Agent's Skills tab in Admin. It lets the Claude app (claude.ai,
