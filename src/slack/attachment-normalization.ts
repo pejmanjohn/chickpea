@@ -1,5 +1,6 @@
 import { getResolvedPDFJS } from 'unpdf';
 
+import { sniffFileKind } from '../files/magic.ts';
 import type {
   GatewayAttachmentClient,
   GatewayAttachmentRead,
@@ -32,12 +33,6 @@ const APPROVED_TEXT_APPLICATION_MIME_TYPES = new Set([
   'application/x-yaml',
   'application/xml',
   'application/yaml',
-]);
-const APPROVED_IMAGE_MIME_TYPES = new Set([
-  'image/gif',
-  'image/jpeg',
-  'image/png',
-  'image/webp',
 ]);
 
 export type SlackAttachmentNextAction =
@@ -271,8 +266,8 @@ async function normalizeReadAttachment(input: {
     };
   }
   if (input.read.representation === 'image_original') {
-    if (!APPROVED_IMAGE_MIME_TYPES.has(input.read.contentType) ||
-        !imageMagicMatches(input.read.contentType, input.read.bytes)) {
+    const sniffed = sniffFileKind(filename, input.read.bytes);
+    if (sniffed.kind !== 'image' || sniffed.mimeType !== input.read.contentType) {
       throw new AttachmentNormalizationError(
         'attachment_mime_magic_mismatch',
         'convert_file',
@@ -455,28 +450,6 @@ function decodeStrictText(bytes: Uint8Array): string {
   return text;
 }
 
-function imageMagicMatches(contentType: string, bytes: Uint8Array): boolean {
-  switch (contentType) {
-    case 'image/png':
-      return startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    case 'image/jpeg':
-      return startsWith(bytes, [0xff, 0xd8, 0xff]);
-    case 'image/gif':
-      return startsWith(bytes, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) ||
-        startsWith(bytes, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61]);
-    case 'image/webp':
-      return startsWith(bytes, [0x52, 0x49, 0x46, 0x46]) &&
-        bytes.byteLength >= 12 && startsWith(bytes.subarray(8), [0x57, 0x45, 0x42, 0x50]);
-    default:
-      return false;
-  }
-}
-
-function startsWith(bytes: Uint8Array, prefix: readonly number[]): boolean {
-  return bytes.byteLength >= prefix.length &&
-    prefix.every((byte, index) => bytes[index] === byte);
-}
-
 function attachmentBytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let offset = 0; offset < bytes.byteLength; offset += 32_768) {
@@ -500,14 +473,9 @@ function validateReadEnvelope(
 }
 
 function validatePdf(read: GatewayAttachmentRead): void {
-  if (read.contentType !== 'application/pdf' || !hasPdfMagic(read.bytes)) {
+  if (read.contentType !== 'application/pdf' || sniffFileKind(read.filename, read.bytes).kind !== 'pdf') {
     throw new AttachmentNormalizationError('attachment_mime_magic_mismatch', 'convert_file');
   }
-}
-
-function hasPdfMagic(bytes: Uint8Array): boolean {
-  return bytes.byteLength >= 5 && bytes[0] === 0x25 && bytes[1] === 0x50 &&
-    bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d;
 }
 
 function attachmentLabel(ordinal: number, filename: string): string {

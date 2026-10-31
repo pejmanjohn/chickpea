@@ -5,6 +5,8 @@ export interface ZipFixtureEntry {
   content?: string | Uint8Array;
   /** 0 stores, 8 deflates; any other value is written as-is with stored bytes. */
   method?: number;
+  /** Write `content` as the entry's data even when `method` says deflate. */
+  rawBody?: boolean;
   flags?: number;
   /** Uncompressed size written to the central directory instead of the real one. */
   declaredSize?: number;
@@ -21,7 +23,7 @@ export function buildZip(entries: readonly ZipFixtureEntry[]): Uint8Array<ArrayB
   for (const entry of entries) {
     const data = Buffer.from(entry.content ?? '');
     const method = entry.method ?? 8;
-    const body = method === 8 ? deflateRawSync(data) : data;
+    const body = method === 8 && !entry.rawBody ? deflateRawSync(data) : data;
     const name = Buffer.from(entry.path);
     const localName = Buffer.from(entry.localPath ?? entry.path);
     const checksum = crc32(data);

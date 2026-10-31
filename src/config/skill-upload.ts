@@ -11,7 +11,14 @@ import {
   SkillImportError,
 } from './skill-import.ts';
 import { inspectSkillPackage, type SkillPackageInspection } from './skill-package.ts';
-import { readZipEntries, ZipArchiveError } from './zip-reader.ts';
+import {
+  type ByteBudget,
+  createByteBudget,
+  isZipJunkPath,
+  openZip,
+  ZipArchiveError,
+  type ZipProblem,
+} from '../files/zip.ts';
 
 export interface UploadedSkillFile { name: string; bytes: Uint8Array }
 
@@ -56,7 +63,7 @@ interface UploadEntry {
   innerPath: string;
   /** The archive this entry came from; loose files have none. */
   archive?: string;
-  size: number;
+  /** Bounded by the document limit and the upload's markdown budget. */
   read(): Promise<Uint8Array>;
 }
 
@@ -70,7 +77,8 @@ export async function resolveUploadedSkills(
     throw new SkillUploadError('upload_too_large', 'Upload up to 8 MB of files at a time.');
   }
   const issues: SkillUploadIssue[] = [];
-  const entries = files.flatMap((file) => uploadEntries(file, issues)).filter((entry) => !isJunk(entry.innerPath));
+  const markdownBudget = createByteBudget(MAX_MARKDOWN_BYTES);
+  const entries = files.flatMap((file) => uploadEntries(file, markdownBudget, issues));
   const roots = new Set(entries.flatMap(({ archive, innerPath }) =>
     archive && isSkillDocument(innerPath) && !SKIP_DIR_RE.test(innerPath) ? [rootKey(archive, dirname(innerPath))] : []));
   const insideRoot = ({ archive, innerPath }: UploadEntry) => archive !== undefined &&
@@ -78,7 +86,6 @@ export async function resolveUploadedSkills(
 
   const skills: UploadedSkillCandidate[] = [];
   let skipped = 0;
-  let markdownBudget = MAX_MARKDOWN_BYTES;
   const skip = (path: string, code: string, message: string) => {
     issues.push({ path, code, message });
     skipped += 1;
@@ -100,13 +107,6 @@ export async function resolveUploadedSkills(
     }
     let document: ReturnType<typeof readSkillDocument>;
     try {
-      if (entry.size > MAX_SKILL_DOCUMENT_BYTES) {
-        throw new SkillImportError('document_too_large', `This file is ${kib(entry.size)} KB. The limit is ${kib(MAX_SKILL_DOCUMENT_BYTES)} KB.`);
-      }
-      if (entry.size > markdownBudget) {
-        throw new SkillImportError('too_much_markdown', 'This upload unpacks to more than 16 MB of markdown. Upload fewer files at a time.');
-      }
-      markdownBudget -= entry.size;
       const markdown = new TextDecoder().decode(await entry.read());
       if (!isSkillFile && !hasSkillHeader(markdown)) {
         skip(path, 'not_a_skill', NOT_A_SKILL);
@@ -115,8 +115,10 @@ export async function resolveUploadedSkills(
       document = readSkillDocument(markdown, isSkillFile ? basename(directory) || archiveStem(entry.archive ?? '') : '');
     } catch (error) {
       if (error instanceof SkillImportError) skip(path, error.code, error.message);
-      else if (error instanceof ZipArchiveError) skip(path, 'invalid_archive', error.message);
-      else throw error;
+      else if (error instanceof ZipArchiveError) {
+        const issue = zipIssue(error.problem);
+        skip(path, issue.code, issue.message);
+      } else throw error;
       continue;
     }
     if (skills.some((skill) => skill.name === document.name)) {
@@ -154,26 +156,53 @@ function hasSkillHeader(markdown: string): boolean {
 const NOT_A_SKILL = 'Not a skill. To upload a markdown file as a skill, give it a YAML header with a name and a description.';
 export const UNSUPPORTED_FILE = 'Not a skill file. Upload SKILL.md files, other markdown files, or .zip and .skill archives.';
 
-function uploadEntries(file: UploadedSkillFile, issues: SkillUploadIssue[]): UploadEntry[] {
-  const name = basename(file.name.replace(/\\/g, '/'));
-  if (!/\.(zip|skill)$/i.test(name)) {
-    return [{ path: name, innerPath: name, size: file.bytes.byteLength, read: async () => file.bytes }];
-  }
-  try {
-    return readZipEntries(file.bytes)
-      .filter((entry) => !entry.path.endsWith('/'))
-      .map((entry) => ({ ...entry, path: `${name}/${entry.path}`, innerPath: entry.path, archive: name }));
-  } catch (error) {
-    if (!(error instanceof ZipArchiveError)) throw error;
-    issues.push({ path: name, code: 'invalid_archive', message: error.message });
-    return [];
+export const NOT_A_ZIP_ARCHIVE = 'This file is not a readable zip archive.';
+const TOO_MUCH_MARKDOWN = 'This upload unpacks to more than 16 MB of markdown. Upload fewer files at a time.';
+
+function documentTooLarge(size: number): string {
+  return `This file is ${kib(size)} KB. The limit is ${kib(MAX_SKILL_DOCUMENT_BYTES)} KB.`;
+}
+
+/** The skill doors' wording for each archive problem. */
+function zipIssue(problem: ZipProblem): Omit<SkillUploadIssue, 'path'> {
+  const invalid = (message: string) => ({ code: 'invalid_archive', message });
+  switch (problem.code) {
+    case 'not_a_zip': return invalid(NOT_A_ZIP_ARCHIVE);
+    case 'zip64': return invalid('This archive uses Zip64, which upload does not support.');
+    case 'split': return invalid('Split zip archives are not supported.');
+    case 'damaged': return invalid('This zip archive is damaged.');
+    case 'encrypted': return invalid('This archive is encrypted.');
+    case 'too_many_entries': return invalid(`This archive has ${problem.entries} entries. The limit is ${problem.limit}.`);
+    case 'unsafe_path': return invalid(`This archive has a path outside the archive: ${problem.path}.`);
+    case 'unsupported_method': return invalid(`This file uses zip compression method ${problem.method}. Upload reads stored and deflated files.`);
+    case 'header_mismatch': return invalid('This file does not match its zip header.');
+    case 'size_mismatch': return invalid('This file does not match its declared size.');
+    case 'inflate_failed': return invalid('This file could not be unpacked.');
+    case 'entry_too_large': return { code: 'document_too_large', message: documentTooLarge(problem.size) };
+    case 'budget_exceeded': return { code: 'too_much_markdown', message: TOO_MUCH_MARKDOWN };
   }
 }
 
-function isJunk(path: string): boolean {
-  const parts = path.split('/');
-  const name = parts[parts.length - 1]!;
-  return parts.includes('__MACOSX') || name.startsWith('._') || name === '.DS_Store';
+function uploadEntries(file: UploadedSkillFile, budget: ByteBudget, issues: SkillUploadIssue[]): UploadEntry[] {
+  const name = basename(file.name.replace(/\\/g, '/'));
+  if (!/\.(zip|skill)$/i.test(name)) {
+    if (isZipJunkPath(name)) return [];
+    return [{ path: name, innerPath: name, read: async () => {
+      if (file.bytes.byteLength > MAX_SKILL_DOCUMENT_BYTES) {
+        throw new SkillImportError('document_too_large', documentTooLarge(file.bytes.byteLength));
+      }
+      if (!budget.take(file.bytes.byteLength)) throw new SkillImportError('too_much_markdown', TOO_MUCH_MARKDOWN);
+      return file.bytes;
+    } }];
+  }
+  try {
+    return openZip(file.bytes, { maxEntryBytes: MAX_SKILL_DOCUMENT_BYTES, budget }).entries
+      .map((entry) => ({ path: `${name}/${entry.path}`, innerPath: entry.path, archive: name, read: entry.read }));
+  } catch (error) {
+    if (!(error instanceof ZipArchiveError)) throw error;
+    issues.push({ path: name, ...zipIssue(error.problem) });
+    return [];
+  }
 }
 
 function isSkillDocument(path: string): boolean {

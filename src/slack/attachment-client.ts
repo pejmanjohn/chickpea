@@ -4,6 +4,7 @@ import { createGatewayDeploymentClient, type GatewayClientStores } from './gatew
 import { MAX_SLACK_ATTACHMENT_BYTES } from './attachment-normalization.ts';
 import { resolveSlackCredentials, readStoredSlackTeamInfo } from './credentials.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
+import { isZipSignature } from '../files/zip.ts';
 import { readBoundedBytes } from '../http/bounded-body.ts';
 
 const OFFICE_TYPES = new Set(['doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx']);
@@ -131,9 +132,8 @@ export async function readDirectSlackAttachment(input: {
       Number.isSafeInteger(file.size) && file.size !== bytes.byteLength) {
     throw new AttachmentReadError('attachment_incomplete', 502);
   }
-  // A local file header, or the end record of an empty archive; the gateway checks the same.
-  if (representation === 'zip_original' && !(bytes[0] === 0x50 && bytes[1] === 0x4b &&
-      ((bytes[2] === 0x03 && bytes[3] === 0x04) || (bytes[2] === 0x05 && bytes[3] === 0x06)))) {
+  // The gateway checks the same signature.
+  if (representation === 'zip_original' && !isZipSignature(bytes)) {
     throw new AttachmentReadError('invalid_slack_file_magic', 502);
   }
   return { fileId: input.fileId, filename, representation, contentType, bytes };
