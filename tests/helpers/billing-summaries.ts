@@ -15,7 +15,14 @@ export const OFFERS: BillingSummary['offers'] = {
     key: `extra_usage_${dollars}`, priceCents: dollars * 100, usageMicros: usd(dollars), validMonths: 12,
   })),
   ownKeyMinimumPlanKey: 'plus',
+  taskFeeMicros: usd(0.3),
+  chatReplyFeeMicros: usd(0),
+  typicalTaskMicros: usd(0.15),
+  rolloverMonths: 1,
 };
+
+/** The trial a workspace on models included starts with, part-used. */
+export const TRIAL_GRANT = { remainingMicros: usd(32.5), grantedMicros: usd(50), expiresAt: new Date('2026-11-06T17:00:00Z') };
 
 export const PERIOD = { start: new Date('2026-10-07T17:00:00Z'), end: new Date('2026-11-07T17:00:00Z') };
 

@@ -63,7 +63,8 @@ export interface BillingSummary {
   readonly rollover: { readonly remainingMicros: UsageMicros; readonly expiresAt: Date } | null;
   /** Remaining extra usage; frozen while `plan` is null, with the soonest expiry. */
   readonly extraUsage: { readonly remainingMicros: UsageMicros; readonly frozen: boolean; readonly expiresAt: Date } | null;
-  readonly trial: { readonly remainingMicros: UsageMicros; readonly expiresAt: Date } | null;
+  /** `grantedMicros` is what the trial started with. */
+  readonly trial: { readonly remainingMicros: UsageMicros; readonly grantedMicros: UsageMicros; readonly expiresAt: Date } | null;
   readonly debtMicros: UsageMicros;
   readonly autoUpgrade: { readonly enabled: boolean; readonly usedThisPeriod: boolean } | null;
   readonly use: {
@@ -77,6 +78,18 @@ export interface BillingSummary {
     readonly plans: readonly PlanOffer[];
     readonly extraUsage: readonly ExtraUsageOffer[];
     readonly ownKeyMinimumPlanKey: string;
+    /** The flat usage a task draws on top of its model tokens; more than zero. */
+    readonly taskFeeMicros: UsageMicros;
+    /** The flat usage a chat reply draws on top of its model tokens. */
+    readonly chatReplyFeeMicros: UsageMicros;
+    /**
+     * The model tokens a typical task draws on the default model with models
+     * included, the chat around it counted in. Task estimates with models
+     * included assume it.
+     */
+    readonly typicalTaskMicros: UsageMicros;
+    /** How many months unused plan usage carries over at renewal; 0 for none. */
+    readonly rolloverMonths: number;
   };
 }
 
