@@ -828,9 +828,9 @@ export function runnerPresentationState(input: {
       ...runnerSharedBudgets(input.remote, base, now),
       ...(input.sharedSlackReads ? { sharedSlackReads: input.sharedSlackReads } : {}),
       // The shared store sees every presentation of this Slack thread,
-      // including ones other executors own; generations never change, and a
-      // newer one counts only once its turn starts, which for a turn this
-      // runner runs `local` reads uncached, so a brief cache is safe.
+      // including ones other executors own. Generations never change, and a
+      // newer one counts only once its turn starts; a turn this runner starts
+      // is in `local`, read uncached below, so a brief cache is safe.
       getLatestThreadSessionGeneration: async (root) => {
         const key = `${root.workspaceId}:${root.channelId}:${root.threadTs}`;
         let cached = generations.get(key);
