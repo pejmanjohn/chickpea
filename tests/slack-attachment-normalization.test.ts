@@ -43,6 +43,7 @@ test('one-page PDF smoke extracts a complete labeled baseline with the serverles
     label: 'Attachment 1 - report.pdf',
     representation: 'pdf_original',
     contentType: 'application/pdf',
+    handle: 'file:1',
     text: '--- Page 1 of 1 ---\nQuarterly result: 42',
     pdfCompleteness: 'baseline_complete',
     bytes,
@@ -74,6 +75,7 @@ test('strict UTF-8 accepts an optional BOM and rejects malformed or binary text 
     label: 'Attachment 1 - notes.txt',
     representation: 'text_original',
     contentType: 'text/plain',
+    handle: 'file:1',
     text: 'hello',
   }]);
   assert.deepEqual(result.failures.map(({ ordinal, code, nextAction }) => ({

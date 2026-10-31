@@ -2,6 +2,9 @@ import { isZipSignature } from './zip.ts';
 
 export type ImageMimeType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
 
+/** The image types Slack images are read as; they use `img:N` handles. */
+export const IMAGE_MIME_TYPES: ReadonlySet<string> = new Set<ImageMimeType>(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
 export type FileKind =
   | { readonly kind: 'image'; readonly mimeType: ImageMimeType }
   | { readonly kind: 'pdf' | 'archive' | 'text' | 'other' };
@@ -17,6 +20,8 @@ interface KindRule {
 }
 
 const OFFICE_NAMES = /\.(?:docx|docm|xlsx|xlsm|pptx|pptm|odt|ods|odp|key|numbers|pages)$/i;
+const PDF_NAMES = /\.pdf$/i;
+const ARCHIVE_NAMES = /\.(?:zip|skill)$/i;
 const TEXT_NAMES = /\.(?:md|markdown|txt|text|csv|tsv|json|jsonl|ndjson|yaml|yml|toml|ini|cfg|conf|env|xml|html?|css|scss|less|svg|js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|kts|swift|c|h|cc|cpp|hpp|cs|php|sh|bash|zsh|ps1|sql|graphql|gql|log|rst|tex|r|lua|pl|vue|svelte)$/i;
 /** How many leading bytes the text rule decodes. */
 const TEXT_SNIFF_BYTES = 4_096;
@@ -41,9 +46,9 @@ const KIND_RULES: readonly KindRule[] = [
     bytes: (head) => startsWith(head, [0x52, 0x49, 0x46, 0x46]) && startsWith(head.subarray(8), [0x57, 0x45, 0x42, 0x50]),
     names: /\.webp$/i,
   },
-  { kind: { kind: 'pdf' }, bytes: (head) => startsWith(head, [0x25, 0x50, 0x44, 0x46, 0x2d]), names: /\.pdf$/i },
+  { kind: { kind: 'pdf' }, bytes: (head) => startsWith(head, [0x25, 0x50, 0x44, 0x46, 0x2d]), names: PDF_NAMES },
   { kind: { kind: 'other' }, bytes: (head, name) => isZipSignature(head) && OFFICE_NAMES.test(name), names: OFFICE_NAMES },
-  { kind: { kind: 'archive' }, bytes: isZipSignature, names: /\.(?:zip|skill)$/i },
+  { kind: { kind: 'archive' }, bytes: isZipSignature, names: ARCHIVE_NAMES },
   { kind: { kind: 'text' }, bytes: looksLikeText, names: TEXT_NAMES },
 ];
 
@@ -57,6 +62,42 @@ export function sniffFileKind(name: string, head?: Uint8Array): FileKind {
     if (matches) return rule.kind;
   }
   return { kind: 'other' };
+}
+
+const TEXT_APPLICATION_MIME_TYPES = new Set([
+  'application/graphql',
+  'application/javascript',
+  'application/json',
+  'application/ld+json',
+  'application/sql',
+  'application/toml',
+  'application/typescript',
+  'application/x-httpd-php',
+  'application/x-javascript',
+  'application/x-ndjson',
+  'application/x-sh',
+  'application/x-yaml',
+  'application/xml',
+  'application/yaml',
+]);
+
+/** A MIME type read as text: `text/*` except RTF, or an approved application type. */
+export function isTextMimeType(mimeType: string): boolean {
+  return (mimeType.startsWith('text/') && mimeType !== 'text/rtf') || TEXT_APPLICATION_MIME_TYPES.has(mimeType);
+}
+
+/** What `read_slack_file` reads a non-image Slack file as. */
+export type ReadableFileKind = 'archive' | 'pdf' | 'text';
+
+/**
+ * The kind a Slack file reads as, by its name and Slack's MIME type, the way
+ * the attachment readers choose. Undefined means no reader serves it.
+ */
+export function readableFileKind(name: string, mimeType?: string): ReadableFileKind | undefined {
+  if (ARCHIVE_NAMES.test(name)) return 'archive';
+  if (mimeType === 'application/pdf' || PDF_NAMES.test(name)) return 'pdf';
+  if ((mimeType !== undefined && isTextMimeType(mimeType)) || TEXT_NAMES.test(name)) return 'text';
+  return undefined;
 }
 
 /** The whole file as text: strict UTF-8 without binary control characters, else undefined. */

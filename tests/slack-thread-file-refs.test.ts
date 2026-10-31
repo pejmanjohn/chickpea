@@ -14,6 +14,7 @@ import {
   recordedSlackFiles,
   recordSlackThreadEventMessage,
 } from '../src/slack/public-context.ts';
+import { retainThreadFiles } from '../src/slack/thread-files.ts';
 import { hydrateTurnSlackContext } from '../src/slack/turn-context-reads.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -173,5 +174,40 @@ test('a thread reply records its file references, an absent list keeps them, and
     const edited = await stored();
     assert.equal(edited?.text, 'never mind the deck');
     assert.equal(edited?.fileRefs, undefined, 'the edit wrote an empty list');
+  } finally { store.close(); }
+});
+
+test('a file keeps its handle when the shared app switches from a Slack read on the first turn to the record on the next', async () => {
+  const store = await memoryStore();
+  try {
+    const THREAD = '1100.000100';
+    const rows = [
+      { user: 'U_SAM', ts: THREAD, thread_ts: THREAD, text: 'the board pack', reply_count: 2,
+        files: [{ id: 'F0BOARD0001', name: 'board.pdf', mimetype: 'application/pdf', size: 9_000 },
+          { id: 'F0DEMO00001', name: 'demo.mp4', mimetype: 'video/mp4', size: 90_000 }] },
+      { user: 'U_DANA', ts: '1101.000100', thread_ts: THREAD, text: 'and the kit', files: [KIT] },
+      { user: 'U_DANA', ts: '1102.000100', thread_ts: THREAD, text: '<@UBOT> what changed?' },
+    ];
+    const client = { conversations: { async replies() { return { ok: true, messages: rows }; } } };
+    const first = turn({ threadTs: THREAD, messageTs: '1102.000100', source: 'app_mention' });
+    const read = await hydrateTurnSlackContext({
+      client: client as never, turn: first, sharedAppReads: true, state: PACED_STATE as never, record: store,
+    });
+    assert.equal(read.window?.reason, 'thread_root');
+    const firstList = retainThreadFiles(read.files ?? []).map(({ id }) => id);
+    assert.deepEqual(firstList, ['F0BOARD0001', 'F0KIT000001']);
+    const seeded = await store.listSlackPublicContext('T1', 'C1', THREAD);
+    assert.deepEqual(seeded.find((row) => row.messageTs === THREAD)?.fileRefs?.map(({ id }) => id),
+      ['F0BOARD0001', 'F0DEMO00001'], 'the seed keeps unreadable files too');
+
+    await recordAcceptedSlackHumanMessage(store, first, { runtimeContract: 'chickpea-v1' } as never, undefined);
+    await recordDeliveredSlackAgentMessage(store, first, { runtimeContract: 'chickpea-v1', agentId: 'agent_a' } as never,
+      { messageTs: '1103.000100', text: 'Two files.' });
+    const next = turn({ threadTs: THREAD, messageTs: '1104.000100', source: 'implicit_thread_reply', eventId: 'Ev2' });
+    const fromRecord = await hydrateTurnSlackContext({
+      client: NO_SLACK_READ as never, turn: next, sharedAppReads: true, state: PACED_STATE as never, record: store,
+    });
+    assert.equal(fromRecord.window?.reason, 'thread_record');
+    assert.deepEqual(retainThreadFiles(fromRecord.files ?? []).map(({ id }) => id), firstList);
   } finally { store.close(); }
 });

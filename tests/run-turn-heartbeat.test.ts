@@ -271,8 +271,8 @@ test('runTurn lists the thread\'s earlier archives in the request and sends thei
       client, usageRecordingEnabled: false,
       runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) },
       appStores: { config: f.config, memory: f.memory, identity: f.identity, management: f.management } as never,
-      agentPrompt: async ({ message, threadArchiveFileIds }) => {
-        dispatched = threadArchiveFileIds;
+      agentPrompt: async ({ message, threadFileIds }) => {
+        dispatched = threadFileIds;
         request = message;
         return { text: '42', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
       },

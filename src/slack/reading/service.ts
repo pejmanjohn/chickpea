@@ -17,6 +17,7 @@ import {
   type SlackContextSelf,
   type SlackWebApiMessage,
 } from '../thread-context.ts';
+import { collectThreadFileRecords } from '../thread-files.ts';
 import { collectThreadImageRecords, slackThreadImageConversationKey } from '../thread-images.ts';
 import { SLACK_USER_ID } from '../ui/text.ts';
 import {
@@ -355,8 +356,10 @@ export class SlackReadingService {
       // The trigger is marked so the seed skips it, as the turn's own read does.
       const context = messages.map((row) => row.ts === current.messageTs ? { ...row, isTrigger: true } : row);
       const images = collectThreadImageRecords(raw, slackThreadImageConversationKey(turn));
+      const files = collectThreadFileRecords(raw);
       await seedSlackThreadRecord(record, turn, {
-        mode: 'thread', messages: context, truncated, degradations: [], ...(images.length ? { images } : {}),
+        mode: 'thread', messages: context, truncated, degradations: [],
+        ...(images.length ? { images } : {}), ...(files.length ? { files } : {}),
       }, { cappedRead: this.options.gate.gated });
     } catch {
       console.warn('[chickpea] thread record seed from a Slack read failed');

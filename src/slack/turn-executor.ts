@@ -286,7 +286,7 @@ export async function executeTurnJob(
       threadImages?: readonly ThreadImageRecord[],
       admittedListIds?: readonly string[],
       turnEnvelope?: TurnEnvelopeV1,
-      threadArchiveFileIds?: readonly string[],
+      threadFileIds?: readonly string[],
     ) => {
       try {
         return await ports.turnJobs.prepareFlueDispatch(
@@ -296,7 +296,7 @@ export async function executeTurnJob(
           threadImages,
           admittedListIds,
           turnEnvelope,
-          threadArchiveFileIds,
+          threadFileIds,
         );
       } catch (error) {
         if (!isTurnJobStopRefusal(error)) throw error;

@@ -15,7 +15,7 @@ import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { parseSlackManagementSignal } from '../src/management/slack-tools.ts';
 import { serializeCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import { archiveListing } from '../src/slack/archive-attachments.ts';
-import { useReadArchiveFileTool } from '../src/slack/archive-file-tool.ts';
+import { useReadSlackFileTool } from '../src/slack/slack-file-tool.ts';
 import { useSlackAttachmentContext } from '../src/slack/attachment-context.ts';
 import { decorateAttachmentProvider } from '../src/slack/attachment-model-context.ts';
 import type { GatewayAttachmentClient } from '../src/slack/gateway/client.ts';
@@ -66,11 +66,11 @@ function ArchiveTurnProbe({ id }: AgentProps) {
   useModel(MODEL);
   const signal = parseSlackManagementSignal(useDelivery(), PLAN);
   useSlackAttachmentContext(PLAN, async () => undefined, async () => MODEL, () => client);
-  useReadArchiveFileTool({
+  useReadSlackFileTool({
     instanceId: id,
     turnKey: signal?.turnJobId ?? '',
     currentMessageFileIds: signal?.attachmentFileIds,
-    threadArchiveFileIds: signal?.threadArchiveFileIds,
+    threadFileIds: signal?.threadFileIds,
     client: async () => client,
   });
   return 'Answer the request.';
@@ -106,8 +106,8 @@ test('one turn lists a zip, then reads a markdown file and a PDF from it with on
     (context: Context) => {
       captures.push(context);
       return fauxAssistantMessage([
-        fauxToolCall('read_archive_file', { file: 'file:1', path: 'kit/plan.md' }),
-        fauxToolCall('read_archive_file', { file: 'file:1', path: 'kit/report.pdf' }),
+        fauxToolCall('read_slack_file', { file: 'file:1', path: 'kit/plan.md' }),
+        fauxToolCall('read_slack_file', { file: 'file:1', path: 'kit/report.pdf' }),
       ], { stopReason: 'toolUse' });
     },
     (context: Context) => {
@@ -140,7 +140,7 @@ test('one turn lists a zip, then reads a markdown file and a PDF from it with on
   assert.match(JSON.stringify(analysis?.messages), /Zip archive file:1: its file list, not file contents\.\\n2 files:\\n- kit\/plan\.md \(text, 31 B\)\\n- kit\/report\.pdf \(pdf, /);
   assert.doesNotMatch(JSON.stringify(analysis?.messages), /__MACOSX/);
   assert.deepEqual(getCurrentTools(analysis!.messages).map((tool) => tool.name), [], 'the analysis call stays tool-free');
-  assert.ok(getCurrentTools(answer!.messages).some((tool) => tool.name === 'read_archive_file'), 'the first answer call can read the archive');
+  assert.ok(getCurrentTools(answer!.messages).some((tool) => tool.name === 'read_slack_file'), 'the first answer call can read the archive');
   assert.match(JSON.stringify(answer?.messages), /handle=file:1 \| status=success \| code=listed/);
 
   const results = afterReads!.messages.filter((message) => message.role === 'toolResult')
@@ -161,11 +161,11 @@ test('a follow-up with no attachment lists and reads a zip an earlier message ca
   faux.setResponses([
     (context: Context) => {
       captures.push(context);
-      return fauxAssistantMessage([fauxToolCall('read_archive_file', { file: 'file:1' })], { stopReason: 'toolUse' });
+      return fauxAssistantMessage([fauxToolCall('read_slack_file', { file: 'file:1' })], { stopReason: 'toolUse' });
     },
     (context: Context) => {
       captures.push(context);
-      return fauxAssistantMessage([fauxToolCall('read_archive_file', { file: 'file:1', path: 'kit/plan.md' })], { stopReason: 'toolUse' });
+      return fauxAssistantMessage([fauxToolCall('read_slack_file', { file: 'file:1', path: 'kit/plan.md' })], { stopReason: 'toolUse' });
     },
     (context: Context) => {
       captures.push(context);
@@ -183,7 +183,7 @@ test('a follow-up with no attachment lists and reads a zip an earlier message ca
   try {
     const handle = init(ArchiveTurnProbe, { id: 'archive-follow-up' });
     await handle.read(await handle.dispatch({
-      message: slackMessage('Now open the plan in that zip.', 'turn_follow_up', { threadArchiveFileIds: 'F0KIT000001' }),
+      message: slackMessage('Now open the plan in that zip.', 'turn_follow_up', { threadFileIds: 'F0KIT000001' }),
     }));
     await handle.read(await handle.dispatch({ message: slackMessage('What is new?', 'turn_plain', {}) }));
   } finally {
@@ -191,12 +191,13 @@ test('a follow-up with no attachment lists and reads a zip an earlier message ca
   }
 
   const [listCall, readCall, answer, plain] = captures;
-  assert.ok(getCurrentTools(listCall!.messages).some((tool) => tool.name === 'read_archive_file'), 'an earlier archive mounts the tool');
-  assert.deepEqual(toolResults(readCall).at(-1), { ok: true, file: 'file:1', listing: archiveListing(KIT, 'file:1') });
+  assert.ok(getCurrentTools(listCall!.messages).some((tool) => tool.name === 'read_slack_file'), 'an earlier archive mounts the tool');
+  assert.deepEqual(toolResults(readCall).at(-1), { ok: true, file: 'file:1', kind: 'archive', listing: archiveListing(KIT, 'file:1'), name: 'kit.zip' });
   assert.match(archiveListing(KIT, 'file:1'), /^Zip archive file:1: its file list, not file contents\.\n2 files:\n- kit\/plan\.md \(text, 31 B\)\n- kit\/report\.pdf/);
   assert.deepEqual(toolResults(answer).at(-1), {
-    ok: true, file: 'file:1', path: 'kit/plan.md', kind: 'text', text: '# Launch plan\nShip on Tuesday.\n',
+    ok: true, file: 'file:1', path: 'kit/plan.md', kind: 'text', text: '# Launch plan\nShip on Tuesday.\n', name: 'kit.zip',
   });
-  assert.deepEqual(reads, [{ fileId: 'F0KIT000001', accept: ['zip_original'] }], 'one download serves the list and the read');
-  assert.ok(!getCurrentTools(plain!.messages).some((tool) => tool.name === 'read_archive_file'), 'no archive and no files: no tool');
+  assert.deepEqual(reads.map(({ fileId, accept }) => [fileId, accept?.at(-1)]), [['F0KIT000001', 'zip_original']],
+    'one download serves the list and the read');
+  assert.ok(!getCurrentTools(plain!.messages).some((tool) => tool.name === 'read_slack_file'), 'no archive and no files: no tool');
 });

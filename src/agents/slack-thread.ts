@@ -228,7 +228,7 @@ import {
   bindCurrentRequestConversation,
   parseCurrentRequestEnvelope,
 } from '../memory/tool-policy.ts';
-import { useReadArchiveFileTool } from '../slack/archive-file-tool.ts';
+import { useReadSlackFileTool } from '../slack/slack-file-tool.ts';
 import { useSlackAttachmentContext } from '../slack/attachment-context.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationIntentCapability } from '../slack/presentation-intent.ts';
@@ -292,6 +292,7 @@ import {
   createThreadImageReader,
   parseThreadImageRecords,
   slackThreadImageConversationKey,
+  threadImageHandle,
   type ThreadImageInventory,
   type ThreadImageRecord,
 } from '../slack/thread-images.ts';
@@ -1010,11 +1011,13 @@ export function useChickpeaSlackRuntimeCapabilities(
   });
   usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
   mountSkillUpload?.();
-  useReadArchiveFileTool({
+  const imageInventory = conversationThreadImageInventory(plan.conversation, threadImages);
+  useReadSlackFileTool({
     instanceId: id,
     turnKey: signal?.turnJobId ?? '',
     currentMessageFileIds: signal?.attachmentFileIds,
-    threadArchiveFileIds: signal?.threadArchiveFileIds,
+    threadFileIds: signal?.threadFileIds,
+    imageHandle: (fileId) => threadImageHandle(imageInventory, fileId),
     client: async () => createSlackAttachmentClient(await resolveAgentPlatformEnv()),
   });
 }

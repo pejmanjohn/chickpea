@@ -177,15 +177,15 @@ test('the host turn hands its thread images and archives to the durable dispatch
     origin: 'person' as const,
     messageTs: '1.0',
   }];
-  const prepare: SlackFlueDispatchState['prepare'] = async (_message, _observation, threadImages, admittedListIds, _envelope, threadArchiveFileIds) => {
-    prepared.push([threadImages, admittedListIds, threadArchiveFileIds]);
+  const prepare: SlackFlueDispatchState['prepare'] = async (_message, _observation, threadImages, admittedListIds, _envelope, threadFileIds) => {
+    prepared.push([threadImages, admittedListIds, threadFileIds]);
     return ENVELOPE;
   };
   await promptSlackThreadAgent({
     ...promptInput(state({ prepare }), handle({})),
     threadImages: records,
     admittedListIds: ['FEXISTING'],
-    threadArchiveFileIds: ['F0Q3PACK001'],
+    threadFileIds: ['F0Q3PACK001'],
   });
   // Omitting the images is the no-image turn, not a different contract.
   await promptSlackThreadAgent({ ...promptInput(state({ prepare }), handle({})) });

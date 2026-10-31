@@ -438,7 +438,7 @@ test('Flue Slack signals checkpoint the admitted List set across replay', () => 
   }
 });
 
-test('Flue Slack signals carry the conversation\'s archive file IDs in handle order, and refuse a malformed list', () => {
+test('Flue Slack signals carry the conversation\'s file IDs in handle order, and refuse a malformed list', () => {
   const db = openStateDb(':memory:');
   try {
     const turns = new TurnJobStoreLogic(db, () => NOW);
@@ -455,12 +455,12 @@ test('Flue Slack signals carry the conversation\'s archive file IDs in handle or
       }));
       const prepare = () => turns.prepareFlueDispatch(id, 'Open the Q3 file.', { generation: id }, undefined, undefined, undefined, archives);
       if (id === 'turn_repeated-archive') {
-        assert.throws(prepare, /Slack thread archive file ids are invalid/);
+        assert.throws(prepare, /Slack thread file ids are invalid/);
         continue;
       }
       const envelope = prepare();
       if (envelope.schemaVersion !== 2) throw new Error('expected a signal dispatch');
-      assert.equal(envelope.message.attributes.threadArchiveFileIds, archives?.join(','));
+      assert.equal(envelope.message.attributes.threadFileIds, archives?.join(','));
     }
   } finally {
     db.close();

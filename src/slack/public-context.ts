@@ -8,12 +8,12 @@ import type {
 } from '../config/types.ts';
 import { MAX_SLACK_PUBLIC_HANDOFF_MESSAGES } from '../config/types.ts';
 import type { CompletedSlackArtifactReceipt } from './artifact-receipts.ts';
-import { safeFilename } from './attachment-context.ts';
 import { SLACK_FILE_ID } from './ids.ts';
 import type { NormalizedSlackTurn, SlackMessageEvent } from './types.ts';
 import type { FoldedMessage } from './follow-ups.ts';
 import { slackReadbackText } from './message-format.ts';
-import { slackFileSummaries, slackMessageText } from './message-text.ts';
+import { safeFilename, slackFileSummaries, slackMessageText } from './message-text.ts';
+import { slackFileRef } from './thread-files.ts';
 import { artifactImageRef, slackImageRef, threadImageRef } from './thread-images.ts';
 import {
   agentContextUserId, atOrBeforeSlackWatermark, DEFAULT_MAX_MESSAGES, ensureTriggerMessage,
@@ -64,7 +64,6 @@ export interface SlackRecordedFiles {
 }
 
 const NO_RECORDED_FILES: SlackRecordedFiles = { images: [], fileRefs: [] };
-const SLACK_MIME_TYPE = /^[a-z0-9.+-]{1,40}\/[a-z0-9.+-]{1,80}$/;
 
 /**
  * A Slack message's files, sorted for the thread record. Each file lands in
@@ -72,15 +71,11 @@ const SLACK_MIME_TYPE = /^[a-z0-9.+-]{1,40}\/[a-z0-9.+-]{1,80}$/;
  * can still serve in `fileRefs`, readable here or not.
  */
 export function recordedSlackFiles(files: unknown): SlackRecordedFiles {
-  const recorded: SlackRecordedFiles = { images: [], fileRefs: [] };
-  if (!Array.isArray(files)) return recorded;
-  for (const file of files) {
-    const image = slackImageRef(file);
-    const fileRef = image ? undefined : slackFileRef(file);
-    if (image) recorded.images.push(image);
-    if (fileRef) recorded.fileRefs.push(fileRef);
-  }
-  return recorded;
+  if (!Array.isArray(files)) return { images: [], fileRefs: [] };
+  return {
+    images: files.flatMap((file) => slackImageRef(file) ?? []),
+    fileRefs: files.flatMap((file) => slackFileRef(file) ?? []),
+  };
 }
 
 /** The files an Agent reply shares, sorted the same way from the host's upload receipts. */
@@ -96,22 +91,6 @@ export function recordedArtifactFiles(
     }
   }
   return recorded;
-}
-
-/** Deleted, over-limit and external files are skipped: Slack serves none of them. */
-function slackFileRef(file: unknown): SlackPublicContextFileRef | undefined {
-  if (!file || typeof file !== 'object' || Array.isArray(file)) return undefined;
-  const { id, name, title, mimetype, size, mode, is_external: isExternal } = file as Record<string, unknown>;
-  if (typeof id !== 'string' || !SLACK_FILE_ID.test(id)) return undefined;
-  if (mode === 'tombstone' || mode === 'hidden_by_limit' || mode === 'external' || isExternal === true) return undefined;
-  const rawName = typeof name === 'string' && name.trim() ? name : typeof title === 'string' ? title : '';
-  const mimeType = typeof mimetype === 'string' ? mimetype.toLowerCase().split(';')[0]!.trim() : '';
-  return {
-    id,
-    name: safeFilename(rawName),
-    ...(SLACK_MIME_TYPE.test(mimeType) ? { mimeType } : {}),
-    ...(typeof size === 'number' && Number.isSafeInteger(size) && size >= 0 ? { sizeBytes: size } : {}),
-  };
 }
 
 export async function recordAcceptedSlackHumanMessage(
@@ -234,16 +213,19 @@ export async function seedSlackThreadRecord(
     .filter((message) => !options.held?.has(message.ts))
     .map((message) => ({
       ...threadRecordInput(
-        turn.workspaceId, turn.channelId, turn.threadTs, message,
-        { images: imageRefsFor(context, message.ts), fileRefs: [] },
+        turn.workspaceId, turn.channelId, turn.threadTs, message, recordedFilesFor(context, message.ts),
       ),
       ...(gapBeforeTs && message.ts === turn.threadTs ? { gapBeforeTs } : {}),
     }));
   return inputs.length ? store.seedSlackPublicContext(inputs) : 0;
 }
 
-function imageRefsFor(context: SlackTurnContext, messageTs: string): SlackPublicContextImage[] {
-  return (context.images ?? []).filter((image) => image.messageTs === messageTs).map(threadImageRef);
+function recordedFilesFor(context: SlackTurnContext, messageTs: string): SlackRecordedFiles {
+  return {
+    images: (context.images ?? []).filter((image) => image.messageTs === messageTs).map(threadImageRef),
+    fileRefs: (context.files ?? []).filter((file) => file.messageTs === messageTs)
+      .map(({ messageTs: _messageTs, ...ref }) => ref),
+  };
 }
 
 /** Kept below the record's own 200-row bound, so a seed never evicts captured rows. */

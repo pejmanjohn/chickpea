@@ -136,6 +136,17 @@ export function manifestFileLabel(value: string, fallback = 'file'): string {
   return folded || fallback;
 }
 
+/** Display-safe basename: no path, no control characters, bounded length. */
+export function safeFilename(value: string): string {
+  const basename = value.split(/[\\/]/).at(-1)?.trim() ?? '';
+  if (!basename || basename.includes('://')) return '[filename omitted]';
+  return Array.from(basename
+    .replace(/={3,}/g, '[delimiter punctuation removed]')
+    .replace(/[\p{Cc}\p{Cf}]/gu, ''))
+    .slice(0, 256)
+    .join('');
+}
+
 /**
  * A display name safe to show beside a row: control and format characters
  * removed, whitespace trimmed, bounded. Undefined when nothing is left.
