@@ -145,7 +145,7 @@ export function boundedDisplayName(value: string | undefined): string | undefine
   return name ? name.slice(0, MAX_DISPLAY_NAME_CHARS) : undefined;
 }
 
-function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number): string {
   if (bytes < 1_024) return `${bytes} B`;
   if (bytes < 1_024 * 1_024) return `${Math.round(bytes / 1_024)} KB`;
   return `${(bytes / (1_024 * 1_024)).toFixed(1)} MB`;

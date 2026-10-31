@@ -226,6 +226,7 @@ import {
   bindCurrentRequestConversation,
   parseCurrentRequestEnvelope,
 } from '../memory/tool-policy.ts';
+import { useReadArchiveFileTool } from '../slack/archive-file-tool.ts';
 import { useSlackAttachmentContext } from '../slack/attachment-context.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationIntentCapability } from '../slack/presentation-intent.ts';
@@ -994,6 +995,12 @@ export function useChickpeaSlackRuntimeCapabilities(
   });
   usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
   mountSkillUpload?.();
+  useReadArchiveFileTool({
+    instanceId: id,
+    turnKey: signal?.turnJobId ?? '',
+    fileIds: signal?.attachmentFileIds,
+    client: async () => createSlackAttachmentClient(await resolveAgentPlatformEnv()),
+  });
 }
 
 /**

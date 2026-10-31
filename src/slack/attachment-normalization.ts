@@ -1,10 +1,14 @@
 import { getResolvedPDFJS } from 'unpdf';
 
+import { sniffFileKind } from '../files/magic.ts';
+import { ZipArchiveError } from '../files/zip.ts';
+import { type ArchiveHandle, archiveHandle, archiveListing } from './archive-attachments.ts';
 import type {
   GatewayAttachmentClient,
   GatewayAttachmentRead,
 } from './gateway/client.ts';
 import {
+  DEFAULT_ATTACHMENT_ACCEPT,
   GATEWAY_ATTACHMENT_REPRESENTATIONS,
   type GatewayAttachmentRepresentation,
 } from './gateway/protocol.ts';
@@ -16,7 +20,9 @@ export const MAX_SLACK_PDF_PAGES = 100;
 export const MAX_SLACK_ATTACHMENT_CHARACTERS = 64_000;
 export const MAX_SLACK_ATTACHMENT_TOTAL_CHARACTERS = 128_000;
 const MAX_SLACK_PDF_IMAGE_PIXELS = 16_777_216;
-const DEFAULT_NORMALIZATION_DEADLINE_PER_ATTACHMENT_MS = 13_000;
+export const DEFAULT_NORMALIZATION_DEADLINE_PER_ATTACHMENT_MS = 13_000;
+/** Everything the analysis can use; a zip arrives as its bytes and is listed. */
+const ANALYSIS_ACCEPT: readonly GatewayAttachmentRepresentation[] = [...DEFAULT_ATTACHMENT_ACCEPT, 'zip_original'];
 const APPROVED_TEXT_APPLICATION_MIME_TYPES = new Set([
   'application/graphql',
   'application/javascript',
@@ -33,12 +39,6 @@ const APPROVED_TEXT_APPLICATION_MIME_TYPES = new Set([
   'application/xml',
   'application/yaml',
 ]);
-const APPROVED_IMAGE_MIME_TYPES = new Set([
-  'image/gif',
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-]);
 
 export type SlackAttachmentNextAction =
   | 'retry'
@@ -50,7 +50,8 @@ export type SlackAttachmentNextAction =
   | 'split_file'
   | 'use_text_pdf'
   | 'use_image_model'
-  | 'remove_unsupported_file';
+  | 'remove_unsupported_file'
+  | 'rezip_archive';
 
 interface NormalizedAttachmentIdentity {
   ordinal: number;
@@ -78,10 +79,18 @@ export interface NormalizedSlackPdfAttachment extends NormalizedAttachmentIdenti
   bytes: Uint8Array;
 }
 
+/** A zip the analysis reads as its file list; the Agent reads files inside by `handle`. */
+export interface NormalizedSlackArchiveAttachment extends NormalizedAttachmentIdentity {
+  kind: 'archive';
+  handle: ArchiveHandle;
+  text: string;
+}
+
 export type NormalizedSlackAttachment =
   | NormalizedSlackTextAttachment
   | NormalizedSlackImageAttachment
-  | NormalizedSlackPdfAttachment;
+  | NormalizedSlackPdfAttachment
+  | NormalizedSlackArchiveAttachment;
 
 export interface SlackAttachmentFailure {
   ordinal: number;
@@ -154,7 +163,8 @@ export async function normalizeSlackAttachments(
     let read: GatewayAttachmentRead;
     const readSignal = signalForAttachmentDeadline(input.signal, deadlineAt, now);
     try {
-      read = await input.gateway.readAttachment(
+      read = await readForAnalysis(
+        input.gateway,
         fileId,
         Math.min(MAX_SLACK_ATTACHMENT_BYTES, remainingBytes),
         readSignal,
@@ -224,6 +234,21 @@ export async function normalizeSlackAttachments(
   return { attachments, failures, totalBytes, totalCharacters };
 }
 
+async function readForAnalysis(
+  gateway: GatewayAttachmentClient,
+  fileId: string,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<GatewayAttachmentRead> {
+  try {
+    return await gateway.readAttachment(fileId, maxBytes, signal, ANALYSIS_ACCEPT);
+  } catch (error) {
+    // A gateway older than `accept` refuses the field; without it, text, PDFs and images still read.
+    if (safeFailureCode(error) !== 'gateway_attachment_unsupported') throw error;
+    return gateway.readAttachment(fileId, maxBytes, signal);
+  }
+}
+
 async function normalizeReadAttachment(input: {
   read: GatewayAttachmentRead;
   ordinal: number;
@@ -257,6 +282,18 @@ async function normalizeReadAttachment(input: {
       bytes: input.read.bytes,
     };
   }
+  if (input.read.representation === 'zip_original') {
+    const handle = archiveHandle(input.ordinal);
+    try {
+      return { kind: 'archive', ...identity, handle, text: archiveListing(input.read.bytes, handle) };
+    } catch (error) {
+      if (!(error instanceof ZipArchiveError)) throw error;
+      throw new AttachmentNormalizationError(
+        `archive_${error.code}`,
+        error.code === 'too_many_entries' ? 'split_file' : 'rezip_archive',
+      );
+    }
+  }
   if (input.read.representation === 'text_original') {
     if (!approvedTextMimeType(input.read.contentType)) {
       throw new AttachmentNormalizationError(
@@ -271,8 +308,8 @@ async function normalizeReadAttachment(input: {
     };
   }
   if (input.read.representation === 'image_original') {
-    if (!APPROVED_IMAGE_MIME_TYPES.has(input.read.contentType) ||
-        !imageMagicMatches(input.read.contentType, input.read.bytes)) {
+    const sniffed = sniffFileKind(filename, input.read.bytes);
+    if (sniffed.kind !== 'image' || sniffed.mimeType !== input.read.contentType) {
       throw new AttachmentNormalizationError(
         'attachment_mime_magic_mismatch',
         'convert_file',
@@ -296,12 +333,15 @@ function approvedTextMimeType(contentType: string): boolean {
     APPROVED_TEXT_APPLICATION_MIME_TYPES.has(contentType);
 }
 
-async function extractPdfTextSequentially(input: {
+export async function extractPdfTextSequentially(input: {
   bytes: Uint8Array;
   signal?: AbortSignal;
   deadlineAt: number;
   now: () => number;
+  /** Text past this fails the whole extraction. Default: one attachment's character limit. */
+  maxCharacters?: number;
 }): Promise<{ text: string; everyPageHasText: boolean }> {
+  const maxCharacters = input.maxCharacters ?? MAX_SLACK_ATTACHMENT_CHARACTERS;
   assertWithinDeadline(input.signal, input.deadlineAt, input.now);
   const { getDocument } = await awaitAttachmentPdfOperation(
     getResolvedPDFJS(),
@@ -359,8 +399,7 @@ async function extractPdfTextSequentially(input: {
         if (!text) everyPageHasText = false;
         const pageText = `--- Page ${pageNumber} of ${document.numPages} ---${text ? `\n${text}` : ''}`;
         const separatorCharacters = pages.length === 0 ? 0 : 1;
-        const remainingCharacters = MAX_SLACK_ATTACHMENT_CHARACTERS -
-          totalCharacters - separatorCharacters;
+        const remainingCharacters = maxCharacters - totalCharacters - separatorCharacters;
         const pageCharacters = characterCountUpTo(pageText, remainingCharacters);
         if (pageCharacters > remainingCharacters) {
           throw new AttachmentNormalizationError(
@@ -455,28 +494,6 @@ function decodeStrictText(bytes: Uint8Array): string {
   return text;
 }
 
-function imageMagicMatches(contentType: string, bytes: Uint8Array): boolean {
-  switch (contentType) {
-    case 'image/png':
-      return startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    case 'image/jpeg':
-      return startsWith(bytes, [0xff, 0xd8, 0xff]);
-    case 'image/gif':
-      return startsWith(bytes, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) ||
-        startsWith(bytes, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61]);
-    case 'image/webp':
-      return startsWith(bytes, [0x52, 0x49, 0x46, 0x46]) &&
-        bytes.byteLength >= 12 && startsWith(bytes.subarray(8), [0x57, 0x45, 0x42, 0x50]);
-    default:
-      return false;
-  }
-}
-
-function startsWith(bytes: Uint8Array, prefix: readonly number[]): boolean {
-  return bytes.byteLength >= prefix.length &&
-    prefix.every((byte, index) => bytes[index] === byte);
-}
-
 function attachmentBytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let offset = 0; offset < bytes.byteLength; offset += 32_768) {
@@ -500,14 +517,9 @@ function validateReadEnvelope(
 }
 
 function validatePdf(read: GatewayAttachmentRead): void {
-  if (read.contentType !== 'application/pdf' || !hasPdfMagic(read.bytes)) {
+  if (read.contentType !== 'application/pdf' || sniffFileKind(read.filename, read.bytes).kind !== 'pdf') {
     throw new AttachmentNormalizationError('attachment_mime_magic_mismatch', 'convert_file');
   }
-}
-
-function hasPdfMagic(bytes: Uint8Array): boolean {
-  return bytes.byteLength >= 5 && bytes[0] === 0x25 && bytes[1] === 0x50 &&
-    bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d;
 }
 
 function attachmentLabel(ordinal: number, filename: string): string {
@@ -579,7 +591,8 @@ function failure(
   };
 }
 
-function safeFailureCode(error: unknown): string | undefined {
+/** An error's `code` when it is a short snake_case word, safe to record and show. */
+export function safeFailureCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const code = (error as { code?: unknown }).code;
   return typeof code === 'string' && /^[a-z0-9_]{1,80}$/.test(code) ? code : undefined;
