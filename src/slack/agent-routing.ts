@@ -28,7 +28,8 @@ type AgentRouteSource =
   | 'default_agent'
   | 'app_home'
   | 'creation_handoff'
-  | 'agent_ask';
+  | 'agent_ask'
+  | 'front_desk';
 
 type AgentRoutingDenialReason =
   | 'not_available'
@@ -36,7 +37,9 @@ type AgentRoutingDenialReason =
   | 'not_workspace_wide'
   | 'member_required'
   | 'installation_unavailable'
-  | 'temporarily_unavailable';
+  | 'temporarily_unavailable'
+  /** A front-desk takeover of a message whose thread was already handed over from it. */
+  | 'handed_off';
 
 interface AgentRouteAlternative {
   id: string;
@@ -104,6 +107,12 @@ interface ResolveAgentRouteInput {
    * the thread over; never Slack message text.
    */
   askAgentId?: string;
+  /**
+   * Trusted host seed of a front-desk takeover: the Agent Chickpea handed
+   * this root DM message to, or the one the person picked on its card. It
+   * takes the thread over from Chickpea; never Slack message text.
+   */
+  frontDeskAgentId?: string;
   /** Authenticated Slack directory seam used only when a mentioned immutable
    * group id is absent from the stored Agent map. */
   transport?: Pick<SlackTransport, 'lookupUserGroup'>;
@@ -256,6 +265,40 @@ export async function resolveAgentRoute(
       handoff: false,
       routeChanged: false,
     }, addressedIds);
+  }
+
+  if (input.frontDeskAgentId !== undefined) {
+    // Only Chickpea's own root DM thread is handed over; a route already the
+    // target's from this message is the same takeover retried after its
+    // claims were given back.
+    const target = agentsById.get(input.frontDeskAgentId);
+    const retried = currentRoute !== undefined && currentRoute.agentId === input.frontDeskAgentId &&
+      currentRoute.handoff?.transferMessageTs === turn.messageTs;
+    if (surface !== 'direct' || slackConversationKind(turn) !== 'im' || turn.threadTs !== turn.messageTs || !currentRoute) {
+      return denied('not_available', []);
+    }
+    if (currentRoute.agentId !== CHICKPEA_AGENT_ID && !retried) {
+      return denied(currentRoute.handoff?.transferMessageTs === turn.messageTs ? 'handed_off' : 'not_available', []);
+    }
+    const access = await agentAccess({
+      agent: target,
+      surface,
+      actor,
+      activeGrants,
+      workspaceManagementRoute: false,
+      ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
+    });
+    if (!target || access !== 'allowed') return denied('not_available', []);
+    return withTeammates(await commitSelectedAgentRoute({
+      turn,
+      surface,
+      config,
+      installation,
+      selected: target,
+      source: 'front_desk',
+      activeGrants,
+      currentRoute,
+    }), []);
   }
 
   const appSelection = agentAppRouteSelection(turn, surface, agents, input.agentApp);

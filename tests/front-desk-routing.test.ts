@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { processGatewaySlackEnvelope } from '../src/channels/slack.ts';
+import { processGatewaySlackEnvelope, processSlackFrontDeskHandoff } from '../src/channels/slack.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
+import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
+import { frontDeskFailureLine } from '../src/slack/front-desk.ts';
+import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
+import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const OWNER = {
@@ -151,5 +156,122 @@ test('a mention of an Agent or of Chickpea, and a DM thread reply, get no front 
       [CHICKPEA_AGENT_ID, true],
       [CHICKPEA_AGENT_ID, false],
     ]);
+  });
+});
+
+const ROOT = '1793440000.000100';
+const LINE_TS = '1793440000.000200';
+
+/** Chickpea's root DM turn, delivered with its hand-off line, then the takeover the line announced. */
+async function handOff(lane: FrontDeskLane, agentId: string, agentName: string, text = 'Check order 4821 on the portal.') {
+  const { stores, gateway, jobs, enqueueTurn } = lane;
+  await processGatewaySlackEnvelope(directMessage('Ev1', ROOT, text, {
+    files: [{ id: 'F0RECEIPT1', name: 'receipt.pdf', mimetype: 'application/pdf', size: 1200 }],
+  }), undefined, gateway, { stores, enqueueTurn });
+  const chickpea = jobs.find(({ assignment }) => assignment.agentId === CHICKPEA_AGENT_ID)!;
+  await recordDeliveredSlackAgentMessage(stores.config, chickpea.turn, chickpea.assignment, {
+    messageTs: LINE_TS, text: `${agentName} is taking this. It has the portal login.`,
+  });
+  const dispatch = () => processSlackFrontDeskHandoff({
+    turn: chickpea.turn, fromAgentId: CHICKPEA_AGENT_ID, agentId, agentName,
+  }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+  await dispatch();
+  return { chickpea, dispatch };
+}
+
+test('a hand-off admits the person\'s own message for the chosen Agent, which takes the thread over', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { stores, gateway, jobs, posts, enqueueTurn } = lane;
+    const { chickpea, dispatch } = await handOff(lane, 'agent_support', 'Support Desk');
+    assert.equal(jobs.length, 2);
+    const support = jobs[1]!;
+    assert.equal(support.id, `msg:D1:${ROOT}:handoff`, 'its own claim, turn job, and usage operation');
+    assert.equal(support.assignment.agentId, 'agent_support');
+    assert.equal(support.turn.text, chickpea.turn.text, 'the person\'s own words, never model text');
+    assert.equal(support.turn.userId, 'U1');
+    assert.equal(support.turn.messageTs, ROOT);
+    assert.equal(support.turn.threadTs, ROOT);
+    assert.deepEqual(support.turn.attachments, chickpea.turn.attachments);
+    assert.ok(support.turn.attachments?.length, 'the person\'s files come along');
+    assert.deepEqual(support.turn.frontDesk, { fromAgentId: CHICKPEA_AGENT_ID, via: 'handoff' });
+    for (const field of ['agentAsk', 'coAddressed', 'uiResponse', 'managementApprovalProposalId', 'sessionThreadTs'] as const) {
+      assert.equal(support.turn[field], undefined, `${field} is never copied`);
+    }
+    assert.equal(support.assignment.frontDesk, undefined, 'the takeover has no front desk of its own');
+    assert.notEqual(support.runId, chickpea.runId, 'a Run of its own');
+    assert.notEqual(slackAgentThreadKey(support.turn, support.assignment), slackAgentThreadKey(chickpea.turn, chickpea.assignment));
+    const route = await stores.config.getAgentThreadRoute('T1', 'D1', ROOT);
+    assert.equal(route?.agentId, 'agent_support');
+    assert.equal(route?.ownerIncarnation, 2);
+    assert.equal(route?.handoff?.transferMessageTs, ROOT);
+    assert.equal(route?.handoff?.previousAgentId, CHICKPEA_AGENT_ID);
+    assert.ok(support.assignment.handoffContext?.some(({ text }) => text.startsWith('Support Desk is taking this.')),
+      'the new owner reads Chickpea\'s line as thread context');
+
+    // A second hand-off of the same message admits nothing and says nothing.
+    await dispatch();
+    await processSlackFrontDeskHandoff({
+      turn: chickpea.turn, fromAgentId: CHICKPEA_AGENT_ID, agentId: 'agent_research', agentName: 'Research',
+    }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+    assert.equal(jobs.length, 2);
+    assert.deepEqual(posts, []);
+
+    // An untagged follow-up stays with the new owner.
+    await processGatewaySlackEnvelope(directMessage('Ev2', '1793440000.000300', 'Also order 4822.', { thread_ts: ROOT }),
+      undefined, gateway, { stores, enqueueTurn });
+    assert.equal(jobs.at(-1)?.assignment.agentId, 'agent_support');
+    assert.equal(jobs.at(-1)?.assignment.ownerIncarnation, 2);
+  });
+});
+
+test('a hand-off to an Agent the person can no longer use is refused, and Chickpea says so once', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { stores, jobs, posts } = lane;
+    await processGatewaySlackEnvelope(directMessage('Ev1', ROOT, 'Check order 4821 on the portal.'),
+      undefined, lane.gateway, { stores, enqueueTurn: lane.enqueueTurn });
+    const chickpea = jobs[0]!;
+    assert.ok(chickpea.assignment.frontDesk?.agents.some(({ id }) => id === 'agent_support'));
+    // Access changes between the list and the hand-off.
+    const support = await stores.config.getAgent('agent_support');
+    await stores.config.updateAgent('agent_support', { creatorMembershipId: 'membership_someone_else' }, support.revision);
+    const dispatch = () => processSlackFrontDeskHandoff({
+      turn: chickpea.turn, fromAgentId: CHICKPEA_AGENT_ID, agentId: 'agent_support', agentName: 'Support Desk',
+    }, undefined, { stores, gatewayClient: lane.gateway, enqueueTurn: lane.enqueueTurn });
+    await dispatch();
+    await dispatch();
+    assert.equal(jobs.length, 1, 'nothing is admitted');
+    assert.deepEqual(posts, [{ channel: 'D1', thread_ts: ROOT, text: frontDeskFailureLine('Support Desk') }]);
+    assert.equal((await stores.config.getAgentThreadRoute('T1', 'D1', ROOT))?.agentId, CHICKPEA_AGENT_ID,
+      'the thread stays Chickpea\'s');
+  });
+});
+
+test('the takeover seed hands over only Chickpea\'s own root DM thread', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { stores, gateway, jobs, enqueueTurn } = lane;
+    const allow = async () => ({ status: 'allowed' as const, audience: 'creator_only' as const });
+    const actor = { channelMember: false, fullMember: true };
+    const route = (turn: NormalizedSlackTurn, agentId = 'agent_support') => resolveAgentRoute({
+      turn, surface: 'direct', actor, config: stores.config, frontDeskAgentId: agentId, authorizeUserAgent: allow,
+    });
+    // A thread another Agent owns is not Chickpea's to hand over.
+    await processGatewaySlackEnvelope(directMessage('Ev1', '1793440100.000100', '<!subteam^SRESEARCH|@research> size it'),
+      undefined, gateway, { stores, enqueueTurn });
+    const research = jobs[0]!;
+    assert.equal((await route(research.turn)).kind, 'denied');
+    // Chickpea's thread, but at a reply or in a group DM: denied.
+    await processGatewaySlackEnvelope(directMessage('Ev2', ROOT, 'Check order 4821.'), undefined, gateway, { stores, enqueueTurn });
+    const chickpea = jobs[1]!;
+    assert.equal((await route({ ...chickpea.turn, messageTs: '1793440000.000900' })).kind, 'denied');
+    assert.equal((await route({ ...chickpea.turn, channelType: 'mpim' })).kind, 'denied');
+    // Chickpea's root: routed, as a takeover; then a retry of the same takeover routes again.
+    const first = await route(chickpea.turn);
+    assert.equal(first.kind === 'routed' && first.source, 'front_desk');
+    assert.equal(first.kind === 'routed' && first.handoff, true);
+    const retried = await route(chickpea.turn);
+    assert.equal(retried.kind === 'routed' && retried.assignment.agentId, 'agent_support');
+    assert.equal(retried.kind === 'routed' && retried.route.ownerIncarnation, 2, 'the retry does not hand over twice');
+    // Once Support Desk owns it, no other Agent may take it from the front desk.
+    assert.equal((await route(chickpea.turn, 'agent_research')).kind, 'denied');
   });
 });

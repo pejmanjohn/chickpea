@@ -7,7 +7,7 @@ import type {
 import type { RuntimePlanFrontDeskV1 } from '../agents/runtime-plan.ts';
 import { slackConversationKind } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
-import type { NormalizedSlackTurn } from './types.ts';
+import type { NormalizedSlackTurn, SlackFrontDeskTurn } from './types.ts';
 import {
   UI_SURFACE_MAX_SPEC_BYTES,
   type HostAgentChoiceSpec,
@@ -43,6 +43,50 @@ export const FRONT_DESK_CHOICE_TTL_MS = 24 * 60 * 60_000;
 export interface FrontDeskHandoff {
   agentIds: string[];
   note: string;
+}
+
+/** A delivered hand-off to one Agent, for the host to admit its takeover. */
+export interface SlackFrontDeskHandoffRequest {
+  /** The person's turn as Chickpea's run read it. */
+  turn: NormalizedSlackTurn;
+  fromAgentId: string;
+  agentId: string;
+  /** As Chickpea's line named it, from the frozen list. */
+  agentName: string;
+}
+
+export type SlackFrontDeskHandoffDispatcher = (request: SlackFrontDeskHandoffRequest) => Promise<void>;
+
+/** The person's message as a takeover carries it: what the card keeps, plus where it was sent. */
+export type FrontDeskOrigin = Pick<
+  NormalizedSlackTurn,
+  'workspaceId' | 'channelId' | 'userId' | 'text' | 'messageTs' | 'threadTs' |
+  'channelType' | 'requesterTimezone' | 'attachments' | 'attachmentIntake'
+>;
+
+/**
+ * The takeover turn, copied field by field from the person's own turn as
+ * the host normalized it, so nothing Chickpea's admission stamped on it (an
+ * approval, a click, an interaction intent, a membership) carries over, and
+ * nothing the model wrote enters it.
+ */
+export function frontDeskTakeoverTurn(origin: FrontDeskOrigin, frontDesk: SlackFrontDeskTurn): NormalizedSlackTurn {
+  return {
+    workspaceId: origin.workspaceId,
+    channelId: origin.channelId,
+    eventId: `front-desk:${origin.channelId}:${origin.messageTs}`,
+    text: origin.text,
+    userId: origin.userId,
+    messageTs: origin.messageTs,
+    threadTs: origin.threadTs,
+    source: 'dm_message',
+    contextMode: 'thread',
+    channelType: origin.channelType ?? 'im',
+    ...(origin.requesterTimezone ? { requesterTimezone: origin.requesterTimezone } : {}),
+    ...(origin.attachments?.length ? { attachments: origin.attachments.map(({ fileId }) => ({ fileId })) } : {}),
+    ...(origin.attachmentIntake ? { attachmentIntake: { ...origin.attachmentIntake } } : {}),
+    frontDesk: { fromAgentId: frontDesk.fromAgentId, via: frontDesk.via },
+  };
 }
 
 /**

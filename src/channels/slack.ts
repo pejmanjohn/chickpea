@@ -89,7 +89,13 @@ import {
   type PrivateAgentPlacementFacts,
 } from '../slack/agent-access.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
-import { frontDeskConversation } from '../slack/front-desk.ts';
+import {
+  frontDeskConversation,
+  frontDeskFailureLine,
+  frontDeskTakeoverTurn,
+  type FrontDeskOrigin,
+  type SlackFrontDeskHandoffRequest,
+} from '../slack/front-desk.ts';
 import { readFrontDeskDirectory } from '../slack/front-desk-directory.ts';
 import {
   agentAppHomeStarterMessage,
@@ -1588,11 +1594,15 @@ export async function processGatewaySlackEnvelope(
 registerNodeAgentAskDispatcher(processSlackAgentAsks);
 
 /**
- * A turn the host addressed to an Agent: an ask, or one of the later Agents
- * a person's message mentioned. Admitted like a person's message, minus
- * everything only a person's own words may do.
+ * A turn the host addressed to an Agent: an ask, one of the later Agents a
+ * person's message mentioned, or a front-desk takeover. Admitted like a
+ * person's message, minus everything only a person's own words may do.
  */
+type SlackHostAddressedAdmission = SlackAgentAskAdmission | SlackFrontDeskAdmission;
+
+/** An ask, or one of the later Agents a person's message mentioned: a guest that never takes the thread. */
 interface SlackAgentAskAdmission {
+  kind: 'ask';
   /** Built by the host: from the asking Agent's delivered message, or from the person's. */
   turn: NormalizedSlackTurn;
   targetAgentId: string;
@@ -1607,6 +1617,23 @@ interface SlackAgentAskAdmission {
    */
   onLimitReached?(client: ReturnType<typeof createSlackWebClient>): Promise<void>;
 }
+
+/**
+ * The front desk's takeover of Chickpea's root DM thread: the person's own
+ * message, admitted again for the Agent Chickpea handed it to or the person
+ * picked. It takes the thread over, so routing gets its own seed, and the
+ * caller learns how admission went: `duplicate` when this message was
+ * already handed over, which admits nothing.
+ */
+interface SlackFrontDeskAdmission {
+  kind: 'takeover';
+  turn: NormalizedSlackTurn;
+  targetAgentId: string;
+  enqueueTurn?: SlackEventExecution['enqueueTurn'];
+  outcome: FrontDeskAdmissionOutcome;
+}
+
+type FrontDeskAdmissionOutcome = 'admitted' | 'duplicate' | 'refused' | 'failed';
 
 /** Attempts of one host-addressed turn's admission when a dependency fails transiently. */
 const AGENT_ASK_ADMISSION_ATTEMPTS = 3;
@@ -1675,24 +1702,9 @@ export async function processSlackAgentAsks(
   }
   if (targets.length === 0) return;
 
-  let execution: SlackEventExecution | undefined;
-  if (installation.transportMode === 'gateway') {
-    if (!installation.gatewayBindingId || !installation.appId || !installation.botUserId) return;
-    const gateway = provided?.gatewayClient ?? createGatewayDeploymentClient(platformEnv);
-    const binding = await gateway.loadBinding();
-    if (
-      !binding || binding.bindingId !== installation.gatewayBindingId ||
-      binding.workspaceId !== asking.workspaceId || binding.appId !== installation.appId ||
-      binding.botUserId !== installation.botUserId
-    ) return;
-    execution = {
-      transport: createGatewaySlackTransport(gateway),
-      client: createGatewaySlackWebClient(gateway),
-      botUserId: installation.botUserId,
-      stores,
-      ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
-    };
-  }
+  const reach = await hostAddressedExecution(installation, platformEnv, { stores, ...provided });
+  if (!reach) return;
+  const { execution } = reach;
   const originMessageTs = agentAskOrigin(asking);
   const fromHandle = agentSlackHandle(from)?.handle;
   for (const { agent, delivery } of targets) {
@@ -1738,6 +1750,7 @@ export async function processSlackAgentAsks(
       },
     };
     const admission: SlackAgentAskAdmission = {
+      kind: 'ask',
       turn,
       targetAgentId: agent.id,
       ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
@@ -1758,15 +1771,169 @@ export async function processSlackAgentAsks(
 }
 
 /**
- * Admit one turn the host addressed to an Agent (an ask, or one of several
- * Agents a person mentioned), retrying a dependency that fails transiently.
- * Its claims were given back on failure, so a retry may admit it again.
+ * How a host-addressed turn reaches Slack: through the bound gateway on a
+ * gateway installation, or with no execution on a direct one, whose
+ * admission resolves its own credentials. Undefined when the gateway's
+ * binding no longer matches the installation.
+ */
+async function hostAddressedExecution(
+  installation: WorkspaceInstallation,
+  platformEnv: PlatformEnv | undefined,
+  provided: {
+    stores: AppStores;
+    gatewayClient?: GatewayDeploymentClient;
+    enqueueTurn?: SlackEventExecution['enqueueTurn'];
+  },
+): Promise<{ execution?: SlackEventExecution } | undefined> {
+  if (installation.transportMode !== 'gateway') return {};
+  if (!installation.gatewayBindingId || !installation.appId || !installation.botUserId) return undefined;
+  const gateway = provided.gatewayClient ?? createGatewayDeploymentClient(platformEnv);
+  const binding = await gateway.loadBinding();
+  if (
+    !binding || binding.bindingId !== installation.gatewayBindingId ||
+    binding.workspaceId !== installation.workspaceId || binding.appId !== installation.appId ||
+    binding.botUserId !== installation.botUserId
+  ) return undefined;
+  return {
+    execution: {
+      transport: createGatewaySlackTransport(gateway),
+      client: createGatewaySlackWebClient(gateway),
+      botUserId: installation.botUserId,
+      stores: provided.stores,
+      ...(provided.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
+    },
+  };
+}
+
+/**
+ * Admit the takeover a delivered front-desk hand-off asked for: Chickpea's
+ * line is in the thread before the chosen Agent's turn exists. When the
+ * takeover is refused (the person can no longer use that Agent, say) or
+ * still fails after its retries, Chickpea says so once in the thread, so the
+ * person can mention the Agent instead. Runs where Chickpea's turn ran.
+ */
+export async function processSlackFrontDeskHandoff(
+  request: SlackFrontDeskHandoffRequest,
+  platformEnv?: PlatformEnv,
+  provided?: {
+    stores?: AppStores;
+    gatewayClient?: GatewayDeploymentClient;
+    enqueueTurn?: SlackEventExecution['enqueueTurn'];
+  },
+): Promise<void> {
+  const stores = provided?.stores ?? resolveStores(platformEnv);
+  const installation = await stores.config.getWorkspaceInstallation(request.turn.workspaceId);
+  if (
+    !installation || installation.health === 'revoked' ||
+    installation.runtimeContract !== 'chickpea-v1'
+  ) return;
+  const reach = await hostAddressedExecution(installation, platformEnv, { ...provided, stores });
+  if (!reach) return;
+  const outcome = await admitFrontDeskTakeover({
+    origin: request.turn,
+    fromAgentId: request.fromAgentId,
+    agentId: request.agentId,
+    via: 'handoff',
+    appId: installation.appId ?? '',
+    platformEnv,
+    execution: reach.execution,
+    ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
+  });
+  if (outcome === 'admitted' || outcome === 'duplicate') return;
+  const client = reach.execution?.client ?? await directSlackClient(platformEnv);
+  if (!client) return;
+  await postFrontDeskFailure({ client, stores, turn: request.turn, agentName: request.agentName }).catch(() => {
+    console.warn('[chickpea] front desk failure line was not posted');
+  });
+}
+
+/** The person's message admitted again for `agentId`, as a takeover of Chickpea's root DM thread. */
+async function admitFrontDeskTakeover(input: {
+  origin: FrontDeskOrigin;
+  fromAgentId: string;
+  agentId: string;
+  via: 'handoff' | 'click';
+  appId: string;
+  platformEnv: PlatformEnv | undefined;
+  execution: SlackEventExecution | undefined;
+  enqueueTurn?: SlackEventExecution['enqueueTurn'];
+}): Promise<FrontDeskAdmissionOutcome> {
+  const turn = frontDeskTakeoverTurn(input.origin, { fromAgentId: input.fromAgentId, via: input.via });
+  const admission: SlackFrontDeskAdmission = {
+    kind: 'takeover',
+    turn,
+    targetAgentId: input.agentId,
+    outcome: 'refused',
+    ...(input.enqueueTurn ? { enqueueTurn: input.enqueueTurn } : {}),
+  };
+  await admitHostAddressedTurn({
+    token: '',
+    team_id: turn.workspaceId,
+    api_app_id: input.appId,
+    event_id: turn.eventId,
+    event_time: Math.floor(Number(turn.messageTs)) || 0,
+    type: 'event_callback',
+    event: {
+      type: 'message',
+      channel: turn.channelId,
+      ts: turn.messageTs,
+      thread_ts: turn.threadTs,
+      user: turn.userId,
+      text: turn.text,
+      channel_type: 'im',
+    },
+  }, input.platformEnv, input.execution, admission);
+  return admission.outcome;
+}
+
+/** The bot client of a direct installation, for a host post outside any turn. */
+async function directSlackClient(platformEnv: PlatformEnv | undefined): Promise<SlackUiClient | undefined> {
+  const credentials = await resolveSlackInstallationCredentials(
+    slackInstallationCredentialId(platformEnv),
+    platformEnv,
+  );
+  return credentials.botToken ? createSlackWebClient(credentials.botToken) : undefined;
+}
+
+/** Chickpea's one line when its hand-off did not go through; it enters the thread record like any reply. */
+async function postFrontDeskFailure(input: {
+  client: SlackUiClient;
+  stores: AppStores;
+  turn: NormalizedSlackTurn;
+  agentName: string;
+}): Promise<void> {
+  const { turn } = input;
+  const key = `front-desk-failure:${turn.workspaceId}:${turn.channelId}:${turn.messageTs}`;
+  if (!(await input.stores.slackState.claim(key))) return;
+  const text = frontDeskFailureLine(input.agentName);
+  let posted: Awaited<ReturnType<SlackUiClient['chat']['postMessage']>>;
+  try {
+    posted = await input.client.chat.postMessage({ channel: turn.channelId, thread_ts: turn.threadTs, text });
+  } catch (error) {
+    await input.stores.slackState.release(key).catch(() => undefined);
+    throw error;
+  }
+  if (typeof posted.ts === 'string' && posted.ts) {
+    await recordDeliveredSlackAgentMessage(
+      input.stores.config,
+      turn,
+      { runtimeContract: 'chickpea-v1', agentId: CHICKPEA_AGENT_ID },
+      { messageTs: posted.ts, text },
+    ).catch(() => undefined);
+  }
+}
+
+/**
+ * Admit one turn the host addressed to an Agent (an ask, one of several
+ * Agents a person mentioned, or a takeover), retrying a dependency that
+ * fails transiently. Its claims were given back on failure, so a retry may
+ * admit it again.
  */
 async function admitHostAddressedTurn(
   payload: SlackEventFixture,
   platformEnv: PlatformEnv | undefined,
   execution: SlackEventExecution | undefined,
-  admission: SlackAgentAskAdmission,
+  admission: SlackHostAddressedAdmission,
 ): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -1776,6 +1943,7 @@ async function admitHostAddressedTurn(
       const retryable = error instanceof SlackDurableEnqueueError || isRetryableDependencyFailure(error);
       if (!retryable || attempt >= AGENT_ASK_ADMISSION_ATTEMPTS) {
         console.error('[chickpea] agent turn was not admitted:', sanitizeError(error));
+        if (admission.kind === 'takeover') admission.outcome = 'failed';
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
@@ -1827,7 +1995,7 @@ async function admitCoAddressedTurns(input: {
       { ...input.payload, event_id: coTurn.eventId },
       input.platformEnv,
       input.execution,
-      { turn: coTurn, targetAgentId: agent.agentId },
+      { kind: 'ask', turn: coTurn, targetAgentId: agent.agentId },
     );
   }
 }
@@ -1857,6 +2025,11 @@ async function resumeCoAddressedTurns(input: {
 /** The claim key, and the queued turn's ID, of one Agent's turn on a message another Agent's turn holds. */
 function askMessageKey(channelId: string, messageTs: string, agentId: string): string {
   return `msg:${channelId}:${messageTs}:ask-${agentId}`;
+}
+
+/** The claim key, and the queued turn's ID, of a message's front-desk takeover: one per message, whoever takes it. */
+function frontDeskTakeoverKey(channelId: string, messageTs: string): string {
+  return `msg:${channelId}:${messageTs}:handoff`;
 }
 
 /**
@@ -2720,10 +2893,10 @@ async function processSlackEvent(
   platformEnv: PlatformEnv | undefined,
   execution?: SlackEventExecution,
   ui?: SlackUiAdmission,
-  ask?: SlackAgentAskAdmission,
+  ask?: SlackHostAddressedAdmission,
 ): Promise<void> {
   // A click is admitted like a message; every early return below is a refusal
-  // (its outcome starts at `unavailable`).
+  // (its outcome starts at `unavailable`, a takeover's at `refused`).
   const stores = execution?.stores ?? resolveStores(platformEnv);
   const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
   const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
@@ -2803,7 +2976,9 @@ async function processSlackEvent(
   // Several Agents can answer one message (asked by a reply, or mentioned
   // together by a person): each Agent's turn on it is its own.
   const msgKey = ask
-    ? askMessageKey(turn.channelId, turn.messageTs, ask.targetAgentId)
+    ? ask.kind === 'takeover'
+      ? frontDeskTakeoverKey(turn.channelId, turn.messageTs)
+      : askMessageKey(turn.channelId, turn.messageTs, ask.targetAgentId)
     : `msg:${turn.channelId}:${turn.messageTs}`;
 
   let assignment: ResolvedAssignment;
@@ -2893,7 +3068,11 @@ async function processSlackEvent(
         ...(execution?.agentApp ? { agentApp: execution.agentApp } : {}),
         config: store,
         transport: runtimeTransport,
-        ...(ask ? { askAgentId: ask.targetAgentId } : guestCardAgentId ? { askAgentId: guestCardAgentId } : {}),
+        ...(ask?.kind === 'takeover'
+          ? { frontDeskAgentId: ask.targetAgentId }
+          : ask
+            ? { askAgentId: ask.targetAgentId }
+            : guestCardAgentId ? { askAgentId: guestCardAgentId } : {}),
         authorizeUserAgent: async (agent) => resolveTurnAgentAccess({
           agent,
           conversation: slackConversationKind(turn),
@@ -2931,6 +3110,7 @@ async function processSlackEvent(
         // The asking Agent's teammates list names whom it can reach; an ask
         // that cannot run here is not answered, and nobody is told in Slack.
         console.info(`[chickpea] host-addressed turn not admitted: ${routed.kind === 'denied' ? routed.reason : routed.kind}`);
+        if (ask.kind === 'takeover' && routed.kind === 'denied' && routed.reason === 'handed_off') ask.outcome = 'duplicate';
         return;
       }
       if (routed.kind !== 'routed') {
@@ -3626,6 +3806,10 @@ async function processSlackEvent(
         if (!result.claimed) {
           if (ui) {
             ui.outcome = 'answered';
+          } else if (ask?.kind === 'takeover') {
+            // One hand-off per message: a retry, a second click, or a click
+            // after the hand-off finds this message's takeover claimed.
+            ask.outcome = 'duplicate';
           } else {
             logTurnAlreadyAdmitted(assignment.agentId, execution);
             await resumeCoAddressedTurns({ payload, turn, platformEnv, execution, state, msgKey });
@@ -3633,7 +3817,7 @@ async function processSlackEvent(
           return;
         }
         if ('agentAskLimitReached' in result) {
-          if (ask?.onLimitReached && slackClient) await ask.onLimitReached(slackClient).catch(() => {
+          if (ask?.kind === 'ask' && ask.onLimitReached && slackClient) await ask.onLimitReached(slackClient).catch(() => {
             console.warn('[chickpea] agent ask pause note was not posted');
           });
           return;
@@ -3828,6 +4012,7 @@ async function processSlackEvent(
         console.warn('[chickpea] accepted Slack message was not added to public context');
       });
     }
+    if (ask?.kind === 'takeover') ask.outcome = 'admitted';
     await admitCoAddressedTurns({ payload, turn, platformEnv, execution });
     return;
   }
@@ -3870,6 +4055,7 @@ async function processSlackEvent(
       console.warn('[chickpea] accepted Slack message was not added to public context');
     });
   }
+  if (ask?.kind === 'takeover') ask.outcome = 'admitted';
   await admitCoAddressedTurns({ payload, turn, platformEnv, execution });
   const wake = wakeNodeTurnRelay(platformEnv).catch((err) => {
     if (execution?.durableIngress) {
