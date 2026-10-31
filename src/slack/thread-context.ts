@@ -69,11 +69,6 @@ export interface SlackTurnContext {
    * no prompt text is derived from this field.
    */
   images?: ThreadImageRecord[];
-  /**
-   * Every non-image file on the rows read, or on the thread record's rows,
-   * readable or not, up to the watermark. The thread record's seed keeps
-   * them; `retainThreadFiles` turns them into the `file:N` list.
-   */
   files?: ThreadFileRecord[];
   /**
    * Host-only: the thread-record rows this hydration already listed, so

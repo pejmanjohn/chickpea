@@ -4,13 +4,6 @@ import { SLACK_FILE_ID, SLACK_TS } from './ids.ts';
 import { formatBytes, manifestFileLabel, safeFilename } from './message-text.ts';
 import { compareSlackTs, type SlackWebApiMessage } from './thread-context.ts';
 
-/**
- * Per-turn inventory of the readable non-image files in this Slack
- * conversation: zips, PDFs, text and Office files. The Agent addresses them by
- * `file:N` handles and `read_slack_file` reads them; no tool takes a Slack
- * file ID. Images keep their own `img:N` inventory (thread-images.ts).
- */
-
 export type FileHandle = `file:${number}`;
 
 export const READ_SLACK_FILE_TOOL_NAME = 'read_slack_file';
@@ -29,7 +22,6 @@ export function fileHandleOrdinal(value: string): number | undefined {
 
 export type FileHandleIds = readonly string[] & { readonly __order: 'thread files, then current message' };
 
-/** `file:N` order: the conversation's readable files, then the current message's files not already among them. */
 export function fileHandleIds(
   threadFileIds: readonly string[],
   currentFileIds: readonly string[],
@@ -38,16 +30,11 @@ export function fileHandleIds(
   return ordered as FileHandleIds;
 }
 
-/** A non-image file on one message of this conversation, readable here or not. */
 export interface ThreadFileRecord extends SlackPublicContextFileRef {
   messageTs: string;
 }
 
-/**
- * The thread record's reference for one raw Slack file that is not one of
- * the four image types, or undefined. Deleted, over-limit and external files
- * are skipped: Slack serves none of them.
- */
+/** Deleted, over-limit and external files are skipped: Slack serves none of them. */
 export function slackFileRef(file: unknown): SlackPublicContextFileRef | undefined {
   if (!file || typeof file !== 'object' || Array.isArray(file)) return undefined;
   const { id, name, title, mimetype, size, mode, is_external: isExternal } = file as Record<string, unknown>;
@@ -64,7 +51,6 @@ export function slackFileRef(file: unknown): SlackPublicContextFileRef | undefin
   };
 }
 
-/** From the raw Slack rows, before the context projection drops bot rows and bare uploads. */
 export function collectThreadFileRecords(rows: readonly SlackWebApiMessage[]): ThreadFileRecord[] {
   return rows.flatMap((row) => {
     if (typeof row.ts !== 'string' || !SLACK_TS.test(row.ts) || !Array.isArray(row.files)) return [];
@@ -76,11 +62,6 @@ export function collectThreadFileRecords(rows: readonly SlackWebApiMessage[]): T
   });
 }
 
-/**
- * Records rebuilt from thread-record rows, for a turn that reads the record
- * instead of Slack. Each reference is validated again, as if Slack had just
- * returned it. A row written before file references were kept has none.
- */
 export function threadFileRecordsFromRecord(entries: readonly SlackPublicContextEntry[]): ThreadFileRecord[] {
   return entries.flatMap((entry) => (entry.fileRefs ?? []).flatMap((stored) => {
     const ref = slackFileRef({ id: stored.id, name: stored.name, mimetype: stored.mimeType, size: stored.sizeBytes });
@@ -88,7 +69,6 @@ export function threadFileRecordsFromRecord(entries: readonly SlackPublicContext
   }));
 }
 
-/** Readable files only, in thread order, each once at its first share; the newest 20 are kept. */
 export function retainThreadFiles(records: readonly ThreadFileRecord[]): ThreadFileRecord[] {
   const seen = new Set<string>();
   const firstShares: ThreadFileRecord[] = [];

@@ -31,7 +31,6 @@ const MAX_ARCHIVE_ENTRY_BYTES = 8 * 1_024 * 1_024;
 const ARCHIVE_READ_BUDGET_BYTES = 16 * 1_024 * 1_024;
 const MAX_PDF_CHARACTERS = 1_000_000;
 const MAX_SUGGESTED_PATHS = 50;
-/** Paging or comparing two files downloads and extracts each once per turn. */
 const MAX_OPENED_FILES = 2;
 const NO_TEXT_LAYER_NOTE = 'Some pages have no text layer, such as scanned pages, so their content is missing here.';
 const UNREADABLE_KIND = 'This kind of file cannot be read here, such as audio, video or another binary file.';
@@ -57,16 +56,13 @@ type OpenedFileResult =
   | { ok: true; file: FileHandle; kind: 'text' | 'pdf' | 'document'; text: string; nextOffset?: number; note?: string }
   | { ok: true; file: FileHandle; kind: 'image'; note: string };
 
-/** Every result of a file that was read carries its folded label, so a stale handle shows a different name. */
 export type ReadSlackFileResult = (OpenedFileResult & { name: string }) | { ok: false; error: string; name?: string };
 
-/** A Slack file read once per turn: an archive's bytes, or the text of a text file, PDF or Office file. */
 type OpenedFile =
   | { kind: 'archive'; name: string; bytes: Uint8Array }
   | { kind: 'text' | 'pdf' | 'document'; name: string; text: string; note?: string }
   | { kind: 'image'; name: string };
 
-/** A read that ends in a message for the Agent rather than an exception. */
 class FileReadRefusal extends Error {
   constructor(readonly error: string, readonly label?: string) {
     super(error);
@@ -140,7 +136,6 @@ async function pdfText(bytes: Uint8Array, signal: AbortSignal | undefined): Prom
   return { text: extracted.text, ...(extracted.everyPageHasText ? {} : { note: NO_TEXT_LAYER_NOTE }) };
 }
 
-/** One read with the analysis's representations; the reader picks one from Slack's metadata. */
 async function openSlackFile(
   client: () => Promise<GatewayAttachmentClient>,
   fileId: string,
@@ -272,13 +267,12 @@ function downloadFailureMessage(error: unknown): string {
 
 /**
  * File reads up to the response's next would-stop check: a call count and
- * the last two files opened. Never persisted. The finish hook clears it, so a
+ * the last files opened. Never persisted. The finish hook clears it, so a
  * continuation counts afresh, bounded by the runtime's continuation ceiling.
  */
 interface FileTurn {
   readonly key: string;
   readonly calls: Set<string>;
-  /** Most recently used first. */
   opened: Array<{ fileId: string; file: Promise<OpenedFile> }>;
 }
 
@@ -293,7 +287,7 @@ function fileTurn(instanceId: string, key: string): FileTurn {
   return next;
 }
 
-/** Concurrent reads of one file share its download and the first caller's abort signal. A failed open is not kept. */
+/** Several reads of one file in a turn open it once. A failed open is not kept. */
 function openedFile(turn: FileTurn, fileId: string, open: () => Promise<OpenedFile>): Promise<OpenedFile> {
   const index = turn.opened.findIndex((entry) => entry.fileId === fileId);
   if (index >= 0) {
@@ -301,6 +295,7 @@ function openedFile(turn: FileTurn, fileId: string, open: () => Promise<OpenedFi
     turn.opened.unshift(hit!);
     return hit!.file;
   }
+  // Concurrent reads of one file share this open and the first caller's abort signal.
   const entry = { fileId, file: open() };
   turn.opened.unshift(entry);
   turn.opened.splice(MAX_OPENED_FILES);
@@ -316,7 +311,6 @@ export interface ReadSlackFileToolOptions {
   turnKey: string;
   fileIds: FileHandleIds;
   client: () => Promise<GatewayAttachmentClient>;
-  /** The `img:N` handle of an image file in this request's image list, when it has one. */
   imageHandle?: (fileId: string) => string | undefined;
 }
 

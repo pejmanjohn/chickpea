@@ -24,7 +24,6 @@ const MAX_SLACK_PDF_IMAGE_PIXELS = 16_777_216;
 export const DEFAULT_NORMALIZATION_DEADLINE_PER_ATTACHMENT_MS = 13_000;
 /** Everything the analysis can use; a zip arrives as its bytes and is listed. */
 const ANALYSIS_ACCEPT: readonly GatewayAttachmentRepresentation[] = [...DEFAULT_ATTACHMENT_ACCEPT, 'zip_original'];
-/** What read_slack_file reads, so the manifest names these files' handles. */
 const READ_TOOL_REPRESENTATIONS: ReadonlySet<GatewayAttachmentRepresentation> = new Set([
   'text_original', 'pdf_original', 'slack_pdf_conversion', 'zip_original',
 ]);
@@ -49,7 +48,6 @@ interface NormalizedAttachmentIdentity {
   label: string;
   representation: GatewayAttachmentRepresentation;
   contentType: string;
-  /** Present when read_slack_file can read the file. */
   handle?: FileHandle;
 }
 
@@ -90,7 +88,6 @@ export interface SlackAttachmentFailure {
   label: string;
   code: string;
   nextAction: SlackAttachmentNextAction;
-  /** A text file too long for the analysis, which read_slack_file can still page through. */
   handle?: FileHandle;
 }
 
@@ -230,7 +227,6 @@ export async function normalizeSlackAttachments(
   return { attachments, failures, totalBytes, totalCharacters };
 }
 
-/** One read with everything the analysis can use; an old gateway that refuses `accept` gets one retry without it. */
 export async function readForAnalysis(
   gateway: GatewayAttachmentClient,
   fileId: string,

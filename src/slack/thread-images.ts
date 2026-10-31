@@ -151,7 +151,7 @@ export function collectThreadImageRecords(
   return records;
 }
 
-/** The thread record's reference for one raw Slack file, or undefined when it is not an image. */
+/** Image reference of one raw Slack file, for the thread record. */
 export function slackImageRef(file: unknown): SlackPublicContextImage | undefined {
   const record = fileRecord(file, { conversationKey: '', origin: 'person', messageTs: '' });
   return record ? threadImageRef(record) : undefined;
@@ -167,7 +167,7 @@ export function threadImageRef(record: ThreadImageRecord): SlackPublicContextIma
   };
 }
 
-/** The thread record's reference for a file an Agent reply shares, or undefined when it is not an image. */
+/** Image reference of a file an Agent reply shares, for its thread-record row. */
 export function artifactImageRef(receipt: CompletedSlackArtifactReceipt): SlackPublicContextImage | undefined {
   const record = receiptRecord(receipt, '');
   return record ? threadImageRef(record) : undefined;
@@ -209,7 +209,6 @@ export function conversationThreadImageInventory(
   });
 }
 
-/** The `img:N` handle an inventory gives one Slack file, if any. */
 export function threadImageHandle(inventory: ThreadImageInventory, fileId: string): string | undefined {
   return inventory.entries.find((entry) => {
     const resolved = inventory.resolveHandle(entry.handle);

@@ -53,11 +53,6 @@ type SlackPublicContextLedger = SlackPublicContextWriter & {
   ): boolean | Promise<boolean>;
 };
 
-/**
- * What the thread record keeps for a message's files besides their labels.
- * Host-side references only: a later turn that reads the record, not Slack,
- * rebuilds its `img:N` and `file:N` handles from them.
- */
 export interface SlackRecordedFiles {
   images: SlackPublicContextImage[];
   fileRefs: SlackPublicContextFileRef[];
@@ -65,11 +60,6 @@ export interface SlackRecordedFiles {
 
 const NO_RECORDED_FILES: SlackRecordedFiles = { images: [], fileRefs: [] };
 
-/**
- * A Slack message's files, sorted for the thread record. Each file lands in
- * one list at most: the four image types in `images`, every other file Slack
- * can still serve in `fileRefs`, readable here or not.
- */
 export function recordedSlackFiles(files: unknown): SlackRecordedFiles {
   if (!Array.isArray(files)) return { images: [], fileRefs: [] };
   return {
@@ -78,7 +68,6 @@ export function recordedSlackFiles(files: unknown): SlackRecordedFiles {
   };
 }
 
-/** The files an Agent reply shares, sorted the same way from the host's upload receipts. */
 export function recordedArtifactFiles(
   receipts: readonly CompletedSlackArtifactReceipt[] | undefined,
 ): SlackRecordedFiles {
@@ -97,7 +86,7 @@ export async function recordAcceptedSlackHumanMessage(
   store: SlackPublicContextWriter,
   turn: NormalizedSlackTurn,
   assignment: Pick<ResolvedAssignment, 'runtimeContract'>,
-  /** The Slack event's files: a later turn that reads the record, not Slack, still sees them. */
+  /** The Slack event's files: their references let a later turn read the record, not Slack. */
   files?: unknown,
 ): Promise<void> {
   if (assignment.runtimeContract !== 'chickpea-v1' || turn.source === 'reaction_added') return;
@@ -122,7 +111,7 @@ export interface SlackPublicDelivery {
   messageTs: string;
   text: string;
   /**
-   * The files this message shares (the Agent's own uploads), so a later turn
+   * The images this message shares (the Agent's own uploads), so a later turn
    * that reads the record, not Slack, can still offer them. References only.
    */
   images?: SlackPublicContextImage[];

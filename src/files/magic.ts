@@ -2,7 +2,6 @@ import { isZipSignature } from './zip.ts';
 
 export type ImageMimeType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
 
-/** The image types Slack images are read as; they use `img:N` handles. */
 export const IMAGE_MIME_TYPES: ReadonlySet<string> = new Set<ImageMimeType>(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
 export type FileKind =
@@ -81,12 +80,11 @@ const TEXT_APPLICATION_MIME_TYPES = new Set([
   'application/yaml',
 ]);
 
-/** A MIME type read as text: `text/*` except RTF, or an approved application type. */
 export function isTextMimeType(mimeType: string): boolean {
   return (mimeType.startsWith('text/') && mimeType !== 'text/rtf') || TEXT_APPLICATION_MIME_TYPES.has(mimeType);
 }
 
-/** Office files the readers serve as Slack's PDF copy: the gateway's list. */
+/** The gateway's Office list (OFFICE_MIME_TYPES, OFFICE_TYPES): it serves these as Slack's PDF copy. */
 const DOCUMENT_MIME_TYPES = new Set([
   'application/msword',
   'application/rtf',
@@ -105,13 +103,8 @@ const DOCUMENT_MIME_TYPES = new Set([
 ]);
 const DOCUMENT_NAMES = /\.(?:doc|docx|key|keynote|numbers|odp|ods|odt|pages|ppt|pptx|rtf|xls|xlsx)$/i;
 
-/** What `read_slack_file` reads a non-image Slack file as. */
 export type ReadableFileKind = 'archive' | 'pdf' | 'document' | 'text';
 
-/**
- * The kind a Slack file reads as, by its name and Slack's MIME type, the way
- * the attachment readers choose. Undefined means no reader serves it.
- */
 export function readableFileKind(name: string, mimeType?: string): ReadableFileKind | undefined {
   if (ARCHIVE_NAMES.test(name)) return 'archive';
   if (mimeType === 'application/pdf' || PDF_NAMES.test(name)) return 'pdf';
