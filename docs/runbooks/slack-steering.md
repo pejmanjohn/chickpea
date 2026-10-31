@@ -292,6 +292,45 @@ while that next turn runs. In addition:
 A message that waits starts the next turn when the run ends, and that turn
 takes any later messages with it.
 
+### Edits
+
+When a person edits a message whose turn is queued or running, the edit
+steers that turn. Only a real text edit counts. A link preview, a reply
+count, a file change, an update by Chickpea or another app, and an edit that
+leaves the text as it was steer nothing. Only the author can edit a Slack
+message, so the edit is theirs.
+
+What the Agent reads depends on whether it has read the message yet:
+
+- A message it has not read yet is read once, with its newest text. This
+  covers a queued message, a turn's own message before its run starts, and a
+  follow-up a turn takes at its start.
+- A message the running Agent already read reaches it at its next check,
+  after a tool step or before its reply, as a message sent while it works
+  would. The Agent sees the new text, marked as edited, and what the message
+  read before. The status line shows `Reading 1 edited message…`.
+- An edit that comes too late for the running reply (the answer is already
+  streaming, a question ended the reply, or the checks are used up) is
+  answered after that reply, as a turn of its own. The Agent is told that its
+  earlier reply answered the previous version. It answers the edited version,
+  or says in one short line that the edit changes nothing that matters.
+  Several edits of one message wait together and get one reply.
+
+An edit keeps its message's Agent, sender and place: it never routes work to
+another Agent, never adds files, and is never a stop or a check-in, even when
+its new text is `stop`. A message that admission gave a turn of its own
+keeps that turn: an edit of a message with files, a command, an approval, or
+a message that mentioned several Agents steers nothing, and neither does an
+edit that would make a plain message a command. An edit of a message whose
+reply already posted steers nothing.
+
+An edit gets no reaction of its own; its message keeps its 👀 or 👍. A
+teammate's edit in a run that uses the requester's own connections is
+information only, like the message. A stop drops a waiting edit with the
+run's other held messages, and the stop note never counts an edit. In direct
+HTTP mode Slack does not order deliveries, so an edit that arrives before
+its message was admitted steers nothing.
+
 ### Answering while it works
 
 When a message the Agent reads after a tool step asks something worth
@@ -363,8 +402,8 @@ hour-long job.
 
 Node installs behave the same: the stop phrases, the Stop button (through the
 shared app's outbound connection or a customer-owned app's HTTP events),
-check-ins, the status line, the 👀, follow-ups, replies while it works, and
-the stop note. The Node
+check-ins, the status line, the 👀, follow-ups, edits, replies while it
+works, and the stop note. The Node
 relay acts on a stop in its own process: it aborts the run and runs the same
 ending. Node has no coding sandbox, so there is no coding stop cascade. Run
 facts live in memory and reset when the process restarts. Logs print to the
@@ -386,7 +425,9 @@ user, channel, or workspace IDs.
 | `turn_latency` field `read` | Runtime event | How many 👀 the turn replaced with 👍 (both lanes). |
 | `turn_latency` field `midRunReplies` | Runtime event | How many replies the Agent posted while it worked (both lanes). `firstWrite: midrun_reply` when one was the attempt's first Slack write. |
 | `turn_fold` | Runtime event | Messages a running turn read after a tool step or before its reply (`late`, both lanes); `informed` counts those that were information only, `turn` those read after a tool step. |
+| `turn_fold` field `edits` | Runtime event | Edits of messages the running turn had already read (both lanes), counted apart from `late`. |
 | `turn_fold` with `op` | Runtime event | A coding job's wait: `coding_pause` (`outcome` `messages`, or `unchecked` after failed checks), `coding_resume` (`completed`, `paused` or a failure reason), and `coding_relay` (`sent`, `finished`, `stopped` or `not_sent`). One record per event. |
+| `turn_fold` with `op: edit_admission` | Runtime event | One record per delivery of a person's edit. `outcome` is `admitted`, `already_admitted` (a redelivery), why it steers nothing (`no_live_turn`, `not_foldable`, `not_author`, `stale`, `unchanged`), `unsupported`, or `failed` (the delivery is retried). |
 | `run_completed` with `outcome: stopped` | [Product telemetry](../../TELEMETRY.md) | An anonymous stopped-run count. |
 
 See [runtime observability](runtime-observability.md#turn-latency-and-relay-alarm-logs)
@@ -410,6 +451,11 @@ for the runtime events. Other records a stop leaves:
   teammate's message taken at its start is `informed`; the freeze decides it.
   A follow-up whose turn ended any other way reads as released; nothing is
   written for that.
+- An edit is a `turn_jobs` row of its own, `edit:<channel>:<ts>:<edited ts>`,
+  holding its message's turn with the new text and `turn.edit` (the save
+  time and the text before). It has its own Run and presentation, copied
+  from its message's. A run that reads it stamps it with a fold record like a
+  follow-up's, and it settles with that run's reply.
 
 These warnings mean a step will retry on its own:
 `stop notice delivery will retry`, `thread runner stop abort will retry`,
@@ -425,7 +471,8 @@ Limits:
   state store aborts the run in its own process. There is no coding stop
   cascade, so the note for a run that did coding work says it may still be
   winding down, and `thread_runner_alarm` reports no `dropped` count. The
-  alarm executor takes no follow-ups, at a turn's start or before its reply.
+  alarm executor takes no follow-ups, at a turn's start or before its reply,
+  so an edit there runs as its own turn after the reply.
   If the executor mode changes to `alarm`
   while runner turns are in flight, a runner turn may still take as a
   follow-up a row the alarm executor had already listed; the alarm's run of
@@ -450,7 +497,9 @@ Rolling back to the previous release is safe with two exceptions. While a stop
 is still holding messages (usually a few seconds), the older release does not
 know they are held and runs them as ordinary turns. Likewise, follow-ups a
 running turn took run again as their own turns after a rollback, so their
-person may get a second reply. Runtime plans are version 4 (they carry
+person may get a second reply. An edit row runs as an ordinary turn on the
+older release, which does not read its edit marker, so the person may get
+one extra reply. Runtime plans are version 4 (they carry
 `usesPersonalAccess`); the older release cannot read them and parks those
 turns for recovery. A stop the runner had not
 acted on yet is ignored, and that run continues. After a rollback, an app
