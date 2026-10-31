@@ -14,6 +14,37 @@ export const CLAUDE_DOCUMENTS = {
 /** Codex's published Client ID Metadata Document, byte for byte as chatgpt.com serves it. */
 export const CODEX_DOCUMENT = { url: 'https://chatgpt.com/oauth/codex/client.json', body: fixture('codex.json') } as const;
 
+const JSON_UTF8 = 'application/json; charset=utf-8';
+
+function onPort(listed: string, port: number): string {
+  const url = new URL(listed);
+  url.port = String(port);
+  return url.href;
+}
+
+export const PUBLIC_CLIENT_DOCUMENTS = {
+  vscode: {
+    url: 'https://vscode.dev/oauth/client-metadata.json',
+    served: { body: fixture('vscode.json'), headers: { 'content-type': JSON_UTF8, 'cache-control': 'no-store,no-cache,max-age=0' } },
+    redirect: 'http://127.0.0.1:33418/',
+  },
+  vscodeInsiders: {
+    url: 'https://insiders.vscode.dev/oauth/client-metadata.json',
+    served: { body: fixture('vscode-insiders.json'), headers: { 'content-type': JSON_UTF8, 'cache-control': 'no-store,no-cache,max-age=0' } },
+    redirect: 'http://127.0.0.1:33418/',
+  },
+  zed: {
+    url: 'https://zed.dev/oauth/client-metadata.json',
+    served: { body: fixture('zed.json'), headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=0, must-revalidate' } },
+    redirect: onPort('http://127.0.0.1/callback', 50113),
+  },
+  goose: {
+    url: 'https://goose-docs.ai/oauth/client-metadata.json',
+    served: { body: fixture('goose.json'), headers: { 'content-type': JSON_UTF8, 'cache-control': 'max-age=600' } },
+    redirect: onPort('http://[::1]/oauth_callback', 50114),
+  },
+} as const;
+
 export type ServedDocument = string | { body: string; status?: number; headers?: Record<string, string> } | (() => never);
 
 /**

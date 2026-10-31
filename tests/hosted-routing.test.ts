@@ -27,7 +27,7 @@ import { activateInstallerOwner } from '../src/auth/installer-owner.ts';
 import { signInSlackMember } from '../src/auth/member-sign-in.ts';
 import { applyGatewaySlackUserChange } from '../src/auth/slack-membership-events.ts';
 import { createMcpOAuthRuntimeRoutes } from '../src/auth/mcp-oauth-routes.ts';
-import { CLAUDE_DOCUMENTS, CODEX_DOCUMENT, metadataDocumentServer } from './helpers/client-metadata-documents.ts';
+import { CLAUDE_DOCUMENTS, CODEX_DOCUMENT, PUBLIC_CLIENT_DOCUMENTS, metadataDocumentServer } from './helpers/client-metadata-documents.ts';
 import {
   resolveInstallationEnv,
   type InstallationKey,
@@ -1061,4 +1061,81 @@ test('Codex signs in to a hosted installation by its metadata document on a rand
   const clients = await hosted.backend.pool.query('SELECT "clientId", "userId", "clientSecret", name FROM "oauthClient"');
   assert.deepEqual(clients.rows, [{ clientId: codex, userId: null, clientSecret: null, name: 'Codex' }]);
   assert.deepEqual(documents.requests, [codex]);
+});
+
+test('VS Code, Zed and Goose each sign in to a hosted installation by their metadata documents, asked for consent every time', { timeout: 120_000 }, async (t) => {
+  for (const { url, served, redirect } of Object.values(PUBLIC_CLIENT_DOCUMENTS)) {
+    await t.test(url, async (t) => {
+      const hosted = await hostedDeployment(t);
+      if (!hosted) return;
+      const documents = metadataDocumentServer({ [url]: served });
+      hosted.routing.environment.fetchClientMetadataResource = documents.fetch;
+      const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
+      const name = (JSON.parse(served.body) as { client_name: string }).client_name;
+
+      const verifier = randomBytes(32).toString('base64url');
+      const authorizeRequest = (cookie?: string) => new Request(
+        `${ORIGIN}/api/auth/oauth2/authorize?${new URLSearchParams({
+          response_type: 'code', client_id: url, redirect_uri: redirect, scope: RENEWABLE_SCOPE,
+          state: 'client-state', resource: RESOURCE,
+          code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
+        })}`,
+        { headers: cookie ? { cookie } : {} },
+      );
+
+      const signedOut = await hosted.shared(authorizeRequest());
+      assert.equal(signedOut.status, 302, await signedOut.clone().text());
+      const login = new URL(signedOut.headers.get('location')!, ORIGIN);
+      assert.equal(login.pathname, '/auth/mcp/login');
+      assert.equal(login.searchParams.get('client_id'), url);
+      const signIn = new URL((await hosted.shared(new Request(login))).headers.get('location')!, ORIGIN);
+      const resume = new URL(signIn.searchParams.get('destination')!, ORIGIN);
+      const resumed = new URL((await hosted.shared(new Request(resume))).headers.get('location')!, ORIGIN);
+      assert.equal(resumed.pathname, '/api/auth/oauth2/authorize');
+
+      const authorize = await hosted.shared(new Request(resumed, { headers: { cookie: acme.ownerCookie } }));
+      assert.equal(authorize.status, 302);
+      const consent = new URL(authorize.headers.get('location')!, ORIGIN);
+      assert.equal(consent.pathname, '/auth/mcp/consent');
+      const page = await (await hosted.shared(new Request(consent, { headers: { cookie: acme.ownerCookie } }))).text();
+      assert.ok(page.includes(
+        `<dt>App</dt><dd>${name} <span class="note">(name provided by the app)</span></dd><dt>Domain</dt><dd>${new URL(url).host}</dd>`,
+      ));
+      const allowed = await hosted.shared(new Request(`${ORIGIN}/auth/mcp/consent`, {
+        method: 'POST',
+        headers: {
+          cookie: acme.ownerCookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin',
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow' }),
+      }));
+      const callback = new URL(/url=([^"]+)"/.exec(await allowed.text())![1]!.replaceAll('&amp;', '&'));
+      assert.equal(`${callback.origin}${callback.pathname}`, redirect);
+      assert.equal(callback.searchParams.get('state'), 'client-state');
+      const exchanged = await hosted.token({
+        grant_type: 'authorization_code', client_id: url, code: callback.searchParams.get('code')!,
+        code_verifier: verifier, redirect_uri: redirect, resource: RESOURCE,
+      });
+      assert.equal(exchanged.status, 200, await exchanged.clone().text());
+      const tokens = await exchanged.json() as { access_token: string; refresh_token: string; scope: string };
+      assert.equal(tokens.scope, RENEWABLE_SCOPE);
+
+      const { response } = await hosted.serve(hosted.mcpRequest(tokens.access_token));
+      assert.equal(response?.status, 200, await response?.clone().text() ?? 'no response');
+      assert.equal((await response!.json() as { clientId: string }).clientId, url);
+      assert.equal((await hosted.refresh({ clientId: url, refreshToken: tokens.refresh_token })).status, 200);
+      const deviceCode = await hosted.token({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code', client_id: url, device_code: 'any', resource: RESOURCE,
+      });
+      assert.equal((await deviceCode.json() as { error: string }).error, 'unsupported_grant_type',
+        'a document may list the device-code grant, as VS Code\'s does, but Chickpea serves none');
+
+      const again = await hosted.shared(authorizeRequest(acme.ownerCookie));
+      assert.equal(new URL(again.headers.get('location')!, ORIGIN).pathname, '/auth/mcp/consent',
+        'any local app can claim the client ID and a loopback port, so a client already consented to is asked again');
+      const clients = await hosted.backend.pool.query('SELECT "clientId", "userId", "clientSecret", name FROM "oauthClient"');
+      assert.deepEqual(clients.rows, [{ clientId: url, userId: null, clientSecret: null, name }]);
+      assert.deepEqual(new Set(documents.requests), new Set([url]));
+    });
+  }
 });

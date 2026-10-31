@@ -9,7 +9,9 @@ import { createBetterAuthPublicHandler, type BetterAuthPublicHandlerInput } from
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import type { ClientMetadataFetch } from '../src/auth/mcp-client-metadata.ts';
 import { mountMcpOAuthBrowserRoutes, renderMcpConsentPage } from '../src/auth/mcp-oauth-routes.ts';
-import { CLAUDE_DOCUMENTS, CODEX_DOCUMENT, metadataDocumentServer, type ServedDocument } from './helpers/client-metadata-documents.ts';
+import {
+  CLAUDE_DOCUMENTS, CODEX_DOCUMENT, PUBLIC_CLIENT_DOCUMENTS, metadataDocumentServer, type ServedDocument,
+} from './helpers/client-metadata-documents.ts';
 
 const ORIGIN = 'https://chickpea.example.test';
 const RESOURCE = `${ORIGIN}/mcp`;
@@ -154,6 +156,7 @@ test('without hosted shared auth no metadata document signs a client in: an acce
     [CLAUDE]: CLAUDE_DOCUMENTS.claude.body,
     [CLAUDE_CODE]: CLAUDE_DOCUMENTS.claudeCode.body,
     [CODEX]: CODEX_DOCUMENT.body,
+    ...Object.fromEntries(Object.values(PUBLIC_CLIENT_DOCUMENTS).map(({ url, served }) => [url, served])),
   });
   const f = await fixture(t, { clientMetadataDocuments: false, fetchClientMetadataResource: host.fetch });
   storeDocumentClient(f.backend, CLAUDE);
@@ -165,6 +168,7 @@ test('without hosted shared auth no metadata document signs a client in: an acce
     [CLAUDE, CLAUDE_CALLBACK],
     [CLAUDE_CODE, 'http://localhost:53682/callback'],
     [CODEX, 'http://127.0.0.1:52247/callback'],
+    ...Object.values(PUBLIC_CLIENT_DOCUMENTS).map(({ url, redirect }) => [url, redirect] as const),
   ] as const) {
     for (const signedIn of [false, true]) {
       const response = await f.authorize(clientId, redirect, { signedIn });
@@ -181,6 +185,8 @@ test('only the accepted published documents sign a client in; any other URL is a
     'https://evil.example/client',
     // ChatGPT's own document authenticates by private_key_jwt.
     'https://chatgpt.com/oauth/client.json',
+    // Cursor's document lists a third-party HTTPS redirect, on grok.com, not yet reviewed.
+    'https://cursor.com/oauth/mcp-client.json',
     `${CODEX}/`,
     'https://claude.ai/oauth/other-client-metadata',
     `${CLAUDE}/`,
