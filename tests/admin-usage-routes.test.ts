@@ -621,7 +621,7 @@ test('the Usage Slack link route is authenticated and reads routine posts from t
 });
 
 
-test('a direct install asks Slack for the permalink with its own bot token', async () => {
+test('a direct install asks Slack for the permalink through its own installation', async () => {
   const permalink = 'https://team-one.slack.com/archives/C1/p1793425408462389?thread_ts=1793425300.000001&cid=C1';
   await withDirectSlackInstall({
     answer: (method) => {

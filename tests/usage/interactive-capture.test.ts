@@ -600,6 +600,17 @@ test('an interactive turn records the Slack message it answers; a reaction or a 
       ['1000.0002', '1000.0002'],
     );
     assert.deepEqual(
+      await record('msg:C_USAGE:1000.0010', {
+        ...turn,
+        source: 'reaction_added',
+        messageTs: '1000.0010',
+        threadTs: '1000.0002',
+        reactionTargetTs: '1000.0006',
+      }),
+      ['1000.0006', '1000.0002'],
+      'a reaction on a reply keeps the reply and its thread root',
+    );
+    assert.deepEqual(
       await record('msg:C_USAGE:1000.0007', {
         ...turn,
         messageTs: '1000.0007',
@@ -648,6 +659,9 @@ test('a usage row admitted before the Slack message columns existed accepts a re
       store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0002', sourceId: 'msg:C_USAGE:1000.0002', slackMessageTs: '1000.0003' }),
       /different work/,
     );
+    await store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0004', sourceId: 'msg:C_USAGE:1000.0004', slackMessageTs: '1000.0004' });
+    const threaded = await store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0004', sourceId: 'msg:C_USAGE:1000.0004', slackMessageTs: '1000.0004', slackThreadTs: '1000.0001' });
+    assert.deepEqual([threaded.slackMessageTs, threaded.slackThreadTs], ['1000.0004', null], 'a row stored before the thread column accepts a replay that adds it');
     await store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0005', sourceId: 'msg:C_USAGE:1000.0005', slackMessageTs: '1000.0005', slackThreadTs: '1000.0001' });
     await assert.rejects(
       store.admitOperation({ ...admission, operationId: 'msg:C_USAGE:1000.0005', sourceId: 'msg:C_USAGE:1000.0005', slackMessageTs: '1000.0005', slackThreadTs: '1000.0002' }),
