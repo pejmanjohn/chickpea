@@ -1227,6 +1227,21 @@ test('a finished setup wakes the Agent that asked for it once, in its thread, as
     assert.equal(await admit({ setupOperationId: 'setup_legal', wake: { ...wake, agentId: 'agent_legal' } }), 'refused',
       'an Agent the person cannot reach in this Channel is not woken');
     assert.equal(jobs.length, 3);
+
+    // The admission itself reports the turn queued; the store's readback is only for a retry.
+    const unread = {
+      ...stores,
+      slackState: new Proxy(stores.slackState, {
+        get(target, property) {
+          if (property === 'turnJobView') return async () => ({ status: 'missing' });
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      }),
+    };
+    assert.equal(await admitSetupWake({ ...request, setupOperationId: 'setup_unread' }, undefined,
+      { stores: unread, gatewayClient: gateway, enqueueTurn: queue }), 'queued');
+    assert.equal(jobs.length, 4);
   });
 });
 
