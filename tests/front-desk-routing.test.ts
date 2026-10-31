@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { processGatewaySlackEnvelope, processSlackFrontDeskHandoff } from '../src/channels/slack.ts';
+import { processGatewaySlackEnvelope, processGatewayUiAction, processSlackFrontDeskHandoff } from '../src/channels/slack.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
@@ -9,7 +9,7 @@ import type { WebClient } from '@slack/web-api';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
-import { uiSurfaceId } from '../src/slack/ui/surface.ts';
+import { uiActionId, uiBlockId, uiSurfaceId, uiValue, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import { compileFrontDeskPlan, frontDeskFailureLine, type SlackFrontDeskHandoffRequest } from '../src/slack/front-desk.ts';
 import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
@@ -67,6 +67,12 @@ export async function withFrontDeskLane(scenario: (lane: FrontDeskLane) => Promi
       workspaceId: 'T1', transportMode: 'gateway', appId: 'A1', botUserId: 'UBOT',
       gatewayBindingId: 'binding1', runtimeContract: 'chickpea-v1',
     });
+    // A model that needs no provider key, so Chickpea's turns are admitted canonically.
+    const current = await stores.config.getWorkspaceModelDefault('T1');
+    await stores.config.putWorkspaceModelDefault({
+      workspaceId: 'T1', modelId: 'local-stub/chickpea', provenance: 'admin_selected',
+      lastChangedByMembershipId: owner.membership.id,
+    }, current?.revision ?? 0);
     const agents: CustomAgentConfig[] = [];
     for (const [id, name, handle, creator, description] of [
       ['agent_support', 'Support Desk', 'support-desk', owner.membership.id, 'Answers order questions on the portal.'],
@@ -137,6 +143,7 @@ test('an untagged root DM reaches Chickpea with the Agents this person may use, 
     assert.equal(jobs.length, 1);
     const [chickpea] = jobs;
     assert.equal(chickpea!.assignment.agentId, CHICKPEA_AGENT_ID);
+    assert.ok(chickpea!.runId, 'admitted with a Run');
     assert.deepEqual(chickpea!.assignment.frontDesk?.agents.map(({ id, name, handle, purpose }) => ({ id, name, handle, purpose })), [
       { id: 'agent_research', name: 'Research', handle: 'research', purpose: 'Researches markets.' },
       { id: 'agent_support', name: 'Support Desk', handle: 'support-desk', purpose: 'Answers order questions on the portal.' },
@@ -323,6 +330,28 @@ async function runHandOff(lane: FrontDeskLane, agentIds: string[], note: string)
   return { chickpea, posts, handoffs, delivered };
 }
 
+/** The card a hand-off to several Agents left, and a pick on it. */
+async function cardOf(lane: FrontDeskLane, turnJobId: string) {
+  const id = uiSurfaceId(turnJobId, 'host-agent-choice');
+  const read = async (): Promise<UiSurfaceRecord> => {
+    const response = await lane.stores.slackState.executeUiSurface!({ kind: 'get_surface', id });
+    assert.ok(response.kind === 'surface' && response.surface);
+    return response.surface;
+  };
+  const card = await read();
+  const click = (index: number, userId = 'U1') => processGatewayUiAction({
+    protocolVersion: 1, kind: 'interaction.ui_action', deliveryId: `ui:${id}:${index}:${userId}`,
+    bindingId: 'binding1', workspaceId: 'T1', userId, containerType: 'message',
+    channelId: 'D1', messageTs: card.messageTs!, threadTs: ROOT, isEphemeral: false, viewId: null,
+    actionId: uiActionId('host', 'agent_choice', index), blockId: uiBlockId('host', id, 1),
+    actionType: 'button', value: uiValue(id, index), selected: [], state: {},
+    actionTs: '1793440001.000100', triggerId: 'trigger1',
+  }, undefined, lane.gateway, { stores: lane.stores, enqueueTurn: lane.enqueueTurn });
+  return { read, click };
+}
+
+const cardText = (posts: Array<Record<string, unknown>>) => posts.filter(({ update }) => update).map(({ text }) => text);
+
 test('Chickpea\'s hand-off to one Agent posts the host\'s line, then asks the executor to admit the takeover', async () => {
   await withFrontDeskLane(async (lane) => {
     const { chickpea, posts, handoffs, delivered } = await runHandOff(lane, ['agent_support'], 'It has the portal login.');
@@ -352,5 +381,80 @@ test('a hand-off to several Agents posts the line and a card with one button per
     assert.equal(record?.requesterUserId, 'U1');
     assert.ok(record && record.expiresAt - record.createdAt <= 24 * 60 * 60_000, 'the card lives a day');
     assert.deepEqual(record?.spec.kind === 'agent_choice' && record.spec.origin.text, 'Check order 4821 on the portal.');
+  });
+});
+
+test('a pick on the card admits the person\'s message for that Agent; anyone else\'s click and a second pick do nothing', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
+    const { read, click } = await cardOf(lane, chickpea.id);
+    assert.equal((await read()).status, 'open');
+
+    await click(0, 'U2');
+    assert.equal(lane.jobs.length, 1, 'a click from someone else admits nothing');
+    assert.deepEqual(lane.posts, [], 'and says nothing');
+    assert.equal((await read()).resolution, undefined);
+
+    await click(0);
+    assert.equal(lane.jobs.length, 2);
+    const support = lane.jobs[1]!;
+    assert.equal(support.id, `msg:D1:${ROOT}:handoff`);
+    assert.equal(support.assignment.agentId, 'agent_support');
+    assert.equal(support.turn.text, 'Check order 4821 on the portal.', 'the person\'s typed message, never the button label');
+    assert.equal(support.turn.uiResponse, undefined);
+    assert.deepEqual(support.turn.frontDesk, { fromAgentId: CHICKPEA_AGENT_ID, via: 'click' });
+    assert.equal((await lane.stores.config.getAgentThreadRoute('T1', 'D1', ROOT))?.agentId, 'agent_support');
+    assert.equal((await read()).status, 'resolved');
+    assert.deepEqual(cardText(lane.posts), ['Support Desk is taking this.']);
+
+    // A second pick, of another Agent, finds the message handed over.
+    await click(1);
+    assert.equal(lane.jobs.length, 2);
+    assert.equal((await read()).resolution?.choice, 0);
+    assert.ok(!lane.posts.some(({ ephemeral }) => ephemeral), 'no notice for a repeat click');
+  });
+});
+
+test('picking Chickpea on the card gives Chickpea its own turn on the message, with no front desk', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { chickpea } = await runHandOff(lane, ['agent_support', CHICKPEA_AGENT_ID], 'I can answer too.');
+    const { click } = await cardOf(lane, chickpea.id);
+    await click(1);
+    const picked = lane.jobs[1]!;
+    assert.equal(picked.id, `msg:D1:${ROOT}:handoff`);
+    assert.equal(picked.assignment.agentId, CHICKPEA_AGENT_ID);
+    assert.deepEqual(picked.turn.frontDesk, { fromAgentId: CHICKPEA_AGENT_ID, via: 'click' });
+    assert.equal(compileFrontDeskPlan(picked.turn, picked.assignment), undefined, 'it cannot hand off again');
+    assert.notEqual(picked.runId, chickpea.runId);
+    assert.deepEqual(cardText(lane.posts), ['Chickpea is answering this.']);
+  });
+});
+
+test('a pick the person can no longer make turns the card into the failure line; an expired card says to mention the Agent', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
+    const support = await lane.stores.config.getAgent('agent_support');
+    await lane.stores.config.updateAgent('agent_support', { enabled: false }, support.revision);
+    const { read, click } = await cardOf(lane, chickpea.id);
+    await click(0);
+    assert.equal(lane.jobs.length, 1);
+    assert.equal((await read()).resolution?.refused, true);
+    assert.deepEqual(cardText(lane.posts), [frontDeskFailureLine('Support Desk')]);
+  });
+  await withFrontDeskLane(async (lane) => {
+    const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
+    const { read, click } = await cardOf(lane, chickpea.id);
+    const card = await read();
+    // The person comes back the next day.
+    const now = Date.now;
+    Date.now = () => card.expiresAt + 1;
+    try {
+      await click(0);
+    } finally {
+      Date.now = now;
+    }
+    assert.equal(lane.jobs.length, 1);
+    assert.equal((await read()).status, 'expired');
+    assert.deepEqual(cardText(lane.posts), ['This choice expired. Mention the Agent you want.']);
   });
 });

@@ -308,7 +308,7 @@ import {
   retireApprovalSurfacesForTypedAnswer,
   uiSurfaceRecord,
 } from '../slack/ui/host-surfaces.ts';
-import { parseUiControl, type UiSurfaceRecord } from '../slack/ui/surface.ts';
+import { parseUiControl, type HostAgentChoiceSpec, type UiSurfaceRecord } from '../slack/ui/surface.ts';
 import type {
   GatewayUiActionDelivery,
   GatewayViewSubmissionDelivery,
@@ -2215,6 +2215,9 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
       kind: 'bind_surface_message', id: surface.id, messageTs: action.messageTs,
     }) ?? surface;
   }
+  if (surface.spec.kind === 'agent_choice') {
+    return handleAgentChoiceClick({ ...input, surface, spec: surface.spec, choice: control.valueIndex, redraw });
+  }
   if (surface.status === 'resolved') {
     await redraw(surface);
     return refuse('answered', surface);
@@ -2281,6 +2284,64 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
     await redraw(current);
   }
   return refuse(current.status === 'resolved' ? 'answered' : outcome, current);
+}
+
+/**
+ * A pick on the front desk's card. Only the person whose message it is may
+ * pick, and anyone else's click does nothing; so does a click on a card that
+ * already resolved. The pick admits that message for the chosen Agent as a
+ * takeover, checked live again, and the card resolves only once admission
+ * returns: to the chosen Agent, or to the failure line when it was refused.
+ */
+async function handleAgentChoiceClick(input: SlackUiContext & {
+  action: SlackUiAction;
+  surface: UiSurfaceRecord;
+  spec: HostAgentChoiceSpec;
+  choice: number | undefined;
+  redraw: (surface: UiSurfaceRecord | undefined) => Promise<void>;
+}): Promise<void> {
+  const { action, surface, spec, stores } = input;
+  const state = stores.slackState as UiSurfaceState;
+  if (action.userId !== spec.requesterUserId) return;
+  if (surface.status !== 'open' && surface.status !== 'pending_delivery') return input.redraw(surface);
+  if (surface.expiresAt <= Date.now()) {
+    return input.redraw(await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'expired' }));
+  }
+  const option = input.choice === undefined ? undefined : spec.options[input.choice];
+  if (!option) return;
+  const outcome = await admitFrontDeskTakeover({
+    origin: {
+      workspaceId: surface.workspaceId,
+      channelId: surface.channelId,
+      userId: spec.origin.userId,
+      text: spec.origin.text,
+      messageTs: spec.origin.messageTs,
+      threadTs: surface.threadTs,
+      channelType: 'im',
+      ...(spec.origin.requesterTimezone ? { requesterTimezone: spec.origin.requesterTimezone } : {}),
+      ...(spec.origin.attachments ? { attachments: spec.origin.attachments } : {}),
+      ...(spec.origin.attachmentIntake ? { attachmentIntake: spec.origin.attachmentIntake } : {}),
+    },
+    fromAgentId: surface.agentId,
+    agentId: option.agentId,
+    via: 'click',
+    appId: input.appId,
+    platformEnv: input.platformEnv,
+    execution: input.execution,
+  });
+  // Another pick took this message first; its own redraw names the Agent.
+  if (outcome === 'duplicate') return input.redraw(await uiSurfaceRecord(state, { kind: 'get_surface', id: surface.id }));
+  if (outcome === 'admitted') emitUiInteraction('resolved');
+  await input.redraw(await uiSurfaceRecord(state, {
+    kind: 'resolve_surface',
+    id: surface.id,
+    resolution: {
+      byUserId: action.userId,
+      at: Date.now(),
+      choice: input.choice!,
+      ...(outcome === 'admitted' ? {} : { refused: true as const }),
+    },
+  }));
 }
 
 /**
