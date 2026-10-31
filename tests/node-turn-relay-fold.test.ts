@@ -18,7 +18,7 @@ import {
 } from '../src/slack/claim-store.ts';
 import { wakeNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
-import type { TurnFoldClaim, TurnFoldRequest, TurnJob } from '../src/slack/turn-job-types.ts';
+import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { turnStopThreadKey } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
@@ -344,10 +344,10 @@ function lateFoldScripts(h: ReturnType<typeof relayHarness>, thread: SlackThread
     });
     await admit(h.state, thread, thread.job(`${prefix}_late1`, '102'), true);
     await admit(h.state, thread, thread.job(`${prefix}_late2`, '103'), true);
-    const fold = options.claimFold as unknown as (request: TurnFoldRequest) => Promise<TurnFoldClaim>;
-    const late = await fold({ phase: 'finish', headId: head.id, instanceId, received: 0, take: true });
+    // The relay's claimFold is the store's own fold; a finish-phase claim goes to it directly.
+    const late = await h.state.foldTurn!({ phase: 'finish', headId: head.id, instanceId, received: 0, take: true });
     assert.deepEqual(late.messages.map((message) => message.turnJobId), [`${prefix}_late1`, `${prefix}_late2`]);
-    await fold({ phase: 'finish', headId: head.id, instanceId, received: 1, take: false });
+    await h.state.foldTurn!({ phase: 'finish', headId: head.id, instanceId, received: 1, take: false });
     await options.flueDispatch!.recordSettlement({
       outcome: 'completed', settledAt: Date.now(),
       result: { text: 'Done.', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' },

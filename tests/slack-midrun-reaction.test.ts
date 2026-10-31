@@ -630,6 +630,14 @@ test('a dropped row whose 👀 removal fails keeps its receipt pending for the r
   } finally { db.close(); }
 });
 
+const COMPLETED = {
+  outcome: 'completed' as const, settledAt: NOW,
+  result: {
+    text: 'Done.', requestedModel: null, returnedModel: null, reportedUsage: null,
+    usageCompleteness: 'not_reported' as const,
+  },
+};
+
 test('a follow-up keeps its 👀 while the run that took it works, and loses it when that run\'s reply posts', async () => {
   const db = openStateDb(':memory:');
   try {
@@ -660,14 +668,6 @@ test('a follow-up keeps its 👀 while the run that took it works, and loses it 
     assert.deepEqual(turns.listPendingSlackInteractionCleanups(), [], 'nothing left for the sweep');
   } finally { db.close(); }
 });
-
-const COMPLETED = {
-  outcome: 'completed' as const, settledAt: NOW,
-  result: {
-    text: 'Done.', requestedModel: null, returnedModel: null, reportedUsage: null,
-    usageCompleteness: 'not_reported' as const,
-  },
-};
 
 /**
  * A running head that took two messages sent while it worked (a late fold),
