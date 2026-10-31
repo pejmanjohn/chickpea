@@ -205,8 +205,8 @@ import {
 } from './recipes.ts';
 import { matchesEgressPrefix } from '../config/egress.ts';
 import {
-  connectionHeaderCredential,
   connectionUrlPrefixes,
+  keyInPath,
   type ApiConnectionCheck,
   type ApiConnectionScope,
   type ConnectionAuthShape,
@@ -214,7 +214,9 @@ import {
 } from '../connections/connection-check.ts';
 import type { SlackMessageQuery, SlackTypedMessage } from '../slack/turn-jobs.ts';
 import { approvedNewKeyedApiConnections, CONNECTION_APPROVAL_WINDOW_MS } from './connection-approval.ts';
+import { setupWakeAgent } from './setup-wake.ts';
 import {
+  assertPathInsideConnection,
   assertScopeInsideConnection,
   ConnectionKeyRefusedError,
   urlsOutsideConnection,
@@ -899,7 +901,7 @@ export class WorkspaceManagementService {
   ): Promise<ImportSkillResult | ProposeSkillImportResult> {
     const actor = await this.requireLiveActor(request.context);
     const input = { ...request, idempotencyKey: turnIdempotencyKey(actor, request.idempotencyKey) };
-    if (startedByAgentAsk(actor)) return await this.proposeSkillImport(input);
+    if (startedWithoutPerson(actor)) return await this.proposeSkillImport(input);
     assertExplicitSkillImportRequest(actor, input);
     const replayOperationId = skillImportOperationId(actor, input);
     const replay = await this.stores.management.getRequest(replayOperationId);
@@ -1213,7 +1215,7 @@ export class WorkspaceManagementService {
       target: { kind: 'agent', id: agentId },
     });
     const agent = await this.requireEditableAgent(actor, agentId);
-    if (startedByAgentAsk(actor)) {
+    if (startedWithoutPerson(actor)) {
       const change = skillActionChange(agent, input.action, input.skillName);
       if (change.kind !== 'change') {
         return this.persistUnchangedManagedAgentSkill(
@@ -1742,6 +1744,7 @@ export class WorkspaceManagementService {
         ownerKind: input.ownerKind,
         handoffUrl: issued.url,
         setupOperationId: issued.record.setupOperationId,
+        ...setupWakeInstruction(issued.record),
       };
     }
     if (actor.origin.kind === 'slack' && !('managedToolkit' in connector) &&
@@ -1757,6 +1760,7 @@ export class WorkspaceManagementService {
         ownerKind: input.ownerKind,
         handoffUrl: issued.url,
         setupOperationId: issued.record.setupOperationId,
+        ...setupWakeInstruction(issued.record),
       };
     }
     const url = new URL([
@@ -2053,7 +2057,12 @@ export class WorkspaceManagementService {
           },
           scopes: catalogConnectionScopes(connector),
         });
-    return { ...result, handoffUrl: issued.url, setupOperationId: issued.record.setupOperationId };
+    return {
+      ...result,
+      handoffUrl: issued.url,
+      setupOperationId: issued.record.setupOperationId,
+      ...setupWakeInstruction(issued.record),
+    };
   }
 
   private async agentCreationConnectorEligible(
@@ -2488,7 +2497,7 @@ export class WorkspaceManagementService {
     key: string,
   ): Promise<boolean> {
     const { origin } = actor;
-    if (origin.kind !== 'slack' || startedByAgentAsk(actor)) return false;
+    if (origin.kind !== 'slack' || startedWithoutPerson(actor)) return false;
     if (entry.account.lifecycle !== 'pending') return false;
     const proposal = await this.stores.management.findConnectionApproval({
       organizationId: actor.organizationId,
@@ -2824,9 +2833,9 @@ export class WorkspaceManagementService {
           operationCount: request.operations.length,
         });
         const policy = classifyManagementOperation(facts);
-        // Another Agent's ask started this turn, so every write but a setup waits for the
-        // person. Schedule actions admitted on their own message carry an approval basis.
-        const heldOnAsk = startedByAgentAsk(actor) && input.approvalBasis === undefined &&
+        // No message of the person's started this turn, so every write but a setup waits
+        // for the person. Schedule actions admitted on their own message carry an approval basis.
+        const heldOnAsk = startedWithoutPerson(actor) && input.approvalBasis === undefined &&
           operation.kind !== 'request_setup';
         if (!policy.allowed) {
           progress = appendOutcome(progress, index, {
@@ -2873,6 +2882,7 @@ export class WorkspaceManagementService {
             disposition: 'setup_required',
             setupOperationId: setup.record.setupOperationId,
             setupUrl: setup.url,
+            ...setupWakeInstruction(setup.record),
           });
         } else {
           const mutation = await this.executeProgressiveItem(
@@ -3142,6 +3152,7 @@ export class WorkspaceManagementService {
           disposition: 'setup_required',
           setupOperationId: setup.record.setupOperationId,
           setupUrl: setup.url,
+          ...setupWakeInstruction(setup.record),
         },
         deferred: { kind: 'issued', itemId, label: setup.record.target.targetLabel, setupUrl: setup.url },
       };
@@ -4107,12 +4118,16 @@ export class WorkspaceManagementService {
       };
       if (account.policy.kind === 'api') {
         const oauth = account.policy.authMode === 'oauth';
+        // Only a key is checked on the setup page, so a sign-in keeps no path.
+        const checkPath = !oauth && request.kind === 'api_connection' ? request.path : undefined;
+        if (checkPath !== undefined) assertPathInsideConnection(account.policy, checkPath);
         return {
           action: oauth ? 'api_oauth' : 'api_credential',
           target: {
             ...target,
             provider: account.policy.oauthProvider ?? account.policy.presetId ?? account.label,
             formFields: oauth ? ['clientId', 'clientSecret'] : ['credential'],
+            ...(checkPath === undefined ? {} : { checkPath }),
           },
           scopes: oauth ? [...account.policy.oauthScopes ?? []] : [`header:${account.policy.headerName}`],
         };
@@ -8735,6 +8750,16 @@ function memoryMutation(memory: AgentMemory, inverse?: ManagementOperation): Imm
   };
 }
 
+/**
+ * A setup link whose completion wakes this Agent (setupWakeAgent): it says
+ * it will carry on by itself, never that the person should come back.
+ */
+function setupWakeInstruction(setup: ManagementSetupRecord): { instruction?: string } {
+  return setupWakeAgent(setup)
+    ? { instruction: 'Give the person this link. When they finish it, Chickpea starts your next turn in this thread with a note saying so, and you test the connection with a real read and carry on with their request. Tell them you will continue as soon as they finish; do not ask them to message you or ask again when they are done.' }
+    : {};
+}
+
 const SETUP_LINK_ON_APPROVAL = 'The person gets this setup link with the receipt when they approve the change set. Tell them it follows their approval, and do not prepare it yourself.';
 const CHANGE_AFTER_APPROVAL = 'This change conflicts with the pending change set. Make it in a new request after the person approves that one.';
 const SAVED_KEY_INSTRUCTION = 'The key is saved and the connection is ready. Tell the person the connection name, where its requests go (sendsKeyTo), what it may do (allowedMethods), and that a test request with the key worked. Then make one real read with connection_request, such as a short list, and show a brief sample; when connection_request is not available in this turn, say they can ask for one in their next message. Never repeat the key.';
@@ -8766,13 +8791,16 @@ function waitingOutcome(
 }
 
 /**
- * A Slack turn another Agent's ask started: it carries no requester text,
- * while every person's turn carries their message, even an empty one (a file
- * alone is read as the host's request to inspect it). The Slack seams decide
- * with this same check, on the origin `slackManagementOrigin` gives the service.
+ * A Slack turn no message of the person's started: another Agent's ask, which
+ * carries no requester text (every person's turn carries their message, even
+ * an empty one, and a file alone is read as the host's request to inspect
+ * it), or Chickpea's note that a setup finished. Its writes wait for the
+ * person. The Slack seams decide with this same check, on the origin
+ * `slackManagementOrigin` gives the service.
  */
-export function startedByAgentAsk(actor: Pick<ManagementActorContext, 'origin'>): boolean {
-  return actor.origin.kind === 'slack' && actor.origin.requestText === undefined;
+export function startedWithoutPerson(actor: Pick<ManagementActorContext, 'origin'>): boolean {
+  return actor.origin.kind === 'slack' &&
+    (actor.origin.requestText === undefined || actor.origin.requestTextSource === 'setup');
 }
 
 export function slackManagementOrigin(
@@ -9305,18 +9333,6 @@ function sendsBasicCredentials(policy: ApiConnectionScope): boolean {
   return policy.headerName.toLowerCase() === 'authorization' && policy.headerValuePrefix === BASIC_PREFIX;
 }
 
-/** Whether a path carries the key, as typed, percent-encoded or as Basic credentials. */
-function keyInPath(path: string, key: string): boolean {
-  let decoded = path;
-  try {
-    decoded = decodeURIComponent(path);
-  } catch {
-    // A malformed escape leaves the raw path to check.
-  }
-  return [key, connectionHeaderCredential(key, 'basic_username')].some((form) =>
-    path.includes(form) || decoded.includes(form));
-}
-
 /** A typed URL covers `url` when it has the same origin and `url`'s path sits inside the typed path. */
 function typedUrlsCover(typed: readonly URL[], url: string): boolean {
   return typed.some((entry) => matchesEgressPrefix(url, entry.href));
@@ -9448,7 +9464,7 @@ function slackSkillUploadFileIds(
   origin: Extract<ManagementOrigin, { kind: 'slack' }>,
   input: UploadSkillsInput,
 ): readonly string[] {
-  if (startedByAgentAsk(actor)) {
+  if (startedWithoutPerson(actor)) {
     throw new ManagementError('invalid_request', 'Skill files install only from a person\'s own message. Ask the person to attach the files to a message to this Agent. No change was made.');
   }
   if (input.files !== undefined || input.replaceExisting !== undefined) {

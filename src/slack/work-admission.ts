@@ -134,12 +134,13 @@ export function prepareSlackShadowAdmission(input: {
   // Several Agents can answer one message (the Agents a reply asked, the
   // ones a person mentioned together, or the one the front desk handed it
   // to): each after the first is a run of its own, scoped by its Agent. An
-  // edit of a message is a run of its own too.
+  // edit of a message is a run of its own too, and so is each setup's wake.
   const hostAddressed = turn.agentAsk !== undefined || isLaterCoAddressedTurn(turn) ||
     turn.frontDesk !== undefined;
   const messageScope = `slack:${turn.workspaceId}:${turn.channelId}:${turn.messageTs}` +
     (hostAddressed ? `:agent:${assignment.agentId}` : '') +
-    (turn.edit ? `:edit:${turn.edit.editedTs}` : '');
+    (turn.edit ? `:edit:${turn.edit.editedTs}` : '') +
+    (turn.setupWake ? `:setup:${turn.setupWake.setupOperationId}` : '');
   const workId = opaqueId('work', scope);
   const bindingId = opaqueId('binding', scope);
   const runId = opaqueId('run', messageScope);

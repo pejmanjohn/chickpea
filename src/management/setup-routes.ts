@@ -122,6 +122,8 @@ import { MANAGED_CONNECTOR_CATALOG, type ManagedConnectorCatalog } from '../conn
 import {
   checkConnection,
   connectionUrlPrefixes,
+  keyInPath,
+  pathInsideConnection,
   type ApiConnectionCheck,
   type ApiConnectionScope,
   type ConnectionCheckOptions,
@@ -172,11 +174,14 @@ import {
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
   failAgentWelcomeDelivery,
+  type SetupWakeRequest,
 } from './receipts.ts';
+import { setupWakeAgent, setupWakeNote, type SavedKeyCheck, type SetupWakeCompletion } from './setup-wake.ts';
 import type { ManagementStore } from './store.ts';
 import {
   ManagementError,
   type ManagementSetupRecord,
+  type ManagementSetupWake,
 } from './types.ts';
 import { emitManagementMetric } from './telemetry.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -214,6 +219,11 @@ interface ManagementSetupRoutesOptions {
   randomCapability?: () => string;
   validateProviderKey?: typeof validateProviderApiKey;
   deliverReceipt?: typeof deliverManagementReceiptToSlack;
+  /**
+   * Wakes the Agent that asked for a finished setup (admitSetupWake, which
+   * the app passes). Without it every finished setup posts its notice.
+   */
+  wakeAgent?: (request: SetupWakeRequest, platformEnv?: PlatformEnv) => Promise<'queued' | 'refused'>;
   managedConnectionProviders?: ManagedConnectionProviderRegistry;
   managedConnectorCatalog?: ManagedConnectorCatalog;
   /** Test seams for native connector setup without live provider traffic. */
@@ -287,7 +297,10 @@ export function createManagementSetupRoutes(
         return page
           ? c.html(c.req.query('poll') === '1' && session && CAPABILITY_PATTERN.test(session)
               ? renderManagedConnectionWaitingPage(page)
-              : renderManagedConnectionSuccessPage(page))
+              : renderManagedConnectionSuccessPage({
+                  ...page,
+                  continuing: await wakeQueued(setup, dependencies.management),
+                }))
           : managedUnavailablePage(c);
       }
       if (principal && !authorized) return managedUnavailablePage(c);
@@ -313,7 +326,12 @@ export function createManagementSetupRoutes(
       if (setup.status === 'completed') {
         if (!authorized) return unavailablePage(c);
         const page = await catalogConnectionPageInput(c, setup, dependencies);
-        return page ? c.html(renderManagedConnectionSuccessPage(page)) : unavailablePage(c);
+        return page
+          ? c.html(renderManagedConnectionSuccessPage({
+              ...page,
+              continuing: await wakeQueued(setup, dependencies.management),
+            }))
+          : unavailablePage(c);
       }
       if (principal && !authorized) return unavailablePage(c);
       const browserMatches = Boolean(
@@ -323,7 +341,7 @@ export function createManagementSetupRoutes(
         return c.html(renderSetupClaimPage({ setupId, reusable: false }));
       }
       if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
-        return terminalPage(c, setup);
+        return terminalPage(c, setup, dependencies.management);
       }
       const page = await catalogConnectionPageInput(c, setup, dependencies, principal);
       return page
@@ -342,7 +360,7 @@ export function createManagementSetupRoutes(
       ? principalMatchesSetup(principal, setup) && sessionMatches(setup, session)
       : false;
     if (setup?.status === 'completed' && principalMatchesSetup(principal, setup)) {
-      return terminalPage(c, setup);
+      return terminalPage(c, setup, dependencies.management);
     }
     if (setup && principal && !principalMatchesSetup(principal, setup)) {
       return unavailablePage(c);
@@ -351,7 +369,7 @@ export function createManagementSetupRoutes(
       return c.html(renderSetupClaimPage({ setupId, reusable: false }));
     }
     if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
-      return terminalPage(c, setup);
+      return terminalPage(c, setup, dependencies.management);
     }
     return c.html(await renderSetupSummary(setup, { destination: await setupDestination(setup, dependencies) }));
   });
@@ -2434,7 +2452,7 @@ async function completeFormAction(
   dependencies: SetupDependencies,
   options: ManagementSetupRoutesOptions,
   at: number,
-): Promise<{ connector?: string; accountLabel?: string; check?: ApiConnectionCheck['kind'] }> {
+): Promise<{ connector?: string; accountLabel?: string; check?: SavedKeyCheck }> {
   await assertExactTarget(setup, dependencies);
   if (setup.action === 'provider_credential') {
     const providerId = setup.target.provider as ProviderKeyId;
@@ -2479,10 +2497,15 @@ async function completeFormAction(
       throw new Error('target_changed');
     }
     const credential = requiredField(fields, 'credential', 16_384);
+    const { checkPath } = setup.target;
+    // A stored path outside the connection as it is now, or one holding the key, is never sent.
+    const path = checkPath !== undefined && pathInsideConnection(policy, checkPath) &&
+      !keyInPath(checkPath, credential) ? checkPath : undefined;
     const check = await checkConnection({
       kind: 'api',
       connection: policy,
       credential,
+      ...(path === undefined ? {} : { path }),
       authorize: async () => (await currentSetupConnection(setup, dependencies)
         .catch(() => undefined))?.account.revision === entry.account.revision,
     }, options.connectionCheck);
@@ -2551,23 +2574,29 @@ async function completeFormAction(
   throw new Error(`wrong_action:${setup.action}:${at}`);
 }
 
+/** What finishing a setup produced, as each setup kind's route reports it. */
+interface SetupCompletion {
+  connector?: string;
+  accountLabel?: string;
+  connectionAccountId?: string;
+  completedByUserId?: string;
+  completedByMembershipId?: string;
+  ownerKind?: 'member' | 'team';
+  accessLane?: 'read' | 'write';
+  check?: SavedKeyCheck;
+}
+
 async function finishSetup(
   c: Context,
   setup: ManagementSetupRecord,
-  result: {
-    connector?: string;
-    accountLabel?: string;
-    connectionAccountId?: string;
-    completedByUserId?: string;
-    completedByMembershipId?: string;
-    ownerKind?: 'member' | 'team';
-    accessLane?: 'read' | 'write';
-  },
+  result: SetupCompletion,
   dependencies: SetupDependencies,
   options: ManagementSetupRoutesOptions,
   at: number,
 ): Promise<void> {
   const browserSessionDigest = digest(setupSession(c, setup.setupOperationId)!);
+  // A wake that cannot be built leaves the notice; it never fails the setup.
+  const wake = await setupWakeFor(setup, result, dependencies).catch(() => undefined);
   const connectionReceipt = ['managed_connection', 'catalog_connection'].includes(setup.action) &&
       setup.target.agentId
     ? await dependencies.config.getAgent(setup.target.agentId).then((agent) => {
@@ -2605,6 +2634,7 @@ async function finishSetup(
     initiator,
     at,
     ...(connectionReceipt ?? {}),
+    ...(wake ? { wake } : {}),
   });
   emitManagementMetric('setup.lifecycle', {
     action: setup.action,
@@ -2625,6 +2655,7 @@ async function finishSetup(
       }
     : undefined;
   const work = getWorkStore(dependencies.platformEnv);
+  const { wakeAgent } = options;
   await drainManagementReceiptOutbox({
     management: dependencies.management,
     onDeliveredSettled: (record) => completeSettledAgentWelcomeHandoff(
@@ -2633,6 +2664,7 @@ async function finishSetup(
       dependencies.management,
     ),
     onTerminalFailure: (record) => failAgentWelcomeDelivery(record, presentation, work),
+    ...(wakeAgent ? { wake: (request: SetupWakeRequest) => wakeAgent(request, dependencies.platformEnv) } : {}),
     deliver: (record) => (options.deliverReceipt ?? deliverManagementReceiptToSlack)(record, {
       identity: dependencies.identity,
       ...(dependencies.platformEnv ? { env: dependencies.platformEnv } : {}),
@@ -2646,6 +2678,55 @@ async function finishSetup(
     }),
     now: () => at,
   }).catch(() => undefined);
+}
+
+/**
+ * The wake a finished setup queues for the Agent that asked for it, as the
+ * person who finished it, or undefined when it posts its notice instead
+ * (setupWakeAgent). That person must be a member of the setup's Slack
+ * workspace; their access to the Agent there is checked when the wake is
+ * admitted.
+ */
+async function setupWakeFor(
+  setup: ManagementSetupRecord,
+  result: SetupCompletion,
+  dependencies: SetupDependencies,
+): Promise<ManagementSetupWake | undefined> {
+  const agent = setupWakeAgent(setup, result.completedByUserId);
+  if (!agent || setup.origin.kind !== 'slack') return undefined;
+  const person = await dependencies.identity.getUser(setup.actorUserId);
+  if (!person || person.slackTeamId !== setup.origin.workspaceId) return undefined;
+  const keyed = setup.action === 'api_credential' || setup.action === 'mcp_credentials';
+  // An MCP key is saved only once the server answered with it.
+  const check = setup.action === 'mcp_credentials' ? 'ok' : result.check;
+  const completion: SetupWakeCompletion = keyed
+    ? { kind: 'key', ...(check ? { check } : {}) }
+    : { kind: 'sign_in', ...await signInAccess(setup, result, dependencies) };
+  return {
+    agentId: agent.agentId,
+    slackUserId: person.slackUserId,
+    ...(setup.origin.conversationKind ? { conversationKind: setup.origin.conversationKind } : {}),
+    note: setupWakeNote({
+      person: person.displayName ?? 'The person',
+      connector: result.connector ?? setup.target.targetLabel,
+      completion,
+      connectorTools: setup.action !== 'api_credential' && setup.action !== 'api_oauth',
+    }),
+  };
+}
+
+/** The access a sign-in granted: the managed lane, or what an API connection's methods allow. */
+async function signInAccess(
+  setup: ManagementSetupRecord,
+  result: SetupCompletion,
+  dependencies: SetupDependencies,
+): Promise<{ access?: 'read' | 'write' }> {
+  const lane = result.accessLane ?? setup.target.accessLane;
+  if (lane) return { access: lane };
+  if (setup.action !== 'api_oauth') return {};
+  const policy = (await setupConnectionEntry(setup, dependencies).catch(() => undefined))?.account.policy;
+  if (policy?.kind !== 'api') return {};
+  return { access: policy.allowedMethods.every((method) => method === 'GET' || method === 'HEAD') ? 'read' : 'write' };
 }
 
 async function verifyMcpConnection(
@@ -3091,21 +3172,44 @@ async function renderSetupSummary(
   });
 }
 
-function terminalPage(c: Context, setup: ManagementSetupRecord): Response {
+async function terminalPage(
+  c: Context,
+  setup: ManagementSetupRecord,
+  management: ManagementStore,
+): Promise<Response> {
   if (setup.action === 'managed_connection') {
     return managedUnavailablePage(c);
   }
   if (setup.status === 'completed') {
-    const saved = keySavedText(c.req.query('check'));
+    const agent = await wakeQueued(setup, management) ? setupWakeAgent(setup)?.agentName : undefined;
+    const check = c.req.query('check');
+    const saved = check !== undefined && Object.hasOwn(KEY_SAVED_TEXT, check)
+      ? KEY_SAVED_TEXT[check as KeySavedCheck]
+      : undefined;
+    const next = agent
+      ? `${escapeHtml(agent)} is ${saved ? 'trying it' : 'testing it'} in Slack now.`
+      : saved?.alone ?? 'Chickpea checked it, and it works.';
     return c.html(renderSetupPanelPage({
       title: 'Setup complete',
       surface: 'setup-complete',
-      content: saved
-        ? `<h1>Key saved</h1><p>${escapeHtml(saved)} You can close this window.</p>`
-        : '<h1>Connected</h1><p>This setup is complete. You can close this window.</p>',
+      content: setup.action === 'api_credential' || setup.action === 'mcp_credentials'
+        ? `<h1>Key saved</h1><p>${saved ? `${escapeHtml(saved.finding)} ` : ''}${next} You can close this window.</p>`
+        : `<h1>Connected</h1><p>${agent ? `${escapeHtml(agent)} is continuing in Slack.` : 'This setup is complete.'} You can close this window.</p>`,
     }));
   }
   return unavailablePage(c);
+}
+
+/**
+ * Whether this finished setup's Agent is continuing in Slack: its receipt
+ * carries a wake that is queued, or still on its way because another drain
+ * holds it, and has not fallen back to posting the notice.
+ */
+async function wakeQueued(setup: ManagementSetupRecord, management: ManagementStore): Promise<boolean> {
+  const outbox = await management.getOutboxForOperation(setup.setupOperationId).catch(() => undefined);
+  if (outbox?.destination.kind !== 'thread' || !outbox.destination.wake) return false;
+  if (outbox.status === 'failed') return false;
+  return outbox.status !== 'delivered' || outbox.deliveryRef?.startsWith('wake:') === true;
 }
 
 function managedUnavailablePage(c: Context): Response {
@@ -3136,19 +3240,29 @@ const SETUP_FAILED_TEXT = 'Setup did not complete. Secret fields were cleared; f
 
 type KeySavedCheck = Exclude<ApiConnectionCheck['kind'], 'ok' | 'key_rejected'>;
 
-/** What the completed page says when an API key was saved but its check did not show it working. */
-const KEY_SAVED_TEXT: Record<KeySavedCheck, string> = {
-  not_permitted: 'The API refused the request Chickpea tried, which usually means your key works but lacks a permission. Some requests may be refused.',
-  path_not_found: 'This API has no page at the address Chickpea tests, so Chickpea could not test the key there. To check it, ask your Agent in Slack to try a request.',
-  unreachable: 'Chickpea could not reach the API to confirm that your key works.',
-  inconclusive: 'Chickpea could not confirm that your key works.',
+/**
+ * What the completed page says when an API key was saved but Chickpea's one
+ * check did not show it working: what the check found, then the next step
+ * when no Agent is testing the key in Slack.
+ */
+const KEY_SAVED_TEXT: Record<KeySavedCheck, { finding: string; alone: string }> = {
+  not_permitted: {
+    finding: 'The API turned down Chickpea\'s check, which usually means the key works but is missing a permission.',
+    alone: 'Some requests may be refused until you add it.',
+  },
+  path_not_found: {
+    finding: 'Chickpea\'s check landed on an address this API doesn\'t serve, which says nothing about the key.',
+    alone: 'Ask your Agent in Slack to read something to test it.',
+  },
+  unreachable: {
+    finding: 'Chickpea couldn\'t reach the API to check it.',
+    alone: 'Your Agent will use it on its next request.',
+  },
+  inconclusive: {
+    finding: 'Chickpea couldn\'t confirm it with its check.',
+    alone: 'Your Agent will use it on its next request.',
+  },
 };
-
-function keySavedText(check: string | undefined): string | undefined {
-  return check !== undefined && Object.hasOwn(KEY_SAVED_TEXT, check)
-    ? KEY_SAVED_TEXT[check as KeySavedCheck]
-    : undefined;
-}
 
 class SetupKeyRejectedError extends Error {
   constructor(host: string) {

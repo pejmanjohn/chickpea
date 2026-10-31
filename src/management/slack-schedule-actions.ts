@@ -22,7 +22,7 @@ import {
 import { reconcileScheduleActionReceipts } from './receipts.ts';
 import {
   slackManagementOrigin,
-  startedByAgentAsk,
+  startedWithoutPerson,
   type WorkspaceManagementService,
 } from './service.ts';
 import type { ManagementStore } from './store.ts';
@@ -80,7 +80,7 @@ export async function invokeSlackScheduleAction(input: {
   const digest = managementOperationDigest([validated]);
   const actionId = scheduleActionId(input.signal.turnJobId, digest);
   const publicIdempotencyKey = `schedule-action:${actionId}`;
-  if (startedByAgentAsk({ origin: slackManagementOrigin(input.signal) })) {
+  if (startedWithoutPerson({ origin: slackManagementOrigin(input.signal) })) {
     return proposeScheduleAction(input, validated, publicIdempotencyKey);
   }
   const storageIdempotencyKey = managementStorageIdempotencyKey(
@@ -149,7 +149,7 @@ export async function invokeSlackScheduleAction(input: {
 }
 
 /**
- * Another Agent's ask started this turn, so no message of the person's asked
+ * Another Agent's ask or Chickpea's setup note started this turn, so no message of the person's asked
  * for this work: it becomes a proposal the person approves, and nothing
  * enters the schedule-action ledger.
  */

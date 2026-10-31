@@ -5,6 +5,7 @@ import {
   type SlackAgentAddress,
 } from '../config/types.ts';
 import { SLACK_CODE_SEGMENT } from './message-format.ts';
+import type { RequesterTextSource } from './requester-text-source.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 
 /**
@@ -220,9 +221,14 @@ export function personRequestText(turn: Pick<NormalizedSlackTurn, 'text' | 'agen
   return turn.agentAsk ? undefined : turn.text;
 }
 
-/** A click's or form answer's text is the host's description of it, never words the person typed. */
+/**
+ * Who wrote a turn's text when the person did not: a click's or form
+ * answer's description, or Chickpea's note that a setup finished.
+ */
 export function personRequestTextSource(
-  turn: Pick<NormalizedSlackTurn, 'agentAsk' | 'uiResponse'>,
-): 'click' | undefined {
-  return !turn.agentAsk && turn.uiResponse ? 'click' : undefined;
+  turn: Pick<NormalizedSlackTurn, 'agentAsk' | 'uiResponse' | 'setupWake'>,
+): RequesterTextSource | undefined {
+  if (turn.agentAsk) return undefined;
+  if (turn.setupWake) return 'setup';
+  return turn.uiResponse ? 'click' : undefined;
 }

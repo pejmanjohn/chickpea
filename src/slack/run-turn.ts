@@ -651,7 +651,7 @@ async function runTurnAttempt(
         ? { onPublicDelivery: options.onPublicMessageDelivered }
         : {}),
     });
-    await repairPresenter.deliverFinal(WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT, 'plain_text', 'error');
+    await repairPresenter.deliverFinal(failureFinalText(turn, WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT), 'plain_text', 'error');
     await options.onDelivered?.();
     await repairPresenter.markCanonicalPresentationFinalized();
     return;
@@ -662,8 +662,9 @@ async function runTurnAttempt(
   // An ask's text is the asking Agent's message: only a person's message can
   // be a memory or schedule command. Admission refuses those for an ask too
   // (typedByPerson in processSlackEvent); this is the runtime's own gate. A
-  // message that mentioned several Agents is one command, for the first.
-  const typedByPerson = !turn.agentAsk && !isLaterCoAddressedTurn(turn);
+  // message that mentioned several Agents is one command, for the first. A
+  // setup's wake is Chickpea's note.
+  const typedByPerson = !turn.agentAsk && !turn.setupWake && !isLaterCoAddressedTurn(turn);
   // The thread's own Agent, handed a teammate's answer: it may end the turn
   // silently, so its reply never streams before it is known.
   const handedBack = isHandedBackTurn(turn, assignment);
@@ -1557,7 +1558,7 @@ async function runTurnAttempt(
       // status cleared, and a terminal delivery outcome.
       logMemoryLeaseFailure('before_run', assignment.agentId, preparedMemory.quarantined === true);
       await statusTurn.prepareFinal();
-      await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
+      await presenter.deliverFinal(failureFinalText(turn, AGENT_FAILURE_TEXT), 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
       return;
@@ -1568,7 +1569,7 @@ async function runTurnAttempt(
       presenter.setFooterModelRepair();
       agentViewPresentation?.setFooterModelRepair();
       await statusTurn.prepareFinal();
-      await presenter.deliverFinal(modelRepairText, 'plain_text', 'error');
+      await presenter.deliverFinal(failureFinalText(turn, modelRepairText), 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
       return;
@@ -2183,10 +2184,11 @@ async function runTurnAttempt(
           ),
         ));
         await statusTurn.prepareFinal();
+        const shownText = failureFinalText(turn, failureText);
         // A plain_text final drops its text when it carries blocks; this text has no markdown syntax.
         await (components
-          ? presenter.deliverFinal(failureText, 'markdown', 'error', { components })
-          : presenter.deliverFinal(failureText, 'plain_text', 'error'));
+          ? presenter.deliverFinal(shownText, 'markdown', 'error', { components })
+          : presenter.deliverFinal(shownText, 'plain_text', 'error'));
         await finishStatus('failure');
         await finishDelivery('failed');
         return;
@@ -2388,7 +2390,7 @@ async function runTurnAttempt(
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
       logMemoryLeaseFailure('after_run', assignment.agentId, preparedMemory.quarantined === true);
       await statusTurn.prepareFinal();
-      await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
+      await presenter.deliverFinal(failureFinalText(turn, AGENT_FAILURE_TEXT), 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
       return;
@@ -3250,7 +3252,12 @@ export async function deliverAgentFailureFinal(
       ? { onPublicDelivery: onPublicMessageDelivered }
       : {}),
   });
-  await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text');
+  await presenter.deliverFinal(failureFinalText(turn, AGENT_FAILURE_TEXT), 'plain_text');
+}
+
+/** A setup's wake that fails before it replies still tells the person the setup finished. */
+function failureFinalText(turn: Pick<NormalizedSlackTurn, 'setupWake'>, text: string): string {
+  return turn.setupWake ? `${turn.setupWake.notice}\n\n${text}` : text;
 }
 
 function resolvedAssignmentModel(assignment: ResolvedAssignment): string | undefined {

@@ -91,6 +91,7 @@ import {
   type MessageVersionRow,
 } from './edits.ts';
 import { turnRequestTs } from './thread-context.ts';
+import { isRequesterTextSource, type RequesterTextSource } from './requester-text-source.ts';
 
 /**
  * Durable queue of Slack turns for the Cloudflare turn-relay (see state-rpc.ts
@@ -3532,8 +3533,8 @@ function validateConversationKind(value: unknown): 'channel' | 'im' | 'mpim' {
   throw new Error('Slack conversation kind is invalid.');
 }
 
-function validateRequesterTextSource(value: unknown): 'click' {
-  if (value === 'click') return value;
+function validateRequesterTextSource(value: unknown): RequesterTextSource {
+  if (isRequesterTextSource(value)) return value;
   throw new Error('Slack requester text source is invalid.');
 }
 

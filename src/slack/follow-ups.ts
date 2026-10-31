@@ -114,16 +114,16 @@ const FOLDABLE_SOURCES: ReadonlySet<NormalizedSlackTurn['source']> = new Set([
 /**
  * Whether a turn may take part in a fold group, as head or as member: a plain
  * message a person typed to the Agent. A command, an approval, a click or a
- * reaction, an ask, a message several Agents were mentioned in, and a message
- * with files each keep a turn of their own, as does any new kind of turn
- * until someone decides otherwise.
+ * reaction, an ask, a message several Agents were mentioned in, a setup's
+ * wake, and a message with files each keep a turn of their own, as does any
+ * new kind of turn until someone decides otherwise.
  */
 export function foldableTurn(turn: NormalizedSlackTurn): boolean {
   const intent = turn.interactionIntent?.disposition;
   return FOLDABLE_SOURCES.has(turn.source) &&
     turn.text.trim().length > 0 &&
     !turn.reaction && !turn.reactionTargetTs && !turn.uiResponse &&
-    !turn.agentAsk && !turn.coAddressed &&
+    !turn.agentAsk && !turn.coAddressed && !turn.setupWake &&
     !turn.managementApprovalProposalId && !turn.approvedBrowserActionId &&
     !turn.attachments?.length && !turn.attachmentIntake &&
     (intent === undefined || intent === 'reply' || intent === 'work') &&

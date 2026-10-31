@@ -10,6 +10,7 @@ import type { NormalizedSlackTurn } from './types.ts';
 import type { CodingWorkerUsageRecord } from './coding-worker-run.ts';
 import type { FoldedMessage } from './follow-ups.ts';
 import type { FrontDeskHandoff } from './front-desk.ts';
+import type { RequesterTextSource } from './requester-text-source.ts';
 
 interface FlueDispatchEnvelopeBase {
   agentName: 'chickpea-slack-v2';
@@ -51,8 +52,8 @@ interface FlueDispatchEnvelopeV2 extends FlueDispatchEnvelopeBase {
       turnJobId: string;
       /** Authenticated triggering Slack text, kept separate from the assembled model prompt. */
       requesterText?: string;
-      /** Set when requesterText is the host's description of a click or form answer. */
-      requesterTextSource?: 'click';
+      /** Set when the host wrote requesterText: a click or form answer, or a setup note. */
+      requesterTextSource?: RequesterTextSource;
       requesterTimezone?: string;
       /** Comma-separated Slack file ids; bytes and private URLs remain outside durable state. */
       attachmentFileIds?: string;

@@ -35,6 +35,7 @@ import type {
   ManagementScheduleActionAcknowledgement,
   ManagementSetupReceipt,
   ManagementSetupRecord,
+  ManagementSetupWake,
 } from './types.ts';
 import { emitManagementMetric } from './telemetry.ts';
 import { managementResultFullyApplied } from './contracts.ts';
@@ -77,6 +78,8 @@ interface CompleteManagementSetupReceiptInput {
   ownerKind?: 'team' | 'member';
   accessLane?: 'read' | 'write';
   avatarUrl?: string;
+  /** The Agent the setup wakes in its Slack thread instead of posting the receipt (setupWakeAgent). */
+  wake?: ManagementSetupWake;
 }
 
 export async function completeManagementSetupReceipt(
@@ -111,7 +114,7 @@ export async function completeManagementSetupReceipt(
   const outbox: ManagementReceiptOutboxRecord = {
     outboxId: `receipt_${input.setup.setupOperationId}`,
     operationId: input.setup.setupOperationId,
-    destination: receiptDestination(input.setup),
+    destination: receiptDestination(input.setup, input.wake),
     receipt,
     status: 'pending',
     attempts: 0,
@@ -160,15 +163,13 @@ export function formatManagementSetupReceipt(
       : `use the approved ${receipt.connector} capabilities`;
     return `✅ ${receipt.connector} is now connected. Your ${scope}, ${access} connection is ready — I can ${action} when you ask me here.`;
   }
-  const subject = receipt.accountLabel ?? receipt.connector;
-  const lead = `${subject} has been connected to ${receipt.connector} connector.`;
-  const details = [
-    `Target: ${receipt.target}`,
-    `Scopes: ${receipt.scopes.length ? receipt.scopes.join(', ') : 'provider default'}`,
-    `Initiated by: ${receipt.initiator}`,
-    `Receipt: ${receipt.setupOperationId}`,
-  ];
-  return `${lead}\n${details.join(' · ')}`;
+  // The person reads one plain line; IDs and raw scopes stay in the record.
+  const connector = escapeSlackText(receipt.connector);
+  const account = receipt.accountLabel && receipt.accountLabel !== receipt.connector
+    ? ` (${escapeSlackText(receipt.accountLabel)})`
+    : '';
+  const target = receipt.target !== receipt.connector ? ` to ${escapeSlackText(receipt.target)}` : '';
+  return `✅ ${connector}${account} is now connected${target}.`;
 }
 
 interface ManagementReceiptDeliveryResult {
@@ -439,9 +440,56 @@ export async function failAgentWelcomeTurn(
   }
 }
 
+/** What a setup's wake needs from its receipt record: its thread, its Agent and person, and its fallback notice. */
+export interface SetupWakeRequest {
+  setupOperationId: string;
+  workspaceId: string;
+  channelId: string;
+  threadTs: string;
+  wake: ManagementSetupWake;
+  notice: string;
+}
+
+function setupWakeRequest(record: ManagementReceiptOutboxRecord): SetupWakeRequest | undefined {
+  const { destination } = record;
+  if (destination.kind !== 'thread' || !destination.wake) return undefined;
+  return {
+    setupOperationId: record.operationId,
+    workspaceId: destination.workspaceId,
+    channelId: destination.channelId,
+    threadTs: destination.threadTs,
+    wake: destination.wake,
+    notice: formatManagementSetupReceipt(record.receipt),
+  };
+}
+
+/**
+ * A receipt that wakes its Agent posts nothing once the wake is queued: the
+ * Agent's reply is the message. A wake that is refused or fails, or a drain
+ * with no `wake`, posts the receipt as before.
+ */
+async function wakeInsteadOfReceipt(
+  record: ManagementReceiptOutboxRecord,
+  wake: ((request: SetupWakeRequest) => Promise<'queued' | 'refused'>) | undefined,
+): Promise<ManagementReceiptDeliveryResult | undefined> {
+  const request = setupWakeRequest(record);
+  if (!request || !wake) return undefined;
+  try {
+    if (await wake(request) === 'queued') return { deliveryRef: `wake:${request.setupOperationId}` };
+  } catch (error) {
+    console.warn('[chickpea:management] setup wake failed; posting the receipt', JSON.stringify({
+      outboxId: record.outboxId,
+      error: error instanceof Error ? error.name : 'unknown',
+    }));
+  }
+  return undefined;
+}
+
 export async function drainManagementReceiptOutbox(input: {
   management: ManagementStore;
   deliver(record: ManagementReceiptOutboxRecord): Promise<ManagementReceiptDeliveryResult>;
+  /** Queue a setup's wake (admitSetupWake); without it, every receipt posts. */
+  wake?(request: SetupWakeRequest): Promise<'queued' | 'refused'>;
   onTerminalFailure?(record: ManagementReceiptOutboxRecord, failureCode: string): Promise<void>;
   onDeliveredSettled?(record: ManagementReceiptOutboxRecord): Promise<void>;
   now?: () => number;
@@ -459,7 +507,7 @@ export async function drainManagementReceiptOutbox(input: {
   let failed = 0;
   for (const record of claimed) {
     try {
-      const result = await input.deliver(record);
+      const result = await wakeInsteadOfReceipt(record, input.wake) ?? await input.deliver(record);
       const settled = await input.management.settleOutbox({
         outboxId: record.outboxId,
         outcome: 'delivered',
@@ -690,13 +738,17 @@ export async function deliverManagementReceiptToSlack(
   };
 }
 
-function receiptDestination(setup: ManagementSetupRecord): ManagementReceiptDestination {
+function receiptDestination(
+  setup: ManagementSetupRecord,
+  wake: ManagementSetupWake | undefined,
+): ManagementReceiptDestination {
   if (setup.origin.kind === 'slack') {
     return {
       kind: 'thread',
       workspaceId: setup.origin.workspaceId,
       channelId: setup.origin.channelId,
       threadTs: setup.origin.threadTs,
+      ...(wake ? { wake } : {}),
     };
   }
   return {

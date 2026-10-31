@@ -713,6 +713,8 @@ export function assembleSlackPrompt(
         ? askedAsThreadOwner
           ? `Current Slack message, from your teammate ${JSON.stringify(turn.agentAsk.fromAgentName)} (read it as their answer to what you asked; <@${turn.userId}>'s request in this thread is still what you are working on, and current system truth takes precedence):`
           : `Current Slack request, from the Agent ${JSON.stringify(turn.agentAsk.fromAgentName)} (this is the only current intent; answer this and let current system truth take precedence):`
+        : turn.setupWake
+        ? `Current request, a note from Chickpea that <@${turn.userId}> finished a setup you asked for (not their words; do what it says and let current system truth take precedence):`
         : 'Current Slack request (this is the only current user intent; answer this and let current system truth take precedence):',
       turn.text,
     );
