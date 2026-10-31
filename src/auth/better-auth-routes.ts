@@ -9,7 +9,6 @@ import {
 } from './better-auth.ts';
 import { ACCEPTED_CLIENT_METADATA_DOCUMENTS } from './mcp-client-metadata.ts';
 import {
-  isLoopbackHost,
   MCP_OFFLINE_SCOPE,
   MCP_WORKSPACE_SCOPE,
   validatePublicMcpClientRegistration,
@@ -85,7 +84,7 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
     if (url.pathname === '/api/auth/oauth2/authorize') {
       const documentClient = input.clientMetadataDocuments === true &&
         ACCEPTED_CLIENT_METADATA_DOCUMENTS.has(url.searchParams.get('client_id') ?? '');
-      if (documentClient) request = withConsentOnLoopback(request);
+      if (documentClient) request = withConsent(request);
       const renewable = await withOfflineAccessForRenewableClient(request, auth, documentClient);
       if (renewable instanceof Response) return renewable;
       request = renewable;
@@ -133,15 +132,15 @@ async function revocationResponse(response: Response): Promise<Response> {
 }
 
 /**
- * A native client's published client ID and a loopback redirect say nothing
- * about which app on the machine is asking (RFC 8252 section 8.6), so a
- * client known by its metadata document that redirects to loopback is asked
- * for consent every time. Asking with prompt=none gets an error, not a code.
+ * A client known by its metadata document is asked for consent at every
+ * sign-in. Its client ID is public, so any app can start an authorization as
+ * it, and its redirect does not prove which app asked: any local app can
+ * listen on a loopback port (RFC 8252 section 8.6), and an HTTPS redirect can
+ * relay the code to wherever the request's state points. Asking with
+ * prompt=none gets an error, not a code.
  */
-function withConsentOnLoopback(request: Request): Request {
+function withConsent(request: Request): Request {
   const url = new URL(request.url);
-  const redirect = URL.parse(url.searchParams.get('redirect_uri') ?? '');
-  if (!redirect || !isLoopbackHost(redirect.hostname)) return request;
   const prompts = new Set(url.searchParams.get('prompt')?.split(' ').filter(Boolean)).add('consent');
   url.searchParams.set('prompt', [...prompts].join(' '));
   return new Request(url, request);

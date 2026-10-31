@@ -104,7 +104,7 @@ export function isHostedSharedAuthPath(pathname: string): boolean {
  * route; every token it issues waits for the user's installation to admit
  * them. Run it before routeHostedRequest. A new MCP client passes the host's
  * `throttleRegistration`: no installation's limiter applies here. Only here
- * does Claude sign in by its client ID metadata document.
+ * does a client sign in by its client ID metadata document.
  */
 export async function serveHostedSharedAuth<E extends PlatformEnv>(
   request: Request,
