@@ -9,7 +9,7 @@ import {
 } from './change-set-presentation.ts';
 import type { ManagementChangeSetPreview } from './types.ts';
 
-/** Slack mrkdwn: single-asterisk bold, control-character escaping, block limit. */
+/** Slack mrkdwn: single-asterisk bold, a bullet character, control-character escaping, block limit. */
 export const SLACK_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {
   header: '*Proposed changes*',
   approvalInstruction: 'Reply `approve` to apply these exact changes, or tell me what to adjust.',
@@ -18,6 +18,7 @@ export const SLACK_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {
   truncationNotice: '_Preview truncated to fit Slack. Approval applies the full proposed changes._',
   textLimit: slackMarkdownBlockTextLimit,
   bold: (text) => `*${text}*`,
+  bullet: '•',
   escape: escapeSlackControlCharacters,
   // Slack code spans cannot hold a backtick; a look-alike keeps the value inside one.
   code: (text) => `\`${escapeSlackControlCharacters(text.replaceAll('`', '\u02cb'))}\``,

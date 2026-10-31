@@ -5,6 +5,7 @@ import type {
   RepositoryGrant,
 } from '../config/types.ts';
 import type { MembershipStatus } from '../identity/types.ts';
+import { summarizeTextChange, type TextChange, type TextChangePlace } from './text-changes.ts';
 import type {
   ManagementAgentLabel,
   ManagementChangeSetPreview,
@@ -22,6 +23,8 @@ export interface ChangeSetPresentationDialect {
   truncationNotice: string;
   textLimit: number;
   bold: (text: string) => string;
+  /** Opens each line of a long text edit's key details. */
+  bullet: string;
   escape: (text: string) => string;
   /** A technical value (URL, host, tool, scope) shown inert: no mention, link or formatting. */
   code: (text: string) => string;
@@ -360,14 +363,11 @@ function formatRecordSections(
         dialect,
       );
     }
-    return [fieldPart(field, after?.[field], formatChangeSection(
-      targetName,
-      FIELD_LABELS[field],
-      presentationValue(field, before?.[field]),
-      presentationValue(field, after?.[field]),
-      compare,
-      dialect,
-    ))];
+    return [fieldPart(
+      field,
+      after?.[field],
+      formatChangeSection(targetName, field, before?.[field], after?.[field], compare, dialect),
+    )];
   });
   return sections.length > 0
     ? sections
@@ -953,14 +953,7 @@ function formatSkillChangeSections(
   const beforeSkills = skillPresentationRecords(before);
   const afterSkills = skillPresentationRecords(after);
   if (!beforeSkills || !afterSkills) {
-    return [formatChangeSection(
-      targetName,
-      FIELD_LABELS.skills,
-      skillNames(before),
-      skillNames(after),
-      compare,
-      dialect,
-    )];
+    return [formatChangeSection(targetName, 'skills', skillNames(before), skillNames(after), compare, dialect)];
   }
   const beforeByName = new Map(beforeSkills.map((skill) => [skill.name, skill]));
   const afterByName = new Map(afterSkills.map((skill) => [skill.name, skill]));
@@ -996,15 +989,13 @@ function formatSkillChangeSection(
   if (before && !after) {
     return [heading, dialect.bold('Remove'), formatSkillDetails(before, dialect)].join('\n');
   }
-  const changedParts = SKILL_PARTS.flatMap(([part, label]) => before![part] === after![part] ? [] : [label]);
   return [
     heading,
     dialect.bold('Replace'),
-    ...(changedParts.length > 0 ? [`Changes: ${changedParts.join(', ')}.`] : []),
-    dialect.bold('Before'),
-    formatSkillDetails(before!, dialect),
-    dialect.bold('After'),
-    formatSkillDetails(after!, dialect),
+    ...SKILL_PARTS.flatMap((part) => before![part] === after![part] ? [] : [
+      dialect.bold(FIELD_LABELS[part]),
+      formatComparison(part, before![part], after![part], dialect),
+    ]),
   ].join('\n');
 }
 
@@ -1015,12 +1006,10 @@ interface SkillPresentationRecord {
   enabled?: boolean;
 }
 
-/** A replaced skill names the parts that differ, since an excerpt can hide a change. */
-const SKILL_PARTS = [
-  ['enabled', 'Status'],
-  ['description', 'Description'],
-  ['instructions', 'Instructions'],
-] as const satisfies ReadonlyArray<readonly [keyof SkillPresentationRecord, string]>;
+/** A replaced skill compares only the parts that differ, in this order. */
+const SKILL_PARTS = ['enabled', 'description', 'instructions'] as const satisfies ReadonlyArray<
+  keyof SkillPresentationRecord & PresentationField
+>;
 
 function skillPresentationRecords(value: unknown): SkillPresentationRecord[] | undefined {
   if (isEmptyPresentationValue(value)) return [];
@@ -1079,27 +1068,135 @@ function quoteExcerpt(
   ].join('\n');
 }
 
+/**
+ * Prose a person reads as text, by the noun approval applies in full. An
+ * existing value that is long on either side shows key details of the edit
+ * instead of Before and After.
+ */
+const PROSE_NOUNS: Partial<Record<PresentationField, string>> = {
+  description: 'description',
+  instructions: 'instructions',
+  taskText: 'task',
+  body: 'memory',
+};
+
+/** A prose value within both limits, after trimming, shows whole as Before and After. */
+const SHORT_TEXT_MAX_LINES = 4;
+const SHORT_TEXT_MAX_CHARACTERS = 400;
+/** Changes a long text edit lists before counting the rest. */
+const LISTED_TEXT_CHANGE_LIMIT = 3;
+/**
+ * Most characters a person reads in one long text edit's key details, bullets
+ * and closing line. Fixed for every surface: the preview stays short on
+ * purpose instead of filling what the surface allows. The longest possible
+ * bullet fits with room to spare, so the first change is always listed.
+ */
+export const KEY_DETAILS_CHARACTER_BUDGET = 640;
+
 function formatChangeSection(
   targetName: string,
-  fieldLabel: string,
-  before: string | undefined,
-  after: string | undefined,
+  field: PresentationField,
+  before: unknown,
+  after: unknown,
   compare: boolean,
   dialect: ChangeSetPresentationDialect,
 ): string {
-  if (!compare) {
-    return [
-      dialect.bold(`${plainText(targetName, dialect)} — ${fieldLabel}`),
-      quoteValue(after, dialect),
-    ].join('\n');
-  }
   return [
-    dialect.bold(`${plainText(targetName, dialect)} — ${fieldLabel}`),
-    dialect.bold('Before'),
-    quoteValue(before, dialect),
-    dialect.bold('After'),
-    quoteValue(after, dialect),
+    dialect.bold(`${plainText(targetName, dialect)} — ${FIELD_LABELS[field]}`),
+    compare ? formatComparison(field, before, after, dialect) : quoteValue(presentationValue(field, after), dialect),
   ].join('\n');
+}
+
+/** Before and After, or the key details of a long prose edit. */
+function formatComparison(
+  field: PresentationField,
+  before: unknown,
+  after: unknown,
+  dialect: ChangeSetPresentationDialect,
+): string {
+  const was = presentationValue(field, before);
+  const now = presentationValue(field, after);
+  const noun = PROSE_NOUNS[field];
+  if (noun !== undefined && !(isShortText(was) && isShortText(now))) {
+    return formatKeyDetails(was ?? '', now ?? '', noun, dialect);
+  }
+  return [dialect.bold('Before'), quoteValue(was, dialect), dialect.bold('After'), quoteValue(now, dialect)].join('\n');
+}
+
+function isShortText(value: string | undefined): boolean {
+  const text = value?.trim() ?? '';
+  return text.length <= SHORT_TEXT_MAX_CHARACTERS && text.split(/\r?\n/).length <= SHORT_TEXT_MAX_LINES;
+}
+
+/**
+ * Where a long text changes, one bullet per change in document order while
+ * they fit the budget, then a count of the rest. Every change is listed or
+ * counted. The budget measures text before escaping, so every surface lists
+ * the same changes. A blank line ends the list: without it, Slack and
+ * Markdown render the closing line inside the last bullet.
+ */
+function formatKeyDetails(
+  before: string,
+  after: string,
+  noun: string,
+  dialect: ChangeSetPresentationDialect,
+): string {
+  const applies = `Approval applies the full ${noun}.`;
+  const changes = summarizeTextChange(before, after);
+  if (changes.length === 0) return `Only spacing or line breaks change. ${applies}`;
+  const block = (listed: number, escape: ChangeSetPresentationDialect['escape']) => {
+    const rest = changes.length - listed;
+    return [
+      ...changes.slice(0, listed)
+        .map((change) => `${dialect.bullet} ${describeTextChange(change, { ...dialect, escape })}`),
+      '',
+      `${rest === 0 ? '' : `And ${rest} more ${rest === 1 ? 'change' : 'changes'}. `}${applies}`,
+    ].join('\n');
+  };
+  const shown = (text: string) => text;
+  let listed = 1;
+  while (
+    listed < Math.min(changes.length, LISTED_TEXT_CHANGE_LIMIT) &&
+    block(listed + 1, shown).length <= KEY_DETAILS_CHARACTER_BUDGET
+  ) listed += 1;
+  return block(listed, dialect.escape);
+}
+
+const TEXT_CHANGE_VERBS = { adds: 'adds', removes: 'removes', changes: 'changes wording to' } as const;
+
+function describeTextChange(change: TextChange, dialect: ChangeSetPresentationDialect): string {
+  const quoted = (text: string) => `“${plainText(text, dialect)}”`;
+  const size = change.quotedWhole ? '' : ` (${formatWordCount(change.words)})`;
+  if (change.kind === 'section') {
+    const sentence = change.action === 'adds'
+      ? `Adds a new section, ${quoted(change.heading)}${change.quote ? `: ${quoted(change.quote)}` : ''}`
+      : `Removes the section ${quoted(change.heading)}`;
+    return `${sentence}${size}`;
+  }
+  const verb = TEXT_CHANGE_VERBS[change.action];
+  const place = placeLead(change.place, quoted);
+  const lead = place ? `${place}, ${verb}` : `${verb[0]!.toUpperCase()}${verb.slice(1)}`;
+  return `${lead}: ${quoted(change.quote)}${size}`;
+}
+
+function placeLead(place: TextChangePlace, quoted: (text: string) => string): string | undefined {
+  switch (place.kind) {
+    case 'heading':
+      return `Under ${quoted(place.heading)}`;
+    case 'start':
+      return 'At the start';
+    case 'end':
+      return 'At the end';
+    case 'none':
+      return undefined;
+  }
+}
+
+/** Exact below ten; otherwise about, to the nearest ten below 1,000 and the nearest hundred from there. */
+function formatWordCount(words: number): string {
+  if (words < 10) return `${words} ${words === 1 ? 'word' : 'words'}`;
+  const rounded = words < 1_000 ? Math.round(words / 10) * 10 : Math.round(words / 100) * 100;
+  return `about ${rounded.toLocaleString('en-US')} words`;
 }
 
 /**
