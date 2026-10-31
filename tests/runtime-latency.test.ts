@@ -305,6 +305,19 @@ test('turn_latency omits durations it cannot measure and never throws', () => {
   assert.doesNotThrow(() => failing.emit('threw'));
 });
 
+test('turn_latency counts the follow-ups a turn took, and only when it took some', () => {
+  const { records, sink } = captureSink();
+  const folded = new TurnLatencyTracker({ lane: 'cloudflare', executor: 'runner' }, {}, clock(0).now, sink);
+  folded.markFolded(2);
+  folded.emit('returned');
+  const single = new TurnLatencyTracker({ lane: 'cloudflare', executor: 'runner' }, {}, clock(0).now, sink);
+  single.markFolded(0);
+  single.emit('returned');
+  assert.equal(records[0]?.folded, 2);
+  assert.equal('folded' in records[1]!, false);
+  assertContentFree(records[0]!);
+});
+
 test('state_rpc logs every slow or failed call and samples fast ones', () => {
   resetStateRpcCountersForTest();
   const { records, sink } = captureSink();

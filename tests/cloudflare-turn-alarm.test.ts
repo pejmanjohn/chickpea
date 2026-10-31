@@ -19,7 +19,7 @@ import {
   isTurnJobStopRefusal,
   TURN_STOP_HOLD_RETRY_MS,
   TurnJobStoreLogic,
-  turnJobStopGate,
+  turnJobGate,
   turnStopThreadKey,
 } from '../src/slack/turn-jobs.ts';
 import {
@@ -39,7 +39,7 @@ import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
 import { givenUpRecoveryText } from '../src/usage/run-settlement.ts';
 
 // What the transplanted turn executor imports for stop records.
-const stopGlobals = { isTurnJobStopRefusal, TURN_STOP_HOLD_RETRY_MS, turnJobStopGate };
+const stopGlobals = { isTurnJobStopRefusal, TURN_STOP_HOLD_RETRY_MS, turnJobGate };
 
 // Execute the production RPC methods and alarm helper, not a copy of their
 // scheduling logic. The complete Worker is also exercised by verify:cf-smoke;
@@ -546,6 +546,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
         record.activeWork.push([key, active]);
       },
       isCodingActiveWork: (key: string) => key === 'coding',
+      endTurn: (id: string, turnJobs: { markDelivered(id: string): void }) => turnJobs.markDelivered(id),
     },
     gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
     presentations: { get: (runId: string) => ({ runId, projectionVersion: 3 }) },

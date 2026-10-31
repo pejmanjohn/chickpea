@@ -140,10 +140,13 @@ import type {
   FlueSettlementCheckpointV1,
   FrozenRuntimePlanDecision,
   SlackThreadContinuation,
+  TurnFoldClaim,
+  TurnFoldRequest,
   TurnPreviousStop,
 } from './turn-job-types.ts';
 import { slackContextSinceWatermark, threadContinuityNote } from './thread-continuity.ts';
 import { hydrateTurnSlackContext } from './turn-context-reads.ts';
+import { foldActivityStatus, foldedRequestText, type FoldedMessage } from './follow-ups.ts';
 import { listAgentAppBots } from './agent-app-bots.ts';
 import { createSlackReadGate, sharesSlackAppReadBudget } from './read-budget.ts';
 import { resolveSlackContextNames } from './context-names.ts';
@@ -268,6 +271,11 @@ export interface RunTurnOptions {
   turnId?: string;
   /** Recorded result from an earlier attempt; skips the agent entirely. */
   replayText?: string;
+  /**
+   * Takes the requester's messages queued behind this turn as part of its
+   * request (TurnJobStoreLogic.fold). Repeatable: a retry gets the same ones.
+   */
+  claimFold?: (request: Extract<TurnFoldRequest, { phase: 'start' }>) => TurnFoldClaim | Promise<TurnFoldClaim>;
   /** Recovery replays can be a durable failure rather than a successful answer. */
   replayTerminalResult?: 'answer' | 'failure';
   /** Persist sandbox side effects before the final Slack delivery can fail. */
@@ -477,12 +485,19 @@ export async function runTurn(
   platformEnv: PlatformEnv | undefined,
   options: RunTurnOptions = {},
 ): Promise<void> {
-  if (!options.turnLatency) return runTurnAttempt(turn, assignment, platformEnv, options);
+  // A replay delivers a recorded answer and a turn stopped before its
+  // dispatch reads nothing more: neither takes follow-ups.
+  const followUps = options.claimFold && options.turnId && options.replayText === undefined &&
+      options.stopEnding?.beforeDispatch !== true
+    ? (await options.claimFold({ phase: 'start', headId: options.turnId })).messages
+    : [];
+  if (!options.turnLatency) return runTurnAttempt(turn, assignment, platformEnv, options, followUps);
   const tracker = new TurnLatencyTracker(options.turnLatency, {
     ...(options.turnId ? { turnJobId: options.turnId } : {}),
     ...(options.runId ? { runId: options.runId } : {}),
     ...(options.runAttempt === undefined ? {} : { attempt: options.runAttempt }),
   });
+  tracker.markFolded(followUps.length);
   const { onDelivered, onDeferredTerminal } = options;
   let stopped = false;
   try {
@@ -502,7 +517,7 @@ export async function runTurn(
             },
           }
         : {}),
-    });
+    }, followUps);
     tracker.emit(stopped ? 'stopped' : 'returned');
   } catch (error) {
     tracker.emit('threw');
@@ -515,7 +530,11 @@ async function runTurnAttempt(
   assignment: ResolvedAssignment,
   platformEnv: PlatformEnv | undefined,
   options: RunTurnOptions,
+  followUps: readonly FoldedMessage[],
 ): Promise<void> {
+  // The person's words across the request's messages, for every reader that
+  // weighs what was asked rather than which message asked it.
+  const requestText = followUps.length > 0 ? foldedRequestText(turn.text, followUps) : turn.text;
   const turnWorkspaceId = effectiveTurnSlackInstallationId(turn);
   const installationContext = options.installationContext ?? (
     options.client
@@ -1011,7 +1030,7 @@ async function runTurnAttempt(
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
       eventId: turn.eventId,
-      text: turn.text,
+      text: requestText,
       source: turn.source,
       guaranteed: true,
       ...(turn.activeWorkAtAdmission === undefined
@@ -1071,6 +1090,7 @@ async function runTurnAttempt(
       !options.runtimePlanDecision && memoryEpoch && resolvedModel
         ? freezeRuntimePlanForTurn({
             turn,
+            requestText,
             assignment,
             platformEnv,
             memoryEpoch,
@@ -1182,6 +1202,11 @@ async function runTurnAttempt(
   const statusTurn = earlyStatusTurn ?? (stoppedBeforeDispatch
     ? registerStatusTurn(statusInstanceId)
     : await beginVisibleWork(statusInstanceId));
+  // A reattached turn showed it on its first attempt.
+  const readingFollowUps = followUps.length > 0 && !options.flueDispatch?.dispatchReceipt;
+  if (readingFollowUps) {
+    await statusTurn.setStatus(foldActivityStatus(followUps.length + 1)).catch(() => false);
+  }
   // Once per turn; a failed hint never holds back the task's progress.
   let codingTaskSignalled = false;
   const signalCodingTaskStarted = async () => {
@@ -1677,7 +1702,7 @@ async function runTurnAttempt(
           frozenPresentation.currentActivity.phase,
         )
       : initialActivityStatus(workChecklist, turn.text);
-    if (semanticActivityEnabled && !admittedVisibleStatus && !admissionStatusAttempted) {
+    if (semanticActivityEnabled && !admittedVisibleStatus && !admissionStatusAttempted && !readingFollowUps) {
       await statusTurn.setStatus(initialStatus);
     }
 
@@ -1703,11 +1728,13 @@ async function runTurnAttempt(
           sharedAppReads,
           state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
           ...(threadRecord ? { record: threadRecord } : {}),
+          followUps,
         });
     const context = await resolveSlackContextNames(
       client,
       turn.workspaceId,
       await assembleRetainedSlackContext(hydratedContext, turn, {
+        followUps,
         visibilityBarrierAt: preparedMemory?.visibilityBarrierAt ?? null,
         ...(threadRecord ? { store: threadRecord, agentId: assignment.agentId } : {}),
       }),
@@ -1731,7 +1758,7 @@ async function runTurnAttempt(
     const admittedListIds = runtimePlanDecision
       ? collectAdmittedSlackListIds({
           workspaceId: turn.workspaceId,
-          currentText: turn.text,
+          currentText: requestText,
           activeRootTs: turn.threadTs,
           contextMessages: context.messages,
           instructions: runtimePlanDecision.runtimePlan.instructions,
@@ -1789,6 +1816,7 @@ async function runTurnAttempt(
       ? conversationThreadImageInventory(runtimePlanDecision.runtimePlan.conversation, threadImages).manifest
       : '';
     const prompt = assembleSlackPrompt(turn, promptContext, {
+      followUps,
       ...(handoffBlock ? { handoffBlock } : {}),
       ...(preparedMemory?.promptBlock && !memoryRendered
         ? { memoryBlock: preparedMemory.promptBlock }
@@ -2724,6 +2752,8 @@ async function readThreadContinuation(
 
 export async function freezeRuntimePlanForTurn(input: {
   turn: NormalizedSlackTurn;
+  /** What the person asked across the request's messages; the turn's own text by default. */
+  requestText?: string;
   assignment: ResolvedAssignment;
   platformEnv: PlatformEnv | undefined;
   settingsStore?: SettingsStore;
@@ -2789,7 +2819,7 @@ export async function freezeRuntimePlanForTurn(input: {
     previous.conversation.threadTs === input.turn.threadTs;
   const connectionResolution = selectConnectionsForRequest({
     connections: allEffectiveConnections,
-    requestText: input.turn.text,
+    requestText: input.requestText ?? input.turn.text,
     ...(sameActorThread && previous.connectionSelections ? { previousSelections: previous.connectionSelections } : {}),
   });
   const canonicalModel = resolvedAssignmentModel(input.assignment);

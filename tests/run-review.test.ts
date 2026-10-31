@@ -567,3 +567,18 @@ test('a Slack turn copies its trigger row and context rows, naming people by Sla
     context: [],
   });
 });
+
+test('a Slack turn that read follow-ups copies them in its request, oldest first, and not as context', () => {
+  const conversation = slackRunReviewConversation({ userId: 'U012ABCDEF3', text: 'Draft the email.' }, {
+    mode: 'thread', truncated: false, degradations: [],
+    messages: [
+      { userId: 'U0ZZZZZZZZ9', text: 'earlier', ts: '1.1', isTrigger: false, role: 'human' },
+      { userId: 'U012ABCDEF3', text: 'Draft the email.', ts: '1.3', isTrigger: true, role: 'human' },
+      { userId: 'U012ABCDEF3', text: 'Keep it short.', ts: '1.4', isTrigger: true, role: 'human' },
+    ],
+  });
+  assert.deepEqual(conversation, {
+    trigger: { author: 'U012ABCDEF3', text: 'Draft the email.\n\nKeep it short.', files: [] },
+    context: [{ author: 'U0ZZZZZZZZ9', role: 'human', text: 'earlier', files: [] }],
+  });
+});

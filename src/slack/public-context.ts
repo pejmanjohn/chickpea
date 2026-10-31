@@ -7,6 +7,7 @@ import type {
 } from '../config/types.ts';
 import { MAX_SLACK_PUBLIC_HANDOFF_MESSAGES } from '../config/types.ts';
 import type { NormalizedSlackTurn, SlackMessageEvent } from './types.ts';
+import type { FoldedMessage } from './follow-ups.ts';
 import { slackReadbackText } from './message-format.ts';
 import { slackFileSummaries, slackMessageText } from './message-text.ts';
 import { slackImageRefs, threadImageRef } from './thread-images.ts';
@@ -269,8 +270,12 @@ export async function assembleRetainedSlackContext(
     agentId?: string;
     visibilityBarrierAt?: number | null;
     maxMessages?: number;
+    /** The follow-ups the turn took: rows through the newest are read, and none is context. */
+    followUps?: readonly FoldedMessage[];
   } = {},
 ): Promise<SlackTurnContext> {
+  const followUps = options.followUps ?? [];
+  const followUpTs = new Set(followUps.map((message) => message.messageTs));
   const entries: SlackPublicContextEntry[] = [];
   const degradations = [...context.degradations];
   const directRoot = turn.messageTs === turn.threadTs && (
@@ -307,9 +312,10 @@ export async function assembleRetainedSlackContext(
         !atOrBeforeSlackWatermark(fetched.contentVersionTs, entry.contentVersionTs))) continue;
     rows.set(entry.messageTs, retainedContextMessage(entry, fetched));
   }
-  const watermark = slackContextWatermark(turn);
+  const watermark = slackContextWatermark(turn, followUps);
   const eligible = orderMessages([...rows.values()].filter((message) => {
-    if (message.ts === turn.messageTs || !atOrBeforeSlackWatermark(message.ts, watermark)) return false;
+    if (message.ts === turn.messageTs || followUpTs.has(message.ts) ||
+        !atOrBeforeSlackWatermark(message.ts, watermark)) return false;
     if (message.contentVersionTs && !atOrBeforeSlackWatermark(message.contentVersionTs, watermark)) {
       degradations.push('slack_context.revision:after_trigger');
       return false;
