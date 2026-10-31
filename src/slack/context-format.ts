@@ -23,6 +23,7 @@ export function formatSlackContextRows(
         : message.ts;
       const provenance = [
         message.role ? `role=${message.role}` : undefined,
+        message.edited ? 'edited' : undefined,
         message.rootTs ? `root=${message.rootTs}` : undefined,
         message.replyCount ? `replies=${message.replyCount}` : undefined,
       ].filter(Boolean).join(' ');

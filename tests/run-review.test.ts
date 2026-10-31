@@ -731,11 +731,35 @@ test('a settled history keeps the late fold\'s messages, read back exactly as fr
   assert.deepEqual(collector.followUps(), [{ userId: 'U012ABCDEF3', messageTs: '1.5', text }]);
 });
 
+test('a settled history keeps an edit the run read late as a follow-up with its new text', () => {
+  const body = followUpSignalBody({
+    messages: [
+      { userId: 'U012ABCDEF3', messageTs: '1.4', text: 'Make it formal.', edit: { previousText: 'Make it casual.' } },
+      { userId: 'U012ABCDEF3', messageTs: '1.5', text: 'Thanks.' },
+    ],
+    requesterId: 'U012ABCDEF3',
+    timezone: 'UTC',
+    envelope: '<current_request_envelope>{}</current_request_envelope>',
+    phase: 'turn',
+  });
+  const collector = RunReviewCollector.fromHistory({
+    v: 1, conversationId: 'conversation', offset: '3', settlements: [],
+    messages: [{
+      id: 'late1', role: 'system', purpose: 'dispatch', display: 'diagnostic', submissionId: SUBMISSION,
+      signal: { tagName: 'slack_message' }, parts: [{ type: 'text', text: body, state: 'done' }],
+    }],
+  }, SUBMISSION);
+  assert.deepEqual(collector.followUps().map(({ messageTs, text }) => ({ messageTs, text })), [
+    { messageTs: '1.4', text: 'Make it formal.' },
+    { messageTs: '1.5', text: 'Thanks.' },
+  ]);
+});
+
 test('a fold signal reads back exactly as framed, whatever the text says', () => {
   const sender = 'U012ABCDEF3';
   const other = 'U0ZZZZZZZZ9';
   const envelope = '<current_request_envelope>{}</current_request_envelope>';
-  type Row = { messageTs: string; text: string; userId?: string; informationOnly?: true };
+  type Row = { messageTs: string; text: string; userId?: string; informationOnly?: true; edit?: { previousText: string } };
   const body = (messages: Row[], timezone = 'America/Los_Angeles', phase: 'turn' | 'finish' = 'finish') =>
     followUpSignalBody({
       messages: messages.map((message) => ({ userId: sender, ...message })), requesterId: sender, timezone, envelope, phase,
@@ -766,6 +790,15 @@ test('a fold signal reads back exactly as framed, whatever the text says', () =>
           { messageTs: '1700000002.000300', text: 'theirs', userId: third, informationOnly: true as const },
         ],
         [{ messageTs: '1700000000.000100', text, userId: other, informationOnly: true as const }],
+        [
+          { messageTs: '1700000000.000100', text: 'new message' },
+          { messageTs: '1699999999.000100', text, edit: { previousText: text } },
+        ],
+        [
+          { messageTs: '1699999999.000100', text: 'edited', edit: { previousText: text } },
+          { messageTs: '1699999998.000100', text, userId: other, edit: { previousText: 'before' } },
+          { messageTs: '1700000002.000300', text: 'theirs', userId: third, informationOnly: true as const, edit: { previousText: text } },
+        ],
       ] satisfies Row[][]) {
         assert.deepEqual(followUpSignalMessages(body(messages, timezone, phase)), messages.map((message) => ({ userId: sender, ...message })),
           `${JSON.stringify(text)} in ${timezone}, ${phase}`);
@@ -775,6 +808,13 @@ test('a fold signal reads back exactly as framed, whatever the text says', () =>
   const mixed = body([{ messageTs: '1.5', text: 'x' }, { messageTs: '1.6', text: 'y', userId: other }]);
   assert.match(mixed, new RegExp(`^While you were working, <@${sender}> and <@${other}> sent 2 more messages in this thread:`));
   const informed = body([{ messageTs: '1.5', text: 'x', userId: other, informationOnly: true }]);
+  const edited = body([{ messageTs: '1.4', text: 'now', edit: { previousText: 'was' } }]);
+  assert.match(edited, new RegExp([
+    `^While you were working, <@${sender}> edited a message you already read in this thread \\(the edited message keeps its time, and its new text replaces what you read\\):`,
+    `- \\[[^\\]]*1\\.4 role=human edited\\] ${sender}: now`,
+    'Before the edit, that message read:',
+    `- \\[[^\\]]*1\\.4 role=human\\] ${sender}: was`,
+  ].join('\n\n')));
   const rejected = {
     head: `Current Slack request (this is the only current user intent; answer this and let current system truth take precedence):\n${
       body([{ messageTs: '1.5', text: 'x' }])}\n\n${envelope}`,
@@ -785,6 +825,13 @@ test('a fold signal reads back exactly as framed, whatever the text says', () =>
     informedNoRows: informed.replace(/\n\n- \[[^\n]*/, ''),
     noRows: `While you were working, <@${sender}> sent another message in this thread:\n\n${envelope}`,
     otherSignal: `Files were delivered.\n\n- [1.5 role=human] ${sender}: x`,
+    beforeWithoutEdit: body([{ messageTs: '1.5', text: 'x' }])
+      .replace(`${sender}: x`, `${sender}: x\n\nBefore the edit, that message read:\n\n- [1.5 role=human] ${sender}: y`),
+    beforeOtherMessage: edited.replace(`1.4 role=human] ${sender}: was`, `1.3 role=human] ${sender}: was`),
+    beforeOtherSender: edited.replace(`1.4 role=human] ${sender}: was`, `1.4 role=human] ${other}: was`),
+    beforeMissing: edited.replace('\n\nBefore the edit, that message read:', ''),
+    beforeCountMismatch: edited.replace('Before the edit, that message read:', 'Before the edits, those messages read:'),
+    editWording: edited.replace('edited a message you already read', 'sent another message'),
   };
   for (const [name, text] of Object.entries(rejected)) assert.equal(followUpSignalMessages(text), undefined, name);
 });

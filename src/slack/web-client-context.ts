@@ -54,11 +54,13 @@ import { isSlackContentMessageSubtype } from './message-subtypes.ts';
 import { slackFileSummaries } from './message-text.ts';
 import { AGENT_ASK_SILENT_REPLY } from './agent-asks.ts';
 import {
+  editedRequestNote,
   foldedRequestHeading,
   frameFoldedMessages,
   informationOnlyHeading,
   type FoldedMessage,
 } from './follow-ups.ts';
+import { isEditTurn } from './edits.ts';
 
 export const SLACK_SELF_MENTION_PLACEHOLDER = '[[CHICKPEA_SELF_MENTION]]';
 
@@ -695,6 +697,7 @@ export function assembleSlackPrompt(
   if (options.threadFileManifest) {
     parts.push('', options.threadFileManifest);
   }
+  if (isEditTurn(turn)) parts.push('', editedRequestNote(turn, contextTimezone));
   const answered = followUps.filter((message) => !message.informationOnly);
   const informed = followUps.filter((message) => message.informationOnly);
   if (answered.length > 0) {

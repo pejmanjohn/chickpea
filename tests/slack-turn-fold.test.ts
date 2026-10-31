@@ -5,6 +5,7 @@ import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import {
+  foldActivityStatus,
   foldableTurn,
   foldedRequestText,
   MAX_FOLD_CYCLES,
@@ -1406,6 +1407,14 @@ const read = (claim: { messages: Array<{ turnJobId: string; text: string; edit?:
   claim.messages.map(({ turnJobId, text, edit, informationOnly }) => ({
     turnJobId, text, ...(edit ? { edit } : {}), ...(informationOnly ? { informationOnly } : {}),
   }));
+
+test('the status names what a late fold reads: new messages, edited ones, or both', () => {
+  const edit = { previousText: 'before' };
+  assert.equal(foldActivityStatus([{}, {}], 'start').text, 'Reading 3 messages…', 'the head counts at start');
+  assert.equal(foldActivityStatus([{}], 'turn').text, 'Reading 1 new message…');
+  assert.equal(foldActivityStatus([{ edit }], 'turn').text, 'Reading 1 edited message…');
+  assert.equal(foldActivityStatus([{}, {}, { edit }, { edit }], 'finish').text, 'Reading 2 new messages and 2 edited messages…');
+});
 
 test('a claim reads its messages and edit notes in the order people sent them, each message once', () => {
   const row = (messageTs: string, text: string, edit?: { editedTs: string; previousText: string }) => ({

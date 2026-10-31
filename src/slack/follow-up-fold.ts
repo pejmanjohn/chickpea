@@ -150,7 +150,7 @@ export function useSlackFollowUpFold(input: {
     // Counted only once dispatched: a lost dispatch is claimed again, never confirmed unread.
     await dispatch(followUp(claimed, 'turn', framing));
     update({ cycles: cycles + 1, finishes, read: reading(read, claimed) });
-    publishActivityStatus(input.instanceId, foldActivityStatus(claimed.messages.length, 'turn'));
+    publishActivityStatus(input.instanceId, foldActivityStatus(claimed.messages, 'turn'));
   });
 
   useAgentFinish(async ({ append, response, log }) => {
@@ -165,7 +165,7 @@ export function useSlackFollowUpFold(input: {
       if (!claimed?.messages.length || !framing) return;
       append(followUp(claimed, 'finish', framing));
       update({ cycles: cycles + 1, finishes: finishes + 1, read: reading(read, claimed) });
-      publishActivityStatus(input.instanceId, foldActivityStatus(claimed.messages.length, 'finish'));
+      publishActivityStatus(input.instanceId, foldActivityStatus(claimed.messages, 'finish'));
     } catch {
       log.warn('Could not check for follow-up messages; the reply answers what the Agent has read');
     }

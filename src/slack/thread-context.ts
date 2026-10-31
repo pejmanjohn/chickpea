@@ -35,6 +35,8 @@ export interface SlackContextMessage {
   files?: SlackFileSummary[];
   /** Replies under this message, for a channel-history row that starts a thread. */
   replyCount?: number;
+  /** An edit note's row in a late fold (frameFoldedMessages): its text is the message's new version. */
+  edited?: true;
 }
 
 export interface SlackContextExchange {
