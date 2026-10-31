@@ -25,8 +25,8 @@ export function archiveFileIds(
   threadArchiveFileIds: readonly string[],
   currentFileIds: readonly string[],
 ): ArchiveFileIds {
-  const ordered = [...threadArchiveFileIds, ...currentFileIds.filter((fileId) => !threadArchiveFileIds.includes(fileId))];
-  return ordered as readonly string[] as ArchiveFileIds;
+  const ordered: readonly string[] = [...threadArchiveFileIds, ...currentFileIds.filter((fileId) => !threadArchiveFileIds.includes(fileId))];
+  return ordered as ArchiveFileIds;
 }
 
 /**

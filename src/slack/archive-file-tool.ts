@@ -266,7 +266,5 @@ export function useReadArchiveFileTool(options: Omit<ReadArchiveFileToolOptions,
   useAgentFinish(() => { archiveTurns.delete(options.instanceId); });
   const fileIds = archiveFileIds(options.threadArchiveFileIds ?? [], options.currentMessageFileIds ?? []);
   if (fileIds.length === 0) return;
-  useTool(createReadArchiveFileTool({
-    instanceId: options.instanceId, turnKey: options.turnKey, fileIds, client: options.client,
-  }));
+  useTool(createReadArchiveFileTool({ ...options, fileIds }));
 }
