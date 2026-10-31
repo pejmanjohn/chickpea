@@ -10,7 +10,14 @@ import {
   type LineHunk,
   type TextChange,
 } from '../src/management/text-changes.ts';
-import { rewordItems, rewordMarker, syntheticSection, syntheticSkill } from './helpers/synthetic-skill.ts';
+import {
+  rewordItems,
+  rewordMarker,
+  syntheticItem,
+  syntheticParagraph,
+  syntheticSection,
+  syntheticSkill,
+} from './helpers/synthetic-skill.ts';
 
 /** Copies the unchanged runs of `before` and takes each hunk's lines from `after`. */
 function applyHunks(before: readonly string[], after: readonly string[], hunks: readonly LineHunk[]): string[] {
@@ -179,4 +186,28 @@ test('a heading that is a long run of emphasis markers reads in linear time', ()
   const [change] = summarizeTextChange(`${heading}\nOld line.`, `${heading}\nNew line.`);
   assert.ok(performance.now() - started < 1_000, 'a backtracking trim takes seconds here');
   assert.equal(change?.kind === 'text' ? change.place.kind : undefined, 'heading');
+});
+
+test('a heading whose section runs on past the change is an edit, not a whole section', () => {
+  const skill = syntheticSkill(8);
+  const heading = '## Step 6: Review area 6';
+  const opening = `${heading}\n\n${syntheticParagraph(6)}\n`;
+  const describe = (after: string) => summarizeTextChange(skill, after).map((change) =>
+    change.kind === 'section' ? `${change.action} section ${change.heading}` : `${change.action} ${change.place.kind}`);
+
+  assert.deepEqual(describe(skill.replace(opening, '')), ['removes heading'], 'the items stay, now under Step 5');
+  assert.deepEqual(
+    describe(skill.replace(heading, '## Step 6: Review area six').replace(syntheticParagraph(6), 'Area 6 now covers more.')),
+    ['changes heading'],
+  );
+  assert.deepEqual(
+    describe(skill.replace(syntheticItem(6, 4), `## Step 6b: Extra\n- New item.\n${syntheticItem(6, 4)}`)),
+    ['adds heading'],
+    'the new heading takes over items 6.4 to 6.6',
+  );
+  assert.deepEqual(describe(skill.replace(syntheticSection(6), '')), ['removes section Step 6: Review area 6']);
+  assert.deepEqual(
+    describe(skill.replace(syntheticSection(6), `${syntheticSection(6)}${syntheticSection(9, 'Archive')}`)),
+    ['adds section Step 9: Archive'],
+  );
 });

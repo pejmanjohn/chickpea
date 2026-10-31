@@ -155,27 +155,35 @@ function trimEmphasis(text: string): string {
 }
 
 /**
- * The headings in a hunk that open a whole section of their own: each holds
- * a body line before the next heading of its rank or above. Only the highest
- * rank among them splits the hunk, so a new section's subsections stay in it.
+ * The headings in a hunk that open a whole section of their own. Only the
+ * highest rank among them splits the hunk, so a new section's subsections
+ * stay in it.
  */
 function sectionStarts(lines: readonly TextLine[], start: number, end: number): number[] {
   const opening: Array<{ index: number; level: number }> = [];
   for (let index = start; index < end; index += 1) {
     const heading = lines[index]!.heading;
-    if (heading && holdsBody(lines, index + 1, end, heading.level)) opening.push({ index, level: heading.level });
+    if (heading && wholeSection(lines, index + 1, end, heading.level)) opening.push({ index, level: heading.level });
   }
   const level = opening.reduce((highest, heading) => Math.min(highest, heading.level), Infinity);
   return opening.filter((heading) => heading.level === level).map(({ index }) => index);
 }
 
-function holdsBody(lines: readonly TextLine[], start: number, end: number, level: number): boolean {
+/**
+ * Whether the section after a heading of `level` holds a body line and ends
+ * inside the hunk: at a heading of its rank or above, or where the hunk ends
+ * and such a heading or the end of the text follows. A section that runs on
+ * past the hunk only had its start edited.
+ */
+function wholeSection(lines: readonly TextLine[], start: number, end: number, level: number): boolean {
+  let body = false;
   for (let index = start; index < end; index += 1) {
     const heading = lines[index]!.heading;
-    if (!heading) return true;
-    if (heading.level <= level) return false;
+    if (heading && heading.level <= level) return body;
+    body ||= heading === undefined;
   }
-  return false;
+  const after = lines[end];
+  return body && (after === undefined || (after.heading !== undefined && after.heading.level <= level));
 }
 
 /** The part of a hunk before its first section: a word diff of its old and new lines. */
