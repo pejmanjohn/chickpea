@@ -427,6 +427,8 @@ test('a message delivered out of order ends the run rather than reorder the requ
 test('plain typed messages are foldable; asks, co-addressed turns and commands are not', () => {
   assert.equal(foldableTurn(turn('1800000000.000101')), true);
   assert.equal(foldableTurn(turn('1800000000.000101', { source: 'dm_message', channelType: 'im' })), true);
+  assert.equal(foldableTurn(turn('1800000000.000101', { source: 'agent_mention' })), true, 'a turn addressed to an Agent by its handle folds');
+  assert.equal(foldableTurn(turn('1800000000.000101', { source: 'reaction_added' })), false);
   assert.equal(foldableTurn(turn('1800000000.000101', {
     coAddressed: { agents: [{ agentId: 'a', name: 'A', handle: 'a' }], position: 0 },
   })), false);

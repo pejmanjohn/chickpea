@@ -46,6 +46,7 @@ export const MAX_FOLD_CYCLES = 3;
 
 const FOLDABLE_SOURCES: ReadonlySet<NormalizedSlackTurn['source']> = new Set([
   'app_mention',
+  'agent_mention',
   'implicit_thread_reply',
   'dm_message',
 ]);
