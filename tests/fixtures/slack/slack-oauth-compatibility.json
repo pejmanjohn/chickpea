@@ -38,7 +38,7 @@
     "localSourcePins": [
       {
         "path": "src/auth/better-auth.ts",
-        "sha256": "b767e2656e0b544ede326b7886aeecb6bf617e3255fb1160b7cd93ac0c919dd1"
+        "sha256": "ee25df146cdaa8e4d73238cbe7fc09c03ae9211de885d94bc13cef91178a1a48"
       },
       {
         "path": "src/auth/better-auth-routes.ts",
