@@ -1283,3 +1283,55 @@ test('a stop created at admission is offered to its runner at once; a repeated s
     assert.equal(h.runnerCalls.length, 1, 'an acknowledged stop is not offered again');
   } finally { h.close(); }
 });
+
+// ── late folds over the state RPC ────────────────────────────────────────
+
+test('a late fold over the state RPC takes follow-ups only for a head its thread runner runs', async () => {
+  const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
+    ts.isMethodDeclaration(member) && member.name.getText(source) === 'slackTurnFold');
+  assert.ok(method, 'production method slackTurnFold exists');
+  const Probe = vm.runInNewContext(ts.transpileModule(
+    `class FoldProbe { ${method.getText(source)} }\nFoldProbe`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText, {}) as new () => {
+    call(run: (stores: unknown) => unknown): Result;
+    slackTurnFold(request: object): Promise<Result>;
+  };
+  for (const runner of [true, false]) {
+    const db = openStateDb(':memory:');
+    try {
+      const clock = { now: NOW };
+      const turns = new TurnJobStoreLogic(db, () => clock.now);
+      const fixture = maintenanceTurnJob('head');
+      const head = {
+        ...fixture,
+        assignment: { ...fixture.assignment, model: 'local-stub/fold', runtimeContract: 'chickpea-v1', ownerIncarnation: 1 },
+      } as typeof fixture;
+      turns.enqueue(head);
+      clock.now += 1;
+      turns.freezeRuntimePlan('head', compileRuntimePlanV2({
+        turn: head.turn, assignment: head.assignment, instructions: 'Help.', memoryEpoch: 1,
+      }));
+      const { instanceId } = turns.prepareFlueDispatch('head', 'Do the work', { generation: 'head' });
+      if (runner) {
+        turns.assignRunner('head');
+        turns.confirmRunner('head');
+      }
+      turns.enqueue({
+        ...head, id: 'late', evtKey: 'evt:late', msgKey: 'msg:late',
+        turn: { ...head.turn, eventId: 'Ev_late', text: 'One more thing.', messageTs: '1800000000.000002' },
+      });
+      const probe = new Probe();
+      probe.call = (run) => ({ ok: true, value: run({ turnJobs: turns }) });
+      const claimed = await probe.slackTurnFold({
+        phase: 'finish', headId: 'head', instanceId, received: 0, take: true,
+      });
+      const messages = claimed.ok ? (claimed.value as { messages: Array<{ turnJobId: string }> }).messages : [];
+      assert.deepEqual(Array.from(messages, (message) => message.turnJobId), runner ? ['late'] : [],
+        runner ? 'a runner head takes it' : 'an alarm head takes nothing');
+      assert.equal(turns.runnerView('late').job?.fold?.headId, runner ? 'head' : undefined);
+    } finally {
+      db.close();
+    }
+  }
+});

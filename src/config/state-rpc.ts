@@ -103,6 +103,8 @@ import type {
   SlackAgentBinding,
   SlackAgentBindingExpectation,
   TurnDirectThreadQuery,
+  TurnFoldClaim,
+  TurnFoldRequest,
   TurnJob,
   TurnSteeringDecision,
   TurnSteeringRequest,
@@ -721,6 +723,12 @@ export interface TagStateRpc {
     headId: string,
     outcome: 'dropped' | 'released',
   ): Promise<StateRpcResult<TurnStopFinish | null>>;
+  /**
+   * Claim a head's follow-ups for its Agent (TurnJobStoreLogic.fold): a late
+   * fold from the Agent's would-stop. Only a head its thread runner runs
+   * takes any; a repeat returns the same rows.
+   */
+  slackTurnFold(request: TurnFoldRequest): Promise<StateRpcResult<TurnFoldClaim>>;
   /** The sender's DM threads with an undelivered run (at most two), for a top-level stop or check-in. */
   slackTurnDirectThreads(query: TurnDirectThreadQuery): Promise<StateRpcResult<string[]>>;
   /**

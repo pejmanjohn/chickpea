@@ -88,7 +88,31 @@ export function foldedRequestHeading(count: number, userId: string): string {
   return `Current Slack request, sent as ${count} messages by <@${userId}> (together they are the only current user intent: read them in order, since a later message may correct or add to an earlier one; answer all of them in one reply and let current system truth take precedence):`;
 }
 
-/** The status while a turn reads its request's messages (`count` includes the head). */
-export function foldActivityStatus(count: number): TypedActivityStatus {
-  return activityStatus('reading', 'Reading', `${count} messages`);
+/**
+ * What a late fold tells the running model: the messages that arrived while
+ * it worked, then the head's current-request envelope verbatim, so tool
+ * policy still reads this turn's envelope as the last one.
+ */
+export function followUpSignalBody(input: {
+  messages: readonly Pick<FoldedMessage, 'userId' | 'messageTs' | 'text'>[];
+  userId: string;
+  timezone: string;
+  envelope: string;
+}): string {
+  const count = input.messages.length;
+  return [
+    `While you were working, <@${input.userId}> sent ${count === 1 ? 'another message' : `${count} more messages`} in this thread:`,
+    frameFoldedMessages(input.messages, input.timezone),
+    'Your draft reply has not been sent. Read these with the request above, in order, since a later message may correct or add to an earlier one. Do any extra work they need, then write your next message as the complete reply to the whole request, not only to these messages.',
+    input.envelope,
+  ].join('\n\n');
+}
+
+/**
+ * The status while a turn reads its request's messages: at its start
+ * `count` includes the head; a late fold counts only the new messages.
+ */
+export function foldActivityStatus(count: number, phase: 'start' | 'finish'): TypedActivityStatus {
+  if (phase === 'start') return activityStatus('reading', 'Reading', `${count} messages`);
+  return activityStatus('reading', 'Reading', count === 1 ? '1 new message' : `${count} new messages`);
 }

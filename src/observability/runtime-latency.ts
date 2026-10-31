@@ -17,6 +17,7 @@ import type { GatewaySessionRunnerHealthSnapshot } from '../slack/gateway/sessio
 export type RuntimeLatencyEvent =
   | 'relay_alarm'
   | 'turn_latency'
+  | 'turn_fold'
   | 'state_rpc'
   | 'gateway_delivery'
   | 'thread_runner_alarm'
@@ -299,6 +300,21 @@ export class TurnLatencyTracker {
       folded: this.folded > 0 ? this.folded : undefined,
     }, this.sink);
   }
+}
+
+// ---------------------------------------------------------------------------
+// turn_fold: messages a running turn read in its would-stop phase.
+
+/**
+ * A running turn's model read `late` more of its requester's messages, sent
+ * while it worked; `turn_latency.folded` counts the ones it took at its start.
+ * Emitted once per message, when the state store confirms the Agent read it.
+ */
+export function emitTurnFold(
+  record: { turnJobId: string; late: number },
+  sink?: RuntimeLatencySink,
+): void {
+  emitRuntimeLatency('turn_fold', { turnRef: opaqueTurnRef(record.turnJobId), late: record.late }, sink);
 }
 
 // ---------------------------------------------------------------------------
