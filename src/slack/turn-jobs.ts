@@ -1058,7 +1058,7 @@ export class TurnJobStoreLogic {
     let informed = 0;
     if (request.phase === 'finish') {
       for (const { record, message } of this.foldMembers(threadKey, request.headId)) {
-        if (record.cycle < 1 || record.cycle > request.received || record.received || !holdsFold(record)) continue;
+        if (record.cycle < 1 || record.cycle > request.received || record.received) continue;
         this.writeFoldRecord(message.turnJobId, { ...record, received: true });
         confirmed += 1;
         if (record.role === 'informed') informed += 1;
@@ -1185,17 +1185,17 @@ export class TurnJobStoreLogic {
   }
 
   /**
-   * Whether the head's run may use the requester's own connections: so its
-   * frozen plan says, and so it reads until a plan is frozen.
+   * Whether the head's run may use the requester's own connections, as
+   * runtimePlanUsesPersonalAccess reads its frozen plan; so it reads until a
+   * plan is frozen. SQLite reads the JSON `false` as 0.
    */
   private headUsesPersonalAccess(headId: string): boolean {
-    const row = this.db.get('SELECT runtime_plan_json FROM turn_jobs WHERE id = ?', headId);
-    if (!row?.runtime_plan_json) return true;
-    try {
-      return runtimePlanUsesPersonalAccess(JSON.parse(String(row.runtime_plan_json)) as RuntimePlanV2);
-    } catch {
-      return true;
-    }
+    const row = this.db.get(
+      `SELECT json_extract(runtime_plan_json, '$.usesPersonalAccess') AS uses_personal_access
+       FROM turn_jobs WHERE id = ?`,
+      headId,
+    );
+    return row?.uses_personal_access !== 0;
   }
 
   /**
@@ -1240,8 +1240,9 @@ export class TurnJobStoreLogic {
    * completed, since only then did the reply answer it. Unread members, and
    * every member of a run that failed or was stopped, read as released, as
    * does an informed member, which the reply did not answer. Plain
-   * statements, run before the head's own tombstone, so a repeat converges. A settled member keeps its 👀 owed: the interaction cleanup
-   * sweeps remove it like a delivered turn's.
+   * statements, run before the head's own tombstone, so a repeat converges.
+   * A settled member keeps its 👀 owed: the interaction cleanup sweeps
+   * remove it like a delivered turn's.
    */
   private settleFoldMembers(headId: string): void {
     const head = this.db.get(
