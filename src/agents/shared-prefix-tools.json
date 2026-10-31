@@ -5493,6 +5493,29 @@
    }
   },
   {
+   "name": "reply_in_thread",
+   "description": "Post a short reply in this Slack thread now, as yourself, while you keep working: answer a question in a message that arrived while you worked, or give a progress update someone in the thread asked for. Never post progress updates nobody asked for. Your final reply still answers everything.",
+   "eager_input_streaming": true,
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "message_ts": {
+      "type": "string",
+      "description": "The ts of the message you answer, from its row among the messages that arrived while you worked."
+     },
+     "text": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Your reply in Slack markdown, at most 600 characters."
+     }
+    },
+    "required": [
+     "message_ts",
+     "text"
+    ]
+   }
+  },
+  {
    "name": "present_table",
    "description": "Present at least seven verified structured rows as a Slack-native static or explorable table. Use Markdown instead for six or fewer rows; never use this for one record.",
    "eager_input_streaming": true,

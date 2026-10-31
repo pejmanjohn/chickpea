@@ -9,6 +9,7 @@ import { POST_ARTIFACT_TOOL_NAME } from '../sandbox/artifact-tool.ts';
 import { GENERATE_IMAGE_TOOL_NAME } from '../sandbox/image-tool.ts';
 import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
 import { COMPLETE_FILE_DELIVERY_TOOL } from '../slack/file-delivery-completion.ts';
+import { SLACK_REPLY_IN_THREAD_TOOL_NAME } from '../slack/follow-ups.ts';
 import type { SLACK_LIST_TOOL_NAMES } from '../slack/lists/tools.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../slack/presentation-intent.ts';
 import type { SLACK_READ_TOOL_NAMES } from '../slack/reading/tools.ts';
@@ -73,6 +74,7 @@ const NON_QUALIFYING_TOOLS: readonly string[] = [
   'recover_image',
   SLACK_PRESENT_TABLE_TOOL_NAME,
   SLACK_STREAM_ANSWER_TOOL_NAME,
+  SLACK_REPLY_IN_THREAD_TOOL_NAME,
   SLACK_ASK_USER_TOOL_NAME,
   SLACK_OFFER_ACTIONS_TOOL_NAME,
   SLACK_PRESENT_CARDS_TOOL_NAME,
