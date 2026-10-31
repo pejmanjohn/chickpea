@@ -9,6 +9,7 @@ import { slackUploadSkillsValibotSchema } from '../src/management/schemas.ts';
 import {
   invokeSlackWorkspaceManagementTool,
   parseSlackManagementSignal,
+  slackSkillUploadKey,
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
 import type { WorkspaceManagementToolArguments } from '../src/management/tool-adapter.ts';
@@ -22,6 +23,7 @@ import {
 import type { GatewayAttachmentClient, GatewayAttachmentRead } from '../src/slack/gateway/client.ts';
 import { classifySkillReplacement, skillReplacementMessage } from '../src/slack/interaction-intent.ts';
 import { createSkillReplacementJudge, type SkillReplacementQuestion } from '../src/management/skill-replacement-judge.ts';
+import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
@@ -76,7 +78,12 @@ const KEPT: SkillConfig[] = [
 
 type Judge = (question: SkillReplacementQuestion) => Promise<boolean>;
 
-async function slackFixture(suffix: string, files?: Record<string, SlackFile>, judge: Judge = async () => false) {
+async function slackFixture(
+  suffix: string,
+  files?: Record<string, SlackFile>,
+  judge: Judge = async () => false,
+  overrides: Partial<WorkspaceManagementServiceInput> = {},
+) {
   const slackFiles = fakeSlackFiles(files);
   const judged: Array<Parameters<Judge>[0]> = [];
   const f = await createManagementAdapterFixture(suffix, {
@@ -85,6 +92,7 @@ async function slackFixture(suffix: string, files?: Record<string, SlackFile>, j
       judged.push(input);
       return judge(input);
     },
+    ...overrides,
   });
   await f.config.ensureWorkspaceInstallation({
     workspaceId: f.admin.user.slackTeamId,
@@ -167,6 +175,16 @@ function refusal(response: Awaited<ReturnType<typeof upload>>): string {
 }
 
 const names = (skills: Array<{ name: string }>) => skills.map(({ name }) => name);
+
+/** One side call's dispatch result, as the model provider reports it. */
+const JUDGE_RESULT = {
+  text: '{"replace":true}',
+  requestedModel: 'openai/gpt-judge-test',
+  returnedModel: { provider: 'openai', id: 'gpt-judge-test' },
+  reportedUsage: { inputTokens: 210, outputTokens: 6, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 216 },
+  usageCompleteness: 'complete' as const,
+  flueSubmissionRef: null,
+};
 
 test('the files on the person\'s message install, read with the skill accept set and the remaining byte budget', async () => {
   const { f, agent, slackFiles } = await slackFixture('slack-upload-install');
@@ -360,20 +378,34 @@ for (const [label, judge] of [
   }
 });
 
-test('a retry of the turn after the judge said no stays no, even when the judge would now say yes', async () => {
+test('a retry of the turn after the judge said no stays no, whether or not the model names the Agent', async () => {
   const answers = [false, true];
-  const { f, agent, judged } = await slackFixture('slack-upload-judge-once', undefined, async () => answers.shift()!);
+  const usage = new SqliteUsageStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const judge = createSkillReplacementJudge({
+    settings,
+    usage: () => usage,
+    classify: async () => ({ replace: answers.shift()!, failed: false, result: JUDGE_RESULT }),
+  });
+  const { f, agent } = await slackFixture('slack-upload-judge-once', undefined, undefined, { judgeSkillReplacement: judge });
   try {
     const signal = personMessage(f, { attachmentFileIds: 'F0ALPHA', requesterText: 'Maybe swap alpha for this one?' });
     assert.ok(signal);
-    const first = receipt(await upload(f, signal));
+    const first = receipt(await upload(f, signal, { idempotencyKey: slackSkillUploadKey(signal) }));
     assert.equal(first.status, 'unchanged');
     assert.deepEqual(names(first.conflicts), ['alpha']);
-    assert.deepEqual(receipt(await upload(f, signal)), first, 'the retry replays the recorded outcome');
-    assert.equal(judged.length, 1, 'the message is judged once');
+    const named = await upload(f, signal, { agentId: agent.id, idempotencyKey: slackSkillUploadKey(signal, agent.id) });
+    assert.deepEqual(receipt(named), first, 'naming the routed Agent is the same upload, so it replays');
+    assert.deepEqual(answers, [true], 'the message is judged once');
+    const recorded = await usage.getOperation(
+      `skill_replacement:${signal.workspaceId}:${signal.channelId}:${signal.eventId}:${agent.id}`,
+    );
+    assert.equal(recorded?.measurements.length, 1, 'and metered once');
     assert.deepEqual((await f.config.getAgent(agent.id)).skills, KEPT);
   } finally {
     f.close();
+    usage.close();
+    settings.close();
   }
 });
 
@@ -389,14 +421,7 @@ test('the replacement judge\'s usage is recorded against the Slack turn', async 
         return {
           replace: true,
           failed: false,
-          result: {
-            text: '{"replace":true}',
-            requestedModel: 'openai/gpt-judge-test',
-            returnedModel: { provider: 'openai', id: 'gpt-judge-test' },
-            reportedUsage: { inputTokens: 210, outputTokens: 6, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 216 },
-            usageCompleteness: 'complete',
-            flueSubmissionRef: null,
-          },
+          result: JUDGE_RESULT,
         };
       },
     });
@@ -463,6 +488,20 @@ test('the replacement judge reads only the message and the skill names, and fail
     { replace: false, failed: true }, 'a timeout replaces nothing');
   assert.deepEqual(await classifySkillReplacement(context, { prompt: async () => { throw new Error('down'); } }),
     { replace: false, failed: true });
+});
+
+test('an upload over the skill cap is refused before the metered judgment', async () => {
+  const { f, agent, judged } = await slackFixture('slack-upload-cap', undefined, async () => true);
+  try {
+    const full = [...KEPT, ...Array.from({ length: 98 }, (_, index) => ({ ...KEPT[0]!, name: `full-${index}` }))];
+    await f.config.updateAgent(agent.id, { skills: full }, agent.revision);
+    const signal = personMessage(f, { attachmentFileIds: 'F0ALPHA,F0BETA', requesterText: 'Replace alpha and add beta.' });
+    assert.ok(signal);
+    assert.match(refusal(await upload(f, signal)), /would have 101 skills; an Agent holds at most 100\./);
+    assert.deepEqual(judged, []);
+  } finally {
+    f.close();
+  }
 });
 
 test('more than four files never reach the tool', async () => {

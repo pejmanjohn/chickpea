@@ -1014,12 +1014,13 @@ export class WorkspaceManagementService {
     if (replay) return await this.replaySkillUpload(actor, agent, replay, resolution, slack ? [false, true] : [replaceExisting], slack);
 
     let plan = planSkillUpload(agent.skills, resolution, replaceExisting);
+    // A replacement keeps the count, so the cap is known before the metered judgment.
+    if (plan.skills.length > MAX_UPLOAD_CANDIDATES) {
+      throw new ManagementError('invalid_request', `${agent.name} would have ${plan.skills.length} skills; an Agent holds at most ${MAX_UPLOAD_CANDIDATES}. Remove some first, or upload fewer. No change was made.`);
+    }
     if (slackOrigin && plan.conflicts.length > 0 &&
         await this.slackMessageAsksToReplace(actor, slackOrigin, agentId, plan.conflicts.map(({ name }) => name))) {
       plan = planSkillUpload(agent.skills, resolution, true);
-    }
-    if (plan.skills.length > MAX_UPLOAD_CANDIDATES) {
-      throw new ManagementError('invalid_request', `${agent.name} would have ${plan.skills.length} skills; an Agent holds at most ${MAX_UPLOAD_CANDIDATES}. Remove some first, or upload fewer. No change was made.`);
     }
     if (plan.added.length === 0 && plan.replaced.length === 0) {
       // A retry of this Slack turn replays the record instead of judging the message again.
@@ -9783,6 +9784,7 @@ const UNAPPLIED_INSTRUCTIONS: Readonly<Record<string, string>> = {
   operation_failed: 'The change did not apply. Inspect again before retrying.',
   skill_missing: 'The Agent has no skill with this name, so nothing changed. Inspect the Agent to see its skills.',
   skill_already_set: 'The skill was already enabled or disabled as asked, so nothing changed.',
+  skill_upload_unchanged: 'The upload added and replaced no skill, so nothing changed. Show the receipt in presentation.slack.',
 };
 
 function unappliedReason(code: string): UnappliedReason {

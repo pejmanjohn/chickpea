@@ -629,6 +629,14 @@ export function slackManagementInstruction(agentId: string): string {
   return `${slackManagementRoutingInstruction(agentId)} ${SLACK_MANAGEMENT_GUIDANCE}`;
 }
 
+/**
+ * Names the target Agent whether the model passed its ID or left the routed
+ * default, so one message and target are one upload, judged and metered once.
+ */
+export function slackSkillUploadKey(signal: Pick<SlackManagementSignal, 'agentId'>, agentId?: string): string {
+  return `slack-upload:${agentId ?? signal.agentId}`;
+}
+
 const SLACK_SKILL_UPLOAD_INSTRUCTION = 'The person\'s current message has files attached. If it asks to add them as skills, call upload_skills, which reads the files itself.';
 
 /**
@@ -945,7 +953,7 @@ export function useWorkspaceManagementSlackTools(
           signal,
           resolvePlatformEnv,
           'upload_skills',
-          { ...data, idempotencyKey: data.agentId ? `slack-upload:${data.agentId}` : 'slack-upload' },
+          { ...data, idempotencyKey: slackSkillUploadKey(signal, data.agentId) },
           turnGuard,
         );
         creationCoordinator.recordFollowOn(result);
