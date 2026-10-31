@@ -41,8 +41,15 @@ export function foldedInformationOnly(
 export const MAX_FOLDED_MESSAGES = 8;
 /** The person's words one fold group may hold; a claim's first row is always taken whole. */
 export const MAX_FOLDED_TEXT_CHARS = 40_000;
-/** Late folds per response. Leftovers run as their own turn, which takes them at its start. */
+/** Would-stop folds per response. Leftovers run as their own turn, which takes them at its start. */
 export const MAX_FOLD_CYCLES = 3;
+/**
+ * Tool-boundary folds per response, counted in the same cycle sequence as
+ * the would-stop folds. Up to eight messages each, which covers a person who
+ * keeps adding to a long turn; past it their messages wait for a turn of
+ * their own, so a long run cannot keep taking on new work.
+ */
+export const MAX_TURN_FOLD_CYCLES = 12;
 
 const FOLDABLE_SOURCES: ReadonlySet<NormalizedSlackTurn['source']> = new Set([
   'app_mention',

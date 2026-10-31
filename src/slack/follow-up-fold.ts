@@ -14,7 +14,7 @@ interface FollowUpFoldState {
   cycles: number;
 }
 
-export type LateFoldRequest = Extract<TurnFoldRequest, { phase: 'finish' }>;
+export type LateFoldRequest = Exclude<TurnFoldRequest, { phase: 'start' }>;
 
 /**
  * Steering B: when the reply is about to settle, messages the same person

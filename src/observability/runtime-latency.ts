@@ -310,22 +310,24 @@ export class TurnLatencyTracker {
 }
 
 // ---------------------------------------------------------------------------
-// turn_fold: messages a running turn read in its would-stop phase.
+// turn_fold: messages a running turn read after a tool batch or in its would-stop phase.
 
 /**
  * A running turn's model read `late` more queued messages, sent while it
- * worked, `informed` of them as information only; `turn_latency.folded` and
- * `foldedInformed` count the ones it took at its start. Emitted when the
- * state store confirms the Agent read them.
+ * worked: `informed` of them as information only, `turn` of them after a
+ * tool batch rather than as it was about to reply. `turn_latency.folded`
+ * and `foldedInformed` count the ones it took at its start. Emitted when
+ * the state store confirms the Agent read them.
  */
 export function emitTurnFold(
-  record: { turnJobId: string; late: number; informed: number },
+  record: { turnJobId: string; late: number; informed: number; turn: number },
   sink?: RuntimeLatencySink,
 ): void {
   emitRuntimeLatency('turn_fold', {
     turnRef: opaqueTurnRef(record.turnJobId),
     late: record.late,
     informed: record.informed > 0 ? record.informed : undefined,
+    turn: record.turn > 0 ? record.turn : undefined,
   }, sink);
 }
 

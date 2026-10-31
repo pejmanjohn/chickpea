@@ -232,19 +232,22 @@ export interface TurnFoldMemberRecordV1 {
   cycle: number;
   /** The model's input holds the message: cycle 0 at once, a late fold once a later claim confirms it. */
   received: boolean;
+  /** A late fold taken at a tool boundary (phase `turn`); absent for the rest. */
+  toolBoundary?: true;
   at: number;
 }
 
 /**
  * Claim a head's follow-ups. `start`: before the head's dispatch, cycle 0;
- * a repeat returns the same rows. `finish`: in the head's would-stop phase on
- * Flue instance `instanceId`; `received` late folds were appended (this call
- * confirms them), and with `take` it claims the next cycle or returns the
- * rows already stamped for it.
+ * a repeat returns the same rows. `turn` (after a tool batch) and `finish`
+ * (the would-stop phase), on Flue instance `instanceId`, share one sequence
+ * of late folds: `received` of them reached the model (this call confirms
+ * them), and with `take` it claims the next cycle or returns the rows
+ * already stamped for it.
  */
 export type TurnFoldRequest =
   | { phase: 'start'; headId: string }
-  | { phase: 'finish'; headId: string; instanceId: string; received: number; take: boolean };
+  | { phase: 'turn' | 'finish'; headId: string; instanceId: string; received: number; take: boolean };
 
 export interface TurnFoldClaim {
   /** This claim's members, oldest first; empty when none was eligible. */

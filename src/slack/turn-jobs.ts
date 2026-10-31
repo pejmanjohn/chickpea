@@ -75,6 +75,7 @@ import {
   MAX_FOLD_CYCLES,
   MAX_FOLDED_MESSAGES,
   MAX_FOLDED_TEXT_CHARS,
+  MAX_TURN_FOLD_CYCLES,
   type FoldedMessage,
 } from './follow-ups.ts';
 
@@ -1030,13 +1031,22 @@ export class TurnJobStoreLogic {
    */
   fold(request: TurnFoldRequest): TurnFoldClaim {
     validateFoldRequest(request);
-    const { claim, confirmed, informed } = this.db.transaction(() => this.claimFold(request));
-    if (confirmed > 0) emitTurnFold({ turnJobId: request.headId, late: confirmed, informed });
+    const { claim, confirmed, informed, toolBoundary } = this.db.transaction(() => this.claimFold(request));
+    if (confirmed > 0) emitTurnFold({ turnJobId: request.headId, late: confirmed, informed, turn: toolBoundary });
     return claim;
   }
 
-  /** The claim, and how many late members this call confirmed as read (`informed` of them information only). */
-  private claimFold(request: TurnFoldRequest): { claim: TurnFoldClaim; confirmed: number; informed: number } {
+  /**
+   * The claim, and how many late members this call confirmed as read:
+   * `informed` of them information only, `toolBoundary` of them taken at a
+   * tool boundary.
+   */
+  private claimFold(request: TurnFoldRequest): {
+    claim: TurnFoldClaim;
+    confirmed: number;
+    informed: number;
+    toolBoundary: number;
+  } {
     const head = this.db.get(
       `SELECT rowid AS row_order, id, turn_json, assignment_json, delivered, status, execution_authority,
          dispatch_started_at, agent_instance_id, stop_json, fold_json, thread_key, enqueued_at
@@ -1044,7 +1054,7 @@ export class TurnJobStoreLogic {
       request.headId,
     );
     const threadKey = typeof head?.thread_key === 'string' ? head.thread_key : undefined;
-    const none = { claim: { messages: [], requesterText: '' }, confirmed: 0, informed: 0 };
+    const none = { claim: { messages: [], requesterText: '' }, confirmed: 0, informed: 0, toolBoundary: 0 };
     if (!head || !threadKey) return none;
     let headTurn: NormalizedSlackTurn;
     let headAssignment: ResolvedAssignment;
@@ -1056,12 +1066,14 @@ export class TurnJobStoreLogic {
     }
     let confirmed = 0;
     let informed = 0;
-    if (request.phase === 'finish') {
+    let toolBoundary = 0;
+    if (request.phase !== 'start') {
       for (const { record, message } of this.foldMembers(threadKey, request.headId)) {
         if (record.cycle < 1 || record.cycle > request.received || record.received) continue;
         this.writeFoldRecord(message.turnJobId, { ...record, received: true });
         confirmed += 1;
         if (record.role === 'informed') informed += 1;
+        if (record.toolBoundary) toolBoundary += 1;
       }
     }
     const cycle = request.phase === 'start' ? 0 : request.received + 1;
@@ -1076,8 +1088,9 @@ export class TurnJobStoreLogic {
       },
       confirmed,
       informed,
+      toolBoundary,
     });
-    if (request.phase === 'finish' && !request.take) return claim([]);
+    if (request.phase !== 'start' && !request.take) return claim([]);
     const stamped = this.foldMembers(threadKey, request.headId)
       .filter(({ record }) => record.cycle === cycle).map(({ message }) => message);
     if (stamped.length > 0) return claim(stamped);
@@ -1093,7 +1106,7 @@ export class TurnJobStoreLogic {
       (request.phase === 'start'
         ? !dispatched
         : dispatched && head.agent_instance_id === request.instanceId);
-    if (!open || cycle > MAX_FOLD_CYCLES) return claim([]);
+    if (!open || cycle > lastFoldCycle(request.phase)) return claim([]);
     const runnerKey = runnerKeyOf({ turn: headTurn, assignment: headAssignment });
     const usesPersonalAccess = this.headUsesPersonalAccess(request.headId);
     const taken: FoldedMessage[] = [];
@@ -1141,6 +1154,7 @@ export class TurnJobStoreLogic {
         headId: request.headId,
         cycle,
         received: cycle === 0,
+        ...(request.phase === 'turn' ? { toolBoundary: true as const } : {}),
         at: this.now(),
       });
       taken.push({
@@ -3051,6 +3065,7 @@ function parseTurnFoldRecord(raw: unknown): TurnFoldMemberRecordV1 | undefined {
       headId: value.headId,
       cycle: Number(value.cycle),
       received: value.received,
+      ...(value.toolBoundary === true ? { toolBoundary: true as const } : {}),
       at: Number(value.at),
     };
   } catch {
@@ -3058,12 +3073,23 @@ function parseTurnFoldRecord(raw: unknown): TurnFoldMemberRecordV1 | undefined {
   }
 }
 
+/**
+ * The last late-fold cycle a phase may claim. Tool boundaries take the
+ * sequence's first MAX_TURN_FOLD_CYCLES; the Agent counts its own
+ * MAX_FOLD_CYCLES would-stop folds, which may follow every one of them.
+ */
+function lastFoldCycle(phase: 'start' | 'turn' | 'finish'): number {
+  if (phase === 'start') return 0;
+  return phase === 'turn' ? MAX_TURN_FOLD_CYCLES : MAX_TURN_FOLD_CYCLES + MAX_FOLD_CYCLES;
+}
+
 function validateFoldRequest(request: TurnFoldRequest): void {
   validateBoundedString(request.headId, 'TurnJob id', 256);
   if (request.phase === 'start') return;
-  if (request.phase !== 'finish') throw new Error('Fold phase is invalid.');
+  if (request.phase !== 'finish' && request.phase !== 'turn') throw new Error('Fold phase is invalid.');
   validateOpaqueAgentId(request.instanceId, 'instance id');
-  if (!Number.isSafeInteger(request.received) || request.received < 0 || request.received > MAX_FOLD_CYCLES) {
+  if (!Number.isSafeInteger(request.received) || request.received < 0 ||
+      request.received > lastFoldCycle('finish')) {
     throw new Error('Fold cycle count is invalid.');
   }
   if (typeof request.take !== 'boolean') throw new Error('Fold take flag is invalid.');
