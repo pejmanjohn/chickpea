@@ -1643,10 +1643,13 @@ test('an edit no claim takes runs as its own turn after the reply, and its start
     const claim = c.turns.fold({ phase: 'start', headId: own.id });
     assert.equal(claim.headText, 'v3');
     assert.deepEqual(claim.messages, []);
+    const laterRun = view(c.turns, editRowId(head, '160')).job!.runId;
+    assert.ok(laterRun);
     dispatch(c.turns, { ...posted('101'), id: own.id, turn: own.turn });
     c.turns.recordFlueSettlement(own.id, COMPLETED);
     c.slack.endTurn(own.id, c.turns, c.work, c.presentations);
     assert.equal(view(c.turns, editRowId(head, '160')).status, 'done', 'one reply answers both edits');
+    assert.equal(c.work.getRun(laterRun as RunId)?.terminalDisposition, 'superseded', 'its Run ends with that reply');
   } finally {
     c.db.close();
   }
