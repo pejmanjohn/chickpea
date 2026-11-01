@@ -151,13 +151,22 @@ each Agent's purpose, connection names, website login hosts, and skill
 names. It stops at 12 Agents and 6,000 characters. It never holds
 credentials, usernames, or another member's personal connections.
 
-When one Agent fits, Chickpea calls `hand_off_to_agent`. Chickpea's reply
+When one Agent fits, Chickpea calls `hand_off_to_agent`. The host, not the
+model, decides whether the person must pick first. The host hands the
+message over at once only to an Agent the person created, or to one that
+answered them in this direct message in the last 7 days. Chickpea's reply
 names that Agent. The host then admits the person's own message again for
 that Agent, which takes the thread over. The requester, text, message ts and
 files are the same as with a mention, and access is checked again at
-admission. When several Agents fit, Chickpea's reply has one button per
-Agent, and only the person's own click hands the message over. A message is
-handed over at most once: the `msg:<channel>:<ts>:handoff` claim allows one.
+admission.
+
+For any other Agent, Chickpea's reply says that Agent can take the message,
+and a card offers two buttons: that Agent and Chickpea. When several Agents
+fit, the card has one button per Agent. Only the person's own click hands
+the message over. When the message is too large for a card, the tool refuses
+an Agent that needs a click, so Chickpea names it and suggests a mention. A
+message is handed over at most once: the `msg:<channel>:<ts>:handoff` claim
+allows one.
 
 Group DMs, Channels, thread replies, and any message that mentions an Agent
 keep the routing described above.
