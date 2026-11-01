@@ -1088,6 +1088,8 @@ async function runTurnAttempt(
     }
   }
   let interactionIntent = turn.interactionIntent;
+  /** The classifier's intent and usage records, awaited once the context read has begun. */
+  let classifierRecords: Promise<void> | undefined;
   // Classification and the memory → plan → Work lifecycle chain read
   // independent state; each chain keeps its own writes in order.
   const classifyTurn = async (): Promise<void> => {
@@ -1112,15 +1114,19 @@ async function runTurnAttempt(
     });
     interactionIntent = classification.intent;
     turn.interactionIntent = interactionIntent;
-    await options.onInteractionIntent?.(interactionIntent);
-    await recordExplicitInteractionClassifierUsage({
-      turn,
-      assignment,
-      classification,
-      requestedModel: resolvedModel ?? null,
-      platformEnv,
-      options,
-    });
+    classifierRecords = Promise.all([
+      options.onInteractionIntent?.(interactionIntent),
+      recordExplicitInteractionClassifierUsage({
+        turn,
+        assignment,
+        classification,
+        requestedModel: resolvedModel ?? null,
+        platformEnv,
+        options,
+      }),
+    ]).then(() => undefined);
+    // Handled where it is awaited; a rejection before then must not be unhandled.
+    classifierRecords.catch(() => undefined);
   };
   const prepareTurn = async () => {
     const memory = skipMemory
@@ -1557,6 +1563,12 @@ async function runTurnAttempt(
   // A turn with any of these ends before the model, whatever the lease says.
   const dispatchExpected = modelRepairText === undefined && !turn.managementApprovalProposalId &&
     !memoryCommand && interactionIntent?.disposition !== 'react_only';
+  // Frozen while the context is read, and taken from this promise at the
+  // dispatch; a retry that holds its dispatch envelope froze one with it.
+  const turnEnvelope = dispatchExpected && options.replayText === undefined &&
+      !stoppedBeforeDispatch && !options.flueDispatch?.dispatchEnvelope
+    ? turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv)
+    : {};
   // The turn's bounded context (degrades to current-message-only on failure).
   // A turn that continues the thread's transcript sends only what arrived
   // since the previous turn; the transcript already holds the rest,
@@ -1627,6 +1639,9 @@ async function runTurnAttempt(
     // fence has decided.
     const contextRead = dispatchExpected ? readTurnContext() : undefined;
     const contextReadSettled = contextRead?.catch(() => undefined);
+    // Everything the intent decides (a checklist, a reaction, the dispatch)
+    // follows its record; a record that fails ends the attempt before them.
+    await classifierRecords;
     if (preparedMemory?.ownerBound && !(await leaseCheck)) {
       // Fail closed, never silently: the durable relay only retires a turn job
       // once delivery is tombstoned, so an early `return` here left the job
@@ -1992,14 +2007,21 @@ async function runTurnAttempt(
           }
         : {}),
     });
-    const persistedPrompt = await workLifecycle?.prepareExecution(prompt);
     // Usage names the execution only once it exists. A creation queued behind
     // a slow Work store links when it lands; usage recorded before then names
     // none, never one that may not exist.
-    workLifecycle?.whenExecutionRecorded((executionId) => {
-      usageRecorder?.linkRunExecution(executionId);
-    });
-    const executionPrompt = persistedPrompt ?? prompt;
+    const executionPrepared = workLifecycle
+      ? workLifecycle.prepareExecution(prompt).then((persisted) => {
+          workLifecycle.whenExecutionRecorded((executionId) => {
+            usageRecorder?.linkRunExecution(executionId);
+          });
+          return persisted;
+        })
+      : undefined;
+    // Ledger authority dispatches the input it read back. An observer
+    // dispatches the prompt it rendered while the ledger records it; the
+    // dispatch itself waits for that record (promptSlackThreadAgent).
+    const executionPrompt = (ledgerAuthority ? await executionPrepared : undefined) ?? prompt;
 
     // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
     //    in a finally so a status that was actually set is cleared even if
@@ -2084,8 +2106,9 @@ async function runTurnAttempt(
             ...(threadImages ? { threadImages } : {}),
             ...(threadFiles.length ? { threadFileIds: threadFiles.map(({ id }) => id) } : {}),
             ...(admittedListIds.length ? { admittedListIds } : {}),
-            ...turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv),
+            ...turnEnvelope,
             ...(platformEnv ? { env: platformEnv } : {}),
+            ...(executionPrepared ? { executionPrepared } : {}),
             ...(workLifecycle && options.runId
               ? {
                   workCorrelation: {
@@ -2114,6 +2137,9 @@ async function runTurnAttempt(
           });
         } finally {
           await streamAgeChecks?.stop();
+          // A settled replay and a failed dispatch return without the
+          // adapter's own wait for the record; the settlement needs it.
+          await executionPrepared;
         }
         text = sandboxUnavailableFallback
           ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${agentResult.text}`
@@ -2902,8 +2928,10 @@ export async function resolveCodingWorkspaceDecision(
 
 /**
  * On Cloudflare the Agent runs in its own Durable Object, where every settings
- * read is an RPC back into this state object. Freeze what its tools read
- * (host-local reads here) so they do not call back per tool.
+ * read is an RPC back into the state object. Freeze what its tools read so
+ * they do not call back per tool: local reads in the state object, RPCs like
+ * every other read in a thread runner, started here so they overlap the
+ * context read.
  */
 function turnEnvelopeBuilder(
   plan: RuntimePlanV2 | undefined,
@@ -2911,10 +2939,16 @@ function turnEnvelopeBuilder(
   config: AppStores['config'] | undefined,
   env: PlatformEnv | undefined,
 ): { buildTurnEnvelope?: () => Promise<TurnEnvelopeV1 | undefined> } {
-  if (!plan || !settings || !config || !isCloudflareTarget()) return {};
-  return {
-    buildTurnEnvelope: () => buildTurnEnvelope({ plan, settings, config, ...(env ? { env } : {}) }),
-  };
+  if (!plan || !isCloudflareTarget()) return {};
+  const building = buildTurnEnvelope({
+    plan,
+    settings: settings ?? getSettingsStore(env),
+    config: config ?? getConfigStore(env),
+    ...(env ? { env } : {}),
+  });
+  // Handled where the dispatch awaits it (buildTurnEnvelopeSafely).
+  building.catch(() => undefined);
+  return { buildTurnEnvelope: () => building };
 }
 
 /**

@@ -192,7 +192,6 @@ export const slackThreadCloudflareExtension = {
 interface AgentObjectNamespace {
   idFromName(name: string): unknown;
   get(id: unknown): {
-    setName?(name: string): Promise<void>;
     chickpeaStageTurnInput(json: string): Promise<void>;
   };
 }
@@ -211,10 +210,9 @@ export async function stageSlackTurnInputOnAgentObject(
     throw new Error(`Agent object binding ${bindingName} is unavailable.`);
   }
   const json = serializeSlackTurnInput(input);
+  // Addressed by name, the object reads its name from its id, and the
+  // dispatch that follows runs its start hook; staging needs neither.
   const stub = binding.get(binding.idFromName(input.instanceId));
-  // Flue's own addressing (getAgentByName) names the object first; a staging
-  // call can be the object's first contact on a thread's first turn.
-  await stub.setName?.(input.instanceId);
   await stub.chickpeaStageTurnInput(json);
 }
 

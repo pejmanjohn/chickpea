@@ -143,3 +143,24 @@ test('an observe-mode invocation whose marker fails is not marked again by later
   assert.equal(providerCalls, 50, 'the legacy execution continues');
   assert.equal(marks, 1, 'one store attempt for the invocation, not one per model operation');
 });
+
+test('an observe-mode invocation marks while the provider request is in flight, and the mark still lands', async () => {
+  const events: string[] = [];
+  const interceptor = createWorkModelInvocationInterceptor({
+    resolveTarget: async () => ({ ...target, workCorrelation: { ...correlation, mode: 'observe' as const } }),
+    markInvocation: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      events.push('marked');
+    },
+  });
+  await interceptor(
+    { type: 'agent', operationId: 'operation', operationKind: 'prompt' },
+    context,
+    () => interceptor({ type: 'model', turnId: 'turn-1' }, {}, async () => {
+      events.push('provider-1');
+    }),
+  );
+  assert.deepEqual(events, ['provider-1'], 'the observer does not wait for its mark before the provider request');
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.deepEqual(events, ['provider-1', 'marked'], 'the mark still lands');
+});

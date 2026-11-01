@@ -271,6 +271,13 @@ interface PromptSlackAgentInput {
    */
   buildTurnEnvelope?: () => Promise<TurnEnvelopeV1 | undefined>;
   workCorrelation?: WorkTraceCorrelation;
+  /**
+   * The ledger's record of this turn's execution, still being written while
+   * the envelope is prepared and staged. Awaited before the dispatch or a
+   * reattached observation: the Agent's first model operation marks that
+   * execution, and every delivery stage follows it.
+   */
+  executionPrepared?: Promise<unknown>;
   env?: PlatformEnv;
   now?: () => number;
   /** Slack seam run after settlement persistence and before any visible reply. */
@@ -432,6 +439,7 @@ export async function promptSlackThreadAgent(
   }
   const agent = input.handle ? undefined : await slackThreadAgent();
   let handle = input.handle ?? slackThreadAgentHandle(agent!, envelope);
+  await input.executionPrepared;
   let receipt = input.state.dispatchReceipt;
   if (!receipt) {
     let admitted: DispatchReceipt;

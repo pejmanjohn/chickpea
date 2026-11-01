@@ -16,7 +16,7 @@ interface InvocationState {
   instanceId: string;
   submissionId: string;
   target?: FlueObservationTarget;
-  marked: boolean;
+  /** The invocation's one mark attempt, whatever it came to. */
   marking?: Promise<void>;
   /** An observe-mode mark failed: this invocation is not marked again. */
   markUnavailable?: boolean;
@@ -78,7 +78,6 @@ export function createWorkModelInvocationInterceptor(options: {
         instanceId,
         submissionId,
         ...(target ? { target } : {}),
-        marked: false,
       }, next);
     }
     if (operation.type !== 'model') return next();
@@ -89,33 +88,30 @@ export function createWorkModelInvocationInterceptor(options: {
     // execution missing, or the store unreachable) is not retried by every
     // later model operation, which sent one store read per operation.
     if (active.markUnavailable && correlation.mode !== 'enforce') return next();
-    try {
-      await ensureInvocationMarked(active, correlation, markInvocation);
-    } catch (error) {
-      if (correlation.mode === 'enforce') throw error;
-      active.markUnavailable = true;
-      console.warn('[work] model invocation marker unavailable; legacy execution will continue');
-    }
+    const marking = ensureInvocationMarked(active, correlation, markInvocation);
+    // Ledger authority never reaches the provider unmarked; an observer's
+    // mark lands while the request is in flight.
+    if (correlation.mode === 'enforce') await marking;
     return next();
   };
 }
 
 export const workModelInvocationInterceptor = createWorkModelInvocationInterceptor();
 
-async function ensureInvocationMarked(
+function ensureInvocationMarked(
   state: InvocationState,
   correlation: WorkTraceCorrelation,
   markInvocation: MarkInvocation,
 ): Promise<void> {
-  if (state.marked) return;
-  state.marking ??= markInvocation(correlation).then(() => {
-    state.marked = true;
+  state.marking ??= markInvocation(correlation).catch((error: unknown) => {
+    if (correlation.mode === 'enforce') {
+      delete state.marking;
+      throw error;
+    }
+    state.markUnavailable = true;
+    console.warn('[work] model invocation marker unavailable; legacy execution will continue');
   });
-  try {
-    await state.marking;
-  } finally {
-    if (!state.marked) delete state.marking;
-  }
+  return state.marking;
 }
 
 async function resolvePersistedObservationTarget(

@@ -54,6 +54,15 @@ before(async () => {
   process.env.SLACK_STATE_DB_PATH = statePath;
   const store = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   await store.createAgent(assignment.agent);
+  // A healthy installation lets a DM turn pass its memory lease and dispatch.
+  const installation = await store.ensureWorkspaceInstallation({
+    workspaceId: assignment.workspaceId,
+    transportMode: 'direct',
+    defaultAgentId: assignment.agentId,
+    teamId: assignment.workspaceId,
+    botUserId: 'U_CHICKPEA',
+  });
+  await store.updateWorkspaceInstallation(assignment.workspaceId, { health: 'healthy' }, installation.revision);
   store.close();
 });
 
@@ -131,11 +140,14 @@ let turns = 0;
 let rejectCustomStatus = false;
 /** Slack's acknowledgement of the custom status waits on this, when set. */
 let holdCustomStatus: ((timeline: string[]) => Promise<void>) | undefined;
+/** The runner's intent record waits on this, when set. */
+let holdInteractionIntent: ((timeline: string[]) => Promise<void>) | undefined;
 
 async function firstStatusTimeline(
   surface: Surface,
   publicUrl?: string | null,
   overrides: Partial<RunTurnOptions> = {},
+  turnAssignment: ResolvedAssignment = assignment,
 ) {
   const timeline: string[] = [];
   turns += 1;
@@ -150,7 +162,7 @@ async function firstStatusTimeline(
   };
   const real = resolveStores();
   const admitted = await real.work.admitShadowRun(prepareSlackShadowAdmission({
-    turn, assignment, sourceVisibility: 'private', admittedAt: Date.now(),
+    turn, assignment: turnAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
   }));
   const runId = admitted.run.id;
   const stores = Object.fromEntries(
@@ -246,7 +258,10 @@ async function firstStatusTimeline(
     usageRecordingEnabled: false,
     ...(publicUrl === undefined ? {} : { publicUrl }),
     // The runner's per-turn state-store writes (see runnerTurnJobsPort).
-    onInteractionIntent: async () => { timeline.push('turnJobs.recordInteractionIntent'); },
+    onInteractionIntent: async () => {
+      timeline.push('turnJobs.recordInteractionIntent');
+      await holdInteractionIntent?.(timeline);
+    },
     onRuntimePlan: async (candidate) => {
       timeline.push('turnJobs.freezeRuntimePlan');
       const { deriveRuntimePlanInstanceId } = await import('../src/agents/runtime-plan.ts');
@@ -256,16 +271,19 @@ async function firstStatusTimeline(
       timeline.push('turnJobs.getBoundRuntimePlan');
       return undefined;
     },
-    agentPrompt: async () => ({
-      text: 'Done.',
-      requestedModel: assignment.model ?? null,
-      returnedModel: null,
-      reportedUsage: null,
-      usageCompleteness: 'not_reported',
-    }),
+    agentPrompt: async () => {
+      timeline.push('agentPrompt');
+      return {
+        text: 'Done.',
+        requestedModel: assignment.model ?? null,
+        returnedModel: null,
+        reportedUsage: null,
+        usageCompleteness: 'not_reported',
+      };
+    },
   };
   try {
-    await runTurn(turn, assignment, undefined, { ...options, ...overrides });
+    await runTurn(turn, turnAssignment, undefined, { ...options, ...overrides });
   } finally {
     db.close();
   }
@@ -424,5 +442,30 @@ test('classification and the plan do not wait for the custom status acknowledgem
     }
   } finally {
     holdCustomStatus = undefined;
+  }
+});
+
+test("the classifier's records land while the context is read, before the dispatch", async () => {
+  // The intent record is slow: it lands once the context read has started,
+  // or after two seconds if the turn waits for it.
+  holdInteractionIntent = async (timeline) => {
+    const deadline = Date.now() + 2_000;
+    while (!timeline.some((entry) => entry.startsWith('slack:conversations.')) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    timeline.push('recorded:turnJobs.recordInteractionIntent');
+  };
+  try {
+    // A DM whose assignment names the DM: the one surface here whose memory
+    // lease passes, so the turn reaches its dispatch.
+    const { timeline } = await firstStatusTimeline('dm', null, {}, { ...assignment, channelId: 'D_FIRST_STATUS' });
+    const contextRead = timeline.findIndex((entry) => entry.startsWith('slack:conversations.'));
+    const recorded = timeline.indexOf('recorded:turnJobs.recordInteractionIntent');
+    const dispatched = timeline.indexOf('agentPrompt');
+    assert.ok(contextRead >= 0 && recorded >= 0 && dispatched >= 0, 'the turn read, recorded and dispatched');
+    assert.ok(contextRead < recorded, "the context read does not wait for the classifier's records");
+    assert.ok(recorded < dispatched, "the dispatch waits for the classifier's records");
+  } finally {
+    holdInteractionIntent = undefined;
   }
 });

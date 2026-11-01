@@ -291,7 +291,7 @@ test('the Cloudflare extension is branded as Flue expects and stages into the ob
     }),
   };
   await stageSlackTurnInputOnAgentObject({ FLUE_AGENT: binding }, 'FLUE_AGENT', input);
-  assert.deepEqual(calls, [`setName:id:${instanceId}:${instanceId}`, 'stage:turn_do']);
+  assert.deepEqual(calls, ['stage:turn_do'], 'the object is addressed by name; staging is the one call');
   await assert.rejects(stageSlackTurnInputOnAgentObject({}, 'FLUE_AGENT', input), /unavailable/);
 });
 
