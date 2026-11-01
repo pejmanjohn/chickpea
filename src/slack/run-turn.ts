@@ -1586,7 +1586,9 @@ async function runTurnAttempt(
       !stoppedBeforeDispatch && !options.flueDispatch?.dispatchEnvelope
     ? turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv)
     : {};
-  const turnConfig = options.appStores?.config ?? getConfigStore(platformEnv);
+  // Read lazily: a turn that ends before any context or front-desk read
+  // (an approval, a stop) never touches the config store.
+  const turnConfig = () => options.appStores?.config ?? getConfigStore(platformEnv);
   // The turn's bounded context (degrades to current-message-only on failure).
   // A turn that continues the thread's transcript sends only what arrived
   // since the previous turn; the transcript already holds the rest,
@@ -1597,7 +1599,7 @@ async function runTurnAttempt(
       ? []
       : runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
     const threadRecord = assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0
-      ? turnConfig
+      ? turnConfig()
       : undefined;
     const hydratedContext = frozenHandoff.length > 0
       ? currentMessageOnlyContext(turn)
@@ -1605,7 +1607,7 @@ async function runTurnAttempt(
           client,
           turn,
           ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
-          siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig, turn.workspaceId),
+          siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig(), turn.workspaceId),
           sharedAppReads,
           state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
           ...(threadRecord ? { record: threadRecord } : {}),
@@ -2406,7 +2408,7 @@ async function runTurnAttempt(
     };
     const frontDeskPlan = runtimePlanDecision?.runtimePlan.frontDesk;
     const frontDeskDecision = agentResult?.frontDeskHandoff && frontDeskPlan
-      ? decideFrontDesk(agentResult.frontDeskHandoff, frontDeskPlan, await readFrontDeskMessage(turnConfig, turn))
+      ? decideFrontDesk(agentResult.frontDeskHandoff, frontDeskPlan, await readFrontDeskMessage(turnConfig(), turn))
       : undefined;
     if (frontDeskDecision) {
       await preparedMemory?.confirmInjection();
