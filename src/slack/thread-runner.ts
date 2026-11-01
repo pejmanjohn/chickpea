@@ -14,6 +14,7 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { SlackPublicContextEntryInput } from '../config/types.ts';
+import type { IdentityStore } from '../identity/types.ts';
 import { tagStateStub, type StateRpcResult } from '../config/state-rpc.ts';
 import {
   cloudflareCodingWorkerStopClient,
@@ -418,7 +419,12 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
               : getConfigStore(env).getWorkspaceInstallation(id),
         },
         settings: start ? prefetchedSettings(settings, start.settings) : settings,
-        credentialDependencies: { state: getIdentityStore(env), env },
+        credentialDependencies: {
+          state: start?.slackCredentials
+            ? prefetchedCredentials(getIdentityStore(env), start.slackCredentials)
+            : getIdentityStore(env),
+          env,
+        },
       });
     }), env);
     const config = {
@@ -556,6 +562,19 @@ function presentationResult<T>(fn: () => T): StateRpcResult<T> {
       error: { code: 'internal', message: error instanceof Error ? error.message : String(error) },
     };
   }
+}
+
+/** An identity store that answers a turn's two credential reads from its `begin`. */
+function prefetchedCredentials(
+  store: IdentityStore,
+  read: NonNullable<RunnerTurnBegin['slackCredentials']>,
+): IdentityStore {
+  return Object.assign(Object.create(store) as IdentityStore, {
+    getSlackCredentialControl: async (installationId?: string) =>
+      installationId === undefined ? read.control ?? undefined : store.getSlackCredentialControl(installationId),
+    getActiveSlackCredentialRevision: async (identityId: string) =>
+      identityId === read.identityId ? read.active ?? undefined : store.getActiveSlackCredentialRevision(identityId),
+  });
 }
 
 /** A settings store that answers the given keys from a read already made. */

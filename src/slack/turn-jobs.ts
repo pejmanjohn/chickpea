@@ -1685,6 +1685,38 @@ export class TurnJobStoreLogic {
     return jobs;
   }
 
+  /**
+   * Assign one just-admitted row to its thread runner (assignRunner) without
+   * the alarm's scan, and return it, when it is a pending alarm row whose
+   * Flue dispatch has not started and every other pending row of its
+   * runner's thread is already that runner's. Undefined otherwise: the row
+   * waits for the alarm, whose listDispatchable also lets a row pass a later
+   * alarm row of its thread.
+   */
+  dispatchableNow(id: string): PendingTurnJob | undefined {
+    const row = this.db.get(
+      `SELECT ${TURN_JOB_SELECT_COLUMNS}, thread_key FROM turn_jobs
+       WHERE id = ? AND executor = 'alarm' AND dispatch_started_at IS NULL
+         AND ${PENDING_ROW} AND execution_authority = 'legacy'`,
+      id,
+    ) as unknown as (TurnJobRow & { thread_key: string | null }) | undefined;
+    if (typeof row?.thread_key !== 'string') return undefined;
+    const job = this.decodeRow(row);
+    const runner = runnerKeyOf(job);
+    // Rows an older release wrote carry no thread key; they are read too.
+    const held = this.db.all(
+      `SELECT turn_json, assignment_json FROM turn_jobs
+       WHERE (thread_key = ? OR thread_key IS NULL) AND id != ? AND executor != 'runner'
+         AND ${PENDING_ROW} AND execution_authority = 'legacy'`,
+      row.thread_key,
+      id,
+    ).some((other) => runnerKeyOf({
+      turn: JSON.parse(String(other.turn_json)) as NormalizedSlackTurn,
+      assignment: JSON.parse(String(other.assignment_json)) as ResolvedAssignment,
+    }) === runner);
+    return !held && this.assignRunner(id) ? job : undefined;
+  }
+
   /** Visit pending rows in enqueue order, a page at a time, until `done()`. */
   private scanPending(
     executionAuthority: RunExecutionAuthority,

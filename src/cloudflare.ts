@@ -299,6 +299,7 @@ import {
 } from './slack/gateway/client.ts';
 import { resolveChickpeaGatewayUrl } from './slack/gateway/runtime.ts';
 import { loadCredentialKeyring } from './slack/credential-keyring.ts';
+import { slackInstallationCredentialId } from './slack/hosted-slack-app.ts';
 import {
   processGatewayAgentSelection,
   processGatewayPrivateChannelSetup,
@@ -1711,10 +1712,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     if (result.ok && result.value.claimed && 'steered' in result.value) {
       await this.offerCreatedStop(result.value.steered);
     }
-    // As enqueueTurn: a turn this admission queued has its alarm armed before
-    // the RPC answers, so the Worker needs no second enqueue to wake it.
+    // A turn this admission queued is with its runner, or has its alarm
+    // armed, before the RPC answers, so the Worker needs no second enqueue.
+    // In runner mode it goes to its runner here, as resumeTurnAfterOAuth
+    // does, sparing the alarm's wake and scan; the alarm stays the recovery
+    // for a hand-off its runner did not confirm.
     if (result.ok && input.turnJob && 'admission' in result.value) {
-      await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
+      const turnJobId = input.turnJob.id;
+      const ready = this.runnerMode()
+        ? this.call((stores) => stores.turnJobs.dispatchableNow(turnJobId))
+        : undefined;
+      const handedOver = ready?.ok && ready.value
+        ? await this.admitToRunner(ready.value).catch(() => false)
+        : false;
+      if (!handedOver) await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
     }
     return result;
   }
@@ -2357,7 +2368,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       return { ok: true, value: (servingVersion ?? null) as ThreadRunnerTurnResult<K> };
     }
     const result = this.call((stores) =>
-      applyThreadRunnerTurnOp(stores, op as ThreadRunnerTurnOp) as ThreadRunnerTurnResult<K>);
+      applyThreadRunnerTurnOp(stores, op as ThreadRunnerTurnOp, this.env as PlatformEnv) as ThreadRunnerTurnResult<K>);
     if (op.kind === 'begin' && result.ok && servingVersion !== undefined) {
       return { ok: true, value: { ...(result.value as RunnerTurnBegin), servingVersion } as ThreadRunnerTurnResult<K> };
     }
@@ -2805,9 +2816,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   // turn's own thread runner, and a running drain already picks up later
   // admissions, so the window would only delay every turn.
   private admissionWakeAt(): number {
-    const runnerMode = Boolean((this.env as PlatformEnv).SLACK_THREAD_RUNNER) &&
+    return this.runnerMode() ? Date.now() : Date.now() + RELAY_BATCH_WINDOW_MS;
+  }
+
+  private runnerMode(): boolean {
+    return Boolean((this.env as PlatformEnv).SLACK_THREAD_RUNNER) &&
       slackTurnExecutor(this.env as PlatformEnv) === 'runner';
-    return runnerMode ? Date.now() : Date.now() + RELAY_BATCH_WINDOW_MS;
   }
 
   private async armAlarmNoLaterThan(at: number, admission = false): Promise<void> {
@@ -3005,10 +3019,33 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   }
 }
 
+/**
+ * RunnerTurnBegin.slackCredentials. A failed read is left to the runner's
+ * own, so a turn meets it where it did before, not as a failed `begin`.
+ */
+function runnerSlackCredentials(
+  stores: TagStateStores,
+  env: PlatformEnv,
+): Pick<RunnerTurnBegin, 'slackCredentials'> {
+  const identityId = slackInstallationCredentialId(env);
+  try {
+    return {
+      slackCredentials: {
+        identityId,
+        control: stores.identity.getSlackCredentialControl() ?? null,
+        active: stores.identity.getActiveSlackCredentialRevision(identityId) ?? null,
+      },
+    };
+  } catch {
+    return {};
+  }
+}
+
 /** One per-turn operation of a SlackThreadRunner (see thread-runner-rpc.ts). */
 function applyThreadRunnerTurnOp(
   stores: TagStateStores,
   op: ThreadRunnerTurnOp,
+  env: PlatformEnv,
 ): ThreadRunnerTurnResult<ThreadRunnerTurnKind> {
   const turnJobs = stores.turnJobs;
   switch (op.kind) {
@@ -3025,6 +3062,7 @@ function applyThreadRunnerTurnOp(
       return {
         view,
         ...(installation ? { installation } : {}),
+        ...(installation?.transportMode === 'direct' ? runnerSlackCredentials(stores, env) : {}),
         ...(presentation?.schemaVersion === 3
           ? {
               latestThreadSessionGeneration:

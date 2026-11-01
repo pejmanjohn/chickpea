@@ -56,7 +56,7 @@ const stateClass = source.statements.find((node) =>
 assert.ok(stateClass && ts.isClassDeclaration(stateClass));
 const methodNames = [
   'enqueueTurn', 'admitSlackTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
-  'maintainWork', 'armAlarmNoLaterThan', 'admissionWakeAt',
+  'maintainWork', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
 ];
 const methods = methodNames.map((name) => {
   const method = stateClass.members.find((member) =>
@@ -148,6 +148,8 @@ function fixture(initialAlarm: number | null, result?: Result, env: object = RUN
         enqueue() {},
         resumeAfterOAuth: () => true,
         runnerView: () => ({ status: 'pending', executor: 'alarm' }),
+        // Not free to go to its runner at once: its alarm wakes it.
+        dispatchableNow: () => undefined,
         retrySlackInstallationRecovery: () => 1,
         hasPending: () => true,
       },
@@ -809,7 +811,7 @@ test('the default runner executor hands a message admitted mid-drain to its runn
 test('an OAuth continuation already handed to a thread runner is admitted there again', async (context) => {
   context.mock.method(Date, 'now', () => NOW);
   const resumeMethods = [
-    'resumeTurnAfterOAuth', 'admitToRunner', 'armAlarmNoLaterThan', 'admissionWakeAt',
+    'resumeTurnAfterOAuth', 'admitToRunner', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
   ].map((name) => {
     const method = stateClass.members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -870,6 +872,140 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
     }
   }
   assert.deepEqual(confirmed, ['oauthresume:c1']);
+});
+
+/**
+ * The production canonical admission RPC (admitSlackTurn and its runner
+ * hand-off) over a real TurnJobStoreLogic, with the runner's `admit` scripted.
+ */
+function admissionHarness(runner: { refuse?: boolean } = {}) {
+  const methods = [
+    'admitSlackTurn', 'admitToRunner', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
+  ].map((name) => {
+    const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
+      ts.isMethodDeclaration(member) && member.name.getText(source) === name);
+    assert.ok(method, `production method ${name} exists`);
+    return method.getText(source);
+  });
+  const code = ts.transpileModule(
+    `${batchDeclaration!.getText(source)}\nclass AdmissionProbe { ${methods.join('\n')} }\nAdmissionProbe`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const admissions: Array<{ id: string; threadKey: string }> = [];
+  const AdmissionProbe = vm.runInNewContext(code, {
+    Date,
+    console: { warn() {} },
+    slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
+    slackAgentThreadKey,
+    installationOwnershipOf,
+    threadRunnerStub: (_env: unknown, threadKey: string) => ({
+      async admit(job: { id: string }) {
+        admissions.push({ id: job.id, threadKey });
+        return runner.refuse ? { admitted: false, refused: 'presentation_import_failed' } : { admitted: true };
+      },
+    }),
+  }) as new () => Probe & { stores: object };
+  const db = openStateDb(':memory:');
+  let clock = NOW;
+  const turns = new TurnJobStoreLogic(db, () => clock++);
+  const probe = new AdmissionProbe();
+  probe.stores = {
+    turnJobs: turns,
+    presentations: { get: () => undefined },
+    // The canonical admission's turn row (see SlackStateLogic.admitCanonical).
+    slack: {
+      admitCanonical: (input: { turnJob: TurnJob }, _work: unknown, turnJobs: TurnJobStoreLogic) => {
+        turnJobs.enqueue(input.turnJob);
+        return { claimed: true, admission: {} };
+      },
+    },
+  };
+  probe.env = RUNNER_ENV;
+  probe.call = (run) => {
+    try {
+      return { ok: true, value: run(probe.stores) };
+    } catch {
+      return { ok: false, error: { code: 'internal' } };
+    }
+  };
+  let alarm: number | null = null;
+  const writes: number[] = [];
+  probe.ctx = { storage: {
+    async getAlarm() { return alarm; },
+    async setAlarm(at) { alarm = at; writes.push(at); },
+  } };
+  return {
+    probe, db, turns, admissions, writes,
+    executor: (id: string) => db.get('SELECT executor FROM turn_jobs WHERE id = ?', id)?.executor,
+    clearAlarm: () => { alarm = null; writes.length = 0; },
+    close: () => db.close(),
+  };
+}
+
+type TurnJob = ReturnType<typeof maintenanceTurnJob>;
+
+function threadJob(id: string, threadTs = '1800000000.000001'): TurnJob {
+  const job = maintenanceTurnJob(id);
+  return { ...job, turn: { ...job.turn, threadTs, messageTs: threadTs } };
+}
+
+test('a canonical admission in runner mode hands its turn to its thread runner and arms no alarm', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const h = admissionHarness();
+  try {
+    const job = threadJob('new');
+    const admitted = await h.probe.admitSlackTurn({ turnJob: job });
+    assert.equal(admitted.ok, true);
+    assert.deepEqual(h.admissions, [{ id: 'new', threadKey: slackAgentThreadKey(job.turn, job.assignment) }],
+      'handed to its runner before the admission answers');
+    assert.equal(h.executor('new'), 'runner', 'the hand-off is confirmed');
+    assert.deepEqual(h.writes, [], 'the state store alarm is not needed');
+  } finally { h.close(); }
+});
+
+test('a hand-off its runner refuses at admission stays a hand-off and arms the alarm', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const h = admissionHarness({ refuse: true });
+  try {
+    await h.probe.admitSlackTurn({ turnJob: threadJob('new') });
+    assert.deepEqual(h.admissions.map(({ id }) => id), ['new']);
+    assert.equal(h.executor('new'), 'handoff', 'the alarm admits it again (listHandoffs)');
+    assert.deepEqual(h.writes, [NOW]);
+  } finally { h.close(); }
+});
+
+test('an admitted turn waits for the alarm while an earlier turn of its thread is not with its runner', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const h = admissionHarness();
+  try {
+    const ahead: Array<[string, string, () => void]> = [
+      ['an unconfirmed hand-off', '1800000000.000001', () => h.turns.assignRunner('ahead-1')],
+      ['an alarm turn whose Flue dispatch started', '1800000000.000002', () => {
+        h.db.run("UPDATE turn_jobs SET dispatch_started_at = 1 WHERE id = 'ahead-2'");
+      }],
+      ['an alarm turn an older release wrote without its thread key', '1800000000.000003', () => {
+        h.db.run("UPDATE turn_jobs SET thread_key = NULL WHERE id = 'ahead-3'");
+      }],
+    ];
+    for (const [index, [name, threadTs, arrange]] of ahead.entries()) {
+      h.clearAlarm();
+      h.turns.enqueue(threadJob(`ahead-${index + 1}`, threadTs));
+      arrange();
+      await h.probe.admitSlackTurn({ turnJob: threadJob(`behind-${index + 1}`, threadTs) });
+      assert.deepEqual(h.admissions, [], `${name} holds its thread`);
+      assert.equal(h.executor(`behind-${index + 1}`), 'alarm', `${name}: listDispatchable hands it over in order`);
+      assert.deepEqual(h.writes, [NOW], `${name}: its alarm is armed`);
+    }
+
+    h.clearAlarm();
+    h.turns.enqueue(threadJob('running', '1800000000.000004'));
+    h.turns.assignRunner('running');
+    h.turns.confirmRunner('running');
+    await h.probe.admitSlackTurn({ turnJob: threadJob('follow-up', '1800000000.000004') });
+    assert.deepEqual(h.admissions.map(({ id }) => id), ['follow-up'],
+      'a turn its runner already holds does not hold the next one');
+    assert.deepEqual(h.writes, []);
+  } finally { h.close(); }
 });
 
 test('the default runner executor: one runner failing its admissions holds only its own thread', async () => {
