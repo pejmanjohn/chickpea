@@ -55,7 +55,7 @@ const stateClass = source.statements.find((node) =>
   ts.isClassDeclaration(node) && node.name?.text === 'TagStateStore');
 assert.ok(stateClass && ts.isClassDeclaration(stateClass));
 const methodNames = [
-  'enqueueTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
+  'enqueueTurn', 'admitSlackTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
   'maintainWork', 'armAlarmNoLaterThan', 'admissionWakeAt',
 ];
 const methods = methodNames.map((name) => {
@@ -97,6 +97,7 @@ type Probe = {
   ctx: { storage: { getAlarm(): Promise<number | null>; setAlarm(at: number): Promise<void> } };
   call: (callback: (stores: unknown) => unknown) => Result;
   enqueueTurn(job: object): Promise<Result>;
+  admitSlackTurn(input: object): Promise<Result>;
   resumeTurnAfterOAuth(taskId: string, continuationId: string): Promise<Result>;
   slackInstallationRecoveryRetry(workspaceId: string): Promise<Result>;
   maintainWork(at: number): Promise<Result>;
@@ -118,6 +119,11 @@ const entryPoints: Array<{
   name: string; invoke(probe: Probe): Promise<Result>; inactive: unknown; admission: boolean;
 }> = [
   { name: 'new turn', invoke: (probe) => probe.enqueueTurn({ id: 'new' }), inactive: null, admission: true },
+  // The Worker sends no enqueue after this: the admission's own alarm wakes the turn.
+  {
+    name: 'canonical admission', invoke: (probe) => probe.admitSlackTurn({ turnJob: { id: 'new' } }),
+    inactive: { claimed: false }, admission: true,
+  },
   {
     name: 'OAuth resume', invoke: (probe) => probe.resumeTurnAfterOAuth('task', 'continuation'),
     inactive: false, admission: true,
@@ -147,6 +153,7 @@ function fixture(initialAlarm: number | null, result?: Result, env: object = RUN
       },
       work: { purgeContent() {} },
       presentations: { maintain() {} },
+      slack: { admitCanonical: () => ({ claimed: true, admission: {} }) },
     });
     persisted = true;
     return { ok: true, value };

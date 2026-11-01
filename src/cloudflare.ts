@@ -1711,6 +1711,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     if (result.ok && result.value.claimed && 'steered' in result.value) {
       await this.offerCreatedStop(result.value.steered);
     }
+    // As enqueueTurn: a turn this admission queued has its alarm armed before
+    // the RPC answers, so the Worker needs no second enqueue to wake it.
+    if (result.ok && input.turnJob && 'admission' in result.value) {
+      await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
+    }
     return result;
   }
 

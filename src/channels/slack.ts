@@ -273,6 +273,7 @@ import {
   type SlackStopButtonPress,
 } from '../slack/types.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
+import type { IdentityResolution } from '../identity/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
 import { resolveTypedSlackManagementApproval } from '../management/slack-approval.ts';
 import type { SetupWakeRequest } from '../management/receipts.ts';
@@ -798,7 +799,14 @@ function handleAgentAppSlackEvents(
     }
     const bot = await agentAppBotCredentials(platformEnv, handoff.agentId, handoff.appId);
     if (!bot) return;
-    await processSlackEvent(payload as unknown as SlackEventFixture, platformEnv, agentAppExecution(bot, platformEnv, gate.botToken));
+    await processSlackEvent(
+      payload as unknown as SlackEventFixture,
+      platformEnv,
+      agentAppExecution(bot, platformEnv, gate.botToken),
+      undefined,
+      undefined,
+      { installation },
+    );
   };
 }
 
@@ -926,9 +934,12 @@ function handleDirectSlackEvents(
       );
       return;
     }
+    // A first hosted delivery may have just marked the record healthy, so
+    // that one event reads it again.
+    const known = hosted && installation.health !== 'healthy' ? undefined : { installation, credentials };
     detach(
       c,
-      processSlackEvent(payload as unknown as SlackEventFixture, platformEnv).catch((error) => {
+      processSlackEvent(payload as unknown as SlackEventFixture, platformEnv, undefined, undefined, undefined, known).catch((error) => {
         console.error('[chickpea] Slack event intake failed:', sanitizeError(error));
       }),
     );
@@ -1056,6 +1067,8 @@ export interface ResolvedAgentRoutingActor {
   requesterTimezone?: string;
   routing: AgentRoutingActor;
   principal?: AuthPrincipal;
+  /** The identity `principal` was made from. */
+  identity?: IdentityResolution;
 }
 
 function privateAgentActor(
@@ -1084,6 +1097,7 @@ export async function resolveAgentRoutingActor(input: {
 }): Promise<ResolvedAgentRoutingActor> {
   const member = await (input.member ?? input.transport.lookupMember(input.userId));
   let principal: AuthPrincipal | undefined;
+  let identity: IdentityResolution | undefined;
   let fullMember = false;
   const provisioned = await provisionSlackInteractionMember({
     identity: input.stores.identity,
@@ -1108,6 +1122,7 @@ export async function resolveAgentRoutingActor(input: {
     provisioned.resolution.membership.status === 'active'
   ) {
     fullMember = true;
+    identity = provisioned.resolution;
     principal = {
       userId: provisioned.resolution.user.id,
       membershipId: provisioned.resolution.membership.id,
@@ -1129,6 +1144,7 @@ export async function resolveAgentRoutingActor(input: {
       fullMember,
     },
     ...(principal ? { principal } : {}),
+    ...(identity ? { identity } : {}),
     ...(member.timezone ? { requesterTimezone: member.timezone } : {}),
   };
 }
@@ -1604,7 +1620,7 @@ export async function processGatewaySlackEnvelope(
     stores,
     ...(providedExecution?.enqueueTurn ? { enqueueTurn: providedExecution.enqueueTurn } : {}),
     ...(providedExecution?.durableIngress ? { durableIngress: true } : {}),
-  });
+  }, undefined, undefined, { installation });
   return 'accepted';
 }
 
@@ -3139,12 +3155,13 @@ async function processSlackEvent(
   execution?: SlackEventExecution,
   ui?: SlackUiAdmission,
   ask?: SlackHostAddressedAdmission,
+  /** What the delivery's handler already read for this event. */
+  known?: { installation: WorkspaceInstallation; credentials?: ResolvedSlackInstallationCredentials },
 ): Promise<void> {
   // A click is admitted like a message; every early return below is a refusal
   // (its outcome starts at `unavailable`, a takeover's at `refused`).
   const stores = execution?.stores ?? resolveStores(platformEnv);
-  const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
-  const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
+  const installation = known?.installation ?? await stores.config.getWorkspaceInstallation(payload.team_id);
   if (!installation || installation.health === 'revoked') return;
   if (execution && !execution.agentApp && installation.transportMode !== 'gateway') return;
   if (!execution && installation.transportMode !== 'direct') return;
@@ -3177,17 +3194,29 @@ async function processSlackEvent(
   // Every bot Chickpea answers as here is itself: the installation's, and each Agent app's.
   const appBots = ask ? [] : await listAgentAppBots(stores.config);
   const tenantBots = ask || !agentSlackAppsHost() ? [] : tenantBotUserIds(appBots, installation.botUserId);
+  // The thread record and the owned-thread check below ask about the same
+  // thread; one read answers both. Routing reads the route again, fresh.
+  const threadRoutes = new Map<string, AgentThreadRoute | undefined>();
+  const threadRoute = async (channelId: string, threadTs: string) => {
+    const key = `${channelId}:${threadTs}`;
+    if (threadRoutes.has(key)) return threadRoutes.get(key);
+    const route = await stores.config.getAgentThreadRoute(payload.team_id, channelId, threadTs);
+    threadRoutes.set(key, route);
+    return route;
+  };
   if (!ask && installation.runtimeContract === 'chickpea-v1' && payload.event.type === 'message') {
     await recordAgentThreadMessage(stores.config, payload.team_id, payload.event, {
       ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
       siblingBotUserIds: tenantBots,
-    });
+    }, threadRoute);
   }
   const credentials = execution
     ? ({ connectionRevision: null } as ResolvedSlackInstallationCredentials)
-    : await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
+    : known?.credentials ??
+      await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
 
   if (payload.event.type === 'member_joined_channel') {
+    const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
     await handleMemberJoinedChannel(
       payload,
       stores,
@@ -3269,7 +3298,7 @@ async function processSlackEvent(
   if (
     !ask &&
     turnRequiresOwnedThread(turn) &&
-    !(await stores.config.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs))
+    !(await threadRoute(turn.channelId, turn.threadTs))
   ) {
     return;
   }
@@ -3334,6 +3363,7 @@ async function processSlackEvent(
         actor: agentRoutingActor.routing,
         ...(execution?.agentApp ? { agentApp: execution.agentApp } : {}),
         config: store,
+        installation,
         transport: runtimeTransport,
         ...(ask?.kind === 'takeover'
           ? { frontDeskAgentId: ask.targetAgentId }
@@ -3408,14 +3438,14 @@ async function processSlackEvent(
       }
       routedHandoff = routed.handoff;
       if (routed.coAddressed) turn.coAddressed = routed.coAddressed;
-      if (!ask) {
-        await claimChickpeaIntroductionForAgentInteraction({
-          actor: agentRoutingActor,
-          workspaceId: turn.workspaceId,
-          slackUserId: turn.userId,
-          management: stores.management,
-        });
-      }
+      // Nothing reads the introduction claim, so it runs beside the reads up
+      // to the model policy, which waits for it either way.
+      const introduction = ask ? undefined : claimChickpeaIntroductionForAgentInteraction({
+        actor: agentRoutingActor,
+        workspaceId: turn.workspaceId,
+        slackUserId: turn.userId,
+        management: stores.management,
+      });
       let routedAssignment = routed.assignment;
       if (routed.handoffFallbackRequired && routed.previousAgentId && routed.route.handoff) {
         const fallbackContext = await hydrateSlackPublicHandoffFallback(
@@ -3471,8 +3501,8 @@ async function processSlackEvent(
       }
       routedBaseAssignment = routedAssignment;
       const policyAssignment = await resolveModelPolicyForAssignment(
-        routedAssignment, store, process.env, undefined, platformEnv,
-      );
+        routedAssignment, store, process.env, installation, platformEnv,
+      ).finally(() => introduction);
       candidateTurn = turn.source === 'reaction_added';
       if (channelFacts) {
         const channel = await channelFacts;
@@ -3627,6 +3657,7 @@ async function processSlackEvent(
     reason: 'slack_truth_unavailable',
   };
   let admittedActorMembershipId = agentRoutingActor?.principal?.membershipId;
+  let admittedIdentity = agentRoutingActor?.identity;
   let admittedRequesterTimezone = agentRoutingActor?.requesterTimezone;
   if (agentRoutingActor && agentSourceVisibility) {
     admissionTruth = {
@@ -3660,6 +3691,7 @@ async function processSlackEvent(
             member.resolution.membership.status === 'active'
           ) {
             admittedActorMembershipId = member.resolution.membership.id;
+            admittedIdentity = member.resolution;
           }
           return member.outcome === 'provisioned' || member.outcome === 'active';
         },
@@ -3780,6 +3812,7 @@ async function processSlackEvent(
         assignment,
         actorMembershipId: admittedActorMembershipId,
         identity: stores.identity,
+        ...(admittedIdentity ? { knownIdentity: admittedIdentity } : {}),
         management: stores.management,
         latestAgentTurnMessageTs: async (query) => await state.latestAgentTurnMessageTs?.(query),
         judge: async (reply) => {
@@ -4248,8 +4281,9 @@ async function processSlackEvent(
   //    - CLOUDFLARE cannot drive a turn inside the events
   //      invocation's `waitUntil` is cancelled ~30s after the response
   //      (tail-log-confirmed), killing any longer model turn. So the handler
-  //      ENQUEUES the job into the state Durable Object — awaited, so the job +
-  //      armed alarm are durable BEFORE the ack (milliseconds) — and the DO's
+  //      ENQUEUES the job into the state Durable Object (a canonical
+  //      admission RPC does it itself) — awaited, so the job + armed alarm
+  //      are durable BEFORE the ack (milliseconds) — and the DO's
   //      alarm() runs the SAME runTurn with the platform's 15-minute wall-time
   //      budget. The claims are already held; each driver owns terminal claim
   //      release and preserves any admitted Flue envelope for reattachment.
@@ -4265,11 +4299,15 @@ async function processSlackEvent(
       ...(midRunReceipt ? { midRunReceipt } : {}),
     };
     // An ask admitted inside the state store enqueues into its own queue
-    // whatever the installation's transport; the stub is for a Worker.
+    // whatever the installation's transport; the stub is for a Worker. A
+    // Worker's canonical admission RPC already queued the job and armed its
+    // alarm, so it has nothing left to enqueue.
     const enqueueTurn = execution?.enqueueTurn ?? ask?.enqueueTurn;
     const enqueued = enqueueTurn
       ? await enqueueTurn(job)
-      : await tagStateStub(platformEnv).enqueueTurn(job);
+      : durableCanonicalTurnJob
+        ? { ok: true as const, value: null }
+        : await tagStateStub(platformEnv).enqueueTurn(job);
     if (!enqueued.ok) {
       // Enqueue failed before anything ran: free the claims so a Slack
       // redelivery can re-drive, and stay silent.
@@ -5241,10 +5279,11 @@ function slackEventFiles(event: SlackEventFixture['event']): unknown {
  * record write that fails loses only this context row, never the event.
  */
 async function recordAgentThreadMessage(
-  config: Pick<ConfigStore, 'getAgentThreadRoute' | 'putSlackPublicContext'>,
+  config: Pick<ConfigStore, 'putSlackPublicContext'>,
   workspaceId: string,
   event: SlackMessageEvent,
   self: SlackContextSelf,
+  threadRoute: (channelId: string, threadTs: string) => Promise<AgentThreadRoute | undefined>,
 ): Promise<void> {
   try {
     await recordSlackThreadEventMessage(
@@ -5252,7 +5291,7 @@ async function recordAgentThreadMessage(
       workspaceId,
       event,
       self,
-      async (rootTs) => Boolean(await config.getAgentThreadRoute(workspaceId, event.channel, rootTs)),
+      async (rootTs) => Boolean(await threadRoute(event.channel, rootTs)),
     );
   } catch {
     console.warn('[chickpea] thread record capture failed');
