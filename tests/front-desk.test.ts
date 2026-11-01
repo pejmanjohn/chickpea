@@ -34,6 +34,7 @@ import {
   frontDeskMounted,
   frontDeskOfferLine,
   pickRecentFrontDeskAgent,
+  readFrontDeskMessage,
   renderFrontDeskBlock,
   resolveFrontDeskTargets,
   sanitizeFrontDeskNote,
@@ -361,16 +362,18 @@ test('the tool hands only to listed Agents, and its refusals never name anything
     'several Agents need a card the message fits on');
 });
 
-test('only the system Agent\'s own root DM turn with a list mounts the front desk', () => {
+test('only the system Agent\'s own root DM turn with a list, or an edit of it, mounts the front desk', () => {
   const frontDesk: FrontDeskDirectory = { agents: [deskAgent('agent_support', 'Support Desk')], omitted: 0, incomplete: false };
   const chickpea = { agentId: CHICKPEA_AGENT_ID, runtimeContract: 'chickpea-v1' as const, frontDesk };
+  const edit = { editedTs: '1793440001.000000', previousText: 'x' };
   assert.equal(frontDeskMounted(rootDm(), chickpea), true);
+  assert.equal(frontDeskMounted(rootDm({ edit }), chickpea), true, 'an edit of Chickpea\'s own turn decides again');
   for (const [why, turn, assignment] of [
     ['a thread reply', rootDm({ messageTs: '1793440000.000200' }), chickpea],
     ['a group DM', rootDm({ channelType: 'mpim', channelId: 'G1' }), chickpea],
     ['a Channel', rootDm({ source: 'app_mention', channelType: 'channel', channelId: 'C1' }), chickpea],
     ['a takeover', rootDm({ frontDesk: { fromAgentId: CHICKPEA_AGENT_ID, via: 'click' } }), chickpea],
-    ['an edit', rootDm({ edit: { editedTs: '1793440001.000000', previousText: 'x' } }), chickpea],
+    ['an edit of a takeover', rootDm({ edit, frontDesk: { fromAgentId: CHICKPEA_AGENT_ID, via: 'click' } }), chickpea],
     ['an ask', rootDm({ agentAsk: { fromAgentId: 'agent_x', fromAgentName: 'X', originMessageTs: '1' } }), chickpea],
     ['a user Agent', rootDm(), { ...chickpea, agentId: 'agent_support' }],
     ['an empty list', rootDm(), { ...chickpea, frontDesk: { ...frontDesk, agents: [] as FrontDeskAgent[] } }],
@@ -445,6 +448,52 @@ test('a message too big for a card is never handed to an Agent that needs a pick
   assert.deepEqual(written, []);
   tool.run({ data: { agents: ['support-desk'], note: '' } });
   assert.deepEqual(written, [{ agentIds: ['agent_support'], note: '' }], 'an Agent that needs no pick needs no card');
+});
+
+test('a one-word message, which may be a pasted secret, never goes on a card; an Agent that needs no pick still takes it', () => {
+  const assignment = {
+    agentId: CHICKPEA_AGENT_ID, runtimeContract: 'chickpea-v1' as const,
+    frontDesk: {
+      agents: [deskAgent('agent_support', 'Support Desk', { direct: true }), deskAgent('agent_research', 'Research')],
+      omitted: 0, incomplete: false,
+    },
+  };
+  for (const text of ['sk_synthetic_0a1b2c3d4e5f', '  synthetic-token-9z8y\n']) {
+    const plan = compileFrontDeskPlan(rootDm({ text }), assignment)!;
+    assert.equal(plan.choices, undefined, JSON.stringify(text));
+    const written: FrontDeskHandoff[] = [];
+    const tool = createFrontDeskTool({ plan, write: (handoff) => written.push(handoff) });
+    assert.throws(() => tool.run({ data: { agents: ['research'], note: '' } }), /suggest the person mention it/,
+      'one Agent that needs a pick');
+    assert.throws(() => tool.run({ data: { agents: ['research', 'support-desk'], note: '' } }), /Several Agents cannot be offered/,
+      'several Agents');
+    assert.deepEqual(written, []);
+    tool.run({ data: { agents: ['support-desk'], note: '' } });
+    assert.deepEqual(written, [{ agentIds: ['agent_support'], note: '' }]);
+  }
+  // Japanese, Chinese, and Thai write a sentence without spaces; it is no pasted secret.
+  for (const text of ['refund status', '注文4821の配送状況を確認してください', '请帮我查一下订单4821的状态', 'ช่วยตรวจสอบคำสั่งซื้อ4821ให้หน่อย']) {
+    assert.equal(compileFrontDeskPlan(rootDm({ text }), assignment)?.choices, true, `${text} may go on a card`);
+  }
+});
+
+test('a message whose record row is missing reads as deleted: a withdrawn message is never handed over', async () => {
+  const message = await readFrontDeskMessage({ listSlackPublicContext: async () => [] } as never, rootDm());
+  assert.equal(message, 'deleted');
+  for (const agentIds of [['agent_support'], ['agent_research'], ['agent_support', 'agent_research']]) {
+    assert.deepEqual(decideFrontDesk({ agentIds, note: '' }, PLAN, message), { kind: 'deleted' }, agentIds.join(' or '));
+  }
+});
+
+test('a message record that cannot be read leaves Chickpea\'s choice as it made it', async () => {
+  for (const listSlackPublicContext of [
+    async () => { throw new Error('config store unavailable'); },
+    () => { throw new Error('config store unavailable'); },
+  ]) {
+    const message = await readFrontDeskMessage({ listSlackPublicContext } as never, rootDm());
+    assert.equal(message, 'current');
+    assert.equal(decideFrontDesk({ agentIds: ['agent_research'], note: '' }, PLAN, message)?.kind, 'card');
+  }
 });
 
 test('the hand-off tool records one hand-off and ends the run; a refusal records nothing', () => {

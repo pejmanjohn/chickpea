@@ -174,7 +174,7 @@ export interface RuntimePlanConnectionAuthorizationV2 {
 /**
  * The front desk this turn mounts (src/slack/front-desk.ts): the Agents the
  * requester may use, as the host listed them, which of them may take the
- * message without the person's pick, and whether the message fits a card.
+ * message without the person's pick, and whether the message may go on a card.
  */
 export interface RuntimePlanFrontDeskV1 {
   agents: Array<{ id: string; name: string; handle?: string; direct?: true }>;

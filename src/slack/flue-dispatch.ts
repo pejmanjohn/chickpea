@@ -1138,7 +1138,8 @@ export function resultFromAgentReply(
   // and nothing the model drafted is posted with it.
   const handoff = frontDesk ? parseFrontDeskHandoff(reply.data?.[SLACK_FRONT_DESK_HANDOFF_DATA_NAME]) : undefined;
   if (frontDesk && handoff) {
-    const text = decideFrontDesk(handoff, frontDesk)?.line;
+    const decision = decideFrontDesk(handoff, frontDesk);
+    const text = decision && 'line' in decision ? decision.line : undefined;
     if (text) {
       const metadata = parseChickpeaResponseMetadata(reply.metadata?.[CHICKPEA_RESPONSE_METADATA_KEY]);
       const usage = metadata ? parseReportedUsage(metadata.usage) : {

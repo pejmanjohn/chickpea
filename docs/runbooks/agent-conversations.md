@@ -163,10 +163,25 @@ admission.
 For any other Agent, Chickpea's reply says that Agent can take the message,
 and a card offers two buttons: that Agent and Chickpea. When several Agents
 fit, the card has one button per Agent. Only the person's own click hands
-the message over. When the message is too large for a card, the tool refuses
-an Agent that needs a click, so Chickpea names it and suggests a mention. A
-message is handed over at most once: the `msg:<channel>:<ts>:handoff` claim
-allows one.
+the message over. A card keeps a copy of the message for a day, so the tool
+refuses an Agent that needs a click when the message is too large for a
+card, or is a single word of ASCII characters with no spaces, which may be a
+pasted secret. Chickpea then names the Agent and suggests a mention. The
+single-word rule also covers a plain word such as "help", but not a
+sentence in a script written without spaces, such as Japanese. A message is
+handed over at most once: the `msg:<channel>:<ts>:handoff` claim allows one.
+
+Chickpea reads the message's public record again once it has decided, and
+compares it with the text its run read. If the person deleted the message
+meanwhile, Chickpea posts nothing and no Agent takes it. A message missing
+from the record counts as deleted, so a failed record write at admission is
+logged as an error. If the person edited the message, no card is posted and
+no Agent takes the old words. Chickpea's reply says the message changed, and
+the edit's own turn decides again on the new words. A hand-off ends
+Chickpea's reply, so an edit sent after it always waits for that turn. An
+edit the run already read while it worked, before it handed off, has no
+turn of its own, so the person then sees only that line. An edit of a
+message another Agent already took over goes to that Agent.
 
 Group DMs, Channels, thread replies, and any message that mentions an Agent
 keep the routing described above.
