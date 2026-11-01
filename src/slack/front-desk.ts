@@ -117,7 +117,7 @@ export function frontDeskMounted(
     (assignment.frontDesk?.agents.length ?? 0) > 0;
 }
 
-/** Names the model may hand to, which need no pick, and whether a card fits the message. */
+/** Names the model may hand to, which need no pick, and whether the message may go on a card. */
 export function compileFrontDeskPlan(
   turn: NormalizedSlackTurn,
   assignment: Pick<ResolvedAssignment, 'agentId' | 'runtimeContract' | 'frontDesk'>,
@@ -131,8 +131,11 @@ export function compileFrontDeskPlan(
     .sort((left, right) => right.name.length - left.name.length)
     .slice(0, FRONT_DESK_MAX_TARGETS)
     .map(({ id, name }) => ({ agentId: id, name }));
-  const fits = agentChoiceSpecFits(agentChoiceSpec(turn, [...widest, chickpeaOption()].slice(0, FRONT_DESK_MAX_TARGETS)));
-  return { agents, ...(fits ? { choices: true as const } : {}) };
+  // A card keeps a copy of the message for a day, so a single word, which may
+  // be a pasted secret, never goes on one.
+  const choices = /\s/.test(turn.text.trim()) &&
+    agentChoiceSpecFits(agentChoiceSpec(turn, [...widest, chickpeaOption()].slice(0, FRONT_DESK_MAX_TARGETS)));
+  return { agents, ...(choices ? { choices: true as const } : {}) };
 }
 
 function chickpeaOption(): HostAgentChoiceSpec['options'][number] {

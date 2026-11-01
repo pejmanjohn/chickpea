@@ -447,6 +447,30 @@ test('a message too big for a card is never handed to an Agent that needs a pick
   assert.deepEqual(written, [{ agentIds: ['agent_support'], note: '' }], 'an Agent that needs no pick needs no card');
 });
 
+test('a one-word message, which may be a pasted secret, never goes on a card; an Agent that needs no pick still takes it', () => {
+  const assignment = {
+    agentId: CHICKPEA_AGENT_ID, runtimeContract: 'chickpea-v1' as const,
+    frontDesk: {
+      agents: [deskAgent('agent_support', 'Support Desk', { direct: true }), deskAgent('agent_research', 'Research')],
+      omitted: 0, incomplete: false,
+    },
+  };
+  for (const text of ['sk_synthetic_0a1b2c3d4e5f', '  synthetic-token-9z8y\n']) {
+    const plan = compileFrontDeskPlan(rootDm({ text }), assignment)!;
+    assert.equal(plan.choices, undefined, JSON.stringify(text));
+    const written: FrontDeskHandoff[] = [];
+    const tool = createFrontDeskTool({ plan, write: (handoff) => written.push(handoff) });
+    assert.throws(() => tool.run({ data: { agents: ['research'], note: '' } }), /suggest the person mention it/,
+      'one Agent that needs a pick');
+    assert.throws(() => tool.run({ data: { agents: ['research', 'support-desk'], note: '' } }), /Several Agents cannot be offered/,
+      'several Agents');
+    assert.deepEqual(written, []);
+    tool.run({ data: { agents: ['support-desk'], note: '' } });
+    assert.deepEqual(written, [{ agentIds: ['agent_support'], note: '' }]);
+  }
+  assert.equal(compileFrontDeskPlan(rootDm({ text: 'refund status' }), assignment)?.choices, true, 'two words may go on a card');
+});
+
 test('the hand-off tool records one hand-off and ends the run; a refusal records nothing', () => {
   const written: FrontDeskHandoff[] = [];
   const tool = createFrontDeskTool({ plan: PLAN, write: (handoff) => written.push(handoff) });
