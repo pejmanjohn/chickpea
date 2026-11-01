@@ -75,8 +75,17 @@ export function canEditAgent(
 }
 
 /**
+ * Website logins belong to the team, so only Owners and Admins add one, raise
+ * what an Agent may do with it, or remove it, whatever owner an older record
+ * names.
+ */
+export function canManageWebsiteLogin(principal: Pick<AuthPrincipal, 'role'>): boolean {
+  return permissionForRole(principal.role).has('connection.create_team');
+}
+
+/**
  * Who may manage a resource owned by the team or by one member (a connection
- * account, a website login): Owners and Admins, or the owning member.
+ * account): Owners and Admins, or the owning member.
  */
 export function canManageOwnedResource(
   principal: Pick<AuthPrincipal, 'role' | 'membershipId'>,

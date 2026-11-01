@@ -30,7 +30,7 @@ import {
 import { resolveBrowserProvider } from './settings.ts';
 
 /**
- * Website logins: a person's sign-in to a website, which Agents granted it can
+ * Website logins: the team's sign-in to a website, which Agents granted it can
  * use in the hosted browser. Admin-owned metadata (host, label, owner,
  * username) lives in one bounded catalog row; the runtime state the browser
  * tools write (saved context, open hand-off, last use) lives in one small row
@@ -68,8 +68,13 @@ export interface WebsiteLogin {
   /** Lowercase hostname, with an explicit non-default port when one was given. */
   host: string;
   label: string;
+  /**
+   * As stored. Releases before logins became team-only wrote `member` for a
+   * member's personal login; the record keeps it so those releases read it
+   * back unchanged. Only `finishDeletedAgentWebsiteLogins` still reads it.
+   */
   ownerKind: WebsiteLoginOwnerKind;
-  /** Present only on member-owned logins. */
+  /** Present only on a stored `member` login. */
   ownerMembershipId?: string;
   createdByMembershipId: string;
   method: WebsiteLoginMethod;
@@ -114,9 +119,8 @@ export interface WebsiteLoginDependencies {
 export interface CreateWebsiteLoginInput {
   host: string;
   label: string;
-  ownerKind: WebsiteLoginOwnerKind;
-  /** Required for member-owned logins; ignored for team logins. */
-  ownerMembershipId?: string;
+  /** Every new login is the team's; see `canManageWebsiteLogin`. */
+  ownerKind: 'team';
   createdByMembershipId: string;
   method: WebsiteLoginMethod;
   username?: string;
@@ -238,10 +242,7 @@ export async function createWebsiteLogin(
   if (!label || label.length > MAX_LABEL_LENGTH || /[\u0000-\u001f\u007f]/.test(label)) {
     throw new WebsiteLoginInputError('invalid_label');
   }
-  if (!MEMBERSHIP_ID_PATTERN.test(input.createdByMembershipId) ||
-      (input.ownerKind !== 'team' && input.ownerKind !== 'member') ||
-      (input.ownerKind === 'member' &&
-        !MEMBERSHIP_ID_PATTERN.test(input.ownerMembershipId ?? ''))) {
+  if (!MEMBERSHIP_ID_PATTERN.test(input.createdByMembershipId) || input.ownerKind !== 'team') {
     throw new WebsiteLoginInputError('invalid_owner');
   }
   const username = input.username === undefined ? undefined : input.username.trim();
@@ -270,8 +271,7 @@ export async function createWebsiteLogin(
     id: `wl_${suffix}`,
     host,
     label,
-    ownerKind: input.ownerKind,
-    ...(input.ownerKind === 'member' ? { ownerMembershipId: input.ownerMembershipId! } : {}),
+    ownerKind: 'team',
     createdByMembershipId: input.createdByMembershipId,
     method: input.method,
     ...(username ? { username } : {}),

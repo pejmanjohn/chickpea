@@ -23,6 +23,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { storeAsPersonalLogin } from './helpers/website-logins.ts';
 
 const PASSWORD = 'website-password-sentinel-91';
 const TOTP = 'JBSWY3DPEHPK3PXP';
@@ -140,7 +141,6 @@ async function addLogin(
 const teamLogin = {
   host: 'Billing.Example.com',
   label: 'Billing',
-  ownerKind: 'team',
   method: 'credentials',
   username: 'ops@example.com',
   password: PASSWORD,
@@ -193,56 +193,39 @@ test('an Admin adds a team login; secrets are encrypted and never returned', asy
   }
 });
 
-test('a login without an owner kind is a team login for an Admin and personal for a member', async () => {
+test('only Owners and Admins add a website login; a member editor is told who can', async () => {
   const f = fixture();
   try {
     await createAgent(f, 'agent_one');
-    const { ownerKind: _omit, ...noOwner } = teamLogin;
-    const byAdmin = await addLogin(f, 'owner', 'agent_one', noOwner);
-    assert.equal(byAdmin.status, 201);
-    assert.equal(((await byAdmin.json()) as { login: { ownerKind: string } }).login.ownerKind, 'team');
-    const byMember = await addLogin(f, 'ana', 'agent_one', { ...noOwner, host: 'mail.example.com', label: 'Mail' });
-    assert.equal(byMember.status, 201);
-    const { login } = await byMember.json() as { login: Record<string, unknown> };
-    assert.equal(login.ownerKind, 'member');
-    assert.equal(login.ownerMembershipId, 'membership_ana');
-  } finally {
-    f.close();
-  }
-});
+    for (const who of ['owner', 'admin'] as const) {
+      const added = await addLogin(f, who, 'agent_one', { ...teamLogin, host: `${who}.example.com` });
+      assert.equal(added.status, 201, await added.clone().text());
+      assert.equal(((await added.json()) as { login: { ownerKind: string } }).login.ownerKind, 'team');
+    }
 
-test('members create personal logins only; team logins need an Admin', async () => {
-  const f = fixture();
-  try {
-    await createAgent(f, 'agent_one');
-    assert.equal((await addLogin(f, 'ana', 'agent_one', teamLogin)).status, 403);
-    const personal = await addLogin(f, 'ana', 'agent_one', {
-      host: 'mail.example.com',
-      label: 'My mail',
-      ownerKind: 'member',
-      method: 'handoff',
-      level: 'act',
-    });
-    assert.equal(personal.status, 201);
-    const { login } = await personal.json() as { login: Record<string, unknown> };
-    assert.equal(login.ownerKind, 'member');
-    assert.equal(login.ownerMembershipId, 'membership_ana');
-    assert.equal(login.method, 'handoff');
-    assert.equal(login.level, 'act');
-
-    // Another member editing the same Agent does not see Ana's personal login;
-    // Owners and Admins do.
-    const boView = await (await f.call('bo', '/admin/api/agents/agent_one/website-logins')).json();
-    assert.deepEqual(boView, { logins: [] });
-    const ownerView = await (await f.call('owner', '/admin/api/agents/agent_one/website-logins')).json() as { logins: unknown[] };
-    assert.equal(ownerView.logins.length, 1);
+    for (const body of [teamLogin, { ...teamLogin, method: 'handoff', password: undefined, totpSeed: undefined }]) {
+      const refused = await addLogin(f, 'ana', 'agent_one', { ...body, host: 'mail.example.com' });
+      assert.equal(refused.status, 403);
+      assert.deepEqual(await refused.json(), {
+        error: 'forbidden',
+        message: 'Only Owners and Admins can add website logins.',
+      });
+    }
+    // An owner kind is no longer part of the request, from anyone.
+    for (const [who, ownerKind] of [['ana', 'member'], ['admin', 'member'], ['admin', 'team']] as const) {
+      assert.equal((await addLogin(f, who, 'agent_one', { ...teamLogin, host: 'mail.example.com', ownerKind })).status, 400);
+    }
+    const stored = await listWebsiteLogins(f.settings);
+    assert.deepEqual(stored.map(({ host, ownerKind }) => [host, ownerKind]),
+      [['owner.example.com', 'team'], ['admin.example.com', 'team']]);
+    assert.equal((await f.store.getAgent('agent_one')).websiteLogins?.length, 2);
 
     // A member who cannot edit the Agent cannot read or add its logins.
     await createAgent(f, 'agent_private', 'creator_and_admins');
     assert.equal((await f.call('ana', '/admin/api/agents/agent_private/website-logins')).status, 403);
-    assert.equal((await addLogin(f, 'ana', 'agent_private', {
-      host: 'mail.example.com', label: 'x', ownerKind: 'member', method: 'handoff',
-    })).status, 403);
+    const hidden = await addLogin(f, 'ana', 'agent_private', { ...teamLogin, host: 'mail.example.com' });
+    assert.equal(hidden.status, 403);
+    assert.deepEqual(await hidden.json(), { error: 'forbidden' });
   } finally {
     f.close();
   }
@@ -351,24 +334,40 @@ test('deleting an Agent deletes the logins no other Agent holds and queues their
 });
 
 const bosMail = {
-  host: 'mail.example.com', label: 'Mail', ownerKind: 'member', method: 'credentials',
+  host: 'mail.example.com', label: 'Mail', method: 'credentials',
   username: 'bo', password: PASSWORD, totpSeed: TOTP,
 };
 
-test('a member cannot delete an Agent that would take another member\'s login with it; an Admin can', async () => {
+/** A login an Admin adds, then stored as releases before team-only logins stored a member's personal one. */
+async function addPersonalLogin(
+  f: Fixture,
+  agentId: string,
+  owner: Who,
+  body: Record<string, unknown> = bosMail,
+): Promise<string> {
+  const loginId = await loginIdOf(await addLogin(f, 'admin', agentId, body));
+  await storeAsPersonalLogin(f.settings, loginId, PRINCIPALS[owner].membershipId);
+  return loginId;
+}
+
+const NOT_REMOVABLE = {
+  error: 'website_login_not_removable',
+  message: 'This Agent uses a website login you can\'t remove. Ask an Owner or Admin to remove it first.',
+};
+
+test('a member cannot delete an Agent that would take a website login with it; an Admin can', async () => {
   const f = fixture();
   try {
     await createAgent(f, 'agent_one');
-    const personal = await loginIdOf(await addLogin(f, 'bo', 'agent_one', bosMail));
+    const personal = await addPersonalLogin(f, 'agent_one', 'bo');
     const team = await loginIdOf(await addLogin(f, 'admin', 'agent_one', { ...teamLogin, host: 'team.example.com' }));
     await recordWebsiteLoginContext(f.settings, personal, 'ctx_bo');
 
-    const refused = await deleteAgent(f, 'agent_one', 'ana');
-    assert.equal(refused.status, 409);
-    assert.deepEqual(await refused.json(), {
-      error: 'website_login_not_removable',
-      message: 'This Agent uses a website login you can\'t remove. Ask its owner or an Admin to remove it first.',
-    });
+    for (const who of ['ana', 'bo'] as const) {
+      const refused = await deleteAgent(f, 'agent_one', who);
+      assert.equal(refused.status, 409, who);
+      assert.deepEqual(await refused.json(), NOT_REMOVABLE);
+    }
     assert.equal((await f.store.getAgent('agent_one')).websiteLogins?.length, 2, 'the Agent is kept');
     assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id }) => id).sort(), [personal, team].sort());
     assert.equal((await readWebsiteLoginSecrets(f.deps, personal))?.totpSeed, TOTP);
@@ -385,12 +384,42 @@ test('a member cannot delete an Agent that would take another member\'s login wi
   }
 });
 
+test('a member deleting their own Agent with their former personal login waits for an Admin to remove it', async () => {
+  const f = fixture();
+  try {
+    const created = await f.call('bo', '/admin/api/agents', {
+      method: 'POST',
+      body: {
+        id: 'agent_bo', name: 'Agent bo', handle: 'bo', editPolicy: 'creator_and_admins',
+        instructions: 'Help.', enabled: true, model: 'local-stub/admin-agent',
+      },
+    });
+    assert.equal(created.status, 201, await created.clone().text());
+    const personal = await addPersonalLogin(f, 'agent_bo', 'bo');
+
+    const refused = await deleteAgent(f, 'agent_bo', 'bo');
+    assert.equal(refused.status, 409);
+    assert.deepEqual(await refused.json(), NOT_REMOVABLE);
+    assert.equal((await f.call('bo', `/admin/api/agents/agent_bo/website-logins/${personal}`, { method: 'DELETE' })).status, 403);
+    assert.deepEqual((await f.store.getAgent('agent_bo')).websiteLogins?.map(({ loginId }) => loginId), [personal]);
+    assert.equal((await readWebsiteLoginSecrets(f.deps, personal))?.password, PASSWORD);
+
+    const removed = await f.call('admin', `/admin/api/agents/agent_bo/website-logins/${personal}`, { method: 'DELETE' });
+    assert.deepEqual(await removed.json(), { removed: true, loginDeleted: true });
+    assert.equal((await deleteAgent(f, 'agent_bo', 'bo')).status, 204);
+    await assert.rejects(f.store.getAgent('agent_bo'));
+    assert.equal(await f.settings.getEncryptedCredentialRevision(`website_login.${personal}`), undefined);
+  } finally {
+    f.close();
+  }
+});
+
 test('a login another Agent still holds never blocks a member\'s Agent deletion', async () => {
   const f = fixture();
   try {
     await createAgent(f, 'agent_one');
-    const personal = await loginIdOf(await addLogin(f, 'bo', 'agent_one', bosMail));
-    assert.equal((await createAgentWithLogins(f, 'bo', 'agent_two', [{ loginId: personal, level: 'check', enabled: true }])).status, 201);
+    const personal = await addPersonalLogin(f, 'agent_one', 'bo');
+    assert.equal((await createAgentWithLogins(f, 'admin', 'agent_two', [{ loginId: personal, level: 'check', enabled: true }])).status, 201);
     await f.store.archiveAgent('agent_two', { expectedRevision: (await f.store.getAgent('agent_two')).revision });
 
     assert.equal((await deleteAgent(f, 'agent_one', 'ana')).status, 204);
@@ -529,7 +558,7 @@ test('a stale login cleanup deletes only what both its stager and whoever finish
   const f = fixture();
   try {
     await createAgent(f, 'agent_one');
-    const bos = await loginIdOf(await addLogin(f, 'bo', 'agent_one', bosMail));
+    const bos = await addPersonalLogin(f, 'agent_one', 'bo');
     const team = await loginIdOf(await addLogin(f, 'admin', 'agent_one', { ...teamLogin, host: 'team.example.com' }));
     await createAgent(f, 'agent_gone');
     const { credentialConfigurationBinding: scope, expectedRevision } = await deleteAgentBody(f, 'agent_gone');
@@ -571,6 +600,32 @@ test('a stale login cleanup deletes only what both its stager and whoever finish
   }
 });
 
+test('a member\'s Agent deletion staged before logins became team-only still deletes their personal login and its secret', async () => {
+  const f = fixture();
+  try {
+    await createAgent(f, 'agent_gone');
+    const bos = await addPersonalLogin(f, 'agent_gone', 'bo');
+    await recordWebsiteLoginContext(f.settings, bos, 'ctx_bo');
+    const body = await deleteAgentBody(f, 'agent_gone');
+    const scope = body.credentialConfigurationBinding;
+    // What an earlier release left when Bo's delete stopped after the Agent went.
+    await f.settings.setSetting(loginCleanupMarker('agent_gone', scope), JSON.stringify({
+      by: { role: 'member', membershipId: 'membership_bo' }, loginIds: [bos],
+    }));
+    const gone = await f.store.getAgent('agent_gone');
+    await f.store.deleteAgent('agent_gone', body.expectedRevision, gone.credentialIncarnation!);
+
+    assert.equal((await f.call('bo', '/admin/api/agents/agent_gone', { method: 'DELETE', body })).status, 204);
+    assert.deepEqual(await listWebsiteLogins(f.settings), []);
+    assert.equal(await f.settings.getEncryptedCredentialRevision(`website_login.${bos}`), undefined);
+    assert.equal(await f.settings.getSetting(loginCleanupMarker('agent_gone', scope)), undefined);
+    assert.deepEqual(JSON.parse((await f.settings.getSetting(PENDING_CONTEXT_DELETIONS_SETTING))!)
+      .map(({ contextId }: { contextId: string }) => contextId), ['ctx_bo']);
+  } finally {
+    f.close();
+  }
+});
+
 test('a DELETE of the system Agent is refused and finishes no login cleanup', async () => {
   const f = fixture();
   try {
@@ -596,18 +651,61 @@ test('a DELETE of the system Agent is refused and finishes no login cleanup', as
   }
 });
 
-test('the owning member may delete a personal login grant; another member may not', async () => {
+test('a former personal login is a team login: everyone who may edit the Agent sees it, and only Owners and Admins manage it', async () => {
   const f = fixture();
   try {
     await createAgent(f, 'agent_one');
-    const created = await addLogin(f, 'ana', 'agent_one', {
-      host: 'mail.example.com', label: 'Mail', ownerKind: 'member', method: 'credentials',
-      username: 'ana', password: PASSWORD,
+    const loginId = await addPersonalLogin(f, 'agent_one', 'ana', {
+      host: 'mail.example.com', label: 'Mail', method: 'credentials', username: 'ana', password: PASSWORD,
     });
-    const loginId = String(((await created.json()) as { login: { loginId: string } }).login.loginId);
-    assert.equal((await f.call('bo', `/admin/api/agents/agent_one/website-logins/${loginId}`, { method: 'DELETE' })).status, 403);
-    const deleted = await f.call('ana', `/admin/api/agents/agent_one/website-logins/${loginId}`, { method: 'DELETE' });
-    assert.deepEqual(await deleted.json(), { removed: true, loginDeleted: true });
+    const stored = (await listWebsiteLogins(f.settings))[0]!;
+    assert.deepEqual([stored.ownerKind, stored.ownerMembershipId], ['member', 'membership_ana'], 'the record keeps its owner');
+
+    const view = {
+      loginId, host: 'mail.example.com', label: 'Mail', ownerKind: 'team', method: 'credentials',
+      username: 'ana', level: 'check', enabled: true,
+    };
+    for (const who of ['owner', 'admin', 'ana', 'bo'] as const) {
+      const listed = await f.call(who, '/admin/api/agents/agent_one/website-logins');
+      assert.deepEqual(await listed.json(), { logins: [view] }, who);
+    }
+
+    // Ana, who added it, can no longer allow actions, remove it, or grant it to another Agent.
+    const path = `/admin/api/agents/agent_one/website-logins/${loginId}`;
+    for (const who of ['ana', 'bo'] as const) {
+      assert.equal((await f.call(who, path, { method: 'PATCH', body: { level: 'act' } })).status, 403, who);
+      assert.equal((await f.call(who, path, { method: 'DELETE' })).status, 403, who);
+      assert.equal((await createAgentWithLogins(f, who, `agent_${who}`, [{ loginId, level: 'check', enabled: true }])).status, 403, who);
+    }
+    assert.deepEqual((await f.store.getAgent('agent_one')).websiteLogins, [{ loginId, level: 'check', enabled: true }]);
+
+    // An Admin raises it, any editor may lower it again, and an Admin removes it.
+    const raised = await f.call('admin', path, { method: 'PATCH', body: { level: 'act' } });
+    assert.deepEqual(await raised.json(), { login: { ...view, level: 'act' } });
+    assert.equal((await f.call('ana', path, { method: 'PATCH', body: { level: 'check' } })).status, 200);
+    const removed = await f.call('admin', path, { method: 'DELETE' });
+    assert.deepEqual(await removed.json(), { removed: true, loginDeleted: true });
+    assert.equal(await f.settings.getEncryptedCredentialRevision(`website_login.${loginId}`), undefined);
+  } finally {
+    f.close();
+  }
+});
+
+test('a stored personal login keeps its record byte for byte while other logins are added and removed', async () => {
+  const f = fixture();
+  try {
+    await createAgent(f, 'agent_one');
+    const personal = await loginIdOf(await addLogin(f, 'admin', 'agent_one', bosMail));
+    const record = await storeAsPersonalLogin(f.settings, personal, 'membership_bo');
+    const catalog = async () => (await f.settings.getSetting('browser.logins.v1'))!;
+    assert.ok((await catalog()).includes(record));
+
+    const other = await loginIdOf(await addLogin(f, 'admin', 'agent_one', { ...teamLogin, host: 'other.example.com' }));
+    assert.ok((await catalog()).includes(record), 'adding a login rewrote it');
+    const removed = await f.call('admin', `/admin/api/agents/agent_one/website-logins/${other}`, { method: 'DELETE' });
+    assert.deepEqual(await removed.json(), { removed: true, loginDeleted: true });
+    assert.ok((await catalog()).includes(record), 'deleting a login rewrote it');
+    assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id, ownerKind }) => [id, ownerKind]), [[personal, 'member']]);
   } finally {
     f.close();
   }
@@ -617,10 +715,7 @@ test('whole-Agent PATCH leaves grants alone, and creating an Agent cannot widen 
   const f = fixture();
   try {
     await createAgent(f, 'agent_one');
-    const created = await addLogin(f, 'ana', 'agent_one', {
-      host: 'mail.example.com', label: 'Mail', ownerKind: 'member', method: 'handoff',
-    });
-    const loginId = String(((await created.json()) as { login: { loginId: string } }).login.loginId);
+    const loginId = await addPersonalLogin(f, 'agent_one', 'ana', { host: 'mail.example.com', label: 'Mail', method: 'handoff' });
     const agent = await f.store.getAgent('agent_one');
     assert.deepEqual(agent.websiteLogins, [{ loginId, level: 'check', enabled: true }]);
 
@@ -647,7 +742,7 @@ test('whole-Agent PATCH leaves grants alone, and creating an Agent cannot widen 
     const projected = await (await f.call('owner', '/admin/api/agents/agent_one')).json() as { agent: Record<string, any> };
     assert.equal(projected.agent.capabilityPreviews.websiteLogins, 0);
 
-    // Bo cannot grant Ana's personal login to a new Agent; unknown logins cannot be granted.
+    // A member cannot grant a login to a new Agent; unknown logins cannot be granted.
     assert.equal((await createAgentWithLogins(f, 'bo', 'agent_bo_plain', [])).status, 201);
     assert.equal((await createAgentWithLogins(f, 'bo', 'agent_bo', [{ loginId, level: 'check', enabled: true }])).status, 403);
     assert.equal((await createAgentWithLogins(f, 'owner', 'agent_unknown', [
@@ -658,25 +753,25 @@ test('whole-Agent PATCH leaves grants alone, and creating an Agent cannot widen 
       { loginId, level: 'act', enabled: true },
       { loginId, level: 'check', enabled: true },
     ])).status, 400);
-    // Ana, who owns it, can.
-    const anaCreate = await createAgentWithLogins(f, 'ana', 'agent_ana', [{ loginId, level: 'act', enabled: true }]);
-    assert.equal(anaCreate.status, 201, await anaCreate.clone().text());
-    assert.deepEqual((await f.store.getAgent('agent_ana')).websiteLogins, [{ loginId, level: 'act', enabled: true }]);
+    // Nor can Ana, whose personal login it was. An Owner can.
+    assert.equal((await createAgentWithLogins(f, 'ana', 'agent_ana', [{ loginId, level: 'check', enabled: true }])).status, 403);
+    const ownerCreate = await createAgentWithLogins(f, 'owner', 'agent_owner', [{ loginId, level: 'act', enabled: true }]);
+    assert.equal(ownerCreate.status, 201, await ownerCreate.clone().text());
+    assert.deepEqual((await f.store.getAgent('agent_owner')).websiteLogins, [{ loginId, level: 'act', enabled: true }]);
   } finally {
     f.close();
   }
 });
 
-test('PATCH one grant level: any editor lowers it, only a manager of the login raises it', async () => {
+test('PATCH one grant level: any editor lowers it, only an Owner or Admin raises it', async () => {
   const f = fixture();
   try {
     await createAgent(f, 'agent_one');
     const team = await addLogin(f, 'admin', 'agent_one', teamLogin);
     const teamId = String(((await team.json()) as { login: { loginId: string } }).login.loginId);
-    const personal = await addLogin(f, 'ana', 'agent_one', {
-      host: 'mail.example.com', label: 'Mail', ownerKind: 'member', method: 'handoff', level: 'act',
+    const personalId = await addPersonalLogin(f, 'agent_one', 'ana', {
+      host: 'mail.example.com', label: 'Mail', method: 'handoff', level: 'act',
     });
-    const personalId = String(((await personal.json()) as { login: { loginId: string } }).login.loginId);
     const level = (who: Who, loginId: string, body: unknown) =>
       f.call(who, `/admin/api/agents/agent_one/website-logins/${loginId}`, { method: 'PATCH', body });
     const grants = async () => Object.fromEntries(((await f.store.getAgent('agent_one')).websiteLogins ?? [])
@@ -692,10 +787,11 @@ test('PATCH one grant level: any editor lowers it, only a manager of the login r
     assert.equal(view.login.loginId, teamId);
     assert.doesNotMatch(JSON.stringify(view), new RegExp(PASSWORD));
 
-    // Any editor may lower; only the owning member raises a personal login.
+    // Any editor may lower a former personal login; its owner can no longer raise it.
     assert.equal((await level('bo', personalId, { level: 'check' })).status, 200);
     assert.equal((await level('bo', personalId, { level: 'act' })).status, 403);
-    assert.equal((await level('ana', personalId, { level: 'act' })).status, 200);
+    assert.equal((await level('ana', personalId, { level: 'act' })).status, 403);
+    assert.equal((await level('admin', personalId, { level: 'act' })).status, 200);
     assert.deepEqual(await grants(), { [teamId]: 'act', [personalId]: 'act' });
     // Setting the same level again is a no-op.
     const before = (await f.store.getAgent('agent_one')).revision;
