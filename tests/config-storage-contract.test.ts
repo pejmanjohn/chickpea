@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { projectAgentWebsiteLogins } from '../src/browser/agent-website-logins.ts';
+import { listWebsiteLogins } from '../src/browser/logins.ts';
 import CONFIG_STORAGE_CONTRACT from '../src/config/storage-contract.json' with { type: 'json' };
 import { readConfigStorageScenario, writeConfigStorageScenario } from './helpers/config-storage-scenario.ts';
 import {
@@ -97,4 +99,17 @@ test(`this code reads v${release.release}'s stored values as v${release.release}
   assert.deepEqual(readbackLosses(release.readback, readback), [],
     'This code reads these values differently. A version bump does not cover a read change. If the change is ' +
     'intended, change readConfigStorageScenario and regenerate the release fixture.');
+});
+
+test(`a personal website login v${release.release} stored keeps its owner on disk and shows as a team login`, async () => {
+  const { settings } = kit(releaseDatabase());
+  const logins = await listWebsiteLogins({
+    getSetting: async (key) => settings.getSetting(key),
+    getSettings: async (keys) => settings.getSettings(keys),
+  });
+  assert.equal(logins.filter(({ ownerKind }) => ownerKind === 'member').length, 1,
+    'the release fixture keeps a personal login as the old-data case');
+  const views = projectAgentWebsiteLogins(logins.map(({ id }) => ({ loginId: id, level: 'check', enabled: true })), logins);
+  assert.deepEqual(views.map(({ loginId, ownerKind }) => [loginId, ownerKind]), logins.map(({ id }) => [id, 'team']));
+  assert.equal(views.some((view) => 'ownerMembershipId' in view), false);
 });

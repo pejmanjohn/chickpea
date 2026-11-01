@@ -50,7 +50,7 @@
       "config_slack_public_context.images_json": 1
     },
     "settings": {
-      "browser.*": 1,
+      "browser.*": 2,
       "connector.*": 1,
       "mcp.*": 1,
       "slack.gateway.binding.v1": 1,
