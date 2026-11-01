@@ -876,7 +876,7 @@ test('on Cloudflare the adapter observes through the agent namespace binding wit
     assert.equal(result.text, 'done');
     assert.equal(reads, 1);
     assert.equal(requests.length, 2);
-    assert.ok(Date.now() - started >= 700, 'the idle page waited the real poll interval');
+    assert.ok(Date.now() - started >= 200, 'the idle page waited the real poll interval');
     for (const url of requests) {
       assert.equal(url.pathname, `/agents/chickpea-slack-v2/${ENVELOPE.instanceId}`);
       assert.equal(url.searchParams.get('view'), 'updates');

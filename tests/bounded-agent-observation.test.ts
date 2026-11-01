@@ -80,7 +80,7 @@ test('idle pages sleep even when the route omits the up-to-date header', async (
   const sleeps: number[] = [];
   await observeAgentSettlementBounded(route, TARGET, { sleep: async (ms) => { sleeps.push(ms); } });
   // The first read from -1 moves the cursor to the head; the second does not.
-  assert.deepEqual(sleeps, [750]);
+  assert.deepEqual(sleeps, [250]);
 });
 
 test('continuously arriving data never busy-loops and lagging pages drain at once', async () => {
@@ -237,7 +237,7 @@ test('adaptive polling backs off after 10 s of quiet following a milestone start
   const relay = createWorkspaceMilestoneRelay('sub_1', async () => {});
   const { route, requests } = fakeRoute([
     { items: [{ type: 'message-started', submissionId: 'sub_1', messageId: 'msg_1' }, milestoneStart()], next: '0_2', upToDate: true },
-    ...idlePages(17),
+    ...idlePages(25),
     { items: [settled()], next: '0_3' },
   ]);
   const clock = fakeClock();
@@ -245,18 +245,19 @@ test('adaptive polling backs off after 10 s of quiet following a milestone start
     ...TARGET, onEvent: relay.onEvent, isIdleCandidate: relay.isIdleCandidate,
   }, { adaptive: {}, sleep: clock.sleep, now: clock.now });
   assert.deepEqual(settlement, { outcome: 'completed' });
-  assert.equal(requests.length, 19);
-  // Quiet since t=0: reads at t < 10 s keep the 750 ms cadence, then it doubles to the 5 s ceiling.
-  assert.deepEqual(clock.sleeps, [...Array(14).fill(750), 1500, 3000, 5000, 5000]);
+  assert.equal(requests.length, 27);
+  // Quiet since t=0: reads at t < 3 s poll hot, reads at t < 10 s keep the 750 ms cadence,
+  // then it doubles to the 5 s ceiling.
+  assert.deepEqual(clock.sleeps, [...Array(12).fill(250), ...Array(10).fill(750), 1500, 3000, 5000, 5000]);
   await relay.drain();
 });
 
-test('a delivered chunk returns the adaptive poll to the base interval', async () => {
+test('a delivered chunk ends the adaptive backoff and polls hot again', async () => {
   let hint = true;
   const delta = { type: 'message-delta', kind: 'text', delta: 'x' };
   const { route } = fakeRoute([
     { next: '0_1', upToDate: true },
-    ...idlePages(15, '0_1'),
+    ...idlePages(23, '0_1'),
     { items: [delta], next: '0_2', upToDate: true },
     ...idlePages(2),
     { items: [settled()], next: '0_3' },
@@ -268,22 +269,43 @@ test('a delivered chunk returns the adaptive poll to the base interval', async (
     onEvent: () => { hint = true; },
     isIdleCandidate: () => hint,
   }, { adaptive: {}, sleep: clock.sleep, now: clock.now });
-  assert.deepEqual(clock.sleeps, [...Array(14).fill(750), 1500, 3000, 750, 750, 750]);
+  assert.deepEqual(clock.sleeps, [...Array(12).fill(250), ...Array(10).fill(750), 1500, 3000, 250, 250, 250]);
 });
 
-test('without an idle hint, or with adaptive off, the cadence stays at the base interval', async () => {
+test('without an idle hint, or with adaptive off, a quiet stream stays at the base interval', async () => {
   for (const variant of [
     { hint: undefined, adaptive: {} },
     { hint: () => false, adaptive: {} },
     { hint: () => true, adaptive: undefined },
   ]) {
-    const { route } = fakeRoute([...idlePages(20), { items: [settled()], next: '0_3' }]);
+    const { route } = fakeRoute([...idlePages(28), { items: [settled()], next: '0_3' }]);
     const clock = fakeClock();
     await observeAgentSettlementBounded(route, {
       ...TARGET, ...(variant.hint ? { isIdleCandidate: variant.hint } : {}),
     }, { ...(variant.adaptive ? { adaptive: variant.adaptive } : {}), sleep: clock.sleep, now: clock.now });
-    assert.deepEqual(clock.sleeps, Array(20).fill(750));
+    assert.deepEqual(clock.sleeps, [...Array(12).fill(250), ...Array(16).fill(750)]);
   }
+});
+
+test('a delivered chunk polls at 250 ms until the stream has been quiet for 3 s, then at 750 ms', async () => {
+  const delta = (text: string) => ({ type: 'message-delta', kind: 'text', delta: text });
+  const { route } = fakeRoute([
+    { items: [delta('a')], next: '0_1', upToDate: true },
+    { next: '0_1', upToDate: true },
+    { next: '0_1', upToDate: true },
+    { items: [delta('b')], next: '0_2', upToDate: true },
+    { items: [settled()], next: '0_3' },
+  ]);
+  // The clock moves to just inside the hot window, onto its edge, then through a long think.
+  const advances = [2_999, 1, 60_000];
+  let time = 0;
+  const sleeps: number[] = [];
+  await observeAgentSettlementBounded(route, TARGET, {
+    adaptive: {},
+    now: () => time,
+    sleep: async (ms) => { sleeps.push(ms); time += advances.shift() ?? 0; },
+  });
+  assert.deepEqual(sleeps, [250, 250, 750, 250]);
 });
 
 test('the milestone relay marks only a milestone start as the last chunk as an idle candidate', () => {
@@ -325,10 +347,10 @@ test('a reattached observation seeded as coding backs off after 10 s idle, then 
     // The replay catches up and ends on something other than the milestone start.
     { items: [delta('replayed')], next: '0_5' },
     { items: [delta('tail')], next: '0_6', upToDate: true },
-    ...idlePages(16, '0_6'),
+    ...idlePages(24, '0_6'),
     // Live output after catching up: the cadence resets and the seed ends.
     { items: [delta('live')], next: '0_7', upToDate: true },
-    ...idlePages(15, '0_7'),
+    ...idlePages(23, '0_7'),
     { items: [settled()], next: '0_8' },
   ]);
   const clock = fakeClock();
@@ -336,7 +358,7 @@ test('a reattached observation seeded as coding backs off after 10 s idle, then 
     ...TARGET, isIdleCandidate: () => false, initialIdleCandidate: true,
   }, { adaptive: {}, sleep: clock.sleep, now: clock.now });
   assert.deepEqual(clock.sleeps, [
-    ...Array(14).fill(750), 1500, 3000, 5000,
-    ...Array(16).fill(750),
+    ...Array(12).fill(250), ...Array(10).fill(750), 1500, 3000, 5000,
+    ...Array(12).fill(250), ...Array(12).fill(750),
   ]);
 });

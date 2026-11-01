@@ -55,7 +55,7 @@ export interface BoundedObservationTarget {
 /**
  * Backs the caught-up poll off geometrically once the stream has been quiet
  * for `idleAfterMs` and the target reports an idle candidate; any delivered
- * chunk returns it to the base interval.
+ * chunk ends the backoff.
  */
 export interface AdaptivePollPolicy {
   idleAfterMs: number;
@@ -66,7 +66,7 @@ export interface AdaptivePollPolicy {
 const DEFAULT_ADAPTIVE_POLICY: AdaptivePollPolicy = { idleAfterMs: 10_000, maxIntervalMs: 5_000, factor: 2 };
 
 export interface BoundedObservationOptions {
-  /** Delay before the next read once a read reports the stream caught up. */
+  /** Delay before the next caught-up read once the stream has gone quiet; a hot stream waits at most 250 ms. */
   pollIntervalMs?: number;
   /** Test seam; production sleeps with a real timer. */
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
@@ -82,11 +82,16 @@ export interface ObservedSettlement {
 }
 
 /**
- * Slack progressive updates are batched at 250 ms and rate limited beyond
- * that, so a 750 ms cadence costs no visible latency while keeping the agent
- * object's request count small during a long model call.
+ * A caught-up stream is read again after 250 ms while a chunk has arrived in
+ * the last 3 s, and after 750 ms once it has gone quiet. A person waits on two
+ * moments, the first streamed text and the settlement after the last token,
+ * and each is noticed on average half a poll late, so the fast cadence covers
+ * the seconds around them. The slow cadence keeps the agent object's request
+ * count small through a long model call.
  */
 const DEFAULT_POLL_INTERVAL_MS = 750;
+const HOT_POLL_INTERVAL_MS = 250;
+const HOT_WINDOW_MS = 3_000;
 const SETTLEMENT_CHUNK = 'submission-settled';
 const RESET_CHUNK = 'conversation-reset';
 // Flue prepends this to every updates page, so a page is idle when the
@@ -101,6 +106,7 @@ export async function observeAgentSettlementBounded(
   options: BoundedObservationOptions = {},
 ): Promise<ObservedSettlement> {
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const hotPollIntervalMs = Math.min(HOT_POLL_INTERVAL_MS, pollIntervalMs);
   const sleep = options.sleep ?? abortableSleep;
   const now = options.now ?? Date.now;
   const adaptive = options.adaptive ? { ...DEFAULT_ADAPTIVE_POLICY, ...options.adaptive } : undefined;
@@ -147,9 +153,11 @@ export async function observeAgentSettlementBounded(
       (delivered === 0 && !advanced);
     if (!caughtUp) continue;
     caughtUpOnce = true;
+    const quietMs = now() - lastChunkAt;
     const idle = adaptive && (seeded || target.isIdleCandidate?.() === true) &&
-      now() - lastChunkAt >= adaptive.idleAfterMs;
-    interval = idle ? Math.min(adaptive.maxIntervalMs, interval * adaptive.factor) : pollIntervalMs;
+      quietMs >= adaptive.idleAfterMs;
+    interval = idle ? Math.min(adaptive.maxIntervalMs, interval * adaptive.factor)
+      : quietMs < HOT_WINDOW_MS ? hotPollIntervalMs : pollIntervalMs;
     await sleep(interval, target.signal);
   }
 }
