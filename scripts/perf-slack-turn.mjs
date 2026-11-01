@@ -1,25 +1,3 @@
-/**
- * Slack time-to-response on the real Cloudflare path: boots the core
- * Cloudflare build under `wrangler dev` (workerd) against the in-memory fake
- * Slack + provider backend, completes the Slack-native setup the cf-smoke
- * drives, publishes one Agent on the local stub model, and then times fresh
- * channel mentions and thread replies from the signed Events POST to each
- * Slack call as it reaches the fake. `slack.latencyMs` stands in for the
- * round trip to Slack, `provider.delayMs` for the model's time to answer, and
- * CHICKPEA_PERF_STATE_RPC_DELAY_MS (set in the Worker's .dev.vars) for the
- * round trip of each state RPC, which is about 1 ms locally and 40 to 90 ms
- * deployed.
- *
- *   npm run verify:host -- --wait-ms 600000 npm run perf:slack-turn -- --turns 7
- *
- * Flags: --turns <n> (7), --slack-latency-ms <n> (120), --provider-delay-ms <n>
- * (1500), --provider-delay-spread-ms <n> (750, see the fake's delaySpreadMs),
- * --state-rpc-delay-ms <n> (40), --thread-replies <n> (1),
- * --skip-build, --out <path>, --label <text>, --wrangler-log <path> (every
- * workerd output line stamped with epoch ms; each turn's `t0` in the JSON
- * report is the event POST on the same clock).
- * Builds and boots workerd, so run it under `verify:host`. No external traffic.
- */
 import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -93,11 +71,6 @@ function git(...args) {
   return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
 }
 
-/**
- * Runtime latency records as workerd prints them: `console.info` of a flat
- * object, either inspect-style (`event: 'turn_latency'`) or JSON. Every value
- * is a primitive, so the first `}` after the event closes the record.
- */
 function runtimeRecords(output, event) {
   const text = output.replace(/\x1b\[[0-9;]*m/g, '');
   const records = [];
@@ -120,7 +93,6 @@ function maxIsolateCalls(output) {
   return Math.max(0, ...runtimeRecords(output, 'state_rpc').map(({ fields }) => fields.isolateCalls ?? 0));
 }
 
-/** The wire entry that completed a final: its chat.stopStream, or the final chat.postMessage. */
 function finalWireEntry(entries, final) {
   if (!final) return undefined;
   const head = entries[final.index];
@@ -256,8 +228,6 @@ function printSummary(summary) {
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
   assertNodeVersion();
-  // Imported only after the flags parse: the module reserves a port and a
-  // persist directory as it loads.
   const smoke = await import('./verify-cf-smoke.mjs');
   const { FakeSlackBackend, STUB_REPLY_MARKER } = await loadFake();
   const backend = new FakeSlackBackend(backendConfig(smoke));
@@ -485,13 +455,11 @@ function backendConfig(smoke) {
   };
 }
 
-/** Create, publish, and repin one user Agent the way the cf-smoke does; returns its id. */
 async function publishLocalStubAgent(smoke, baseUrl) {
   const expect = (result, status, what) => {
     if (result.status !== status) throw new Error(`${what} failed (HTTP ${result.status} ${JSON.stringify(result.body)})`);
     return result.body;
   };
-  // The hosted catalog is otherwise fetched from GitHub; keep the run offline.
   expect(await smoke.adminFetch(baseUrl, '/admin/api/model-catalog/mode', {
     method: 'PUT',
     body: JSON.stringify({ mode: 'bundled' }),

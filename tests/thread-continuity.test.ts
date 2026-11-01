@@ -97,7 +97,6 @@ function plan(overrides: {
   });
 }
 
-/** A sealed envelope as the host freezes one: every frozen key present, absent ones null. */
 function sealedEnvelope(agentId = AGENT.id): TurnEnvelopeV1 {
   return parseTurnEnvelope({
     schemaVersion: 1,
@@ -110,7 +109,6 @@ function sealedEnvelope(agentId = AGENT.id): TurnEnvelopeV1 {
   });
 }
 
-/** The observation the host records with a dispatch, without an executor route. */
 function observationOf(current: RuntimePlanV2): FlueTurnObservationV1 {
   return {
     generation: 'msg:C_CONT:1788000000.000200',
@@ -157,7 +155,6 @@ test('a turn input round-trips, binds its plan to its instance, and accepts a le
   );
   assert.throws(() => parseSlackTurnInput({ ...input, extra: true }), /unknown field/);
 
-  // The envelope and observation ride along sealed; the reader rejects what the host could not have written.
   const observation = observationOf(current);
   const turnEnvelope = sealedEnvelope();
   const full = createSlackTurnInput({

@@ -96,7 +96,6 @@ interface ResolveAgentRouteInput {
     | 'putAgentThreadRoute'
     | 'listSlackPublicContext'
   >;
-  /** The installation the caller already read for this event; read here when absent. */
   installation?: NonNullable<Awaited<ReturnType<ConfigStore['getWorkspaceInstallation']>>>;
   /** Trusted Agent seed from App Home interactivity, never Slack message text. */
   appHomeAgentId?: string;

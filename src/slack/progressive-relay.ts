@@ -44,7 +44,6 @@ interface ProgressiveRelaySummary {
  * What an append may ask of the relay while it waits. `closing` turns true
  * once the relay stops reading: the terminal is about to deliver the whole
  * answer, so an append still waiting for the Slack budget can give way.
- * `closed` settles at that same moment, for a wait that cannot poll.
  */
 export interface ProgressiveAppendControl {
   closing(): boolean;

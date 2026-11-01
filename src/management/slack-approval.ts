@@ -95,7 +95,6 @@ export async function resolveHostSlackManagementProposal(input: {
   assignment: ResolvedAssignment;
   actorMembershipId: string;
   identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
-  /** The requester's identity as admission just read it, checked here as a fresh read would be. */
   knownIdentity?: IdentityResolution;
   management: Pick<ManagementStore, 'getActiveChangeSetProposal'>;
 }): Promise<ManagementChangeSetProposalRecord | undefined> {
@@ -151,7 +150,6 @@ export async function resolveTypedSlackManagementApproval(input: {
   identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
   knownIdentity?: IdentityResolution;
   management: Pick<ManagementStore, 'getActiveChangeSetProposal' | 'markChangeSetProposalStale'>;
-  /** The proposal read, when admission started it beside its other reads. */
   proposal?: ReturnType<typeof resolveHostSlackManagementProposal>;
   latestAgentTurnMessageTs: (query: SlackLatestAgentTurnQuery) => Promise<string | undefined>;
   judge: (reply: { text: string; change: string }) => Promise<SlackManagementApproval>;

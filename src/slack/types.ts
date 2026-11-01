@@ -214,11 +214,6 @@ export interface NormalizedSlackTurn {
    * or about to be. Absent when admission read no facts, as for a DM.
    */
   sharedChannel?: boolean;
-  /**
-   * Set at admission when its Channel read found its bot a member of the
-   * turn's Channel, naming that bot and when. The executor trusts it while
-   * fresh instead of reading the Channel again.
-   */
   channelMembership?: { botUserId: string; verifiedAt: number };
   contextMode: SlackContextMode;
   reaction?: string;

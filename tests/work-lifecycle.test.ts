@@ -394,7 +394,6 @@ test('durable observational Work waits past 100ms without turning a slow owner i
     });
     const started = performance.now();
     assert.equal(await lifecycle.prepareExecution('durable routine prompt'), 'durable routine prompt');
-    // Three writes, each past the 100 ms observer budget, all waited for.
     assert.ok(performance.now() - started >= 350);
     assert.equal(lifecycle.hasExecution, true);
     assert.deepEqual(gaps, []);
@@ -573,7 +572,6 @@ test('a confirmed delivery retry keeps the durable prepared input despite later 
       routeEvidence: { providerAuthRoute: 'openai_api_key' },
       now: () => NOW + 100,
     });
-    // An observer runs what it rendered; the ledger keeps the input it recorded first.
     assert.equal(
       await retry.prepareExecution('edited or rehydrated prompt'),
       'edited or rehydrated prompt',

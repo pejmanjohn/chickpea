@@ -55,7 +55,6 @@ function harness(input: {
   owner?:
     | { kind: 'selected_agent'; persona: { name: string; avatarUrl: string; avatarRevision: number } }
     | { kind: 'chickpea' };
-  /** Replaces the harness clock's instant wait, for a wait the test holds. */
   wait?: (milliseconds: number) => Promise<void>;
 } = {}) {
   // Slack stream timestamps below are seconds on this clock, so a stream's

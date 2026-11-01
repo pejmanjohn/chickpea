@@ -861,9 +861,7 @@ async function runTurnAttempt(
   // that text. Otherwise the native start is made at most once per attempt:
   // one that fails is not retried, and the custom status (or its settle) is
   // what the turn shows instead.
-  /** Settles once the native start's outcome (`nativeHeld`) is known; the status turn waits for it. */
   let nativeStart: Promise<void> | undefined;
-  /** Resolves once the native start is issued, before Slack acknowledges it, so the turn's reads can begin. */
   const startNativeIndicator = (): Promise<void> => {
     if (admittedVisibleStatus !== undefined || !agentViewPresentation) return Promise.resolve();
     const issued = Promise.withResolvers<void>();
@@ -875,7 +873,6 @@ async function runTurnAttempt(
       nativeHeld = held;
       if (held) options.onSlackWrite?.('agent_session');
     });
-    // Awaited by the status turn; a rejection before then must not be unhandled.
     nativeStart.catch(() => undefined);
     return Promise.race([issued.promise, nativeStart]);
   };
@@ -1045,8 +1042,6 @@ async function runTurnAttempt(
     return registration;
   };
   const showAdmittedStatus = async (statusInstanceId: string) => {
-    // Every reader of the native start's outcome (the hold below, the
-    // hand-over in the custom write, the keepalive) runs through this registration.
     await nativeStart;
     const registered = registerStatusTurn(statusInstanceId);
     // Native processing shows from the start (sent now, or by an earlier
@@ -1242,10 +1237,6 @@ async function runTurnAttempt(
   };
   let earlyStatusTurn: ReturnType<typeof registerStatusTurn> | undefined;
   let prepared: Awaited<ReturnType<typeof prepareTurn>>;
-  // The classifier's answer is a model round trip, the slowest read before
-  // the dispatch. Nothing the preparation unlocks (the lease check, the
-  // context read, the envelope) depends on it, so those start as soon as the
-  // preparation settles, and the intent is awaited where it is first needed.
   const classified = classifyTurn();
   classified.catch(() => undefined);
   try {
@@ -1259,9 +1250,7 @@ async function runTurnAttempt(
     prepared = preparation.value;
   } catch (error) {
     // Only the status turn is open yet. Like any failed V3 attempt, it keeps
-    // the admitted activity visible for the next attempt. The classifier
-    // settles before the attempt ends, so its intent record cannot land
-    // under a retry's own classification.
+    // the admitted activity visible for the next attempt.
     earlyStatusTurn?.close();
     await classified.catch(() => undefined);
     throw error;
@@ -1574,25 +1563,13 @@ async function runTurnAttempt(
     await finishDelivery('stopped');
   };
 
-  // A turn with any of these ends before the model, whatever the lease says.
-  // The classifier may still be answering here: only an intent the admission
-  // settled counts, and a `react_only` answered later ends the turn in its
-  // branch below, dropping the reads started meanwhile.
   const dispatchExpected = modelRepairText === undefined && !turn.managementApprovalProposalId &&
     !memoryCommand && interactionIntent?.disposition !== 'react_only';
-  // Frozen while the context is read, and taken from this promise at the
-  // dispatch; a retry that holds its dispatch envelope froze one with it.
   const turnEnvelope = dispatchExpected && options.replayText === undefined &&
       !stoppedBeforeDispatch && !options.flueDispatch?.dispatchEnvelope
     ? turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv)
     : {};
-  // Read lazily: a turn that ends before any context or front-desk read
-  // (an approval, a stop) never touches the config store.
   const turnConfig = () => options.appStores?.config ?? getConfigStore(platformEnv);
-  // The turn's bounded context (degrades to current-message-only on failure).
-  // A turn that continues the thread's transcript sends only what arrived
-  // since the previous turn; the transcript already holds the rest,
-  // including any ownership handoff context its first turn carried.
   const readTurnContext = async () => {
     const continuation = await readThreadContinuation(options, runtimePlanDecision, turn);
     const frozenHandoff = continuation
@@ -1653,13 +1630,8 @@ async function runTurnAttempt(
     // config snapshot. Fence every visible Slack effect as well as model/tool
     // execution when the selected owner lease has already gone stale.
     const leaseCheck = preparedMemory?.ownerBound ? preparedMemory.validateLease() : undefined;
-    // The context read shows nothing in Slack and runs no model, so it runs
-    // while the lease is checked; a read that fails is reported only once the
-    // fence has decided.
     const contextRead = dispatchExpected ? readTurnContext() : undefined;
     const contextReadSettled = contextRead?.catch(() => undefined);
-    // Everything the intent decides (a checklist, a reaction, the dispatch)
-    // follows its record; a record that fails ends the attempt before them.
     await classified;
     if (preparedMemory?.ownerBound && !(await leaseCheck)) {
       // Fail closed, never silently: the durable relay only retires a turn job
@@ -1694,10 +1666,6 @@ async function runTurnAttempt(
           console.warn('[chickpea] Slack Agent View title could not be recorded');
         })
       : undefined;
-    // The title's two presentation transitions are fenced on the row's
-    // version, so no other transition may land between them. A turn that
-    // ends before the model waits here or at its branch; the model path
-    // waits before its next transition, after the usage admission.
     if (!dispatchExpected) await titleSet;
     if (turn.managementApprovalProposalId && options.replayText === undefined &&
         options.invokeManagementApproval && !options.managementApproval) {
@@ -1912,7 +1880,6 @@ async function runTurnAttempt(
       await statusTurn.setStatus(initialStatus);
     }
 
-    // 2. The bounded context, read since the lease check began.
     const { frozenHandoff, context, promptContext, continuityNote } =
       await (contextRead ?? readTurnContext());
     review.context = promptContext;
@@ -2041,9 +2008,6 @@ async function runTurnAttempt(
           return persisted;
         })
       : undefined;
-    // Ledger authority dispatches the input it read back. An observer
-    // dispatches the prompt it rendered while the ledger records it; the
-    // dispatch itself waits for that record (promptSlackThreadAgent).
     const executionPrompt = (ledgerAuthority ? await executionPrepared : undefined) ?? prompt;
 
     // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
@@ -2059,7 +2023,6 @@ async function runTurnAttempt(
     // retry loop from the claims being released on an uncaught throw).
     let text: string;
     let agentResult: AgentDispatchResult | undefined;
-    /** The delivery lease check, started with the reply when nothing before the final can change its answer. */
     let earlyLeaseCheck: Promise<boolean> | undefined;
     // A settled answer replayed from its checkpoint carries no display
     // components; they are read back from the turn's stored surfaces.
@@ -2076,7 +2039,6 @@ async function runTurnAttempt(
       console.warn('[chickpea] display components were not stored; the answer posts without them');
       return [];
     });
-    /** The display surfaces, read with the reply when the final can only be the Agent's own answer or a lease failure. */
     let earlyDisplaySurfaces: ReturnType<typeof readDisplaySurfaces> | undefined;
     let tablePresentation: SlackTablePresentation | undefined =
       options.flueDispatch?.flueSettlement?.outcome === 'completed'
@@ -2176,8 +2138,6 @@ async function runTurnAttempt(
           });
         } finally {
           await streamAgeChecks?.stop();
-          // A settled replay and a failed dispatch return without the
-          // adapter's own wait for the record; the settlement needs it.
           await executionPrepared;
         }
         text = sandboxUnavailableFallback
@@ -2195,9 +2155,6 @@ async function runTurnAttempt(
           presenter.setFooterModelLabel(codingFooterLabel);
           agentViewPresentation?.setFooterModelLabel(codingFooterLabel);
         }
-        // The settle is awaited first because the delivery records after it
-        // are ordered behind it; the lease and the display surfaces are
-        // awaited where the first visible effect needs them.
         const settling = workLifecycle?.settleExecution({
           outcome: 'succeeded',
           rawStatus: 'flue_succeeded',
@@ -2988,7 +2945,6 @@ function turnEnvelopeBuilder(
     config: config ?? getConfigStore(env),
     ...(env ? { env } : {}),
   });
-  // Handled where the dispatch awaits it (buildTurnEnvelopeSafely).
   building.catch(() => undefined);
   return { buildTurnEnvelope: () => building };
 }

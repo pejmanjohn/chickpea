@@ -94,12 +94,6 @@ export interface RunnerTurnBegin {
    * Absent when the turn has no V3 presentation or the state store predates it.
    */
   latestThreadSessionGeneration?: number | null;
-  /**
-   * A direct installation's two Slack credential reads, the ones its runner
-   * makes next over the identity RPC, as that RPC answers them: the envelope
-   * stays encrypted for the runner to decrypt. Absent for a
-   * gateway installation, a failed read, or an older state store.
-   */
   slackCredentials?: {
     identityId: string;
     control: SlackCredentialControl | null;

@@ -2,7 +2,6 @@ import { DatabaseSync } from 'node:sqlite';
 
 import type { TurnInputSql } from '../../src/agents/turn-input.ts';
 
-/** An agent object's SQLite, as the staging code sees it, over node:sqlite. */
 export function sqlStorage(): TurnInputSql & { db: DatabaseSync } {
   const db = new DatabaseSync(':memory:');
   return {

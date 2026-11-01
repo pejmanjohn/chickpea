@@ -600,8 +600,7 @@ export class SlackAgentViewPresentation {
    * Start Slack's native Agent Session processing indicator independently of
    * the richer, owner-authored activity message. The intent is persisted
    * before the API call so admission replay cannot blindly duplicate an
-   * outcome whose receipt is unknown. `onIssued` runs once the Slack call is
-   * on the wire, before Slack acknowledges it.
+   * outcome whose receipt is unknown.
    */
   async beginAgentSessionProcessing(onIssued?: () => void): Promise<boolean> {
     let presentation = await this.requirePresentation();
@@ -1915,11 +1914,6 @@ export class SlackAgentViewPresentation {
       : 'yielded';
   }
 
-  /**
-   * The pace between appends. A reader that closes meanwhile ends it at
-   * once: the terminal delivers the waiting text, and the slot check after
-   * the wait yields the same way it does after a full wait.
-   */
   private async waitForAppendPace(control: ProgressiveAppendControl | undefined): Promise<void> {
     const delay = Math.max(0, this.nextAppendAt - this.now());
     if (delay <= 0) return;

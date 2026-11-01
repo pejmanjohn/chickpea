@@ -68,7 +68,6 @@ export interface AdaptivePollPolicy {
 const DEFAULT_ADAPTIVE_POLICY: AdaptivePollPolicy = { idleAfterMs: 10_000, maxIntervalMs: 5_000, factor: 2 };
 
 export interface BoundedObservationOptions {
-  /** Delay before the next caught-up read once the stream has gone quiet; a hot stream waits at most 150 ms. */
   pollIntervalMs?: number;
   /** Test seam; production sleeps with a real timer. */
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
@@ -259,7 +258,6 @@ function agentViewBase(agentName: string, instanceId: string): string {
   return `https://flue.invalid/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
 }
 
-/** One immediate read of an agent view; a missing stream means the instance is gone. */
 async function readAgentView(
   route: AgentUpdatesRoute,
   target: Pick<BoundedObservationTarget, 'agentName' | 'instanceId'>,

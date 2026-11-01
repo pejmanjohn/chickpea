@@ -17,7 +17,6 @@ interface InvocationState {
   instanceId: string;
   submissionId: string;
   target?: FlueObservationTarget;
-  /** The mark this invocation's model operations share; an enforce-mode failure is dropped so the next one retries. */
   marking?: Promise<void>;
   /** An observe-mode mark failed: this invocation is not marked again. */
   markUnavailable?: boolean;
@@ -53,8 +52,6 @@ export function currentFlueObservationContext(): ActiveFlueObservationContext | 
  * Resolve app-owned TurnJob correlation from Flue's instance/submission facts,
  * then persist invocation immediately before the first model operation. No
  * trace header, delivered attribute, or prompt-visible identifier is used.
- * The correlation comes from the input the host staged in the agent object
- * when it carries one; `resolveTarget` (the state store) answers otherwise.
  */
 export function createWorkModelInvocationInterceptor(options: {
   resolveTarget?: ResolveTarget;
@@ -93,8 +90,6 @@ export function createWorkModelInvocationInterceptor(options: {
     // later model operation, which sent one store read per operation.
     if (active.markUnavailable && correlation.mode !== 'enforce') return next();
     const marking = ensureInvocationMarked(active, correlation, markInvocation);
-    // Ledger authority never reaches the provider unmarked; an observer's
-    // mark lands while the request is in flight.
     if (correlation.mode === 'enforce') await marking;
     return next();
   };

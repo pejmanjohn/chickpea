@@ -41,9 +41,7 @@ export interface WireEntry {
    */
   ok?: boolean;
   responseTs?: string;
-  /** Date.now() when the request reached the fake. */
   at: number;
-  /** Slack calls only: Date.now() when the response was written, after any `slack.latencyMs`. */
   respondedAt?: number;
 }
 
@@ -57,7 +55,6 @@ interface RouteResult {
   rawBody?: string;
   contentType?: string;
   headers?: Record<string, string>;
-  /** The Slack call this result answers, so the HTTP transport can stamp `respondedAt`. */
   slackEntry?: WireEntry;
 }
 
@@ -123,11 +120,6 @@ export interface FakeSlackBehaviorConfig {
   reactionsRemoveError?: string;
   /** Deterministic confidential bot/OIDC fixture used by the workerd smoke. */
   oauth?: FakeSlackOAuthConfig;
-  /**
-   * Hold every Slack `/api/*` response this long before writing it, standing
-   * in for the round trip to Slack. HTTP transport only; `asFetch()` answers
-   * at once. Default 0.
-   */
   latencyMs?: number;
 }
 
@@ -197,13 +189,6 @@ export interface FakeProviderConfig {
    * (default) responds immediately. HTTP transport only.
    */
   delayMs?: number;
-  /**
-   * Vary the hold per turn without changing a turn's total model time: the
-   * interaction classifier's call is held `delayMs - s` and the Agent's own
-   * call `delayMs + s`, where `s` steps through `(-spread/2, spread/2)` turn by
-   * turn. A fixed hold that is a multiple of a reader's poll interval would
-   * always land on the same poll phase. HTTP transport only. Default 0.
-   */
   delaySpreadMs?: number;
 }
 
@@ -256,7 +241,6 @@ export class FakeSlackBackend {
   private replyText: string;
   private providerDelayMs: number;
   private providerDelaySpreadMs: number;
-  /** Held Agent calls so far, which positions the next spread step. */
   private heldAgentCalls = 0;
   private channels: FakeSlackChannel[];
   private conversationsListPageSize: number;
@@ -1340,8 +1324,6 @@ export class FakeSlackBackend {
         res.write(': keepalive\n\n');
       }
     }, 2000);
-    // Same classifier answer as the undelayed path, so a held turn still
-    // classifies instead of parsing the stub reply as a classifier failure.
     const classifierReply = interactionClassifierReply(body);
     const content = openAiTextStreamBody(classifierReply ?? this.replyText);
     setTimeout(() => {
@@ -1353,11 +1335,6 @@ export class FakeSlackBackend {
     return true;
   }
 
-  /**
-   * The hold for one delayed call. With a spread, the Agent call after each
-   * classifier call takes the same step in the other direction, so the two
-   * together always hold `2 * delayMs`.
-   */
   private heldDelayMs(classifier: boolean): number {
     const spread = this.providerDelaySpreadMs;
     if (spread <= 0) return this.providerDelayMs;

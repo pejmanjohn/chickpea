@@ -564,7 +564,6 @@ function presentationResult<T>(fn: () => T): StateRpcResult<T> {
   }
 }
 
-/** An identity store that answers a turn's two credential reads from its `begin`. */
 function prefetchedCredentials(
   store: IdentityStore,
   read: NonNullable<RunnerTurnBegin['slackCredentials']>,

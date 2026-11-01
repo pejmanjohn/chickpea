@@ -126,7 +126,6 @@ if (!(SLOW_TURN_DELAY_MS > 10_000)) {
 export const failures = [];
 let adminCookie = '';
 export let defaultAgentMention = '';
-/** Importers cannot assign the binding; mentionEvent() addresses this handle. */
 export function setDefaultAgentMention(mention) {
   defaultAgentMention = mention;
 }
@@ -2135,7 +2134,6 @@ async function main() {
 
 export { SIGNING_SECRET };
 
-// scripts/perf-slack-turn.mjs imports the helpers above; only a direct run is the smoke.
 const invokedAsScript = process.argv[1] !== undefined &&
   realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 if (invokedAsScript) {

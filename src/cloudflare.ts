@@ -770,11 +770,6 @@ Sandbox.outbound = denySandboxOutbound;
 // would likely re-fail; a couple of seconds lets a transient Slack blip clear.
 const RELAY_RETRY_BACKOFF_MS = 2_000;
 
-// Under the alarm executor, a tiny first-fire window lets Slack events from
-// the same burst land in the queue before the alarm snapshots it. The alarm
-// fans independent conversations out concurrently; without this window, the
-// first event can start a long turn milliseconds before its neighbors enqueue
-// and serialize the whole burst behind it.
 const RELAY_BATCH_WINDOW_MS = 250;
 
 // Pages of MAX_TURN_DRAIN_BATCH threads one alarm hands to thread runners.
@@ -1712,11 +1707,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     if (result.ok && result.value.claimed && 'steered' in result.value) {
       await this.offerCreatedStop(result.value.steered);
     }
-    // A turn this admission queued is with its runner, or has its alarm
-    // armed, before the RPC answers, so the Worker needs no second enqueue.
-    // In runner mode it goes to its runner here, as resumeTurnAfterOAuth
-    // does, sparing the alarm's wake and scan; the alarm stays the recovery
-    // for a hand-off its runner did not confirm.
     if (result.ok && input.turnJob && 'admission' in result.value) {
       const turnJobId = input.turnJob.id;
       const ready = this.runnerMode()
@@ -2812,9 +2802,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     }
   }
 
-  // Runner mode skips the batch window. Its alarm only hands each turn to the
-  // turn's own thread runner, and a running drain already picks up later
-  // admissions, so the window would only delay every turn.
   private admissionWakeAt(): number {
     return this.runnerMode() ? Date.now() : Date.now() + RELAY_BATCH_WINDOW_MS;
   }
@@ -3019,10 +3006,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   }
 }
 
-/**
- * RunnerTurnBegin.slackCredentials. A failed read is left to the runner's
- * own read, so the turn meets the failure there rather than as a failed `begin`.
- */
 function runnerSlackCredentials(
   stores: TagStateStores,
   env: PlatformEnv,

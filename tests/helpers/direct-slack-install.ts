@@ -35,10 +35,6 @@ export interface DirectSlackInstall {
   ownerMembershipId: string;
   /** Every Slack Web API call, in order. */
   calls: DirectSlackCall[];
-  /**
-   * POST a delivery signed with the install's signing secret (or `secret`, to
-   * forge one), with the env a host would give Core.
-   */
   deliver(
     kind: 'events' | 'interactions',
     body: Record<string, unknown>,

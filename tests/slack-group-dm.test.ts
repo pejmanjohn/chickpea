@@ -343,7 +343,6 @@ test('a Channel turn records whether Slack says the Channel is shared beyond the
       ['CPARTNERS', 'agent_mention', true],
       ['COUTSIDE', 'agent_mention', false],
     ]);
-    // Admission still takes a turn in a Channel its bot is not in; that one vouches for nothing.
     assert.deepEqual(harness.jobs.filter(({ turn }) => turn.source === 'agent_mention').map(({ turn }) => [
       turn.channelId,
       turn.channelMembership?.botUserId,

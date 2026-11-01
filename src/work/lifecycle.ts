@@ -181,9 +181,6 @@ export class ShadowWorkLifecycle {
     });
     if (prepared === 'gap') return undefined;
     let preparedBody: string | undefined;
-    // A deferred input is checked by its execution, which requires it. Only
-    // ledger authority reads the input back; an observer runs what it
-    // rendered whether or not the ledger kept it.
     if (prepared === 'recorded' && this.options.mode !== 'enforce') {
       preparedBody = preparedInput;
     } else if (prepared === 'recorded') {

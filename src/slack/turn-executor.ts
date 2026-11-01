@@ -272,9 +272,6 @@ export async function executeTurnJob(
   let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
     ? slackAgentThreadKey(job.turn, job.assignment)
     : undefined;
-  // Advance the attempt count before the run's first effect: a crash
-  // mid-turn then re-fires with the count already committed, bounding
-  // retries. A run that claims its follow-ups commits it beside that claim.
   const attemptRecorded = Promise.resolve(ports.turnJobs.recordAttempt(job.id, attempt));
   attemptRecorded.catch(() => undefined);
   // A stop recorded after this row was read: dispatch preparation refused it.
@@ -490,7 +487,6 @@ export async function executeTurnJob(
         return false;
       }
     };
-    // runTurn claims follow-ups first unless it replays or ends stopped before its dispatch.
     const claimsFollowUps = ports.turnJobs.fold !== undefined && replayText === undefined &&
       !stoppedBeforeDispatch;
     if (!claimsFollowUps) await attemptRecorded;
@@ -632,8 +628,6 @@ export async function executeTurnJob(
       console.warn('[chickpea] post-delivery cleanup did not complete');
       return true;
     }
-    // Restoring or spending this attempt needs it committed first; a commit
-    // that failed throws here.
     await attemptRecorded;
     if (stopRefused) {
       // Nothing was dispatched: give the attempt back and wait like a held row.

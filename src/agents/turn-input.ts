@@ -29,13 +29,6 @@ import { parseTurnEnvelope, type TurnEnvelopeV1 } from './turn-envelope.ts';
  * the host through `chickpeaStageTurnInput` (see slackThreadCloudflareExtension)
  * and read through Flue's Cloudflare context. Node: the agent runs in the
  * host process; the host keeps the input in process and in its state DB.
- *
- * Beside the plan, the input carries the two per-turn facts the agent object
- * would otherwise fetch from the state object before its first provider
- * request: the sealed turn envelope and the dispatch observation. Both are
- * secret-free (see turn-envelope.ts and FlueTurnObservationV1). The
- * observation is read by Flue's submission id, which the host derives the
- * way Flue does, so the agent object also indexes each input by it.
  */
 export const SLACK_TURN_INPUT_SCHEMA_VERSION = 1 as const;
 
@@ -55,11 +48,8 @@ export interface SlackTurnInputV1 {
   runtimePlan: AdmittedRuntimePlanData;
   /** This turn's Agent memory, rendered as an instruction. */
   memoryBlock?: string;
-  /** Flue's submission id for this dispatch (`slackTurnSubmissionId`). */
   submissionId?: string;
-  /** The observation the host records with the dispatch, minus its executor route. */
   observation?: FlueTurnObservationV1;
-  /** The sealed turn envelope the host freezes with the dispatch. */
   turnEnvelope?: TurnEnvelopeV1;
 }
 
@@ -106,7 +96,6 @@ export async function keyedSubmissionId(agentName: string, instanceId: string, i
   return `sub_ik_${digest.slice(0, 32)}`;
 }
 
-/** A Slack turn's dispatch is keyed by its TurnJob id. */
 export function slackTurnSubmissionId(instanceId: string, turnJobId: string): Promise<string> {
   return keyedSubmissionId(CHICKPEA_SLACK_AGENT_NAME, instanceId, turnJobId);
 }
@@ -171,7 +160,6 @@ export function validTurnJobId(value: unknown): string {
   return value;
 }
 
-/** The same shape and bounds the state store accepts for a dispatch observation. */
 function parseStagedObservation(value: unknown): FlueTurnObservationV1 {
   const record = exactRecord(value, 'Slack turn input observation', [
     'generation', 'workCorrelation', 'harnessRevision', 'configurationRevision', 'executor', 'runnerKey',
@@ -245,7 +233,6 @@ export interface TurnInputSql {
 }
 
 const TURN_INPUT_TABLE = 'chickpea_turn_inputs';
-/** Flue submission id to TurnJob id, for the read that happens before the delivery is known. */
 const TURN_INPUT_SUBMISSION_TABLE = 'chickpea_turn_input_submissions';
 
 function ensureTurnInputTable(sql: TurnInputSql): void {
@@ -357,8 +344,6 @@ export async function stageSlackTurnInputOnAgentObject(
     throw new Error(`Agent object binding ${bindingName} is unavailable.`);
   }
   const json = serializeSlackTurnInput(input);
-  // Addressed by name, the object reads its name from its id, and the
-  // dispatch that follows runs its start hook; staging needs neither.
   const stub = binding.get(binding.idFromName(input.instanceId));
   await stub.chickpeaStageTurnInput(json);
 }
@@ -374,20 +359,10 @@ if (isCloudflareTarget()) {
     .catch(() => undefined);
 }
 
-/** Test seam: the agent object's storage, where Flue's Cloudflare entry cannot load. */
 export function useAgentObjectStorageForTests(reader: CloudflareContextReader | undefined): void {
   cloudflareContext = reader;
 }
 
-/**
- * The observation target staged for a Flue submission of this agent object,
- * as `matchFlueObservation` would return it, or undefined when there is none
- * to read: the input was staged without one (an older host), the object's
- * storage is not reachable yet, or this is Node, where the state store is
- * local. The caller then asks the state store, as before. The executor route
- * is never staged: the one reader that needs it looks it up live (see
- * relayMidRunReply).
- */
 export function readStagedSlackObservationTarget(
   instanceId: string,
   submissionId: string,

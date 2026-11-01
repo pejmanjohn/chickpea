@@ -394,8 +394,6 @@ export async function prepareDisplaySurfaces(input: {
       });
     }
   }
-  // One listing serves both: it holds this attempt's rows (written above)
-  // and an earlier attempt's extra components, which never reach Slack.
   const listed = await state.executeUiSurface({ kind: 'list_turn_surfaces', turnJobId: input.turnJobId });
   const surfaces = (listed.kind === 'surfaces' ? listed.surfaces : []).filter((surface) => isDisplaySurface(surface.spec));
   const extras = input.fresh

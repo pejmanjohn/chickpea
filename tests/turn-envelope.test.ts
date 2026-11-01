@@ -256,10 +256,8 @@ test('a turn whose staged input carries the envelope never fetches it from the s
     const coordinator = new TurnEnvelopeContext('turn_staged', AGENT_ID, loader, envelope);
     for (let call = 0; call < 3; call += 1) await prepareRuntimePlanModel(plan, env, coordinator);
     await resolveRuntimePlanBashRepositoryAccess(plan, env, coordinator);
-    // The render hands the staged envelope to the context it builds for the turn.
     const delivery = { kind: 'signal', type: 'slack.message', tagName: 'slack_message', body: '', attributes: { turnJobId: 'turn_staged' } };
     assert.deepEqual(await runtimePlanTurnContext(plan, delivery as never, envelope)?.envelope(), envelope);
-    // Staged for another Agent: the turn reads live without fetching an envelope that names the same Agent.
     assert.equal(await new TurnEnvelopeContext('turn_staged', 'agent_other', loader, envelope).envelope(), undefined);
   });
 

@@ -535,13 +535,6 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   return response;
 };
 
-/**
- * What a standalone events delivery's handler reuses from before its
- * signature check: the credentials it was checked with, and the installation
- * of the team its body names, read beside them. That read is keyed by a body
- * not yet verified, so it writes nothing and only a delivery whose signature
- * holds awaits it: a forged one is answered exactly as before.
- */
 interface VerifiedSlackDelivery {
   credentials: ResolvedSlackInstallationCredentials;
   installation?: { teamId: string; read: Promise<WorkspaceInstallation | undefined> };
@@ -577,7 +570,6 @@ async function slackDeliveryVerification(
   const installation = teamId === undefined
     ? undefined
     : { teamId, read: resolveStores(platformEnv).config.getWorkspaceInstallation(teamId) };
-  // A delivery its signature refuses never awaits the read.
   installation?.read.catch(() => undefined);
   const credentials = await resolveSlackInstallationCredentials(
     slackInstallationCredentialId(platformEnv),
@@ -974,8 +966,6 @@ function handleDirectSlackEvents(
       );
       return;
     }
-    // A first hosted delivery may have just marked the record healthy, so
-    // that one event reads it again.
     const known = hosted && installation.health !== 'healthy' ? undefined : { installation, credentials };
     detach(
       c,
@@ -1110,7 +1100,6 @@ export interface ResolvedAgentRoutingActor {
   requesterTimezone?: string;
   routing: AgentRoutingActor;
   principal?: AuthPrincipal;
-  /** The identity `principal` was made from. */
   identity?: IdentityResolution;
 }
 
@@ -1132,7 +1121,6 @@ export async function resolveAgentRoutingActor(input: {
   /** A Slack message/reaction event is current proof that its author belongs
    * to the exact source Channel at event time. */
   sourceChannelMembership?: boolean;
-  /** The author's Slack profile, when the caller has already asked Slack for it. */
   member?: Promise<SlackMember>;
   botUserId: string;
   transport: SlackTransport;
@@ -1426,7 +1414,6 @@ async function resolvedAgentAvatarUrl(
   return agentAvatarUrlForPresentation(agent, origin, agentAvatarInstallation(platformEnv));
 }
 
-/** A stored avatar URL needs the public origin only to name its installation. */
 function avatarNeedsPublicUrl(agent: ResolvedAssignment['agent'], platformEnv: PlatformEnv | undefined): boolean {
   return !agent.slackPresence?.avatar.url || Boolean(agentAvatarInstallation(platformEnv));
 }
@@ -3202,7 +3189,6 @@ async function processSlackEvent(
   execution?: SlackEventExecution,
   ui?: SlackUiAdmission,
   ask?: SlackHostAddressedAdmission,
-  /** What the delivery's handler already read for this event. */
   known?: { installation: WorkspaceInstallation; credentials?: ResolvedSlackInstallationCredentials },
 ): Promise<void> {
   // A click is admitted like a message; every early return below is a refusal
@@ -3241,8 +3227,6 @@ async function processSlackEvent(
   // Every bot Chickpea answers as here is itself: the installation's, and each Agent app's.
   const appBots = ask ? [] : await listAgentAppBots(stores.config);
   const tenantBots = ask || !agentSlackAppsHost() ? [] : tenantBotUserIds(appBots, installation.botUserId);
-  // The thread record and the owned-thread check below ask about the same
-  // thread; one read answers both. Routing reads the route again, fresh.
   const threadRoutes = new Map<string, AgentThreadRoute | undefined>();
   const threadRoute = async (channelId: string, threadTs: string) => {
     const key = `${channelId}:${threadTs}`;
@@ -3355,8 +3339,6 @@ async function processSlackEvent(
     return;
   }
   if (!runtimeTransport || !runtimeClient || !resolvedBotUserId) return;
-  // Both Slack reads start now so neither waits on the other. A failure counts
-  // only where its result is awaited below; a turn that ends earlier drops it.
   const member = runtimeTransport.lookupMember(turn.userId);
   void member.catch(() => undefined);
   let conversation: SlackConversation | undefined;
@@ -3490,8 +3472,6 @@ async function processSlackEvent(
       }
       routedHandoff = routed.handoff;
       if (routed.coAddressed) turn.coAddressed = routed.coAddressed;
-      // Nothing reads the introduction claim, so it runs beside the reads up
-      // to the model policy, which waits for it either way.
       const introduction = ask ? undefined : claimChickpeaIntroductionForAgentInteraction({
         actor: agentRoutingActor,
         workspaceId: turn.workspaceId,
@@ -3552,8 +3532,6 @@ async function processSlackEvent(
         if (frontDesk) routedAssignment = { ...routedAssignment, frontDesk };
       }
       routedBaseAssignment = routedAssignment;
-      // A guest answering an ask keeps its own frozen configuration, so the
-      // owner's snapshot is never replaced by the guest's.
       const guestAgent = routedAssignment.threadGuest ? routedAssignment.agent : undefined;
       const snapshotKey = guestAgent ? slackGuestThreadKey(threadKey, guestAgent.id) : threadKey;
       const existingSnapshot = stores.snapshots.get(snapshotKey);
@@ -3561,10 +3539,6 @@ async function processSlackEvent(
       const policyAssignment = await resolveModelPolicyForAssignment(
         routedAssignment, store, process.env, installation, platformEnv,
       ).finally(() => introduction);
-      // The rest of admission's reads need only the route and its model, so
-      // they start now, beside the snapshot. The admitted assignment keeps the
-      // route's runtime contract and owner incarnation, so its thread key is
-      // the routed one.
       const admittedCredential = {
         model: policyAssignment.model,
         credential: resolveModelCredentialAttribution(
@@ -3599,8 +3573,6 @@ async function processSlackEvent(
       if (channelFacts) {
         const channel = await channelFacts;
         turn.sharedChannel = channel.shared === true;
-        // The same facts the executor's own read would check, so a fresh
-        // record stands in for that read.
         if (channel.member && channel.id === turn.channelId &&
             (channel.teamId === undefined || channel.teamId === turn.workspaceId)) {
           turn.channelMembership = { botUserId: resolvedBotUserId, verifiedAt: Date.now() };
@@ -4398,9 +4370,7 @@ async function processSlackEvent(
       ...(midRunReceipt ? { midRunReceipt } : {}),
     };
     // An ask admitted inside the state store enqueues into its own queue
-    // whatever the installation's transport; the stub is for a Worker. A
-    // Worker's canonical admission RPC already queued the job and armed its
-    // alarm, so it has nothing left to enqueue.
+    // whatever the installation's transport; the stub is for a Worker.
     const enqueueTurn = execution?.enqueueTurn ?? ask?.enqueueTurn;
     const enqueued = enqueueTurn
       ? await enqueueTurn(job)

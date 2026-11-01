@@ -119,7 +119,6 @@ const entryPoints: Array<{
   name: string; invoke(probe: Probe): Promise<Result>; inactive: unknown; admission: boolean;
 }> = [
   { name: 'new turn', invoke: (probe) => probe.enqueueTurn({ id: 'new' }), inactive: null, admission: true },
-  // The Worker sends no enqueue after this: the admission's own alarm wakes the turn.
   {
     name: 'canonical admission', invoke: (probe) => probe.admitSlackTurn({ turnJob: { id: 'new' } }),
     inactive: { claimed: false }, admission: true,
@@ -148,7 +147,6 @@ function fixture(initialAlarm: number | null, result?: Result, env: object = RUN
         enqueue() {},
         resumeAfterOAuth: () => true,
         runnerView: () => ({ status: 'pending', executor: 'alarm' }),
-        // Not free to go to its runner at once: its alarm wakes it.
         dispatchableNow: () => undefined,
         retrySlackInstallationRecovery: () => 1,
         hasPending: () => true,
@@ -250,7 +248,6 @@ for (const withPendingTurn of [false, true]) {
       `${batchDeclaration.getText(source)}\n${executorCode}\n${portCode}\nclass AlarmProbe { ${methods.join('\n')}\n${alarmMethods.join('\n')} }\nAlarmProbe`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
     ).outputText;
-    // The drain below runs the alarm executor, so the turn it admits keeps the batch window.
     const { probe: storageProbe, alarm, writes } = fixture(null, undefined, {});
     const relayAlarmRecords: object[] = [];
     const AlarmProbe = vm.runInNewContext(alarmCode, {
@@ -874,10 +871,6 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
   assert.deepEqual(confirmed, ['oauthresume:c1']);
 });
 
-/**
- * The production canonical admission RPC (admitSlackTurn and its runner
- * hand-off) over a real TurnJobStoreLogic, with the runner's `admit` scripted.
- */
 function admissionHarness(runner: { refuse?: boolean } = {}) {
   const methods = [
     'admitSlackTurn', 'admitToRunner', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
@@ -912,7 +905,6 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
   probe.stores = {
     turnJobs: turns,
     presentations: { get: () => undefined },
-    // The canonical admission's turn row (see SlackStateLogic.admitCanonical).
     slack: {
       admitCanonical: (input: { turnJob: TurnJob }, _work: unknown, turnJobs: TurnJobStoreLogic) => {
         turnJobs.enqueue(input.turnJob);

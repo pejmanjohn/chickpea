@@ -132,9 +132,7 @@ export function createMidRunReplyHandler(input: {
 /**
  * The Agent's side of the post: the live turn's registry in this process on
  * Node, or the thread runner that executes the turn on Cloudflare. Only a
- * runner's turn reads messages mid-run there (see slackTurnFold). A target
- * the host staged beside the instance carries no executor route, so the
- * route is read from the state store here, once per post.
+ * runner's turn reads messages mid-run there (see slackTurnFold).
  */
 export async function relayMidRunReply(request: MidRunReplyRequest): Promise<MidRunReplyOutcome> {
   const context = currentFlueObservationContext();

@@ -27,7 +27,6 @@ interface Page {
   upToDate?: boolean;
   status?: number;
   body?: unknown;
-  /** A history page: the conversation snapshot the route returns verbatim. */
   snapshot?: unknown;
 }
 
@@ -57,7 +56,6 @@ function settled(submissionId = 'sub_1', outcome = 'completed', error?: unknown)
   return { type: 'submission-settled', submissionId, outcome, ...(error === undefined ? {} : { error }) };
 }
 
-/** The history view's snapshot with one assistant reply for `submissionId`. */
 function historyWithReply(submissionId: string, text: string) {
   return {
     v: 1,
@@ -71,7 +69,6 @@ function historyWithReply(submissionId: string, text: string) {
   };
 }
 
-/** A handle whose Flue read must stay unused: the reader has the settlement and the history page. */
 const unusedHandle = {
   async read(): Promise<never> { throw new Error('Flue read() must not run after the observed settlement'); },
 };
@@ -284,8 +281,6 @@ test('adaptive polling backs off after 10 s of quiet following a milestone start
   }, { adaptive: {}, sleep: clock.sleep, now: clock.now });
   assert.deepEqual(settlement, { outcome: 'completed' });
   assert.equal(requests.length, 35);
-  // Quiet since t=0: reads at t < 3 s poll hot, reads at t < 10 s keep the 750 ms cadence,
-  // then it doubles to the 5 s ceiling.
   assert.deepEqual(clock.sleeps, [...Array(20).fill(150), ...Array(10).fill(750), 1500, 3000, 5000, 5000]);
   await relay.drain();
 });
@@ -334,7 +329,6 @@ test('a delivered chunk polls at 150 ms until the stream has been quiet for 3 s,
     { items: [delta('b')], next: '0_2', upToDate: true },
     { items: [settled()], next: '0_3' },
   ]);
-  // The clock moves to just inside the hot window, onto its edge, then through a long think.
   const advances = [2_999, 1, 60_000];
   let time = 0;
   const sleeps: number[] = [];

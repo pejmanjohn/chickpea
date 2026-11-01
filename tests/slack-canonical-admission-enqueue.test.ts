@@ -10,8 +10,6 @@ const OWNER = {
   is_restricted: false, is_ultra_restricted: false, is_stranger: false,
 };
 
-// On Cloudflare the canonical admission RPC queues the turn and arms its
-// alarm (TagStateStore.admitSlackTurn), so the Worker sends no second enqueue.
 test('a Worker admission that queued its turn canonically makes no second enqueue RPC', async () => {
   const envKeys = ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH'] as const;
   const previousEnv = envKeys.map((key) => process.env[key]);

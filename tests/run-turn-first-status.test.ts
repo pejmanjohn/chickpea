@@ -56,7 +56,6 @@ before(async () => {
   process.env.SLACK_STATE_DB_PATH = statePath;
   const store = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   await store.createAgent(assignment.agent);
-  // A healthy installation lets a DM turn pass its memory lease and dispatch.
   const installation = await store.ensureWorkspaceInstallation({
     workspaceId: assignment.workspaceId,
     transportMode: 'direct',
@@ -140,14 +139,10 @@ function surfaceTurn(surface: Surface): NormalizedSlackTurn {
 let turns = 0;
 /** Slack rejects the custom assistant status (a platform error), when set. */
 let rejectCustomStatus = false;
-/** Slack's acknowledgement of the custom status waits on this, when set. */
 let holdCustomStatus: ((timeline: string[]) => Promise<void>) | undefined;
-/** Slack's acknowledgement of the native start waits on this, when set. */
 let holdNativeStart: ((timeline: string[]) => Promise<void>) | undefined;
-/** The classifier's model answer waits on this, when set; the harness scripts the classifier's provider. */
 let holdClassifierAnswer: ((timeline: string[]) => Promise<void>) | undefined;
 
-/** Resolves once `ready()` holds, or after two seconds if it never does. */
 async function waitUntil(ready: () => boolean): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (!ready() && Date.now() < deadline) {
@@ -164,7 +159,6 @@ async function firstStatusTimeline(
   const timeline: string[] = [];
   if (holdClassifierAnswer) {
     const hold = holdClassifierAnswer;
-    // The side call resolves the profile's `anthropic/` model to the provider registered as `anthropic`.
     scriptedProvider([async (model) => {
       await hold(timeline);
       return scriptedMessage(model, [{ type: 'text', text: '{"disposition":"reply","reason":"substantive_request"}' }], 'stop');
@@ -444,9 +438,7 @@ test('a rejected custom status shows native again, without a second start', asyn
 });
 
 test('classification and the plan do not wait for the custom status acknowledgement', async () => {
-  // One read from each chain: the classifier's disposition and the plan freeze.
   const reads = ['turnJobs.recordInteractionIntent', 'turnJobs.freezeRuntimePlan'];
-  // Slack acknowledges the custom status only once both reads have landed.
   holdCustomStatus = (timeline) => waitUntil(() => reads.every((read) => timeline.includes(read)));
   try {
     const { timeline } = await firstStatusTimeline('channel_mention', null);
@@ -463,9 +455,7 @@ test('classification and the plan do not wait for the custom status acknowledgem
 });
 
 test('classification and the plan start once the native start is issued, before Slack acknowledges it', async () => {
-  // One read from each chain: the classifier's intent record and the plan's bound-plan read.
   const reads = ['turnJobs.recordInteractionIntent', 'turnJobs.getBoundRuntimePlan'];
-  // Slack acknowledges the native start only once both reads have landed.
   holdNativeStart = (timeline) => waitUntil(() => reads.every((read) => timeline.includes(read)));
   try {
     const { timeline } = await firstStatusTimeline('channel_mention', null);
@@ -477,7 +467,6 @@ test('classification and the plan start once the native start is issued, before 
       assert.ok(at > issued, `${read} follows the native start`);
       assert.ok(at < acknowledged, `${read} does not wait for the native acknowledgement`);
     }
-    // The hand-over releases a session Slack has acknowledged as processing.
     assert.ok(timeline.indexOf('slack:session:active') > acknowledged,
       'the hand-over waits for the native acknowledgement');
   } finally {
@@ -486,21 +475,14 @@ test('classification and the plan start once the native start is issued, before 
 });
 
 test('the context is read before the classifier answers; the dispatch waits for the answer and its record', async () => {
-  // The classifier answers only once the context read has been issued. The
-  // two-second bound stays under the classifier's timeout, so no fallback
-  // intent answers first.
   holdClassifierAnswer = async (timeline) => {
     await waitUntil(() => timeline.some((entry) => entry.startsWith('slack:conversations.')));
     timeline.push('classifier:answered');
   };
-  // The scripted provider stands in for Anthropic, whose side call carries
-  // the installation's key.
   const previousKey = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = 'anthropic-first-status-key';
   configureModelAccessResolver({ resolve: async () => ({ apiKey: 'anthropic-first-status-key' }) });
   try {
-    // A DM whose assignment names the DM: the one surface here whose memory
-    // lease passes, so the turn reaches its dispatch.
     const { timeline } = await firstStatusTimeline('dm', null, {}, {
       ...assignment,
       channelId: 'D_FIRST_STATUS',

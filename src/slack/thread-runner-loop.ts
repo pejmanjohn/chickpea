@@ -806,10 +806,6 @@ export function runnerPresentationState(input: {
       console.warn('[chickpea] thread runner presentation publish failed');
     }
   };
-  // The copy is a mirror: the state store's putSnapshot and this runner's
-  // import are both version-gated, so a late or lost publish never regresses
-  // either side, and the job end publishes once more. The transition that
-  // triggers it never waits for it.
   const lifecycleChanged = (presentation: SlackRunPresentation): void => {
     const runId = presentation.runId;
     if (published.get(runId) === lifecycleFingerprint(presentation) || trailing.has(runId)) return;

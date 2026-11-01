@@ -272,12 +272,6 @@ interface PromptSlackAgentInput {
    */
   buildTurnEnvelope?: () => Promise<TurnEnvelopeV1 | undefined>;
   workCorrelation?: WorkTraceCorrelation;
-  /**
-   * The ledger's record of this turn's execution, still being written while
-   * the envelope is prepared and staged. Awaited before the dispatch or a
-   * reattached observation: the Agent's first model operation marks that
-   * execution, and every delivery stage follows it.
-   */
   executionPrepared?: Promise<unknown>;
   env?: PlatformEnv;
   now?: () => number;

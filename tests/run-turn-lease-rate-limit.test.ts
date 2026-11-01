@@ -77,7 +77,6 @@ after(() => {
   rmSync(stateDirectory, { recursive: true, force: true });
 });
 
-/** A person's root-message mention of the Agent in the granted channel. */
 function leaseTurn(eventId: string, messageTs: string): NormalizedSlackTurn {
   return {
     workspaceId: assignment.workspaceId,
@@ -94,7 +93,6 @@ function leaseTurn(eventId: string, messageTs: string): NormalizedSlackTurn {
   };
 }
 
-/** The run's V3 presentation, and the state port a runner answers it from. */
 function presentationFor(store: SlackRunPresentationStoreLogic, runId: string, turn: NormalizedSlackTurn) {
   const sessionGeneration = Number(turn.messageTs.replace('.', ''));
   store.create({
@@ -252,8 +250,6 @@ test('the context read runs while the owner lease is checked, and the title wait
       members: async () => {
         membersChecks += 1;
         if (membersChecks === 1) {
-          // The lease's last Slack answer arrives once the thread read has been
-          // issued, or after half a second if that read waits for the lease.
           const deadline = Date.now() + 500;
           while (!timeline.includes('conversations.replies') && Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, 5));

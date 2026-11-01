@@ -332,14 +332,11 @@ export async function resolveRuntimeModel(
     // stored Node selection cannot cause Cloudflare auth or model egress.
     requireOpenAiSubscriptionAvailable();
   }
-  // The catalog load and the key read are independent, so both start here; a
-  // catalog failure still wins over a missing key.
   const keyProvider: ProviderKeyId | undefined = providerId === 'openai'
     ? ((openAiAuthorization ?? 'api_key') === 'api_key' ? 'openai' : undefined)
     : isProviderKeyId(providerId) ? providerId : undefined;
   const catalog = (dependencies.loadCatalog ?? loadModelCatalog)(dependencies.settings, dependencies.env);
   const key = keyProvider ? requireProviderKey(keyProvider, dependencies) : undefined;
-  // Awaited after the catalog; a rejection before then must not be unhandled.
   key?.catch(() => undefined);
   await catalog;
   if (providerId === 'anthropic') {

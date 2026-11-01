@@ -131,7 +131,6 @@ function state(
   };
 }
 
-/** The history view's snapshot with one assistant reply for `submissionId`. */
 function historySnapshot(submissionId: string, text: string) {
   return {
     v: 1, conversationId: 'c', offset: '1',

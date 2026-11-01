@@ -1,4 +1,3 @@
-/** Run with `isCloudflareTarget()` true, as the Worker build sees it. */
 export async function withCloudflareUserAgent<T>(run: () => Promise<T>): Promise<T> {
   const prototype = Object.getPrototypeOf(globalThis.navigator) as object;
   const original = Object.getOwnPropertyDescriptor(prototype, 'userAgent');

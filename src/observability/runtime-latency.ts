@@ -388,11 +388,6 @@ export const STATE_RPC_SAMPLE_EVERY = 100;
 
 const stateRpcCounters = { calls: 0, slow: 0 };
 
-/**
- * Performance harness only (scripts/perf-slack-turn.mjs): hold every
- * state RPC this long so a local workerd run pays a production-like round
- * trip per call. Unset in every deployment; zero means no hold.
- */
 const PERF_STATE_RPC_DELAY_MS = Math.max(0, Number(process.env.CHICKPEA_PERF_STATE_RPC_DELAY_MS ?? 0) || 0);
 
 /**
