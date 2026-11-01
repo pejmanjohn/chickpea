@@ -62,10 +62,12 @@ const REPLY_ENDING_TOOL_NAMES: ReadonlySet<string> = new Set([
  * Whether a tool, once it succeeds, leaves the response no more work to do:
  * `stream_answer` streams the answer that follows, and a posted question
  * ends the reply, so this policy refuses the tools that come after either.
- * A message that arrives after one waits for a turn of its own.
+ * A front-desk hand-off ends the reply with the host's line. A message that
+ * arrives after one waits for a turn of its own.
  */
 export function endsResponseWork(toolName: string): boolean {
-  return toolName === SLACK_STREAM_ANSWER_TOOL_NAME || REPLY_ENDING_TOOL_NAMES.has(toolName);
+  return toolName === SLACK_STREAM_ANSWER_TOOL_NAME || toolName === FRONT_DESK_TOOL_NAME ||
+    REPLY_ENDING_TOOL_NAMES.has(toolName);
 }
 /** Display components ride in the answer; other presentation tools may follow them. */
 const DISPLAY_TOOL_NAMES: ReadonlySet<string> = new Set(Object.keys(DISPLAY_TOOL_KINDS));

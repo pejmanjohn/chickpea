@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { fauxAssistantMessage, fauxProvider, fauxToolCall, type FauxResponseStep } from '@earendil-works/pi-ai';
+import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type FauxResponseStep } from '@earendil-works/pi-ai';
 import {
   bash, init, instrument, useDelivery, useModel, useSandbox, useTool,
   type AgentProps, type DeliveredMessage, type FlueExecutionInterceptor, type LlmMessage,
@@ -24,6 +24,7 @@ import { COMPLETE_FILE_DELIVERY_TOOL, useFileDeliveryCompletion } from '../src/s
 import { promptSlackThreadAgent, type SlackFlueDispatchState } from '../src/slack/flue-dispatch.ts';
 import { useSlackFollowUpFold, type LateFoldRequest } from '../src/slack/follow-up-fold.ts';
 import { followUpSignalMessages } from '../src/slack/follow-ups.ts';
+import { FRONT_DESK_TOOL_NAME } from '../src/slack/front-desk.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../src/slack/presentation-intent.ts';
 import { registerSlackStatusTurn } from '../src/slack/status-registry.ts';
 import type { FlueDispatchEnvelopeV1, TurnFoldClaim, TurnJob } from '../src/slack/turn-job-types.ts';
@@ -91,6 +92,15 @@ function FoldProbe({ id }: AgentProps) {
     description: 'Ask the person a question; the answer arrives as the next message.',
     input: v.strictObject({}),
     run: () => ({ output: 'asked' }),
+  });
+  useTool({
+    name: FRONT_DESK_TOOL_NAME,
+    description: 'Hand the request to another Agent; the reply ends with this call.',
+    input: v.strictObject({}),
+    run: () => {
+      scenario.arrive('late', 'Check order 4822 instead.');
+      return { output: 'Handed off.', terminate: true };
+    },
   });
 }
 
@@ -394,6 +404,23 @@ test('messages sent while the Agent works join its response before the reply', {
           arrivesDuring('late', 'Also mention the pricing change.', answer('Which launch do you mean?')),
         ]);
         assert.equal(result.text, 'Which launch do you mean?');
+        assert.deepEqual(scenario.calls, []);
+        assert.equal(scenario.turns.runnerView('late').job!.fold, undefined);
+        assert.equal(folds().length, 0);
+      } finally {
+        scenario.close();
+      }
+    });
+
+    await t.test('a hand-off shuts the gate: a message sent while Chickpea decides waits for its own turn', async () => {
+      scenario = openScenario();
+      try {
+        const { result, modelCalls } = await run([
+          fauxAssistantMessage([fauxText('Support Desk can take this.'), fauxToolCall(FRONT_DESK_TOOL_NAME, {})], { stopReason: 'toolUse' }),
+          answer('A second reply after the hand-off.'),
+        ]);
+        assert.equal(result.text, 'Support Desk can take this.');
+        assert.equal(modelCalls, 1, 'the hand-off ends the reply');
         assert.deepEqual(scenario.calls, []);
         assert.equal(scenario.turns.runnerView('late').job!.fold, undefined);
         assert.equal(folds().length, 0);
