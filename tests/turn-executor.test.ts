@@ -143,8 +143,7 @@ test('a failed first attempt is retained for a retry and ends its thread for thi
 
 test('a run that claims its follow-ups records its attempt beside the claim, and goes on only once both are in', async () => {
   const events: string[] = [];
-  let commit!: () => void;
-  const committed = new Promise<void>((resolve) => { commit = resolve; });
+  const committed = Promise.withResolvers<void>();
   const h = fakePorts(async (options) => {
     const claim = options.claimFold!({ phase: 'start', headId: 'turn_1' });
     events.push('claim started');
@@ -154,7 +153,7 @@ test('a run that claims its follow-ups records its attempt beside the claim, and
   Object.assign(h.ports.turnJobs, {
     recordAttempt: async () => {
       events.push('attempt sent');
-      await committed;
+      await committed.promise;
       events.push('attempt committed');
     },
     fold: async () => {
@@ -166,7 +165,7 @@ test('a run that claims its follow-ups records its attempt beside the claim, and
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(events, ['attempt sent', 'fold', 'claim started'],
     'the claim starts while the attempt is in flight, and the run waits for both');
-  commit();
+  committed.resolve();
   assert.equal(await run, true);
   assert.deepEqual(events.slice(3), ['attempt committed', 'claim answered']);
 });

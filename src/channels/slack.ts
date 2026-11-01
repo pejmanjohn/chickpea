@@ -3562,10 +3562,9 @@ async function processSlackEvent(
         routedAssignment, store, process.env, installation, platformEnv,
       ).finally(() => introduction);
       // The rest of admission's reads need only the route and its model, so
-      // they start now, beside the snapshot. A failure counts only where its
-      // result is awaited below; a turn that ends earlier drops it. The
-      // admitted assignment keeps the route's runtime contract and owner
-      // incarnation, so its thread key is the routed one.
+      // they start now, beside the snapshot. The admitted assignment keeps the
+      // route's runtime contract and owner incarnation, so its thread key is
+      // the routed one.
       const admittedCredential = {
         model: policyAssignment.model,
         credential: resolveModelCredentialAttribution(

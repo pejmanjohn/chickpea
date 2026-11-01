@@ -3021,7 +3021,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
 
 /**
  * RunnerTurnBegin.slackCredentials. A failed read is left to the runner's
- * own, so a turn meets it where it did before, not as a failed `begin`.
+ * own read, so the turn meets the failure there rather than as a failed `begin`.
  */
 function runnerSlackCredentials(
   stores: TagStateStores,

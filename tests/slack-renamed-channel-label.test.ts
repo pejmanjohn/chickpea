@@ -109,15 +109,14 @@ test('a Channel turn records the current Slack name and refreshes labels cached 
 
 test('a Channel turn asks Slack for its Channel while the author lookup is still unanswered', async () => {
   const seen: string[] = [];
-  let answerAuthor!: () => void;
-  const authorHeld = new Promise<void>((resolve) => { answerAuthor = resolve; });
-  const giveUp = setTimeout(() => answerAuthor(), 500);
+  const author = Promise.withResolvers<void>();
+  const giveUp = setTimeout(() => author.resolve(), 500);
   try {
     await withChannelTurn(async (operation) => {
       seen.push(operation);
-      if (operation === 'conversations.info') answerAuthor();
+      if (operation === 'conversations.info') author.resolve();
       if (operation === 'users.info') {
-        await authorHeld;
+        await author.promise;
         seen.push('users.info answered');
       }
     }, async (admit, _stores, jobs) => {
@@ -132,15 +131,14 @@ test('a Channel turn asks Slack for its Channel while the author lookup is still
 
 test('a Channel turn asks whether its thread has work running while its snapshot read is unanswered', async () => {
   const seen: string[] = [];
-  let answerSnapshot!: () => void;
-  const snapshotHeld = new Promise<void>((resolve) => { answerSnapshot = resolve; });
-  const giveUp = setTimeout(() => answerSnapshot(), 500);
+  const snapshotRead = Promise.withResolvers<void>();
+  const giveUp = setTimeout(() => snapshotRead.resolve(), 500);
   try {
     await withChannelTurn(() => undefined, async (admit, stores, jobs) => {
       const snapshots = stores.snapshots;
       stores.snapshots = {
         get: async (key) => {
-          await snapshotHeld;
+          await snapshotRead.promise;
           seen.push('snapshot answered');
           return snapshots.get(key);
         },
@@ -151,7 +149,7 @@ test('a Channel turn asks whether its thread has work running while its snapshot
       const isActiveWork = stores.slackState.isActiveWork;
       stores.slackState.isActiveWork = async (key) => {
         seen.push('active work read');
-        answerSnapshot();
+        snapshotRead.resolve();
         return isActiveWork(key);
       };
       assert.equal(await admit(), 'accepted');

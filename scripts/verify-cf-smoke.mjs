@@ -124,13 +124,13 @@ if (!(SLOW_TURN_DELAY_MS > 10_000)) {
 }
 
 export const failures = [];
-export let adminCookie = '';
+let adminCookie = '';
 export let defaultAgentMention = '';
 /** Importers cannot assign the binding; mentionEvent() addresses this handle. */
 export function setDefaultAgentMention(mention) {
   defaultAgentMention = mention;
 }
-export function check(ok, label, detail = '') {
+function check(ok, label, detail = '') {
   const status = ok ? 'ok  ' : 'FAIL';
   console.log(`  [${status}] ${label}${detail ? ` — ${detail}` : ''}`);
   if (!ok) failures.push(label);

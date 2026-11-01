@@ -632,8 +632,8 @@ export async function executeTurnJob(
       console.warn('[chickpea] post-delivery cleanup did not complete');
       return true;
     }
-    // Restoring or spending this attempt needs it committed first; one that
-    // never committed throws as it did before the run.
+    // Restoring or spending this attempt needs it committed first; a commit
+    // that failed throws here.
     await attemptRecorded;
     if (stopRefused) {
       // Nothing was dispatched: give the attempt back and wait like a held row.

@@ -73,7 +73,8 @@ function parseFlags(argv) {
     if (!Number.isInteger(value) || value < min) throw new Error(`--${name} must be an integer >= ${min}`);
     return value;
   };
-  const out = values.out?.startsWith('~/') ? join(homedir(), values.out.slice(2)) : values.out;
+  const expandHome = (path) => (path?.startsWith('~/') ? join(homedir(), path.slice(2)) : path);
+  const wranglerLog = expandHome(values['wrangler-log']);
   return {
     turns: count('turns', 1),
     slackLatencyMs: count('slack-latency-ms', 0),
@@ -82,11 +83,9 @@ function parseFlags(argv) {
     providerDelaySpreadMs: count('provider-delay-spread-ms', 0),
     threadReplies: count('thread-replies', 0),
     skipBuild: values['skip-build'],
-    out: resolve(out ?? join(DEFAULT_RUNS_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}.json`)),
+    out: resolve(expandHome(values.out) ?? join(DEFAULT_RUNS_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}.json`)),
     label: values.label,
-    wranglerLog: values['wrangler-log']
-      ? resolve(values['wrangler-log'].startsWith('~/') ? join(homedir(), values['wrangler-log'].slice(2)) : values['wrangler-log'])
-      : undefined,
+    wranglerLog: wranglerLog ? resolve(wranglerLog) : undefined,
   };
 }
 

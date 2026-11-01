@@ -332,8 +332,8 @@ export async function resolveRuntimeModel(
     // stored Node selection cannot cause Cloudflare auth or model egress.
     requireOpenAiSubscriptionAvailable();
   }
-  // The catalog's reads and the key read are independent state, issued
-  // together and decided in the old order: the catalog first, then the key.
+  // The catalog load and the key read are independent, so both start here; a
+  // catalog failure still wins over a missing key.
   const keyProvider: ProviderKeyId | undefined = providerId === 'openai'
     ? ((openAiAuthorization ?? 'api_key') === 'api_key' ? 'openai' : undefined)
     : isProviderKeyId(providerId) ? providerId : undefined;

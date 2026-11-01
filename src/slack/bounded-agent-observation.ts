@@ -249,9 +249,6 @@ export function createBoundedAgentReplyReader(input: {
         ...(settlement.error === undefined ? {} : { cause: settlement.error }),
       });
     }
-    // Every chunk already went through onEvent; only the settled reply is
-    // still needed, so the history view is read once instead of replaying
-    // the conversation through Flue's read().
     const history = await readAgentView(route, target, `${agentViewBase(input.agentName, instanceId)}?view=history`);
     const snapshot = await history.json() as AgentConversationSnapshot;
     return { ...replyFromSnapshot(snapshot, receipt.submissionId), uid: receipt.uid, submissionId: receipt.submissionId };

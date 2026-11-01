@@ -193,10 +193,7 @@ export class ShadowWorkLifecycle {
       if (!preparedContent?.body) {
         this.usable = false;
         this.options.onGap?.('prepare_input');
-        if (this.options.mode === 'enforce') {
-          throw new Error('Ledger prepared input could not be read after persistence.');
-        }
-        return undefined;
+        throw new Error('Ledger prepared input could not be read after persistence.');
       }
       preparedBody = preparedContent.body;
     }

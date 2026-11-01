@@ -97,16 +97,16 @@ export function createSlackTurnInput(input: {
 }
 
 /**
- * The submission id Flue gives a keyed dispatch of the Slack agent: the
- * TurnJob id is the idempotency key. Flue documents the derivation as a
- * frozen wire format; `tests/sandbox-workspace-task.test.ts` checks it
- * against a real receipt.
+ * The submission id Flue gives a dispatch that carries an idempotency key.
+ * Flue documents the derivation as a frozen wire format;
+ * `tests/sandbox-workspace-task.test.ts` checks it against a real receipt.
  */
 export async function keyedSubmissionId(agentName: string, instanceId: string, idempotencyKey: string): Promise<string> {
   const digest = await sha256Hex(`flue-submission-key\n${agentName}\n${instanceId}\n${idempotencyKey}`);
   return `sub_ik_${digest.slice(0, 32)}`;
 }
 
+/** A Slack turn's dispatch is keyed by its TurnJob id. */
 export function slackTurnSubmissionId(instanceId: string, turnJobId: string): Promise<string> {
   return keyedSubmissionId(CHICKPEA_SLACK_AGENT_NAME, instanceId, turnJobId);
 }

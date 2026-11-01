@@ -97,7 +97,7 @@ export interface RunnerTurnBegin {
   /**
    * A direct installation's two Slack credential reads, the ones its runner
    * makes next over the identity RPC, as that RPC answers them: the envelope
-   * stays encrypted and the runner decrypts it as before. Absent for a
+   * stays encrypted for the runner to decrypt. Absent for a
    * gateway installation, a failed read, or an older state store.
    */
   slackCredentials?: {

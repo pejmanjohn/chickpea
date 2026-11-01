@@ -147,6 +147,14 @@ let holdNativeStart: ((timeline: string[]) => Promise<void>) | undefined;
 /** The classifier's model answer waits on this, when set; the harness scripts the classifier's provider. */
 let holdClassifierAnswer: ((timeline: string[]) => Promise<void>) | undefined;
 
+/** Resolves once `ready()` holds, or after two seconds if it never does. */
+async function waitUntil(ready: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!ready() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 async function firstStatusTimeline(
   surface: Surface,
   publicUrl?: string | null,
@@ -274,9 +282,7 @@ async function firstStatusTimeline(
     usageRecordingEnabled: false,
     ...(publicUrl === undefined ? {} : { publicUrl }),
     // The runner's per-turn state-store writes (see runnerTurnJobsPort).
-    onInteractionIntent: async () => {
-      timeline.push('turnJobs.recordInteractionIntent');
-    },
+    onInteractionIntent: async () => { timeline.push('turnJobs.recordInteractionIntent'); },
     onRuntimePlan: async (candidate) => {
       timeline.push('turnJobs.freezeRuntimePlan');
       const { deriveRuntimePlanInstanceId } = await import('../src/agents/runtime-plan.ts');
@@ -323,9 +329,10 @@ async function firstStatusTimeline(
  * memory, the plan, and the Work lifecycle start once that call is issued
  * and run while Slack acknowledges it. The custom status waits for the
  * acknowledgement (its hand-over releases an acknowledged session) and is
- * issued next; the reads do not wait for it either. The thread's generation fence (checked by the
- * hand-over and by the custom write) is the status path's only other state
- * read; a thread runner answers it from its `begin` round trip.
+ * issued next; the reads do not wait for it either. The thread's generation
+ * fence (checked by the hand-over and by the custom write) is the status
+ * path's only other state read; a thread runner answers it from its `begin`
+ * round trip.
  */
 for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
   test(`${surface}: native first, before any other read, then the custom status`, async () => {
@@ -439,14 +446,8 @@ test('a rejected custom status shows native again, without a second start', asyn
 test('classification and the plan do not wait for the custom status acknowledgement', async () => {
   // One read from each chain: the classifier's disposition and the plan freeze.
   const reads = ['turnJobs.recordInteractionIntent', 'turnJobs.freezeRuntimePlan'];
-  // Slack is slow to acknowledge the custom status. The acknowledgement
-  // arrives once both reads have landed, or after two seconds if they wait.
-  holdCustomStatus = async (timeline) => {
-    const deadline = Date.now() + 2_000;
-    while (!reads.every((read) => timeline.includes(read)) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-  };
+  // Slack acknowledges the custom status only once both reads have landed.
+  holdCustomStatus = (timeline) => waitUntil(() => reads.every((read) => timeline.includes(read)));
   try {
     const { timeline } = await firstStatusTimeline('channel_mention', null);
     const acknowledged = timeline.indexOf('acknowledged:assistant.threads.setStatus');
@@ -464,14 +465,8 @@ test('classification and the plan do not wait for the custom status acknowledgem
 test('classification and the plan start once the native start is issued, before Slack acknowledges it', async () => {
   // One read from each chain: the classifier's intent record and the plan's bound-plan read.
   const reads = ['turnJobs.recordInteractionIntent', 'turnJobs.getBoundRuntimePlan'];
-  // Slack is slow to acknowledge the native start. The acknowledgement
-  // arrives once both reads have landed, or after two seconds if they wait.
-  holdNativeStart = async (timeline) => {
-    const deadline = Date.now() + 2_000;
-    while (!reads.every((read) => timeline.includes(read)) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-  };
+  // Slack acknowledges the native start only once both reads have landed.
+  holdNativeStart = (timeline) => waitUntil(() => reads.every((read) => timeline.includes(read)));
   try {
     const { timeline } = await firstStatusTimeline('channel_mention', null);
     const issued = timeline.indexOf('slack:session:processing');
@@ -491,14 +486,11 @@ test('classification and the plan start once the native start is issued, before 
 });
 
 test('the context is read before the classifier answers; the dispatch waits for the answer and its record', async () => {
-  // The classifier's model is slow: it answers once the context read has been
-  // issued, or after two seconds if the turn waits for it. Two seconds stays
-  // under the classifier's timeout, so no fallback intent answers first.
+  // The classifier answers only once the context read has been issued. The
+  // two-second bound stays under the classifier's timeout, so no fallback
+  // intent answers first.
   holdClassifierAnswer = async (timeline) => {
-    const deadline = Date.now() + 2_000;
-    while (!timeline.some((entry) => entry.startsWith('slack:conversations.')) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    await waitUntil(() => timeline.some((entry) => entry.startsWith('slack:conversations.')));
     timeline.push('classifier:answered');
   };
   // The scripted provider stands in for Anthropic, whose side call carries

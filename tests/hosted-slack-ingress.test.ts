@@ -331,17 +331,15 @@ test('a standalone delivery reads its installation beside its credentials, once 
     const hold = (store: object, name: string) => {
       const target = store as Record<string, (...args: unknown[]) => Promise<unknown>>;
       const original = target[name]!.bind(store);
-      let release!: () => void;
-      const held = new Promise<void>((resolve) => { release = resolve; });
-      let reached!: () => void;
-      const read = new Promise<void>((resolve) => { reached = resolve; });
+      const held = Promise.withResolvers<void>();
+      const reached = Promise.withResolvers<void>();
       target[name] = async (...args) => {
         reads.push(name);
-        reached();
-        await held;
+        reached.resolve();
+        await held.promise;
         return original(...args);
       };
-      return { read, release };
+      return { read: reached.promise, release: held.resolve };
     };
     const event = (eventId: string) => ({
       token: '', team_id: 'T1', api_app_id: 'A1', type: 'event_callback', event_id: eventId,

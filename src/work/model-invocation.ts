@@ -17,7 +17,7 @@ interface InvocationState {
   instanceId: string;
   submissionId: string;
   target?: FlueObservationTarget;
-  /** The invocation's one mark attempt, whatever it came to. */
+  /** The mark this invocation's model operations share; an enforce-mode failure is dropped so the next one retries. */
   marking?: Promise<void>;
   /** An observe-mode mark failed: this invocation is not marked again. */
   markUnavailable?: boolean;

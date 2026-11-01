@@ -235,11 +235,10 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
 
   private readonly queue: RelayOperation[] = [];
   private closing = false;
-  private signalClosed!: () => void;
-  private readonly closed = new Promise<void>((resolve) => { this.signalClosed = resolve; });
+  private readonly closed = Promise.withResolvers<void>();
   private readonly appendControl: ProgressiveAppendControl = {
     closing: () => this.closing,
-    closed: this.closed,
+    closed: this.closed.promise,
   };
   private pumpPromise: Promise<void> | undefined;
   private accepting = true;
@@ -338,7 +337,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
 
   private markClosing(): void {
     this.closing = true;
-    this.signalClosed();
+    this.closed.resolve();
   }
 
   private handleToolInput(toolName: string, toolCallId: string): void {

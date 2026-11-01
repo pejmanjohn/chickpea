@@ -393,9 +393,7 @@ const stateRpcCounters = { calls: 0, slow: 0 };
  * state RPC this long so a local workerd run pays a production-like round
  * trip per call. Unset in every deployment; zero means no hold.
  */
-const PERF_STATE_RPC_DELAY_MS = Math.max(0, Number(
-  (typeof process !== 'undefined' ? process.env?.CHICKPEA_PERF_STATE_RPC_DELAY_MS : undefined) ?? 0,
-) || 0);
+const PERF_STATE_RPC_DELAY_MS = Math.max(0, Number(process.env.CHICKPEA_PERF_STATE_RPC_DELAY_MS ?? 0) || 0);
 
 /**
  * Time one RPC at the Cf*Store class boundary. Callers pass the in-flight

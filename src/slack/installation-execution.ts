@@ -184,9 +184,9 @@ export async function resolveSlackInstallationExecutionContext(
 
 /**
  * How long admission's Channel read vouches for its bot's membership. The
- * executor runs seconds after admission, so a second read there only delayed
- * the first visible write; a turn run later (a retry, an OAuth resume) reads
- * again. The fact names its bot because a turn admitted through Chickpea's
+ * executor runs seconds after admission, so a second read there would only
+ * delay the first visible write; a turn run later (a retry, an OAuth resume)
+ * reads again. The fact names its bot because a turn admitted through Chickpea's
  * bot may answer as an Agent's own app.
  */
 const ADMISSION_MEMBERSHIP_TTL_MS = 60_000;

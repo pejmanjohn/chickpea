@@ -1247,7 +1247,6 @@ async function runTurnAttempt(
   // context read, the envelope) depends on it, so those start as soon as the
   // preparation settles, and the intent is awaited where it is first needed.
   const classified = classifyTurn();
-  // Handled where it is awaited; a rejection before then must not be unhandled.
   classified.catch(() => undefined);
   try {
     const [visible, preparation] = await Promise.allSettled([
@@ -1587,6 +1586,7 @@ async function runTurnAttempt(
       !stoppedBeforeDispatch && !options.flueDispatch?.dispatchEnvelope
     ? turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv)
     : {};
+  const turnConfig = options.appStores?.config ?? getConfigStore(platformEnv);
   // The turn's bounded context (degrades to current-message-only on failure).
   // A turn that continues the thread's transcript sends only what arrived
   // since the previous turn; the transcript already holds the rest,
@@ -1596,7 +1596,6 @@ async function runTurnAttempt(
     const frozenHandoff = continuation
       ? []
       : runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
-    const turnConfig = options.appStores?.config ?? getConfigStore(platformEnv);
     const threadRecord = assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0
       ? turnConfig
       : undefined;
@@ -2194,10 +2193,9 @@ async function runTurnAttempt(
           presenter.setFooterModelLabel(codingFooterLabel);
           agentViewPresentation?.setFooterModelLabel(codingFooterLabel);
         }
-        // Four stores, so four starts at once. The settle is awaited first
-        // because the delivery records after it are ordered behind it; the
-        // lease and the display surfaces are awaited where the first visible
-        // effect needs them.
+        // The settle is awaited first because the delivery records after it
+        // are ordered behind it; the lease and the display surfaces are
+        // awaited where the first visible effect needs them.
         const settling = workLifecycle?.settleExecution({
           outcome: 'succeeded',
           rawStatus: 'flue_succeeded',
@@ -2207,13 +2205,13 @@ async function runTurnAttempt(
         });
         const recordingUsage = usageRecorder?.recordSuccess(agentResult);
         recordingUsage?.catch(() => undefined);
-        if (preparedMemory && !agentResult.memoryUpdate && !agentResult.agentCreationTerminal &&
-            !agentResult.frontDeskHandoff) {
+        const plainAnswer = !agentResult.memoryUpdate && !agentResult.agentCreationTerminal &&
+          !agentResult.frontDeskHandoff;
+        if (preparedMemory && plainAnswer) {
           earlyLeaseCheck = preparedMemory.validateLease();
           earlyLeaseCheck.catch(() => undefined);
         }
-        if (!handedBack && !agentResult.memoryUpdate && !agentResult.agentCreationTerminal &&
-            !agentResult.frontDeskHandoff && options.replayTerminalResult === undefined) {
+        if (!handedBack && plainAnswer && options.replayTerminalResult === undefined) {
           earlyDisplaySurfaces = readDisplaySurfaces();
         }
         await settling;
