@@ -1554,6 +1554,57 @@ async function runTurnAttempt(
     await finishDelivery('stopped');
   };
 
+  // A turn with any of these ends before the model, whatever the lease says.
+  const dispatchExpected = modelRepairText === undefined && !turn.managementApprovalProposalId &&
+    !memoryCommand && interactionIntent?.disposition !== 'react_only';
+  // The turn's bounded context (degrades to current-message-only on failure).
+  // A turn that continues the thread's transcript sends only what arrived
+  // since the previous turn; the transcript already holds the rest,
+  // including any ownership handoff context its first turn carried.
+  const readTurnContext = async () => {
+    const continuation = await readThreadContinuation(options, runtimePlanDecision, turn);
+    const frozenHandoff = continuation
+      ? []
+      : runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
+    const turnConfig = options.appStores?.config ?? getConfigStore(platformEnv);
+    const threadRecord = assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0
+      ? turnConfig
+      : undefined;
+    const hydratedContext = frozenHandoff.length > 0
+      ? currentMessageOnlyContext(turn)
+      : await hydrateTurnSlackContext({
+          client,
+          turn,
+          ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
+          siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig, turn.workspaceId),
+          sharedAppReads,
+          state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
+          ...(threadRecord ? { record: threadRecord } : {}),
+          followUps,
+        });
+    const context = await resolveSlackContextNames(
+      client,
+      turn.workspaceId,
+      await assembleRetainedSlackContext(hydratedContext, turn, {
+        followUps,
+        visibilityBarrierAt: preparedMemory?.visibilityBarrierAt ?? null,
+        ...(threadRecord ? { store: threadRecord, agentId: assignment.agentId } : {}),
+      }),
+    );
+    const promptContext = continuation
+      ? slackContextSinceWatermark(context, continuation.messageTs, assignment.agentId)
+      : context;
+    const continuityNote = continuation && runtimePlanDecision
+      ? threadContinuityNote({
+          previous: continuation,
+          plan: runtimePlanDecision.runtimePlan,
+          turn,
+          sharedThread: slackConversationKind(turn) !== 'im',
+        })
+      : undefined;
+    return { frozenHandoff, context, promptContext, continuityNote };
+  };
+
   // 1. Visible work: set best-effort native status. A rejection degrades to
   //    Agent Session lifecycle only and never creates a progress message.
   try {
@@ -1570,7 +1621,13 @@ async function runTurnAttempt(
     // Owner-native memory is authorized live, independently of the frozen
     // config snapshot. Fence every visible Slack effect as well as model/tool
     // execution when the selected owner lease has already gone stale.
-    if (preparedMemory?.ownerBound && !(await preparedMemory.validateLease())) {
+    const leaseCheck = preparedMemory?.ownerBound ? preparedMemory.validateLease() : undefined;
+    // The context read shows nothing in Slack and runs no model, so it runs
+    // while the lease is checked; a read that fails is reported only once the
+    // fence has decided.
+    const contextRead = dispatchExpected ? readTurnContext() : undefined;
+    const contextReadSettled = contextRead?.catch(() => undefined);
+    if (preparedMemory?.ownerBound && !(await leaseCheck)) {
       // Fail closed, never silently: the durable relay only retires a turn job
       // once delivery is tombstoned, so an early `return` here left the job
       // pending and the alarm re-armed forever behind a live "Thinking…"
@@ -1581,6 +1638,7 @@ async function runTurnAttempt(
       await presenter.deliverFinal(failureFinalText(turn, AGENT_FAILURE_TEXT), 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
+      await contextReadSettled;
       return;
     }
     // The turn's model cannot run until Model providers is repaired: say so
@@ -1597,11 +1655,16 @@ async function runTurnAttempt(
     // A click's or form's text is host-authored, and an ask or a later
     // co-addressed turn joins a thread a person's message already titled.
     const personTypedText = typedByPerson && !turn.uiResponse;
-    if (personTypedText) {
-      await agentViewPresentation?.setTitle(turn.text).catch(() => {
-        console.warn('[chickpea] Slack Agent View title could not be recorded');
-      });
-    }
+    const titleSet = personTypedText
+      ? agentViewPresentation?.setTitle(turn.text).catch(() => {
+          console.warn('[chickpea] Slack Agent View title could not be recorded');
+        })
+      : undefined;
+    // The title's two presentation transitions are fenced on the row's
+    // version, so no other transition may land between them. A turn that
+    // ends before the model waits here; the model path waits before its
+    // next transition, after the usage admission.
+    if (!dispatchExpected) await titleSet;
     if (turn.managementApprovalProposalId && options.replayText === undefined &&
         options.invokeManagementApproval && !options.managementApproval) {
       const persisted = await workLifecycle?.prepareExecution('Slack management approval');
@@ -1758,6 +1821,7 @@ async function runTurnAttempt(
       return;
     }
     if (usageRecordingEnabled && options.replayText === undefined) await openUsageRecorder();
+    await titleSet;
     // A substantive @-mention is classified late (above), AFTER Work admission
     // froze the presentation without a plan — whereas ambient and obvious-work
     // turns carry their plan from admission. Attach the late-classified work
@@ -1810,51 +1874,10 @@ async function runTurnAttempt(
       await statusTurn.setStatus(initialStatus);
     }
 
-    // 2. Hydrate bounded context (degrades to current-message-only on failure).
-    // A turn that continues the thread's transcript sends only what arrived
-    // since the previous turn; the transcript already holds the rest,
-    // including any ownership handoff context its first turn carried.
-    const continuation = await readThreadContinuation(options, runtimePlanDecision, turn);
-    const frozenHandoff = continuation
-      ? []
-      : runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
-    const turnConfig = options.appStores?.config ?? getConfigStore(platformEnv);
-    const threadRecord = assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0
-      ? turnConfig
-      : undefined;
-    const hydratedContext = frozenHandoff.length > 0
-      ? currentMessageOnlyContext(turn)
-      : await hydrateTurnSlackContext({
-          client,
-          turn,
-          ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
-          siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig, turn.workspaceId),
-          sharedAppReads,
-          state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
-          ...(threadRecord ? { record: threadRecord } : {}),
-          followUps,
-        });
-    const context = await resolveSlackContextNames(
-      client,
-      turn.workspaceId,
-      await assembleRetainedSlackContext(hydratedContext, turn, {
-        followUps,
-        visibilityBarrierAt: preparedMemory?.visibilityBarrierAt ?? null,
-        ...(threadRecord ? { store: threadRecord, agentId: assignment.agentId } : {}),
-      }),
-    );
-    const promptContext = continuation
-      ? slackContextSinceWatermark(context, continuation.messageTs, assignment.agentId)
-      : context;
+    // 2. The bounded context, read since the lease check began.
+    const { frozenHandoff, context, promptContext, continuityNote } =
+      await (contextRead ?? readTurnContext());
     review.context = promptContext;
-    const continuityNote = continuation && runtimePlanDecision
-      ? threadContinuityNote({
-          previous: continuation,
-          plan: runtimePlanDecision.runtimePlan,
-          turn,
-          sharedThread: slackConversationKind(turn) !== 'im',
-        })
-      : undefined;
     // A frozen plan reaches the render with the turn's staged input, so the
     // memory is rendered as an instruction there, once, instead of piling up
     // in the thread's transcript turn after turn.

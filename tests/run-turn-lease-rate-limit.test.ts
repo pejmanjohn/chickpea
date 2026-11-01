@@ -77,13 +77,13 @@ after(() => {
   rmSync(stateDirectory, { recursive: true, force: true });
 });
 
-test('a rate-limited delivery lease check retries the attempt, and the retry delivers the answer', async () => {
-  const messageTs = '1790000200.000100';
-  const turn: NormalizedSlackTurn = {
+/** A person's root-message mention of the Agent in the granted channel. */
+function leaseTurn(eventId: string, messageTs: string): NormalizedSlackTurn {
+  return {
     workspaceId: assignment.workspaceId,
     channelId: assignment.channelId,
     channelType: 'channel',
-    eventId: 'Ev_LEASE_LIMIT',
+    eventId,
     text: 'Summarize the release notes.',
     userId: 'U_LEASE_LIMIT',
     messageTs,
@@ -92,14 +92,11 @@ test('a rate-limited delivery lease check retries the attempt, and the retry del
     contextMode: 'thread',
     interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
   };
-  const work = new SqliteWorkStore(':memory:');
-  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
-    turn, assignment, sourceVisibility: 'public', admittedAt: Date.now(),
-  }));
-  const runId = admitted.run.id;
-  const db = openStateDb(':memory:');
-  const store = new SlackRunPresentationStoreLogic(db);
-  const sessionGeneration = Number(messageTs.replace('.', ''));
+}
+
+/** The run's V3 presentation, and the state port a runner answers it from. */
+function presentationFor(store: SlackRunPresentationStoreLogic, runId: string, turn: NormalizedSlackTurn) {
+  const sessionGeneration = Number(turn.messageTs.replace('.', ''));
   store.create({
     schemaVersion: 3,
     runId,
@@ -122,6 +119,29 @@ test('a rate-limited delivery lease check retries the attempt, and the retry del
       requesterUserId: turn.userId,
     },
   });
+  return {
+    getRunPresentation: (id: string) => store.get(id),
+    getLatestThreadSessionGeneration: (root: Parameters<typeof store.getLatestThreadSessionGeneration>[0]) =>
+      store.getLatestThreadSessionGeneration(root),
+    transitionRunPresentation: (input: Parameters<typeof store.transition>[0]) => store.transition(input),
+    reserveSlackAppend: (workspaceId: string) => store.reserveAppend(workspaceId),
+    applySlackAppendCooldown: (workspaceId: string, retryAfterMs: number) =>
+      store.applyAppendCooldown(workspaceId, retryAfterMs),
+    matchFlueObservation: () => undefined,
+  };
+}
+
+test('a rate-limited delivery lease check retries the attempt, and the retry delivers the answer', async () => {
+  const messageTs = '1790000200.000100';
+  const turn = leaseTurn('Ev_LEASE_LIMIT', messageTs);
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment, sourceVisibility: 'public', admittedAt: Date.now(),
+  }));
+  const runId = admitted.run.id;
+  const db = openStateDb(':memory:');
+  const store = new SlackRunPresentationStoreLogic(db);
+  const state = presentationFor(store, runId, turn);
   const finals: string[] = [];
   let leaseChecks = 0;
   let rateLimitLeaseCheck: number | undefined = 2; // the post-answer check
@@ -157,16 +177,6 @@ test('a rate-limited delivery lease check retries the attempt, and the retry del
       },
     },
   } as unknown as WebClient;
-  const state = {
-    getRunPresentation: (id: string) => store.get(id),
-    getLatestThreadSessionGeneration: (root: Parameters<typeof store.getLatestThreadSessionGeneration>[0]) =>
-      store.getLatestThreadSessionGeneration(root),
-    transitionRunPresentation: (input: Parameters<typeof store.transition>[0]) => store.transition(input),
-    reserveSlackAppend: (workspaceId: string) => store.reserveAppend(workspaceId),
-    applySlackAppendCooldown: (workspaceId: string, retryAfterMs: number) =>
-      store.applyAppendCooldown(workspaceId, retryAfterMs),
-    matchFlueObservation: () => undefined,
-  };
   const attempt = () => runTurn(turn, assignment, undefined, {
     client,
     runId,
@@ -205,6 +215,93 @@ test('a rate-limited delivery lease check retries the attempt, and the retry del
     } else {
       assert.fail('the retried attempt did not deliver its answer');
     }
+  } finally {
+    db.close();
+    work.close();
+  }
+});
+
+test('the context read runs while the owner lease is checked, and the title waits for the lease', async () => {
+  const messageTs = '1790000300.000100';
+  const turn = leaseTurn('Ev_LEASE_OVERLAP', messageTs);
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment, sourceVisibility: 'public', admittedAt: Date.now(),
+  }));
+  const runId = admitted.run.id;
+  const db = openStateDb(':memory:');
+  const store = new SlackRunPresentationStoreLogic(db);
+  const state = presentationFor(store, runId, turn);
+  const timeline: string[] = [];
+  const finals: string[] = [];
+  const seen = <T>(method: string, result: T) => async () => {
+    timeline.push(method);
+    return result;
+  };
+  let membersChecks = 0;
+  const client = {
+    apiCall: async () => ({ ok: true }),
+    assistant: { threads: {
+      setStatus: async () => ({ ok: true }),
+      setTitle: seen('assistant.threads.setTitle', { ok: true }),
+    } },
+    auth: { test: async () => ({ ok: true, user_id: 'U_CHICKPEA' }) },
+    users: { info: async () => ({ ok: true, user: { id: turn.userId, team_id: turn.workspaceId } }) },
+    conversations: {
+      info: async () => ({ ok: true, channel: { id: turn.channelId, context_team_id: turn.workspaceId, is_member: true } }),
+      members: async () => {
+        membersChecks += 1;
+        if (membersChecks === 1) {
+          // The lease's last Slack answer arrives once the thread read has been
+          // issued, or after half a second if that read waits for the lease.
+          const deadline = Date.now() + 500;
+          while (!timeline.includes('conversations.replies') && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+          timeline.push('lease:members_answered');
+        }
+        return { ok: true, members: [turn.userId, 'U_CHICKPEA'] };
+      },
+      replies: seen('conversations.replies', { ok: true, messages: [] }),
+      history: seen('conversations.history', { ok: true, messages: [] }),
+    },
+    chat: {
+      startStream: async (input: { chunks?: Array<{ text?: string }> }) => {
+        finals.push(input.chunks?.map((chunk) => chunk.text ?? '').join('') ?? '');
+        return { ok: true, ts: '1790000300.000200' };
+      },
+      appendStream: async () => ({ ok: true }),
+      stopStream: async () => ({ ok: true }),
+      postMessage: async (input: { text?: string }) => {
+        finals.push(input.text ?? '');
+        return { ok: true, ts: '1790000300.000200' };
+      },
+    },
+  } as unknown as WebClient;
+  try {
+    await runTurn(turn, assignment, undefined, {
+      client,
+      runId,
+      turnId: `turn_${runId}`,
+      presentationState: state,
+      workStore: work,
+      usageRecordingEnabled: false,
+      agentPrompt: async () => ({
+        text: 'The release notes cover three fixes.',
+        requestedModel: assignment.model ?? null,
+        returnedModel: null,
+        reportedUsage: null,
+        usageCompleteness: 'not_reported' as const,
+      }),
+    });
+    const read = timeline.indexOf('conversations.replies');
+    const leaseAnswered = timeline.indexOf('lease:members_answered');
+    const titled = timeline.indexOf('assistant.threads.setTitle');
+    assert.ok(read >= 0 && leaseAnswered >= 0 && titled >= 0, `read, lease and title all happen: ${timeline.join(' ')}`);
+    assert.ok(read < leaseAnswered, `the context read does not wait for the lease: ${timeline.join(' ')}`);
+    assert.ok(titled > leaseAnswered, `the title waits for the lease: ${timeline.join(' ')}`);
+    assert.equal(finals.length, 1);
+    assert.match(finals[0]!, /three fixes/);
   } finally {
     db.close();
     work.close();
