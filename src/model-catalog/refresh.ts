@@ -61,12 +61,10 @@ export async function loadModelCatalog(
   settings: SettingsStore,
   env?: PlatformEnv,
 ): Promise<ModelCatalogLoadResult> {
-  if (await readModelCatalogMode(settings) === 'bundled') {
-    const snapshot = activateBundledModelCatalog(env);
-    return { status: 'bundled', revision: snapshot.revision };
-  }
-  const lkg = await safeReadLkg(settings);
-  if (!lkg) {
+  // Both reads at once: the mode decides whether the LKG is used, and an LKG
+  // read the mode then discards is harmless.
+  const [mode, lkg] = await Promise.all([readModelCatalogMode(settings), safeReadLkg(settings)]);
+  if (mode === 'bundled' || !lkg) {
     const snapshot = activateBundledModelCatalog(env);
     return { status: 'bundled', revision: snapshot.revision };
   }

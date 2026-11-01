@@ -600,9 +600,10 @@ export class SlackAgentViewPresentation {
    * Start Slack's native Agent Session processing indicator independently of
    * the richer, owner-authored activity message. The intent is persisted
    * before the API call so admission replay cannot blindly duplicate an
-   * outcome whose receipt is unknown.
+   * outcome whose receipt is unknown. `onIssued` runs once the Slack call is
+   * on the wire, before Slack acknowledges it.
    */
-  async beginAgentSessionProcessing(): Promise<boolean> {
+  async beginAgentSessionProcessing(onIssued?: () => void): Promise<boolean> {
     let presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3 || presentation.agentSession.disposition ||
         presentation.agentSession.desired !== 'processing') return false;
@@ -623,13 +624,15 @@ export class SlackAgentViewPresentation {
     }
     if (presentation.schemaVersion !== 3) return false;
     try {
-      await setAgentSessionStatus(this.options.client, {
+      const call = setAgentSessionStatus(this.options.client, {
         channel_id: presentation.root.channelId,
         thread_ts: presentation.root.threadTs,
         status: 'processing',
         initiator_user_id: presentation.root.requesterUserId,
         ...ownerPersonaFields(presentation.owner),
       });
+      onIssued?.();
+      await call;
       await this.recordAgentSessionReceipt(operationId, 'acknowledged', 'processing');
       return true;
     } catch (error) {

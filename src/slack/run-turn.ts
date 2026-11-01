@@ -861,14 +861,23 @@ async function runTurnAttempt(
   // that text. Otherwise the native start is made at most once per attempt:
   // one that fails is not retried, and the custom status (or its settle) is
   // what the turn shows instead.
-  const startNativeIndicator = async (): Promise<void> => {
-    if (admittedVisibleStatus !== undefined || !agentViewPresentation) return;
+  /** Settles once the native start's outcome (`nativeHeld`) is known; the status turn waits for it. */
+  let nativeStart: Promise<void> | undefined;
+  /** Resolves once the native start is issued, before Slack acknowledges it, so the turn's reads can begin. */
+  const startNativeIndicator = (): Promise<void> => {
+    if (admittedVisibleStatus !== undefined || !agentViewPresentation) return Promise.resolve();
+    const issued = Promise.withResolvers<void>();
     // True also for a retry whose earlier attempt started native processing
     // and stopped before its custom write, so that write hands over too. A
     // start whose outcome is unknown returns false: its custom writes do not
     // hand over, and may stay hidden until the turn settles (cosmetic).
-    nativeHeld = await agentViewPresentation.beginAgentSessionProcessing();
-    if (nativeHeld) options.onSlackWrite?.('agent_session');
+    nativeStart = agentViewPresentation.beginAgentSessionProcessing(() => issued.resolve()).then((held) => {
+      nativeHeld = held;
+      if (held) options.onSlackWrite?.('agent_session');
+    });
+    // Awaited by the status turn; a rejection before then must not be unhandled.
+    nativeStart.catch(() => undefined);
+    return Promise.race([issued.promise, nativeStart]);
   };
   /**
    * Hand the working indicator from native `processing` to the custom status
@@ -1036,6 +1045,9 @@ async function runTurnAttempt(
     return registration;
   };
   const showAdmittedStatus = async (statusInstanceId: string) => {
+    // Every reader of the native start's outcome (the hold below, the
+    // hand-over in the custom write, the keepalive) runs through this registration.
+    await nativeStart;
     const registered = registerStatusTurn(statusInstanceId);
     // Native processing shows from the start (sent now, or by an earlier
     // attempt): keep it alive until a custom status takes over.
@@ -1062,11 +1074,12 @@ async function runTurnAttempt(
     await startNativeIndicator();
     return showAdmittedStatus(statusInstanceId);
   };
-  // A frozen V3 presentation shows Slack's native indicator before the turn
+  // A frozen V3 presentation issues Slack's native indicator before the turn
   // reads anything else (classification, memory, plan, Work lifecycle): in a
-  // thread runner each of those is a round trip to the state store. The
-  // admitted activity is then issued as the custom status, and those reads run
-  // while Slack acknowledges it; the status turn is awaited where it is first
+  // thread runner each of those is a round trip to the state store. Those
+  // reads start once the native call is issued, not acknowledged; the status
+  // turn waits for the acknowledgement, hands the session over and issues the
+  // admitted activity as the custom status, and is awaited where it is first
   // used. What it shows is the admission's own pending activity, whatever the
   // turn decides later. Observed activity is routed by the Agent instance,
   // known once the plan is frozen; nothing is observed before dispatch.
@@ -2041,6 +2054,20 @@ async function runTurnAttempt(
     // A settled answer replayed from its checkpoint carries no display
     // components; they are read back from the turn's stored surfaces.
     const settledBeforePrompt = options.flueDispatch?.flueSettlement?.outcome === 'completed';
+    const surfaceState = options.appStores?.slackState ?? getSlackStateStore(platformEnv);
+    const surfaceTurnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+    const readDisplaySurfaces = () => prepareDisplaySurfaces({
+      state: surfaceState,
+      turn,
+      agentId: assignment.agent.id,
+      turnJobId: surfaceTurnJobId,
+      ...(settledBeforePrompt ? {} : { fresh: agentResult?.displayComponents ?? [] }),
+    }).catch(() => {
+      console.warn('[chickpea] display components were not stored; the answer posts without them');
+      return [];
+    });
+    /** The display surfaces, read with the reply when the final can only be the Agent's own answer or a lease failure. */
+    let earlyDisplaySurfaces: ReturnType<typeof readDisplaySurfaces> | undefined;
     let tablePresentation: SlackTablePresentation | undefined =
       options.flueDispatch?.flueSettlement?.outcome === 'completed'
         ? options.flueDispatch.flueSettlement.result.tablePresentations?.[0]
@@ -2158,9 +2185,10 @@ async function runTurnAttempt(
           presenter.setFooterModelLabel(codingFooterLabel);
           agentViewPresentation?.setFooterModelLabel(codingFooterLabel);
         }
-        // Three stores, so three starts at once. The settle is awaited first
+        // Four stores, so four starts at once. The settle is awaited first
         // because the delivery records after it are ordered behind it; the
-        // lease is awaited where the first visible effect needs it.
+        // lease and the display surfaces are awaited where the first visible
+        // effect needs them.
         const settling = workLifecycle?.settleExecution({
           outcome: 'succeeded',
           rawStatus: 'flue_succeeded',
@@ -2174,6 +2202,10 @@ async function runTurnAttempt(
             !agentResult.frontDeskHandoff) {
           earlyLeaseCheck = preparedMemory.validateLease();
           earlyLeaseCheck.catch(() => undefined);
+        }
+        if (!handedBack && !agentResult.memoryUpdate && !agentResult.agentCreationTerminal &&
+            !agentResult.frontDeskHandoff && options.replayTerminalResult === undefined) {
+          earlyDisplaySurfaces = readDisplaySurfaces();
         }
         await settling;
         await recordingUsage;
@@ -2524,23 +2556,10 @@ async function runTurnAttempt(
     const deliverableArtifacts = recoveredText === undefined && leaseValid && terminalResult === 'answer'
       ? artifacts
       : undefined;
-    const surfaceState = options.appStores?.slackState ?? getSlackStateStore(platformEnv);
-    const surfaceTurnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
     // Components travel only with the model's own lease-valid answer.
     const ownAnswer = terminalResult === 'answer' && recoveredText === undefined && leaseValid &&
       !(acknowledgeMemoryUpdate && agentResult?.memoryUpdate?.preservesContext !== true);
-    const displaySurfaces = ownAnswer
-      ? await prepareDisplaySurfaces({
-          state: surfaceState,
-          turn,
-          agentId: assignment.agent.id,
-          turnJobId: surfaceTurnJobId,
-          ...(settledBeforePrompt ? {} : { fresh: agentResult?.displayComponents ?? [] }),
-        }).catch(() => {
-          console.warn('[chickpea] display components were not stored; the answer posts without them');
-          return [];
-        })
-      : [];
+    const displaySurfaces = ownAnswer ? await (earlyDisplaySurfaces ?? readDisplaySurfaces()) : [];
     const displayComponents = renderDisplayComponents(displaySurfaces);
     await presenter.deliverFinal(
       text,

@@ -332,15 +332,24 @@ export async function resolveRuntimeModel(
     // stored Node selection cannot cause Cloudflare auth or model egress.
     requireOpenAiSubscriptionAvailable();
   }
-  await (dependencies.loadCatalog ?? loadModelCatalog)(dependencies.settings, dependencies.env);
+  // The catalog's reads and the key read are independent state, issued
+  // together and decided in the old order: the catalog first, then the key.
+  const keyProvider: ProviderKeyId | undefined = providerId === 'openai'
+    ? ((openAiAuthorization ?? 'api_key') === 'api_key' ? 'openai' : undefined)
+    : isProviderKeyId(providerId) ? providerId : undefined;
+  const catalog = (dependencies.loadCatalog ?? loadModelCatalog)(dependencies.settings, dependencies.env);
+  const key = keyProvider ? requireProviderKey(keyProvider, dependencies) : undefined;
+  // Awaited after the catalog; a rejection before then must not be unhandled.
+  key?.catch(() => undefined);
+  await catalog;
   if (providerId === 'anthropic') {
     const model = resolveApiKeyModelSpecifier(canonicalModel, 'anthropic', dependencies.env);
-    await requireProviderKey('anthropic', dependencies);
+    await key;
     return { model };
   }
   if (providerId !== 'openai') {
-    if (isProviderKeyId(providerId)) {
-      await requireProviderKey(providerId, dependencies);
+    if (key) {
+      await key;
       if (providerId === 'openrouter' && !dependencies.requireProviderKey) {
         let available: boolean;
         try {
@@ -378,7 +387,7 @@ export async function resolveRuntimeModel(
   const authorization = openAiAuthorization ?? 'api_key';
   if (authorization === 'api_key') {
     const model = resolveApiKeyModelSpecifier(canonicalModel, 'openai', dependencies.env);
-    await requireProviderKey('openai', dependencies);
+    await key;
     return { model, providerAuthRoute: 'openai_api_key' };
   }
 

@@ -140,6 +140,8 @@ let turns = 0;
 let rejectCustomStatus = false;
 /** Slack's acknowledgement of the custom status waits on this, when set. */
 let holdCustomStatus: ((timeline: string[]) => Promise<void>) | undefined;
+/** Slack's acknowledgement of the native start waits on this, when set. */
+let holdNativeStart: ((timeline: string[]) => Promise<void>) | undefined;
 /** The runner's intent record waits on this, when set. */
 let holdInteractionIntent: ((timeline: string[]) => Promise<void>) | undefined;
 
@@ -231,6 +233,10 @@ async function firstStatusTimeline(
     // agents.sessions.setStatus, labelled by the session status it sets.
     apiCall: async (_method: string, input: Record<string, unknown>) => {
       timeline.push(`slack:session:${String(input.status)}`);
+      if (holdNativeStart && input.status === 'processing') {
+        await holdNativeStart(timeline);
+        timeline.push('acknowledged:session:processing');
+      }
       return { ok: true };
     },
     assistant: { threads: { setStatus: slack('assistant.threads.setStatus') } },
@@ -304,10 +310,11 @@ async function firstStatusTimeline(
  * Work lifecycle, all serial. Now the first write is Slack's native
  * `processing` indicator (the fast write); the session is then handed over and
  * the admitted activity is written as the custom status, which replaces it
- * (#207). Only the public URL precedes the native start. The custom status
- * is issued next, and classification, memory, the plan, and the Work
- * lifecycle run while Slack acknowledges it; they wait for the native start,
- * not for the custom status. The thread's generation fence (checked by the
+ * (#207). Only the public URL precedes the native start. Classification,
+ * memory, the plan, and the Work lifecycle start once that call is issued
+ * and run while Slack acknowledges it. The custom status waits for the
+ * acknowledgement (its hand-over releases an acknowledged session) and is
+ * issued next; the reads do not wait for it either. The thread's generation fence (checked by the
  * hand-over and by the custom write) is the status path's only other state
  * read; a thread runner answers it from its `begin` round trip.
  */
@@ -442,6 +449,35 @@ test('classification and the plan do not wait for the custom status acknowledgem
     }
   } finally {
     holdCustomStatus = undefined;
+  }
+});
+
+test('classification and the plan start once the native start is issued, before Slack acknowledges it', async () => {
+  // One read from each chain: the classifier's intent record and the plan's bound-plan read.
+  const reads = ['turnJobs.recordInteractionIntent', 'turnJobs.getBoundRuntimePlan'];
+  // Slack is slow to acknowledge the native start. The acknowledgement
+  // arrives once both reads have landed, or after two seconds if they wait.
+  holdNativeStart = async (timeline) => {
+    const deadline = Date.now() + 2_000;
+    while (!reads.every((read) => timeline.includes(read)) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  };
+  try {
+    const { timeline } = await firstStatusTimeline('channel_mention', null);
+    const issued = timeline.indexOf('slack:session:processing');
+    const acknowledged = timeline.indexOf('acknowledged:session:processing');
+    assert.ok(issued >= 0 && acknowledged > issued, 'the native start was issued and acknowledged');
+    for (const read of reads) {
+      const at = timeline.indexOf(read);
+      assert.ok(at > issued, `${read} follows the native start`);
+      assert.ok(at < acknowledged, `${read} does not wait for the native acknowledgement`);
+    }
+    // The hand-over releases a session Slack has acknowledged as processing.
+    assert.ok(timeline.indexOf('slack:session:active') > acknowledged,
+      'the hand-over waits for the native acknowledgement');
+  } finally {
+    holdNativeStart = undefined;
   }
 });
 
