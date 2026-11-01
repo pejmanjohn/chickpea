@@ -469,7 +469,10 @@ test('a one-word message, which may be a pasted secret, never goes on a card; an
     tool.run({ data: { agents: ['support-desk'], note: '' } });
     assert.deepEqual(written, [{ agentIds: ['agent_support'], note: '' }]);
   }
-  assert.equal(compileFrontDeskPlan(rootDm({ text: 'refund status' }), assignment)?.choices, true, 'two words may go on a card');
+  // Japanese, Chinese, and Thai write a sentence without spaces; it is no pasted secret.
+  for (const text of ['refund status', '注文4821の配送状況を確認してください', '请帮我查一下订单4821的状态', 'ช่วยตรวจสอบคำสั่งซื้อ4821ให้หน่อย']) {
+    assert.equal(compileFrontDeskPlan(rootDm({ text }), assignment)?.choices, true, `${text} may go on a card`);
+  }
 });
 
 test('a message record that cannot be read leaves Chickpea\'s choice as it made it', async () => {

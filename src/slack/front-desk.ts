@@ -120,6 +120,9 @@ export function frontDeskMounted(
     (assignment.frontDesk?.agents.length ?? 0) > 0;
 }
 
+/** One run of printable ASCII: the shape of a key or token, never a sentence in any script. */
+const SINGLE_ASCII_WORD = /^[\x21-\x7e]+$/;
+
 /** Names the model may hand to, which need no pick, and whether the message may go on a card. */
 export function compileFrontDeskPlan(
   turn: NormalizedSlackTurn,
@@ -134,9 +137,9 @@ export function compileFrontDeskPlan(
     .sort((left, right) => right.name.length - left.name.length)
     .slice(0, FRONT_DESK_MAX_TARGETS)
     .map(({ id, name }) => ({ agentId: id, name }));
-  // A card keeps a copy of the message for a day, so a single word, which may
-  // be a pasted secret, never goes on one.
-  const choices = /\s/.test(turn.text.trim()) &&
+  // A card keeps a copy of the message for a day, so a single ASCII word,
+  // which may be a pasted secret, never goes on one.
+  const choices = !SINGLE_ASCII_WORD.test(turn.text.trim()) &&
     agentChoiceSpecFits(agentChoiceSpec(turn, [...widest, chickpeaOption()].slice(0, FRONT_DESK_MAX_TARGETS)));
   return { agents, ...(choices ? { choices: true as const } : {}) };
 }
