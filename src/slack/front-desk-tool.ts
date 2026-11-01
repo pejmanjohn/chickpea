@@ -25,17 +25,24 @@ export const FrontDeskHandoffSchema = v.strictObject({
  * mounts it and its shared-prefix segment stays cacheable.
  */
 export const FRONT_DESK_TOOL_DESCRIPTION = [
-  'Hand the person\'s current request to one of their other Agents, listed in "Agents this person may use" in the current message.',
-  'The host posts your note as your reply and the Agent you name answers the request in this thread, with the person\'s own message and files. Your reply ends with this call.',
+  'Hand the person\'s current request to one of their other Agents, listed in "Agents this person may use" ' +
+    'in the current message.',
+  'The host posts your note as your reply and the Agent you name answers the request in this thread, ' +
+    'with the person\'s own message and files. Your reply ends with this call.',
   'Rules:',
   '1. One listed Agent clearly fits, by a website login host, a connection, a skill, or its purpose: hand off to it.',
-  '2. Several fit: if one of them is the most recent Agent in this DM and the message does not say otherwise, hand off to it. Otherwise name all of them, and "chickpea" too if you also fit, so the person picks with a button.',
-  '3. The request is about this workspace (creating or changing Agents, connecting something to an Agent, settings, or a question about Chickpea itself): do not call this tool; answer yourself.',
+  '2. Several fit: if one of them is the most recent Agent in this DM and the message does not say otherwise, ' +
+    'hand off to it. Otherwise name all of them, and "chickpea" too if you also fit, so the person picks with a button.',
+  '3. The request is about this workspace (creating or changing Agents, connecting something to an Agent, ' +
+    'settings, or a question about Chickpea itself): do not call this tool; answer yourself.',
   '4. No listed Agent fits: do not call this tool; answer yourself, accurately.',
-  '5. Never say this workspace lacks a login, connection, or skill that a listed Agent has. If no listed Agent has it, say which listed Agent an Admin could add it to.',
+  '5. Never say this workspace lacks a login, connection, or skill that a listed Agent has. ' +
+    'If no listed Agent has it, say which listed Agent an Admin could add it to.',
   'An Agent with its own Slack app is not in the list. If the person names one, tell them to message it directly.',
 ].join('\n');
 
+// Looser than the host's caps on purpose: a call past them still reaches the
+// tool, which refuses too many Agents in its own words and trims a long note.
 const FrontDeskToolInput = v.strictObject({
   agents: v.pipe(
     v.array(v.pipe(v.string(), v.maxLength(200))),

@@ -173,7 +173,8 @@ export function uiResponseTurnText(record: UiSurfaceRecord, answer: InteractiveA
   if (spec.kind === 'form') {
     return formTurnText(record, spec.form, parseFormValues(answer.values), byUserId);
   }
-  // A pick re-admits the person's own message; the click itself is never a turn.
+  // Never reached: a pick is handled before admission and re-admits the
+  // person's own message. The branch only narrows the spec below.
   if (spec.kind === 'agent_choice') return 'Picked an Agent.';
   if (spec.kind !== 'approval') return interactiveTurnText(record, spec, answer, byUserId);
   const decision = approvalChoice(answer.choice);

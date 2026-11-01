@@ -90,8 +90,9 @@ const FILE_REPAIR_TOOLS = new Set([
 /**
  * Tools after which the host can replace the model's draft at delivery: a
  * memory update or rewrite swaps in its summary, an Agent creation swaps in
- * the welcome, and a front-desk hand-off swaps in its line. A streamed answer could then be overwritten, so a later
- * declaration is refused and the reply stays terminal.
+ * the welcome, and a front-desk hand-off swaps in its line. A streamed answer
+ * could then be overwritten, so a later declaration is refused and the reply
+ * stays terminal.
  */
 const DRAFT_REPLACING_TOOL_NAMES: ReadonlySet<string> = new Set([
   'update_agent_memory',

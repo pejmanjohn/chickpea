@@ -1136,25 +1136,25 @@ export function resultFromAgentReply(
 ): AgentDispatchResult {
   // A hand-off ends the run without model text: its reply is the host's line,
   // and nothing the model drafted is posted with it.
-  const frontDeskHandoff = frontDesk
-    ? parseFrontDeskHandoff(reply.data?.[SLACK_FRONT_DESK_HANDOFF_DATA_NAME])
-    : undefined;
-  const handoffText = frontDeskHandoff && frontDesk ? frontDeskReplyText(frontDeskHandoff, frontDesk) : undefined;
-  if (handoffText && frontDeskHandoff) {
-    const metadata = parseChickpeaResponseMetadata(reply.metadata?.[CHICKPEA_RESPONSE_METADATA_KEY]);
-    const usage = metadata ? parseReportedUsage(metadata.usage) : {
-      reportedUsage: null,
-      completeness: 'not_reported' as const,
-    };
-    return {
-      text: handoffText,
-      frontDeskHandoff,
-      requestedModel: metadata?.requestedModel ?? nonEmptyString(requestedModel),
-      returnedModel: metadata?.returnedModel ?? null,
-      reportedUsage: usage.reportedUsage,
-      usageCompleteness: usage.completeness,
-      flueSubmissionRef: opaqueId('fluesubmission', reply.submissionId),
-    };
+  const handoff = frontDesk ? parseFrontDeskHandoff(reply.data?.[SLACK_FRONT_DESK_HANDOFF_DATA_NAME]) : undefined;
+  if (frontDesk && handoff) {
+    const text = frontDeskReplyText(handoff, frontDesk);
+    if (text) {
+      const metadata = parseChickpeaResponseMetadata(reply.metadata?.[CHICKPEA_RESPONSE_METADATA_KEY]);
+      const usage = metadata ? parseReportedUsage(metadata.usage) : {
+        reportedUsage: null,
+        completeness: 'not_reported' as const,
+      };
+      return {
+        text,
+        frontDeskHandoff: handoff,
+        requestedModel: metadata?.requestedModel ?? nonEmptyString(requestedModel),
+        returnedModel: metadata?.returnedModel ?? null,
+        reportedUsage: usage.reportedUsage,
+        usageCompleteness: usage.completeness,
+        flueSubmissionRef: opaqueId('fluesubmission', reply.submissionId),
+      };
+    }
   }
   const artifacts = parseSlackArtifactReceipts(reply.data?.[SLACK_ARTIFACT_RECEIPTS_DATA_NAME]);
   // Checkpoints and the Work ledger require nonempty approved text. A file-only

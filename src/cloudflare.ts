@@ -3399,9 +3399,8 @@ function localFrontDeskDispatcher(
   platformEnv: PlatformEnv,
   productTelemetry: ProductTelemetryCapture,
 ): SlackFrontDeskHandoffDispatcher {
-  return async (request) => {
-    await processSlackFrontDeskHandoff(request, platformEnv, localHostAddressedAdmission(stores, platformEnv, productTelemetry));
-  };
+  return (request) =>
+    processSlackFrontDeskHandoff(request, platformEnv, localHostAddressedAdmission(stores, platformEnv, productTelemetry));
 }
 
 /**

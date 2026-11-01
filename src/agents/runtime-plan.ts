@@ -33,6 +33,7 @@ import {
 import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
 import { ownerBoundSandboxKey, runtimePlanGuestSandboxKey } from '../sandbox/thread-key.ts';
 import { conversationThreadTs, slackAgentContinuityKey, slackConversationKey, slackTurnSurface } from '../slack/thread-key.ts';
+import { FRONT_DESK_MAX_AGENTS } from '../slack/front-desk.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
   MAX_SLACK_PUBLIC_HANDOFF_CHARS,
@@ -1500,8 +1501,6 @@ function computeHarnessRevision(plan: HarnessRevisionInput): string {
     .digest('hex');
 }
 
-const FRONT_DESK_PLAN_AGENT_LIMIT = 12;
-
 function compileFrontDesk(frontDesk: RuntimePlanFrontDeskV1): RuntimePlanFrontDeskV1 {
   return {
     agents: frontDesk.agents.map(({ id, name, handle }) => ({ id, name, ...(handle ? { handle } : {}) })),
@@ -1521,7 +1520,7 @@ function parseFrontDesk(value: unknown): RuntimePlanFrontDeskV1 {
       name: boundedString(agent.name, 'frontDesk agent name', 1, 200),
       ...(agent.handle === undefined ? {} : { handle: boundedString(agent.handle, 'frontDesk agent handle', 1, 80) }),
     };
-  }, FRONT_DESK_PLAN_AGENT_LIMIT);
+  }, FRONT_DESK_MAX_AGENTS);
   if (agents.length === 0 || new Set(agents.map(({ id }) => id)).size !== agents.length) {
     throw new Error('Runtime plan frontDesk agents must be present and unique.');
   }

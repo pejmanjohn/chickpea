@@ -196,9 +196,13 @@ function fitFrontDeskDirectory(directory: FrontDeskDirectory, nowMs: number): Fr
   let fitted = directory;
   while (fitted.agents.length > 0 && renderFrontDeskBlock(fitted, nowMs).length > FRONT_DESK_MAX_BLOCK_CHARS) {
     const agents = fitted.agents.slice(0, -1);
-    const { recent: _recent, ...rest } = fitted;
-    const recent = fitted.recent && agents.some(({ id }) => id === fitted.recent!.agentId) ? fitted.recent : undefined;
-    fitted = { ...rest, agents, omitted: fitted.omitted + 1, ...(recent ? { recent } : {}) };
+    const { recent } = fitted;
+    fitted = {
+      agents,
+      omitted: fitted.omitted + 1,
+      incomplete: fitted.incomplete,
+      ...(recent && agents.some(({ id }) => id === recent.agentId) ? { recent } : {}),
+    };
   }
   return fitted.agents.length > 0 ? fitted : undefined;
 }

@@ -1607,7 +1607,7 @@ export async function processGatewaySlackEnvelope(
 
 // The Node relay runs turns in this process and admits their asks and hand-offs here.
 registerNodeAgentAskDispatcher(processSlackAgentAsks);
-registerNodeFrontDeskDispatcher((request, env) => processSlackFrontDeskHandoff(request, env));
+registerNodeFrontDeskDispatcher(processSlackFrontDeskHandoff);
 registerNodeSetupWakeAdmitter(admitSetupWake);
 
 /**
@@ -1662,8 +1662,9 @@ const AGENT_ASK_ADMISSION_ATTEMPTS = 3;
 /**
  * The installation a host-addressed turn (an ask, a front-desk hand-off, or a
  * setup's wake) runs on, and, on a gateway installation, the gateway
- * execution it is admitted through. Undefined when the workspace cannot run a turn now: no healthy
- * chickpea-v1 installation, or a gateway binding that no longer matches it.
+ * execution it is admitted through. Undefined when the workspace cannot run
+ * a turn now: no healthy chickpea-v1 installation, or a gateway binding that
+ * no longer matches it.
  */
 async function hostAddressedExecution(
   workspaceId: string,
