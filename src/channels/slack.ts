@@ -223,6 +223,7 @@ import {
   isRetryableDependencyFailure,
   type SlackChannel as SlackConversation,
   type SlackInboundEnvelope,
+  type SlackMember,
   type SlackTransport,
 } from '../slack/transport/types.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
@@ -1075,11 +1076,13 @@ export async function resolveAgentRoutingActor(input: {
   /** A Slack message/reaction event is current proof that its author belongs
    * to the exact source Channel at event time. */
   sourceChannelMembership?: boolean;
+  /** The author's Slack profile, when the caller has already asked Slack for it. */
+  member?: Promise<SlackMember>;
   botUserId: string;
   transport: SlackTransport;
   stores: AppStores;
 }): Promise<ResolvedAgentRoutingActor> {
-  const member = await input.transport.lookupMember(input.userId);
+  const member = await (input.member ?? input.transport.lookupMember(input.userId));
   let principal: AuthPrincipal | undefined;
   let fullMember = false;
   const provisioned = await provisionSlackInteractionMember({
@@ -3271,6 +3274,10 @@ async function processSlackEvent(
     return;
   }
   if (!runtimeTransport || !runtimeClient || !resolvedBotUserId) return;
+  // Both Slack reads start now so neither waits on the other. A failure counts
+  // only where its result is awaited below; a turn that ends earlier drops it.
+  const member = runtimeTransport.lookupMember(turn.userId);
+  void member.catch(() => undefined);
   let conversation: SlackConversation | undefined;
   try {
     conversation = await resolveTurnConversation(turn, runtimeTransport);
@@ -3280,6 +3287,10 @@ async function processSlackEvent(
     return;
   }
   const surface = slackTurnSurface(turn);
+  const channelFacts = surface !== 'channel'
+    ? undefined
+    : conversation ? Promise.resolve(conversation) : runtimeTransport.lookupChannel(turn.channelId);
+  void channelFacts?.catch(() => undefined);
 
   // e. Resolve the config for this turn before canonical admission acquires
   //    the claims. A failure here must not release keys owned by a concurrent
@@ -3294,6 +3305,7 @@ async function processSlackEvent(
       agentRoutingActor = await resolveAgentRoutingActor({
         workspaceId: turn.workspaceId,
         userId: turn.userId,
+        member,
         ...(surface === 'channel' ? { channelId: turn.channelId } : {}),
         ...(surface === 'channel' ? { sourceChannelMembership: true } : {}),
         botUserId: resolvedBotUserId,
@@ -3462,8 +3474,8 @@ async function processSlackEvent(
         routedAssignment, store, process.env, undefined, platformEnv,
       );
       candidateTurn = turn.source === 'reaction_added';
-      if (surface === 'channel') {
-        const channel = conversation ?? await runtimeTransport.lookupChannel(turn.channelId);
+      if (channelFacts) {
+        const channel = await channelFacts;
         turn.sharedChannel = channel.shared === true;
         agentSourceVisibility = channel.private ? 'private' : 'public';
         liveChannelName = channel.name;

@@ -242,7 +242,7 @@ test('people talking to each other in a group DM reach no Agent, and Slack is no
     await harness.deliver({ ts: '1800000420.000100', text: '<!subteam^SDESIGN|@design-team> thoughts?' });
     assert.deepEqual(harness.jobs, []);
     assert.deepEqual(harness.posts, []);
-    assert.deepEqual(harness.calls, ['conversations.info', 'users.info'],
+    assert.deepEqual(harness.calls, ['users.info', 'conversations.info'],
       'only the message naming a group of people is read, as a possible Agent address');
   });
 });
