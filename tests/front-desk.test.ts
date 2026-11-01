@@ -11,7 +11,7 @@ import type {
   FrontDeskDirectory,
   ResolvedAssignment,
 } from '../src/config/types.ts';
-import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { compileRuntimePlanV2, parseRuntimePlanV2, type RuntimePlanFrontDeskV1 } from '../src/agents/runtime-plan.ts';
 import { runtimePlanConnectedServicesInstruction } from '../src/agents/slack-thread.ts';
 import { BROWSER_NO_LOGINS_MESSAGE, chickpeaNoLoginsMessage } from '../src/browser/messages.ts';
 import { browserSkillForPlan } from '../src/browser/skill.ts';
@@ -27,10 +27,12 @@ import {
   type FrontDeskHandoff,
   agentChoiceSpec,
   compileFrontDeskPlan,
+  decideFrontDesk,
   frontDeskChoiceLine,
   frontDeskFailureLine,
   frontDeskHandoffLine,
   frontDeskMounted,
+  frontDeskOfferLine,
   pickRecentFrontDeskAgent,
   renderFrontDeskBlock,
   resolveFrontDeskTargets,
@@ -70,6 +72,18 @@ function rootDm(patch: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {
     workspaceId: 'T1', channelId: 'D1', eventId: 'Ev1', text: 'Check my order status on the portal.',
     userId: 'U1', messageTs: '1793440000.000100', threadTs: '1793440000.000100',
     source: 'dm_message', channelType: 'im', contextMode: 'thread', ...patch,
+  };
+}
+
+function chickpeaAssignment(patch: Partial<ResolvedAssignment> = {}): ResolvedAssignment {
+  return {
+    workspaceId: 'T1', channelId: 'D1', agentId: CHICKPEA_AGENT_ID, model: 'local-stub/chickpea',
+    runtimeContract: 'chickpea-v1', ownerIncarnation: 1,
+    agent: {
+      id: CHICKPEA_AGENT_ID, kind: 'system', revision: 1, name: 'Chickpea', instructions: 'Help.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    },
+    ...patch,
   };
 }
 
@@ -223,6 +237,62 @@ test('the recent Agent is the newest reply within seven days from an Agent the p
   ], usable, NOW), undefined, 'an Agent the person can no longer use is never the hint');
 });
 
+test('an Agent may take a message without a pick only when the person created it or it answered them here within seven days', () => {
+  const directory = assembleFrontDeskDirectory({
+    usable: {
+      agents: [
+        userAgent('agent_mine', 'Mine', { creatorMembershipId: 'membership_u1' }),
+        userAgent('agent_used', 'Used', { creatorMembershipId: 'membership_u2' }),
+        userAgent('agent_stale', 'Stale', { creatorMembershipId: 'membership_u2' }),
+        userAgent('agent_shared', 'Shared', { creatorMembershipId: 'membership_u2' }),
+      ],
+      incomplete: false,
+    },
+    accounts: [], bindings: new Map(), actorMembershipId: 'membership_u1',
+    recentReplies: [
+      { agentId: 'agent_used', messageTs: slackTsAt(NOW - 6 * DAY) },
+      { agentId: 'agent_stale', messageTs: slackTsAt(NOW - 8 * DAY) },
+    ],
+    nowMs: NOW,
+  })!;
+  assert.deepEqual(Object.fromEntries(directory.agents.map(({ name, direct }) => [name, direct ?? false])), {
+    Used: true, Mine: true, Shared: false, Stale: false,
+  });
+  assert.equal(directory.recent?.agentId, 'agent_used', 'the recent Agent is always one that needs no pick');
+
+  // A person with no membership created nothing, even an Agent with no recorded creator.
+  const anonymous = assembleFrontDeskDirectory({
+    usable: { agents: [userAgent('agent_orphan', 'Orphan')], incomplete: false },
+    accounts: [], bindings: new Map(), recentReplies: [], nowMs: NOW,
+  });
+  assert.equal(anonymous?.agents[0]?.direct, undefined);
+});
+
+test('the frozen plan keeps which Agents need no pick, and an older plan without that still reads', () => {
+  const turn = rootDm();
+  const frontDesk = compileFrontDeskPlan(turn, {
+    agentId: CHICKPEA_AGENT_ID, runtimeContract: 'chickpea-v1',
+    frontDesk: {
+      agents: [deskAgent('agent_support', 'Support Desk', { direct: true }), deskAgent('agent_research', 'Research')],
+      omitted: 0, incomplete: false,
+    },
+  })!;
+  assert.deepEqual(frontDesk.agents.map(({ id, direct }) => [id, direct]), [['agent_support', true], ['agent_research', undefined]]);
+  const frozen = (desk: RuntimePlanFrontDeskV1) => JSON.parse(JSON.stringify(compileRuntimePlanV2({
+    turn, assignment: chickpeaAssignment(), instructions: 'Help.', memoryEpoch: 1, frontDesk: desk,
+  })));
+  assert.deepEqual(parseRuntimePlanV2(frozen(frontDesk)).frontDesk, frontDesk);
+  // What the release before this one froze: no Agent carries the mark.
+  const older = { ...frontDesk, agents: frontDesk.agents.map(({ direct: _direct, ...agent }) => agent) };
+  const olderPlan = parseRuntimePlanV2(frozen(older)).frontDesk!;
+  assert.deepEqual(olderPlan, older);
+  assert.equal(decideFrontDesk({ agentIds: ['agent_support'], note: '' }, olderPlan)?.kind, 'card',
+    'with no mark, the person picks');
+  const invalid = frozen(frontDesk);
+  invalid.frontDesk.agents[0].direct = false;
+  assert.throws(() => parseRuntimePlanV2(invalid), /direct must be true/);
+});
+
 test('the store returns each Agent\'s newest reply in one DM since a time', () => {
   const db = openStateDb(':memory:');
   try {
@@ -265,6 +335,7 @@ test('the note is one plain sentence with no Slack control syntax', () => {
   assert.equal(frontDeskHandoffLine('Support Desk', 'It has the portal login.'), 'Support Desk is taking this. It has the portal login.');
   assert.equal(frontDeskHandoffLine('Support Desk', ''), 'Support Desk is taking this.');
   assert.equal(frontDeskChoiceLine('Both can check orders.'), 'Which Agent should take this? Both can check orders.');
+  assert.equal(frontDeskOfferLine('Research', 'It researches markets.'), 'Research can take this. It researches markets.');
   assert.equal(frontDeskFailureLine('Support Desk'), "I couldn't hand this to Support Desk. Mention the Agent you want to try again.");
 });
 
@@ -330,13 +401,51 @@ test('several Agents are offered only when the message fits on the card', () => 
   });
 });
 
+/** Support Desk needs no pick (the person made it or used it here lately); Research does. */
 const PLAN = {
   agents: [
-    { id: 'agent_support', name: 'Support Desk', handle: 'support-desk' },
+    { id: 'agent_support', name: 'Support Desk', handle: 'support-desk', direct: true as const },
     { id: 'agent_research', name: 'Research', handle: 'research' },
   ],
   choices: true as const,
 };
+
+test('the host hands the message over at once only to an Agent that needs no pick; any other choice waits on a card', () => {
+  assert.deepEqual(decideFrontDesk({ agentIds: ['agent_support'], note: 'It has the portal login.' }, PLAN), {
+    kind: 'handoff', option: { agentId: 'agent_support', name: 'Support Desk' },
+    line: 'Support Desk is taking this. It has the portal login.',
+  });
+  assert.deepEqual(decideFrontDesk({ agentIds: ['agent_research'], note: 'It researches markets.' }, PLAN), {
+    kind: 'card',
+    options: [{ agentId: 'agent_research', name: 'Research' }, { agentId: CHICKPEA_AGENT_ID, name: 'Chickpea' }],
+    line: 'Research can take this. It researches markets.',
+  });
+  assert.deepEqual(decideFrontDesk({ agentIds: ['agent_research', 'agent_support'], note: 'Both can look.' }, PLAN), {
+    kind: 'card',
+    options: [{ agentId: 'agent_research', name: 'Research' }, { agentId: 'agent_support', name: 'Support Desk' }],
+    line: 'Which Agent should take this? Both can look.',
+  }, 'several Agents are the person\'s pick, even beside one that needs none');
+  assert.equal(decideFrontDesk({ agentIds: ['agent_hr'], note: '' }, PLAN), undefined);
+  assert.equal(decideFrontDesk({ agentIds: [CHICKPEA_AGENT_ID], note: '' }, PLAN), undefined);
+});
+
+test('a message too big for a card is never handed to an Agent that needs a pick, and the refusal names no one', () => {
+  const plan = compileFrontDeskPlan(rootDm({ text: 'x'.repeat(17_000) }), {
+    agentId: CHICKPEA_AGENT_ID, runtimeContract: 'chickpea-v1',
+    frontDesk: {
+      agents: [deskAgent('agent_support', 'Support Desk', { direct: true }), deskAgent('agent_research', 'Research')],
+      omitted: 0, incomplete: false,
+    },
+  })!;
+  assert.equal(plan.choices, undefined);
+  const written: FrontDeskHandoff[] = [];
+  const tool = createFrontDeskTool({ plan, write: (handoff) => written.push(handoff) });
+  assert.throws(() => tool.run({ data: { agents: ['research'], note: '' } }), (error: Error) =>
+    /suggest the person mention it/.test(error.message) && !/research|support|agent_/i.test(error.message));
+  assert.deepEqual(written, []);
+  tool.run({ data: { agents: ['support-desk'], note: '' } });
+  assert.deepEqual(written, [{ agentIds: ['agent_support'], note: '' }], 'an Agent that needs no pick needs no card');
+});
 
 test('the hand-off tool records one hand-off and ends the run; a refusal records nothing', () => {
   const written: FrontDeskHandoff[] = [];
@@ -367,6 +476,11 @@ test('a hand-off\'s reply is the host\'s line, named from the frozen list, never
   }), null, PLAN);
   assert.equal(several.text, 'Which Agent should take this? Both can help.');
 
+  const offered = resultFromAgentReply(handoffReply({
+    [SLACK_FRONT_DESK_HANDOFF_DATA_NAME]: [{ agentIds: ['agent_research'], note: 'It researches markets.' }],
+  }), null, PLAN);
+  assert.equal(offered.text, 'Research can take this. It researches markets.');
+
   // A record naming an Agent outside the list, or one on a turn with no front desk, is ignored.
   assert.throws(() => resultFromAgentReply(handoffReply({
     [SLACK_FRONT_DESK_HANDOFF_DATA_NAME]: [{ agentIds: ['agent_hr'], note: '' }],
@@ -381,15 +495,9 @@ test('a settled hand-off survives the durable checkpoint, and a plan with a fron
   try {
     const jobs = new TurnJobStoreLogic(db);
     const turn = rootDm();
-    const assignment: ResolvedAssignment = {
-      workspaceId: 'T1', channelId: 'D1', agentId: CHICKPEA_AGENT_ID, model: 'local-stub/chickpea',
-      runtimeContract: 'chickpea-v1', ownerIncarnation: 1,
+    const assignment = chickpeaAssignment({
       frontDesk: { agents: [deskAgent('agent_support', 'Support Desk')], omitted: 0, incomplete: false },
-      agent: {
-        id: CHICKPEA_AGENT_ID, kind: 'system', revision: 1, name: 'Chickpea', instructions: 'Help.', enabled: true,
-        skills: [], mcpServers: [], apiConnections: [], repositories: [],
-      },
-    };
+    });
     const id = `msg:D1:${turn.messageTs}`;
     jobs.enqueue({ id, evtKey: 'evt:Ev1', msgKey: id, turn, assignment });
     const frontDesk = compileFrontDeskPlan(turn, assignment)!;

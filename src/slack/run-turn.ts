@@ -59,8 +59,8 @@ import { resolveModelCredentialAttribution } from '../config/model-credential-re
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
 import {
-  agentChoiceOptions,
   compileFrontDeskPlan,
+  decideFrontDesk,
   renderFrontDeskBlock,
   type SlackFrontDeskHandoffRequest,
 } from './front-desk.ts';
@@ -2269,21 +2269,23 @@ async function runTurnAttempt(
       return;
     }
     const frontDeskPlan = runtimePlanDecision?.runtimePlan.frontDesk;
-    if (agentResult?.frontDeskHandoff && frontDeskPlan) {
+    const frontDeskDecision = agentResult?.frontDeskHandoff && frontDeskPlan
+      ? decideFrontDesk(agentResult.frontDeskHandoff, frontDeskPlan)
+      : undefined;
+    if (frontDeskDecision) {
       // The host's line, never the model's draft: one Agent takes the
       // message once the line is delivered, or the person picks on a card.
-      const choices = agentChoiceOptions(agentResult.frontDeskHandoff.agentIds, frontDeskPlan);
       await preparedMemory?.confirmInjection();
-      review.answer = agentResult.text;
+      review.answer = frontDeskDecision.line;
       await statusTurn.prepareFinal();
-      await presenter.deliverFinal(agentResult.text, 'plain_text', 'complete');
+      await presenter.deliverFinal(frontDeskDecision.line, 'plain_text', 'complete');
       const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
-      if (choices.length === 1) {
+      if (frontDeskDecision.kind === 'handoff') {
         options.onFrontDeskHandoff?.({
           turn,
           fromAgentId: assignment.agentId,
-          agentId: choices[0]!.agentId,
-          agentName: choices[0]!.name,
+          agentId: frontDeskDecision.option.agentId,
+          agentName: frontDeskDecision.option.name,
         });
       } else {
         await deliverAgentChoiceSurface({
@@ -2295,7 +2297,7 @@ async function runTurnAttempt(
             post: (rendered) => presenter.postSurfaceMessage(rendered),
             update: (messageTs, rendered) => presenter.updateSurfaceMessage(messageTs, rendered),
           },
-          options: choices,
+          options: frontDeskDecision.options,
         }).catch(() => {
           console.warn('[chickpea] Slack Agent choice buttons were not posted');
         });

@@ -1,5 +1,5 @@
 import type { RuntimePlanFrontDeskV1 } from '../agents/runtime-plan.ts';
-import { SLACK_FRONT_DESK_HANDOFF_DATA_NAME, frontDeskReplyText, type FrontDeskHandoff } from './front-desk.ts';
+import { SLACK_FRONT_DESK_HANDOFF_DATA_NAME, decideFrontDesk, type FrontDeskHandoff } from './front-desk.ts';
 import { parseFrontDeskHandoff } from './front-desk-tool.ts';
 import { SLACK_MEMORY_UPDATE_DATA_NAME, parseSlackMemoryUpdate, type SlackMemoryUpdate } from './memory-update-terminal.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
@@ -1138,7 +1138,7 @@ export function resultFromAgentReply(
   // and nothing the model drafted is posted with it.
   const handoff = frontDesk ? parseFrontDeskHandoff(reply.data?.[SLACK_FRONT_DESK_HANDOFF_DATA_NAME]) : undefined;
   if (frontDesk && handoff) {
-    const text = frontDeskReplyText(handoff, frontDesk);
+    const text = decideFrontDesk(handoff, frontDesk)?.line;
     if (text) {
       const metadata = parseChickpeaResponseMetadata(reply.metadata?.[CHICKPEA_RESPONSE_METADATA_KEY]);
       const usage = metadata ? parseReportedUsage(metadata.usage) : {

@@ -18,6 +18,7 @@ import {
   clampText,
   compileFrontDeskPlan,
   frontDeskFailureLine,
+  slackTsAt,
   type SlackFrontDeskHandoffRequest,
 } from '../src/slack/front-desk.ts';
 import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
@@ -155,10 +156,10 @@ test('an untagged root DM reaches Chickpea with the Agents this person may use, 
     const [chickpea] = jobs;
     assert.equal(chickpea!.assignment.agentId, CHICKPEA_AGENT_ID);
     assert.ok(chickpea!.runId, 'admitted with a Run');
-    assert.deepEqual(chickpea!.assignment.frontDesk?.agents.map(({ id, name, handle, purpose }) => ({ id, name, handle, purpose })), [
-      { id: 'agent_research', name: 'Research', handle: 'research', purpose: 'Researches markets.' },
-      { id: 'agent_support', name: 'Support Desk', handle: 'support-desk', purpose: 'Answers order questions on the portal.' },
-    ], 'a creator-only Agent another member made is never listed');
+    assert.deepEqual(chickpea!.assignment.frontDesk?.agents.map(({ id, name, handle, purpose, direct }) => ({ id, name, handle, purpose, direct })), [
+      { id: 'agent_research', name: 'Research', handle: 'research', purpose: 'Researches markets.', direct: true },
+      { id: 'agent_support', name: 'Support Desk', handle: 'support-desk', purpose: 'Answers order questions on the portal.', direct: true },
+    ], 'a creator-only Agent another member made is never listed; the person\'s own Agents need no pick');
     assert.equal(chickpea!.assignment.frontDesk?.omitted, 0);
     assert.equal(chickpea!.assignment.frontDesk?.incomplete, false);
   });
@@ -513,7 +514,7 @@ test('the takeover is metered as its own Agent\'s turn, for the same requester a
   });
 });
 
-test('Chickpea\'s hand-off to one Agent posts the host\'s line, then asks the executor to admit the takeover', async () => {
+test('Chickpea\'s hand-off to an Agent the person made posts the host\'s line, then asks the executor to admit the takeover', async () => {
   await withFrontDeskLane(async (lane) => {
     const { chickpea, posts, handoffs, delivered } = await runHandOff(lane, ['agent_support'], 'It has the portal login.');
     assert.equal(delivered, 'succeeded');
@@ -573,6 +574,71 @@ test('a pick on the card admits the person\'s message for that Agent; anyone els
     assert.equal(lane.jobs.length, 2);
     assert.equal((await read()).resolution?.choice, 0);
     assert.ok(!lane.posts.some(({ ephemeral }) => ephemeral), 'no notice for a repeat click');
+  });
+});
+
+const buttonLabels = (post: Record<string, unknown> | undefined) =>
+  (post as { blocks: Array<{ elements?: Array<{ text: { text: string } }> }> }).blocks
+    .flatMap((block) => block.elements ?? []).map((button) => button.text.text);
+
+const DAY = 24 * 60 * 60_000;
+
+/** An Agent another member made and placed in a public Channel: any full member, U1 too, may use it. */
+async function addSharedAgent(lane: FrontDeskLane, id: string, name: string, handle: string) {
+  await lane.stores.config.createAgent(agentInput(id, name, handle, 'membership_someone_else', `Handles ${handle} work.`));
+  await lane.stores.config.putAgentChannelGrant({
+    workspaceId: 'T1', channelId: 'C1', agentId: id, status: 'active', createdByMembershipId: 'membership_someone_else',
+  }, 0);
+}
+
+/** A reply the Agent gave the person in this DM, `ageMs` ago. */
+async function repliedInDm(lane: FrontDeskLane, agentId: string, ageMs: number) {
+  const ts = slackTsAt(Date.now() - ageMs);
+  await lane.stores.config.putSlackPublicContext({
+    workspaceId: 'T1', channelId: 'D1', rootTs: ts, messageTs: ts, role: 'agent', agentId, text: 'synthetic reply',
+  });
+}
+
+test('an Agent the person neither made nor used here this week is offered beside Chickpea, and takes nothing until a pick', async () => {
+  for (const [why, ageMs] of [['never used here', undefined], ['last used here eight days ago', 8 * DAY]] as const) {
+    await withFrontDeskLane(async (lane) => {
+      await addSharedAgent(lane, 'agent_ops', 'Ops', 'ops');
+      if (ageMs) await repliedInDm(lane, 'agent_ops', ageMs);
+      const { chickpea, posts, handoffs } = await runHandOff(lane, ['agent_ops'], 'It runs the on-call rota.');
+      assert.equal(chickpea.assignment.frontDesk?.agents.find(({ id }) => id === 'agent_ops')?.direct, undefined, why);
+      assert.deepEqual(handoffs, [], `${why}: no takeover before a pick`);
+      assert.equal(lane.jobs.length, 1);
+      assert.equal(posts[0]?.text, 'Ops can take this. It runs the on-call rota.');
+      assert.deepEqual(buttonLabels(posts[1]), ['Ops', 'Chickpea']);
+
+      const { read, click } = await cardOf(lane, chickpea.turn);
+      await click(0);
+      assert.equal(lane.jobs.length, 2);
+      const ops = lane.jobs[1]!;
+      assert.equal(ops.id, `msg:D1:${ROOT}:handoff`);
+      assert.equal(ops.assignment.agentId, 'agent_ops');
+      assert.equal(ops.turn.text, 'Check order 4821 on the portal.');
+      assert.deepEqual(ops.turn.frontDesk, { fromAgentId: CHICKPEA_AGENT_ID, via: 'click' });
+      assert.equal((await lane.stores.config.getAgentThreadRoute('T1', 'D1', ROOT))?.agentId, 'agent_ops');
+      assert.equal((await read()).status, 'resolved');
+      assert.deepEqual(cardText(lane.posts), ['Ops is taking this.']);
+    });
+  }
+});
+
+test('an Agent that answered the person here within seven days takes the message with no pick, and is the hint beside others', async () => {
+  await withFrontDeskLane(async (lane) => {
+    await addSharedAgent(lane, 'agent_ops', 'Ops', 'ops');
+    await addSharedAgent(lane, 'agent_billing', 'Billing', 'billing');
+    await repliedInDm(lane, 'agent_ops', 6 * DAY);
+    const { chickpea, posts, handoffs } = await runHandOff(lane, ['agent_ops'], 'It answered you here this week.');
+    const desk = chickpea.assignment.frontDesk!;
+    assert.equal(desk.recent?.agentId, 'agent_ops', 'the most recent Agent is the hint');
+    assert.deepEqual(desk.agents.map(({ id, direct }) => [id, direct ?? false]), [
+      ['agent_ops', true], ['agent_billing', false], ['agent_research', true], ['agent_support', true],
+    ]);
+    assert.deepEqual(handoffs.map(({ agentId, agentName }) => [agentId, agentName]), [['agent_ops', 'Ops']]);
+    assert.deepEqual(posts.map(({ text }) => text), ['Ops is taking this. It answered you here this week.']);
   });
 });
 

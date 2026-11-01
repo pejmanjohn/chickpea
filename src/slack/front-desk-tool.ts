@@ -29,6 +29,7 @@ export const FRONT_DESK_TOOL_DESCRIPTION = [
     'in the current message.',
   'The host posts your note as your reply and the Agent you name answers the request in this thread, ' +
     'with the person\'s own message and files. Your reply ends with this call.',
+  'Before an Agent the person has not used takes over, the host may ask the person to pick it with a button.',
   'Rules:',
   '1. One listed Agent clearly fits, by a website login host, a connection, a skill, or its purpose: hand off to it.',
   '2. Several fit: if one of them is the most recent Agent in this DM and the message does not say otherwise, ' +
