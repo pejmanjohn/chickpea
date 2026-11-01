@@ -16,7 +16,6 @@ import {
 } from './surface.ts';
 import {
   FRONT_DESK_CHOICE_EXPIRED_LINE,
-  FRONT_DESK_CHOICE_SETTLED_LINE,
   frontDeskChoiceResolvedLine,
   frontDeskFailureLine,
 } from '../front-desk.ts';
@@ -117,7 +116,11 @@ function renderHostApproval(record: UiSurfaceRecord, spec: HostApprovalSpec): Re
 
 const AGENT_CHOICE_PROMPT = 'Which Agent should take this?';
 
-/** The front desk's card: one button per Agent, then one line once the person picked. */
+/**
+ * The front desk's card: one button per Agent, then one line once the person
+ * picked. A pick that names no one taking it (its claim never settled, or
+ * an Agent not on the card has the thread) reads as expired.
+ */
 function renderAgentChoice(record: UiSurfaceRecord, spec: HostAgentChoiceSpec): RenderedUiSurface {
   const line = (text: string): RenderedUiSurface => ({
     text,
@@ -128,7 +131,7 @@ function renderAgentChoice(record: UiSurfaceRecord, spec: HostAgentChoiceSpec): 
     const picked = spec.options[choice];
     if (refused && picked) return line(frontDeskFailureLine(picked.name));
     const taking = takenBy === undefined ? undefined : spec.options[takenBy];
-    return line(taking ? frontDeskChoiceResolvedLine(taking) : FRONT_DESK_CHOICE_SETTLED_LINE);
+    if (taking) return line(frontDeskChoiceResolvedLine(taking));
   }
   if (record.status !== 'open' && record.status !== 'pending_delivery') return line(FRONT_DESK_CHOICE_EXPIRED_LINE);
   return {

@@ -13,7 +13,6 @@ import { uiActionId, uiBlockId, uiSurfaceId, uiValue, type UiSurfaceRecord } fro
 import { escapeMrkdwn } from '../src/slack/ui/text.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import {
-  FRONT_DESK_CHOICE_SETTLED_LINE,
   FRONT_DESK_MAX_NAME_CHARS,
   clampText,
   compileFrontDeskPlan,
@@ -610,7 +609,7 @@ test('a pick after another takeover of the message names the Agent that has it',
   });
 });
 
-test('a click on a card whose pick never settled leaves no live buttons', async () => {
+test('a card whose pick never settled reads as expired, with no live buttons', async () => {
   await withFrontDeskLane(async (lane) => {
     const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
     const { read, click } = await cardOf(lane, chickpea.id);
@@ -625,7 +624,7 @@ test('a click on a card whose pick never settled leaves no live buttons', async 
     await click(1);
     assert.equal(lane.jobs.length, 2, 'the click admits nothing');
     const redrawn = lastCard(lane.posts);
-    assert.equal(redrawn?.text, FRONT_DESK_CHOICE_SETTLED_LINE);
+    assert.equal(redrawn?.text, 'This choice expired. Mention the Agent you want.');
     assert.ok(!redrawn?.blocks.some(({ type }) => type === 'actions'), 'no buttons left');
   });
 });

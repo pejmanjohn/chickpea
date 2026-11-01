@@ -267,11 +267,8 @@ export function frontDeskChoiceResolvedLine(option: HostAgentChoiceSpec['options
     : `${option.name} is taking this.`;
 }
 
-/** The card past its day. */
+/** The card once it can no longer be picked: past its day, its message changed, or its pick never settled. */
 export const FRONT_DESK_CHOICE_EXPIRED_LINE = 'This choice expired. Mention the Agent you want.';
-
-/** The card once picked, when it cannot name who is answering. */
-export const FRONT_DESK_CHOICE_SETTLED_LINE = 'An Agent was picked for this.';
 
 /** Posted when the chosen Agent's turn could not be admitted. */
 export function frontDeskFailureLine(name: string): string {
