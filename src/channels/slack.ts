@@ -305,6 +305,7 @@ import {
   readFormSubmission,
 } from '../slack/ui/render-form.ts';
 import { approvalChoice, uiResponseTurnText, type RenderedUiSurface } from '../slack/ui/render.ts';
+import { escapeMrkdwn } from '../slack/ui/text.ts';
 import {
   interactiveAnswer,
   QUESTION_OTHER_CHOICE,
@@ -2034,7 +2035,8 @@ async function postFrontDeskFailure(input: {
   const { turn } = input;
   const key = `front-desk-failure:${turn.workspaceId}:${turn.channelId}:${turn.messageTs}`;
   if (!(await input.stores.slackState.claim(key))) return;
-  const text = frontDeskFailureLine(input.agentName);
+  // Posted as mrkdwn: an Agent's name is shown as written, never as markup.
+  const text = frontDeskFailureLine(escapeMrkdwn(input.agentName));
   let posted: Awaited<ReturnType<SlackUiClient['chat']['postMessage']>>;
   try {
     posted = await input.client.chat.postMessage({ channel: turn.channelId, thread_ts: turn.threadTs, text });

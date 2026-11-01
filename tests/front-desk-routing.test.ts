@@ -10,6 +10,7 @@ import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import { freezeRuntimePlanForTurn, runTurn } from '../src/slack/run-turn.ts';
 import { uiActionId, uiBlockId, uiSurfaceId, uiValue, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
+import { escapeMrkdwn } from '../src/slack/ui/text.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import {
   FRONT_DESK_CHOICE_SETTLED_LINE,
@@ -303,6 +304,23 @@ test('a hand-off to an Agent the person can no longer use is refused, and Chickp
     assert.deepEqual(posts, [{ channel: 'D1', thread_ts: ROOT, text: frontDeskFailureLine('Support Desk') }]);
     assert.equal((await stores.config.getAgentThreadRoute('T1', 'D1', ROOT))?.agentId, CHICKPEA_AGENT_ID,
       'the thread stays Chickpea\'s');
+  });
+});
+
+test('the failure line shows an Agent name as written, never as Slack markup', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { stores, jobs, posts } = lane;
+    await processGatewaySlackEnvelope(directMessage('Ev1', ROOT, 'Check order 4821 on the portal.'),
+      undefined, lane.gateway, { stores, enqueueTurn: lane.enqueueTurn });
+    const support = await stores.config.getAgent('agent_support');
+    await stores.config.updateAgent('agent_support', { enabled: false }, support.revision);
+    await processSlackFrontDeskHandoff({
+      turn: jobs[0]!.turn, fromAgentId: CHICKPEA_AGENT_ID, agentId: 'agent_support', agentName: 'R&D @channel',
+    }, undefined, { stores, gatewayClient: lane.gateway, enqueueTurn: lane.enqueueTurn });
+    const text = String(posts[0]?.text);
+    assert.equal(text, frontDeskFailureLine(escapeMrkdwn('R&D @channel')));
+    assert.ok(text.includes('R&amp;D'), 'an ampersand is escaped');
+    assert.ok(!text.includes('@channel'), 'a broadcast word cannot notify anyone');
   });
 });
 
