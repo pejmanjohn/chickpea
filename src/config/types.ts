@@ -1059,6 +1059,11 @@ export interface FrontDeskAgent {
   skills: string[];
   /** Names left out of each list past its cap. */
   more: { connections: number; websiteHosts: number; skills: number };
+  /**
+   * The requester created it, or it answered them in this DM within the
+   * recent window, so it may take a message without the person's pick.
+   */
+  direct?: true;
 }
 
 export interface FrontDeskDirectory {

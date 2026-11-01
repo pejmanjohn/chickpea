@@ -29,6 +29,7 @@ import {
   clampText,
   inlineText,
   pickRecentFrontDeskAgent,
+  recentlyUsedFrontDeskAgents,
   renderFrontDeskBlock,
   slackTsAt,
 } from './front-desk.ts';
@@ -65,6 +66,8 @@ interface FrontDeskOrder {
   /** Every candidate, the recent Agent first, then by name. */
   ordered: CustomAgentConfig[];
   recent: FrontDeskDirectory['recent'];
+  /** Agents that replied in this DM within the window. */
+  used: ReadonlySet<string>;
 }
 
 function orderFrontDeskCandidates(
@@ -82,6 +85,7 @@ function orderFrontDeskCandidates(
         ]
       : candidates,
     recent,
+    used: recentlyUsedFrontDeskAgents(replies, nowMs),
   };
 }
 
@@ -90,11 +94,11 @@ export function assembleFrontDeskDirectory(facts: FrontDeskFacts): FrontDeskDire
 }
 
 function assembleOrdered(
-  { ordered, recent }: FrontDeskOrder,
+  { ordered, recent, used }: FrontDeskOrder,
   facts: Omit<FrontDeskFacts, 'recentReplies'>,
 ): FrontDeskDirectory | undefined {
   if (ordered.length === 0) return undefined;
-  const listed = ordered.slice(0, FRONT_DESK_MAX_AGENTS).map((agent) => frontDeskAgent(agent, facts));
+  const listed = ordered.slice(0, FRONT_DESK_MAX_AGENTS).map((agent) => frontDeskAgent(agent, used, facts));
   return fitFrontDeskDirectory({
     agents: listed,
     omitted: ordered.length - listed.length,
@@ -166,8 +170,10 @@ export async function readFrontDeskDirectory(input: {
 
 function frontDeskAgent(
   agent: CustomAgentConfig,
+  used: ReadonlySet<string>,
   facts: Pick<FrontDeskFacts, 'accounts' | 'bindings' | 'actorMembershipId' | 'websiteLogins'>,
 ): FrontDeskAgent {
+  const created = Boolean(facts.actorMembershipId) && agent.creatorMembershipId === facts.actorMembershipId;
   const connections = capNames(projectEffectiveConnectionAccounts(
     [...facts.accounts],
     [...facts.bindings.get(agent.id) ?? []],
@@ -188,6 +194,7 @@ function frontDeskAgent(
     websiteHosts: websiteHosts.names,
     skills: skills.names,
     more: { connections: connections.more, websiteHosts: websiteHosts.more, skills: skills.more },
+    ...(created || used.has(agent.id) ? { direct: true as const } : {}),
   };
 }
 

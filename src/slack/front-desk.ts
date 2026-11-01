@@ -123,8 +123,8 @@ export function compileFrontDeskPlan(
   assignment: Pick<ResolvedAssignment, 'agentId' | 'runtimeContract' | 'frontDesk'>,
 ): RuntimePlanFrontDeskV1 | undefined {
   if (!frontDeskMounted(turn, assignment)) return undefined;
-  const agents = assignment.frontDesk!.agents.map(({ id, name, handle }) => ({
-    id, name, ...(handle ? { handle } : {}),
+  const agents = assignment.frontDesk!.agents.map(({ id, name, handle, direct }) => ({
+    id, name, ...(handle ? { handle } : {}), ...(direct ? { direct: true as const } : {}),
   }));
   // The widest card any choice could make: the longest names, as many as one call may name.
   const widest = [...agents]
@@ -301,18 +301,30 @@ export function pickRecentFrontDeskAgent(
   agentIds: ReadonlySet<string>,
   nowMs: number,
 ): FrontDeskDirectory['recent'] {
-  const since = nowMs - FRONT_DESK_RECENT_WINDOW_MS;
   let recent: FrontDeskDirectory['recent'];
   let recentMs = -Infinity;
   for (const reply of replies) {
-    const ms = slackTimestampMs(reply.messageTs);
-    if (ms === null || ms < since || ms > nowMs || !agentIds.has(reply.agentId)) continue;
+    const ms = recentReplyMs(reply, nowMs);
+    if (ms === null || !agentIds.has(reply.agentId)) continue;
     if (ms > recentMs) {
       recent = { agentId: reply.agentId, lastUsedTs: reply.messageTs };
       recentMs = ms;
     }
   }
   return recent;
+}
+
+/** Every Agent that replied in this DM within the window, so the recent Agent is always among them. */
+export function recentlyUsedFrontDeskAgents(
+  replies: readonly RecentSlackAgentReply[],
+  nowMs: number,
+): Set<string> {
+  return new Set(replies.filter((reply) => recentReplyMs(reply, nowMs) !== null).map(({ agentId }) => agentId));
+}
+
+function recentReplyMs(reply: RecentSlackAgentReply, nowMs: number): number | null {
+  const ms = slackTimestampMs(reply.messageTs);
+  return ms === null || ms < nowMs - FRONT_DESK_RECENT_WINDOW_MS || ms > nowMs ? null : ms;
 }
 
 /** A Slack ts for `ms`, for store queries bounded by time. */

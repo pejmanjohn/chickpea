@@ -11,7 +11,7 @@ import type {
   FrontDeskDirectory,
   ResolvedAssignment,
 } from '../src/config/types.ts';
-import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { compileRuntimePlanV2, parseRuntimePlanV2, type RuntimePlanFrontDeskV1 } from '../src/agents/runtime-plan.ts';
 import { runtimePlanConnectedServicesInstruction } from '../src/agents/slack-thread.ts';
 import { BROWSER_NO_LOGINS_MESSAGE, chickpeaNoLoginsMessage } from '../src/browser/messages.ts';
 import { browserSkillForPlan } from '../src/browser/skill.ts';
@@ -70,6 +70,18 @@ function rootDm(patch: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {
     workspaceId: 'T1', channelId: 'D1', eventId: 'Ev1', text: 'Check my order status on the portal.',
     userId: 'U1', messageTs: '1793440000.000100', threadTs: '1793440000.000100',
     source: 'dm_message', channelType: 'im', contextMode: 'thread', ...patch,
+  };
+}
+
+function chickpeaAssignment(patch: Partial<ResolvedAssignment> = {}): ResolvedAssignment {
+  return {
+    workspaceId: 'T1', channelId: 'D1', agentId: CHICKPEA_AGENT_ID, model: 'local-stub/chickpea',
+    runtimeContract: 'chickpea-v1', ownerIncarnation: 1,
+    agent: {
+      id: CHICKPEA_AGENT_ID, kind: 'system', revision: 1, name: 'Chickpea', instructions: 'Help.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    },
+    ...patch,
   };
 }
 
@@ -221,6 +233,59 @@ test('the recent Agent is the newest reply within seven days from an Agent the p
   assert.equal(pickRecentFrontDeskAgent([
     { agentId: 'agent_revoked', messageTs: at(DAY) },
   ], usable, NOW), undefined, 'an Agent the person can no longer use is never the hint');
+});
+
+test('an Agent may take a message without a pick only when the person created it or it answered them here within seven days', () => {
+  const directory = assembleFrontDeskDirectory({
+    usable: {
+      agents: [
+        userAgent('agent_mine', 'Mine', { creatorMembershipId: 'membership_u1' }),
+        userAgent('agent_used', 'Used', { creatorMembershipId: 'membership_u2' }),
+        userAgent('agent_stale', 'Stale', { creatorMembershipId: 'membership_u2' }),
+        userAgent('agent_shared', 'Shared', { creatorMembershipId: 'membership_u2' }),
+      ],
+      incomplete: false,
+    },
+    accounts: [], bindings: new Map(), actorMembershipId: 'membership_u1',
+    recentReplies: [
+      { agentId: 'agent_used', messageTs: slackTsAt(NOW - 6 * DAY) },
+      { agentId: 'agent_stale', messageTs: slackTsAt(NOW - 8 * DAY) },
+    ],
+    nowMs: NOW,
+  })!;
+  assert.deepEqual(Object.fromEntries(directory.agents.map(({ name, direct }) => [name, direct ?? false])), {
+    Used: true, Mine: true, Shared: false, Stale: false,
+  });
+  assert.equal(directory.recent?.agentId, 'agent_used', 'the recent Agent is always one that needs no pick');
+
+  // A person with no membership created nothing, even an Agent with no recorded creator.
+  const anonymous = assembleFrontDeskDirectory({
+    usable: { agents: [userAgent('agent_orphan', 'Orphan')], incomplete: false },
+    accounts: [], bindings: new Map(), recentReplies: [], nowMs: NOW,
+  });
+  assert.equal(anonymous?.agents[0]?.direct, undefined);
+});
+
+test('the frozen plan keeps which Agents need no pick, and an older plan without that still reads', () => {
+  const turn = rootDm();
+  const frontDesk = compileFrontDeskPlan(turn, {
+    agentId: CHICKPEA_AGENT_ID, runtimeContract: 'chickpea-v1',
+    frontDesk: {
+      agents: [deskAgent('agent_support', 'Support Desk', { direct: true }), deskAgent('agent_research', 'Research')],
+      omitted: 0, incomplete: false,
+    },
+  })!;
+  assert.deepEqual(frontDesk.agents.map(({ id, direct }) => [id, direct]), [['agent_support', true], ['agent_research', undefined]]);
+  const frozen = (desk: RuntimePlanFrontDeskV1) => JSON.parse(JSON.stringify(compileRuntimePlanV2({
+    turn, assignment: chickpeaAssignment(), instructions: 'Help.', memoryEpoch: 1, frontDesk: desk,
+  })));
+  assert.deepEqual(parseRuntimePlanV2(frozen(frontDesk)).frontDesk, frontDesk);
+  // What the release before this one froze: no Agent carries the mark.
+  const older = { ...frontDesk, agents: frontDesk.agents.map(({ direct: _direct, ...agent }) => agent) };
+  assert.deepEqual(parseRuntimePlanV2(frozen(older)).frontDesk, older);
+  const invalid = frozen(frontDesk);
+  invalid.frontDesk.agents[0].direct = false;
+  assert.throws(() => parseRuntimePlanV2(invalid), /direct must be true/);
 });
 
 test('the store returns each Agent\'s newest reply in one DM since a time', () => {
@@ -381,15 +446,9 @@ test('a settled hand-off survives the durable checkpoint, and a plan with a fron
   try {
     const jobs = new TurnJobStoreLogic(db);
     const turn = rootDm();
-    const assignment: ResolvedAssignment = {
-      workspaceId: 'T1', channelId: 'D1', agentId: CHICKPEA_AGENT_ID, model: 'local-stub/chickpea',
-      runtimeContract: 'chickpea-v1', ownerIncarnation: 1,
+    const assignment = chickpeaAssignment({
       frontDesk: { agents: [deskAgent('agent_support', 'Support Desk')], omitted: 0, incomplete: false },
-      agent: {
-        id: CHICKPEA_AGENT_ID, kind: 'system', revision: 1, name: 'Chickpea', instructions: 'Help.', enabled: true,
-        skills: [], mcpServers: [], apiConnections: [], repositories: [],
-      },
-    };
+    });
     const id = `msg:D1:${turn.messageTs}`;
     jobs.enqueue({ id, evtKey: 'evt:Ev1', msgKey: id, turn, assignment });
     const frontDesk = compileFrontDeskPlan(turn, assignment)!;

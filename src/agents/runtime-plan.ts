@@ -173,11 +173,11 @@ export interface RuntimePlanConnectionAuthorizationV2 {
 
 /**
  * The front desk this turn mounts (src/slack/front-desk.ts): the Agents the
- * requester may use, as the host listed them, and whether the message fits
- * a card offering several of them.
+ * requester may use, as the host listed them, which of them may take the
+ * message without the person's pick, and whether the message fits a card.
  */
 export interface RuntimePlanFrontDeskV1 {
-  agents: Array<{ id: string; name: string; handle?: string }>;
+  agents: Array<{ id: string; name: string; handle?: string; direct?: true }>;
   choices?: true;
 }
 
@@ -1503,7 +1503,9 @@ function computeHarnessRevision(plan: HarnessRevisionInput): string {
 
 function compileFrontDesk(frontDesk: RuntimePlanFrontDeskV1): RuntimePlanFrontDeskV1 {
   return {
-    agents: frontDesk.agents.map(({ id, name, handle }) => ({ id, name, ...(handle ? { handle } : {}) })),
+    agents: frontDesk.agents.map(({ id, name, handle, direct }) => ({
+      id, name, ...(handle ? { handle } : {}), ...(direct ? { direct: true as const } : {}),
+    })),
     ...(frontDesk.choices ? { choices: true as const } : {}),
   };
 }
@@ -1514,11 +1516,15 @@ function parseFrontDesk(value: unknown): RuntimePlanFrontDeskV1 {
     throw new Error('Runtime plan frontDesk.choices must be true when present.');
   }
   const agents = arrayOf(record.agents, 'frontDesk.agents', (entry) => {
-    const agent = exactRecord(entry, 'frontDesk agent', ['id', 'name', 'handle'], ['handle']);
+    const agent = exactRecord(entry, 'frontDesk agent', ['id', 'name', 'handle', 'direct'], ['handle', 'direct']);
+    if (agent.direct !== undefined && agent.direct !== true) {
+      throw new Error('Runtime plan frontDesk agent direct must be true when present.');
+    }
     return {
       id: boundedString(agent.id, 'frontDesk agent id', 1, 128),
       name: boundedString(agent.name, 'frontDesk agent name', 1, 200),
       ...(agent.handle === undefined ? {} : { handle: boundedString(agent.handle, 'frontDesk agent handle', 1, 80) }),
+      ...(agent.direct === true ? { direct: true as const } : {}),
     };
   }, FRONT_DESK_MAX_AGENTS);
   if (agents.length === 0 || new Set(agents.map(({ id }) => id)).size !== agents.length) {

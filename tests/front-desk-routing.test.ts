@@ -155,10 +155,10 @@ test('an untagged root DM reaches Chickpea with the Agents this person may use, 
     const [chickpea] = jobs;
     assert.equal(chickpea!.assignment.agentId, CHICKPEA_AGENT_ID);
     assert.ok(chickpea!.runId, 'admitted with a Run');
-    assert.deepEqual(chickpea!.assignment.frontDesk?.agents.map(({ id, name, handle, purpose }) => ({ id, name, handle, purpose })), [
-      { id: 'agent_research', name: 'Research', handle: 'research', purpose: 'Researches markets.' },
-      { id: 'agent_support', name: 'Support Desk', handle: 'support-desk', purpose: 'Answers order questions on the portal.' },
-    ], 'a creator-only Agent another member made is never listed');
+    assert.deepEqual(chickpea!.assignment.frontDesk?.agents.map(({ id, name, handle, purpose, direct }) => ({ id, name, handle, purpose, direct })), [
+      { id: 'agent_research', name: 'Research', handle: 'research', purpose: 'Researches markets.', direct: true },
+      { id: 'agent_support', name: 'Support Desk', handle: 'support-desk', purpose: 'Answers order questions on the portal.', direct: true },
+    ], 'a creator-only Agent another member made is never listed; the person\'s own Agents need no pick');
     assert.equal(chickpea!.assignment.frontDesk?.omitted, 0);
     assert.equal(chickpea!.assignment.frontDesk?.incomplete, false);
   });
