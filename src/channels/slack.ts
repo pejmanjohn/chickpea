@@ -3115,6 +3115,21 @@ async function steerWithSlackEdit(input: {
   await wake;
 }
 
+/**
+ * Add an admitted message a person typed to its thread's public record. The
+ * turn runs either way; without the row, later turns read no copy of the
+ * message, and the front desk reads it as deleted and hands it to no Agent.
+ */
+async function recordAcceptedMessage(...args: Parameters<typeof recordAcceptedSlackHumanMessage>): Promise<void> {
+  await recordAcceptedSlackHumanMessage(...args).catch((err: unknown) => {
+    console.error(
+      '[chickpea] accepted Slack message was not added to public context; later turns will not see it, ' +
+        'and the front desk will not hand it to an Agent:',
+      sanitizeError(err),
+    );
+  });
+}
+
 async function processSlackEvent(
   payload: SlackEventFixture,
   platformEnv: PlatformEnv | undefined,
@@ -4258,9 +4273,7 @@ async function processSlackEvent(
       await addMidRunReaction({ client: slackClient, state, jobId: job.id, receipt: midRunReceipt });
     }
     if (typedByPerson) {
-      await recordAcceptedSlackHumanMessage(stores.config, turn, assignment, slackEventFiles(payload.event)).catch(() => {
-        console.warn('[chickpea] accepted Slack message was not added to public context');
-      });
+      await recordAcceptedMessage(stores.config, turn, assignment, slackEventFiles(payload.event));
     }
     if (ask?.kind === 'takeover') ask.outcome = 'admitted';
     await admitCoAddressedTurns({ payload, turn, platformEnv, execution });
@@ -4302,9 +4315,7 @@ async function processSlackEvent(
     await addMidRunReaction({ client: slackClient, state, jobId: msgKey, receipt: midRunReceipt });
   }
   if (typedByPerson) {
-    await recordAcceptedSlackHumanMessage(stores.config, turn, assignment, slackEventFiles(payload.event)).catch(() => {
-      console.warn('[chickpea] accepted Slack message was not added to public context');
-    });
+    await recordAcceptedMessage(stores.config, turn, assignment, slackEventFiles(payload.event));
   }
   if (ask?.kind === 'takeover') ask.outcome = 'admitted';
   await admitCoAddressedTurns({ payload, turn, platformEnv, execution });

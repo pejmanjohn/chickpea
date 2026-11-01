@@ -998,3 +998,22 @@ test('a change Slack reports while Chickpea decides that is no edit still leaves
     });
   }
 });
+
+test('a message the record could not take at admission is logged as an error and handed to no Agent', async (t) => {
+  await withFrontDeskLane(async (lane) => {
+    const write = t.mock.method(lane.stores.config, 'putSlackPublicContext', () => {
+      throw new Error('config store unavailable');
+    });
+    const logged = t.mock.method(console, 'error', () => {});
+    await processGatewaySlackEnvelope(directMessage('Ev1', ROOT, 'Check order 4821 on the portal.'),
+      undefined, lane.gateway, { stores: lane.stores, enqueueTurn: lane.enqueueTurn });
+    write.mock.restore();
+    logged.mock.restore();
+    assert.ok(logged.mock.calls.some(({ arguments: [line] }) =>
+      String(line).includes('the front desk will not hand it to an Agent')), 'the log names what the person loses');
+    const { posts, handoffs, delivered } = await runChickpeaHandOff(lane, lane.jobs[0]!, ['agent_support'], 'It has the portal login.');
+    assert.equal(delivered, 'no_op');
+    assert.deepEqual(posts, []);
+    assert.deepEqual(handoffs, []);
+  });
+});
