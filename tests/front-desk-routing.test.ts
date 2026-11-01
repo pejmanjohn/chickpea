@@ -678,28 +678,37 @@ test('a pick the person can no longer make turns the card into the failure line;
 
 const originOf = (card: UiSurfaceRecord) => card.spec.kind === 'agent_choice' ? card.spec.origin : null;
 
-/** A change Slack reports to the person's root message: an edit to `text`, or a delete. */
-function rootMessageChange(eventId: string, change: { edit: string } | 'delete') {
+/**
+ * A change Slack reports to the person's root message: an edit to `text`, a
+ * delete, a delete once it has replies (Slack leaves a hidden tombstone in
+ * its place and reports a change, not a delete), or a new reply's count.
+ */
+function rootMessageChange(eventId: string, change: { edit: string } | 'delete' | 'tombstone' | 'replied') {
   const original = { type: 'message' as const, user: 'U1', ts: ROOT, text: 'Check order 4821 on the portal.' };
-  return {
-    workspaceId: 'T1', eventId, eventTime: 1793440002,
-    event: change === 'delete'
-      ? { type: 'message' as const, subtype: 'message_deleted', channel: 'D1', channel_type: 'im', ts: '1793440002.000100',
-          deleted_ts: ROOT, previous_message: original }
-      : { type: 'message' as const, subtype: 'message_changed', channel: 'D1', channel_type: 'im', ts: '1793440002.000100',
-          message: { ...original, text: change.edit, edited: { user: 'U1', ts: '1793440002.000100' } },
-          previous_message: original },
-  };
+  const changed = { type: 'message' as const, subtype: 'message_changed', channel: 'D1', channel_type: 'im', ts: '1793440002.000100' };
+  const replies = { thread_ts: ROOT, reply_count: 2, reply_users_count: 1, latest_reply: '1793440000.000901', reply_users: ['UBOT'] };
+  const event = change === 'delete'
+    ? { type: 'message' as const, subtype: 'message_deleted', channel: 'D1', channel_type: 'im', ts: '1793440002.000100',
+        deleted_ts: ROOT, previous_message: original }
+    : change === 'tombstone'
+      ? { ...changed, hidden: true, previous_message: { ...original, ...replies },
+          message: { type: 'message', subtype: 'tombstone', text: 'This message was deleted.', user: 'USLACKBOT',
+            hidden: true, ts: ROOT, parent_user_id: 'USLACKBOT', ...replies } }
+      : change === 'replied'
+        ? { ...changed, hidden: true, message: { ...original, ...replies }, previous_message: { ...original, ...replies, reply_count: 1 } }
+        : { ...changed, message: { ...original, text: change.edit, edited: { user: 'U1', ts: '1793440002.000100' } },
+            previous_message: original };
+  return { workspaceId: 'T1', eventId, eventTime: 1793440002, event };
 }
 
 test('an edit or a delete of the message closes its card, and a later pick sends nothing', async () => {
-  for (const change of [{ edit: 'Check order 4822 instead.' }, 'delete'] as const) {
+  for (const change of [{ edit: 'Check order 4822 instead.' }, 'delete', 'tombstone'] as const) {
     await withFrontDeskLane(async (lane) => {
       const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
       const { read, click } = await cardOf(lane, chickpea.id);
       await processGatewaySlackEnvelope(rootMessageChange('Ev9', change) as never, undefined, lane.gateway,
         { stores: lane.stores, enqueueTurn: lane.enqueueTurn });
-      const label = change === 'delete' ? 'delete' : 'edit';
+      const label = typeof change === 'string' ? change : 'edit';
       assert.equal((await read()).status, 'expired', `${label} closes the card`);
       assert.equal(originOf(await read()), undefined, `${label} drops the copy`);
       const before = lane.jobs.length;
@@ -709,6 +718,17 @@ test('an edit or a delete of the message closes its card, and a later pick sends
       assert.deepEqual(cardText(lane.posts), ['This choice expired. Mention the Agent you want.']);
     });
   }
+});
+
+test('a change Slack reports for a reply under the message leaves its card open', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
+    const { read } = await cardOf(lane, chickpea.id);
+    await processGatewaySlackEnvelope(rootMessageChange('Ev9', 'replied') as never, undefined, lane.gateway,
+      { stores: lane.stores, enqueueTurn: lane.enqueueTurn });
+    assert.equal((await read()).status, 'open');
+    assert.equal(originOf(await read())?.text, 'Check order 4821 on the portal.');
+  });
 });
 
 test('a pick forgets the message once it claims the card', async () => {

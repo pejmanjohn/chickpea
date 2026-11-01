@@ -279,13 +279,19 @@ export function parseSlackMessageEdit(payload: SlackEventFixture): SlackMessageE
   };
 }
 
-/** The message a `message_deleted` event removed, by channel and ts. */
+/**
+ * The message a delete removed, by channel and ts. Slack reports deleting a
+ * message that has replies as a `message_changed` to a tombstone, never as
+ * `message_deleted`.
+ */
 export function parseSlackMessageDelete(
   payload: SlackEventFixture,
 ): { channelId: string; messageTs: string } | undefined {
   const event = payload.event;
-  if (!isSlackMessageEvent(event) || event.subtype !== 'message_deleted' || !event.channel) return undefined;
-  const messageTs = event.deleted_ts ?? event.previous_message?.ts;
+  if (!isSlackMessageEvent(event) || !event.channel) return undefined;
+  const messageTs = event.subtype === 'message_deleted'
+    ? event.deleted_ts ?? event.previous_message?.ts
+    : event.subtype === 'message_changed' && event.message?.subtype === 'tombstone' ? event.message.ts : undefined;
   return messageTs && SLACK_MESSAGE_TS.test(messageTs) ? { channelId: event.channel, messageTs } : undefined;
 }
 
