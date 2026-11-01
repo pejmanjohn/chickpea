@@ -433,10 +433,18 @@ function stubModel<T extends TurnJob['assignment']>(assignment: T): T {
   return { ...assignment, model: 'local-stub/agent', modelAttribution: { source: 'pinned' as const, providerId: 'local-stub' } };
 }
 
-/** Chickpea's root DM turn run to delivery, with the model's run replaced by a hand-off to `agentIds`. */
-async function runHandOff(lane: FrontDeskLane, agentIds: string[], note: string, options: { usage?: true } = {}) {
+/**
+ * Chickpea's root DM turn run to delivery, with the model's run replaced by a
+ * hand-off to `agentIds`. `whileDeciding` runs before that run returns.
+ */
+async function runHandOff(lane: FrontDeskLane, agentIds: string[], note: string, options: {
+  usage?: true;
+  message?: { text: string; patch?: Record<string, unknown> };
+  whileDeciding?: () => Promise<void>;
+} = {}) {
   const { stores, gateway, jobs, enqueueTurn } = lane;
-  await processGatewaySlackEnvelope(directMessage('Ev1', ROOT, 'Check order 4821 on the portal.'),
+  const message = options.message ?? { text: 'Check order 4821 on the portal.' };
+  await processGatewaySlackEnvelope(directMessage('Ev1', ROOT, message.text, message.patch),
     undefined, gateway, { stores, enqueueTurn });
   const chickpea = jobs[0]!;
   const assignment = stubModel(chickpea.assignment);
@@ -453,6 +461,7 @@ async function runHandOff(lane: FrontDeskLane, agentIds: string[], note: string,
     appStores: stores,
     agentPrompt: async (input) => {
       const { resultFromAgentReply } = await import('../src/slack/flue-dispatch.ts');
+      await options.whileDeciding?.();
       return resultFromAgentReply({
         text: 'A draft the person never sees.', metadata: {},
         data: { slackFrontDeskHandoff: [{ agentIds, note }] }, submissionId: 'sub_front_desk', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -764,8 +773,12 @@ const originOf = (card: UiSurfaceRecord) => card.spec.kind === 'agent_choice' ? 
  * delete, a delete once it has replies (Slack leaves a hidden tombstone in
  * its place and reports a change, not a delete), or a new reply's count.
  */
-function rootMessageChange(eventId: string, change: { edit: string } | 'delete' | 'tombstone' | 'replied') {
-  const original = { type: 'message' as const, user: 'U1', ts: ROOT, text: 'Check order 4821 on the portal.' };
+function rootMessageChange(
+  eventId: string,
+  change: { edit: string } | 'delete' | 'tombstone' | 'replied',
+  message: Record<string, unknown> = { text: 'Check order 4821 on the portal.' },
+) {
+  const original = { type: 'message' as const, user: 'U1', ts: ROOT, ...message };
   const changed = { type: 'message' as const, subtype: 'message_changed', channel: 'D1', channel_type: 'im', ts: '1793440002.000100' };
   const replies = { thread_ts: ROOT, reply_count: 2, reply_users_count: 1, latest_reply: '1793440000.000901', reply_users: ['UBOT'] };
   const event = change === 'delete'
@@ -859,4 +872,86 @@ test('a pick forgets the message once it claims the card', async () => {
     assert.equal(lane.jobs[1]?.turn.text, 'Check order 4821 on the portal.');
     assert.equal(originOf(await read()), undefined);
   });
+});
+
+const EXPIRED = 'This choice expired. Mention the Agent you want.';
+
+/** The person changes their root message while Chickpea's run is still deciding. */
+function changeWhileDeciding(
+  lane: FrontDeskLane,
+  change: Parameters<typeof rootMessageChange>[1],
+  message?: Record<string, unknown>,
+) {
+  return async () => {
+    await processGatewaySlackEnvelope(rootMessageChange('Ev9', change, message) as never, undefined, lane.gateway,
+      { stores: lane.stores, enqueueTurn: lane.enqueueTurn });
+  };
+}
+
+async function storedCard(lane: FrontDeskLane): Promise<UiSurfaceRecord | undefined> {
+  const response = await lane.stores.slackState.executeUiSurface!({ kind: 'get_surface', id: agentChoiceSurfaceId('D1', ROOT) });
+  return response.kind === 'surface' ? response.surface ?? undefined : undefined;
+}
+
+const takeovers = (lane: FrontDeskLane) => lane.jobs.filter(({ id }) => id.endsWith(':handoff'));
+
+test('a message edited or deleted while Chickpea decides gets no card, and Chickpea says the choice expired', async () => {
+  for (const change of [{ edit: 'Check order 4822 instead.' }, 'delete', 'tombstone'] as const) {
+    for (const agentIds of [['agent_support', 'agent_research'], ['agent_ops']]) {
+      await withFrontDeskLane(async (lane) => {
+        await addSharedAgent(lane, 'agent_ops', 'Ops', 'ops');
+        const { posts, handoffs, delivered } = await runHandOff(lane, agentIds, 'Both can look.', {
+          whileDeciding: changeWhileDeciding(lane, change),
+        });
+        const label = `${typeof change === 'string' ? change : 'edit'} of a message for ${agentIds.join(' or ')}`;
+        assert.equal(delivered, 'succeeded', label);
+        assert.deepEqual(posts.map(({ text }) => text), [EXPIRED], `${label}: the line, and no card after it`);
+        assert.equal(await storedCard(lane), undefined, `${label}: no card keeps the message`);
+        assert.deepEqual(handoffs, [], label);
+        assert.deepEqual(takeovers(lane), [], label);
+      });
+    }
+  }
+});
+
+test('a message deleted while Chickpea decides is handed to no Agent, even one that needs no pick', async () => {
+  for (const change of ['delete', 'tombstone'] as const) {
+    await withFrontDeskLane(async (lane) => {
+      const { posts, handoffs } = await runHandOff(lane, ['agent_support'], 'It has the portal login.', {
+        whileDeciding: changeWhileDeciding(lane, change),
+      });
+      assert.deepEqual(handoffs, [], `${change}: no takeover is asked for`);
+      assert.deepEqual(posts.map(({ text }) => text), [EXPIRED], `${change}: the line does not say an Agent is taking it`);
+      assert.deepEqual(takeovers(lane), []);
+    });
+  }
+});
+
+test('a message edited while Chickpea decides is still handed to an Agent that needs no pick', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { posts, handoffs } = await runHandOff(lane, ['agent_support'], 'It has the portal login.', {
+      whileDeciding: changeWhileDeciding(lane, { edit: 'Check order 4822 instead.' }),
+    });
+    assert.deepEqual(posts.map(({ text }) => text), ['Support Desk is taking this. It has the portal login.']);
+    assert.equal(handoffs.length, 1);
+    await processSlackFrontDeskHandoff(handoffs[0]!, undefined,
+      { stores: lane.stores, gatewayClient: lane.gateway, enqueueTurn: lane.enqueueTurn });
+    assert.deepEqual(takeovers(lane).map(({ assignment }) => assignment.agentId), ['agent_support']);
+    assert.equal((await lane.stores.config.getAgentThreadRoute('T1', 'D1', ROOT))?.agentId, 'agent_support');
+  });
+});
+
+test('a change Slack reports while Chickpea decides that is no edit still leaves a card, also for a file sent without words', async () => {
+  const receipt = { files: [{ id: 'F0RECEIPT1', name: 'receipt.pdf', mimetype: 'application/pdf', size: 1200 }] };
+  for (const message of [{ text: 'Check order 4821 on the portal.' }, { text: '', patch: receipt }]) {
+    await withFrontDeskLane(async (lane) => {
+      const { posts } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.', {
+        message,
+        whileDeciding: changeWhileDeciding(lane, 'replied', { text: message.text, ...message.patch }),
+      });
+      const label = message.text ? 'a typed message' : 'a file alone';
+      assert.equal(posts[0]?.text, 'Which Agent should take this? Both can look.', label);
+      assert.equal((await storedCard(lane))?.status, 'open', label);
+    });
+  }
 });

@@ -61,6 +61,7 @@ import { buildTurnEnvelope } from './turn-envelope-builder.ts';
 import {
   compileFrontDeskPlan,
   decideFrontDesk,
+  readFrontDeskMessage,
   renderFrontDeskBlock,
   type SlackFrontDeskHandoffRequest,
 } from './front-desk.ts';
@@ -2270,11 +2271,13 @@ async function runTurnAttempt(
     }
     const frontDeskPlan = runtimePlanDecision?.runtimePlan.frontDesk;
     const frontDeskDecision = agentResult?.frontDeskHandoff && frontDeskPlan
-      ? decideFrontDesk(agentResult.frontDeskHandoff, frontDeskPlan)
+      ? decideFrontDesk(agentResult.frontDeskHandoff, frontDeskPlan, await readFrontDeskMessage(turnConfig, turn))
       : undefined;
     if (frontDeskDecision) {
-      // The host's line, never the model's draft: one Agent takes the
-      // message once the line is delivered, or the person picks on a card.
+      // The host's line, never the model's draft, chosen from the message as
+      // it stands now: one Agent takes the message once the line is
+      // delivered, the person picks on a card, or, for a message the person
+      // took back while Chickpea decided, neither.
       await preparedMemory?.confirmInjection();
       review.answer = frontDeskDecision.line;
       await statusTurn.prepareFinal();
@@ -2287,7 +2290,7 @@ async function runTurnAttempt(
           agentId: frontDeskDecision.option.agentId,
           agentName: frontDeskDecision.option.name,
         });
-      } else {
+      } else if (frontDeskDecision.kind === 'card') {
         await deliverAgentChoiceSurface({
           turn,
           assignment,

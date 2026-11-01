@@ -34,6 +34,7 @@ import {
   frontDeskMounted,
   frontDeskOfferLine,
   pickRecentFrontDeskAgent,
+  readFrontDeskMessage,
   renderFrontDeskBlock,
   resolveFrontDeskTargets,
   sanitizeFrontDeskNote,
@@ -469,6 +470,17 @@ test('a one-word message, which may be a pasted secret, never goes on a card; an
     assert.deepEqual(written, [{ agentIds: ['agent_support'], note: '' }]);
   }
   assert.equal(compileFrontDeskPlan(rootDm({ text: 'refund status' }), assignment)?.choices, true, 'two words may go on a card');
+});
+
+test('a message record that cannot be read leaves Chickpea\'s choice as it made it', async () => {
+  for (const listSlackPublicContext of [
+    async () => { throw new Error('config store unavailable'); },
+    () => { throw new Error('config store unavailable'); },
+  ]) {
+    const message = await readFrontDeskMessage({ listSlackPublicContext } as never, rootDm());
+    assert.equal(message, 'current');
+    assert.equal(decideFrontDesk({ agentIds: ['agent_research'], note: '' }, PLAN, message)?.kind, 'card');
+  }
 });
 
 test('the hand-off tool records one hand-off and ends the run; a refusal records nothing', () => {

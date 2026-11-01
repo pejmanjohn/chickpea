@@ -46,6 +46,9 @@ export function normalizeSlackInboundEnvelope(
   };
 }
 
+/** A turn's text when the person sent files without words. */
+export const SLACK_FILE_ONLY_TEXT = 'Please inspect the attached file.';
+
 interface RunnableTurnInput {
   payload: SlackEventFixture;
   channelId: string;
@@ -160,7 +163,7 @@ export function normalizeSlackTurn(
   const attachmentSet = normalizeSlackAttachments(event);
   const attachments = attachmentSet.references;
   const text = preserveSlackRichTextLinks(event.text, event.blocks) ||
-    (attachmentSet.intake ? 'Please inspect the attached file.' : '');
+    (attachmentSet.intake ? SLACK_FILE_ONLY_TEXT : '');
   if (!text) {
     return { status: 'ignored', reason: 'empty_text' };
   }

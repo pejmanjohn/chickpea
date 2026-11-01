@@ -169,6 +169,12 @@ may be a pasted secret, or too large for a card. Chickpea then names the
 Agent and suggests a mention. A message is handed over at most once: the
 `msg:<channel>:<ts>:handoff` claim allows one.
 
+Chickpea reads the message's public record again once it has decided. If
+the person edited or deleted the message meanwhile, no card is posted, and
+Chickpea's reply says the choice expired. A deleted message is not handed
+to any Agent either. An edited one is still handed to an Agent that needs no
+click.
+
 Group DMs, Channels, thread replies, and any message that mentions an Agent
 keep the routing described above.
 
