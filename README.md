@@ -157,7 +157,7 @@ Chickpea has no agent loop of its own. That is Flue ([`@flue/runtime`](https://w
 
 Every connection belongs to one Agent for its lifetime. A **team account** is shared authority the Agent's editors manage, like the support team's Zendesk. A **personal account** belongs to one member inside one Agent, like your work Gmail, and runtime use requires both that Agent's connection and your identity. Authorizing the same external account for a second Agent creates a separate connection with its own consent.
 
-**Credentials never enter model context or the tool arguments the model writes.** The model picks a connection by ID and the secret goes in at egress. An interrupted OAuth flow resumes bound to the provider, the account owner, the Agent, and the Slack task it left. Disconnecting revokes that one connection, tombstones secret access, and retires it from dependent schedules.
+**Credentials entered in Admin or on a setup page never enter model context or the tool arguments the model writes.** The model picks a connection by ID and the secret goes in at egress. The exception is a key a person pastes into a Slack message. That key is message text, so the Agent reads it and may pass it to `try_connection` or `save_connection_key`. Chickpea accepts it only from that person's own message, sends it only to the hosts and paths they typed beside it or approved in that conversation in the last 30 minutes, and saves it only into an API connection that has no key yet, after a test request with it succeeds. The key stays in the Slack message, so the Agent suggests rotating it. An interrupted OAuth flow resumes bound to the provider, the account owner, the Agent, and the Slack task it left. Disconnecting revokes that one connection, tombstones secret access, and retires it from dependent schedules.
 
 Selected connection capabilities authorize the Agent to carry out the requested task. The model uses the conversation and saved instructions to determine intent, without requiring particular words or an extra confirmation merely because a tool can write. Explicit read-only permissions, preview-only requests, and saved confirmation requirements remain in force. Conversation text and API results cannot expand connection grants. The [Security Model](#security-model) has the full list.
 
@@ -364,7 +364,7 @@ That one message creates the Agent, gives it a handle and an avatar, and publish
 | Connect a service, grant a repository, add a provider key | link | ✓ | link |
 | Composio project key, GitHub App, coding sandbox install | | ✓ | |
 
-"Link" means the Agent hands back a Chickpea link and the rest finishes in the browser, because OAuth sign-in and secrets never pass through a Slack message. When you hand an Agent a GitHub link for skills, it reads the `SKILL.md` files and shows you which skills it found before importing any of them.
+"Link" means the Agent hands back a Chickpea link and the rest finishes in the browser, where OAuth sign-in and secret entry happen. The one exception is a key a person pastes in Slack for an API connection, described under [Connections and Authority](#connections-and-authority). When you hand an Agent a GitHub link for skills, it reads the `SKILL.md` files and shows you which skills it found before importing any of them.
 
 What keeps a chat window from being a loophole:
 
@@ -440,7 +440,7 @@ Install the coding sandbox when an Agent needs a real checkout, package installa
 What the design guarantees:
 
 - **No ambient listening.** Unmentioned root messages never trigger classification, model spend, memory writes, or work. There is no "read the channel and decide if you're needed" mode.
-- **Credentials never reach the model.** Never in model context, never in the tool arguments the model writes. The model picks a connection by ID; the runtime resolves the secret at the moment of the call and injects it at egress.
+- **Credentials entered in Admin or on a setup page never reach the model.** Never in model context, never in the tool arguments the model writes. The model picks a connection by ID; the runtime resolves the secret at the moment of the call and injects it at egress. A key a person pastes into a Slack message is the exception. The Agent reads it as message text and may pass it to the tool that tests or saves it, under the rules in [Connections and Authority](#connections-and-authority).
 - **Conversation cannot expand authority.** Authority comes from stored grants and saved instructions, read from stored state and re-checked at the moment of each use, never from anything produced during the turn. Message text, retrieved content, and tool output are data, never permission.
 - **Connection permissions**, enforced through selected tools, resource scopes, and argument restrictions. Saved confirmation requirements and preview-only requests guide the model's behavior.
 - **Per-Agent isolation.** Connections, memory, skills, repositories, and reach all stop at the Agent. Nothing is reused across Agents implicitly.
