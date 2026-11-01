@@ -124,6 +124,7 @@
     "verify:worker-size": "node scripts/verify-worker-size.mjs",
     "verify:cf-smoke": "node scripts/verify-cf-smoke.mjs",
     "verify:cf-smoke:alarm": "SMOKE_TURN_EXECUTOR=alarm node scripts/verify-cf-smoke.mjs",
+    "perf:slack-turn": "node scripts/perf-slack-turn.mjs",
     "verify:gateway-live": "node --import tsx scripts/verify-shared-gateway-live.mjs",
     "verify:run-foundation": "node scripts/verify-run-foundation.mjs",
     "verify:admin-ui": "node scripts/verify-admin-ui.mjs",

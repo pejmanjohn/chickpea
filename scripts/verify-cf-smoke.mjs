@@ -29,9 +29,10 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { hasScheduledComposition } from './worker-artifact.mjs';
 import { readBuildIdentity } from './lib/build-identity.mjs';
@@ -64,28 +65,28 @@ import {
 
 const WRANGLER_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'wrangler');
 const CF_OUTPUT_DIR = join(REPO_ROOT, 'dist-cf');
-const CF_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.json');
+export const CF_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.json');
 const CF_SMOKE_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.smoke.json');
 const CF_AI_SMOKE_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.ai-smoke.json');
-const PERSIST_DIR = mkdtempSync(join(tmpdir(), 'chickpea-cf-smoke-'));
+export const PERSIST_DIR = mkdtempSync(join(tmpdir(), 'chickpea-cf-smoke-'));
 const AUTH_SECRET = '9d'.repeat(32);
 const PUBLIC_ORIGIN = 'https://chickpea-smoke.invalid';
-const WORKSPACE = 'T0SMOKE';
-const APP_ID = 'A0SMOKE';
-const BOT_USER_ID = 'UBOTSMOKE';
-const OWNER_USER_ID = 'UOWNERSMOKE';
-const ONBOARDING_DM_CHANNEL = 'DSMOKEONBOARDING';
-const OAUTH_CLIENT_ID = '123456.789012';
-const OAUTH_CLIENT_SECRET = 'fake-confidential-client-secret';
-const OAUTH_CONFIGURATION_TOKEN = 'xoxe.fake-workerd-configuration-token';
-const OAUTH_BOT_TOKEN = 'xoxb-fake-workerd-bot-token';
+export const WORKSPACE = 'T0SMOKE';
+export const APP_ID = 'A0SMOKE';
+export const BOT_USER_ID = 'UBOTSMOKE';
+export const OWNER_USER_ID = 'UOWNERSMOKE';
+export const ONBOARDING_DM_CHANNEL = 'DSMOKEONBOARDING';
+export const OAUTH_CLIENT_ID = '123456.789012';
+export const OAUTH_CLIENT_SECRET = 'fake-confidential-client-secret';
+export const OAUTH_CONFIGURATION_TOKEN = 'xoxe.fake-workerd-configuration-token';
+export const OAUTH_BOT_TOKEN = 'xoxb-fake-workerd-bot-token';
 const RECOVERY_TOKEN = '5c'.repeat(32);
-const CHANNEL = 'C0SMOKE';
+export const CHANNEL = 'C0SMOKE';
 const AI_CHANNEL = 'C0SMOKEAI';
 const MENTION_TS = '1782770400.000100';
 const MEMORY_TS = '1782770450.000100';
 const AI_MENTION_TS = '1782770100.000100';
-const PORT = process.env.SMOKE_WRANGLER_PORT ? Number(process.env.SMOKE_WRANGLER_PORT) : await getFreePort();
+export const PORT = process.env.SMOKE_WRANGLER_PORT ? Number(process.env.SMOKE_WRANGLER_PORT) : await getFreePort();
 const AI_SMOKE_SERVICE = 'chickpea-ai-smoke-stub';
 const AI_SMOKE_REPLY = 'workers-ai-binding-smoke::gateway-disabled';
 const AI_SMOKE_RPC_FLAG = 'enable_abortsignal_rpc';
@@ -122,10 +123,14 @@ if (!(SLOW_TURN_DELAY_MS > 10_000)) {
   throw new Error('SMOKE_SLOW_TURN_DELAY_MS must exceed the 10000 ms fast-ack bound.');
 }
 
-const failures = [];
-let adminCookie = '';
-let defaultAgentMention = '';
-function check(ok, label, detail = '') {
+export const failures = [];
+export let adminCookie = '';
+export let defaultAgentMention = '';
+/** Importers cannot assign the binding; mentionEvent() addresses this handle. */
+export function setDefaultAgentMention(mention) {
+  defaultAgentMention = mention;
+}
+export function check(ok, label, detail = '') {
   const status = ok ? 'ok  ' : 'FAIL';
   console.log(`  [${status}] ${label}${detail ? ` — ${detail}` : ''}`);
   if (!ok) failures.push(label);
@@ -139,7 +144,7 @@ function sameArray(actual, expected) {
   );
 }
 
-function buildCloudflareTarget(profile, { reuseExisting = false } = {}) {
+export function buildCloudflareTarget(profile, { reuseExisting = false } = {}) {
   if (reuseExisting && process.env.SMOKE_SKIP_BUILD === '1' && existsSync(CF_WRANGLER_CONFIG)) {
     console.log(`• SMOKE_SKIP_BUILD=1 — reusing existing ${profile} dist-cf build`);
     return;
@@ -315,7 +320,7 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
   );
 }
 
-function writeSmokeWranglerConfigs(setup) {
+export function writeSmokeWranglerConfigs(setup) {
   const productionConfig = JSON.parse(readFileSync(CF_WRANGLER_CONFIG, 'utf8'));
   // The production AI binding accepts the turn's AbortSignal directly. Our
   // local stand-in crosses a service-RPC boundary, so opt only the disposable
@@ -372,7 +377,7 @@ function writeSmokeWranglerConfigs(setup) {
   );
 }
 
-function writeDevVars(fakeUrl) {
+export function writeDevVars(fakeUrl) {
   // wrangler dev reads .dev.vars from the directory of the config file it was
   // given. dist-cf is disposable build output, so writing here never touches a
   // developer's real .dev.vars in the repo root.
@@ -400,7 +405,7 @@ function writeDevVars(fakeUrl) {
   );
 }
 
-function applyLocalAuthMigrations() {
+export function applyLocalAuthMigrations() {
   const result = spawnSync(
     WRANGLER_BIN,
     [
@@ -421,7 +426,7 @@ function applyLocalAuthMigrations() {
   }
 }
 
-function spawnWranglerDev() {
+export function spawnWranglerDev() {
   const child = spawn(
     WRANGLER_BIN,
     [
@@ -449,7 +454,7 @@ function spawnWranglerDev() {
   return { child, getOutput: () => output };
 }
 
-function stopWrangler(handle) {
+export function stopWrangler(handle) {
   return new Promise((resolve) => {
     const { child } = handle;
     if (child.exitCode !== null || child.signalCode !== null) {
@@ -468,7 +473,7 @@ function stopWrangler(handle) {
   });
 }
 
-async function adminFetch(baseUrl, path, init = {}) {
+export async function adminFetch(baseUrl, path, init = {}) {
   const method = String(init.method ?? 'GET').toUpperCase();
   const mutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
   const response = await fetch(`${baseUrl}${path}`, {
@@ -532,7 +537,7 @@ function slackAuthorizationUrlFromHandoff(html) {
   return new URL(encoded ? encoded.replaceAll('&amp;', '&') : 'about:blank');
 }
 
-async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
+export async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
   const setupPage = await fetch(`${baseUrl}/admin/setup`);
   const setupHtml = await setupPage.text();
   check(
@@ -936,7 +941,7 @@ async function renderAdminWithWorkerdState(baseUrl, path = '/admin') {
 }
 
 /** Ready = the public setup page answers from the DO-backed store (workerd + DO up). */
-async function waitForSetupReady(handle, baseUrl, timeoutMs = 90_000) {
+export async function waitForSetupReady(handle, baseUrl, timeoutMs = 90_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (handle.child.exitCode !== null) {
@@ -993,7 +998,7 @@ async function measureRepresentativeStateWrite(baseUrl) {
   return { count: samples.length, p95 };
 }
 
-function mentionEvent(eventId = 'Ev_SMOKE_MENTION_1', { baseApp = false } = {}) {
+export function mentionEvent(eventId = 'Ev_SMOKE_MENTION_1', { baseApp = false } = {}) {
   if (!baseApp && !defaultAgentMention) throw new Error('Publish the Default Agent before sending its mention.');
   return {
     token: 'verification-token-not-a-secret',
@@ -1081,7 +1086,7 @@ function slowMentionEvent(eventId = 'Ev_SMOKE_SLOW_1') {
   };
 }
 
-function threadReplyEvent() {
+export function threadReplyEvent() {
   return {
     token: 'verification-token-not-a-secret',
     team_id: WORKSPACE,
@@ -1102,7 +1107,7 @@ function threadReplyEvent() {
   };
 }
 
-async function waitForFinalCount(backend, minFinals, timeoutMs) {
+export async function waitForFinalCount(backend, minFinals, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (backend.finals().length >= minFinals) {
@@ -2128,9 +2133,16 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exitCode = 1;
-}).finally(() => {
-  rmSync(PERSIST_DIR, { recursive: true, force: true });
-});
+export { SIGNING_SECRET };
+
+// scripts/perf-slack-turn.mjs imports the helpers above; only a direct run is the smoke.
+const invokedAsScript = process.argv[1] !== undefined &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+if (invokedAsScript) {
+  main().catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  }).finally(() => {
+    rmSync(PERSIST_DIR, { recursive: true, force: true });
+  });
+}

@@ -389,6 +389,15 @@ export const STATE_RPC_SAMPLE_EVERY = 100;
 const stateRpcCounters = { calls: 0, slow: 0 };
 
 /**
+ * Performance harness only (scripts/perf-slack-turn.mjs): hold every
+ * state RPC this long so a local workerd run pays a production-like round
+ * trip per call. Unset in every deployment; zero means no hold.
+ */
+const PERF_STATE_RPC_DELAY_MS = Math.max(0, Number(
+  (typeof process !== 'undefined' ? process.env?.CHICKPEA_PERF_STATE_RPC_DELAY_MS : undefined) ?? 0,
+) || 0);
+
+/**
  * Time one RPC at the Cf*Store class boundary. Callers pass the in-flight
  * promise from a direct `this.stub.<method>(...)` call; the stub, its methods,
  * and D1 handles are never wrapped, which is what keeps this safe in workerd.
@@ -401,6 +410,7 @@ export async function timedStateRpc<T>(
   const startedAt = Date.now();
   let ok = false;
   try {
+    if (PERF_STATE_RPC_DELAY_MS > 0) await new Promise((resolve) => setTimeout(resolve, PERF_STATE_RPC_DELAY_MS));
     const result = await pending;
     ok = true;
     return result;
