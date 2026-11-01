@@ -1838,8 +1838,7 @@ export class SlackAgentViewPresentation {
     if (slot === 'reserved') {
       this.appendSlot = undefined;
     } else {
-      const delay = Math.max(0, this.nextAppendAt - this.now());
-      if (delay > 0) await this.wait(delay);
+      await this.waitForAppendPace(control);
       if (!(await this.reserveAppendSlot(presentation.root.workspaceId, control))) return;
       // The wait may have outlived this writer's view of the row.
       presentation = await this.requirePresentation();
@@ -1907,11 +1906,21 @@ export class SlackAgentViewPresentation {
     if (this.degradedReason || control.closing()) return;
     const presentation = await this.requirePresentation();
     if (presentation.stream.state !== 'streaming' || !presentation.stream.messageTs) return;
-    const delay = Math.max(0, this.nextAppendAt - this.now());
-    if (delay > 0) await this.wait(delay);
+    await this.waitForAppendPace(control);
     this.appendSlot = await this.reserveAppendSlot(presentation.root.workspaceId, control)
       ? 'reserved'
       : 'yielded';
+  }
+
+  /**
+   * The pace between appends. A reader that closes meanwhile ends it at
+   * once: the terminal delivers the waiting text, and the slot check after
+   * the wait yields the same way it does after a full wait.
+   */
+  private async waitForAppendPace(control: ProgressiveAppendControl | undefined): Promise<void> {
+    const delay = Math.max(0, this.nextAppendAt - this.now());
+    if (delay <= 0) return;
+    await (control ? Promise.race([this.wait(delay), control.closed]) : this.wait(delay));
   }
 
   /**

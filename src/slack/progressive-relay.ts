@@ -44,9 +44,11 @@ interface ProgressiveRelaySummary {
  * What an append may ask of the relay while it waits. `closing` turns true
  * once the relay stops reading: the terminal is about to deliver the whole
  * answer, so an append still waiting for the Slack budget can give way.
+ * `closed` settles at that same moment, for a wait that cannot poll.
  */
 export interface ProgressiveAppendControl {
   closing(): boolean;
+  closed: Promise<void>;
 }
 
 interface ProgressiveTextSink {
@@ -233,8 +235,11 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
 
   private readonly queue: RelayOperation[] = [];
   private closing = false;
+  private signalClosed!: () => void;
+  private readonly closed = new Promise<void>((resolve) => { this.signalClosed = resolve; });
   private readonly appendControl: ProgressiveAppendControl = {
     closing: () => this.closing,
+    closed: this.closed,
   };
   private pumpPromise: Promise<void> | undefined;
   private accepting = true;
@@ -307,7 +312,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       }
     }
     this.accepting = false;
-    this.closing = true;
+    this.markClosing();
     await this.drain();
     return this.summary();
   }
@@ -316,7 +321,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     reason: ProgressiveRelayInvalidationReason,
   ): Promise<ProgressiveRelaySummary> {
     this.queueInvalidation(reason);
-    this.closing = true;
+    this.markClosing();
     await this.drain();
     return this.summary();
   }
@@ -326,9 +331,14 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     // queue: the next read replays the receipt from its start, and the sink's
     // durable position skips everything this relay already accepted.
     this.accepting = false;
-    this.closing = true;
+    this.markClosing();
     await this.drain();
     return this.summary();
+  }
+
+  private markClosing(): void {
+    this.closing = true;
+    this.signalClosed();
   }
 
   private handleToolInput(toolName: string, toolCallId: string): void {
@@ -466,7 +476,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     this.invalidated = true;
     this.invalidationReason = reason;
     this.accepting = false;
-    this.closing = true;
+    this.markClosing();
     this.queue.push({ kind: 'invalidate', reason });
     this.startPump();
   }

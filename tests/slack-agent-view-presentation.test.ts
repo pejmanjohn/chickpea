@@ -55,6 +55,8 @@ function harness(input: {
   owner?:
     | { kind: 'selected_agent'; persona: { name: string; avatarUrl: string; avatarRevision: number } }
     | { kind: 'chickpea' };
+  /** Replaces the harness clock's instant wait, for a wait the test holds. */
+  wait?: (milliseconds: number) => Promise<void>;
 } = {}) {
   // Slack stream timestamps below are seconds on this clock, so a stream's
   // age reads as it would in production.
@@ -202,7 +204,7 @@ function harness(input: {
     footer: { agentName: 'Chickpea', agentId: 'agent_default' },
     minAppendIntervalMs: 750,
     now: () => clock,
-    wait: async (milliseconds) => { clock += milliseconds; },
+    wait: input.wait ?? (async (milliseconds) => { clock += milliseconds; }),
     onFinalized: (record) => { finalizationRecords.push(structuredClone(record)); },
     ...(input.onNativeStarted ? { onNativeStarted: input.onNativeStarted } : {}),
     ...(input.readGate ? { readGate: input.readGate } : {}),
@@ -524,6 +526,69 @@ async function streamFirstChunkThenDegrade(h: ReturnType<typeof harness>, answer
   });
   await relay.closeAndDrain();
 }
+
+test('a close ends the append pace wait; the terminal carries the text that was waiting', async () => {
+  let release: (() => void) | undefined;
+  const h = harness({
+    schemaVersion: 3,
+    wait: () => new Promise<void>((resolve) => { release = resolve; }),
+  });
+  try {
+    const relay = await prepareReceipt(h, {
+      instanceId: 'instance_pace',
+      receipt: { submissionId: 'submission_pace', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    assert.ok(relay);
+    relay.onEvent({
+      type: 'message-started', conversationId: 'conversation',
+      submissionId: 'submission_pace', messageId: 'message_pace',
+      position: { batch: 1, index: 0 },
+    });
+    declareProgressiveIntent(relay, { submissionId: 'submission_pace', messageId: 'message_pace' });
+    const first = 'First paragraph.\n\n';
+    const second = 'Second paragraph.\n\n';
+    relay.onEvent({
+      type: 'message-delta', conversationId: 'conversation', messageId: 'message_pace',
+      kind: 'text', delta: first, position: { batch: 4, index: 0 },
+    });
+    for (let turn = 0; turn < 100 && h.store.get(h.runId)?.stream.state !== 'streaming'; turn += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(h.store.get(h.runId)?.stream.state, 'streaming');
+    relay.onEvent({
+      type: 'message-delta', conversationId: 'conversation', messageId: 'message_pace',
+      kind: 'text', delta: second, position: { batch: 5, index: 0 },
+    });
+    for (let turn = 0; turn < 100 && !release; turn += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.ok(release, 'the second chunk waits for the append pace');
+    relay.onEvent({
+      type: 'message-completed', conversationId: 'conversation', messageId: 'message_pace',
+      position: { batch: 6, index: 0 },
+    });
+    const outcome = await Promise.race([
+      relay.closeAndDrain().then(() => 'drained'),
+      new Promise<string>((resolve) => { setTimeout(() => resolve('still waiting'), 250); }),
+    ]);
+    assert.equal(outcome, 'drained', 'closeAndDrain waited out the append pace instead of ending it');
+    assert.equal(h.calls.some((call) => call.method === 'chat.appendStream'), false);
+
+    const events: Array<Record<string, unknown>> = [];
+    await h.presentation.finalize(first + second, 'markdown', 'complete', observer(events));
+    const writes = h.calls.filter((call) => call.method.startsWith('chat.'));
+    assert.deepEqual(writes.map((call) => call.method), ['chat.startStream', 'chat.stopStream']);
+    assert.ok(markdownChunkText(writes[1]!.input).includes(second.trimEnd()),
+      'the stop carries the paragraph the pace wait was holding');
+    assert.equal(markdownChunkText(writes[0]!.input) + markdownChunkText(writes[1]!.input), (first + second).trimEnd());
+    await h.presentation.markCanonicalFinalized();
+    assert.equal(h.store.get(h.runId)?.stream.state, 'finalized');
+  } finally {
+    release?.();
+    h.db.close();
+  }
+});
 
 function markdownChunkText(input: Record<string, unknown>): string {
   return ((input.chunks as Array<{ type: string; text?: string }> | undefined) ?? [])

@@ -806,12 +806,16 @@ export function runnerPresentationState(input: {
       console.warn('[chickpea] thread runner presentation publish failed');
     }
   };
-  const lifecycleChanged = async (presentation: SlackRunPresentation) => {
+  // The copy is a mirror: the state store's putSnapshot and this runner's
+  // import are both version-gated, so a late or lost publish never regresses
+  // either side, and the job end publishes once more. The transition that
+  // triggers it never waits for it.
+  const lifecycleChanged = (presentation: SlackRunPresentation): void => {
     const runId = presentation.runId;
     if (published.get(runId) === lifecycleFingerprint(presentation) || trailing.has(runId)) return;
     const wait = lastPublishAt + interval - now();
     if (wait <= 0) {
-      await put(runId);
+      void put(runId);
       return;
     }
     trailing.set(runId, setTimeout(() => {
@@ -856,7 +860,7 @@ export function runnerPresentationState(input: {
           if (before) published.set(transition.runId, lifecycleFingerprint(before));
         }
         const result = input.local.transition(transition);
-        if (result.outcome === 'applied') await lifecycleChanged(result.presentation);
+        if (result.outcome === 'applied') lifecycleChanged(result.presentation);
         return result;
       },
     },

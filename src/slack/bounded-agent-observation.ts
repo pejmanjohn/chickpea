@@ -1,5 +1,6 @@
 import type { AgentReply, ConversationStreamChunk, DispatchReceipt } from '@flue/runtime';
-import { AgentInstanceNotFoundError } from '@flue/runtime';
+import { AgentInstanceNotFoundError, AgentRunError } from '@flue/runtime';
+import { replyFromSnapshot } from '@flue/runtime/internal';
 
 import { CHICKPEA_SLACK_AGENT_NAME } from '../agents/names.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
@@ -25,8 +26,9 @@ import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
  * conversation updates view (no `live` parameter, which the route answers at
  * once) and sleeps whenever a read reports the stream caught up, so no
  * cross-object nesting can accumulate and no busy loop can form. Once
- * settlement is observed it defers to Flue's `read()`, which then completes in
- * bounded immediate requests and preserves Flue's settled failure semantics.
+ * settlement is observed it reads the history view once for the reply, with
+ * Flue's own settled-failure semantics (`AgentRunError`), instead of Flue's
+ * `read()`, which would replay the conversation it has already seen.
  */
 
 export interface AgentUpdatesRoute {
@@ -114,20 +116,11 @@ export async function observeAgentSettlementBounded(
   let lastChunkAt = now();
   let seeded = target.initialIdleCandidate === true;
   let caughtUpOnce = false;
-  const base = `https://flue.invalid/agents/${encodeURIComponent(target.agentName)}/${encodeURIComponent(target.instanceId)}`;
+  const base = agentViewBase(target.agentName, target.instanceId);
   let offset = '-1';
   for (;;) {
     throwIfAborted(target.signal);
-    const response = await route(new Request(`${base}?view=updates&offset=${encodeURIComponent(offset)}`));
-    if (!response.ok) {
-      if (response.status === 404) {
-        const body = await response.json().catch(() => undefined) as { error?: { type?: string } } | undefined;
-        if (body?.error?.type === 'stream_not_found') {
-          throw new AgentInstanceNotFoundError({ id: target.instanceId });
-        }
-      }
-      throw new Error(`Bounded agent observation for "${target.agentName}" failed with status ${response.status}.`);
-    }
+    const response = await readAgentView(route, target, `${base}?view=updates&offset=${encodeURIComponent(offset)}`);
     const chunks = await response.json() as ConversationStreamChunk[];
     let settlement: ObservedSettlement | undefined;
     let delivered = 0;
@@ -233,11 +226,11 @@ export function createBoundedAgentReplyReader(input: {
   adaptive?: BoundedObservationOptions['adaptive'];
   now?: BoundedObservationOptions['now'];
 }): BoundedReplyReader {
-  return async ({ handle, instanceId, receipt, onEvent, signal, isIdleCandidate, initialIdleCandidate }) => {
+  return async ({ instanceId, receipt, onEvent, signal, isIdleCandidate, initialIdleCandidate }) => {
     const route = await input.resolveRoute(instanceId);
-    await observeAgentSettlementBounded(route, {
-      agentName: input.agentName,
-      instanceId,
+    const target = { agentName: input.agentName, instanceId };
+    const settlement = await observeAgentSettlementBounded(route, {
+      ...target,
       submissionId: receipt.submissionId,
       onEvent,
       ...(signal ? { signal } : {}),
@@ -249,10 +242,41 @@ export function createBoundedAgentReplyReader(input: {
       ...(input.adaptive ? { adaptive: input.adaptive } : {}),
       ...(input.now ? { now: input.now } : {}),
     });
-    // Settled: Flue's read now completes in immediate bounded requests and
-    // keeps its settled-failure semantics (AgentRunError) for the caller.
-    return handle.read(receipt as DispatchReceipt);
+    if (settlement.outcome !== 'completed') {
+      throw new AgentRunError({
+        outcome: settlement.outcome === 'aborted' ? 'aborted' : 'failed',
+        submissionId: receipt.submissionId,
+        ...(settlement.error === undefined ? {} : { cause: settlement.error }),
+      });
+    }
+    // Every chunk already went through onEvent; only the settled reply is
+    // still needed, so the history view is read once instead of replaying
+    // the conversation through Flue's read().
+    const history = await readAgentView(route, target, `${agentViewBase(input.agentName, instanceId)}?view=history`);
+    const snapshot = await history.json() as AgentConversationSnapshot;
+    return { ...replyFromSnapshot(snapshot, receipt.submissionId), uid: receipt.uid, submissionId: receipt.submissionId };
   };
+}
+
+function agentViewBase(agentName: string, instanceId: string): string {
+  return `https://flue.invalid/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
+}
+
+/** One immediate read of an agent view; a missing stream means the instance is gone. */
+async function readAgentView(
+  route: AgentUpdatesRoute,
+  target: Pick<BoundedObservationTarget, 'agentName' | 'instanceId'>,
+  url: string,
+): Promise<Response> {
+  const response = await route(new Request(url));
+  if (response.ok) return response;
+  if (response.status === 404) {
+    const body = await response.json().catch(() => undefined) as { error?: { type?: string } } | undefined;
+    if (body?.error?.type === 'stream_not_found') {
+      throw new AgentInstanceNotFoundError({ id: target.instanceId });
+    }
+  }
+  throw new Error(`Bounded agent observation for "${target.agentName}" failed with status ${response.status}.`);
 }
 
 /** The agent's Durable Object namespace binding, as the Worker env exposes it. */
@@ -332,8 +356,9 @@ export async function readAgentHistoryBounded(
 ): Promise<AgentConversationSnapshot | undefined> {
   const binding = agentObjectNamespace(env, agentObjectBindingName(agentName));
   if (!binding) return undefined;
-  const base = `https://flue.invalid/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
-  const response = await agentObjectRoute(binding, instanceId)(new Request(`${base}?view=history&limit=${limit}`));
+  const response = await agentObjectRoute(binding, instanceId)(
+    new Request(`${agentViewBase(agentName, instanceId)}?view=history&limit=${limit}`),
+  );
   return response.ok ? await response.json() as AgentConversationSnapshot : undefined;
 }
 

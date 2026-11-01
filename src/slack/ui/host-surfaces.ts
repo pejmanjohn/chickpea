@@ -366,8 +366,8 @@ export async function prepareDisplaySurfaces(input: {
   if (!input.state.executeUiSurface) return [];
   const state = input.state as SurfaceState;
   const now = input.now ?? Date.now();
+  const ids = new Set<string>();
   if (input.fresh) {
-    const ids = new Set<string>();
     for (const [index, spec] of input.fresh.entries()) {
       const id = uiSurfaceId(input.turnJobId, `display:${index}`);
       ids.add(id);
@@ -393,17 +393,19 @@ export async function prepareDisplaySurfaces(input: {
         },
       });
     }
-    // An earlier attempt's extra components never reach Slack.
-    const listed = await state.executeUiSurface({ kind: 'list_turn_surfaces', turnJobId: input.turnJobId });
-    for (const surface of listed.kind === 'surfaces' ? listed.surfaces : []) {
-      if (isDisplaySurface(surface.spec) && !ids.has(surface.id) && surface.status === 'pending_delivery') {
-        await state.executeUiSurface({ kind: 'close_surface', id: surface.id, status: 'failed' });
-      }
-    }
   }
+  // One listing serves both: it holds this attempt's rows (written above)
+  // and an earlier attempt's extra components, which never reach Slack.
   const listed = await state.executeUiSurface({ kind: 'list_turn_surfaces', turnJobId: input.turnJobId });
-  return (listed.kind === 'surfaces' ? listed.surfaces : []).filter((surface) =>
-    isDisplaySurface(surface.spec) && (surface.status === 'pending_delivery' || surface.status === 'open'));
+  const surfaces = (listed.kind === 'surfaces' ? listed.surfaces : []).filter((surface) => isDisplaySurface(surface.spec));
+  const extras = input.fresh
+    ? surfaces.filter((surface) => !ids.has(surface.id) && surface.status === 'pending_delivery')
+    : [];
+  for (const surface of extras) {
+    await state.executeUiSurface({ kind: 'close_surface', id: surface.id, status: 'failed' });
+  }
+  return surfaces.filter((surface) =>
+    !extras.includes(surface) && (surface.status === 'pending_delivery' || surface.status === 'open'));
 }
 
 /**

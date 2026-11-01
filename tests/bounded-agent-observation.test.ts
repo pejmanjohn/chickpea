@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { AgentInstanceNotFoundError } from '@flue/runtime';
+import { AgentInstanceNotFoundError, AgentRunError } from '@flue/runtime';
 
 import {
   AgentObjectBindingUnavailableError,
@@ -27,6 +27,8 @@ interface Page {
   upToDate?: boolean;
   status?: number;
   body?: unknown;
+  /** A history page: the conversation snapshot the route returns verbatim. */
+  snapshot?: unknown;
 }
 
 function fakeRoute(pages: Page[]) {
@@ -38,6 +40,7 @@ function fakeRoute(pages: Page[]) {
     if (page.status && page.status !== 200) {
       return Response.json(page.body ?? {}, { status: page.status });
     }
+    if (page.snapshot) return Response.json(page.snapshot);
     return Response.json([CHECKPOINT, ...(page.items ?? [])], {
       headers: {
         ...(page.next ? { 'Stream-Next-Offset': page.next } : {}),
@@ -50,9 +53,28 @@ function fakeRoute(pages: Page[]) {
 
 const TARGET = { agentName: 'chickpea-slack-v2', instanceId: 'agent_1', submissionId: 'sub_1' };
 
-function settled(submissionId = 'sub_1', outcome = 'completed') {
-  return { type: 'submission-settled', submissionId, outcome };
+function settled(submissionId = 'sub_1', outcome = 'completed', error?: unknown) {
+  return { type: 'submission-settled', submissionId, outcome, ...(error === undefined ? {} : { error }) };
 }
+
+/** The history view's snapshot with one assistant reply for `submissionId`. */
+function historyWithReply(submissionId: string, text: string) {
+  return {
+    v: 1,
+    conversationId: 'conv_1',
+    offset: '0_9',
+    messages: [
+      { id: 'm_user', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+      { id: 'm_reply', role: 'assistant', submissionId, parts: [{ type: 'text', text }], metadata: { k: 'v' } },
+    ],
+    settlements: [{ submissionId, outcome: 'completed' }],
+  };
+}
+
+/** A handle whose Flue read must stay unused: the reader has the settlement and the history page. */
+const unusedHandle = {
+  async read(): Promise<never> { throw new Error('Flue read() must not run after the observed settlement'); },
+};
 
 test('checkpoint-only idle pages with an unchanged cursor sleep between reads', async () => {
   // The reviewer's production-shape reproducer: two idle pages, then settlement.
@@ -150,18 +172,12 @@ test('a missing stream and an abort surface as errors without further reads', as
   assert.equal(requests.length, 1);
 });
 
-test('the reply reader observes to settlement, then reads once through Flue', async () => {
+test('the reply reader observes to settlement, then reads the history view once', async () => {
   const { route, requests } = fakeRoute([
     { next: '0_1', upToDate: true },
     { items: [{ type: 'message-delta', kind: 'text', delta: 'x' }, settled('sub_9')], next: '0_3' },
+    { snapshot: historyWithReply('sub_9', 'final') },
   ]);
-  const reads: unknown[] = [];
-  const handle = {
-    async read(receipt: unknown) {
-      reads.push(receipt);
-      return { text: 'final', data: {}, submissionId: 'sub_9' };
-    },
-  };
   const seen: string[] = [];
   const reader = createBoundedAgentReplyReader({
     agentName: 'chickpea-slack-v2',
@@ -170,15 +186,34 @@ test('the reply reader observes to settlement, then reads once through Flue', as
     sleep: async () => {},
   });
   const reply = await reader({
-    handle, instanceId: 'agent_9',
+    handle: unusedHandle, instanceId: 'agent_9',
     receipt: { submissionId: 'sub_9', acceptedAt: 'now', uid: 'uid' },
     onEvent: (chunk) => seen.push(chunk.type),
   });
-  assert.equal(reply.text, 'final');
-  assert.equal(requests.length, 2);
+  assert.deepEqual(reply, { text: 'final', data: {}, metadata: { k: 'v' }, uid: 'uid', submissionId: 'sub_9' },
+    'the reply is Flue\'s shape: the snapshot\'s reply plus the receipt\'s uid and submission');
   assert.deepEqual(seen, ['message-delta', 'submission-settled']);
-  assert.deepEqual(reads, [{ submissionId: 'sub_9', acceptedAt: 'now', uid: 'uid' }],
-    'Flue read runs once, after settlement, with no event callback to long-poll for');
+  assert.deepEqual(requests.map((url) => url.searchParams.get('view')), ['updates', 'updates', 'history'],
+    'after the observed settlement only the history view is read, once, and nothing replays the updates');
+  assert.equal(requests[2]?.searchParams.has('live'), false);
+});
+
+test('a settled failure is an AgentRunError with the settlement\'s cause, and reads no history', async () => {
+  const { route, requests } = fakeRoute([
+    { items: [settled('sub_f', 'failed', { message: 'provider refused' })], next: '0_2' },
+  ]);
+  const reader = createBoundedAgentReplyReader({ agentName: 'chickpea-slack-v2', resolveRoute: () => route });
+  await assert.rejects(
+    reader({
+      handle: unusedHandle, instanceId: 'agent_f',
+      receipt: { submissionId: 'sub_f', acceptedAt: 'now', uid: 'uid' },
+      onEvent: () => {},
+    }),
+    (error: unknown) => error instanceof AgentRunError && error.outcome === 'failed' &&
+      error.submissionId === 'sub_f' &&
+      (error.cause as { message?: string } | undefined)?.message === 'provider refused',
+  );
+  assert.equal(requests.length, 1, 'a failed settlement needs no reply read');
 });
 
 test('the Cloudflare reader reaches the agent namespace binding and fails clearly without it', async () => {
@@ -191,7 +226,10 @@ test('the Cloudflare reader reaches the agent namespace binding and fails clearl
     AgentObjectBindingUnavailableError,
   );
 
-  const { route, requests } = fakeRoute([{ items: [settled('sub_c')], next: '0_1' }]);
+  const { route, requests } = fakeRoute([
+    { items: [settled('sub_c')], next: '0_1' },
+    { snapshot: historyWithReply('sub_c', 'ok') },
+  ]);
   const calls: string[] = [];
   const namespace = {
     idFromName: (name: string) => { calls.push(`idFromName:${name}`); return { name }; },
@@ -199,14 +237,14 @@ test('the Cloudflare reader reaches the agent namespace binding and fails clearl
   };
   const reader = createCloudflareBoundedAgentReplyReader({ FLUE_CHICKPEA_SLACK_V2_AGENT: namespace });
   const reply = await reader({
-    handle: { read: async () => ({ text: 'ok', data: {}, submissionId: 'sub_c' }) },
+    handle: unusedHandle,
     instanceId: 'agent_c',
     receipt: { submissionId: 'sub_c', acceptedAt: 'now', uid: 'uid' },
     onEvent: () => {},
   });
   assert.equal(reply.text, 'ok');
-  assert.deepEqual(calls, ['idFromName:agent_c', 'get:agent_c']);
-  assert.equal(requests[0]?.searchParams.has('live'), false);
+  assert.deepEqual(calls, ['idFromName:agent_c', 'get:agent_c'], 'one stub serves the observation and the reply read');
+  assert.deepEqual(requests.map((url) => url.searchParams.has('live')), [false, false]);
 });
 
 /** A fake clock the fake sleep advances, so idle time is measured in sleeps. */

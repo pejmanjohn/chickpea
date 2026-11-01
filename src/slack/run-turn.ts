@@ -2036,6 +2036,8 @@ async function runTurnAttempt(
     // retry loop from the claims being released on an uncaught throw).
     let text: string;
     let agentResult: AgentDispatchResult | undefined;
+    /** The delivery lease check, started with the reply when nothing before the final can change its answer. */
+    let earlyLeaseCheck: Promise<boolean> | undefined;
     // A settled answer replayed from its checkpoint carries no display
     // components; they are read back from the turn's stored surfaces.
     const settledBeforePrompt = options.flueDispatch?.flueSettlement?.outcome === 'completed';
@@ -2156,14 +2158,25 @@ async function runTurnAttempt(
           presenter.setFooterModelLabel(codingFooterLabel);
           agentViewPresentation?.setFooterModelLabel(codingFooterLabel);
         }
-        await workLifecycle?.settleExecution({
+        // Three stores, so three starts at once. The settle is awaited first
+        // because the delivery records after it are ordered behind it; the
+        // lease is awaited where the first visible effect needs it.
+        const settling = workLifecycle?.settleExecution({
           outcome: 'succeeded',
           rawStatus: 'flue_succeeded',
           ...(agentResult.flueSubmissionRef
             ? { flueSubmissionRef: agentResult.flueSubmissionRef }
             : {}),
         });
-        await usageRecorder?.recordSuccess(agentResult);
+        const recordingUsage = usageRecorder?.recordSuccess(agentResult);
+        recordingUsage?.catch(() => undefined);
+        if (preparedMemory && !agentResult.memoryUpdate && !agentResult.agentCreationTerminal &&
+            !agentResult.frontDeskHandoff) {
+          earlyLeaseCheck = preparedMemory.validateLease();
+          earlyLeaseCheck.catch(() => undefined);
+        }
+        await settling;
+        await recordingUsage;
       } catch (err) {
         // A Flue identity or idempotency conflict is not an ordinary model
         // failure. Its TurnJob already entered recovery_required and must not
@@ -2475,7 +2488,8 @@ async function runTurnAttempt(
     // this one finishes; that bookkeeping race must not discard a completed,
     // lease-valid answer.
     await preparedMemory?.confirmInjection();
-    const leaseValid = acknowledgeMemoryUpdate || (await preparedMemory?.validateLease() ?? true);
+    const leaseValid = acknowledgeMemoryUpdate ||
+      (await (earlyLeaseCheck ?? preparedMemory?.validateLease()) ?? true);
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
       logMemoryLeaseFailure('after_run', assignment.agentId, preparedMemory.quarantined === true);
       await statusTurn.prepareFinal();
