@@ -127,7 +127,7 @@ export function mapPolicyChannel(channel: SlackApiResult): SlackChannel {
         slackPendingExternalShare(channel)
       ? { shared: true as const }
       : {}),
-    ...(stringValue(channel.context_team_id) ? { teamId: stringValue(channel.context_team_id) } : {}),
+    ...(stringValue(channel.context_team_id) ? { contextTeamId: stringValue(channel.context_team_id) } : {}),
   };
 }
 

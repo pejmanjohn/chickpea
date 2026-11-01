@@ -3478,6 +3478,7 @@ async function processSlackEvent(
         slackUserId: turn.userId,
         management: stores.management,
       });
+      introduction?.catch(() => undefined);
       let routedAssignment = routed.assignment;
       if (routed.handoffFallbackRequired && routed.previousAgentId && routed.route.handoff) {
         const fallbackContext = await hydrateSlackPublicHandoffFallback(
@@ -3538,7 +3539,8 @@ async function processSlackEvent(
       void existingSnapshot.catch(() => undefined);
       const policyAssignment = await resolveModelPolicyForAssignment(
         routedAssignment, store, process.env, installation, platformEnv,
-      ).finally(() => introduction);
+      );
+      await introduction;
       const admittedCredential = {
         model: policyAssignment.model,
         credential: resolveModelCredentialAttribution(
@@ -3574,7 +3576,7 @@ async function processSlackEvent(
         const channel = await channelFacts;
         turn.sharedChannel = channel.shared === true;
         if (channel.member && channel.id === turn.channelId &&
-            (channel.teamId === undefined || channel.teamId === turn.workspaceId)) {
+            (channel.contextTeamId === undefined || channel.contextTeamId === turn.workspaceId)) {
           turn.channelMembership = { botUserId: resolvedBotUserId, verifiedAt: Date.now() };
         }
         agentSourceVisibility = channel.private ? 'private' : 'public';

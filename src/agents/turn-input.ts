@@ -371,6 +371,7 @@ export function readStagedSlackObservationTarget(
   const json = readStagedTurnInputJsonBySubmission(cloudflareContext().storage.sql, submissionId);
   if (json === undefined) return undefined;
   const input = parseSlackTurnInput(json);
+  if (input.submissionId === undefined) return undefined;
   if (input.instanceId !== instanceId || input.submissionId !== submissionId) {
     throw new Error('Staged Slack turn input belongs to another submission.');
   }

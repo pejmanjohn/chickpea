@@ -1630,6 +1630,7 @@ async function runTurnAttempt(
     // config snapshot. Fence every visible Slack effect as well as model/tool
     // execution when the selected owner lease has already gone stale.
     const leaseCheck = preparedMemory?.ownerBound ? preparedMemory.validateLease() : undefined;
+    leaseCheck?.catch(() => undefined);
     const contextRead = dispatchExpected ? readTurnContext() : undefined;
     const contextReadSettled = contextRead?.catch(() => undefined);
     await classified;
@@ -2008,6 +2009,7 @@ async function runTurnAttempt(
           return persisted;
         })
       : undefined;
+    executionPrepared?.catch(() => undefined);
     const executionPrompt = (ledgerAuthority ? await executionPrepared : undefined) ?? prompt;
 
     // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
@@ -2138,7 +2140,7 @@ async function runTurnAttempt(
           });
         } finally {
           await streamAgeChecks?.stop();
-          await executionPrepared;
+          await executionPrepared?.catch(() => undefined);
         }
         text = sandboxUnavailableFallback
           ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${agentResult.text}`

@@ -20,6 +20,8 @@ import { slackManifestRefusal } from '../helpers/slack-manifest-rules.ts';
  */
 
 export const STUB_REPLY_MARKER = 'stub-reply::glm-parity-marker';
+/** Coprime with any spread under 97, so the held steps visit distinct phases. */
+const SPREAD_STRIDE = 97;
 export const RAW_PROVIDER_ERROR_MARKER = 'raw_provider_error_marker';
 export const FAKE_PROVIDER_KEYS = {
   anthropic: 'anthropic-valid-key',
@@ -1339,7 +1341,7 @@ export class FakeSlackBackend {
     const spread = this.providerDelaySpreadMs;
     if (spread <= 0) return this.providerDelayMs;
     const position = classifier ? this.heldAgentCalls : this.heldAgentCalls++;
-    const step = ((position * 97) % spread) - Math.floor(spread / 2);
+    const step = ((position * SPREAD_STRIDE) % spread) - Math.floor(spread / 2);
     return Math.max(0, this.providerDelayMs + (classifier ? -step : step));
   }
 

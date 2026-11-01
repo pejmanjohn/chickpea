@@ -239,6 +239,27 @@ test('the agent object serves the staged observation target by submission, or de
   assert.equal(readStagedSlackObservationTarget(instanceId, withTarget), undefined, 'Node keeps the state store path');
 });
 
+test('a submission that maps to an input staged without one defers to the state store instead of throwing', async () => {
+  const sql = sqlStorage();
+  const current = plan();
+  const instanceId = deriveRuntimePlanInstanceId(current);
+  const submissionId = await slackTurnSubmissionId(instanceId, 'turn_mixed');
+  writeStagedTurnInput(sql, serializeSlackTurnInput(createSlackTurnInput({
+    turnJobId: 'turn_mixed', instanceId, runtimePlan: current,
+  })), 1);
+  writeStagedTurnInput(sql, serializeSlackTurnInput(createSlackTurnInput({
+    turnJobId: 'turn_mixed', instanceId, runtimePlan: current, submissionId, observation: observationOf(current),
+  })), 2);
+  useAgentObjectStorageForTests(() => ({ storage: { sql } }));
+  try {
+    await withCloudflareUserAgent(async () => {
+      assert.equal(readStagedSlackObservationTarget(instanceId, submissionId), undefined);
+    });
+  } finally {
+    useAgentObjectStorageForTests(undefined);
+  }
+});
+
 test('the render uses the staged plan, fails closed for a thread instance without one, and keeps legacy instances on their creation data', () => {
   const creation = plan();
   const instanceId = deriveRuntimePlanInstanceId(creation);

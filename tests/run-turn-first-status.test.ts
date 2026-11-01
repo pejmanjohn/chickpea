@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { DEFAULT_INTERACTION_TIMEOUT_MS } from '../src/slack/interaction-intent.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -144,7 +145,7 @@ let holdNativeStart: ((timeline: string[]) => Promise<void>) | undefined;
 let holdClassifierAnswer: ((timeline: string[]) => Promise<void>) | undefined;
 
 async function waitUntil(ready: () => boolean): Promise<void> {
-  const deadline = Date.now() + 2_000;
+  const deadline = Date.now() + DEFAULT_INTERACTION_TIMEOUT_MS / 4;
   while (!ready() && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
