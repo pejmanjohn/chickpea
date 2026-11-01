@@ -413,21 +413,9 @@ test('the takeover seed hands over only Chickpea\'s own root DM thread', async (
   });
 });
 
-/** Chickpea's root DM turn run to delivery, with the model's run replaced by a hand-off to `agentIds`. */
-async function runHandOff(lane: FrontDeskLane, agentIds: string[], note: string) {
-  const { stores, gateway, jobs, enqueueTurn } = lane;
-  await processGatewaySlackEnvelope(directMessage('Ev1', ROOT, 'Check order 4821 on the portal.'),
-    undefined, gateway, { stores, enqueueTurn });
-  const chickpea = jobs[0]!;
-  // A model that needs no provider key, so the run reaches delivery.
-  const assignment = {
-    ...chickpea.assignment, model: 'local-stub/chickpea',
-    modelAttribution: { source: 'pinned' as const, providerId: 'local-stub' },
-  };
-  const frontDesk = compileFrontDeskPlan(chickpea.turn, assignment)!;
-  const runtimePlan = compileRuntimePlanV2({ turn: chickpea.turn, assignment, instructions: 'Help.', memoryEpoch: 1, frontDesk });
-  const posts: Array<Record<string, unknown>> = [];
-  const client = {
+/** A Slack client that records what a run posts. */
+function recordingClient(posts: Array<Record<string, unknown>>): WebClient {
+  return {
     conversations: { replies: async () => ({ ok: true, messages: [] }), history: async () => ({ ok: true, messages: [] }) },
     chat: {
       postMessage: async (args: Record<string, unknown>) => {
@@ -437,10 +425,29 @@ async function runHandOff(lane: FrontDeskLane, agentIds: string[], note: string)
       update: async () => ({ ok: true }),
     },
   } as unknown as WebClient;
+}
+
+/** A model that needs no provider key, so the run reaches delivery. */
+function stubModel<T extends TurnJob['assignment']>(assignment: T): T {
+  return { ...assignment, model: 'local-stub/agent', modelAttribution: { source: 'pinned' as const, providerId: 'local-stub' } };
+}
+
+/** Chickpea's root DM turn run to delivery, with the model's run replaced by a hand-off to `agentIds`. */
+async function runHandOff(lane: FrontDeskLane, agentIds: string[], note: string, options: { usage?: true } = {}) {
+  const { stores, gateway, jobs, enqueueTurn } = lane;
+  await processGatewaySlackEnvelope(directMessage('Ev1', ROOT, 'Check order 4821 on the portal.'),
+    undefined, gateway, { stores, enqueueTurn });
+  const chickpea = jobs[0]!;
+  const assignment = stubModel(chickpea.assignment);
+  const frontDesk = compileFrontDeskPlan(chickpea.turn, assignment)!;
+  const runtimePlan = compileRuntimePlanV2({ turn: chickpea.turn, assignment, instructions: 'Help.', memoryEpoch: 1, frontDesk });
+  const posts: Array<Record<string, unknown>> = [];
+  const client = recordingClient(posts);
   const handoffs: SlackFrontDeskHandoffRequest[] = [];
   let delivered: string | undefined;
   await runTurn(chickpea.turn, assignment, undefined, {
-    client, usageRecordingEnabled: false, turnId: chickpea.id,
+    client, turnId: chickpea.id,
+    ...(options.usage ? { usageRecordingEnabled: true, usageStore: stores.usage } : { usageRecordingEnabled: false }),
     runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) },
     appStores: stores,
     agentPrompt: async (input) => {
@@ -477,6 +484,34 @@ async function cardOf(lane: FrontDeskLane, turnJobId: string) {
 }
 
 const cardText = (posts: Array<Record<string, unknown>>) => posts.filter(({ update }) => update).map(({ text }) => text);
+
+test('the takeover is metered as its own Agent\'s turn, for the same requester as Chickpea\'s decision', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { stores } = lane;
+    const { chickpea, handoffs } = await runHandOff(lane, ['agent_support'], 'It has the portal login.', { usage: true });
+    await processSlackFrontDeskHandoff(handoffs[0]!, undefined, { stores, gatewayClient: lane.gateway, enqueueTurn: lane.enqueueTurn });
+    const takeover = lane.jobs[1]!;
+    const assignment = stubModel(takeover.assignment);
+    const runtimePlan = compileRuntimePlanV2({ turn: takeover.turn, assignment, instructions: 'Help.', memoryEpoch: 1 });
+    await runTurn(takeover.turn, assignment, undefined, {
+      client: recordingClient([]), turnId: takeover.id, usageRecordingEnabled: true, usageStore: stores.usage,
+      runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) },
+      appStores: stores,
+      agentPrompt: async () => {
+        const { resultFromAgentReply } = await import('../src/slack/flue-dispatch.ts');
+        return resultFromAgentReply({
+          text: 'Order 4821 shipped yesterday.', metadata: {}, data: {}, submissionId: 'sub_takeover', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAW',
+        }, null);
+      },
+    });
+    const decision = (await stores.usage.getOperation(chickpea.id))?.operation;
+    const taken = (await stores.usage.getOperation(takeover.id))?.operation;
+    assert.equal(decision?.agentId, CHICKPEA_AGENT_ID, 'Chickpea\'s short decision is metered as Chickpea\'s');
+    assert.equal(taken?.agentId, 'agent_support', 'the takeover is metered as the target Agent\'s');
+    assert.equal(taken?.requesterMembershipId, lane.ownerMembershipId);
+    assert.equal(taken?.requesterMembershipId, decision?.requesterMembershipId, 'the same requester on both');
+  });
+});
 
 test('Chickpea\'s hand-off to one Agent posts the host\'s line, then asks the executor to admit the takeover', async () => {
   await withFrontDeskLane(async (lane) => {
