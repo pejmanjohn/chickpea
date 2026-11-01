@@ -153,18 +153,19 @@ release forward to rolling back across v0.1.34.
 ## 3. Deploy to the same Worker
 
 v0.1.42 makes Chickpea the front desk of its direct messages. A new message
-to Chickpea that mentions no Agent goes to the Agent that fits: Chickpea
-replies that the Agent is taking it, or, when several fit, offers one button
-per Agent, and it still answers requests about the workspace itself. When a
-person finishes a connection setup an Agent asked for in a Slack thread, that
-Agent now continues there and tests the connection; otherwise the thread gets
-one plain line. An Agent can take a key the person sends right after
-approving its connection. A managed sign-in started in Admin now ends on a
-Chickpea page that tries to close itself, and an approval preview for a long
-text edit lists its key changes instead of the whole text. Neither the
-storage contract nor any migration changes, so every `release.json` digest
-stays the same. Updating needs no other step. There is no rollback path:
-recovery means deploying a fixed release forward.
+at the top of a person's direct message with Chickpea that mentions no Agent
+goes to the Agent that fits: Chickpea replies that the Agent is taking it, or,
+when several fit, offers one button per Agent, and it still answers requests
+about the workspace itself. When the person who asked an Agent for a
+connection in a Slack thread finishes its setup, that Agent now continues
+there and tests the connection; otherwise the thread gets one plain line. An
+Agent can take a key that the person who approved its connection sends within
+30 minutes, in the same conversation. A managed sign-in started in Admin now
+ends on a Chickpea page that tries to close itself, and an approval preview
+for a long text edit lists its key changes instead of the whole text. Neither
+the storage contract nor any migration changes, so every `release.json`
+digest stays the same. Updating needs no other step. There is no rollback
+path: recovery means deploying a fixed release forward.
 
 v0.1.41 lets an Agent read up to 10 files attached to one Slack message, up
 from 4; a message with more still reads none of its files. Editing a message
