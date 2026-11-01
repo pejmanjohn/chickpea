@@ -50,7 +50,7 @@ export interface FrontDeskFacts {
  * Slack app is left out: it posts as its own bot, which is not in this DM.
  * So is one with neither a name that survives cleaning nor a handle.
  */
-export function frontDeskCandidates(usable: PrivatelyUsableAgents): CustomAgentConfig[] {
+function frontDeskCandidates(usable: PrivatelyUsableAgents): CustomAgentConfig[] {
   return usable.agents.filter((agent) =>
     agent.kind === 'user' && agent.id !== CHICKPEA_AGENT_ID && !agentAppIsLive(agent.slackPresence) &&
     frontDeskName(agent) !== '');
@@ -61,12 +61,17 @@ function frontDeskName(agent: CustomAgentConfig): string {
   return clampText(inlineText(agent.name), FRONT_DESK_MAX_NAME_CHARS) || (agent.slackPresence?.normalizedHandle ?? '');
 }
 
-/** The candidates in listing order: the recent Agent first, then by name. */
+interface FrontDeskOrder {
+  /** Every candidate, the recent Agent first, then by name. */
+  ordered: CustomAgentConfig[];
+  recent: FrontDeskDirectory['recent'];
+}
+
 function orderFrontDeskCandidates(
   usable: PrivatelyUsableAgents,
   replies: readonly RecentSlackAgentReply[],
   nowMs: number,
-): { ordered: CustomAgentConfig[]; recent: FrontDeskDirectory['recent'] } {
+): FrontDeskOrder {
   const candidates = frontDeskCandidates(usable);
   const recent = pickRecentFrontDeskAgent(replies, new Set(candidates.map(({ id }) => id)), nowMs);
   return {
@@ -81,7 +86,13 @@ function orderFrontDeskCandidates(
 }
 
 export function assembleFrontDeskDirectory(facts: FrontDeskFacts): FrontDeskDirectory | undefined {
-  const { ordered, recent } = orderFrontDeskCandidates(facts.usable, facts.recentReplies, facts.nowMs);
+  return assembleOrdered(orderFrontDeskCandidates(facts.usable, facts.recentReplies, facts.nowMs), facts);
+}
+
+function assembleOrdered(
+  { ordered, recent }: FrontDeskOrder,
+  facts: Omit<FrontDeskFacts, 'recentReplies'>,
+): FrontDeskDirectory | undefined {
   if (ordered.length === 0) return undefined;
   const listed = ordered.slice(0, FRONT_DESK_MAX_AGENTS).map((agent) => frontDeskAgent(agent, facts));
   return fitFrontDeskDirectory({
@@ -115,9 +126,15 @@ export async function readFrontDeskDirectory(input: {
   nowMs?: number;
 }): Promise<FrontDeskDirectory | undefined> {
   const nowMs = input.nowMs ?? Date.now();
-  const [agents, grants] = await Promise.all([
+  const [agents, grants, recentReplies, accounts] = await Promise.all([
     input.config.listAgents(),
     input.config.listAgentChannelGrants(input.workspaceId),
+    input.config.listRecentSlackAgentReplies({
+      workspaceId: input.workspaceId,
+      channelId: input.channelId,
+      sinceMessageTs: slackTsAt(nowMs - FRONT_DESK_RECENT_WINDOW_MS),
+    }),
+    input.config.listConnectionAccounts(input.workspaceId),
   ]);
   const usable = await listPrivatelyUsableAgents({
     agents,
@@ -126,15 +143,10 @@ export async function readFrontDeskDirectory(input: {
     actor: input.actor,
     transport: input.transport,
   });
-  if (frontDeskCandidates(usable).length === 0) return undefined;
-  const recentReplies = await input.config.listRecentSlackAgentReplies({
-    workspaceId: input.workspaceId,
-    channelId: input.channelId,
-    sinceMessageTs: slackTsAt(nowMs - FRONT_DESK_RECENT_WINDOW_MS),
-  });
-  const listed = orderFrontDeskCandidates(usable, recentReplies, nowMs).ordered.slice(0, FRONT_DESK_MAX_AGENTS);
-  const [accounts, bindings, browser] = await Promise.all([
-    input.config.listConnectionAccounts(input.workspaceId),
+  const order = orderFrontDeskCandidates(usable, recentReplies, nowMs);
+  if (order.ordered.length === 0) return undefined;
+  const listed = order.ordered.slice(0, FRONT_DESK_MAX_AGENTS);
+  const [bindings, browser] = await Promise.all([
     Promise.all(listed.map(async (agent) =>
       [agent.id, await input.config.listAgentConnectionBindings(agent.id)] as const)),
     listed.some((agent) => agent.websiteLogins?.some(({ enabled }) => enabled))
@@ -142,18 +154,20 @@ export async function readFrontDeskDirectory(input: {
       : undefined,
   ]);
   const websiteLogins = browser ? await listWebsiteLogins(input.settings).catch(() => []) : undefined;
-  return assembleFrontDeskDirectory({
+  return assembleOrdered(order, {
     usable,
     accounts,
     bindings: new Map(bindings),
     ...(input.actor.membershipId ? { actorMembershipId: input.actor.membershipId } : {}),
     ...(websiteLogins ? { websiteLogins } : {}),
-    recentReplies,
     nowMs,
   });
 }
 
-function frontDeskAgent(agent: CustomAgentConfig, facts: FrontDeskFacts): FrontDeskAgent {
+function frontDeskAgent(
+  agent: CustomAgentConfig,
+  facts: Pick<FrontDeskFacts, 'accounts' | 'bindings' | 'actorMembershipId' | 'websiteLogins'>,
+): FrontDeskAgent {
   const connections = capNames(projectEffectiveConnectionAccounts(
     [...facts.accounts],
     [...facts.bindings.get(agent.id) ?? []],
