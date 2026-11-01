@@ -212,7 +212,60 @@ test('a Slack agent whose staged input carries the observation correlates from i
     { ...observation, turnJobId: 'turn_staged', instanceId, submissionId: stagedSubmission },
     { ...observation, turnJobId: 'turn_bare', instanceId, submissionId: bareSubmission },
   ]);
-  assert.deepEqual(storeReads, [bareSubmission], 'only the turn staged without an observation reaches the state store');
+  assert.deepEqual(storeReads, [stagedSubmission, bareSubmission], 'the store is asked for both; only the bare turn waits for it');
+});
+
+test('a staged target whose turn the state store no longer holds fails at the first model operation, before the provider', async () => {
+  const agent: CustomAgentConfig = {
+    id: 'agent_ended', kind: 'user', revision: 1, name: 'Ended', instructions: 'Correlate.',
+    enabled: true, model: 'openai/gpt-5.4-mini', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  };
+  const turn: NormalizedSlackTurn = {
+    workspaceId: 'T_WORK', channelId: 'C_WORK', eventId: 'E_ENDED', text: 'Correlate me.', userId: 'U_ALICE',
+    messageTs: '1788000000.000300', threadTs: '1788000000.000100', source: 'app_mention', contextMode: 'thread',
+  };
+  const assignment: ResolvedAssignment = {
+    workspaceId: 'T_WORK', channelId: 'C_WORK', agentId: agent.id, agent, runtimeContract: 'chickpea-v1',
+    ownerIncarnation: 1, model: 'openai/gpt-5.4-mini', modelAttribution: { source: 'pinned', providerId: 'openai' },
+  };
+  const plan = compileRuntimePlanV2({ turn, assignment, instructions: agent.instructions, memoryEpoch: 1 });
+  const instanceId = deriveRuntimePlanInstanceId(plan);
+  const observation = { generation: 'msg:C_WORK:1788000000.000300', workCorrelation: correlation, harnessRevision: plan.harnessRevision };
+  const submissionId = await slackTurnSubmissionId(instanceId, 'turn_ended');
+  const sql = sqlStorage();
+  writeStagedTurnInput(sql, serializeSlackTurnInput(createSlackTurnInput({
+    turnJobId: 'turn_ended', instanceId, runtimePlan: plan, submissionId, observation,
+  })), 1);
+  let storeAnswered = false;
+  const interceptor = createWorkModelInvocationInterceptor({
+    resolveTarget: async () => { storeAnswered = true; return undefined; },
+    markInvocation: async () => {},
+  });
+  const events: string[] = [];
+  useAgentObjectStorageForTests(() => ({ storage: { sql } }));
+  try {
+    await withCloudflareUserAgent(async () => {
+      await assert.rejects(
+        interceptor(
+          { type: 'agent', operationId: submissionId, operationKind: 'prompt' },
+          { instanceId, submissionId, agentName: 'chickpea-slack-v2' },
+          async () => {
+            events.push('rendered');
+            await interceptor(
+              { type: 'model', turnId: 'model-1' },
+              { instanceId, submissionId, agentName: 'chickpea-slack-v2' },
+              async () => { events.push('provider'); },
+            );
+          },
+        ),
+        /correlation is unavailable/,
+      );
+    });
+  } finally {
+    useAgentObjectStorageForTests(undefined);
+  }
+  assert.equal(storeAnswered, true);
+  assert.deepEqual(events, ['rendered'], 'the render ran on the staged target; the provider never did');
 });
 
 test('an observe-mode invocation marks while the provider request is in flight, and the mark still lands', async () => {

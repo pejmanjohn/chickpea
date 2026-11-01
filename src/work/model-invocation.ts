@@ -17,6 +17,8 @@ interface InvocationState {
   instanceId: string;
   submissionId: string;
   target?: FlueObservationTarget;
+  /** The state store's view of a staged target, awaited before the first model operation. */
+  live?: Promise<FlueObservationTarget | undefined>;
   marking?: Promise<void>;
   /** An observe-mode mark failed: this invocation is not marked again. */
   markUnavailable?: boolean;
@@ -70,21 +72,30 @@ export function createWorkModelInvocationInterceptor(options: {
       const instanceId = context.instanceId;
       const submissionId = context.submissionId;
       if (!instanceId || !submissionId) return next();
-      const target = readStagedSlackObservationTarget(instanceId, submissionId) ??
-        await resolveTarget(instanceId, submissionId);
-      if (!target) {
-        throw new Error('Slack TurnJob observation correlation is unavailable.');
-      }
+      // The staged copy knows nothing of a turn the runner has since ended;
+      // the store does, so its read starts here and is awaited before the
+      // first model operation instead of before the render.
+      const staged = readStagedSlackObservationTarget(instanceId, submissionId);
+      const live = resolveTarget(instanceId, submissionId);
+      live.catch(() => undefined);
+      const target = staged ?? await live;
+      if (!target) throw correlationUnavailable();
       return invocationState.run({
         instanceId,
         submissionId,
-        ...(target ? { target } : {}),
+        target,
+        ...(staged ? { live } : {}),
       }, next);
     }
     if (operation.type !== 'model') return next();
     const active = invocationState.getStore();
     const correlation = active?.target?.workCorrelation;
     if (!active || !correlation) return next();
+    if (active.live) {
+      const current = await active.live;
+      delete active.live;
+      if (!current) throw correlationUnavailable();
+    }
     // Observe mode marks at most once per invocation: a failed mark (its
     // execution missing, or the store unreachable) is not retried by every
     // later model operation, which sent one store read per operation.
@@ -96,6 +107,10 @@ export function createWorkModelInvocationInterceptor(options: {
 }
 
 export const workModelInvocationInterceptor = createWorkModelInvocationInterceptor();
+
+function correlationUnavailable(): Error {
+  return new Error('Slack TurnJob observation correlation is unavailable.');
+}
 
 function ensureInvocationMarked(
   state: InvocationState,
