@@ -1101,8 +1101,6 @@ async function runTurnAttempt(
     }
   }
   let interactionIntent = turn.interactionIntent;
-  /** The classifier's intent and usage records, awaited once the context read has begun. */
-  let classifierRecords: Promise<void> | undefined;
   // Classification and the memory → plan → Work lifecycle chain read
   // independent state; each chain keeps its own writes in order.
   const classifyTurn = async (): Promise<void> => {
@@ -1127,7 +1125,7 @@ async function runTurnAttempt(
     });
     interactionIntent = classification.intent;
     turn.interactionIntent = interactionIntent;
-    classifierRecords = Promise.all([
+    await Promise.all([
       options.onInteractionIntent?.(interactionIntent),
       recordExplicitInteractionClassifierUsage({
         turn,
@@ -1137,9 +1135,7 @@ async function runTurnAttempt(
         platformEnv,
         options,
       }),
-    ]).then(() => undefined);
-    // Handled where it is awaited; a rejection before then must not be unhandled.
-    classifierRecords.catch(() => undefined);
+    ]);
   };
   const prepareTurn = async () => {
     const memory = skipMemory
@@ -1246,21 +1242,29 @@ async function runTurnAttempt(
   };
   let earlyStatusTurn: ReturnType<typeof registerStatusTurn> | undefined;
   let prepared: Awaited<ReturnType<typeof prepareTurn>>;
+  // The classifier's answer is a model round trip, the slowest read before
+  // the dispatch. Nothing the preparation unlocks (the lease check, the
+  // context read, the envelope) depends on it, so those start as soon as the
+  // preparation settles, and the intent is awaited where it is first needed.
+  const classified = classifyTurn();
+  // Handled where it is awaited; a rejection before then must not be unhandled.
+  classified.catch(() => undefined);
   try {
-    const [visible, classified, preparation] = await Promise.allSettled([
+    const [visible, preparation] = await Promise.allSettled([
       earlyStatusWork,
-      classifyTurn(),
       prepareTurn(),
     ]);
     if (visible.status === 'rejected') throw visible.reason;
     earlyStatusTurn = visible.value;
-    if (classified.status === 'rejected') throw classified.reason;
     if (preparation.status === 'rejected') throw preparation.reason;
     prepared = preparation.value;
   } catch (error) {
     // Only the status turn is open yet. Like any failed V3 attempt, it keeps
-    // the admitted activity visible for the next attempt.
+    // the admitted activity visible for the next attempt. The classifier
+    // settles before the attempt ends, so its intent record cannot land
+    // under a retry's own classification.
     earlyStatusTurn?.close();
+    await classified.catch(() => undefined);
     throw error;
   }
   const {
@@ -1387,9 +1391,6 @@ async function runTurnAttempt(
         }
       : undefined;
   let workChecklistTs = interactionProgress.checklist?.messageTs;
-  const workChecklist = interactionIntent?.disposition === 'work'
-    ? interactionIntent.checklist
-    : undefined;
   const triggerCoordinate = {
     channelId: turn.channelId,
     messageTs: turn.reactionTargetTs ?? turn.messageTs,
@@ -1503,10 +1504,11 @@ async function runTurnAttempt(
     await options.onDelivered?.(outcome);
     await presenter.markCanonicalPresentationFinalized();
     await usageRecorder?.repairAfterDelivery();
-    if (workChecklistTs && workChecklist &&
+    const checklist = interactionIntent?.disposition === 'work' ? interactionIntent.checklist : undefined;
+    if (workChecklistTs && checklist &&
         !interactionProgress.checklist?.supersededByNative) {
       try {
-        await presenter.updateWorkChecklist(workChecklistTs, workChecklist, true);
+        await presenter.updateWorkChecklist(workChecklistTs, checklist, true);
         const checklistProgress = interactionProgress.checklist;
         if (checklistProgress) {
           await recordInteractionProgress({
@@ -1574,6 +1576,9 @@ async function runTurnAttempt(
   };
 
   // A turn with any of these ends before the model, whatever the lease says.
+  // The classifier may still be answering here: only an intent the admission
+  // settled counts, and a `react_only` answered later ends the turn in its
+  // branch below, dropping the reads started meanwhile.
   const dispatchExpected = modelRepairText === undefined && !turn.managementApprovalProposalId &&
     !memoryCommand && interactionIntent?.disposition !== 'react_only';
   // Frozen while the context is read, and taken from this promise at the
@@ -1654,7 +1659,7 @@ async function runTurnAttempt(
     const contextReadSettled = contextRead?.catch(() => undefined);
     // Everything the intent decides (a checklist, a reaction, the dispatch)
     // follows its record; a record that fails ends the attempt before them.
-    await classifierRecords;
+    await classified;
     if (preparedMemory?.ownerBound && !(await leaseCheck)) {
       // Fail closed, never silently: the durable relay only retires a turn job
       // once delivery is tombstoned, so an early `return` here left the job
@@ -1690,8 +1695,8 @@ async function runTurnAttempt(
       : undefined;
     // The title's two presentation transitions are fenced on the row's
     // version, so no other transition may land between them. A turn that
-    // ends before the model waits here; the model path waits before its
-    // next transition, after the usage admission.
+    // ends before the model waits here or at its branch; the model path
+    // waits before its next transition, after the usage admission.
     if (!dispatchExpected) await titleSet;
     if (turn.managementApprovalProposalId && options.replayText === undefined &&
         options.invokeManagementApproval && !options.managementApproval) {
@@ -1817,6 +1822,7 @@ async function runTurnAttempt(
       }
     }
     if (interactionIntent?.disposition === 'react_only') {
+      await titleSet;
       const prepared = await workLifecycle?.prepareExecution(
         `Slack reaction response: ${interactionIntent.reaction}`,
       );
@@ -1850,6 +1856,9 @@ async function runTurnAttempt(
     }
     if (usageRecordingEnabled && options.replayText === undefined) await openUsageRecorder();
     await titleSet;
+    const workChecklist = interactionIntent?.disposition === 'work'
+      ? interactionIntent.checklist
+      : undefined;
     // A substantive @-mention is classified late (above), AFTER Work admission
     // froze the presentation without a plan — whereas ambient and obvious-work
     // turns carry their plan from admission. Attach the late-classified work

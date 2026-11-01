@@ -6,6 +6,7 @@ import { after, before, test } from 'node:test';
 
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
+import { configureModelAccessResolver, resetModelAccessForTests } from '../src/config/model-access.ts';
 import { closeNodeStateStores, resolveStores, type AppStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
@@ -17,6 +18,7 @@ import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { SCRIPTED_MODEL, scriptedMessage, scriptedProvider } from './helpers/scripted-provider.ts';
 
 /**
  * How many state-store calls a turn makes before its first Slack write. In a
@@ -142,8 +144,8 @@ let rejectCustomStatus = false;
 let holdCustomStatus: ((timeline: string[]) => Promise<void>) | undefined;
 /** Slack's acknowledgement of the native start waits on this, when set. */
 let holdNativeStart: ((timeline: string[]) => Promise<void>) | undefined;
-/** The runner's intent record waits on this, when set. */
-let holdInteractionIntent: ((timeline: string[]) => Promise<void>) | undefined;
+/** The classifier's model answer waits on this, when set; the harness scripts the classifier's provider. */
+let holdClassifierAnswer: ((timeline: string[]) => Promise<void>) | undefined;
 
 async function firstStatusTimeline(
   surface: Surface,
@@ -152,6 +154,14 @@ async function firstStatusTimeline(
   turnAssignment: ResolvedAssignment = assignment,
 ) {
   const timeline: string[] = [];
+  if (holdClassifierAnswer) {
+    const hold = holdClassifierAnswer;
+    // The side call resolves the profile's `anthropic/` model to the provider registered as `anthropic`.
+    scriptedProvider([async (model) => {
+      await hold(timeline);
+      return scriptedMessage(model, [{ type: 'text', text: '{"disposition":"reply","reason":"substantive_request"}' }], 'stop');
+    }], { providerId: 'anthropic' });
+  }
   turns += 1;
   const base = surfaceTurn(surface);
   // A distinct message per call, in the same Slack thread shape.
@@ -266,7 +276,6 @@ async function firstStatusTimeline(
     // The runner's per-turn state-store writes (see runnerTurnJobsPort).
     onInteractionIntent: async () => {
       timeline.push('turnJobs.recordInteractionIntent');
-      await holdInteractionIntent?.(timeline);
     },
     onRuntimePlan: async (candidate) => {
       timeline.push('turnJobs.freezeRuntimePlan');
@@ -481,27 +490,44 @@ test('classification and the plan start once the native start is issued, before 
   }
 });
 
-test("the classifier's records land while the context is read, before the dispatch", async () => {
-  // The intent record is slow: it lands once the context read has started,
-  // or after two seconds if the turn waits for it.
-  holdInteractionIntent = async (timeline) => {
+test('the context is read before the classifier answers; the dispatch waits for the answer and its record', async () => {
+  // The classifier's model is slow: it answers once the context read has been
+  // issued, or after two seconds if the turn waits for it. Two seconds stays
+  // under the classifier's timeout, so no fallback intent answers first.
+  holdClassifierAnswer = async (timeline) => {
     const deadline = Date.now() + 2_000;
     while (!timeline.some((entry) => entry.startsWith('slack:conversations.')) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    timeline.push('recorded:turnJobs.recordInteractionIntent');
+    timeline.push('classifier:answered');
   };
+  // The scripted provider stands in for Anthropic, whose side call carries
+  // the installation's key.
+  const previousKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'anthropic-first-status-key';
+  configureModelAccessResolver({ resolve: async () => ({ apiKey: 'anthropic-first-status-key' }) });
   try {
     // A DM whose assignment names the DM: the one surface here whose memory
     // lease passes, so the turn reaches its dispatch.
-    const { timeline } = await firstStatusTimeline('dm', null, {}, { ...assignment, channelId: 'D_FIRST_STATUS' });
+    const { timeline } = await firstStatusTimeline('dm', null, {}, {
+      ...assignment,
+      channelId: 'D_FIRST_STATUS',
+      model: `anthropic/${SCRIPTED_MODEL}`,
+      modelAttribution: { source: 'pinned', providerId: 'anthropic' },
+    });
     const contextRead = timeline.findIndex((entry) => entry.startsWith('slack:conversations.'));
-    const recorded = timeline.indexOf('recorded:turnJobs.recordInteractionIntent');
+    const answered = timeline.indexOf('classifier:answered');
+    const recorded = timeline.indexOf('turnJobs.recordInteractionIntent');
     const dispatched = timeline.indexOf('agentPrompt');
-    assert.ok(contextRead >= 0 && recorded >= 0 && dispatched >= 0, 'the turn read, recorded and dispatched');
-    assert.ok(contextRead < recorded, "the context read does not wait for the classifier's records");
-    assert.ok(recorded < dispatched, "the dispatch waits for the classifier's records");
+    assert.ok(contextRead >= 0 && answered >= 0 && recorded >= 0 && dispatched >= 0,
+      `the turn read, classified, recorded and dispatched: ${timeline.join(' ')}`);
+    assert.ok(contextRead < answered, `the context read does not wait for the classifier: ${timeline.join(' ')}`);
+    assert.ok(answered < dispatched && recorded < dispatched,
+      `the dispatch waits for the classifier's answer and its record: ${timeline.join(' ')}`);
   } finally {
-    holdInteractionIntent = undefined;
+    holdClassifierAnswer = undefined;
+    if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousKey;
+    resetModelAccessForTests();
   }
 });
