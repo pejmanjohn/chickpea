@@ -39,6 +39,18 @@ state, deploy path, and first checks when a browser tool fails.
 
 ## Website logins
 
+- Ownership: every website login belongs to the team. Only Owners and Admins
+  add one, raise an Agent's use of it to actions, or remove it
+  (`canManageWebsiteLogin`). Any editor of the Agent sees its logins and may
+  lower one to checking only. Everyone who can use the Agent signs in with
+  them.
+- Former personal logins: earlier releases stored a member's own login
+  with `ownerKind: "member"` and their membership id. Records keep both, so
+  an older release reads them unchanged, but Admin, management and the
+  permission checks treat them as team logins. The stored owner still counts
+  in one place: an Agent deletion that member staged before the update
+  finishes, so the login and its secret are not left on no Agent. Nothing is
+  deleted when a member leaves.
 - Metadata row: `browser.logins.v1` (host, label, method, owner; at most 100
   logins). No secret is in this row. Each login's saved context, open
   hand-off session and last use live in its own `website_login_state.<id>`
@@ -52,7 +64,8 @@ state, deploy path, and first checks when a browser tool fails.
   context. Removing a login from an Agent deletes the login, its secret and
   its context only when no other Agent, archived ones included, still holds
   it. Deleting an Agent does the same for each of its logins, and is refused
-  when one of them is a login the person deleting could not remove.
+  when one of them is a login the person deleting could not remove: a member
+  asks an Owner or Admin to remove it first.
 - Deletion queue: the context and any open hand-off session of a deleted
   login are queued in `browser.pendingContextDeletions` in the same write
   that removes the login, then deleted at Browserbase at once or by work
