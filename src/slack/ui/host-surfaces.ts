@@ -13,10 +13,17 @@ import { renderUiSurface, type RenderedUiSurface } from './render.ts';
 import { renderCards, renderChart, renderDetails } from './render-display.ts';
 import type { RenderedSlackComponents } from '../reply-continuations.ts';
 import {
+  FRONT_DESK_CHOICE_TTL_MS,
+  agentChoiceSpec,
+  agentChoiceSpecFits,
+  agentChoiceSurfaceId,
+} from '../front-desk.ts';
+import {
   isDisplaySurface,
   UI_SURFACE_TTL_MS,
   uiSurfaceId,
   type DisplaySurfaceSpec,
+  type HostAgentChoiceSpec,
   type HostApprovalSpec,
   type UiSurfaceRecord,
   type UiSurfaceResolution,
@@ -164,6 +171,79 @@ export async function deliverHostApprovalSurfaces(input: {
       await uiSurfaceRecord(state, { kind: 'bind_surface_message', id: stored.id, messageTs });
     }
   }
+}
+
+/**
+ * After Chickpea's front-desk reply names several Agents, post the card the
+ * person picks one on. Like an approval card, its record is durable before
+ * the post and its id derives from the turn, so a retried delivery never
+ * posts twice. The card lives a day; every pick is checked again.
+ */
+export async function deliverAgentChoiceSurface(input: {
+  turn: NormalizedSlackTurn;
+  assignment: Pick<ResolvedAssignment, 'agent' | 'runtimeContract'>;
+  turnJobId: string;
+  state: SlackStateStore;
+  messenger: UiSurfaceMessenger;
+  options: HostAgentChoiceSpec['options'];
+  now?: number;
+}): Promise<void> {
+  const { turn } = input;
+  if (!input.state.executeUiSurface || input.options.length < 2) return;
+  const state = input.state as SurfaceState;
+  const spec = agentChoiceSpec(turn, input.options);
+  if (!agentChoiceSpecFits(spec)) return;
+  const now = input.now ?? Date.now();
+  const stored = await uiSurfaceRecord(state, {
+    kind: 'put_surface',
+    record: {
+      id: agentChoiceSurfaceId(turn.channelId, turn.messageTs),
+      namespace: 'host',
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      threadTs: turn.threadTs,
+      conversationThreadTs: conversationThreadTs(turn, input.assignment.runtimeContract),
+      conversationKind: 'im',
+      agentId: input.assignment.agent.id,
+      turnJobId: input.turnJobId,
+      requesterUserId: turn.userId,
+      spec,
+      status: 'pending_delivery',
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: now + FRONT_DESK_CHOICE_TTL_MS,
+    },
+  });
+  if (!stored || stored.messageTs || stored.status !== 'pending_delivery') return;
+  const rendered = renderUiSurface(stored);
+  const check = checkSlackBlocks(rendered.blocks, { text: rendered.text });
+  if (!check.ok) {
+    console.error('[chickpea] Agent choice card failed the Block Kit check', { issues: check.issues.slice(0, 5) });
+    await uiSurfaceRecord(state, { kind: 'close_surface', id: stored.id, status: 'failed' });
+    return;
+  }
+  const messageTs = await input.messenger.post(rendered).catch(() => undefined);
+  if (messageTs) await uiSurfaceRecord(state, { kind: 'bind_surface_message', id: stored.id, messageTs });
+}
+
+/**
+ * Close the front desk's card for one message, if it is still open: the
+ * person edited or deleted the message the card holds a copy of. Returns the
+ * closed card for a redraw; a later pick says the choice expired.
+ */
+export async function closeAgentChoiceSurface(
+  state: Pick<SlackStateStore, 'executeUiSurface'>,
+  channelId: string,
+  messageTs: string,
+): Promise<UiSurfaceRecord | undefined> {
+  // The card is only ever posted in a one-to-one DM.
+  if (!state.executeUiSurface || !channelId.startsWith('D')) return undefined;
+  const closed = await uiSurfaceRecord(state as SurfaceState, {
+    kind: 'close_surface',
+    id: agentChoiceSurfaceId(channelId, messageTs),
+    status: 'expired',
+  });
+  return closed?.status === 'expired' ? closed : undefined;
 }
 
 /**

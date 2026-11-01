@@ -691,6 +691,20 @@ export interface RecentSlackPublicContextInput {
   limit: number;
 }
 
+/** One DM channel's Agent replies since a time, newest per Agent. */
+export interface RecentSlackAgentRepliesInput {
+  workspaceId: string;
+  channelId: string;
+  /** Slack ts: only replies at or after it count. */
+  sinceMessageTs: string;
+}
+
+export interface RecentSlackAgentReply {
+  agentId: string;
+  /** The Agent's newest reply in the channel. */
+  messageTs: string;
+}
+
 export type ConnectionAccountOwnerKind = 'team' | 'member';
 export type ConnectionAccountLifecycle = 'pending' | 'ready' | 'needs_attention' | 'revoked';
 
@@ -1009,6 +1023,11 @@ export interface ResolvedAssignment {
    * Agents in that thread.
    */
   teammates?: AgentTeammate[];
+  /**
+   * The Agents the requester may use, frozen at ingress for the system
+   * Agent's root DM turn: the front desk it may hand the request to.
+   */
+  frontDesk?: FrontDeskDirectory;
   // Optional pre-resolved model label. Set only when the assignment is served
   // from a frozen thread snapshot; undefined means resolve from the agent via
   // model policy at turn time.
@@ -1025,6 +1044,32 @@ export type SlackAgentAddress =
   | { botUserId: string };
 
 export type AgentTeammate = { name: string; handle: string } & SlackAgentAddress;
+
+/** One Agent the front desk may hand a request to: names only, never ids or secrets in the prompt. */
+export interface FrontDeskAgent {
+  id: string;
+  name: string;
+  handle?: string;
+  /** The first sentence of the Agent's description. */
+  purpose?: string;
+  /** What the requester would get in a run: account and connection names. */
+  connections: string[];
+  /** Hosts of the Agent's enabled website logins, while the browser is connected. */
+  websiteHosts: string[];
+  skills: string[];
+  /** Names left out of each list past its cap. */
+  more: { connections: number; websiteHosts: number; skills: number };
+}
+
+export interface FrontDeskDirectory {
+  agents: FrontDeskAgent[];
+  /** Agents the person may use that the list leaves out. */
+  omitted: number;
+  /** Slack could not confirm every Agent's placement, so some may be missing. */
+  incomplete: boolean;
+  /** The listed Agent that last replied in this DM within the window. */
+  recent?: { agentId: string; lastUsedTs: string };
+}
 
 // A snapshot IS a resolved assignment frozen at a thread's first turn, plus the
 // resolved model/provider/instructions. Declaring the relation lets a

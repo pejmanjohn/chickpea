@@ -1,5 +1,7 @@
 import type { RuntimePlanV2, RuntimePlanWebsiteLoginV1 } from '../agents/runtime-plan.ts';
+import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import type { SkillConfig } from '../config/types.ts';
+import { CHICKPEA_NO_LOGINS, chickpeaNoLoginsNextStep } from './messages.ts';
 
 export const BROWSER_SKILL_NAME = 'browser';
 
@@ -59,6 +61,15 @@ const NO_LOGINS_INSTRUCTIONS = [
   '- This Agent has no granted website logins, so it cannot sign in anywhere. When a page needs a sign-in, say so; an Admin can grant a website login on the Agent\'s Websites tab.',
 ].join('\n');
 
+function chickpeaNoLoginsInstructions(frontDeskMounted: boolean): string {
+  return [
+    '## Signing in',
+    '',
+    `- ${CHICKPEA_NO_LOGINS} You cannot sign in anywhere yourself.`,
+    `- When a page needs a sign-in: ${chickpeaNoLoginsNextStep(frontDeskMounted)}`,
+  ].join('\n');
+}
+
 function signingInInstructions(logins: readonly RuntimePlanWebsiteLoginV1[]): string {
   const sites = logins.map((login) => {
     const how = login.method === 'credentials' ? 'saved password' : 'the person signs in';
@@ -81,10 +92,14 @@ function signingInInstructions(logins: readonly RuntimePlanWebsiteLoginV1[]): st
 
 /** The built-in browser skill, mounted when the install has a browser connected. */
 export function browserSkillForPlan(
-  plan: Pick<RuntimePlanV2, 'browserCapability' | 'websiteLogins'>,
+  plan: Pick<RuntimePlanV2, 'browserCapability' | 'websiteLogins'> &
+    Partial<Pick<RuntimePlanV2, 'agentId' | 'frontDesk'>>,
 ): SkillConfig | undefined {
   if (!plan.browserCapability) return undefined;
   const logins = plan.websiteLogins ?? [];
+  const noLogins = plan.agentId === CHICKPEA_AGENT_ID
+    ? chickpeaNoLoginsInstructions(plan.frontDesk !== undefined)
+    : NO_LOGINS_INSTRUCTIONS;
   return {
     name: BROWSER_SKILL_NAME,
     description: logins.length > 0
@@ -92,7 +107,7 @@ export function browserSkillForPlan(
       : 'Open, read, and navigate public websites, and attach a screenshot or recording as proof.',
     instructions: [
       BROWSER_BASE_INSTRUCTIONS,
-      logins.length > 0 ? signingInInstructions(logins) : NO_LOGINS_INSTRUCTIONS,
+      logins.length > 0 ? signingInInstructions(logins) : noLogins,
       ...(logins.some((login) => login.level === 'act') ? [TAKING_ACTIONS_INSTRUCTIONS] : []),
       BROWSER_SAFETY_INSTRUCTIONS,
     ].join('\n\n'),

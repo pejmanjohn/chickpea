@@ -71,6 +71,7 @@ import {
 import { slackPresentationStatePort } from './presentation-state-port.ts';
 import { recordDeliveredSlackAgentMessage } from './public-context.ts';
 import { createAgentAskCollector, type SlackAgentAskRequest } from './agent-asks.ts';
+import type { SlackFrontDeskHandoffRequest } from './front-desk.ts';
 import {
   abandonTerminalSlackPresentationBestEffort,
   postRecoveryNoticeBestEffort,
@@ -117,6 +118,14 @@ export function registerNodeAgentAskDispatcher(
   dispatcher: (request: SlackAgentAskRequest, env?: PlatformEnv) => Promise<void>,
 ): void {
   agentAskDispatcher = dispatcher;
+}
+/** Admits the takeover a delivered front-desk hand-off asked for; registered like the ask dispatcher. */
+let frontDeskDispatcher: ((request: SlackFrontDeskHandoffRequest, env?: PlatformEnv) => Promise<void>) | undefined;
+
+export function registerNodeFrontDeskDispatcher(
+  dispatcher: (request: SlackFrontDeskHandoffRequest, env?: PlatformEnv) => Promise<void>,
+): void {
+  frontDeskDispatcher = dispatcher;
 }
 
 /** Admits a finished setup's wake; registered by the Slack channel module, as asks are. */
@@ -635,6 +644,7 @@ function createNodeThreadDrain(
         assignment: job.assignment,
         dispatch: dispatcher ? (request) => dispatcher(request, env) : undefined,
       });
+      let frontDeskHandoff: SlackFrontDeskHandoffRequest | undefined;
       // The stopped ending (KTD3), as in executeTurnJob. The state store drops
       // (and counts) the rows the stop held before anything is delivered:
       // once the turn is marked delivered, an unfinished stop would release
@@ -724,6 +734,7 @@ function createNodeThreadDrain(
             agentAsks.note(delivery);
             return recordDeliveredSlackAgentMessage(config, job.turn, job.assignment, delivery);
           },
+          onFrontDeskHandoff: (request) => { frontDeskHandoff = request; },
           ...(stoppedEnding ? { stopEnding: stoppedEnding } : {}),
           ...(job.previousStop ? { previousStop: job.previousStop } : {}),
           onDeferredTerminal: async () => {
@@ -756,6 +767,12 @@ function createNodeThreadDrain(
             }
             // Teammates this reply asked; a stopped run asks nobody.
             if (outcome !== 'stopped' && !raced) await agentAsks.flush(outcome);
+            const handoff = frontDeskHandoff;
+            if (outcome === 'succeeded' && !raced && handoff && frontDeskDispatcher) {
+              await frontDeskDispatcher(handoff, env).catch((error: unknown) => {
+                console.warn('[chickpea] front desk hand-off dispatch failed:', error instanceof Error ? error.name : 'unknown');
+              });
+            }
           },
         });
         if (deferredTerminal) return true;

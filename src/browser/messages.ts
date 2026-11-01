@@ -24,6 +24,20 @@ export const BROWSER_VISION_UNAVAILABLE_MESSAGE =
   "This Agent's model cannot look at images. Use browser_snapshot instead.";
 export const BROWSER_NO_LOGINS_MESSAGE =
   "This Agent has no website logins. An Admin can grant one on the Agent's Websites tab.";
+/**
+ * The built-in Chickpea's logins are its own, not the workspace's, and it has
+ * no Websites tab: its refusal points at the person's other Agents.
+ */
+export const CHICKPEA_NO_LOGINS = "Chickpea itself has no website logins, but the person's other Agents may.";
+/** Where Chickpea sends a sign-in it cannot do, with or without the front desk mounted. */
+export function chickpeaNoLoginsNextStep(frontDeskMounted: boolean): string {
+  return frontDeskMounted
+    ? 'If an Agent in "Agents this person may use" has a login for this site, hand the request to it with hand_off_to_agent.'
+    : "Tell the person to mention an Agent that has a login for this site. If you know of none, say an Admin can add a login to the Agent that should do this, on that Agent's Websites tab.";
+}
+export function chickpeaNoLoginsMessage(frontDeskMounted: boolean): string {
+  return `${CHICKPEA_NO_LOGINS} ${chickpeaNoLoginsNextStep(frontDeskMounted)}`;
+}
 export const BROWSER_UNKNOWN_LOGIN_MESSAGE =
   'This Agent has no website login with that id. Use a loginId from the Signing in section of the browser skill.';
 export const BROWSER_LOGIN_REVOKED_MESSAGE =

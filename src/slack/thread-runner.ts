@@ -75,7 +75,7 @@ import type {
   ThreadRunnerJobPayload,
 } from './thread-runner-rpc.ts';
 import { executeTurnJob, type TurnExecutionPorts } from './turn-executor.ts';
-import { processSlackAgentAsks } from '../channels/slack.ts';
+import { processSlackAgentAsks, processSlackFrontDeskHandoff } from '../channels/slack.ts';
 import type { FlueObservationTarget, TurnStopNotice } from './turn-job-types.ts';
 import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
 
@@ -455,6 +455,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       // Admitted here like a Worker admits a Slack event, into this thread's
       // queue: the asked Agent answers after this turn.
       dispatchAgentAsks: (request) => processSlackAgentAsks(request, env),
+      dispatchFrontDeskHandoff: (request) => processSlackFrontDeskHandoff(request, env),
       runTurn,
     };
     const result = await runThreadRunnerAlarm({

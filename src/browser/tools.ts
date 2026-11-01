@@ -118,6 +118,8 @@ export interface BrowserToolsOptions {
   approvals?: BrowserApprovalOptions;
   /** The Agent's website logins; absent, the sign-in tools explain there are none. */
   logins?: BrowserLoginOptions;
+  /** That explanation, when this Agent's is not the default one. */
+  noLoginsMessage?: string;
   /** Sends text privately to the person who asked; absent, hand-offs are refused. */
   notifyRequester?: NotifyRequester;
   stageArtifact: BindingStageArtifact;
@@ -371,7 +373,7 @@ export function createBrowserTools(options: BrowserToolsOptions) {
   };
   const refuse = (error: string) => ({ output: { error } });
 
-  const logins = new BrowserLoginBinder(session, options.logins, sleep, () => now().getTime());
+  const logins = new BrowserLoginBinder(session, options.logins, sleep, () => now().getTime(), options.noLoginsMessage);
   const formSteps = new BrowserFormSteps();
 
   const readPage = async (pageInfo?: PageInfo) => {

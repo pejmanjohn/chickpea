@@ -87,6 +87,8 @@ import type {
   RollbackChickpeaCutoverInput,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
+  RecentSlackAgentRepliesInput,
+  RecentSlackAgentReply,
   RecentSlackPublicContextInput,
   NonChatModelRole,
   WorkspaceModelDefault,
@@ -335,7 +337,8 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'configGetChannel', 'configGetWorkspaceInstallation', 'configGetWorkspaceModelDefault',
   'configGetWorkspaceModelRole', 'configListAgentChannelGrants', 'configListAgentConnectionBindings',
   'configListAgentScheduleReferences', 'configListAgents', 'configListChannels',
-  'configListConnectionAccounts', 'configListRecentSlackPublicContext', 'configListSlackPublicContext',
+  'configListConnectionAccounts', 'configListRecentSlackAgentReplies', 'configListRecentSlackPublicContext',
+  'configListSlackPublicContext',
   'configListUserAgents', 'configListWorkspaceInstallations', 'configPreflightChickpeaCutover',
   'configSummarizeAdoptionInventory', 'encryptedCredentialCensus', 'encryptedCredentialGet', 'encryptedCredentialList',
   'modelCredentialRead',
@@ -370,8 +373,9 @@ const REPLAY_SAFE_EXECUTE_KINDS = new Set([
   'summarize', 'retention_status', 'export_summary',
   'put_agent_memory', // gated on the expected revision
   // Interactive surfaces: write-once inserts and status moves out of `open`.
+  // A claim is not: a replay would tell the claimer it lost.
   'put_surface', 'bind_surface_message', 'close_surface', 'resolve_surface', 'supersede_surfaces',
-  'open_surface',
+  'open_surface', 'settle_surface',
 ]);
 
 /**
@@ -1762,6 +1766,15 @@ export class CfConfigStore implements ConfigStore {
     return rpcVia(this.stub,
       'configListRecentSlackPublicContext',
       (stub) => stub.configListRecentSlackPublicContext(input),
+    );
+  }
+
+  async listRecentSlackAgentReplies(
+    input: RecentSlackAgentRepliesInput,
+  ): Promise<RecentSlackAgentReply[]> {
+    return rpcVia(this.stub,
+      'configListRecentSlackAgentReplies',
+      (stub) => stub.configListRecentSlackAgentReplies(input),
     );
   }
 

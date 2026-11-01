@@ -6316,6 +6316,36 @@
      ]
     }
    }
+  ],
+  "front_desk": [
+   {
+    "name": "hand_off_to_agent",
+    "description": "Hand the person's current request to one of their other Agents, listed in \"Agents this person may use\" in the current message.\nThe host posts your note as your reply and the Agent you name answers the request in this thread, with the person's own message and files. Your reply ends with this call.\nRules:\n1. One listed Agent clearly fits, by a website login host, a connection, a skill, or its purpose: hand off to it.\n2. Several fit: if one of them is the most recent Agent in this DM and the message does not say otherwise, hand off to it. Otherwise name all of them, and \"chickpea\" too if you also fit, so the person picks with a button.\n3. The request is about this workspace (creating or changing Agents, connecting something to an Agent, settings, or a question about Chickpea itself): do not call this tool; answer yourself.\n4. No listed Agent fits: do not call this tool; answer yourself, accurately.\n5. Never say this workspace lacks a login, connection, or skill that a listed Agent has. If no listed Agent has it, say which listed Agent an Admin could add it to.\nAn Agent with its own Slack app is not in the list. If the person names one, tell them to message it directly.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "agents": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "maxLength": 200
+       },
+       "maxItems": 16,
+       "description": "1 to 4 Agents from the list, by @handle without the @ (or by name when the list shows no handle). \"chickpea\" names you, and only beside at least one other Agent."
+      },
+      "note": {
+       "type": "string",
+       "maxLength": 2000,
+       "description": "One plain sentence for the person saying why, at most 160 characters. No mentions or links."
+      }
+     },
+     "required": [
+      "agents",
+      "note"
+     ]
+    }
+   }
   ]
  },
  "trailer": [

@@ -16,6 +16,7 @@ import {
   parseModelVisibleCurrentRequestEnvelope,
   type CurrentRequestEnvelope,
 } from '../memory/tool-policy.ts';
+import { FRONT_DESK_TOOL_NAME } from './front-desk.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import { SLACK_PRESENT_TABLE_TOOL_NAME } from './table-presentation.ts';
 import {
@@ -88,14 +89,16 @@ const FILE_REPAIR_TOOLS = new Set([
 
 /**
  * Tools after which the host can replace the model's draft at delivery: a
- * memory update or rewrite swaps in its summary, and an Agent creation swaps
- * in the welcome. A streamed answer could then be overwritten, so a later
- * declaration is refused and the reply stays terminal.
+ * memory update or rewrite swaps in its summary, an Agent creation swaps in
+ * the welcome, and a front-desk hand-off swaps in its line. A streamed answer
+ * could then be overwritten, so a later declaration is refused and the reply
+ * stays terminal.
  */
 const DRAFT_REPLACING_TOOL_NAMES: ReadonlySet<string> = new Set([
   'update_agent_memory',
   'apply_workspace_changes',
   'undo_workspace_change',
+  FRONT_DESK_TOOL_NAME,
 ]);
 
 const submissionPolicy = new AsyncLocalStorage<PresentationToolPolicyState>();

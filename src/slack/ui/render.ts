@@ -10,9 +10,15 @@ import {
   uiActionId,
   uiBlockId,
   uiValue,
+  type HostAgentChoiceSpec,
   type HostApprovalSpec,
   type UiSurfaceRecord,
 } from './surface.ts';
+import {
+  FRONT_DESK_CHOICE_EXPIRED_LINE,
+  frontDeskChoiceResolvedLine,
+  frontDeskFailureLine,
+} from '../front-desk.ts';
 import { clampDisplay, escapeMrkdwn, mrkdwn, plain, slackTime } from './text.ts';
 
 /**
@@ -108,12 +114,50 @@ function renderHostApproval(record: UiSurfaceRecord, spec: HostApprovalSpec): Re
   };
 }
 
+const AGENT_CHOICE_PROMPT = 'Which Agent should take this?';
+
+/**
+ * The front desk's card: one button per Agent, then one line once the person
+ * picked. A pick that names no one taking it (its claim never settled, or
+ * an Agent not on the card has the thread) reads as expired.
+ */
+function renderAgentChoice(record: UiSurfaceRecord, spec: HostAgentChoiceSpec): RenderedUiSurface {
+  const line = (text: string): RenderedUiSurface => ({
+    text,
+    blocks: [{ type: 'section', block_id: uiBlockId('host', record.id, 0), text: mrkdwn(escapeMrkdwn(text)) }],
+  });
+  if (record.status === 'resolved' && record.resolution) {
+    const { choice, refused, takenBy } = record.resolution;
+    const picked = spec.options[choice];
+    if (refused && picked) return line(frontDeskFailureLine(picked.name));
+    const taking = takenBy === undefined ? undefined : spec.options[takenBy];
+    if (taking) return line(frontDeskChoiceResolvedLine(taking));
+  }
+  if (record.status !== 'open' && record.status !== 'pending_delivery') return line(FRONT_DESK_CHOICE_EXPIRED_LINE);
+  return {
+    text: AGENT_CHOICE_PROMPT,
+    blocks: [
+      {
+        type: 'actions',
+        block_id: uiBlockId('host', record.id, 1),
+        elements: spec.options.map((option, index) => ({
+          type: 'button',
+          action_id: uiActionId('host', 'agent_choice', index),
+          text: plain(option.name, 75),
+          value: uiValue(record.id, index),
+        })),
+      },
+    ],
+  };
+}
+
 export function renderUiSurface(
   record: UiSurfaceRecord,
   options: { withHeader?: boolean } = {},
 ): RenderedUiSurface {
   const spec = record.spec;
   if (spec.kind === 'approval') return renderHostApproval(record, spec);
+  if (spec.kind === 'agent_choice') return renderAgentChoice(record, spec);
   if (isDisplaySurface(spec)) {
     throw new Error('Display components render inside the answer, not as their own message.');
   }
@@ -132,6 +176,9 @@ export function uiResponseTurnText(record: UiSurfaceRecord, answer: InteractiveA
   if (spec.kind === 'form') {
     return formTurnText(record, spec.form, parseFormValues(answer.values), byUserId);
   }
+  // Never reached: a pick is handled before admission and re-admits the
+  // person's own message. The branch only narrows the spec below.
+  if (spec.kind === 'agent_choice') return 'Picked an Agent.';
   if (spec.kind !== 'approval') return interactiveTurnText(record, spec, answer, byUserId);
   const decision = approvalChoice(answer.choice);
   if (spec.approval === 'workspace_change') {

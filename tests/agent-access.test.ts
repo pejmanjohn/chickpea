@@ -354,7 +354,7 @@ test('directory access filters workspace, grant, and Agent lifecycle state', asy
     transport: transport({ calls, channels: { C_PUBLIC: channel('C_PUBLIC') } }),
   });
 
-  assert.deepEqual(visible.map(({ id }) => id), [active.id]);
+  assert.deepEqual(visible, { agents: [active], incomplete: false });
   assert.deepEqual(calls, ['lookup:C_PUBLIC']);
   assert.equal(await resolvePrivateAgentAudience({
     agent: disabled,
@@ -379,7 +379,7 @@ test('directory access excludes guests and Slack Connect actors without reading 
         calls,
         channels: { C_PUBLIC: channel('C_PUBLIC') },
       }),
-    }), []);
+    }), { agents: [], incomplete: false });
   }
   assert.deepEqual(calls, []);
 });
@@ -400,7 +400,7 @@ test('directory fact collection deduplicates Channel lookups and member traversa
     }),
   });
 
-  assert.deepEqual(visible.map(({ id }) => id), [alpha.id, beta.id]);
+  assert.deepEqual(visible.agents.map(({ id }) => id), [alpha.id, beta.id]);
   assert.deepEqual(calls, ['lookup:C_SHARED', 'member-channels']);
 });
 
@@ -421,8 +421,42 @@ test('large directories use one bounded traversal and target only unresolved gra
     }),
   });
 
-  assert.equal(visible.length, 8);
+  assert.equal(visible.agents.length, 8);
   assert.deepEqual(calls, ['directory', 'lookup:C7']);
+});
+
+test('a directory says it is incomplete when Slack could not confirm an Agent the person may use', async () => {
+  const shown = agent('shown');
+  const unconfirmed = agent('unconfirmed');
+  const elsewhere = agent('elsewhere');
+  const listed = await listPrivatelyUsableAgents({
+    agents: [shown, unconfirmed, elsewhere],
+    workspaceId: 'T1',
+    grants: [grant(shown.id, 'C_PUBLIC'), grant(unconfirmed.id, 'C_DOWN'), grant(elsewhere.id, 'C_SECRET')],
+    actor: fullMember,
+    transport: transport({
+      channels: {
+        C_PUBLIC: channel('C_PUBLIC'),
+        C_DOWN: new SlackTransportError('conversations.info', 'ratelimited'),
+        C_SECRET: channel('C_SECRET', { private: true }),
+      },
+      memberChannels: new Set(),
+    }),
+  });
+  assert.deepEqual(listed, { agents: [shown], incomplete: true });
+
+  // An Agent the person is denied is left out without making the list incomplete.
+  const denied = await listPrivatelyUsableAgents({
+    agents: [shown, elsewhere],
+    workspaceId: 'T1',
+    grants: [grant(shown.id, 'C_PUBLIC'), grant(elsewhere.id, 'C_SECRET')],
+    actor: fullMember,
+    transport: transport({
+      channels: { C_PUBLIC: channel('C_PUBLIC'), C_SECRET: channel('C_SECRET', { private: true }) },
+      memberChannels: new Set(),
+    }),
+  });
+  assert.deepEqual(denied, { agents: [shown], incomplete: false });
 });
 
 test('Slack fact failures emit sanitized unavailable diagnostics', async (t) => {

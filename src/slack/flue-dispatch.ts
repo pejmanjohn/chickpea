@@ -1,3 +1,6 @@
+import type { RuntimePlanFrontDeskV1 } from '../agents/runtime-plan.ts';
+import { SLACK_FRONT_DESK_HANDOFF_DATA_NAME, frontDeskReplyText, type FrontDeskHandoff } from './front-desk.ts';
+import { parseFrontDeskHandoff } from './front-desk-tool.ts';
 import { SLACK_MEMORY_UPDATE_DATA_NAME, parseSlackMemoryUpdate, type SlackMemoryUpdate } from './memory-update-terminal.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import { SLACK_INTERACTIVE_QUESTION_DATA_NAME } from './ui/interactive-tools.ts';
@@ -125,6 +128,8 @@ export interface AgentDispatchResult {
   artifacts?: SlackArtifactReceipt[];
   agentCreationTerminal?: SlackAgentCreationTerminalIntent;
   memoryUpdate?: SlackMemoryUpdate;
+  /** The front desk handed the person's message on; `text` is then the host's line for it. */
+  frontDeskHandoff?: FrontDeskHandoff;
   /** The coding model a coding worker ran on this response; names it in the footer. */
   codingModel?: string;
   /** Each coding worker's own model usage this response, recorded beside the Agent's. */
@@ -609,7 +614,11 @@ export async function promptSlackThreadAgent(
 
   let completed: AgentDispatchResult;
   try {
-    completed = resultFromAgentReply({ ...reply, text: terminalText.resolve(reply.text) }, input.requestedModel);
+    completed = resultFromAgentReply(
+      { ...reply, text: terminalText.resolve(reply.text) },
+      input.requestedModel,
+      input.runtimePlan?.frontDesk,
+    );
   } catch (error) {
     const failureKind = error instanceof AgentPromptFailure && error.kind === 'invalid-output'
       ? 'invalid-output' : 'agent';
@@ -1123,7 +1132,30 @@ function boundedReceipt(receipt: DispatchReceipt): FlueDispatchReceiptV1 {
 export function resultFromAgentReply(
   reply: AgentReply,
   requestedModel: string | null,
+  frontDesk?: RuntimePlanFrontDeskV1,
 ): AgentDispatchResult {
+  // A hand-off ends the run without model text: its reply is the host's line,
+  // and nothing the model drafted is posted with it.
+  const handoff = frontDesk ? parseFrontDeskHandoff(reply.data?.[SLACK_FRONT_DESK_HANDOFF_DATA_NAME]) : undefined;
+  if (frontDesk && handoff) {
+    const text = frontDeskReplyText(handoff, frontDesk);
+    if (text) {
+      const metadata = parseChickpeaResponseMetadata(reply.metadata?.[CHICKPEA_RESPONSE_METADATA_KEY]);
+      const usage = metadata ? parseReportedUsage(metadata.usage) : {
+        reportedUsage: null,
+        completeness: 'not_reported' as const,
+      };
+      return {
+        text,
+        frontDeskHandoff: handoff,
+        requestedModel: metadata?.requestedModel ?? nonEmptyString(requestedModel),
+        returnedModel: metadata?.returnedModel ?? null,
+        reportedUsage: usage.reportedUsage,
+        usageCompleteness: usage.completeness,
+        flueSubmissionRef: opaqueId('fluesubmission', reply.submissionId),
+      };
+    }
+  }
   const artifacts = parseSlackArtifactReceipts(reply.data?.[SLACK_ARTIFACT_RECEIPTS_DATA_NAME]);
   // Checkpoints and the Work ledger require nonempty approved text. A file-only
   // model result still has a useful host caption for its combined Slack reply.

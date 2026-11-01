@@ -1351,6 +1351,37 @@ test('an admitted edit is a row of its own: the message\'s turn and Agent, the n
   }
 });
 
+test('an edit after a front-desk takeover steers the new owner\'s turn, not Chickpea\'s delivered one', () => {
+  const c = canonicalStore();
+  try {
+    const chickpea = posted('101', { text: 'check order 4821' }, { agentId: 'chickpea', ownerIncarnation: 1 });
+    admitCanonical(c, chickpea);
+    c.turns.markDelivered(chickpea.id);
+    c.clock.now += 1;
+    const takeoverId = `${chickpea.id}:handoff`;
+    const takeover: TurnJob = {
+      ...job(takeoverId, '101', {
+        text: 'check order 4821', frontDesk: { fromAgentId: 'chickpea', via: 'handoff' },
+      }, { agentId: 'agent_support', ownerIncarnation: 2 }),
+      evtKey: 'evt:front-desk:C_FOLD:1800000000.000101', msgKey: takeoverId,
+    };
+    const takeoverRun = admitCanonical(c, takeover);
+    const admitted = admitEdit(c, editOf(chickpea, '201', 'check order 4822'));
+    assert.equal(admitted.outcome, 'admitted');
+    if (admitted.outcome !== 'admitted') return;
+    assert.equal(admitted.job.assignment.agentId, 'agent_support');
+    assert.equal(admitted.job.assignment.ownerIncarnation, 2);
+    assert.deepEqual(admitted.job.turn.frontDesk, { fromAgentId: 'chickpea', via: 'handoff' });
+    assert.equal(admitted.job.turn.edit?.previousText, 'check order 4821');
+    const row = view(c.turns, admitted.job.id).job!;
+    const edited = c.work.getRun(row.runId as RunId);
+    const lane = c.work.getRun(takeoverRun);
+    assert.equal(edited?.bindingId, lane?.bindingId, 'it runs in the new owner\'s lane');
+  } finally {
+    c.db.close();
+  }
+});
+
 test('a channel root\'s edit reads the thread its reply went to when it runs on its own', () => {
   const c = canonicalStore();
   try {

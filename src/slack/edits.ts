@@ -101,8 +101,11 @@ export function decideEdit(versions: readonly MessageVersionRow[], edit: SlackMe
   const refuse = (reason: SlackEditRefusal): SlackEditDecision => ({ kind: 'refuse', reason });
   const [first] = versions;
   if (!first || !versions.some((row) => row.live)) return refuse('no_live_turn');
-  // An edit row carries its message's turn, so it stands in once the message's own row is purged.
-  const base = versions.find((row) => !isEditTurn(row.turn)) ?? first;
+  // The message's newest live turn is the one an edit steers: after a
+  // front-desk takeover, the new owner's. An edit row carries its message's
+  // turn, so it stands in once the message's own rows are purged.
+  const messageRows = versions.filter((row) => !isEditTurn(row.turn));
+  const base = messageRows.filter((row) => row.live).at(-1) ?? messageRows.at(-1) ?? first;
   if (base.executionAuthority !== 'legacy') return refuse('not_foldable');
   if (edit.userId !== base.turn.userId || edit.workspaceId !== base.turn.workspaceId) return refuse('not_author');
   if (!foldableTurn(base.turn) || !foldableTurn({ ...base.turn, text: edit.text })) return refuse('not_foldable');

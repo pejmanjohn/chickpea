@@ -97,6 +97,8 @@ export class BrowserLoginBinder {
     private readonly options: BrowserLoginOptions | undefined,
     private readonly sleep: (ms: number) => Promise<void>,
     private readonly now: () => number = Date.now,
+    /** What the sign-in tools say when this Agent has no logins at all. */
+    private readonly noLoginsMessage: string = BROWSER_NO_LOGINS_MESSAGE,
   ) {}
 
   get granted(): readonly BrowserWebsiteLogin[] {
@@ -122,7 +124,7 @@ export class BrowserLoginBinder {
 
   /** A login by id for the sign-in tools, or the refusal to return. */
   async find(loginId: string, logins: readonly BrowserWebsiteLogin[]): Promise<BrowserWebsiteLogin | string> {
-    if (!this.granted.length) return BROWSER_NO_LOGINS_MESSAGE;
+    if (!this.granted.length) return this.noLoginsMessage;
     const login = classifyGrantedLogin(this.granted, logins, loginId);
     if (login === 'unknown') return BROWSER_UNKNOWN_LOGIN_MESSAGE;
     if (login === 'revoked') return this.revoked(loginId);

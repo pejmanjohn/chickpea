@@ -46,6 +46,8 @@ import type {
   RollbackChickpeaCutoverInput,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
+  RecentSlackAgentRepliesInput,
+  RecentSlackAgentReply,
   RecentSlackPublicContextInput,
   AgentModelRole,
   AgentModelRoleInput,
@@ -456,6 +458,9 @@ export interface TagStateRpc {
   configListRecentSlackPublicContext(
     input: RecentSlackPublicContextInput,
   ): Promise<StateRpcResult<SlackPublicContextEntry[]>>;
+  configListRecentSlackAgentReplies(
+    input: RecentSlackAgentRepliesInput,
+  ): Promise<StateRpcResult<RecentSlackAgentReply[]>>;
   configPutSlackPublicContext(
     input: SlackPublicContextEntryInput,
   ): Promise<StateRpcResult<SlackPublicContextEntry>>;

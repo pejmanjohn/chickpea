@@ -39,6 +39,8 @@ import { createRuntimePlanCodingTools } from '../src/agents/coding-worker-task.t
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { EMPTY_WORKSPACE_ROSTER, createWorkspaceRoster } from '../src/sandbox/workspace-limits.ts';
 import { WORKSPACE_TOOL_NAMES } from '../src/sandbox/workspace-tools.ts';
+import { FRONT_DESK_TOOL_NAME } from '../src/slack/front-desk.ts';
+import { createFrontDeskTool } from '../src/slack/front-desk-tool.ts';
 
 const SNAPSHOT = new URL('../src/agents/shared-prefix-tools.json', import.meta.url);
 const REQUEST_ID = 'req_shared_prefix_test';
@@ -333,8 +335,8 @@ const CODING_BRAVO: CodingTenant = {
   coordinatorId: 'coordinator_bravo', conversationKey: `${BRAVO.workspace}:${BRAVO.channel}:1787009000.000100`, openWorkspace: 'ledger-fix',
 };
 
-test('shapes compose the capability segments in mount order, and only interactive shapes without coding are warmed', () => {
-  assert.equal(Object.keys(SHARED_PREFIX_SHAPES).length, 16);
+test('shapes compose the capability segments in mount order, and only interactive shapes without coding or a front desk are warmed', () => {
+  assert.equal(Object.keys(SHARED_PREFIX_SHAPES).length, 32);
   for (const [shape, segments] of Object.entries(SHARED_PREFIX_SHAPES)) {
     assert.equal(shape, segments.join('_') || 'bare');
   }
@@ -356,6 +358,42 @@ test('the coding-workspace tools render the same in every workspace and name non
 });
 
 const REPOSITORY = { repositories: [{ id: 'repo_1', installationId: 7, accountLogin: 'acme', fullName: 'acme/support-portal', enabled: true }] };
+
+const FRONT_DESK = {
+  agents: [{
+    id: 'agent_support', name: 'Support Desk', handle: 'support-desk', purpose: 'Answers order questions.',
+    connections: ['Zendesk'], websiteHosts: ['portal.example.test'], skills: [],
+    more: { connections: 0, websiteHosts: 0, skills: 0 },
+  }],
+  omitted: 0,
+  incomplete: false,
+};
+
+/** The hand-off tool as a request carries it; its definition names no Agent. */
+async function renderFrontDeskTools(): Promise<unknown[]> {
+  const tools = (await renderToolPayloads([createFrontDeskTool({
+    plan: { agents: [{ id: 'agent_render', name: 'Render Only' }] }, write: () => undefined,
+  })])).filter((tool: any) => tool.name === FRONT_DESK_TOOL_NAME);
+  assert.equal(tools.length, 1, 'the hand-off tool renders');
+  return withoutMarkers(tools) as unknown[];
+}
+
+test('Chickpea\'s front-desk turn mounts the hand-off tool last, keeps a shared prefix, and caches B for an hour', async () => {
+  const before = sharedPrefixMisses();
+  const request = await render({ ...ALPHA_DM, thread: '1787006300.000100', frontDesk: FRONT_DESK });
+  assert.equal(sharedPrefixMisses(), before);
+  const names = request.tools.map((tool: any) => tool.name);
+  assert.equal(names.filter((name: string) => !PI_TRAILER_TOOLS.includes(name)).at(-1), FRONT_DESK_TOOL_NAME);
+  assert.equal(chargedSharedPrefix(request), 'system/interactive_streaming_front_desk');
+  assert.deepEqual(request.system[0].cache_control, ONE_HOUR, 'breakpoint B is cached for an hour');
+  const tool = JSON.stringify(request.tools.find((entry: any) => entry.name === FRONT_DESK_TOOL_NAME));
+  for (const tenant of ['agent_support', 'Support Desk', 'portal.example.test', ALPHA.workspace, ALPHA_DM.channel]) {
+    assert.ok(!tool.includes(tenant), `${tenant} is not in the tool definition`);
+  }
+
+  const plain = await render({ ...ALPHA_DM, thread: '1787006400.000100' });
+  assert.ok(!plain.tools.some((entry: any) => entry.name === FRONT_DESK_TOOL_NAME), 'a turn without a front desk does not mount it');
+});
 
 for (const [name, variant, expected] of [
   ['a user Agent', { ...ALPHA, agentKind: 'user' }, 'user/interactive_streaming_coding'],
@@ -528,6 +566,7 @@ test('sharedPrefixRequests sends the bytes rendered turns send under the ID thei
   }
   // A Node render never mounts a coding workspace; the segment comes from the tools a coordinator mounts.
   snapshot.segments.coding = await renderCodingTools(CODING_ALPHA);
+  snapshot.segments.front_desk = await renderFrontDeskTools();
   const stored = JSON.stringify(snapshot, null, 1) + '\n';
   if (update) writeFileSync(SNAPSHOT, stored);
   assert.equal(readFileSync(SNAPSHOT, 'utf8'), stored,

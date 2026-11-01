@@ -9,6 +9,7 @@ import type { SlackAgentCreationTerminalIntent } from './agent-creation-terminal
 import type { NormalizedSlackTurn } from './types.ts';
 import type { CodingWorkerUsageRecord } from './coding-worker-run.ts';
 import type { FoldedMessage } from './follow-ups.ts';
+import type { FrontDeskHandoff } from './front-desk.ts';
 import type { RequesterTextSource } from './requester-text-source.ts';
 
 interface FlueDispatchEnvelopeBase {
@@ -105,6 +106,7 @@ export type FlueSettlementCheckpointV1 =
         artifacts?: SlackArtifactReceipt[];
         agentCreationTerminal?: SlackAgentCreationTerminalIntent;
         memoryUpdate?: SlackMemoryUpdate;
+        frontDeskHandoff?: FrontDeskHandoff;
         codingModel?: string;
         codingWorkerUsage?: CodingWorkerUsageRecord[];
         requestedModel: string | null;

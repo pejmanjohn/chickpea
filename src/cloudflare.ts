@@ -128,6 +128,8 @@ import type {
   RollbackChickpeaCutoverInput,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
+  RecentSlackAgentRepliesInput,
+  RecentSlackAgentReply,
   RecentSlackPublicContextInput,
   NonChatModelRole,
   WorkspaceModelDefault,
@@ -304,6 +306,7 @@ import {
   processGatewayViewSubmission,
   processGatewaySlackEnvelope,
   processSlackAgentAsks,
+  processSlackFrontDeskHandoff,
   admitSetupWake,
 } from './channels/slack.ts';
 import {
@@ -324,6 +327,7 @@ import { createLiveWorkspaceManagementService } from './management/live-service.
 import { createPlatformProductTelemetry } from './telemetry/platform.ts';
 import type { ProductTelemetryCapture } from './telemetry/client.ts';
 import type { SlackAgentAskDispatcher } from './slack/agent-asks.ts';
+import type { SlackFrontDeskHandoffDispatcher } from './slack/front-desk.ts';
 import { createWaitUntilTelemetryLifecycle } from './telemetry/runtime.ts';
 import {
   invokeSlackWorkspaceManagementTool,
@@ -1469,6 +1473,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.call((stores) => stores.config.listRecentSlackPublicContext(input));
   }
 
+  async configListRecentSlackAgentReplies(
+    input: RecentSlackAgentRepliesInput,
+  ): Promise<StateRpcResult<RecentSlackAgentReply[]>> {
+    return this.call((stores) => stores.config.listRecentSlackAgentReplies(input));
+  }
+
   async configPutSlackPublicContext(
     input: SlackPublicContextEntryInput,
   ): Promise<StateRpcResult<SlackPublicContextEntry>> {
@@ -2545,6 +2555,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       resolveInstallation,
       sandboxes: sandboxTurnReaders(this.env as PlatformEnv),
       dispatchAgentAsks: localAgentAskDispatcher(stores, this.env as PlatformEnv, productTelemetry),
+      dispatchFrontDeskHandoff: localFrontDeskDispatcher(stores, this.env as PlatformEnv, productTelemetry),
       runTurn,
     };
     const runJob = (
@@ -3382,9 +3393,20 @@ function localAgentAskDispatcher(
   return (request) => processSlackAgentAsks(request, platformEnv, localHostAddressedAdmission(stores, platformEnv, productTelemetry));
 }
 
+/** A front-desk hand-off made by a turn this state store runs itself, admitted like its asks. */
+function localFrontDeskDispatcher(
+  stores: TagStateStores,
+  platformEnv: PlatformEnv,
+  productTelemetry: ProductTelemetryCapture,
+): SlackFrontDeskHandoffDispatcher {
+  return (request) =>
+    processSlackFrontDeskHandoff(request, platformEnv, localHostAddressedAdmission(stores, platformEnv, productTelemetry));
+}
+
 /**
- * What a host-addressed turn (an ask, or a setup's wake) admitted inside this
- * state store runs on: its own stores, queue and gateway client.
+ * What a host-addressed turn (an ask, a front-desk hand-off, or a setup's
+ * wake) admitted inside this state store runs on: its own stores, queue and
+ * gateway client.
  */
 function localHostAddressedAdmission(
   stores: TagStateStores,

@@ -458,7 +458,7 @@ export function semanticDescriptorForCoreTool(toolName: string): SemanticActivit
       role: 'answer_generation',
     };
   }
-  if (toolName === 'request_chickpea_handoff') {
+  if (toolName === 'request_chickpea_handoff' || toolName === 'hand_off_to_agent') {
     return {
       ...descriptor('share', 'internal', 'the request', 'none', 'built_in'),
       role: 'internal_hidden',

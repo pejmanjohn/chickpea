@@ -595,6 +595,8 @@ export function assembleSlackPrompt(
     threadFileManifest?: string;
     /** The person's messages queued after the trigger that this turn took as part of its request. */
     followUps?: readonly FoldedMessage[];
+    /** The Agents this person may use, on a turn that mounts the front desk (renderFrontDeskBlock). */
+    frontDeskBlock?: string;
   } = {},
 ): string {
   const partition = partitionSlackContext(turn, context);
@@ -697,6 +699,7 @@ export function assembleSlackPrompt(
   if (options.threadFileManifest) {
     parts.push('', options.threadFileManifest);
   }
+  if (options.frontDeskBlock) parts.push('', options.frontDeskBlock);
   if (isEditTurn(turn)) parts.push('', editedRequestNote(turn, contextTimezone));
   const answered = followUps.filter((message) => !message.informationOnly);
   const informed = followUps.filter((message) => message.informationOnly);

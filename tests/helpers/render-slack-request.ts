@@ -66,6 +66,8 @@ export interface SlackRequestVariant {
    * does. Only the Cloudflare target compiles or mounts one.
    */
   codingWorkspace?: true;
+  /** The system Agent's root DM turn with these Agents on its front desk. */
+  frontDesk?: import('../../src/config/types.ts').FrontDeskDirectory;
 }
 
 export const USER_AGENT_ID = 'agent_brief_writer';
@@ -168,10 +170,12 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   charged = undefined;
   const agent = currentAgent();
   const conversationKind = variant.conversationKind ?? 'channel';
-  const messageTs = (Number(variant.thread) + 0.0001).toFixed(6);
+  // A front-desk turn is the root of its DM thread.
+  const messageTs = variant.frontDesk ? variant.thread : (Number(variant.thread) + 0.0001).toFixed(6);
   const assignment = {
     workspaceId: variant.workspace, channelId: variant.channel, agentId: agent.id, agent, model: agent.model,
     modelAttribution: { source: 'workspace_default', providerId: 'anthropic', workspaceDefaultRevision: 1 },
+    ...(variant.frontDesk ? { runtimeContract: 'chickpea-v1', frontDesk: variant.frontDesk } : {}),
   } as any;
   const turn = {
     workspaceId: variant.workspace, channelId: variant.channel, eventId: `E_${variant.thread}`, text: variant.text,
