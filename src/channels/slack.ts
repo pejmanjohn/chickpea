@@ -3507,6 +3507,12 @@ async function processSlackEvent(
       if (channelFacts) {
         const channel = await channelFacts;
         turn.sharedChannel = channel.shared === true;
+        // The same facts the executor's own read would check, so a fresh
+        // record stands in for that read.
+        if (channel.member && channel.id === turn.channelId &&
+            (channel.teamId === undefined || channel.teamId === turn.workspaceId)) {
+          turn.channelMembership = { botUserId: resolvedBotUserId, verifiedAt: Date.now() };
+        }
         agentSourceVisibility = channel.private ? 'private' : 'public';
         liveChannelName = channel.name;
         if (liveChannelName && routedAssignment.channelLabel !== liveChannelName) {

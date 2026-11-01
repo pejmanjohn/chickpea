@@ -182,6 +182,15 @@ export async function resolveSlackInstallationExecutionContext(
   };
 }
 
+/**
+ * How long admission's Channel read vouches for its bot's membership. The
+ * executor runs seconds after admission, so a second read there only delayed
+ * the first visible write; a turn run later (a retry, an OAuth resume) reads
+ * again. The fact names its bot because a turn admitted through Chickpea's
+ * bot may answer as an Agent's own app.
+ */
+const ADMISSION_MEMBERSHIP_TTL_MS = 60_000;
+
 export async function verifySlackInstallationTurnAccess(
   context: SlackInstallationExecutionContext,
   turn: NormalizedSlackTurn,
@@ -190,6 +199,11 @@ export async function verifySlackInstallationTurnAccess(
     throw new SlackInstallationUnavailableError(context.workspaceId, 'workspace_mismatch');
   }
   if (slackTurnSurface(turn) === 'direct') return;
+  const membership = turn.channelMembership;
+  if (membership && membership.botUserId === context.botUserId) {
+    const age = Date.now() - membership.verifiedAt;
+    if (age >= 0 && age < ADMISSION_MEMBERSHIP_TTL_MS) return;
+  }
   if (context.transportMode === 'direct' && context.botToken) {
     const conversation = await slackConversationsInfo(context.botToken, turn.channelId);
     if (

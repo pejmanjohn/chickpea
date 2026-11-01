@@ -190,6 +190,44 @@ test('an installation that cannot recover holds the row for operator recovery', 
   assert.deepEqual(h.retries, []);
 });
 
+test('a Channel turn reads its Channel again unless admission found the same bot a member within the last minute', async (t) => {
+  const channel = { ok: true, channel: { id: 'C1', is_member: true, context_team_id: 'T1' } };
+  let reads = 0;
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL) => {
+    if (String(input).endsWith('/conversations.info')) reads += 1;
+    return Response.json(channel);
+  });
+  const contexts = {
+    direct: { workspaceId: 'T1', transportMode: 'direct', botToken: 'xoxb-test', botUserId: 'UBOT', client: {} },
+    gateway: {
+      workspaceId: 'T1', transportMode: 'gateway', botUserId: 'UBOT',
+      client: { conversations: { info: async () => { reads += 1; return channel; } } },
+    },
+  };
+  const now = Date.now();
+  const cases = [
+    ['fresh', { botUserId: 'UBOT', verifiedAt: now - 5_000 }, 0],
+    ['older than a minute', { botUserId: 'UBOT', verifiedAt: now - 61_000 }, 1],
+    ['read by another bot', { botUserId: 'UCHICKPEA', verifiedAt: now - 5_000 }, 1],
+    ['absent, as on a row admitted before the fact existed', undefined, 1],
+  ] as const;
+  for (const [mode, context] of Object.entries(contexts)) {
+    for (const [label, channelMembership, expected] of cases) {
+      reads = 0;
+      const h = fakePorts(async (options) => { await options.onDelivered?.(); }, async () => context);
+      const job = pendingJob({
+        turn: {
+          workspaceId: 'T1', channelId: 'C1', channelType: 'channel', threadTs: '1785900000.000100',
+          messageTs: '1785900000.000100', userId: 'U1', text: 'question', source: 'app_mention',
+          eventId: 'Ev1', contextMode: 'thread', ...(channelMembership ? { channelMembership } : {}),
+        },
+      });
+      assert.equal(await executeTurnJob(job, h.ports, h.options), true, `${mode}, ${label}`);
+      assert.equal(reads, expected, `${mode}, ${label}: conversations.info reads`);
+    }
+  }
+});
+
 test('a dispatch that needs reconciliation posts the recovery notice once and settles as an error', async () => {
   const h = fakePorts(async (options) => {
     if (options.replayTerminalResult === 'failure') {
