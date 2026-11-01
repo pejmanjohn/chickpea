@@ -745,6 +745,8 @@ test('whole-Agent PATCH leaves grants alone, and creating an Agent cannot widen 
     // A member cannot grant a login to a new Agent; unknown logins cannot be granted.
     assert.equal((await createAgentWithLogins(f, 'bo', 'agent_bo_plain', [])).status, 201);
     assert.equal((await createAgentWithLogins(f, 'bo', 'agent_bo', [{ loginId, level: 'check', enabled: true }])).status, 403);
+    // Nor a disabled grant, which would keep the login alive after an Admin removes it elsewhere.
+    assert.equal((await createAgentWithLogins(f, 'bo', 'agent_bo_disabled', [{ loginId, level: 'check', enabled: false }])).status, 403);
     assert.equal((await createAgentWithLogins(f, 'owner', 'agent_unknown', [
       { loginId: `wl_${'e'.repeat(32)}`, level: 'check', enabled: true },
     ])).status, 403);

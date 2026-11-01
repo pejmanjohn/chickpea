@@ -13203,9 +13203,11 @@ function websiteLoginGrantWidensWithoutAuthority(
   const byId = new Map(logins.map((login) => [login.id, login]));
   return next.some((grant) => {
     const previous = before.get(grant.loginId);
-    const widens = grant.enabled && (
-      !previous || !previous.enabled || (grant.level === 'act' && previous.level !== 'act')
-    );
+    // A new grant needs authority even disabled: it would keep the login alive
+    // after an Admin removes it from every other Agent.
+    const widens = !previous || (grant.enabled && (
+      !previous.enabled || (grant.level === 'act' && previous.level !== 'act')
+    ));
     if (!widens) return false;
     const login = byId.get(grant.loginId);
     return !login || !principal || !canManageWebsiteLogin(principal);

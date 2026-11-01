@@ -40,7 +40,8 @@ state, deploy path, and first checks when a browser tool fails.
 ## Website logins
 
 - Ownership: every website login belongs to the team. Only Owners and Admins
-  add one, raise an Agent's use of it to actions, or remove it
+  add one, grant it to an Agent, raise an Agent's use of it to actions, or
+  remove it
   (`canManageWebsiteLogin`). Any editor of the Agent sees its logins and may
   lower one to checking only. Everyone who can use the Agent signs in with
   them.

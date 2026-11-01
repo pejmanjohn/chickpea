@@ -20780,6 +20780,17 @@ test('the add-login dialog asks what the Agent may do there and sends the level'
   assert.match(harness.app.innerHTML, /<option value="act" selected>Check and take actions<\/option>/);
 });
 
+test('with the host\'s browser off, a member is not told they can remove website logins', async () => {
+  const hosted = { selfHosted: false, browserSetupOffered: false, websiteLoginsOffered: false, websiteLoginsRemoveOnly: true };
+  const granted = { ...releaseAgent, websiteLogins: [{ loginId: WEBSITE_LOGIN_TEAM_ID, level: 'check', enabled: true }] };
+  const { harness } = websiteLoginsHarness(websiteLoginFixtures(), { ...hosted, workspaceAdminUi: false, agents: [granted, opsAgent], initialSearch: '?tab=websites' });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.match(html, /The browser is off right now, so website logins can't be added or changed\.<\/p>/);
+  assert.doesNotMatch(html, /You can still remove them/);
+  assert.doesNotMatch(html, /data-action="website-login-remove"/);
+});
+
 test('a member editing an Agent sees its website logins, is asked to get an Owner or Admin to add one, and may only lower a level', async () => {
   const granted = websiteLoginFixtures().map((login, index) => index ? login : { ...login, level: 'act' });
   const { harness, calls } = websiteLoginsHarness(granted, { workspaceAdminUi: false, initialSearch: '?tab=websites' });

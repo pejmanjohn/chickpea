@@ -8477,7 +8477,8 @@
     return hint + head + body + note;
   }
 
-  var WEBSITE_LOGINS_OFF_HINT = "The browser is off right now, so website logins can't be added or changed. You can still remove them.";
+  var WEBSITE_LOGINS_OFF_HINT = "The browser is off right now, so website logins can't be added or changed." +
+    (WORKSPACE_ADMIN_UI ? " You can still remove them." : "");
 
   function openWebsiteLoginDialog() {
     var draft = state.profileDraft;

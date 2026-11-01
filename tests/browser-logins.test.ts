@@ -142,7 +142,7 @@ test('a handoff login stores no secret, and every new login is a team login', as
       (error: unknown) => error instanceof WebsiteLoginInputError && error.code === 'invalid_totp_seed',
     );
     await assert.rejects(
-      createWebsiteLogin(deps, { ...credentialsInput, ownerKind: 'member' as never, ownerMembershipId: 'membership_ana' } as never),
+      createWebsiteLogin(deps, { ...credentialsInput, ownerKind: 'member', ownerMembershipId: 'membership_ana' } as never),
       (error: unknown) => error instanceof WebsiteLoginInputError && error.code === 'invalid_owner',
     );
   });
