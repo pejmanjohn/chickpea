@@ -3122,10 +3122,15 @@ async function processSlackEvent(
   // The front desk's card holds a copy of the message it offers: an edit or a
   // delete closes it, so a pick never sends words the person took back.
   const takenBack = edit ?? (ask ? undefined : parseSlackMessageDelete(payload));
-  if (takenBack) {
-    await closeAgentChoiceSurface(stores.slackState, takenBack.channelId, takenBack.messageTs).catch(() => {
-      console.warn('[chickpea] Agent choice card was not closed after its message changed');
-    });
+  const closedChoice = takenBack && await closeAgentChoiceSurface(
+    stores.slackState, takenBack.channelId, takenBack.messageTs,
+  ).catch(() => {
+    console.warn('[chickpea] Agent choice card was not closed after its message changed');
+    return undefined;
+  });
+  if (closedChoice?.messageTs) {
+    const client = execution?.client ?? await directSlackClient(platformEnv).catch(() => undefined);
+    if (client) await redrawUiSurface(surfaceMessenger(client, closedChoice.channelId), closedChoice);
   }
   if (
     !ask &&

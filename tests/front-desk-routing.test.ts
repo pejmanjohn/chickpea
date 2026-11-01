@@ -701,7 +701,8 @@ function rootMessageChange(eventId: string, change: { edit: string } | 'delete' 
   return { workspaceId: 'T1', eventId, eventTime: 1793440002, event };
 }
 
-test('an edit or a delete of the message closes its card, and a later pick sends nothing', async () => {
+test('an edit or a delete of the message closes its card and takes its buttons, and a later pick sends nothing', async () => {
+  const expired = 'This choice expired. Mention the Agent you want.';
   for (const change of [{ edit: 'Check order 4822 instead.' }, 'delete', 'tombstone'] as const) {
     await withFrontDeskLane(async (lane) => {
       const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
@@ -711,13 +712,30 @@ test('an edit or a delete of the message closes its card, and a later pick sends
       const label = typeof change === 'string' ? change : 'edit';
       assert.equal((await read()).status, 'expired', `${label} closes the card`);
       assert.equal(originOf(await read()), undefined, `${label} drops the copy`);
+      const redrawn = lastCard(lane.posts) as ReturnType<typeof lastCard> & { ts?: string };
+      assert.deepEqual(cardText(lane.posts), [expired], `${label} redraws the card at once`);
+      assert.equal(redrawn?.ts, (await read()).messageTs, 'the card message itself');
+      assert.ok(!redrawn?.blocks.some(({ type }) => type === 'actions'), `no buttons left after an ${label}`);
       const before = lane.jobs.length;
       await click(0);
       assert.equal(lane.jobs.length, before, `the pick admits nothing after an ${label}`);
       assert.ok(!lane.jobs.some(({ id }) => id.endsWith(':handoff')));
-      assert.deepEqual(cardText(lane.posts), ['This choice expired. Mention the Agent you want.']);
+      assert.deepEqual(cardText(lane.posts), [expired, expired]);
     });
   }
+});
+
+test('an edit of a message whose card was already picked leaves that card as it is', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
+    const { read, click } = await cardOf(lane, chickpea.turn);
+    await click(0);
+    const updates = cardText(lane.posts);
+    await processGatewaySlackEnvelope(rootMessageChange('Ev9', { edit: 'Check order 4822 instead.' }) as never,
+      undefined, lane.gateway, { stores: lane.stores, enqueueTurn: lane.enqueueTurn });
+    assert.equal((await read()).status, 'resolved');
+    assert.deepEqual(cardText(lane.posts), updates, 'no redraw');
+  });
 });
 
 test('an edit in a Channel, where no card is ever posted, never asks to close one', async () => {

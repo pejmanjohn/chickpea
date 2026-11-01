@@ -228,21 +228,22 @@ export async function deliverAgentChoiceSurface(input: {
 
 /**
  * Close the front desk's card for one message, if it is still open: the
- * person edited or deleted the message the card holds a copy of. A later
- * pick then says the choice expired.
+ * person edited or deleted the message the card holds a copy of. Returns the
+ * closed card for a redraw; a later pick says the choice expired.
  */
 export async function closeAgentChoiceSurface(
   state: Pick<SlackStateStore, 'executeUiSurface'>,
   channelId: string,
   messageTs: string,
-): Promise<void> {
+): Promise<UiSurfaceRecord | undefined> {
   // The card is only ever posted in a one-to-one DM.
-  if (!channelId.startsWith('D')) return;
-  await state.executeUiSurface?.({
+  if (!state.executeUiSurface || !channelId.startsWith('D')) return undefined;
+  const closed = await uiSurfaceRecord(state as SurfaceState, {
     kind: 'close_surface',
     id: agentChoiceSurfaceId(channelId, messageTs),
     status: 'expired',
   });
+  return closed?.status === 'expired' ? closed : undefined;
 }
 
 /**
