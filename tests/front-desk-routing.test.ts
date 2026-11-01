@@ -617,7 +617,7 @@ test('a card whose pick never settled reads as expired, with no live buttons', a
     // The host claimed the card and admitted the takeover, then stopped before settling it.
     const card = await read();
     await lane.stores.slackState.executeUiSurface!({
-      kind: 'claim_surface', id: card.id, namespace: 'host', resolution: { byUserId: 'U1', at: Date.now(), choice: 0 },
+      kind: 'claim_surface', id: card.id, namespace: 'host', resolution: { byUserId: 'U1', at: Date.now() - 2 * 60_000, choice: 0 },
     });
     await processSlackFrontDeskHandoff({
       turn: chickpea.turn, fromAgentId: CHICKPEA_AGENT_ID, agentId: 'agent_support', agentName: 'Support Desk',
@@ -627,6 +627,21 @@ test('a card whose pick never settled reads as expired, with no live buttons', a
     const redrawn = lastCard(lane.posts);
     assert.equal(redrawn?.text, 'This choice expired. Mention the Agent you want.');
     assert.ok(!redrawn?.blocks.some(({ type }) => type === 'actions'), 'no buttons left');
+  });
+});
+
+test('a second click while the first pick is still settling leaves the card for that pick to redraw', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
+    const { read, click } = await cardOf(lane, chickpea.turn);
+    const card = await read();
+    await lane.stores.slackState.executeUiSurface!({
+      kind: 'claim_surface', id: card.id, namespace: 'host', resolution: { byUserId: 'U1', at: Date.now(), choice: 0 },
+    });
+    const before = lane.posts.length;
+    await click(1);
+    assert.equal(lane.posts.length, before, 'the settling pick is not redrawn as expired');
+    assert.equal(lane.jobs.length, 1, 'the click admits nothing');
   });
 });
 

@@ -2416,6 +2416,16 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
   return refuse(current.status === 'resolved' ? 'answered' : outcome, current);
 }
 
+/** How long a claimed pick may take to settle before a later click redraws its card as expired. */
+const AGENT_CHOICE_SETTLE_MS = 60_000;
+
+/** A pick that claimed the card moments ago and has not settled yet. */
+function agentChoicePickSettling(surface: UiSurfaceRecord): boolean {
+  const resolution = surface.resolution;
+  return surface.status === 'resolved' && resolution !== undefined && resolution.takenBy === undefined &&
+    !resolution.refused && Date.now() - resolution.at < AGENT_CHOICE_SETTLE_MS;
+}
+
 /**
  * A pick on the front desk's card. Only the person whose message it is may
  * pick, and anyone else's click does nothing. The first pick claims the
@@ -2434,7 +2444,11 @@ async function handleAgentChoiceClick(input: SlackUiContext & {
   const { action, surface, spec, stores, choice } = input;
   const state = stores.slackState as UiSurfaceState;
   if (action.userId !== spec.requesterUserId) return;
-  if (surface.status !== 'open' && surface.status !== 'pending_delivery') return input.redraw(surface);
+  if (surface.status !== 'open' && surface.status !== 'pending_delivery') {
+    // The click that claimed it redraws the card once its takeover settles.
+    if (agentChoicePickSettling(surface)) return;
+    return input.redraw(surface);
+  }
   const { origin } = spec;
   if (surface.expiresAt <= Date.now() || !origin) {
     return input.redraw(await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'expired' }));
