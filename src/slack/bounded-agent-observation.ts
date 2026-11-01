@@ -68,7 +68,7 @@ export interface AdaptivePollPolicy {
 const DEFAULT_ADAPTIVE_POLICY: AdaptivePollPolicy = { idleAfterMs: 10_000, maxIntervalMs: 5_000, factor: 2 };
 
 export interface BoundedObservationOptions {
-  /** Delay before the next caught-up read once the stream has gone quiet; a hot stream waits at most 250 ms. */
+  /** Delay before the next caught-up read once the stream has gone quiet; a hot stream waits at most 150 ms. */
   pollIntervalMs?: number;
   /** Test seam; production sleeps with a real timer. */
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
@@ -84,7 +84,7 @@ export interface ObservedSettlement {
 }
 
 /**
- * A caught-up stream is read again after 250 ms while a chunk has arrived in
+ * A caught-up stream is read again after 150 ms while a chunk has arrived in
  * the last 3 s, and after 750 ms once it has gone quiet. A person waits on two
  * moments, the first streamed text and the settlement after the last token,
  * and each is noticed on average half a poll late, so the fast cadence covers
@@ -92,7 +92,7 @@ export interface ObservedSettlement {
  * count small through a long model call.
  */
 const DEFAULT_POLL_INTERVAL_MS = 750;
-const HOT_POLL_INTERVAL_MS = 250;
+const HOT_POLL_INTERVAL_MS = 150;
 const HOT_WINDOW_MS = 3_000;
 const SETTLEMENT_CHUNK = 'submission-settled';
 const RESET_CHUNK = 'conversation-reset';

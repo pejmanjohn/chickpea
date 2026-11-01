@@ -883,7 +883,7 @@ test('on Cloudflare the adapter observes through the agent namespace binding wit
     assert.equal(result.text, 'done');
     assert.deepEqual(requests.map((url) => url.searchParams.get('view')), ['updates', 'updates', 'history'],
       'the settlement is observed on the updates view, then the reply is read once from history');
-    assert.ok(Date.now() - started >= 200, 'the idle page waited the real poll interval');
+    assert.ok(Date.now() - started >= 100, 'the idle page waited the real poll interval');
     for (const url of requests) {
       assert.equal(url.pathname, `/agents/chickpea-slack-v2/${ENVELOPE.instanceId}`);
       assert.equal(url.searchParams.has('live'), false);
