@@ -304,3 +304,16 @@ test('memory Slack mapper preserves unsupported shared-channel flags from the fa
     globalThis.fetch = originalFetch;
   }
 });
+
+test('a provider delay spread moves the Agent hold and the classifier hold in opposite steps', () => {
+  const backend = new FakeSlackBackend({ provider: { mode: 'ok', delayMs: 1500, delaySpreadMs: 750 } });
+  const held = (classifier: boolean) =>
+    (backend as unknown as { heldDelayMs(classifier: boolean): number }).heldDelayMs(classifier);
+  const turns = [0, 1, 2].map(() => ({ classifier: held(true), agent: held(false) }));
+  for (const turn of turns) {
+    assert.equal(turn.classifier + turn.agent, 3000, `a turn's two holds sum to twice the delay: ${JSON.stringify(turn)}`);
+  }
+  assert.notEqual(turns[0]!.agent, turns[1]!.agent, 'the Agent hold changes from turn to turn');
+  assert.equal(held(true), held(true), 'a classifier call does not advance the spread');
+  assert.notEqual(held(false), turns[2]!.agent, 'an Agent call advances the spread');
+});

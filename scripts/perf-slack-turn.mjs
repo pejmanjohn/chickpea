@@ -15,7 +15,9 @@
  * Flags: --turns <n> (7), --slack-latency-ms <n> (120), --provider-delay-ms <n>
  * (1500), --provider-delay-spread-ms <n> (750, see the fake's delaySpreadMs),
  * --state-rpc-delay-ms <n> (40), --thread-replies <n> (1),
- * --skip-build, --out <path>, --label <text>.
+ * --skip-build, --out <path>, --label <text>, --wrangler-log <path> (every
+ * workerd output line stamped with epoch ms; each turn's `t0` in the JSON
+ * report is the event POST on the same clock).
  * Builds and boots workerd, so run it under `verify:host`. No external traffic.
  */
 import { execFileSync } from 'node:child_process';
@@ -62,6 +64,7 @@ function parseFlags(argv) {
       'thread-replies': { type: 'string', default: '1' },
       'skip-build': { type: 'boolean', default: false },
       out: { type: 'string' },
+      'wrangler-log': { type: 'string' },
       label: { type: 'string', default: '' },
     },
   });
@@ -81,6 +84,9 @@ function parseFlags(argv) {
     skipBuild: values['skip-build'],
     out: resolve(out ?? join(DEFAULT_RUNS_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}.json`)),
     label: values.label,
+    wranglerLog: values['wrangler-log']
+      ? resolve(values['wrangler-log'].startsWith('~/') ? join(homedir(), values['wrangler-log'].slice(2)) : values['wrangler-log'])
+      : undefined,
   };
 }
 
@@ -300,6 +306,15 @@ async function main() {
     const baseUrl = `http://127.0.0.1:${smoke.PORT}`;
     const eventsUrl = `${baseUrl}${EVENTS_PATH}`;
     wrangler = smoke.spawnWranglerDev();
+    if (flags.wranglerLog) {
+      mkdirSync(dirname(flags.wranglerLog), { recursive: true });
+      const stamp = (chunk) => appendFileSync(
+        flags.wranglerLog,
+        String(chunk).split('\n').map((line) => `[${Date.now()}] ${line}`).join('\n') + '\n',
+      );
+      wrangler.child.stdout.on('data', stamp);
+      wrangler.child.stderr.on('data', stamp);
+    }
     console.log('• waiting for wrangler dev…');
     await smoke.waitForSetupReady(wrangler, baseUrl);
     await smoke.completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend);

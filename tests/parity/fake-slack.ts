@@ -1349,7 +1349,7 @@ export class FakeSlackBackend {
       if (res.writableEnded) return;
       res.write(content);
       res.end();
-    }, this.heldDelayMs(classifierReply !== undefined));
+    }, this.heldDelayMs(classifierReply !== null));
     return true;
   }
 
