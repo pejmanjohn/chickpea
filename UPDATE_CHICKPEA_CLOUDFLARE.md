@@ -158,16 +158,22 @@ it straight to an Agent the person created, or one that answered them in that
 direct message in the last 7 days. For any other single Agent that fits, it
 replies that the Agent can take it, with one button for that Agent and one for
 Chickpea, and hands nothing over until the person picks. A message deleted
-while Chickpea decides gets no reply. An edited one gets a line saying it
-changed, and its new words are decided again. A message that is a single word
-of ASCII characters, such as a pasted key, never goes on a card. Website
+while Chickpea hands it on is neither handed over nor put on a card, and
+Chickpea posts nothing for it. An edited one is not handed over either:
+Chickpea says it changed, and the edit's own turn decides again. A message
+that is a single word of ASCII characters, such as a pasted key, never goes on
+a card, so only an Agent that may take a message without asking can take it;
+otherwise Chickpea answers itself and suggests mentioning the Agent. Website
 logins now belong to the team: only Owners and Admins add, grant, raise or
 remove them, and a member sees a line asking an Owner or Admin to add one. A
 member's personal login saved before the update is shown and managed as a team
-login; its stored record is not rewritten. The storage contract raises
-`settings.browser.*` to 2, so `release.json`'s `configuration` digest changes;
-there is no migration. Updating needs no other step. There is no rollback
-path: recovery means deploying a fixed release forward.
+login; its stored record is not rewritten. Everyone who may edit that Agent
+now sees the login's site, label, sign-in name and last use, and a member can
+no longer remove it, or delete an Agent that alone holds it, until an Owner or
+Admin removes it. The storage contract raises `settings.browser.*` to 2, so
+`release.json`'s `configuration` digest changes; there is no migration.
+Updating needs no other step. There is no rollback path: recovery means
+deploying a fixed release forward.
 
 v0.1.42 makes Chickpea the front desk of its direct messages. A new message
 at the top of a person's direct message with Chickpea that mentions no Agent
