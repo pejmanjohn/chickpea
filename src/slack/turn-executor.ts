@@ -272,9 +272,11 @@ export async function executeTurnJob(
   let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
     ? slackAgentThreadKey(job.turn, job.assignment)
     : undefined;
-  // Advance the attempt count before running the turn: a crash mid-turn
-  // then re-fires with the count already committed, bounding retries.
-  await ports.turnJobs.recordAttempt(job.id, attempt);
+  // Advance the attempt count before the run's first effect: a crash
+  // mid-turn then re-fires with the count already committed, bounding
+  // retries. A run that claims its follow-ups commits it beside that claim.
+  const attemptRecorded = Promise.resolve(ports.turnJobs.recordAttempt(job.id, attempt));
+  attemptRecorded.catch(() => undefined);
   // A stop recorded after this row was read: dispatch preparation refused it.
   let stopRefused = false;
   // The turn entered its stopped ending: nothing may post a failure for it.
@@ -488,6 +490,10 @@ export async function executeTurnJob(
         return false;
       }
     };
+    // runTurn claims follow-ups first unless it replays or ends stopped before its dispatch.
+    const claimsFollowUps = ports.turnJobs.fold !== undefined && replayText === undefined &&
+      !stoppedBeforeDispatch;
+    if (!claimsFollowUps) await attemptRecorded;
     await ports.runTurn(job.turn, job.assignment, ports.env, {
       client,
       installationContext,
@@ -522,7 +528,10 @@ export async function executeTurnJob(
       // its own head took could run again.
       ...(ports.turnJobs.fold
         ? {
-            claimFold: (request) => ports.turnJobs.fold!(request),
+            claimFold: async (request) => {
+              const [claim] = await Promise.all([ports.turnJobs.fold!(request), attemptRecorded]);
+              return claim;
+            },
             recordFollowUpProgress: async (id, patch) => {
               await ports.turnJobs.recordSlackInteractionProgress(id, patch);
             },
@@ -623,6 +632,9 @@ export async function executeTurnJob(
       console.warn('[chickpea] post-delivery cleanup did not complete');
       return true;
     }
+    // Restoring or spending this attempt needs it committed first; one that
+    // never committed throws as it did before the run.
+    await attemptRecorded;
     if (stopRefused) {
       // Nothing was dispatched: give the attempt back and wait like a held row.
       await Promise.resolve(ports.turnJobs.recordAttempt(job.id, job.attempts)).catch(() => undefined);

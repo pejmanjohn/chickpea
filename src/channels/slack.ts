@@ -494,10 +494,11 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   const timestamp = c.req.header('x-slack-request-timestamp') ?? '';
   const recoveryChallenge = await slackRecoveryChallenge(platformEnv, { rawBody, signature, timestamp });
   if (recoveryChallenge !== undefined) return c.json({ challenge: recoveryChallenge });
-  const verification = await slackDeliveryVerification(platformEnv);
+  const verification = await slackDeliveryVerification(platformEnv, rawBody);
   if (!verification) {
     return c.json({ error: 'slack_not_configured' }, 401);
   }
+  if (verification.delivery) verifiedDeliveries.set(c, verification.delivery);
   const route = channelForInstallation(
     verification.signingSecret,
     verification.credentialRevision,
@@ -535,19 +536,36 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
 };
 
 /**
+ * What a standalone events delivery's handler reuses from before its
+ * signature check: the credentials it was checked with, and the installation
+ * of the team its body names, read beside them. That read is keyed by a body
+ * not yet verified, so it writes nothing and only a delivery whose signature
+ * holds awaits it: a forged one is answered exactly as before.
+ */
+interface VerifiedSlackDelivery {
+  credentials: ResolvedSlackInstallationCredentials;
+  installation?: { teamId: string; read: Promise<WorkspaceInstallation | undefined> };
+}
+
+const verifiedDeliveries = new WeakMap<object, VerifiedSlackDelivery>();
+
+/**
  * The signing secret a delivery must carry, and the bot credential revision
  * its handlers act for. Standalone: both from the customer-owned app's
- * bundle. Installation tenancy: the host's app alone, the same for every
- * installation, so nothing is read before the signature is checked; the
+ * bundle, with the installation of the team an events body names read beside
+ * it (`delivery`). Installation tenancy: the host's app alone, the same for
+ * every installation, so nothing is read before the signature is checked; the
  * handlers read the installation's own state once it is.
  */
 async function slackDeliveryVerification(
   platformEnv: PlatformEnv | undefined,
+  unverifiedEventsBody?: string,
 ): Promise<{
   signingSecret: string;
   credentialRevision: string | null;
   cacheKey: string;
   hosted: boolean;
+  delivery?: VerifiedSlackDelivery;
 } | undefined> {
   if (requireInstallationScope(platformEnv)) {
     const app = hostedSlackAppOf(platformEnv);
@@ -555,6 +573,12 @@ async function slackDeliveryVerification(
       ? { signingSecret: app.signingSecret, credentialRevision: null, cacheKey: `hosted:${app.appId}`, hosted: true }
       : undefined;
   }
+  const teamId = unverifiedEventsBody === undefined ? undefined : unverifiedTeamId(unverifiedEventsBody);
+  const installation = teamId === undefined
+    ? undefined
+    : { teamId, read: resolveStores(platformEnv).config.getWorkspaceInstallation(teamId) };
+  // A delivery its signature refuses never awaits the read.
+  installation?.read.catch(() => undefined);
   const credentials = await resolveSlackInstallationCredentials(
     slackInstallationCredentialId(platformEnv),
     platformEnv,
@@ -565,8 +589,18 @@ async function slackDeliveryVerification(
         credentialRevision: credentials.connectionRevision,
         cacheKey: credentials.connectionRevision ?? 'current',
         hosted: false,
+        delivery: { credentials, ...(installation ? { installation } : {}) },
       }
     : undefined;
+}
+
+function unverifiedTeamId(rawBody: string): string | undefined {
+  try {
+    const body = JSON.parse(rawBody) as { team_id?: unknown };
+    return typeof body.team_id === 'string' ? body.team_id : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function readSlackIngressBody(
@@ -856,7 +890,10 @@ function handleDirectSlackEvents(
     if (hosted && (payload.api_app_id !== hostedSlackAppOf(platformEnv)?.appId ||
         hostedSlackEventRoute(payload).route !== 'installation')) return;
     const stores = resolveStores(platformEnv);
-    const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
+    const early = verifiedDeliveries.get(c)?.installation;
+    const installation = await (early?.teamId === payload.team_id
+      ? early.read
+      : stores.config.getWorkspaceInstallation(payload.team_id));
     if (
       !installation || installation.transportMode !== 'direct' ||
       installation.health === 'revoked' ||
@@ -1026,7 +1063,8 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
 }
 
 /**
- * The installation's Slack credentials for a direct delivery. A hosted bundle
+ * The installation's Slack credentials for a direct delivery: the ones its
+ * signature was checked with, when it was. A hosted bundle
  * that latches recovery on this read is answered as the app's recovery gate
  * answers every later request, not found, rather than as a server error; a
  * keyring that will not load stays a server error, transient for Slack to
@@ -1036,6 +1074,8 @@ async function directSlackCredentials(
   c: { notFound(): Response | Promise<Response> },
   platformEnv: PlatformEnv | undefined,
 ): Promise<ResolvedSlackInstallationCredentials | Response> {
+  const verified = verifiedDeliveries.get(c)?.credentials;
+  if (verified) return verified;
   try {
     return await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
   } catch (error) {

@@ -141,6 +141,36 @@ test('a failed first attempt is retained for a retry and ends its thread for thi
   assert.deepEqual(h.retries, [undefined]);
 });
 
+test('a run that claims its follow-ups records its attempt beside the claim, and goes on only once both are in', async () => {
+  const events: string[] = [];
+  let commit!: () => void;
+  const committed = new Promise<void>((resolve) => { commit = resolve; });
+  const h = fakePorts(async (options) => {
+    const claim = options.claimFold!({ phase: 'start', headId: 'turn_1' });
+    events.push('claim started');
+    await claim;
+    events.push('claim answered');
+  });
+  Object.assign(h.ports.turnJobs, {
+    recordAttempt: async () => {
+      events.push('attempt sent');
+      await committed;
+      events.push('attempt committed');
+    },
+    fold: async () => {
+      events.push('fold');
+      return { messages: [], requesterText: '' };
+    },
+  });
+  const run = executeTurnJob(pendingJob(), h.ports, h.options);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['attempt sent', 'fold', 'claim started'],
+    'the claim starts while the attempt is in flight, and the run waits for both');
+  commit();
+  assert.equal(await run, true);
+  assert.deepEqual(events.slice(3), ['attempt committed', 'claim answered']);
+});
+
 test('a rate-limited attempt asks for a retry no sooner than the gateway allows, bounded to one window', async () => {
   const h = fakePorts(async () => {
     throw new SlackTransportError('conversations.info', 'gateway_rate_limited', {
