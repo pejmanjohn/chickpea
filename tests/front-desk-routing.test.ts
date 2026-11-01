@@ -9,11 +9,12 @@ import type { WebClient } from '@slack/web-api';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import { freezeRuntimePlanForTurn, runTurn } from '../src/slack/run-turn.ts';
-import { uiActionId, uiBlockId, uiSurfaceId, uiValue, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
+import { uiActionId, uiBlockId, uiValue, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
 import { escapeMrkdwn } from '../src/slack/ui/text.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import {
   FRONT_DESK_MAX_NAME_CHARS,
+  agentChoiceSurfaceId,
   clampText,
   compileFrontDeskPlan,
   frontDeskFailureLine,
@@ -462,9 +463,9 @@ async function runHandOff(lane: FrontDeskLane, agentIds: string[], note: string,
   return { chickpea, posts, handoffs, delivered };
 }
 
-/** The card a hand-off to several Agents left, and a pick on it. */
-async function cardOf(lane: FrontDeskLane, turnJobId: string) {
-  const id = uiSurfaceId(turnJobId, 'host-agent-choice');
+/** The card a hand-off to several Agents left on the person's message, and a pick on it. */
+async function cardOf(lane: FrontDeskLane, turn: Pick<NormalizedSlackTurn, 'channelId' | 'messageTs'>) {
+  const id = agentChoiceSurfaceId(turn.channelId, turn.messageTs);
   const read = async (): Promise<UiSurfaceRecord> => {
     const response = await lane.stores.slackState.executeUiSurface!({ kind: 'get_surface', id });
     assert.ok(response.kind === 'surface' && response.surface);
@@ -534,7 +535,7 @@ test('a hand-off to several Agents posts the line and a card with one button per
     assert.deepEqual(card.blocks.flatMap((block) => block.elements ?? []).map((button) => button.text.text),
       ['Support Desk', 'Research', 'Chickpea']);
     const surface = await lane.stores.slackState.executeUiSurface!({
-      kind: 'get_surface', id: uiSurfaceId(chickpea.id, 'host-agent-choice'),
+      kind: 'get_surface', id: agentChoiceSurfaceId(chickpea.turn.channelId, chickpea.turn.messageTs),
     });
     const record = surface.kind === 'surface' ? surface.surface : null;
     assert.equal(record?.namespace, 'host');
@@ -547,7 +548,7 @@ test('a hand-off to several Agents posts the line and a card with one button per
 test('a pick on the card admits the person\'s message for that Agent; anyone else\'s click and a second pick do nothing', async () => {
   await withFrontDeskLane(async (lane) => {
     const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
-    const { read, click } = await cardOf(lane, chickpea.id);
+    const { read, click } = await cardOf(lane, chickpea.turn);
     assert.equal((await read()).status, 'open');
 
     await click(0, 'U2');
@@ -582,7 +583,7 @@ test('two picks at once, of the same Agent or of two, admit one takeover and the
   for (const picks of [[0, 0], [0, 1]] as const) {
     await withFrontDeskLane(async (lane) => {
       const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
-      const { read, click } = await cardOf(lane, chickpea.id);
+      const { read, click } = await cardOf(lane, chickpea.turn);
       await Promise.all(picks.map((index) => click(index)));
       assert.equal(lane.jobs.length, 2, `one takeover for picks ${picks.join(',')}`);
       const owner = (await lane.stores.config.getAgentThreadRoute('T1', 'D1', ROOT))?.agentId;
@@ -601,7 +602,7 @@ test('a pick after another takeover of the message names the Agent that has it',
     await processSlackFrontDeskHandoff({
       turn: chickpea.turn, fromAgentId: CHICKPEA_AGENT_ID, agentId: 'agent_research', agentName: 'Research',
     }, undefined, { stores: lane.stores, gatewayClient: lane.gateway, enqueueTurn: lane.enqueueTurn });
-    const { read, click } = await cardOf(lane, chickpea.id);
+    const { read, click } = await cardOf(lane, chickpea.turn);
     await click(0);
     assert.equal(lane.jobs.length, 2, 'Support Desk is not admitted');
     assert.equal((await read()).resolution?.takenBy, 1);
@@ -612,7 +613,7 @@ test('a pick after another takeover of the message names the Agent that has it',
 test('a card whose pick never settled reads as expired, with no live buttons', async () => {
   await withFrontDeskLane(async (lane) => {
     const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
-    const { read, click } = await cardOf(lane, chickpea.id);
+    const { read, click } = await cardOf(lane, chickpea.turn);
     // The host claimed the card and admitted the takeover, then stopped before settling it.
     const card = await read();
     await lane.stores.slackState.executeUiSurface!({
@@ -632,7 +633,7 @@ test('a card whose pick never settled reads as expired, with no live buttons', a
 test('picking Chickpea on the card gives Chickpea its own turn on the message, with no front desk', async () => {
   await withFrontDeskLane(async (lane) => {
     const { chickpea } = await runHandOff(lane, ['agent_support', CHICKPEA_AGENT_ID], 'I can answer too.');
-    const { click } = await cardOf(lane, chickpea.id);
+    const { click } = await cardOf(lane, chickpea.turn);
     await click(1);
     const picked = lane.jobs[1]!;
     assert.equal(picked.id, `msg:D1:${ROOT}:handoff`);
@@ -649,7 +650,7 @@ test('a pick the person can no longer make turns the card into the failure line;
     const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
     const support = await lane.stores.config.getAgent('agent_support');
     await lane.stores.config.updateAgent('agent_support', { enabled: false }, support.revision);
-    const { read, click } = await cardOf(lane, chickpea.id);
+    const { read, click } = await cardOf(lane, chickpea.turn);
     await click(0);
     assert.equal(lane.jobs.length, 1);
     assert.equal((await read()).resolution?.refused, true);
@@ -658,7 +659,7 @@ test('a pick the person can no longer make turns the card into the failure line;
   });
   await withFrontDeskLane(async (lane) => {
     const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
-    const { read, click } = await cardOf(lane, chickpea.id);
+    const { read, click } = await cardOf(lane, chickpea.turn);
     const card = await read();
     // The person comes back the next day.
     const now = Date.now;
@@ -704,7 +705,7 @@ test('an edit or a delete of the message closes its card, and a later pick sends
   for (const change of [{ edit: 'Check order 4822 instead.' }, 'delete', 'tombstone'] as const) {
     await withFrontDeskLane(async (lane) => {
       const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
-      const { read, click } = await cardOf(lane, chickpea.id);
+      const { read, click } = await cardOf(lane, chickpea.turn);
       await processGatewaySlackEnvelope(rootMessageChange('Ev9', change) as never, undefined, lane.gateway,
         { stores: lane.stores, enqueueTurn: lane.enqueueTurn });
       const label = typeof change === 'string' ? change : 'edit';
@@ -719,10 +720,30 @@ test('an edit or a delete of the message closes its card, and a later pick sends
   }
 });
 
+test('an edit in a Channel, where no card is ever posted, never asks to close one', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const state = lane.stores.slackState;
+    const execute = state.executeUiSurface!.bind(state);
+    const requested: string[] = [];
+    state.executeUiSurface = (request) => {
+      requested.push(request.kind);
+      return execute(request);
+    };
+    const original = { type: 'message' as const, user: 'U1', ts: ROOT, text: 'Check order 4821 on the portal.' };
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev9', eventTime: 1793440002,
+      event: { type: 'message', subtype: 'message_changed', channel: 'C1', channel_type: 'channel', ts: '1793440002.000100',
+        message: { ...original, text: 'Check order 4822 instead.', edited: { user: 'U1', ts: '1793440002.000100' } },
+        previous_message: original },
+    } as never, undefined, lane.gateway, { stores: lane.stores, enqueueTurn: lane.enqueueTurn });
+    assert.deepEqual(requested.filter((kind) => kind === 'close_surface'), []);
+  });
+});
+
 test('a change Slack reports for a reply under the message leaves its card open', async () => {
   await withFrontDeskLane(async (lane) => {
     const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
-    const { read } = await cardOf(lane, chickpea.id);
+    const { read } = await cardOf(lane, chickpea.turn);
     await processGatewaySlackEnvelope(rootMessageChange('Ev9', 'replied') as never, undefined, lane.gateway,
       { stores: lane.stores, enqueueTurn: lane.enqueueTurn });
     assert.equal((await read()).status, 'open');
@@ -733,7 +754,7 @@ test('a change Slack reports for a reply under the message leaves its card open'
 test('a pick forgets the message once it claims the card', async () => {
   await withFrontDeskLane(async (lane) => {
     const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
-    const { read, click } = await cardOf(lane, chickpea.id);
+    const { read, click } = await cardOf(lane, chickpea.turn);
     assert.equal(originOf(await read())?.text, 'Check order 4821 on the portal.');
     await click(0);
     assert.equal(lane.jobs[1]?.turn.text, 'Check order 4821 on the portal.');

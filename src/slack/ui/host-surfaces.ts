@@ -236,6 +236,8 @@ export async function closeAgentChoiceSurface(
   channelId: string,
   messageTs: string,
 ): Promise<void> {
+  // The card is only ever posted in a one-to-one DM.
+  if (!channelId.startsWith('D')) return;
   await state.executeUiSurface?.({
     kind: 'close_surface',
     id: agentChoiceSurfaceId(channelId, messageTs),
