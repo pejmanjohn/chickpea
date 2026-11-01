@@ -129,3 +129,36 @@ test('a Channel turn asks Slack for its Channel while the author lookup is still
     clearTimeout(giveUp);
   }
 });
+
+test('a Channel turn asks whether its thread has work running while its snapshot read is unanswered', async () => {
+  const seen: string[] = [];
+  let answerSnapshot!: () => void;
+  const snapshotHeld = new Promise<void>((resolve) => { answerSnapshot = resolve; });
+  const giveUp = setTimeout(() => answerSnapshot(), 500);
+  try {
+    await withChannelTurn(() => undefined, async (admit, stores, jobs) => {
+      const snapshots = stores.snapshots;
+      stores.snapshots = {
+        get: async (key) => {
+          await snapshotHeld;
+          seen.push('snapshot answered');
+          return snapshots.get(key);
+        },
+        putIfAbsent: (key, snapshot) => snapshots.putIfAbsent(key, snapshot),
+        replace: (key, snapshot) => snapshots.replace(key, snapshot),
+        listLiveRootsByAgent: (agentId) => snapshots.listLiveRootsByAgent(agentId),
+      };
+      const isActiveWork = stores.slackState.isActiveWork;
+      stores.slackState.isActiveWork = async (key) => {
+        seen.push('active work read');
+        answerSnapshot();
+        return isActiveWork(key);
+      };
+      assert.equal(await admit(), 'accepted');
+      assert.equal(jobs.length, 1);
+      assert.deepEqual(seen.slice(0, 2), ['active work read', 'snapshot answered']);
+    });
+  } finally {
+    clearTimeout(giveUp);
+  }
+});

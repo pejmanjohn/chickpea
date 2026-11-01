@@ -275,7 +275,10 @@ import {
 import type { AuthPrincipal } from '../auth/types.ts';
 import type { IdentityResolution } from '../identity/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
-import { resolveTypedSlackManagementApproval } from '../management/slack-approval.ts';
+import {
+  resolveHostSlackManagementProposal,
+  resolveTypedSlackManagementApproval,
+} from '../management/slack-approval.ts';
 import type { SetupWakeRequest } from '../management/receipts.ts';
 import { admitSlackBrowserActionReply } from '../slack/browser-action-admission.ts';
 import {
@@ -1373,15 +1376,19 @@ async function resolvedAgentAvatarUrl(
   agent: ResolvedAssignment['agent'],
   stores: AppStores,
   platformEnv: PlatformEnv | undefined,
+  publicUrl?: Promise<string | undefined>,
 ): Promise<string | undefined> {
-  const installationId = agentAvatarInstallation(platformEnv);
-  // A stored URL needs the origin only to name its installation. Otherwise
-  // every admitted turn and App Home seed passes here first, with the
+  // Every admitted turn and App Home seed passes here first, with the
   // request's (or the state store's local) stores: the one backfill point.
-  const origin = agent.slackPresence?.avatar.url && !installationId
-    ? undefined
-    : await resolveSlackPublicUrl(platformEnv, stores.settings, stores.identity);
-  return agentAvatarUrlForPresentation(agent, origin, installationId);
+  const origin = avatarNeedsPublicUrl(agent, platformEnv)
+    ? await (publicUrl ?? resolveSlackPublicUrl(platformEnv, stores.settings, stores.identity))
+    : undefined;
+  return agentAvatarUrlForPresentation(agent, origin, agentAvatarInstallation(platformEnv));
+}
+
+/** A stored avatar URL needs the public origin only to name its installation. */
+function avatarNeedsPublicUrl(agent: ResolvedAssignment['agent'], platformEnv: PlatformEnv | undefined): boolean {
+  return !agent.slackPresence?.avatar.url || Boolean(agentAvatarInstallation(platformEnv));
 }
 
 export async function postAgentRoutingFeedback(input: {
@@ -3275,6 +3282,11 @@ async function processSlackEvent(
   let agentRoutingActor: ResolvedAgentRoutingActor | undefined;
   let agentSourceVisibility: 'public' | 'private' | undefined;
   let liveChannelName: string | undefined;
+  let routedReads: {
+    activeWork: Promise<boolean>;
+    proposal?: ReturnType<typeof resolveHostSlackManagementProposal>;
+    publicUrl?: Promise<string | undefined>;
+  } | undefined;
   const runtimeTransport = execution?.transport ?? (
     credentials.botToken ? createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, stores.settings)) : undefined
   );
@@ -3500,9 +3512,50 @@ async function processSlackEvent(
         if (frontDesk) routedAssignment = { ...routedAssignment, frontDesk };
       }
       routedBaseAssignment = routedAssignment;
+      // A guest answering an ask keeps its own frozen configuration, so the
+      // owner's snapshot is never replaced by the guest's.
+      const guestAgent = routedAssignment.threadGuest ? routedAssignment.agent : undefined;
+      const snapshotKey = guestAgent ? slackGuestThreadKey(threadKey, guestAgent.id) : threadKey;
+      const existingSnapshot = stores.snapshots.get(snapshotKey);
+      void existingSnapshot.catch(() => undefined);
       const policyAssignment = await resolveModelPolicyForAssignment(
         routedAssignment, store, process.env, installation, platformEnv,
       ).finally(() => introduction);
+      // The rest of admission's reads need only the route and its model, so
+      // they start now, beside the snapshot. A failure counts only where its
+      // result is awaited below; a turn that ends earlier drops it. The
+      // admitted assignment keeps the route's runtime contract and owner
+      // incarnation, so its thread key is the routed one.
+      const admittedCredential = {
+        model: policyAssignment.model,
+        credential: resolveModelCredentialAttribution(
+          policyAssignment.model, platformEnv, stores.settings, stores.usage,
+        ),
+      };
+      const proposalMembershipId = !ui && !ask && turn.source !== 'reaction_added'
+        ? agentRoutingActor.principal?.membershipId
+        : undefined;
+      routedReads = {
+        activeWork: state.isActiveWork(slackAgentThreadKey(turn, routedAssignment)),
+        ...(proposalMembershipId
+          ? {
+              proposal: resolveHostSlackManagementProposal({
+                turn,
+                assignment: routedAssignment,
+                actorMembershipId: proposalMembershipId,
+                identity: stores.identity,
+                ...(agentRoutingActor.identity ? { knownIdentity: agentRoutingActor.identity } : {}),
+                management: stores.management,
+              }),
+            }
+          : {}),
+        ...(avatarNeedsPublicUrl(routedAssignment.agent, platformEnv)
+          ? { publicUrl: resolveSlackPublicUrl(platformEnv, stores.settings, stores.identity) }
+          : {}),
+      };
+      for (const read of [admittedCredential.credential, ...Object.values(routedReads)]) {
+        void read.catch(() => undefined);
+      }
       candidateTurn = turn.source === 'reaction_added';
       if (channelFacts) {
         const channel = await channelFacts;
@@ -3525,12 +3578,9 @@ async function processSlackEvent(
       } else {
         agentSourceVisibility = 'private';
       }
-      // A guest answering an ask keeps its own frozen configuration, so the
-      // owner's snapshot is never replaced by the guest's.
-      const guestAgent = routedAssignment.threadGuest ? routedAssignment.agent : undefined;
       const frozenAssignment = await withAdmittedModelCredential(await getOrReplaceSnapshotForRoute(
         stores.snapshots,
-        guestAgent ? slackGuestThreadKey(threadKey, guestAgent.id) : threadKey,
+        snapshotKey,
         guestAgent
           ? {
               agentId: guestAgent.id,
@@ -3539,7 +3589,9 @@ async function processSlackEvent(
             }
           : { ...routed.route, modelAttribution: policyAssignment.modelAttribution },
         () => effectiveSlackConfigFromAssignment(policyAssignment),
-      ), platformEnv, stores);
+        Date.now,
+        existingSnapshot,
+      ), platformEnv, stores, admittedCredential);
       assignment = {
         ...frozenAssignment,
         ...(routedAssignment.runtimeContract
@@ -3647,7 +3699,7 @@ async function processSlackEvent(
     return;
   }
   threadKey = slackAgentThreadKey(turn, assignment);
-  turn.activeWorkAtAdmission = await state.isActiveWork(threadKey);
+  turn.activeWorkAtAdmission = await (routedReads?.activeWork ?? state.isActiveWork(threadKey));
   const commandAddress = {
     botUserId: resolvedBotUserId,
     agentUserGroupId: assignment.agent.slackPresence?.userGroupId,
@@ -3820,6 +3872,7 @@ async function processSlackEvent(
         identity: stores.identity,
         ...(admittedIdentity ? { knownIdentity: admittedIdentity } : {}),
         management: stores.management,
+        ...(routedReads?.proposal ? { proposal: routedReads.proposal } : {}),
         latestAgentTurnMessageTs: async (query) => await state.latestAgentTurnMessageTs?.(query),
         judge: async (reply) => {
           const requestedModel = assignment.model ?? null;
@@ -3984,6 +4037,7 @@ async function processSlackEvent(
     assignment.agent,
     stores,
     platformEnv,
+    routedReads?.publicUrl,
   );
 
   // Canonical Work admission stores a concrete configured model. A missing
@@ -5231,14 +5285,12 @@ async function withAdmittedModelCredential<T extends Pick<ResolvedAssignment, 'm
   config: T,
   platformEnv: PlatformEnv | undefined,
   stores: Pick<AppStores, 'settings' | 'usage'>,
+  admitted?: { model: string; credential: ReturnType<typeof resolveModelCredentialAttribution> },
 ): Promise<Omit<T, 'modelCredential'> & Pick<ResolvedAssignment, 'modelCredential'>> {
   const { modelCredential: _snapshotCredential, ...current } = config;
-  const modelCredential = await resolveModelCredentialAttribution(
-    config.model,
-    platformEnv,
-    stores.settings,
-    stores.usage,
-  );
+  const modelCredential = await (admitted?.model === config.model
+    ? admitted.credential
+    : resolveModelCredentialAttribution(config.model, platformEnv, stores.settings, stores.usage));
   return modelCredential ? { ...current, modelCredential } : current;
 }
 

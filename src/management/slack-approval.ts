@@ -151,6 +151,8 @@ export async function resolveTypedSlackManagementApproval(input: {
   identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
   knownIdentity?: IdentityResolution;
   management: Pick<ManagementStore, 'getActiveChangeSetProposal' | 'markChangeSetProposalStale'>;
+  /** The proposal read, when admission started it beside its other reads. */
+  proposal?: ReturnType<typeof resolveHostSlackManagementProposal>;
   latestAgentTurnMessageTs: (query: SlackLatestAgentTurnQuery) => Promise<string | undefined>;
   judge: (reply: { text: string; change: string }) => Promise<SlackManagementApproval>;
 }): Promise<TypedSlackManagementApproval | undefined> {
@@ -159,7 +161,7 @@ export async function resolveTypedSlackManagementApproval(input: {
       turn.source === 'reaction_added') {
     return undefined;
   }
-  const proposal = await resolveHostSlackManagementProposal(input);
+  const proposal = await (input.proposal ?? resolveHostSlackManagementProposal(input));
   if (!proposal) return undefined;
   if (shouldResolveSlackManagementApproval(turn.text)) return { kind: 'approve', proposalId: proposal.proposalId };
   if (!await answersProposal(input, proposal)) return undefined;
