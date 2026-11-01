@@ -8303,14 +8303,6 @@
     return ago(Math.floor(days / 365), "year");
   }
 
-  // "added by" is shown only when this browser can tell who added the login:
-  // a personal login names its owner, and the Team page reports the viewer.
-  function websiteLoginAddedBy(login) {
-    var viewer = state.team && state.team.viewer ? state.team.viewer.membershipId : "";
-    if (login.ownerKind !== "member" || !login.ownerMembershipId || !viewer) return "";
-    return login.ownerMembershipId === viewer ? "you" : "a teammate";
-  }
-
   // Accepts a bare domain or a pasted URL and keeps only its host name.
   function websiteLoginHost(value) {
     var text = String(value || "").trim().toLowerCase();
@@ -8371,8 +8363,6 @@
     var parts = [];
     if (login.method === "handoff") parts.push("signs in by hand");
     else if (login.username) parts.push(login.username);
-    var addedBy = websiteLoginAddedBy(login);
-    if (addedBy) parts.push("added by " + addedBy);
     var lastUsed = login.lastUsedAt != null ? websiteLoginRelativeTime(login.lastUsedAt) : "";
     parts.push(lastUsed ? "last used " + lastUsed : "never used");
     var meta = parts.map(function (part, index) {
@@ -8385,7 +8375,7 @@
     var acts = login.level === "act";
     var levelError = logins.levelError && logins.levelError.loginId === login.loginId ? logins.levelError.message : "";
     var actions = '<div class="agent-schedule-actions">' + websiteLoginLevelHtml(login, readOnly || WEBSITE_LOGINS_REMOVE_ONLY) +
-      (readOnly || confirming ? "" : '<button type="button" class="btn btn-ghost btn-sm agent-schedule-delete" data-action="website-login-remove" data-login-id="' + esc(login.loginId) + '" aria-label="Remove ' + esc(login.host) + '">Remove</button>') +
+      (readOnly || confirming || !WORKSPACE_ADMIN_UI ? "" : '<button type="button" class="btn btn-ghost btn-sm agent-schedule-delete" data-action="website-login-remove" data-login-id="' + esc(login.loginId) + '" aria-label="Remove ' + esc(login.host) + '">Remove</button>') +
       '</div>';
     var confirm = confirming
       ? '<div class="action-well" style="grid-column: 1 / -1;"><div class="danger-copy"><span class="hint">Remove this login from ' + esc(agentName) + '? If no other Agent uses it, the saved sign-in is deleted too.</span>' +
@@ -8403,19 +8393,13 @@
   var WEBSITE_LOGIN_ACT_HINT = "Asks in Slack before anything that changes data.";
   var WEBSITE_LOGIN_LEVELS = [["check", "Check only"], ["act", "Check and take actions"]];
 
-  // Raising a login to actions needs authority over the login: Owners and
-  // Admins manage every login, and a member sees only team logins and their
-  // own personal ones. Anyone who can edit the Agent may lower it.
-  function websiteLoginCanRaise(login) {
-    return WORKSPACE_ADMIN_UI || login.ownerKind === "member";
-  }
-
   function websiteLoginLevelHtml(login, readOnly) {
     var level = login.level === "act" ? "act" : "check";
     var label = level === "act" ? "Check and take actions" : "Check only";
     if (readOnly) return '<span class="badge badge-off">' + label + '</span>';
     var saving = state.websiteLogins.levelSaving === login.loginId;
-    var canRaise = websiteLoginCanRaise(login);
+    // Only Owners and Admins raise a login to actions; any Agent editor may lower it.
+    var canRaise = WORKSPACE_ADMIN_UI;
     var disabled = saving || (!canRaise && level !== "act");
     var options = WEBSITE_LOGIN_LEVELS.map(function (entry) {
       var blocked = entry[0] === "act" && !canRaise && level !== "act";
@@ -8450,7 +8434,7 @@
       state.websiteLogins.levelError = {
         loginId: loginId,
         message: error && error.status === 403
-          ? "Only an Admin or the person who added this login can allow actions."
+          ? "Only Owners and Admins can allow actions."
           : "The change could not be saved. Try again."
       };
       renderPreservingPagePosition();
@@ -8465,7 +8449,9 @@
     if (!draft || !draft.id) {
       return hint + '<div class="empty"><p class="field-label">Save this Agent to add website logins</p></div>' + note;
     }
-    var addButton = readOnly || WEBSITE_LOGINS_REMOVE_ONLY ? "" : '<button type="button" class="btn btn-primary btn-sm" data-action="website-login-add">Add a website login</button>';
+    var editable = !readOnly && !WEBSITE_LOGINS_REMOVE_ONLY;
+    var addButton = editable && WORKSPACE_ADMIN_UI ? '<button type="button" class="btn btn-primary btn-sm" data-action="website-login-add">Add a website login</button>' : "";
+    var askAdmin = editable && !WORKSPACE_ADMIN_UI ? '<p class="hint">Ask an Owner or Admin to add a website login.</p>' : "";
     var head = '<div class="repo-panel-head"><span class="section-eyebrow">Signed-in websites</span>' + addButton + '</div>';
     var current = state.websiteLogins;
     var logins = websiteLoginsFor(draft);
@@ -8479,14 +8465,14 @@
     } else if (!logins) {
       body = '<div class="empty"><p class="hint">Loading website logins&hellip;</p></div>';
     } else if (!logins.length) {
-      body = WEBSITE_LOGINS_REMOVE_ONLY
-        ? '<div class="empty"><p class="hint">This Agent has no website logins.</p></div>'
-        : '<div class="empty"><p class="hint">No website logins yet. Add one to let this Agent sign in somewhere.</p>' + addButton + '</div>';
+      body = addButton
+        ? '<div class="empty"><p class="hint">No website logins yet. Add one to let this Agent sign in somewhere.</p>' + addButton + '</div>'
+        : '<div class="empty"><p class="hint">This Agent has no website logins.</p>' + askAdmin + '</div>';
     } else {
       var agentName = String(draft.name || "this Agent").trim() || "this Agent";
       body = '<div class="agent-schedule-list">' + logins.map(function (login) {
         return websiteLoginRowHtml(login, agentName, readOnly);
-      }).join("") + '</div>';
+      }).join("") + '</div>' + askAdmin;
     }
     return hint + head + body + note;
   }
@@ -8529,6 +8515,7 @@
     var field = error && error.payload && error.payload.field;
     if (code === "invalid_host" || field === "invalid_host") return WEBSITE_LOGIN_HOST_ERROR;
     if (code === "website_login_limit") return "The limit of website logins has been reached. Remove one first.";
+    if (error && error.status === 403 && error.serverMessage) return error.serverMessage;
     if (field === "invalid_totp_seed") return "That one-time code secret doesn't look right. Paste the setup key exactly as the site shows it.";
     return "The login could not be saved. Try again.";
   }
