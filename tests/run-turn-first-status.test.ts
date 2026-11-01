@@ -129,6 +129,8 @@ function surfaceTurn(surface: Surface): NormalizedSlackTurn {
 let turns = 0;
 /** Slack rejects the custom assistant status (a platform error), when set. */
 let rejectCustomStatus = false;
+/** Slack's acknowledgement of the custom status waits on this, when set. */
+let holdCustomStatus: ((timeline: string[]) => Promise<void>) | undefined;
 
 async function firstStatusTimeline(
   surface: Surface,
@@ -207,6 +209,10 @@ async function firstStatusTimeline(
         data: { ok: false, error: 'not_allowed' },
       });
     }
+    if (holdCustomStatus && method === 'assistant.threads.setStatus') {
+      await holdCustomStatus(timeline);
+      timeline.push('acknowledged:assistant.threads.setStatus');
+    }
     return { ok: true, ts: '1788000100.000100', channel: turn.channelId, messages: [] };
   };
   const client = {
@@ -280,16 +286,18 @@ async function firstStatusTimeline(
  * Work lifecycle, all serial. Now the first write is Slack's native
  * `processing` indicator (the fast write); the session is then handed over and
  * the admitted activity is written as the custom status, which replaces it
- * (#207). Only the public URL precedes the native start, and the thread's
- * generation fence (checked by the hand-over and by the custom write)
- * precedes the custom write; a thread runner answers both from its `begin`
- * round trip. Classification, memory, the plan, and the Work
- * lifecycle all follow.
+ * (#207). Only the public URL precedes the native start. The custom status
+ * is issued next, and classification, memory, the plan, and the Work
+ * lifecycle run while Slack acknowledges it; they wait for the native start,
+ * not for the custom status. The thread's generation fence (checked by the
+ * hand-over and by the custom write) is the status path's only other state
+ * read; a thread runner answers it from its `begin` round trip.
  */
 for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
-  test(`${surface}: native first, then the custom status, before classification, memory, and the plan`, async () => {
+  test(`${surface}: native first, before any other read, then the custom status`, async () => {
     const { beforeFirstWrite, slackWrites, timeline } = await firstStatusTimeline(surface);
-    assert.deepEqual(beforeFirstWrite, ['settings.getSetting'], 'only the public URL');
+    assert.deepEqual(beforeFirstWrite, ['settings.getSetting'],
+      'only the public URL is read before the native start');
     assert.deepEqual(slackWrites.slice(0, 3), [
       'slack:session:processing', // the fast first write
       'slack:session:active', // hand-over, so the custom text renders
@@ -299,9 +307,8 @@ for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
     // The hand-over and the custom write each check the thread's generation
     // fence; a runner answers both from the cache its `begin` round trip seeds.
     assert.deepEqual(
-      timeline.slice(0, custom).filter((entry) => !entry.startsWith('slack:')),
+      timeline.slice(0, custom).filter((entry) => entry.startsWith('presentations.')),
       [
-        'settings.getSetting',
         'presentations.getLatestThreadSessionGeneration',
         'presentations.getLatestThreadSessionGeneration',
       ],
@@ -309,13 +316,6 @@ for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
     );
     assert.equal(timeline.filter((entry) => entry === 'slack:session:processing').length, 1,
       'one native start');
-    for (const later of ['turnJobs.freezeRuntimePlan', 'work.getRun']) {
-      assert.ok(timeline.indexOf(later) > custom, `${later} runs after the custom status`);
-    }
-    if (surface !== 'thread_follow_up') {
-      // Classified late: the admitted activity shows before the disposition.
-      assert.ok(timeline.indexOf('turnJobs.recordInteractionIntent') > custom);
-    }
   });
 
   test(`${surface}: a runner that read the public URL at begin writes to Slack first`, async () => {
@@ -325,7 +325,7 @@ for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
     // The generation fence before the custom write: the runner seeds it from
     // the same `begin` round trip (see slack-thread-runner-execution tests).
     const custom = timeline.indexOf('slack:assistant.threads.setStatus');
-    assert.deepEqual(timeline.slice(0, custom).filter((entry) => !entry.startsWith('slack:')), [
+    assert.deepEqual(timeline.slice(0, custom).filter((entry) => entry.startsWith('presentations.')), [
       'presentations.getLatestThreadSessionGeneration',
       'presentations.getLatestThreadSessionGeneration',
     ]);
@@ -387,21 +387,42 @@ test('memory preparation that fails while the plan is still reading fails the tu
   }
 });
 
-test('a rejected custom status shows native again, still before classification and the plan', async () => {
+test('a rejected custom status shows native again, without a second start', async () => {
   rejectCustomStatus = true;
   try {
-    const { slackWrites, timeline } = await firstStatusTimeline('channel_mention', null);
+    const { slackWrites } = await firstStatusTimeline('channel_mention', null);
     assert.deepEqual(slackWrites.slice(0, 4), [
       'slack:session:processing',
       'slack:session:active',
       'slack:assistant.threads.setStatus', // rejected
       'slack:session:processing', // native shown again, not a second start
     ]);
-    const fallback = timeline.lastIndexOf('slack:session:processing');
-    for (const later of ['turnJobs.recordInteractionIntent', 'turnJobs.freezeRuntimePlan', 'work.getRun']) {
-      assert.ok(timeline.indexOf(later) > fallback, `${later} runs after the native fallback`);
-    }
   } finally {
     rejectCustomStatus = false;
+  }
+});
+
+test('classification and the plan do not wait for the custom status acknowledgement', async () => {
+  // One read from each chain: the classifier's disposition and the plan freeze.
+  const reads = ['turnJobs.recordInteractionIntent', 'turnJobs.freezeRuntimePlan'];
+  // Slack is slow to acknowledge the custom status. The acknowledgement
+  // arrives once both reads have landed, or after two seconds if they wait.
+  holdCustomStatus = async (timeline) => {
+    const deadline = Date.now() + 2_000;
+    while (!reads.every((read) => timeline.includes(read)) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  };
+  try {
+    const { timeline } = await firstStatusTimeline('channel_mention', null);
+    const acknowledged = timeline.indexOf('acknowledged:assistant.threads.setStatus');
+    assert.ok(acknowledged > timeline.indexOf('slack:assistant.threads.setStatus'));
+    for (const read of reads) {
+      const at = timeline.indexOf(read);
+      assert.ok(at >= 0, `${read} happens`);
+      assert.ok(at < acknowledged, `${read} does not wait for the custom status acknowledgement`);
+    }
+  } finally {
+    holdCustomStatus = undefined;
   }
 });

@@ -1035,8 +1035,7 @@ async function runTurnAttempt(
     nativeKeepalive = registration;
     return registration;
   };
-  const beginVisibleWork = async (statusInstanceId: string) => {
-    await startNativeIndicator();
+  const showAdmittedStatus = async (statusInstanceId: string) => {
     const registered = registerStatusTurn(statusInstanceId);
     // Native processing shows from the start (sent now, or by an earlier
     // attempt): keep it alive until a custom status takes over.
@@ -1059,22 +1058,35 @@ async function runTurnAttempt(
     }
     return registered;
   };
-  // A frozen V3 presentation shows its admitted activity before the turn
+  const beginVisibleWork = async (statusInstanceId: string) => {
+    await startNativeIndicator();
+    return showAdmittedStatus(statusInstanceId);
+  };
+  // A frozen V3 presentation shows Slack's native indicator before the turn
   // reads anything else (classification, memory, plan, Work lifecycle): in a
-  // thread runner each of those is a round trip to the state store. What it
-  // shows is the admission's own pending activity, whatever the turn decides
-  // later. Observed activity is routed by the Agent instance, known once the
-  // plan is frozen; nothing is observed before dispatch.
+  // thread runner each of those is a round trip to the state store. The
+  // admitted activity is then issued as the custom status, and those reads run
+  // while Slack acknowledges it; the status turn is awaited where it is first
+  // used. What it shows is the admission's own pending activity, whatever the
+  // turn decides later. Observed activity is routed by the Agent instance,
+  // known once the plan is frozen; nothing is observed before dispatch.
   // A stopped turn that never dispatched shows nothing new: its status turn
   // only lets the stopped ending clear what an earlier attempt showed.
   const earlyStatusInstanceId = options.runtimePlanDecision?.instanceId ??
     options.continuityKey ??
     slackAgentThreadKey(turn, assignment);
-  const earlyStatusTurn = frozenPresentation?.schemaVersion !== 3
-    ? undefined
-    : stoppedBeforeDispatch
-      ? registerStatusTurn(earlyStatusInstanceId)
-      : await beginVisibleWork(earlyStatusInstanceId);
+  let earlyStatusWork:
+    | ReturnType<typeof showAdmittedStatus>
+    | ReturnType<typeof registerStatusTurn>
+    | undefined;
+  if (frozenPresentation?.schemaVersion === 3) {
+    if (stoppedBeforeDispatch) {
+      earlyStatusWork = registerStatusTurn(earlyStatusInstanceId);
+    } else {
+      await startNativeIndicator();
+      earlyStatusWork = showAdmittedStatus(earlyStatusInstanceId);
+    }
+  }
   let interactionIntent = turn.interactionIntent;
   // Classification and the memory → plan → Work lifecycle chain read
   // independent state; each chain keeps its own writes in order.
@@ -1213,9 +1225,16 @@ async function runTurnAttempt(
       modelRepairText: undefined,
     };
   };
+  let earlyStatusTurn: ReturnType<typeof registerStatusTurn> | undefined;
   let prepared: Awaited<ReturnType<typeof prepareTurn>>;
   try {
-    const [classified, preparation] = await Promise.allSettled([classifyTurn(), prepareTurn()]);
+    const [visible, classified, preparation] = await Promise.allSettled([
+      earlyStatusWork,
+      classifyTurn(),
+      prepareTurn(),
+    ]);
+    if (visible.status === 'rejected') throw visible.reason;
+    earlyStatusTurn = visible.value;
     if (classified.status === 'rejected') throw classified.reason;
     if (preparation.status === 'rejected') throw preparation.reason;
     prepared = preparation.value;
