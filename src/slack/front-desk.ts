@@ -10,6 +10,7 @@ import { slackTimestampMs } from './timestamp.ts';
 import type { NormalizedSlackTurn, SlackFrontDeskTurn } from './types.ts';
 import {
   UI_SURFACE_MAX_SPEC_BYTES,
+  uiSurfaceId,
   type HostAgentChoiceSpec,
 } from './ui/surface.ts';
 
@@ -159,6 +160,14 @@ export function agentChoiceSpec(
       ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
     },
   };
+}
+
+/**
+ * The card's id, from the message it offers: Chickpea's own turn on that
+ * message posts it, and an edit or delete of the message finds it.
+ */
+export function agentChoiceSurfaceId(channelId: string, messageTs: string): string {
+  return uiSurfaceId(`msg:${channelId}:${messageTs}`, 'host-agent-choice');
 }
 
 export function agentChoiceSpecFits(spec: HostAgentChoiceSpec): boolean {

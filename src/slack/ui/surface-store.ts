@@ -199,6 +199,7 @@ export class UiSurfaceStoreLogic {
       namespace,
       now,
     ).changes === 1;
+    if (changed) this.forgetOrigins(input.surfaceId);
     const surface = this.get(input.surfaceId);
     return changed && surface ? { claimed: true, surface } : { claimed: false, ...(surface ? { surface } : {}) };
   }
@@ -222,6 +223,7 @@ export class UiSurfaceStoreLogic {
       this.now(),
       id,
     );
+    this.forgetOrigins(id);
     return this.get(id);
   }
 
@@ -290,6 +292,7 @@ export class UiSurfaceStoreLogic {
       now,
       id,
     );
+    this.forgetOrigins(id);
     return this.get(id);
   }
 
@@ -348,6 +351,25 @@ export class UiSurfaceStoreLogic {
       `DELETE FROM ui_surfaces WHERE expires_at < ? AND updated_at < ?`,
       this.now() - RETAIN_SETTLED_MS,
       this.now() - RETAIN_SETTLED_MS,
+    );
+    this.forgetOrigins();
+  }
+
+  /**
+   * A front-desk card keeps its copy of the person's message only while it
+   * can still be picked: once it is resolved, closed, or past its day, the
+   * copy is dropped from the stored spec. One surface, or every one.
+   */
+  private forgetOrigins(id?: string): void {
+    this.db.run(
+      `UPDATE ui_surfaces SET spec_json = json_remove(spec_json, '$.origin')
+       WHERE (? IS NULL OR id = ?)
+         AND (status NOT IN ('open', 'pending_delivery') OR expires_at <= ?)
+         AND spec_json LIKE '%"origin"%'
+         AND json_extract(spec_json, '$.kind') = 'agent_choice'`,
+      id ?? null,
+      id ?? null,
+      this.now(),
     );
   }
 }

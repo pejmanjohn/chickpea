@@ -58,6 +58,31 @@ test('surface ids are stable per turn and slot, and controls parse only structur
 
 // ── store ─────────────────────────────────────────────────────────────────
 
+test('a front-desk card forgets the person\'s message once picked or past its day, even unpicked; other cards keep their spec', () => {
+  let now = NOW;
+  const store = new UiSurfaceStoreLogic(openStateDb(':memory:'), () => now);
+  const origin = { userId: 'U1', messageTs: '1.000001', text: 'Check order 4821 on the portal.' };
+  const card = (id: string): UiSurfaceRecord => record({
+    id, conversationKind: 'im', channelId: 'D1',
+    spec: { kind: 'agent_choice', requesterUserId: 'U1', options: [{ agentId: 'agent_a', name: 'A' }], origin },
+  });
+  const originOf = (id: string) => {
+    const spec = store.get(id)?.spec;
+    return spec?.kind === 'agent_choice' ? spec.origin : null;
+  };
+  const picked = store.put(card('e'.repeat(32)));
+  const unpicked = store.put(card('f'.repeat(32)));
+  const approval = store.put(record({ id: 'a'.repeat(32) }));
+  assert.equal(store.claim({ surfaceId: picked.id, resolution: { byUserId: 'U1', at: now, choice: 0 } }, 'host').claimed, true);
+  assert.equal(originOf(picked.id), undefined, 'a claimed card forgets the message');
+  assert.deepEqual(originOf(unpicked.id), origin, 'an open card keeps it');
+  now = unpicked.expiresAt + 1;
+  store.put(record({ id: '0'.repeat(32) }));
+  assert.equal(store.get(unpicked.id)?.status, 'open');
+  assert.equal(originOf(unpicked.id), undefined, 'past its day, the next write drops it');
+  assert.deepEqual(store.get(approval.id)?.spec, approval.spec);
+});
+
 test('the surface store is write-once, first-wins, namespace-bound, and supersedes by thread', () => {
   let now = NOW;
   const store = new UiSurfaceStoreLogic(openStateDb(':memory:'), () => now);

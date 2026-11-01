@@ -12,7 +12,12 @@ import { checkSlackBlocks } from './block-kit-limits.ts';
 import { renderUiSurface, type RenderedUiSurface } from './render.ts';
 import { renderCards, renderChart, renderDetails } from './render-display.ts';
 import type { RenderedSlackComponents } from '../reply-continuations.ts';
-import { FRONT_DESK_CHOICE_TTL_MS, agentChoiceSpec, agentChoiceSpecFits } from '../front-desk.ts';
+import {
+  FRONT_DESK_CHOICE_TTL_MS,
+  agentChoiceSpec,
+  agentChoiceSpecFits,
+  agentChoiceSurfaceId,
+} from '../front-desk.ts';
 import {
   isDisplaySurface,
   UI_SURFACE_TTL_MS,
@@ -192,7 +197,7 @@ export async function deliverAgentChoiceSurface(input: {
   const stored = await uiSurfaceRecord(state, {
     kind: 'put_surface',
     record: {
-      id: uiSurfaceId(input.turnJobId, 'host-agent-choice'),
+      id: agentChoiceSurfaceId(turn.channelId, turn.messageTs),
       namespace: 'host',
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
@@ -219,6 +224,23 @@ export async function deliverAgentChoiceSurface(input: {
   }
   const messageTs = await input.messenger.post(rendered).catch(() => undefined);
   if (messageTs) await uiSurfaceRecord(state, { kind: 'bind_surface_message', id: stored.id, messageTs });
+}
+
+/**
+ * Close the front desk's card for one message, if it is still open: the
+ * person edited or deleted the message the card holds a copy of. A later
+ * pick then says the choice expired.
+ */
+export async function closeAgentChoiceSurface(
+  state: Pick<SlackStateStore, 'executeUiSurface'>,
+  channelId: string,
+  messageTs: string,
+): Promise<void> {
+  await state.executeUiSurface?.({
+    kind: 'close_surface',
+    id: agentChoiceSurfaceId(channelId, messageTs),
+    status: 'expired',
+  });
 }
 
 /**

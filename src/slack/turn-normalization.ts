@@ -279,6 +279,16 @@ export function parseSlackMessageEdit(payload: SlackEventFixture): SlackMessageE
   };
 }
 
+/** The message a `message_deleted` event removed, by channel and ts. */
+export function parseSlackMessageDelete(
+  payload: SlackEventFixture,
+): { channelId: string; messageTs: string } | undefined {
+  const event = payload.event;
+  if (!isSlackMessageEvent(event) || event.subtype !== 'message_deleted' || !event.channel) return undefined;
+  const messageTs = event.deleted_ts ?? event.previous_message?.ts;
+  return messageTs && SLACK_MESSAGE_TS.test(messageTs) ? { channelId: event.channel, messageTs } : undefined;
+}
+
 function runnableTurn(input: RunnableTurnInput): SlackTurnNormalization {
   const turn: NormalizedSlackTurn = {
     workspaceId: input.payload.team_id,

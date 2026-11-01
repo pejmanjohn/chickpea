@@ -43,13 +43,15 @@ export type HostApprovalSpec =
 /**
  * The front desk's card: the person picks which Agent takes their message.
  * It carries the message itself (`origin`), because the message's turn job
- * is gone long before the card is; a pick admits that message again.
+ * is gone long before the card is; a pick admits that message again. The
+ * store drops that copy once the card is picked, closed, or past its day,
+ * and an edit or delete of the message closes the card.
  */
 export interface HostAgentChoiceSpec {
   kind: 'agent_choice';
   requesterUserId: string;
   options: Array<{ agentId: string; name: string }>;
-  origin: {
+  origin?: {
     userId: string;
     messageTs: string;
     text: string;

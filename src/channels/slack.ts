@@ -164,7 +164,11 @@ import {
   slackThreadKey,
   slackTurnSurface,
 } from '../slack/thread-key.ts';
-import { normalizeSlackTurn, parseSlackMessageEdit } from '../slack/turn-normalization.ts';
+import {
+  normalizeSlackTurn,
+  parseSlackMessageDelete,
+  parseSlackMessageEdit,
+} from '../slack/turn-normalization.ts';
 import {
   registerNodeAgentAskDispatcher,
   registerNodeFrontDeskDispatcher,
@@ -307,6 +311,7 @@ import {
   type InteractiveAnswer,
 } from '../slack/ui/render-interactive.ts';
 import {
+  closeAgentChoiceSurface,
   redrawUiSurface,
   retireApprovalSurfacesForTypedAnswer,
   uiSurfaceRecord,
@@ -2427,7 +2432,8 @@ async function handleAgentChoiceClick(input: SlackUiContext & {
   const state = stores.slackState as UiSurfaceState;
   if (action.userId !== spec.requesterUserId) return;
   if (surface.status !== 'open' && surface.status !== 'pending_delivery') return input.redraw(surface);
-  if (surface.expiresAt <= Date.now()) {
+  const { origin } = spec;
+  if (surface.expiresAt <= Date.now() || !origin) {
     return input.redraw(await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'expired' }));
   }
   const option = choice === undefined ? undefined : spec.options[choice];
@@ -2441,14 +2447,14 @@ async function handleAgentChoiceClick(input: SlackUiContext & {
     origin: {
       workspaceId: surface.workspaceId,
       channelId: surface.channelId,
-      userId: spec.origin.userId,
-      text: spec.origin.text,
-      messageTs: spec.origin.messageTs,
+      userId: origin.userId,
+      text: origin.text,
+      messageTs: origin.messageTs,
       threadTs: surface.threadTs,
       channelType: 'im',
-      ...(spec.origin.requesterTimezone ? { requesterTimezone: spec.origin.requesterTimezone } : {}),
-      ...(spec.origin.attachments ? { attachments: spec.origin.attachments } : {}),
-      ...(spec.origin.attachmentIntake ? { attachmentIntake: spec.origin.attachmentIntake } : {}),
+      ...(origin.requesterTimezone ? { requesterTimezone: origin.requesterTimezone } : {}),
+      ...(origin.attachments ? { attachments: origin.attachments } : {}),
+      ...(origin.attachmentIntake ? { attachmentIntake: origin.attachmentIntake } : {}),
     },
     fromAgentId: surface.agentId,
     agentId: option.agentId,
@@ -3110,6 +3116,14 @@ async function processSlackEvent(
   // An edit steers its message's turn, then the public record below takes the new text too.
   const edit = ask ? undefined : parseSlackMessageEdit(payload);
   if (edit) await steerWithSlackEdit({ edit, state: stores.slackState, execution, platformEnv });
+  // The front desk's card holds a copy of the message it offers: an edit or a
+  // delete closes it, so a pick never sends words the person took back.
+  const takenBack = edit ?? (ask ? undefined : parseSlackMessageDelete(payload));
+  if (takenBack) {
+    await closeAgentChoiceSurface(stores.slackState, takenBack.channelId, takenBack.messageTs).catch(() => {
+      console.warn('[chickpea] Agent choice card was not closed after its message changed');
+    });
+  }
   if (
     !ask &&
     installation.runtimeContract === 'chickpea-v1' &&

@@ -488,7 +488,7 @@ test('a hand-off to several Agents posts the line and a card with one button per
     assert.equal(record?.namespace, 'host');
     assert.equal(record?.requesterUserId, 'U1');
     assert.ok(record && record.expiresAt - record.createdAt <= 24 * 60 * 60_000, 'the card lives a day');
-    assert.deepEqual(record?.spec.kind === 'agent_choice' && record.spec.origin.text, 'Check order 4821 on the portal.');
+    assert.deepEqual(record?.spec.kind === 'agent_choice' && record.spec.origin?.text, 'Check order 4821 on the portal.');
   });
 });
 
@@ -602,6 +602,7 @@ test('a pick the person can no longer make turns the card into the failure line;
     assert.equal(lane.jobs.length, 1);
     assert.equal((await read()).resolution?.refused, true);
     assert.deepEqual(cardText(lane.posts), [frontDeskFailureLine('Support Desk')]);
+    assert.equal(originOf(await read()), undefined, 'a refused pick forgets the message');
   });
   await withFrontDeskLane(async (lane) => {
     const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
@@ -618,5 +619,52 @@ test('a pick the person can no longer make turns the card into the failure line;
     assert.equal(lane.jobs.length, 1);
     assert.equal((await read()).status, 'expired');
     assert.deepEqual(cardText(lane.posts), ['This choice expired. Mention the Agent you want.']);
+    assert.equal(originOf(await read()), undefined, 'an expired card forgets the message');
+  });
+});
+
+const originOf = (card: UiSurfaceRecord) => card.spec.kind === 'agent_choice' ? card.spec.origin : null;
+
+/** A change Slack reports to the person's root message: an edit to `text`, or a delete. */
+function rootMessageChange(eventId: string, change: { edit: string } | 'delete') {
+  const original = { type: 'message' as const, user: 'U1', ts: ROOT, text: 'Check order 4821 on the portal.' };
+  return {
+    workspaceId: 'T1', eventId, eventTime: 1793440002,
+    event: change === 'delete'
+      ? { type: 'message' as const, subtype: 'message_deleted', channel: 'D1', channel_type: 'im', ts: '1793440002.000100',
+          deleted_ts: ROOT, previous_message: original }
+      : { type: 'message' as const, subtype: 'message_changed', channel: 'D1', channel_type: 'im', ts: '1793440002.000100',
+          message: { ...original, text: change.edit, edited: { user: 'U1', ts: '1793440002.000100' } },
+          previous_message: original },
+  };
+}
+
+test('an edit or a delete of the message closes its card, and a later pick sends nothing', async () => {
+  for (const change of [{ edit: 'Check order 4822 instead.' }, 'delete'] as const) {
+    await withFrontDeskLane(async (lane) => {
+      const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
+      const { read, click } = await cardOf(lane, chickpea.id);
+      await processGatewaySlackEnvelope(rootMessageChange('Ev9', change) as never, undefined, lane.gateway,
+        { stores: lane.stores, enqueueTurn: lane.enqueueTurn });
+      const label = change === 'delete' ? 'delete' : 'edit';
+      assert.equal((await read()).status, 'expired', `${label} closes the card`);
+      assert.equal(originOf(await read()), undefined, `${label} drops the copy`);
+      const before = lane.jobs.length;
+      await click(0);
+      assert.equal(lane.jobs.length, before, `the pick admits nothing after an ${label}`);
+      assert.ok(!lane.jobs.some(({ id }) => id.endsWith(':handoff')));
+      assert.deepEqual(cardText(lane.posts), ['This choice expired. Mention the Agent you want.']);
+    });
+  }
+});
+
+test('a pick forgets the message once it claims the card', async () => {
+  await withFrontDeskLane(async (lane) => {
+    const { chickpea } = await runHandOff(lane, ['agent_support', 'agent_research'], 'Both can look.');
+    const { read, click } = await cardOf(lane, chickpea.id);
+    assert.equal(originOf(await read())?.text, 'Check order 4821 on the portal.');
+    await click(0);
+    assert.equal(lane.jobs[1]?.turn.text, 'Check order 4821 on the portal.');
+    assert.equal(originOf(await read()), undefined);
   });
 });
