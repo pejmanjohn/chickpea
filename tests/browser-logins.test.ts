@@ -115,18 +115,18 @@ test('a credentials login round-trips through encrypted storage and never lands 
   });
 });
 
-test('a handoff login stores no secret and a member login records its owner', async () => {
+test('a handoff login stores no secret, and every new login is a team login', async () => {
   await withLogins(async ({ deps, settings }) => {
     const login = await createWebsiteLogin(deps, {
       host: 'intranet.local:8443',
       label: 'Intranet',
-      ownerKind: 'member',
-      ownerMembershipId: 'membership_ana',
+      ownerKind: 'team',
       createdByMembershipId: 'membership_ana',
       method: 'handoff',
     });
     assert.equal(login.host, 'intranet.local:8443');
-    assert.equal(login.ownerMembershipId, 'membership_ana');
+    assert.equal(login.ownerKind, 'team');
+    assert.equal('ownerMembershipId' in login, false);
     assert.equal(await settings.getEncryptedCredentialRevision(`website_login.${login.id}`), undefined);
     assert.equal(await readWebsiteLoginSecrets(deps, login.id), undefined);
     await assert.rejects(
@@ -142,7 +142,7 @@ test('a handoff login stores no secret and a member login records its owner', as
       (error: unknown) => error instanceof WebsiteLoginInputError && error.code === 'invalid_totp_seed',
     );
     await assert.rejects(
-      createWebsiteLogin(deps, { ...credentialsInput, ownerKind: 'member' }),
+      createWebsiteLogin(deps, { ...credentialsInput, ownerKind: 'member', ownerMembershipId: 'membership_ana' } as never),
       (error: unknown) => error instanceof WebsiteLoginInputError && error.code === 'invalid_owner',
     );
   });

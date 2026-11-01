@@ -23,6 +23,7 @@ import type {
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { storeAsPersonalLogin } from './helpers/website-logins.ts';
 
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
 
@@ -555,8 +556,20 @@ test('inspect lists website logins without secrets, and removal confirms as in A
       password: 'hunter2-portal-password',
       totpSeed: 'JBSWY3DPEHPK3PXP',
     });
+    const member = await addMember(f, 'U44444444');
+    const personal = await createWebsiteLogin(deps, {
+      host: 'desk.example.com',
+      label: 'Desk',
+      ownerKind: 'team',
+      createdByMembershipId: f.owner.membership.id,
+      method: 'handoff',
+    });
+    await storeAsPersonalLogin(store, personal.id, member.membership.id);
     await f.config.updateAgent(agent.id, {
-      websiteLogins: [{ loginId: team.id, level: 'check', enabled: true }],
+      websiteLogins: [
+        { loginId: team.id, level: 'check', enabled: true },
+        { loginId: personal.id, level: 'check', enabled: true },
+      ],
     }, agent.revision);
 
     const { snapshot, agent: inspected } = await inspectAgent(f, mcpContext(f.owner), agent.id);
@@ -569,21 +582,32 @@ test('inspect lists website logins without secrets, and removal confirms as in A
       username: 'ops@example.com',
       level: 'check',
       enabled: true,
+    }, {
+      loginId: personal.id,
+      host: 'desk.example.com',
+      label: 'Desk',
+      ownerKind: 'team',
+      method: 'handoff',
+      level: 'check',
+      enabled: true,
     }]);
     const raw = JSON.stringify(snapshot);
     assert.doesNotMatch(raw, /hunter2-portal-password/);
     assert.doesNotMatch(raw, /JBSWY3DPEHPK3PXP/);
-    assert.match(snapshot.websiteLoginSetup ?? '', /Admin/);
+    assert.match(snapshot.websiteLoginSetup ?? '', /^An Owner or Admin adds website logins in Admin/);
 
-    const member = await addMember(f, 'U44444444');
-    const memberResult = await apply(f, mcpContext(member), 'member-remove-login', [{
-      itemId: 'remove',
-      kind: 'remove_website_login',
-      agentId: agent.id,
-      loginId: team.id,
-    }]);
-    assert.equal(memberResult.outcomes[0]?.disposition, 'failed', JSON.stringify(memberResult.outcomes));
-    assert.equal(memberResult.outcomes[0]?.code, 'forbidden');
+    // The member whose personal login it was can no longer remove it, nor a team login.
+    for (const loginId of [team.id, personal.id]) {
+      const memberResult = await apply(f, mcpContext(member), `member-remove-${loginId}`, [{
+        itemId: 'remove',
+        kind: 'remove_website_login',
+        agentId: agent.id,
+        loginId,
+      }]);
+      assert.equal(memberResult.outcomes[0]?.disposition, 'failed', JSON.stringify(memberResult.outcomes));
+      assert.equal(memberResult.outcomes[0]?.code, 'forbidden');
+      assert.match(JSON.stringify(memberResult.outcomes), /Only a Chickpea Owner or Admin can remove a website login\./);
+    }
 
     const pending = await apply(f, mcpContext(f.owner), 'remove-login', [{
       itemId: 'remove',
@@ -594,14 +618,14 @@ test('inspect lists website logins without secrets, and removal confirms as in A
     assert.equal(pending.status, 'confirmation_required', JSON.stringify(pending.outcomes));
     assert.match(pending.presentation?.markdown ?? '',
       /^\*\*Proposed changes\*\*\nRemove the \*\*portal\.example\.com\*\* login from \*\*Ops\*\* \(@ops\)\. If no other Agent uses it, the saved sign-in is deleted too\.\n/);
-    assert.equal((await listWebsiteLogins(store)).length, 1, 'nothing applies before confirm');
+    assert.equal((await listWebsiteLogins(store)).length, 2, 'nothing applies before confirm');
 
     const confirmed = await call(f, mcpContext(f.owner), 'confirm_workspace_change', {
       proposalId: pending.outcomes[0]!.proposalId!,
     }) as ManagementApplyResult;
     assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
-    assert.deepEqual((await f.config.getAgent(agent.id)).websiteLogins, []);
-    assert.deepEqual(await listWebsiteLogins(store), [], 'the unused login and its secret are deleted');
+    assert.deepEqual((await f.config.getAgent(agent.id)).websiteLogins, [{ loginId: personal.id, level: 'check', enabled: true }]);
+    assert.deepEqual((await listWebsiteLogins(store)).map(({ id }) => id), [personal.id], 'the unused login and its secret are deleted');
   }));
 
 test('a re-point preview names only fields the caller sent', () =>
@@ -636,10 +660,9 @@ test('a re-point preview names only fields the caller sent', () =>
     assert.doesNotMatch(preview, /Discovered tools/);
   }));
 
-test('deleting an Agent over the management door refuses to take a login the member cannot remove', () =>
+test('deleting an Agent over the management door refuses a member a login, even their former personal one', () =>
   withEnv({ CHICKPEA_CREDENTIAL_KEYRING_PATH: join(mkdtempSync(join(tmpdir(), 'chickpea-keyring-')), 'keyring.json') }, () =>
   withFixture('delete-agent-login', async (f) => {
-    const member = await addMember(f, 'U55555555');
     const holder = await addMember(f, 'U66666666');
     const agent = await f.config.createAgent({
       id: 'agent_desk',
@@ -658,11 +681,11 @@ test('deleting an Agent over the management door refuses to take a login the mem
     const login = await createWebsiteLogin({ store: f.settings, keyring: generateCredentialKeyring('delete_agent_login') }, {
       host: 'mail.example.com',
       label: 'Mail',
-      ownerKind: 'member',
-      ownerMembershipId: holder.membership.id,
-      createdByMembershipId: holder.membership.id,
+      ownerKind: 'team',
+      createdByMembershipId: f.owner.membership.id,
       method: 'handoff',
     });
+    await storeAsPersonalLogin(f.settings, login.id, holder.membership.id);
     const granted = await f.config.updateAgent(agent.id, {
       websiteLogins: [{ loginId: login.id, level: 'check', enabled: true }],
     }, agent.revision);
@@ -680,15 +703,15 @@ test('deleting an Agent over the management door refuses to take a login the mem
     const live = (context: ManagementActorContext, name: WorkspaceManagementToolName, args: unknown) =>
       invokeWorkspaceManagementTool({ service, resolveContext: async () => context }, name, args as never);
 
-    const proposed = await live(mcpContext(member), 'apply_workspace_changes', {
+    const proposed = await live(mcpContext(holder), 'apply_workspace_changes', {
       idempotencyKey: 'delete-desk',
       operations: [{ itemId: 'delete', kind: 'delete_agent', agentId: agent.id, expectedRevision: granted.revision }],
     });
     assert.equal(proposed.ok, true, JSON.stringify(proposed));
     const proposalId = (proposed as { result: ManagementApplyResult }).result.outcomes[0]!.proposalId!;
-    const refused = await live(mcpContext(member), 'confirm_workspace_change', { proposalId });
+    const refused = await live(mcpContext(holder), 'confirm_workspace_change', { proposalId });
     assert.match(JSON.stringify(refused),
-      /"code":"forbidden".*This Agent uses a website login you can't remove\. Ask its owner or an Admin to remove it first\./);
+      /"code":"forbidden".*This Agent uses a website login you can't remove\. Ask an Owner or Admin to remove it first\./);
     assert.equal((await f.config.getAgent(agent.id)).websiteLogins?.length, 1, 'the Agent is kept');
     assert.deepEqual((await listWebsiteLogins(f.settings)).map(({ id }) => id), [login.id]);
   })));

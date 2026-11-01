@@ -493,6 +493,7 @@ import {
   projectAgentWebsiteLogins,
   removeAgentWebsiteLogin,
   updateAgentWebsiteLogins,
+  WEBSITE_LOGIN_ADMIN_ONLY,
   websiteLoginView,
   WebsiteLoginGrantNotFoundError,
   WebsiteLoginNotRemovableError,
@@ -725,6 +726,7 @@ import {
   AuthorizationError,
   canEditAgent,
   canManageOwnedResource,
+  canManageWebsiteLogin,
   isOwnerSession,
   permissionForRole,
   requireAgentEdit,
@@ -1374,8 +1376,6 @@ const websiteLoginsSchema = v.pipe(
 const websiteLoginCreateSchema = v.strictObject({
   host: v.pipe(v.string(), v.maxLength(260)),
   label: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
-  /** Absent, the login is a team login when the caller may create one, else personal. */
-  ownerKind: v.optional(v.picklist(['team', 'member'])),
   method: v.picklist(['credentials', 'handoff']),
   username: v.optional(v.pipe(v.string(), v.maxLength(320))),
   password: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(1_024))),
@@ -9542,7 +9542,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       // logins. The list is metadata only; widening access is gated separately.
       if (!canEditAgent(principal, agent)) throw new AuthorizationError();
       const logins = await listWebsiteLogins(websiteLoginSettings(c));
-      return c.json({ logins: projectAgentWebsiteLogins(agent.websiteLogins, logins, principal) });
+      return c.json({ logins: projectAgentWebsiteLogins(agent.websiteLogins, logins) });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
@@ -9569,12 +9569,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!principal) throw new AuthorizationError('principal_required');
       const agent = await store(c).getAgent(agentId);
       requireAgentEdit(principal, agent);
-      const ownerKind = input.ownerKind ??
-        (permissionForRole(principal.role).has('connection.create_team') ? 'team' : 'member');
-      requirePermission(
-        principal,
-        ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal',
-      );
+      if (!canManageWebsiteLogin(principal)) {
+        return c.json({ error: 'forbidden', message: WEBSITE_LOGIN_ADMIN_ONLY }, 403);
+      }
       if ((agent.websiteLogins ?? []).length >= 50) {
         return c.json({ error: 'website_login_limit', message: 'This Agent already has 50 website logins.' }, 409);
       }
@@ -9583,8 +9580,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       created = await createWebsiteLogin(deps, {
         host: input.host,
         label: input.label,
-        ownerKind,
-        ...(ownerKind === 'member' ? { ownerMembershipId: principal.membershipId } : {}),
+        ownerKind: 'team',
         createdByMembershipId: principal.membershipId,
         method: input.method,
         ...(input.username !== undefined ? { username: input.username } : {}),
@@ -9627,8 +9623,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   // Change what an Agent may do with one granted login. Any Agent editor may
-  // lower it to checking only; raising it to actions needs authority over the
-  // login itself (Owner/Admin, or the personal login's owner).
+  // lower it to checking only; raising it to actions needs an Owner or Admin.
   app.patch('/admin/api/agents/:id/website-logins/:loginId', async (c) => {
     const agentId = c.req.param('id');
     const loginId = c.req.param('loginId');
@@ -13196,8 +13191,7 @@ function toWebsiteLogins(
 /**
  * Agent editors may always narrow website-login access (remove, disable, or
  * lower a grant). Anything that widens it — a new grant, re-enabling one, or
- * raising `check` to `act` — must name an existing login the principal can
- * manage, so creating an Agent cannot reach another member's personal login.
+ * raising `check` to `act` — needs an Owner or Admin and an existing login.
  */
 function websiteLoginGrantWidensWithoutAuthority(
   principal: AuthPrincipal | undefined,
@@ -13209,12 +13203,14 @@ function websiteLoginGrantWidensWithoutAuthority(
   const byId = new Map(logins.map((login) => [login.id, login]));
   return next.some((grant) => {
     const previous = before.get(grant.loginId);
-    const widens = grant.enabled && (
-      !previous || !previous.enabled || (grant.level === 'act' && previous.level !== 'act')
-    );
+    // A new grant needs authority even disabled: it would keep the login alive
+    // after an Admin removes it from every other Agent.
+    const widens = !previous || (grant.enabled && (
+      !previous.enabled || (grant.level === 'act' && previous.level !== 'act')
+    ));
     if (!widens) return false;
     const login = byId.get(grant.loginId);
-    return !login || !principal || !canManageOwnedResource(principal, login);
+    return !login || !principal || !canManageWebsiteLogin(principal);
   });
 }
 

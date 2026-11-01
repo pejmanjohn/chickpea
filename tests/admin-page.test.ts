@@ -4191,7 +4191,7 @@ test('Agent deletion shows the server\'s reason for a refusal it has no text of 
     agentWriteError: {
       status: 409,
       error: 'website_login_not_removable',
-      message: 'This Agent uses a website login you can\'t remove. Ask its owner or an Admin to remove it first.',
+      message: 'This Agent uses a website login you can\'t remove. Ask an Owner or Admin to remove it first.',
     },
   });
   await flushAsync();
@@ -4206,7 +4206,7 @@ test('Agent deletion shows the server\'s reason for a refusal it has no text of 
 
   click({ target: actionTarget({ 'data-action': 'delete-profile' }) });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /uses a website login you can(?:'|&#39;|&#x27;)t remove\. Ask its owner or an Admin/);
+  assert.match(harness.app.innerHTML, /uses a website login you can(?:'|&#39;|&#x27;)t remove\. Ask an Owner or Admin/);
   assert.doesNotMatch(harness.app.innerHTML, /website_login_not_removable/);
 });
 
@@ -19942,7 +19942,7 @@ test('Settings › Browser renders the connected card with monthly usage', async
 // ---- Agent Websites tab ----------------------------------------------------
 
 const WEBSITE_LOGIN_TEAM_ID = `wl_${'a'.repeat(32)}`;
-const WEBSITE_LOGIN_MEMBER_ID = `wl_${'b'.repeat(32)}`;
+const WEBSITE_LOGIN_HANDOFF_ID = `wl_${'b'.repeat(32)}`;
 
 function websiteLoginFixtures(): Array<Record<string, unknown>> {
   return [
@@ -19952,8 +19952,8 @@ function websiteLoginFixtures(): Array<Record<string, unknown>> {
       level: 'check', enabled: true,
     },
     {
-      loginId: WEBSITE_LOGIN_MEMBER_ID, host: 'admin.acme.com', label: 'Acme admin', ownerKind: 'member',
-      ownerMembershipId: 'membership_owner', method: 'handoff', level: 'check', enabled: true,
+      loginId: WEBSITE_LOGIN_HANDOFF_ID, host: 'admin.acme.com', label: 'Acme admin', ownerKind: 'team',
+      method: 'handoff', level: 'check', enabled: true,
     },
   ];
 }
@@ -20555,7 +20555,7 @@ test('the Websites tab lists signed-in websites and shows an empty state', async
   const panel = html.match(/id="ptab-panel-websites"[\s\S]*?(?=id="ptab-panel-memory")/)?.[0] ?? '';
   assert.ok(panel);
   // Internal ids appear only as action attributes, never as visible copy.
-  assert.doesNotMatch(panel.replace(/data-login-id="[^"]*"/g, ''), /wl_a{32}|wl_b{32}|membership_owner|>check</);
+  assert.doesNotMatch(panel.replace(/data-login-id="[^"]*"/g, ''), /wl_a{32}|wl_b{32}|>check</);
 
   const empty = websiteLoginsHarness([], { initialSearch: '?tab=websites' });
   await flushAsync();
@@ -20643,6 +20643,8 @@ test('Add a website login explains server rejections and clears the typed passwo
     [jsonResponse({ error: 'invalid_website_login', field: 'invalid_host' }, 422), /That doesn&#39;t look like a website address\./],
     [jsonResponse({ error: 'website_login_limit', message: 'This Agent already has 50 website logins.' }, 409), /The limit of website logins has been reached\. Remove one first\./],
     [jsonResponse({ error: 'forbidden' }, 403), /The login could not be saved\. Try again\./],
+    [jsonResponse({ error: 'forbidden', message: 'Only Owners and Admins can add website logins.' }, 403),
+      /Only Owners and Admins can add website logins\./],
   ];
   for (const [response, message] of cases) {
     const { harness, calls } = websiteLoginsHarness([], { initialSearch: '?tab=websites' }, { post: () => response });
@@ -20656,7 +20658,7 @@ test('Add a website login explains server rejections and clears the typed passwo
     }
     harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-save' }) });
     await flushAsync();
-    assert.equal(calls.posts[0]?.ownerKind, undefined, 'the server picks the owner kind');
+    assert.equal(calls.posts[0]?.ownerKind, undefined, 'every login is the team\'s');
     assert.match(harness.app.innerHTML, message);
     assert.match(harness.app.innerHTML, /id="website-login-password" type="password" autocomplete="new-password" value=""/);
     assert.ok(harness.renderHistory.every((rendered) => !rendered.includes('pw-never-rendered')));
@@ -20711,10 +20713,10 @@ test('each website login row has a level selector that saves the new level', asy
     patch: () => jsonResponse({ error: 'forbidden' }, 403),
   });
   await flushAsync();
-  refused.harness.listeners.change?.({ target: valueTarget({ 'data-action': 'website-login-level', 'data-login-id': WEBSITE_LOGIN_MEMBER_ID }, 'act') });
+  refused.harness.listeners.change?.({ target: valueTarget({ 'data-action': 'website-login-level', 'data-login-id': WEBSITE_LOGIN_HANDOFF_ID }, 'act') });
   await flushAsync();
   html = refused.harness.app.innerHTML;
-  assert.match(html, /Only an Admin or the person who added this login can allow actions\./);
+  assert.match(html, /Only Owners and Admins can allow actions\./);
   assert.doesNotMatch(html, /<option value="act" selected>/);
 });
 
@@ -20776,6 +20778,40 @@ test('the add-login dialog asks what the Agent may do there and sends the level'
   await flushAsync();
   assert.equal(calls.posts[0]?.level, 'act');
   assert.match(harness.app.innerHTML, /<option value="act" selected>Check and take actions<\/option>/);
+});
+
+test('with the host\'s browser off, a member is not told they can remove website logins', async () => {
+  const hosted = { selfHosted: false, browserSetupOffered: false, websiteLoginsOffered: false, websiteLoginsRemoveOnly: true };
+  const granted = { ...releaseAgent, websiteLogins: [{ loginId: WEBSITE_LOGIN_TEAM_ID, level: 'check', enabled: true }] };
+  const { harness } = websiteLoginsHarness(websiteLoginFixtures(), { ...hosted, workspaceAdminUi: false, agents: [granted, opsAgent], initialSearch: '?tab=websites' });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.match(html, /The browser is off right now, so website logins can't be added or changed\.<\/p>/);
+  assert.doesNotMatch(html, /You can still remove them/);
+  assert.doesNotMatch(html, /data-action="website-login-remove"/);
+});
+
+test('a member editing an Agent sees its website logins, is asked to get an Owner or Admin to add one, and may only lower a level', async () => {
+  const granted = websiteLoginFixtures().map((login, index) => index ? login : { ...login, level: 'act' });
+  const { harness, calls } = websiteLoginsHarness(granted, { workspaceAdminUi: false, initialSearch: '?tab=websites' });
+  await flushAsync();
+  let html = harness.app.innerHTML;
+  assert.equal(calls.gets, 1);
+  assert.match(html, /Signed-in websites<\/span><\/div>/);
+  assert.doesNotMatch(html, /data-action="website-login-(?:add|remove)"/);
+  assert.match(html, /<\/article><\/div><p class="hint">Ask an Owner or Admin to add a website login\.<\/p>/);
+  assert.match(html, new RegExp(`data-login-id="${WEBSITE_LOGIN_TEAM_ID}"[^>]*><option value="check">Check only</option><option value="act" selected>`));
+  assert.match(html, new RegExp(`data-login-id="${WEBSITE_LOGIN_HANDOFF_ID}"[^>]* disabled><option value="check" selected>Check only</option><option value="act" disabled>`));
+
+  harness.listeners.change?.({ target: valueTarget({ 'data-action': 'website-login-level', 'data-login-id': WEBSITE_LOGIN_TEAM_ID }, 'check') });
+  await flushAsync();
+  assert.deepEqual(calls.patches, [{ loginId: WEBSITE_LOGIN_TEAM_ID, body: { level: 'check' } }]);
+
+  const empty = websiteLoginsHarness([], { workspaceAdminUi: false, initialSearch: '?tab=websites' });
+  await flushAsync();
+  html = empty.harness.app.innerHTML;
+  assert.match(html, /<div class="empty"><p class="hint">This Agent has no website logins\.<\/p><p class="hint">Ask an Owner or Admin to add a website login\.<\/p><\/div>/);
+  assert.doesNotMatch(html, /data-action="website-login-add"/);
 });
 
 test('a read-only Agent shows its website logins without Add or Remove', async () => {

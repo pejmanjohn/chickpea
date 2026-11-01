@@ -1116,8 +1116,8 @@ export async function startAdminVisualFixture(options = {}) {
             lastUsedAt: now - 2 * 3_600_000, level: 'act', enabled: true,
           },
           {
-            loginId: `wl_${'b2'.repeat(16)}`, host: 'admin.acme.com', label: 'Acme admin', ownerKind: 'member',
-            ownerMembershipId: 'membership_visual_owner', method: 'handoff',
+            loginId: `wl_${'b2'.repeat(16)}`, host: 'admin.acme.com', label: 'Acme admin', ownerKind: 'team',
+            method: 'handoff',
             lastUsedAt: now - 6 * 86_400_000, level: 'check', enabled: true,
           },
         ] : [],

@@ -334,7 +334,7 @@ const THREAD_TTL_DAYS = THREAD_TTL_MS / 86_400_000;
 const META_ADS_CATALOG_SETUP_MESSAGE =
   'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.';
 const TEAM_CONNECTION_ADMIN_ONLY = 'Only a Chickpea Admin can change or remove a team connection.';
-const WEBSITE_LOGIN_SETUP = 'Website logins are added in Admin: open the Agent, choose Websites, and save the sign-in there. Workspace management can list and remove them, but not add one.';
+const WEBSITE_LOGIN_SETUP = 'An Owner or Admin adds website logins in Admin: open the Agent, choose Websites, and save the sign-in there. Workspace management can list them, and an Owner or Admin can remove one, but it cannot add one.';
 const SCHEDULE_AGENT_NOT_AVAILABLE = 'The schedule Agent is not available to this member.';
 const PRIVATE_CHANNEL_NOT_JOINED = 'The routine is in a private Channel this member is not in.';
 const DM_ROUTINE_RUNS_AS_OWNER = 'A DM routine always runs as the person whose DM it is, so it cannot be taken over.';
@@ -4778,7 +4778,7 @@ export class WorkspaceManagementService {
         throw new ManagementError('invalid_request', `The website login was not found on ${agent.name}.`);
       }
       if (error instanceof AuthorizationError) {
-        throw new ManagementError('forbidden', 'Only a Chickpea Admin or its owner can remove this website login.');
+        throw new ManagementError('forbidden', 'Only a Chickpea Owner or Admin can remove a website login.');
       }
       throw error;
     }
@@ -5198,7 +5198,7 @@ export class WorkspaceManagementService {
           : {}),
         repositories,
         ...(grants?.length
-          ? { websiteLogins: projectAgentWebsiteLogins(grants, websiteLogins, principal) }
+          ? { websiteLogins: projectAgentWebsiteLogins(grants, websiteLogins) }
           : {}),
         groupDms: groupDms.get(id)!,
         ...(agentAppIsLive(slackPresence) ? { ownSlackApp: { handle: slackPresence.normalizedHandle } } : {}),

@@ -1,4 +1,9 @@
-import { AuthorizationError, canManageOwnedResource, requireAgentEdit } from '../auth/permissions.ts';
+import {
+  AuthorizationError,
+  canManageOwnedResource,
+  canManageWebsiteLogin,
+  requireAgentEdit,
+} from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { AgentRevisionConflictError } from '../config/errors.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
@@ -6,13 +11,17 @@ import type { ConfigStore } from '../config/store.ts';
 import type { CustomAgentConfig, WebsiteLoginGrant } from '../config/types.ts';
 import { deleteWebsiteLogin, listWebsiteLogins, type WebsiteLogin, type WebsiteLoginDependencies } from './logins.ts';
 
-/** The only website-login shape Admin and management return. Never a password or TOTP seed. */
+export const WEBSITE_LOGIN_ADMIN_ONLY = 'Only Owners and Admins can add website logins.';
+
+/**
+ * The only website-login shape Admin and management return. Never a password
+ * or TOTP seed. Every login is the team's, whatever owner its record names.
+ */
 export interface WebsiteLoginView {
   loginId: string;
   host: string;
   label: string;
-  ownerKind: WebsiteLogin['ownerKind'];
-  ownerMembershipId?: string;
+  ownerKind: 'team';
   method: WebsiteLogin['method'];
   username?: string;
   lastUsedAt?: number;
@@ -25,8 +34,7 @@ export function websiteLoginView(login: WebsiteLogin, grant: WebsiteLoginGrant):
     loginId: login.id,
     host: login.host,
     label: login.label,
-    ownerKind: login.ownerKind,
-    ...(login.ownerMembershipId ? { ownerMembershipId: login.ownerMembershipId } : {}),
+    ownerKind: 'team',
     method: login.method,
     ...(login.username ? { username: login.username } : {}),
     ...(login.lastUsedAt !== undefined ? { lastUsedAt: login.lastUsedAt } : {}),
@@ -35,18 +43,15 @@ export function websiteLoginView(login: WebsiteLogin, grant: WebsiteLoginGrant):
   };
 }
 
-/** An Agent's website logins as one person sees them: another member's personal login stays private. */
+/** An Agent's website logins, the same for everyone who may see the Agent. */
 export function projectAgentWebsiteLogins(
   grants: readonly WebsiteLoginGrant[] | undefined,
   logins: readonly WebsiteLogin[],
-  principal: AuthPrincipal,
 ): WebsiteLoginView[] {
   const byId = new Map(logins.map((login) => [login.id, login]));
   return (grants ?? []).flatMap((grant) => {
     const login = byId.get(grant.loginId);
-    if (!login) return [];
-    if (login.ownerKind === 'member' && !canManageOwnedResource(principal, login)) return [];
-    return [websiteLoginView(login, grant)];
+    return login ? [websiteLoginView(login, grant)] : [];
   });
 }
 
@@ -98,7 +103,7 @@ export async function removableAgentWebsiteLogin(input: {
   }
   const login = (await listWebsiteLogins(input.logins)).find((candidate) => candidate.id === input.loginId);
   // A grant whose login is already gone is removable by any editor.
-  if (login && !canManageOwnedResource(input.principal, login)) throw new AuthorizationError();
+  if (login && !canManageWebsiteLogin(input.principal)) throw new AuthorizationError();
   return login;
 }
 
@@ -136,7 +141,7 @@ export async function removeAgentWebsiteLogin(input: {
 export class WebsiteLoginNotRemovableError extends Error {
   readonly name = 'WebsiteLoginNotRemovableError';
   constructor() {
-    super('This Agent uses a website login you can\'t remove. Ask its owner or an Admin to remove it first.');
+    super('This Agent uses a website login you can\'t remove. Ask an Owner or Admin to remove it first.');
   }
 }
 
@@ -164,9 +169,7 @@ export async function agentDeletionWebsiteLogins(input: {
   const held = await grantedLoginIds(input.config, input.agent.id);
   const removed = (await listWebsiteLogins(input.logins))
     .filter((login) => granted.has(login.id) && !held.has(login.id));
-  if (removed.some((login) => !canManageOwnedResource(input.principal, login))) {
-    throw new WebsiteLoginNotRemovableError();
-  }
+  if (removed.length && !canManageWebsiteLogin(input.principal)) throw new WebsiteLoginNotRemovableError();
   return { by, loginIds: removed.map(({ id }) => id) };
 }
 
@@ -218,6 +221,13 @@ export interface DeletedAgentWebsiteLogins {
  * the retry; a provider failure is the deletion queue's to finish. A login
  * kept back only because the one finishing could not Remove it stays in the
  * marker for a retry by someone who can. True when a marker was found.
+ *
+ * These checks keep the owner rule logins had before they became team-only.
+ * Staging now refuses a member any login, so a marker naming one under a
+ * member's authority was staged before that change, for their own personal
+ * login on an Agent already deleted. The owner rule lets their retry finish
+ * it; the team rule would drop it from the marker, leaving the login and its
+ * secret on no Agent, where nothing lists or removes them.
  */
 export async function finishDeletedAgentWebsiteLogins(
   agentId: string,

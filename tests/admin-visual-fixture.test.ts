@@ -500,7 +500,7 @@ test('visual fixture serves display-safe website logins for the Websites tab aft
       research.logins.map(({ host, ownerKind, method, username, level, enabled }) => ({ host, ownerKind, method, username, level, enabled })),
       [
         { host: 'acme.com', ownerKind: 'team', method: 'credentials', username: 'qa-team@acme.com', level: 'act', enabled: true },
-        { host: 'admin.acme.com', ownerKind: 'member', method: 'handoff', username: undefined, level: 'check', enabled: true },
+        { host: 'admin.acme.com', ownerKind: 'team', method: 'handoff', username: undefined, level: 'check', enabled: true },
       ],
     );
     for (const login of research.logins) {
