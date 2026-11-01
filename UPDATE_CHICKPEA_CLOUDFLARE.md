@@ -67,7 +67,7 @@ data, and explain that problem rather than telling the user to wait indefinitely
 
 Some releases add Durable Object migrations; v0.1.27 adds two, on every
 installation: `v10` for coding workers and `v11` for per-thread Slack turn
-runners. v0.1.28 through v0.1.42 add none; an update from v0.1.26 or
+runners. v0.1.28 through v0.1.43 add none; an update from v0.1.26 or
 earlier straight to any of them still applies `v10` and `v11`. Once the deploy applies them,
 Cloudflare refuses `wrangler rollback` and dashboard rollbacks to any version
 from before that release. Recovery from a bad update then means deploying a newer or fixed
@@ -151,6 +151,23 @@ failed replies on v0.1.33 until you update again. Prefer deploying a fixed
 release forward to rolling back across v0.1.34.
 
 ## 3. Deploy to the same Worker
+
+v0.1.43 has Chickpea ask before an Agent the person has not used takes a
+message at the top of their direct message with Chickpea. Chickpea still hands
+it straight to an Agent the person created, or one that answered them in that
+direct message in the last 7 days. For any other single Agent that fits, it
+replies that the Agent can take it, with one button for that Agent and one for
+Chickpea, and hands nothing over until the person picks. A message deleted
+while Chickpea decides gets no reply. An edited one gets a line saying it
+changed, and its new words are decided again. A message that is a single word
+of ASCII characters, such as a pasted key, never goes on a card. Website
+logins now belong to the team: only Owners and Admins add, grant, raise or
+remove them, and a member sees a line asking an Owner or Admin to add one. A
+member's personal login saved before the update is shown and managed as a team
+login; its stored record is not rewritten. The storage contract raises
+`settings.browser.*` to 2, so `release.json`'s `configuration` digest changes;
+there is no migration. Updating needs no other step. There is no rollback
+path: recovery means deploying a fixed release forward.
 
 v0.1.42 makes Chickpea the front desk of its direct messages. A new message
 at the top of a person's direct message with Chickpea that mentions no Agent
