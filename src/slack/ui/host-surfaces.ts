@@ -174,10 +174,11 @@ export async function deliverHostApprovalSurfaces(input: {
 }
 
 /**
- * After Chickpea's front-desk reply names several Agents, post the card the
- * person picks one on. Like an approval card, its record is durable before
- * the post and its id derives from the turn, so a retried delivery never
- * posts twice. The card lives a day; every pick is checked again.
+ * After Chickpea's front-desk reply offers a choice (several Agents, or one
+ * the person has not used beside Chickpea), post the card the person picks
+ * on. Like an approval card, its record is durable before the post and its id
+ * derives from the turn, so a retried delivery never posts twice. The card
+ * lives a day; every pick is checked again.
  */
 export async function deliverAgentChoiceSurface(input: {
   turn: NormalizedSlackTurn;

@@ -27,10 +27,12 @@ import {
   type FrontDeskHandoff,
   agentChoiceSpec,
   compileFrontDeskPlan,
+  decideFrontDesk,
   frontDeskChoiceLine,
   frontDeskFailureLine,
   frontDeskHandoffLine,
   frontDeskMounted,
+  frontDeskOfferLine,
   pickRecentFrontDeskAgent,
   renderFrontDeskBlock,
   resolveFrontDeskTargets,
@@ -282,7 +284,10 @@ test('the frozen plan keeps which Agents need no pick, and an older plan without
   assert.deepEqual(parseRuntimePlanV2(frozen(frontDesk)).frontDesk, frontDesk);
   // What the release before this one froze: no Agent carries the mark.
   const older = { ...frontDesk, agents: frontDesk.agents.map(({ direct: _direct, ...agent }) => agent) };
-  assert.deepEqual(parseRuntimePlanV2(frozen(older)).frontDesk, older);
+  const olderPlan = parseRuntimePlanV2(frozen(older)).frontDesk!;
+  assert.deepEqual(olderPlan, older);
+  assert.equal(decideFrontDesk({ agentIds: ['agent_support'], note: '' }, olderPlan)?.kind, 'card',
+    'with no mark, the person picks');
   const invalid = frozen(frontDesk);
   invalid.frontDesk.agents[0].direct = false;
   assert.throws(() => parseRuntimePlanV2(invalid), /direct must be true/);
@@ -330,6 +335,7 @@ test('the note is one plain sentence with no Slack control syntax', () => {
   assert.equal(frontDeskHandoffLine('Support Desk', 'It has the portal login.'), 'Support Desk is taking this. It has the portal login.');
   assert.equal(frontDeskHandoffLine('Support Desk', ''), 'Support Desk is taking this.');
   assert.equal(frontDeskChoiceLine('Both can check orders.'), 'Which Agent should take this? Both can check orders.');
+  assert.equal(frontDeskOfferLine('Research', 'It researches markets.'), 'Research can take this. It researches markets.');
   assert.equal(frontDeskFailureLine('Support Desk'), "I couldn't hand this to Support Desk. Mention the Agent you want to try again.");
 });
 
@@ -395,13 +401,51 @@ test('several Agents are offered only when the message fits on the card', () => 
   });
 });
 
+/** Support Desk needs no pick (the person made it or used it here lately); Research does. */
 const PLAN = {
   agents: [
-    { id: 'agent_support', name: 'Support Desk', handle: 'support-desk' },
+    { id: 'agent_support', name: 'Support Desk', handle: 'support-desk', direct: true as const },
     { id: 'agent_research', name: 'Research', handle: 'research' },
   ],
   choices: true as const,
 };
+
+test('the host hands the message over at once only to an Agent that needs no pick; any other choice waits on a card', () => {
+  assert.deepEqual(decideFrontDesk({ agentIds: ['agent_support'], note: 'It has the portal login.' }, PLAN), {
+    kind: 'handoff', option: { agentId: 'agent_support', name: 'Support Desk' },
+    line: 'Support Desk is taking this. It has the portal login.',
+  });
+  assert.deepEqual(decideFrontDesk({ agentIds: ['agent_research'], note: 'It researches markets.' }, PLAN), {
+    kind: 'card',
+    options: [{ agentId: 'agent_research', name: 'Research' }, { agentId: CHICKPEA_AGENT_ID, name: 'Chickpea' }],
+    line: 'Research can take this. It researches markets.',
+  });
+  assert.deepEqual(decideFrontDesk({ agentIds: ['agent_research', 'agent_support'], note: 'Both can look.' }, PLAN), {
+    kind: 'card',
+    options: [{ agentId: 'agent_research', name: 'Research' }, { agentId: 'agent_support', name: 'Support Desk' }],
+    line: 'Which Agent should take this? Both can look.',
+  }, 'several Agents are the person\'s pick, even beside one that needs none');
+  assert.equal(decideFrontDesk({ agentIds: ['agent_hr'], note: '' }, PLAN), undefined);
+  assert.equal(decideFrontDesk({ agentIds: [CHICKPEA_AGENT_ID], note: '' }, PLAN), undefined);
+});
+
+test('a message too big for a card is never handed to an Agent that needs a pick, and the refusal names no one', () => {
+  const plan = compileFrontDeskPlan(rootDm({ text: 'x'.repeat(17_000) }), {
+    agentId: CHICKPEA_AGENT_ID, runtimeContract: 'chickpea-v1',
+    frontDesk: {
+      agents: [deskAgent('agent_support', 'Support Desk', { direct: true }), deskAgent('agent_research', 'Research')],
+      omitted: 0, incomplete: false,
+    },
+  })!;
+  assert.equal(plan.choices, undefined);
+  const written: FrontDeskHandoff[] = [];
+  const tool = createFrontDeskTool({ plan, write: (handoff) => written.push(handoff) });
+  assert.throws(() => tool.run({ data: { agents: ['research'], note: '' } }), (error: Error) =>
+    /suggest the person mention it/.test(error.message) && !/research|support|agent_/i.test(error.message));
+  assert.deepEqual(written, []);
+  tool.run({ data: { agents: ['support-desk'], note: '' } });
+  assert.deepEqual(written, [{ agentIds: ['agent_support'], note: '' }], 'an Agent that needs no pick needs no card');
+});
 
 test('the hand-off tool records one hand-off and ends the run; a refusal records nothing', () => {
   const written: FrontDeskHandoff[] = [];
@@ -431,6 +475,11 @@ test('a hand-off\'s reply is the host\'s line, named from the frozen list, never
     [SLACK_FRONT_DESK_HANDOFF_DATA_NAME]: [{ agentIds: ['agent_support', CHICKPEA_AGENT_ID], note: 'Both can help.' }],
   }), null, PLAN);
   assert.equal(several.text, 'Which Agent should take this? Both can help.');
+
+  const offered = resultFromAgentReply(handoffReply({
+    [SLACK_FRONT_DESK_HANDOFF_DATA_NAME]: [{ agentIds: ['agent_research'], note: 'It researches markets.' }],
+  }), null, PLAN);
+  assert.equal(offered.text, 'Research can take this. It researches markets.');
 
   // A record naming an Agent outside the list, or one on a turn with no front desk, is ignored.
   assert.throws(() => resultFromAgentReply(handoffReply({

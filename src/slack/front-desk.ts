@@ -117,7 +117,7 @@ export function frontDeskMounted(
     (assignment.frontDesk?.agents.length ?? 0) > 0;
 }
 
-/** Names the model may hand to, and whether several may be offered as buttons. */
+/** Names the model may hand to, which need no pick, and whether a card fits the message. */
 export function compileFrontDeskPlan(
   turn: NormalizedSlackTurn,
   assignment: Pick<ResolvedAssignment, 'agentId' | 'runtimeContract' | 'frontDesk'>,
@@ -174,8 +174,8 @@ export function agentChoiceSpecFits(spec: HostAgentChoiceSpec): boolean {
   return new TextEncoder().encode(JSON.stringify(spec)).byteLength <= UI_SURFACE_MAX_SPEC_BYTES;
 }
 
-/** The options a card offers for a hand-off to several Agents, in the order Chickpea named them. */
-export function agentChoiceOptions(
+/** The Agents named, in Chickpea's order, as the frozen list names them. */
+function agentChoiceOptions(
   agentIds: readonly string[],
   plan: Pick<RuntimePlanFrontDeskV1, 'agents'>,
 ): HostAgentChoiceSpec['options'] {
@@ -184,6 +184,33 @@ export function agentChoiceOptions(
     const agent = plan.agents.find(({ id }) => id === agentId);
     return agent ? [{ agentId: agent.id, name: agent.name }] : [];
   });
+}
+
+/** What the host does with a hand-off, and Chickpea's reply saying so. */
+export type FrontDeskDecision =
+  | { kind: 'handoff'; option: HostAgentChoiceSpec['options'][number]; line: string }
+  | { kind: 'card'; options: HostAgentChoiceSpec['options']; line: string };
+
+/**
+ * The host's rule, whatever the model's instructions say: a message goes to
+ * one Agent without asking only when that Agent is `direct` (the person
+ * created it, or it answered them here lately). Any other Agent, and any
+ * choice of several, waits for the person's pick on a card. Names come from
+ * the frozen list, never from the model. Undefined when the record names an
+ * Agent outside the list, or only Chickpea.
+ */
+export function decideFrontDesk(
+  handoff: FrontDeskHandoff,
+  plan: Pick<RuntimePlanFrontDeskV1, 'agents'>,
+): FrontDeskDecision | undefined {
+  const options = agentChoiceOptions(handoff.agentIds, plan);
+  if (options.length !== handoff.agentIds.length || options.length === 0) return undefined;
+  if (options.length > 1) return { kind: 'card', options, line: frontDeskChoiceLine(handoff.note) };
+  const only = options[0]!;
+  if (only.agentId === CHICKPEA_AGENT_ID) return undefined;
+  return plan.agents.some(({ id, direct }) => id === only.agentId && direct)
+    ? { kind: 'handoff', option: only, line: frontDeskHandoffLine(only.name, handoff.note) }
+    : { kind: 'card', options: [only, chickpeaOption()], line: frontDeskOfferLine(only.name, handoff.note) };
 }
 
 export type FrontDeskTargets =
@@ -223,10 +250,13 @@ export function resolveFrontDeskTargets(
   if (agentIds.length === 1 && agentIds[0] === CHICKPEA_AGENT_ID) {
     return { ok: false, error: 'To answer yourself, reply without this tool.' };
   }
-  if (agentIds.length > 1 && !plan.choices) {
+  if (!plan.choices && decideFrontDesk({ agentIds, note: '' }, plan)?.kind === 'card') {
     return {
       ok: false,
-      error: 'Several Agents cannot be offered for this message. Hand it to the one that fits best, or answer yourself.',
+      error: agentIds.length > 1
+        ? 'Several Agents cannot be offered for this message. Hand it to the one that fits best, or answer yourself.'
+        : 'This Agent needs the person\'s pick first, and a pick cannot be offered for this message. ' +
+          'Answer yourself: name the Agent and suggest the person mention it.',
     };
   }
   return { ok: true, agentIds };
@@ -260,6 +290,11 @@ export function frontDeskChoiceLine(note: string): string {
   return withNote('Which Agent should take this?', note);
 }
 
+/** Chickpea's reply above the card when one Agent the person has not used could take the message. */
+export function frontDeskOfferLine(name: string, note: string): string {
+  return withNote(`${name} can take this.`, note);
+}
+
 /** The card once the person picked. */
 export function frontDeskChoiceResolvedLine(option: HostAgentChoiceSpec['options'][number]): string {
   return option.agentId === CHICKPEA_AGENT_ID
@@ -273,22 +308,6 @@ export const FRONT_DESK_CHOICE_EXPIRED_LINE = 'This choice expired. Mention the 
 /** Posted when the chosen Agent's turn could not be admitted. */
 export function frontDeskFailureLine(name: string): string {
   return `I couldn't hand this to ${name}. Mention the Agent you want to try again.`;
-}
-
-/**
- * Chickpea's reply for a hand-off, composed by the host: Agent names come
- * from the frozen list, never from the model. Undefined when the record names
- * an Agent outside the list.
- */
-export function frontDeskReplyText(
-  handoff: FrontDeskHandoff,
-  plan: Pick<RuntimePlanFrontDeskV1, 'agents'>,
-): string | undefined {
-  const options = agentChoiceOptions(handoff.agentIds, plan);
-  if (options.length !== handoff.agentIds.length || options.length === 0) return undefined;
-  if (options.length > 1) return frontDeskChoiceLine(handoff.note);
-  const only = options[0]!;
-  return only.agentId === CHICKPEA_AGENT_ID ? undefined : frontDeskHandoffLine(only.name, handoff.note);
 }
 
 function withNote(line: string, note: string): string {
