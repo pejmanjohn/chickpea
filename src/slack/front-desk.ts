@@ -105,9 +105,10 @@ export function frontDeskConversation(
 
 /**
  * Whether this turn mounts the front desk. Only the system Agent's own root
- * DM turn with a non-empty frozen list does; an edit, an ask, a co-addressed
- * turn, a click, or a turn the front desk itself admitted never does, so
- * Chickpea cannot hand off twice.
+ * DM turn with a non-empty frozen list does, or an edit of it, which decides
+ * again on the new words. An ask, a co-addressed turn, a click, or a turn the
+ * front desk itself admitted never does; an edit of a takeover carries the
+ * takeover's marker and owner, so it never does either.
  */
 export function frontDeskMounted(
   turn: NormalizedSlackTurn,
@@ -116,7 +117,7 @@ export function frontDeskMounted(
   return assignment.agentId === CHICKPEA_AGENT_ID &&
     assignment.runtimeContract === 'chickpea-v1' &&
     frontDeskConversation(turn) &&
-    !turn.edit && !turn.agentAsk && !turn.coAddressed && !turn.frontDesk && !turn.uiResponse &&
+    !turn.agentAsk && !turn.coAddressed && !turn.frontDesk && !turn.uiResponse &&
     (assignment.frontDesk?.agents.length ?? 0) > 0;
 }
 
@@ -199,8 +200,10 @@ function agentChoiceOptions(
 export type FrontDeskDecision =
   | { kind: 'handoff'; option: HostAgentChoiceSpec['options'][number]; line: string }
   | { kind: 'card'; options: HostAgentChoiceSpec['options']; line: string }
-  /** The person took the message back while Chickpea decided: no card, and no takeover. */
-  | { kind: 'expired'; line: string };
+  /** Edited while Chickpea decided: no card and no takeover. The edit's own turn decides again. */
+  | { kind: 'edited'; line: string }
+  /** Deleted while Chickpea decided: nothing is posted, and no Agent takes it. */
+  | { kind: 'deleted' };
 
 /** The person's message as its public record holds it once Chickpea has decided. */
 export type FrontDeskMessageState = 'current' | 'edited' | 'deleted';
@@ -213,9 +216,8 @@ export type FrontDeskMessageState = 'current' | 'edited' | 'deleted';
  * the frozen list, never from the model. Undefined when the record names an
  * Agent outside the list, or only Chickpea.
  *
- * A message edited or deleted while Chickpea decided gets no card, which
- * would offer the old words for a day. A deleted message is not handed over
- * either; an edited one still is, since the person still wants an answer.
+ * A message edited or deleted while Chickpea decided is neither handed over
+ * nor put on a card: either would carry words the person took back.
  */
 export function decideFrontDesk(
   handoff: FrontDeskHandoff,
@@ -226,12 +228,10 @@ export function decideFrontDesk(
   if (options.length !== handoff.agentIds.length || options.length === 0) return undefined;
   const only = options.length === 1 ? options[0]! : undefined;
   if (only?.agentId === CHICKPEA_AGENT_ID) return undefined;
-  const direct = only !== undefined && plan.agents.some(({ id, direct }) => id === only.agentId && direct);
-  if (message === 'deleted' || (message === 'edited' && !direct)) {
-    return { kind: 'expired', line: FRONT_DESK_CHOICE_EXPIRED_LINE };
-  }
+  if (message === 'deleted') return { kind: 'deleted' };
+  if (message === 'edited') return { kind: 'edited', line: FRONT_DESK_MESSAGE_CHANGED_LINE };
   if (!only) return { kind: 'card', options, line: frontDeskChoiceLine(handoff.note) };
-  return direct
+  return plan.agents.some(({ id, direct }) => id === only.agentId && direct)
     ? { kind: 'handoff', option: only, line: frontDeskHandoffLine(only.name, handoff.note) }
     : { kind: 'card', options: [only, chickpeaOption()], line: frontDeskOfferLine(only.name, handoff.note) };
 }
@@ -240,9 +240,13 @@ export function decideFrontDesk(
 const SLACK_DELETED_MESSAGE_TEXT = 'This message was deleted.';
 
 /**
- * The person's message as its public record holds it now. The record applies
- * every edit and delete Slack reports, so this sees one made while Chickpea
- * decided. A record that cannot be read leaves the message as Chickpea read it.
+ * The person's message as its public record holds it now, against the text
+ * the run read (`turn.text`, an edit its start took included). The record
+ * applies every edit and delete Slack reports, so this sees one made while
+ * Chickpea decided. A record that cannot be read leaves the message as
+ * Chickpea read it. A missing row reads as deleted, since a delete without
+ * replies removes the row, so a message whose row was never written is not
+ * handed over either.
  */
 export async function readFrontDeskMessage(
   record: Pick<ConfigStore, 'listSlackPublicContext'>,
@@ -351,12 +355,11 @@ export function frontDeskChoiceResolvedLine(option: HostAgentChoiceSpec['options
     : `${option.name} is taking this.`;
 }
 
-/**
- * The card once it can no longer be picked: past its day, its message
- * changed, or its pick never settled. Also Chickpea's reply in place of a
- * card or a hand-off when the message changed while Chickpea decided.
- */
+/** The card once it can no longer be picked: past its day, its message changed, or its pick never settled. */
 export const FRONT_DESK_CHOICE_EXPIRED_LINE = 'This choice expired. Mention the Agent you want.';
+
+/** Chickpea's reply in place of a hand-off or a card when the person edited the message while it decided. */
+export const FRONT_DESK_MESSAGE_CHANGED_LINE = 'Your message changed before an Agent could take it.';
 
 /** Posted when the chosen Agent's turn could not be admitted. */
 export function frontDeskFailureLine(name: string): string {

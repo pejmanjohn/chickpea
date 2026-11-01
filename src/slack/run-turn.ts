@@ -2269,16 +2269,32 @@ async function runTurnAttempt(
       await options.onDeferredTerminal?.();
       return;
     }
+    // Nothing is posted, and the turn ends like a reaction-only one.
+    const endWithoutReply = async (): Promise<void> => {
+      if (frozenPresentation?.schemaVersion === 3 && agentViewPresentation &&
+          !(await agentViewPresentation.prepareDeferredTerminalDelivery('answer'))) {
+        throw new Error('Slack silent reply requires reconciliation.');
+      }
+      await abandonTurnSurfaces(
+        options.appStores?.slackState ?? getSlackStateStore(platformEnv),
+        options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
+      ).catch(() => undefined);
+      await workLifecycle?.settleWithoutDelivery({ terminalDisposition: 'no_op' });
+      await agentViewPresentation?.recordTerminalDeliveryReceipt('acknowledged');
+      await finishStatus('answer');
+      await finishDelivery('no_op');
+    };
     const frontDeskPlan = runtimePlanDecision?.runtimePlan.frontDesk;
     const frontDeskDecision = agentResult?.frontDeskHandoff && frontDeskPlan
       ? decideFrontDesk(agentResult.frontDeskHandoff, frontDeskPlan, await readFrontDeskMessage(turnConfig, turn))
       : undefined;
     if (frontDeskDecision) {
-      // The host's line, never the model's draft, chosen from the message as
-      // it stands now: one Agent takes the message once the line is
-      // delivered, the person picks on a card, or, for a message the person
-      // took back while Chickpea decided, neither.
       await preparedMemory?.confirmInjection();
+      if (frontDeskDecision.kind === 'deleted') {
+        await endWithoutReply();
+        return;
+      }
+      // The host's line, never the model's draft.
       review.answer = frontDeskDecision.line;
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(frontDeskDecision.line, 'plain_text', 'complete');
@@ -2416,18 +2432,7 @@ async function runTurnAttempt(
       !acknowledgeMemoryUpdate && !artifacts?.length && !tablePresentation &&
       !agentResult?.displayComponents?.length && !workChecklistTs;
     if (silentEnding) {
-      if (frozenPresentation?.schemaVersion === 3 && agentViewPresentation &&
-          !(await agentViewPresentation.prepareDeferredTerminalDelivery('answer'))) {
-        throw new Error('Slack silent reply requires reconciliation.');
-      }
-      await abandonTurnSurfaces(
-        options.appStores?.slackState ?? getSlackStateStore(platformEnv),
-        options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
-      ).catch(() => undefined);
-      await workLifecycle?.settleWithoutDelivery({ terminalDisposition: 'no_op' });
-      await agentViewPresentation?.recordTerminalDeliveryReceipt('acknowledged');
-      await finishStatus('answer');
-      await finishDelivery('no_op');
+      await endWithoutReply();
       return;
     }
     const terminalResult = options.replayTerminalResult ?? 'answer';
