@@ -1,7 +1,22 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { createWorkModelInvocationInterceptor } from '../src/work/model-invocation.ts';
+import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
+import {
+  createSlackTurnInput,
+  serializeSlackTurnInput,
+  slackTurnSubmissionId,
+  useAgentObjectStorageForTests,
+  writeStagedTurnInput,
+} from '../src/agents/turn-input.ts';
+import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import {
+  createWorkModelInvocationInterceptor,
+  currentFlueObservationContext,
+} from '../src/work/model-invocation.ts';
+import { sqlStorage } from './helpers/agent-object-sql.ts';
+import { withCloudflareUserAgent } from './helpers/cloudflare-target.ts';
 
 const correlation = {
   runId: 'run_invocation_boundary',
@@ -142,6 +157,62 @@ test('an observe-mode invocation whose marker fails is not marked again by later
   }
   assert.equal(providerCalls, 50, 'the legacy execution continues');
   assert.equal(marks, 1, 'one store attempt for the invocation, not one per model operation');
+});
+
+test('a Slack agent whose staged input carries the observation correlates from its own storage; one without it asks the state store', async () => {
+  const agent: CustomAgentConfig = {
+    id: 'agent_invocation', kind: 'user', revision: 1, name: 'Invocation', instructions: 'Correlate.',
+    enabled: true, model: 'openai/gpt-5.4-mini', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  };
+  const turn: NormalizedSlackTurn = {
+    workspaceId: 'T_WORK', channelId: 'C_WORK', eventId: 'E_WORK', text: 'Correlate me.', userId: 'U_ALICE',
+    messageTs: '1788000000.000200', threadTs: '1788000000.000100', source: 'app_mention', contextMode: 'thread',
+  };
+  const assignment: ResolvedAssignment = {
+    workspaceId: 'T_WORK', channelId: 'C_WORK', agentId: agent.id, agent, runtimeContract: 'chickpea-v1',
+    ownerIncarnation: 1, model: 'openai/gpt-5.4-mini', modelAttribution: { source: 'pinned', providerId: 'openai' },
+  };
+  const plan = compileRuntimePlanV2({ turn, assignment, instructions: agent.instructions, memoryEpoch: 1 });
+  const instanceId = deriveRuntimePlanInstanceId(plan);
+  const observation = { generation: 'msg:C_WORK:1788000000.000200', workCorrelation: correlation, harnessRevision: plan.harnessRevision };
+  const stagedSubmission = await slackTurnSubmissionId(instanceId, 'turn_staged');
+  const bareSubmission = await slackTurnSubmissionId(instanceId, 'turn_bare');
+  const sql = sqlStorage();
+  writeStagedTurnInput(sql, serializeSlackTurnInput(createSlackTurnInput({
+    turnJobId: 'turn_staged', instanceId, runtimePlan: plan, submissionId: stagedSubmission, observation,
+  })), 1);
+  writeStagedTurnInput(sql, serializeSlackTurnInput(createSlackTurnInput({
+    turnJobId: 'turn_bare', instanceId, runtimePlan: plan, submissionId: bareSubmission,
+  })), 2);
+
+  const storeReads: string[] = [];
+  const interceptor = createWorkModelInvocationInterceptor({
+    resolveTarget: async (_instanceId, submissionId) => {
+      storeReads.push(submissionId);
+      return { ...observation, turnJobId: 'turn_bare', instanceId, submissionId };
+    },
+    markInvocation: async () => {},
+  });
+  const correlated: unknown[] = [];
+  useAgentObjectStorageForTests(() => ({ storage: { sql } }));
+  try {
+    await withCloudflareUserAgent(async () => {
+      for (const submissionId of [stagedSubmission, bareSubmission]) {
+        await interceptor(
+          { type: 'agent', operationId: submissionId, operationKind: 'prompt' },
+          { instanceId, submissionId, agentName: 'chickpea-slack-v2' },
+          async () => { correlated.push(currentFlueObservationContext()?.target); },
+        );
+      }
+    });
+  } finally {
+    useAgentObjectStorageForTests(undefined);
+  }
+  assert.deepEqual(correlated, [
+    { ...observation, turnJobId: 'turn_staged', instanceId, submissionId: stagedSubmission },
+    { ...observation, turnJobId: 'turn_bare', instanceId, submissionId: bareSubmission },
+  ]);
+  assert.deepEqual(storeReads, [bareSubmission], 'only the turn staged without an observation reaches the state store');
 });
 
 test('an observe-mode invocation marks while the provider request is in flight, and the mark still lands', async () => {

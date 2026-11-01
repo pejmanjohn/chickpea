@@ -36,6 +36,7 @@ import {
   createSlackTurnInput,
   rememberInProcessTurnInput,
   serializeSlackTurnInput,
+  slackTurnSubmissionId,
   stageSlackTurnInputOnAgentObject,
   type SlackTurnInputV1,
 } from '../agents/turn-input.ts';
@@ -324,20 +325,27 @@ interface PromptSlackAgentInput {
 }
 
 /**
- * Stage this turn's plan and memory beside its thread instance, before the
- * dispatch that renders them. Repeating it for a retried dispatch is
- * harmless: the first staged input for a turn wins, and its plan is frozen.
+ * Stage this turn's plan, memory, observation, and envelope beside its thread
+ * instance, before the dispatch that renders them. Repeating it for a retried
+ * dispatch is harmless: the first staged input for a turn wins, and its plan
+ * is frozen. The envelope is the one this attempt froze; a retry that holds
+ * its dispatch envelope froze none, and the agent fetches it then.
  */
 async function stageTurnInputForDispatch(
   input: PromptSlackAgentInput,
   envelope: FlueDispatchEnvelopeV1,
   runtimePlan: RuntimePlanV2,
+  observation: FlueTurnObservationV1,
+  turnEnvelope: TurnEnvelopeV1 | undefined,
 ): Promise<void> {
   const turnInput = createSlackTurnInput({
     turnJobId: envelope.idempotencyKey,
     instanceId: envelope.instanceId,
     runtimePlan,
     memoryBlock: input.memoryBlock,
+    submissionId: await slackTurnSubmissionId(envelope.instanceId, envelope.idempotencyKey),
+    observation,
+    turnEnvelope,
   });
   try {
     if (input.stageTurnInput) {
@@ -424,18 +432,22 @@ export async function promptSlackThreadAgent(
   // observed with bounded immediate reads instead of Flue's `read()`.
   const observeReply = input.observeReply ??
     (isCloudflareTarget() ? createCloudflareBoundedAgentReplyReader(input.env) : undefined);
-  let envelope = input.state.dispatchEnvelope ??
-    await input.state.prepare(
+  let turnEnvelope: TurnEnvelopeV1 | undefined;
+  let envelope = input.state.dispatchEnvelope;
+  if (!envelope) {
+    turnEnvelope = await buildTurnEnvelopeSafely(input.buildTurnEnvelope);
+    envelope = await input.state.prepare(
       input.message,
       observation,
       input.threadImages,
       input.admittedListIds,
-      await buildTurnEnvelopeSafely(input.buildTurnEnvelope),
+      turnEnvelope,
       input.threadFileIds,
     );
+  }
   input.state.dispatchEnvelope = envelope;
   if (!input.state.dispatchReceipt && input.runtimePlan) {
-    await stageTurnInputForDispatch(input, envelope, input.runtimePlan);
+    await stageTurnInputForDispatch(input, envelope, input.runtimePlan, observation, turnEnvelope);
   }
   const agent = input.handle ? undefined : await slackThreadAgent();
   let handle = input.handle ?? slackThreadAgentHandle(agent!, envelope);

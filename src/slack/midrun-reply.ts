@@ -2,6 +2,7 @@ import { useTool } from '@flue/runtime';
 import * as v from 'valibot';
 
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { getSlackStateStore, type PlatformEnv } from '../config/state-backend.ts';
 import { currentFlueObservationContext } from '../work/model-invocation.ts';
 import type { SlackFollowUps } from './follow-up-fold.ts';
 import { SLACK_REPLY_IN_THREAD_TOOL_NAME } from './follow-ups.ts';
@@ -131,7 +132,9 @@ export function createMidRunReplyHandler(input: {
 /**
  * The Agent's side of the post: the live turn's registry in this process on
  * Node, or the thread runner that executes the turn on Cloudflare. Only a
- * runner's turn reads messages mid-run there (see slackTurnFold).
+ * runner's turn reads messages mid-run there (see slackTurnFold). A target
+ * the host staged beside the instance carries no executor route, so the
+ * route is read from the state store here, once per post.
  */
 export async function relayMidRunReply(request: MidRunReplyRequest): Promise<MidRunReplyOutcome> {
   const context = currentFlueObservationContext();
@@ -140,11 +143,14 @@ export async function relayMidRunReply(request: MidRunReplyRequest): Promise<Mid
   if (!isCloudflareTarget()) {
     return defaultSlackStatusRegistry.midRunReply(context.instanceId, target.generation, request);
   }
-  if (target.executor !== 'runner' || !target.runnerKey) return { posted: false, refusal: 'unavailable' };
   try {
     const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
-    const env = getCloudflareContext().env as Record<string, unknown> | undefined;
-    const runner = threadRunnerStub(env, target.runnerKey);
+    const env = getCloudflareContext().env as PlatformEnv;
+    const route = target.runnerKey
+      ? target
+      : await getSlackStateStore(env).matchFlueObservation?.(context.instanceId, context.submissionId);
+    if (route?.executor !== 'runner' || !route.runnerKey) return { posted: false, refusal: 'unavailable' };
+    const runner = threadRunnerStub(env, route.runnerKey);
     if (!runner) return { posted: false, refusal: 'unavailable' };
     return await runner.midRunReply(context.instanceId, context.submissionId, request);
   } catch {

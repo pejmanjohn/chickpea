@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { FlueExecutionInterceptor } from '@flue/runtime';
 
+import { readStagedSlackObservationTarget } from '../agents/turn-input.ts';
 import {
   getSlackStateStore,
   getWorkStore,
@@ -52,6 +53,8 @@ export function currentFlueObservationContext(): ActiveFlueObservationContext | 
  * Resolve app-owned TurnJob correlation from Flue's instance/submission facts,
  * then persist invocation immediately before the first model operation. No
  * trace header, delivered attribute, or prompt-visible identifier is used.
+ * The correlation comes from the input the host staged in the agent object
+ * when it carries one; `resolveTarget` (the state store) answers otherwise.
  */
 export function createWorkModelInvocationInterceptor(options: {
   resolveTarget?: ResolveTarget;
@@ -70,7 +73,8 @@ export function createWorkModelInvocationInterceptor(options: {
       const instanceId = context.instanceId;
       const submissionId = context.submissionId;
       if (!instanceId || !submissionId) return next();
-      const target = await resolveTarget(instanceId, submissionId);
+      const target = readStagedSlackObservationTarget(instanceId, submissionId) ??
+        await resolveTarget(instanceId, submissionId);
       if (!target) {
         throw new Error('Slack TurnJob observation correlation is unavailable.');
       }
