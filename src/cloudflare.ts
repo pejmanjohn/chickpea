@@ -769,11 +769,11 @@ Sandbox.outbound = denySandboxOutbound;
 // would likely re-fail; a couple of seconds lets a transient Slack blip clear.
 const RELAY_RETRY_BACKOFF_MS = 2_000;
 
-// A tiny first-fire window lets Slack events from the same burst land in the
-// queue before the alarm snapshots it. The alarm already fans independent
-// conversations out concurrently; without this window, the first event can
-// start a long turn milliseconds before its neighbors enqueue and serialize
-// the whole burst behind it.
+// Under the alarm executor, a tiny first-fire window lets Slack events from
+// the same burst land in the queue before the alarm snapshots it. The alarm
+// fans independent conversations out concurrently; without this window, the
+// first event can start a long turn milliseconds before its neighbors enqueue
+// and serialize the whole burst behind it.
 const RELAY_BATCH_WINDOW_MS = 250;
 
 // Pages of MAX_TURN_DRAIN_BATCH threads one alarm hands to thread runners.
@@ -2076,12 +2076,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     });
     // Arm the alarm only after the row is written, and AWAIT it: the job + the
     // armed alarm must both be durable before this RPC resolves, because the
-    // events handler acks Slack the instant it does. A small, non-sliding batch
-    // window lets near-simultaneous independent threads reach the existing
-    // bounded fan-out. Bring a later receipt/retry alarm forward for new work,
-    // but never move an already-armed alarm later.
+    // events handler acks Slack the instant it does. Under the alarm executor
+    // a small, non-sliding batch window lets near-simultaneous independent
+    // threads reach the existing bounded fan-out. Bring a later receipt/retry
+    // alarm forward for new work, but never move an already-armed alarm later.
     if (result.ok) {
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
+      await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
     }
     return result;
   }
@@ -2095,7 +2095,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const decision = result.value;
     if (decision.outcome === 'enqueue' && decision.enqueued) {
       // As enqueueTurn: the row and its alarm are durable before the reply.
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
+      await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
     } else {
       await this.offerCreatedStop(decision);
     }
@@ -2248,7 +2248,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       if (admitted.value !== 'verified') outcome = admitted.value;
       // A duplicate also arms recovery: a previous insert may have survived an
       // alarm-write failure or loss of the HTTP response.
-      if (admitted.value !== 'verified') await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
+      if (admitted.value !== 'verified') await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
       return {status:200, body:httpDeliveryReceipt(value, admitted.value)};
     } catch (error) {
       return {status:error instanceof HttpDeliveryError ? error.status : 503,
@@ -2267,7 +2267,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       return gatewayUiReceiptNow(delivery, stores.uiSurfaces) ?? stores.gatewayInbox.admit(delivery);
     });
     if (result.ok && typeof result.value === 'string') {
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
+      await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
     }
     return result;
   }
@@ -2293,7 +2293,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       ? await this.admitToRunner(result.value.runnerJob)
       : false;
     if (result.value.resumed && !readmitted) {
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
+      await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
     }
     return { ok: true, value: result.value.resumed };
   }
@@ -2794,6 +2794,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       await loop.catch(() => undefined);
       this.dispatchWake = undefined;
     }
+  }
+
+  // Runner mode skips the batch window. Its alarm only hands each turn to the
+  // turn's own thread runner, and a running drain already picks up later
+  // admissions, so the window would only delay every turn.
+  private admissionWakeAt(): number {
+    const runnerMode = Boolean((this.env as PlatformEnv).SLACK_THREAD_RUNNER) &&
+      slackTurnExecutor(this.env as PlatformEnv) === 'runner';
+    return runnerMode ? Date.now() : Date.now() + RELAY_BATCH_WINDOW_MS;
   }
 
   private async armAlarmNoLaterThan(at: number, admission = false): Promise<void> {

@@ -56,7 +56,7 @@ const stateClass = source.statements.find((node) =>
 assert.ok(stateClass && ts.isClassDeclaration(stateClass));
 const methodNames = [
   'enqueueTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
-  'maintainWork', 'armAlarmNoLaterThan',
+  'maintainWork', 'armAlarmNoLaterThan', 'admissionWakeAt',
 ];
 const methods = methodNames.map((name) => {
   const method = stateClass.members.find((member) =>
@@ -93,6 +93,7 @@ const compiled = ts.transpileModule(
 
 type Result = { ok: true; value: unknown } | { ok: false; error: { code: string } };
 type Probe = {
+  env: object;
   ctx: { storage: { getAlarm(): Promise<number | null>; setAlarm(at: number): Promise<void> } };
   call: (callback: (stores: unknown) => unknown) => Result;
   enqueueTurn(job: object): Promise<Result>;
@@ -103,18 +104,34 @@ type Probe = {
 const ProbeClass = vm.runInNewContext(compiled, {
   Date,
   oauthResumeTurnJobId: (id: string) => `oauthresume:${id}`,
+  slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
 }) as new () => Probe;
 const NOW = 1_800_000_000_000;
 const BATCH_MS = 250;
-const entryPoints: Array<{ name: string; invoke(probe: Probe): Promise<Result>; inactive: unknown }> = [
-  { name: 'new turn', invoke: (probe) => probe.enqueueTurn({ id: 'new' }), inactive: null },
-  { name: 'OAuth resume', invoke: (probe) => probe.resumeTurnAfterOAuth('task', 'continuation'), inactive: false },
-  { name: 'installation recovery', invoke: (probe) => probe.slackInstallationRecoveryRetry('workspace'), inactive: 0 },
-  { name: 'work maintenance', invoke: (probe) => probe.maintainWork(NOW), inactive: false },
+const RUNNER_ENV = { SLACK_THREAD_RUNNER: {} };
+const executors = [
+  { name: 'runner executor', env: RUNNER_ENV, admissionWake: NOW },
+  { name: 'alarm executor', env: { ...RUNNER_ENV, SLACK_TAG_TURN_EXECUTOR: 'alarm' }, admissionWake: NOW + BATCH_MS },
+  { name: 'no runner binding', env: {}, admissionWake: NOW + BATCH_MS },
+];
+const entryPoints: Array<{
+  name: string; invoke(probe: Probe): Promise<Result>; inactive: unknown; admission: boolean;
+}> = [
+  { name: 'new turn', invoke: (probe) => probe.enqueueTurn({ id: 'new' }), inactive: null, admission: true },
+  {
+    name: 'OAuth resume', invoke: (probe) => probe.resumeTurnAfterOAuth('task', 'continuation'),
+    inactive: false, admission: true,
+  },
+  {
+    name: 'installation recovery', invoke: (probe) => probe.slackInstallationRecoveryRetry('workspace'),
+    inactive: 0, admission: false,
+  },
+  { name: 'work maintenance', invoke: (probe) => probe.maintainWork(NOW), inactive: false, admission: false },
 ];
 
-function fixture(initialAlarm: number | null, result?: Result) {
+function fixture(initialAlarm: number | null, result?: Result, env: object = RUNNER_ENV) {
   const probe = new ProbeClass();
+  probe.env = env;
   let alarm = initialAlarm;
   let persisted = false;
   const writes: number[] = [];
@@ -146,20 +163,23 @@ function fixture(initialAlarm: number | null, result?: Result) {
 }
 
 for (const entry of entryPoints) {
-  for (const [label, initial] of [
-    ['missing', null], ['later retry', NOW + 120_000],
-    ['earlier', NOW + 100], ['equal', NOW + BATCH_MS], ['overdue', NOW - 100],
-  ] as const) {
-    test(`${entry.name} respects its wake policy for a ${label} alarm`, async (context) => {
-      context.mock.method(Date, 'now', () => NOW);
-      const { probe, writes, alarm } = fixture(initial);
-      assert.equal((await entry.invoke(probe)).ok, true);
-      const expected = entry.name === 'work maintenance' && initial !== null
-        ? initial
-        : Math.min(initial ?? Infinity, NOW + BATCH_MS);
-      assert.equal(alarm(), expected);
-      assert.deepEqual(writes, initial === expected ? [] : [expected]);
-    });
+  for (const executor of executors) {
+    for (const [label, initial] of [
+      ['missing', null], ['later retry', NOW + 120_000], ['100 ms', NOW + 100],
+      ['window-end', NOW + BATCH_MS], ['due now', NOW], ['overdue', NOW - 100],
+    ] as const) {
+      test(`${entry.name} respects its wake policy for a ${label} alarm (${executor.name})`, async (context) => {
+        context.mock.method(Date, 'now', () => NOW);
+        const { probe, writes, alarm } = fixture(initial, undefined, executor.env);
+        assert.equal((await entry.invoke(probe)).ok, true);
+        const wake = entry.admission ? executor.admissionWake : NOW + BATCH_MS;
+        const expected = entry.name === 'work maintenance' && initial !== null
+          ? initial
+          : Math.min(initial ?? Infinity, wake);
+        assert.equal(alarm(), expected);
+        assert.deepEqual(writes, initial === expected ? [] : [expected]);
+      });
+    }
   }
 
   test(`${entry.name} does not arm an alarm after a failed store operation`, async () => {
@@ -221,7 +241,8 @@ for (const withPendingTurn of [false, true]) {
       `${batchDeclaration.getText(source)}\n${executorCode}\n${portCode}\nclass AlarmProbe { ${methods.join('\n')}\n${alarmMethods.join('\n')} }\nAlarmProbe`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
     ).outputText;
-    const { probe: storageProbe, alarm, writes } = fixture(null);
+    // The drain below runs the alarm executor, so the turn it admits keeps the batch window.
+    const { probe: storageProbe, alarm, writes } = fixture(null, undefined, {});
     const relayAlarmRecords: object[] = [];
     const AlarmProbe = vm.runInNewContext(alarmCode, {
       ...stopGlobals,
@@ -780,7 +801,9 @@ test('the default runner executor hands a message admitted mid-drain to its runn
 
 test('an OAuth continuation already handed to a thread runner is admitted there again', async (context) => {
   context.mock.method(Date, 'now', () => NOW);
-  const resumeMethods = ['resumeTurnAfterOAuth', 'admitToRunner', 'armAlarmNoLaterThan'].map((name) => {
+  const resumeMethods = [
+    'resumeTurnAfterOAuth', 'admitToRunner', 'armAlarmNoLaterThan', 'admissionWakeAt',
+  ].map((name) => {
     const method = stateClass.members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
     assert.ok(method, `production method ${name} exists`);
@@ -796,6 +819,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
     Date,
     console: { warn() {} },
     oauthResumeTurnJobId: (id: string) => `oauthresume:${id}`,
+    slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
     slackAgentThreadKey: () => 'T1:C1:1.0:owner-i1',
     installationOwnershipOf,
     threadRunnerStub: (_env: unknown, threadKey: string) => ({
