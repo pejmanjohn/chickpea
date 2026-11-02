@@ -1013,6 +1013,8 @@ async function runTurnAttempt(
   };
   const statusRegistry = options.statusRegistry ?? defaultSlackStatusRegistry;
   let admissionStatusAttempted = false;
+  /** Settles once the admitted activity's custom status landed or failed; none: settled. */
+  let admittedStatusShown: Promise<unknown> = Promise.resolve();
   /**
    * The turn's first Slack writes, which need only the client and the frozen
    * presentation: the native indicator, then the admitted pending activity as
@@ -1061,7 +1063,9 @@ async function runTurnAttempt(
         frozenPresentation.currentActivity?.operation.certainty === 'pending') {
       admissionStatusAttempted = true;
       const admitted = frozenPresentation.currentActivity;
-      await registered.setStatus(activityStatus(
+      // Not awaited here: the turn reads while Slack takes it, and its first
+      // visible write after those reads waits for it (`openingStatusShown`).
+      admittedStatusShown = registered.setStatus(activityStatus(
         admitted.kind,
         admitted.action,
         admitted.object,
@@ -1275,6 +1279,7 @@ async function runTurnAttempt(
   } catch (error) {
     // Only the status turn is open yet. Like any failed V3 attempt, it keeps
     // the admitted activity visible for the next attempt.
+    await admittedStatusShown;
     earlyStatusTurn?.close();
     await judgment?.settled;
     throw error;
@@ -1313,9 +1318,15 @@ async function runTurnAttempt(
     : await beginVisibleWork(statusInstanceId));
   // A reattached turn showed it on its first attempt.
   const readingFollowUps = followUps.length > 0 && !options.flueDispatch?.dispatchReceipt;
-  if (readingFollowUps) {
-    await statusTurn.setStatus(foldActivityStatus(followUps, 'start')).catch(() => false);
-  }
+  // The turn's opening status writes, in order: the admitted activity, then
+  // the follow-ups it reads. The turn's reads (the lease check, the thread's
+  // context) and its judgment do not wait for them; everything visible after
+  // those reads does, so no later write or presentation transition can land
+  // between them.
+  const openingStatusShown = readingFollowUps
+    ? admittedStatusShown.then(() =>
+        statusTurn.setStatus(foldActivityStatus(followUps, 'start')).catch(() => false))
+    : admittedStatusShown;
   // Once per turn; a failed hint never holds back the task's progress.
   let codingTaskSignalled = false;
   const signalCodingTaskStarted = async () => {
@@ -1644,6 +1655,7 @@ async function runTurnAttempt(
   //    Agent Session lifecycle only and never creates a progress message.
   try {
     if (stoppedBeforeDispatch) {
+      await openingStatusShown;
       // The stop refused this turn's dispatch: nothing ran, so it ends now.
       stopping = true;
       const facts = await options.stopEnding!.finish();
@@ -1663,13 +1675,15 @@ async function runTurnAttempt(
     // Nothing below acts before the basis is recorded; a retry restores it and
     // never judges again.
     const intent = await judgment?.basis ?? turn.interactionIntent;
-    if (preparedMemory?.ownerBound && !(await leaseCheck)) {
+    const leaseLost = preparedMemory?.ownerBound === true && !(await leaseCheck);
+    await openingStatusShown;
+    if (leaseLost) {
       // Fail closed, never silently: the durable relay only retires a turn job
       // once delivery is tombstoned, so an early `return` here left the job
       // pending and the alarm re-armed forever behind a live "Thinking…"
       // status. Mirror the post-run lease fence: one sanitized final, the
       // status cleared, and a terminal delivery outcome.
-      logMemoryLeaseFailure('before_run', assignment.agentId, preparedMemory.quarantined === true);
+      logMemoryLeaseFailure('before_run', assignment.agentId, preparedMemory?.quarantined === true);
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(failureFinalText(turn, AGENT_FAILURE_TEXT), 'plain_text', 'error');
       await finishStatus('failure');
@@ -2642,6 +2656,8 @@ async function runTurnAttempt(
     }
     throw err;
   } finally {
+    // An attempt that ended before its opening status writes landed leaves none in flight.
+    await openingStatusShown;
     // A yielded turn is still running: it ends nothing a reattaching attempt
     // needs (its status and acknowledgment), the same as an attempt the
     // platform killed mid-observation.

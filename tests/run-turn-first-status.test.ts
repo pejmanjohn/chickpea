@@ -479,8 +479,11 @@ test('a rejected custom status shows native again, without a second start', asyn
   }
 });
 
-test('classification and the plan do not wait for the custom status acknowledgement', async () => {
-  const reads = ['turnJobs.recordInteractionIntent', 'turnJobs.freezeRuntimePlan'];
+// Defects caught: the thread's context read waiting for the opening status
+// writes again (the 864 ms chain in the Amber d3 trace), and the reply
+// overtaking the admitted status.
+test('classification, the plan and the thread context do not wait for the custom status acknowledgement; the reply does', async () => {
+  const reads = ['turnJobs.recordInteractionIntent', 'turnJobs.freezeRuntimePlan', 'slack:conversations.replies'];
   holdCustomStatus = (timeline) => waitUntil(() => reads.every((read) => timeline.includes(read)));
   try {
     const { timeline } = await firstStatusTimeline('channel_mention', null);
@@ -491,6 +494,8 @@ test('classification and the plan do not wait for the custom status acknowledgem
       assert.ok(at >= 0, `${read} happens`);
       assert.ok(at < acknowledged, `${read} does not wait for the custom status acknowledgement`);
     }
+    const reply = timeline.findIndex((entry) => entry.startsWith('slack:chat.'));
+    assert.ok(reply > acknowledged, `the reply follows the admitted status: ${timeline.join(' ')}`);
   } finally {
     holdCustomStatus = undefined;
   }
