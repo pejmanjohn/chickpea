@@ -224,7 +224,6 @@ export function managedCapabilityDefinition(
   return detail.connector.capabilities.find(({ id }) => id === capabilityId.trim());
 }
 
-
 export function semanticDescriptorForManagedCapability(
   capabilityId: string,
 ): SemanticActivityDescriptor | undefined {

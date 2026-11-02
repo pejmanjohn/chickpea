@@ -314,7 +314,7 @@ test('every managed connector has a safe read-only canary manifest', async () =>
   for (const connector of MANAGED_CONNECTOR_CATALOG.list()) {
     const manifest = MANAGED_CONNECTOR_CANARY_MANIFESTS[connector.toolkit];
     assert.ok(manifest, connector.toolkit);
-    const capability = (await loadManagedCapability(manifest.capability));
+    const capability = await loadManagedCapability(manifest.capability);
     assert.equal(capability?.connectorToolkit, connector.toolkit);
     assert.equal(capability?.accessLane, 'read');
     assert.equal(capability?.effect, 'read');
@@ -345,9 +345,9 @@ test('managed catalog rejects semantic overrides outside the closed vocabulary',
 });
 
 test('YouTube schemas keep channels local, uploads confined, and publication narrow', async () => {
-  const upload = (await loadManagedCapability('youtube.videos.upload'));
-  const search = (await loadManagedCapability('youtube.search.public'));
-  const update = (await loadManagedCapability('youtube.videos.update'));
+  const upload = await loadManagedCapability('youtube.videos.upload');
+  const search = await loadManagedCapability('youtube.search.public');
+  const update = await loadManagedCapability('youtube.videos.update');
   assert.ok(upload && search && update);
   assert.equal(v.safeParse(upload.input, {
     channelHandle: 'channel_primary',
@@ -373,9 +373,9 @@ test('YouTube schemas keep channels local, uploads confined, and publication nar
 });
 
 test('Google Ads schemas reject free-form queries, raw customer IDs, excessive reports, and unsafe amounts', async () => {
-  const report = (await loadManagedCapability('ads.campaigns.report'));
-  const budget = (await loadManagedCapability('ads.budgets.update_amount'));
-  const ad = (await loadManagedCapability('ads.ads.create_paused'));
+  const report = await loadManagedCapability('ads.campaigns.report');
+  const budget = await loadManagedCapability('ads.budgets.update_amount');
+  const ad = await loadManagedCapability('ads.ads.create_paused');
   assert.ok(report && budget && ad);
 
   assert.equal(v.safeParse(report.input, {
@@ -404,9 +404,9 @@ test('Google Ads schemas reject free-form queries, raw customer IDs, excessive r
 });
 
 test('Gong schemas bound workspaces, date ranges, task filters, and transcript chunks', async () => {
-  const calls = (await loadManagedCapability('gong.calls.list'));
-  const transcript = (await loadManagedCapability('gong.transcripts.get'));
-  const tasks = (await loadManagedCapability('gong.tasks.list'));
+  const calls = await loadManagedCapability('gong.calls.list');
+  const transcript = await loadManagedCapability('gong.transcripts.get');
+  const tasks = await loadManagedCapability('gong.tasks.list');
   assert.ok(calls && transcript && tasks);
   assert.equal(v.safeParse(calls.input, {
     workspaceHandle: 'workspace_primary',
@@ -429,9 +429,9 @@ test('Gong schemas bound workspaces, date ranges, task filters, and transcript c
 });
 
 test('HubSpot schemas keep CRM properties typed, allowlisted, and bounded', async () => {
-  const search = (await loadManagedCapability('hubspot.objects.search'));
-  const create = (await loadManagedCapability('hubspot.contacts.create'));
-  const update = (await loadManagedCapability('hubspot.deals.update'));
+  const search = await loadManagedCapability('hubspot.objects.search');
+  const create = await loadManagedCapability('hubspot.contacts.create');
+  const update = await loadManagedCapability('hubspot.deals.update');
   assert.ok(search && create && update);
 
   assert.equal(v.safeParse(search.input, {
@@ -457,7 +457,7 @@ test('HubSpot schemas keep CRM properties typed, allowlisted, and bounded', asyn
 });
 
 test('HubSpot search sorts and filters every object type by its standard timestamps', async () => {
-  const search = (await loadManagedCapability('hubspot.objects.search'));
+  const search = await loadManagedCapability('hubspot.objects.search');
   assert.ok(search);
   const timestamps = {
     contacts: ['createdate', 'lastmodifieddate'],
@@ -488,9 +488,9 @@ test('HubSpot search sorts and filters every object type by its standard timesta
 });
 
 test('analytics schemas bound resource handles, dates, dimensions, metrics, and result rows', async () => {
-  const search = (await loadManagedCapability('search_console.analytics.query'));
-  const report = (await loadManagedCapability('analytics.reports.run'));
-  const funnel = (await loadManagedCapability('analytics.reports.funnel'));
+  const search = await loadManagedCapability('search_console.analytics.query');
+  const report = await loadManagedCapability('analytics.reports.run');
+  const funnel = await loadManagedCapability('analytics.reports.funnel');
   assert.ok(search && report && funnel);
 
   assert.equal(v.safeParse(search.input, {
@@ -537,8 +537,8 @@ test('analytics schemas bound resource handles, dates, dimensions, metrics, and 
 });
 
 test('Notion schemas permit bounded scalar edits but reject archive and raw block shapes', async () => {
-  const properties = (await loadManagedCapability('notion.pages.update_properties'));
-  const blocks = (await loadManagedCapability('notion.pages.append_blocks'));
+  const properties = await loadManagedCapability('notion.pages.update_properties');
+  const blocks = await loadManagedCapability('notion.pages.append_blocks');
   assert.ok(properties && blocks);
   assert.equal(v.safeParse(properties.input, {
     pageId: 'page_1',
@@ -567,9 +567,9 @@ test('Notion schemas permit bounded scalar edits but reject archive and raw bloc
 });
 
 test('productivity schemas reject unbounded payloads and arbitrary Slides requests', async () => {
-  const sheetsWrite = (await loadManagedCapability('sheets.values.update'));
-  const docsMarkdown = (await loadManagedCapability('docs.documents.create_markdown'));
-  const slidesUpdate = (await loadManagedCapability('slides.presentations.batch_update'));
+  const sheetsWrite = await loadManagedCapability('sheets.values.update');
+  const docsMarkdown = await loadManagedCapability('docs.documents.create_markdown');
+  const slidesUpdate = await loadManagedCapability('slides.presentations.batch_update');
   assert.ok(sheetsWrite && docsMarkdown && slidesUpdate);
 
   assert.equal(v.safeParse(sheetsWrite.input, {
