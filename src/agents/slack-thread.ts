@@ -1823,8 +1823,6 @@ function createRuntimePlanSandbox(
       // Native plans grant only their frozen connector scopes. Empty plans
       // need no account reads.
       if (!plan.repositories.length) {
-        // Loaded here, as egress.ts does for the scoped shell, to keep the
-        // interpreter out of the Worker's startup graph.
         return bash(async () => {
           const { Bash, InMemoryFs } = await import('just-bash');
           return new Bash({ fs: new InMemoryFs() });

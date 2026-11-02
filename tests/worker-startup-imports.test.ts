@@ -102,7 +102,9 @@ function reachable(entries: string[], followDynamic: boolean): Map<string, strin
   return chains;
 }
 
-const isModule = (node: string, module: string) => node === module || node.startsWith(module + '/');
+function isModule(node: string, module: string): boolean {
+  return node === module || node.startsWith(module + '/');
+}
 
 test('the lazily loaded modules stay out of what the Worker loads at startup', () => {
   const entries = workerEntries();
