@@ -1,18 +1,6 @@
 import { isRecord } from '../security/content-validation.ts';
 import { decodeBase64Url, encodeBase64Url } from '../security/base64url.ts';
 import { applicationIdentity } from '../release/identity.ts';
-import {
-  discoverAuthorizationServerMetadata,
-  discoverOAuthProtectedResourceMetadata,
-  exchangeAuthorization,
-  refreshAuthorization,
-  registerClient,
-  startAuthorization,
-} from '@modelcontextprotocol/sdk/client/auth.js';
-import {
-  checkResourceAllowed,
-  resourceUrlFromServerUrl,
-} from '@modelcontextprotocol/sdk/shared/auth-utils.js';
 import type {
   AuthorizationServerMetadata,
   OAuthClientInformationMixed,
@@ -31,6 +19,7 @@ import {
 import { UnknownAgentError } from './errors.ts';
 import { AGENT_ID_PATTERN } from './agent-id.ts';
 import { validConnectionCredentialRef } from './connection-credential-binding.ts';
+import { mcpOAuthSdk } from './mcp-sdk.ts';
 import {
   stageMcpSecretCleanup,
   type McpSecretRef,
@@ -357,11 +346,12 @@ export async function startMcpOAuthAuthorization(
   }
 
   const fetchFn = guardedOAuthFetch(dependencies);
+  const oauth = await mcpOAuthSdk.load();
   let resourceMetadata: OAuthProtectedResourceMetadata;
   let metadata: AuthorizationServerMetadata | undefined;
   let authorizationServerUrl: string;
   try {
-    resourceMetadata = await discoverOAuthProtectedResourceMetadata(
+    resourceMetadata = await oauth.discoverOAuthProtectedResourceMetadata(
       serverUrl,
       undefined,
       fetchFn,
@@ -374,7 +364,7 @@ export async function startMcpOAuthAuthorization(
         new URL(authorizationServerUrl).href !== configuredClient.authorizationServerUrl) {
       throw new Error('Protected Resource Metadata returned an untrusted authorization server');
     }
-    metadata = await discoverAuthorizationServerMetadata(authorizationServerUrl, {
+    metadata = await oauth.discoverAuthorizationServerMetadata(authorizationServerUrl, {
       fetchFn,
     });
   } catch (error) {
@@ -407,7 +397,7 @@ export async function startMcpOAuthAuthorization(
     );
   }
 
-  const requestedResource = resourceUrlFromServerUrl(serverUrl);
+  const requestedResource = oauth.resourceUrlFromServerUrl(serverUrl);
   if (configuredClient && new URL(resourceMetadata.resource).href !== serverUrl) {
     throw new McpOAuthError(
       'oauth_discovery_failed',
@@ -415,7 +405,7 @@ export async function startMcpOAuthAuthorization(
     );
   }
   if (
-    !checkResourceAllowed({
+    !oauth.checkResourceAllowed({
       requestedResource,
       configuredResource: resourceMetadata.resource,
     })
@@ -436,7 +426,7 @@ export async function startMcpOAuthAuthorization(
     configuredClient,
   );
   const state = encodeState(input.ref, oauthRandomId(dependencies));
-  const { authorizationUrl, codeVerifier } = await startAuthorization(
+  const { authorizationUrl, codeVerifier } = await oauth.startAuthorization(
     authorizationServerUrl,
     {
       metadata,
@@ -540,7 +530,7 @@ export async function completeMcpOAuthAuthorization(
 
     let tokens: OAuthTokens;
     try {
-      tokens = await exchangeAuthorization(pending.authorizationServerUrl, {
+      tokens = await (await mcpOAuthSdk.load()).exchangeAuthorization(pending.authorizationServerUrl, {
         metadata: pending.metadata,
         clientInformation: pending.clientInformation,
         authorizationCode: input.code,
@@ -761,7 +751,7 @@ export async function resolveMcpOAuthAccessToken(
       const startedAt = oauthNow(dependencies);
       let tokens: OAuthTokens;
       try {
-        tokens = await refreshAuthorization(current.authorizationServerUrl, {
+        tokens = await (await mcpOAuthSdk.load()).refreshAuthorization(current.authorizationServerUrl, {
           metadata: current.metadata,
           clientInformation: current.clientInformation,
           refreshToken,
@@ -1151,7 +1141,7 @@ async function resolveClientInformation(
     }
     let clientInformation: OAuthClientInformationMixed;
     try {
-      clientInformation = await registerClient(authorizationServerUrl, {
+      clientInformation = await (await mcpOAuthSdk.load()).registerClient(authorizationServerUrl, {
         metadata,
         clientMetadata: createMcpOAuthClientMetadata(callbackUrl),
         ...(scope ? { scope } : {}),

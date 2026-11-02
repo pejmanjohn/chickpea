@@ -24,6 +24,9 @@ const LAZY_MODULES: Record<string, string> = {
     "a connector's detail (connections/catalog/index.ts): turn staging, an Agent object's start, the Composio provider, Admin",
   'image-in-browser': 'image output preparation (images/prepare-output.ts)',
   'unpdf': 'the first PDF attachment read (slack/attachment-normalization.ts)',
+  '@modelcontextprotocol/sdk/client': 'the MCP SDK (config/mcp-sdk.ts): a connection test, an identity probe, an OAuth start, exchange, refresh or registration',
+  '@modelcontextprotocol/sdk/validation': 'the MCP SDK (config/mcp-sdk.ts): a connection test or an identity probe',
+  '@modelcontextprotocol/sdk/shared/auth-utils.js': "the MCP SDK (config/mcp-sdk.ts): an OAuth authorization's start",
 };
 
 /**
