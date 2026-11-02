@@ -773,6 +773,40 @@ test('a turn wakes its Agent object once its plan is saved, before it stages, an
   assert.ok(Number(latency[0]?.agentWakeLeadMs) >= 25, `the lead covers the wait to stage: ${latency[0]?.agentWakeLeadMs}`);
 });
 
+// Defects caught: a freeze that wakes the object admission already woke (two
+// wakes per turn); and when admission woke another instance, a freeze that
+// then skips its own object's wake.
+test("admission's wake of the instance the plan names stands; one of another instance changes nothing", async () => {
+  const frozenInstance = `agent_${'d'.repeat(40)}`;
+  const run = async (admissionAgentWake?: RunTurnOptions['admissionAgentWake']) => {
+    const events: string[] = [];
+    await firstStatusTimeline('dm', null, {
+      turnLatency: { lane: 'cloudflare', executor: 'runner' },
+      ...(admissionAgentWake ? { admissionAgentWake } : {}),
+      onRuntimePlan: async (candidate) => {
+        events.push('freeze');
+        return { runtimePlan: candidate, instanceId: frozenInstance };
+      },
+      wakeAgentObject: async (id) => { events.push(`wake:${id}`); },
+      agentPrompt: async ({ onAgentStaged }) => {
+        events.push('stage');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        onAgentStaged?.(0);
+        return AGENT_ANSWER;
+      },
+    }, dmAssignment);
+    return { events };
+  };
+  const sentAt = Date.now() - 5_000;
+  const admitted = await run({ instanceId: frozenInstance, sentAt });
+  assert.deepEqual(admitted.events, ['freeze', 'stage'], 'no second wake of the object admission woke');
+
+  const baseline = await run();
+  const other = await run({ instanceId: `agent_${'e'.repeat(40)}`, sentAt });
+  assert.deepEqual(other.events, baseline.events, 'the turn freezes, wakes and stages as with no admission wake');
+  assert.deepEqual(other.events, ['freeze', `wake:${frozenInstance}`, 'stage']);
+});
+
 // Defect caught: a wake hung on anything but this attempt's freeze (an
 // instance already known, the thread key) reaches a turn that never stages.
 test('a replayed turn, a command, and a turn stopped before dispatch send no wake', async () => {

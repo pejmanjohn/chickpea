@@ -400,9 +400,10 @@ export async function wakeSlackAgentObject(
   bindingName: string,
   instanceId: string,
   turnJobId?: string,
+  sentAt = Date.now(),
 ): Promise<void> {
   const binding = agentObjectNamespace(env, bindingName);
-  await binding.get(binding.idFromName(instanceId)).chickpeaWake(Date.now(), turnJobId);
+  await binding.get(binding.idFromName(instanceId)).chickpeaWake(sentAt, turnJobId);
 }
 
 /**

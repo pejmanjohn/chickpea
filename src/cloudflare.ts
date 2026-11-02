@@ -252,6 +252,9 @@ import {
   type ThreadRunnerTurnResult,
 } from './slack/thread-runner-rpc.ts';
 import { receiptRunnerWake } from './slack/receipt-runner-wake.ts';
+import { admissionAgentInstance, type AdmissionAgentWake } from './slack/admission-agent-wake.ts';
+import { CHICKPEA_SLACK_AGENT_BINDING } from './slack/bounded-agent-observation.ts';
+import { wakeSlackAgentObject } from './agents/turn-input.ts';
 import { localSlackPresentationStatePort } from './slack/presentation-state-port.ts';
 import {
   drainSlackPresentationRepairs,
@@ -2732,16 +2735,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const runner = threadRunnerStub(this.env as PlatformEnv, threadKey);
     if (!stores || !runner) return false;
     const presentation = job.runId ? stores.presentations.get(job.runId) : undefined;
+    const slackInstallation = stores.config.getWorkspaceInstallation(effectiveTurnSlackInstallationId(job.turn));
     // The bot identity this store verified within the window, so the runner
     // does not ask Slack for it again before the turn's first status.
-    const gatewayIdentity = carriedGatewayIdentity(
-      stores.config.getWorkspaceInstallation(effectiveTurnSlackInstallationId(job.turn)),
-    );
+    const gatewayIdentity = carriedGatewayIdentity(slackInstallation);
+    const installation = installationOwnershipOf(this.env as PlatformEnv);
+    const agentWake = this.wakeAgentAtHandoff(job, installation, slackInstallation?.botUserId);
     const payload: ThreadRunnerJobPayload = {
       ...(presentation ? { presentation } : {}),
       ...(gatewayIdentity ? { gatewayIdentity } : {}),
+      ...(agentWake ? { agentWake } : {}),
     };
-    const installation = installationOwnershipOf(this.env as PlatformEnv);
     try {
       const result = await runner.admit({
         id: job.id,
@@ -2757,6 +2761,36 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     }
     stores.turnJobs.confirmRunner(job.id);
     return true;
+  }
+
+  /**
+   * Wake the Flue agent object a handed-over turn's plan will name, so its
+   * activation overlaps the hand-off, the runner's start and the turn's
+   * preparation instead of starting once the plan froze. The name is
+   * recorded in the inventory before it is addressed (admissionAgentInstance).
+   * Sent before the hand-off and never awaited; nothing here changes the
+   * hand-off. Returns what the hand-off carries, so the turn's freeze sends
+   * no second wake to the same object and measures its lead from this one.
+   */
+  private wakeAgentAtHandoff(
+    job: PendingTurnJob,
+    installation: ReturnType<typeof installationOwnershipOf>,
+    botUserId: string | undefined,
+  ): AdmissionAgentWake | undefined {
+    try {
+      const stores = this.stores;
+      if (!stores) return undefined;
+      const instanceId = admissionAgentInstance(job, { installation, botUserId, inventory: stores.objectInventory });
+      if (!instanceId) return undefined;
+      const sentAt = Date.now();
+      void Promise.resolve(
+        wakeSlackAgentObject(this.env as PlatformEnv, CHICKPEA_SLACK_AGENT_BINDING, instanceId, job.id, sentAt),
+      ).catch(() => undefined);
+      return { instanceId, sentAt };
+    } catch {
+      // The freeze wakes the object instead.
+      return undefined;
+    }
   }
 
   /**

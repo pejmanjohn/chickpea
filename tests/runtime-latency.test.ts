@@ -423,9 +423,16 @@ function handoffProbe(answer: Record<string, unknown>) {
       effectiveTurnSlackInstallationId: () => 'workspace',
       carriedGatewayIdentity: () => undefined,
     },
-  ) as new () => { stores: unknown; env: unknown; admitToRunner(job: unknown): Promise<boolean> };
+  ) as new () => {
+    stores: unknown;
+    env: unknown;
+    wakeAgentAtHandoff: () => undefined;
+    admitToRunner(job: unknown): Promise<boolean>;
+  };
   const probe = new HandoffProbe();
   probe.env = {};
+  // The Agent wake beside the hand-off is agent-wake-admission.test.ts's.
+  probe.wakeAgentAtHandoff = () => undefined;
   probe.stores = {
     presentations: { get: () => undefined },
     config: { getWorkspaceInstallation: () => undefined },

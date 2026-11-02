@@ -12,6 +12,7 @@ import {
   resetIdentityVerificationsForTests,
   seedGatewayIdentity,
 } from '../src/slack/installation-execution.ts';
+import { parseAdmissionAgentWake } from '../src/slack/admission-agent-wake.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { ThreadRunnerJobStore } from '../src/slack/thread-runner-jobs.ts';
 import { NodeStateDb } from '../src/state/node-state-db.ts';
@@ -118,10 +119,10 @@ test("the runner's admit reports the hand-off's send time and keeps its delay fo
     ts.transpileModule(`class AdmitProbe { ${parts.map((part) => part!.getText(source)).join('\n')} }\nAdmitProbe`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText,
-    { Date: { now: () => 70_000 }, assertInstallationOwnership: () => undefined, seedGatewayIdentity, console },
+    { Date: { now: () => 70_000 }, assertInstallationOwnership: () => undefined, seedGatewayIdentity, parseAdmissionAgentWake, console },
   ) as new () => Record<string, unknown> & {
     admit(job: unknown): Promise<Record<string, unknown>>;
-    takeHandoff(jobId: string): Record<string, unknown>;
+    takeHandoff(jobId: string): { latency: Record<string, unknown> };
   };
   const probe = () => {
     const marks: unknown[][] = [];
@@ -142,16 +143,16 @@ test("the runner's admit reports the hand-off's send time and keeps its delay fo
   assert.deepEqual(sent.marks, [['admit', { sentAt: 68_100, turnJobId: 'turn_1' }]]);
   // The state store retrying a hand-off the runner already holds keeps the first delay.
   await sent.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {}, sentAt: 69_500 });
-  assert.deepEqual({ ...sent.instance.takeHandoff('turn_2') }, {}, "another job never reads this job's delay");
-  assert.deepEqual({ ...sent.instance.takeHandoff('turn_1') }, { handoffMs: 1_900 });
-  assert.deepEqual({ ...sent.instance.takeHandoff('turn_1') }, {}, 'a later attempt of the job carries none');
+  assert.deepEqual({ ...sent.instance.takeHandoff('turn_2').latency }, {}, "another job never reads this job's delay");
+  assert.deepEqual({ ...sent.instance.takeHandoff('turn_1').latency }, { handoffMs: 1_900 });
+  assert.deepEqual({ ...sent.instance.takeHandoff('turn_1').latency }, {}, 'a later attempt of the job carries none');
 
   // A state store on an older version sends no clock: no delay, no send time.
   const older = probe();
   assert.deepEqual({ ...await older.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {} }) },
     { admitted: true });
   assert.deepEqual(older.marks, [['admit', { sentAt: undefined, turnJobId: 'turn_1' }]]);
-  assert.deepEqual({ ...older.instance.takeHandoff('turn_1') }, {});
+  assert.deepEqual({ ...older.instance.takeHandoff('turn_1').latency }, {});
 });
 
 // Defects caught: a runner that drops the carried identity (its turn asks
@@ -174,6 +175,7 @@ test("the runner's admit takes a carried gateway identity into its cache and sto
         if (installation === 'another') throw new Error('installation mismatch');
       },
       seedGatewayIdentity,
+      parseAdmissionAgentWake,
       console: { warn() {} },
     },
   ) as new () => { admit(job: unknown): Promise<Record<string, unknown>> };
@@ -216,8 +218,9 @@ test('the Worker entry exports SlackThreadRunner for its v11 binding', () => {
 
 test('the runner executes through the shared turn executor as the runner executor', () => {
   const runner = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
-  // The turn's latency context takes the hand-off delay of the job it runs.
-  assert.match(runner, /executeTurnJob\(job, ports, \{\s*latency: \{ lane: 'cloudflare', executor: 'runner', \.\.\.this\.takeHandoff\(job\.id\) \},/);
+  // The turn's latency context takes the hand-off delay of the job it runs,
+  // and the turn the wake admission sent its Agent object.
+  assert.match(runner, /const handoff = this\.takeHandoff\(job\.id\);\s*return executeTurnJob\(job, ports, \{\s*latency: \{ lane: 'cloudflare', executor: 'runner', \.\.\.handoff\.latency \},\s*\.\.\.\(handoff\.agentWake \? \{ agentWake: handoff\.agentWake \} : \{\}\),/);
   assert.match(runner, /observationRoute: \{ executor: 'runner'/);
   assert.match(runner, /statusRegistry: this\.registry/);
 });

@@ -58,6 +58,7 @@ import {
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { wakeSlackAgentObject } from '../agents/turn-input.ts';
+import type { AdmissionAgentWake } from './admission-agent-wake.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
 import {
   compileFrontDeskPlan,
@@ -84,11 +85,9 @@ import { parseMemoryCommand } from '../memory/commands.ts';
 import { handleMemoryCommand, prepareMemoryTurn } from '../memory/runtime.ts';
 import {
   handleRoutineSlackRequest,
-  parseRoutineCommand,
   routineResponseVisibility,
   shouldHandleRoutineCommandTurn,
 } from '../routines/commands.ts';
-import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import { replyFooterModelLabel } from './message-format.ts';
 import { createMidRunReplyHandler } from './midrun-reply.ts';
 import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
@@ -139,9 +138,9 @@ import type { NormalizedSlackTurn } from './types.ts';
 import {
   isAgentAskSilentReply,
   isHandedBackTurn,
-  isLaterCoAddressedTurn,
   personRequestText,
 } from './agent-asks.ts';
+import { isDeterministicSlackCommand, slackTurnTypedByPerson } from './turn-commands.ts';
 import {
   effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
@@ -288,6 +287,12 @@ export interface RunTurnOptions {
   agentPrompt?: typeof promptSlackThreadAgent;
   /** Focused seam; production wakes the thread's agent object on Cloudflare only. */
   wakeAgentObject?: (instanceId: string) => Promise<void>;
+  /**
+   * The wake the state store sent the thread's Agent object as it handed
+   * this turn to its runner. The freeze sends no second wake to the instance
+   * it named.
+   */
+  admissionAgentWake?: AdmissionAgentWake;
   /** Adapter-owned dispatch/read checkpoints restored by the relay. */
   flueDispatch?: SlackFlueDispatchState;
   /** Durable turn key forwarded to the sandbox for cap/idempotency state. */
@@ -675,7 +680,7 @@ async function runTurnAttempt(
   // (typedByPerson in processSlackEvent); this is the runtime's own gate. A
   // message that mentioned several Agents is one command, for the first. A
   // setup's wake is Chickpea's note.
-  const typedByPerson = !turn.agentAsk && !turn.setupWake && !isLaterCoAddressedTurn(turn);
+  const typedByPerson = slackTurnTypedByPerson(turn);
   // The thread's own Agent, handed a teammate's answer: it may end the turn
   // silently, so its reply never streams before it is known.
   const handedBack = isHandedBackTurn(turn, assignment);
@@ -720,9 +725,7 @@ async function runTurnAttempt(
     }
   }
   const memoryCommand = typedByPerson ? parseMemoryCommand(turn.text) : undefined;
-  const deterministicCommand = Boolean(memoryCommand) ||
-    Boolean(turn.managementApprovalProposalId) ||
-    (typedByPerson && isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
+  const deterministicCommand = isDeterministicSlackCommand(turn, commandAddress);
   // Delivery-only recovery replays the exact persisted answer. It must not
   // re-resolve current Agent memory (which could both block recovery
   // on a changed lease and unnecessarily touch live state).
@@ -1113,12 +1116,15 @@ async function runTurnAttempt(
   // instance, which may then be addressed: waking it lets its activation
   // overlap the rest of this preparation instead of delaying its staging. A
   // turn already judged react_only never stages. A failed wake is ignored:
-  // staging activates the object itself.
+  // staging activates the object itself. Admission's wake of the same
+  // instance came first, so it stands.
   const wakeAgentObject = (instanceId: string): void => {
+    if (turn.interactionIntent?.disposition === 'react_only') return;
+    if (options.admissionAgentWake?.instanceId === instanceId) return;
     const wake = options.wakeAgentObject ?? (isCloudflareTarget()
       ? (id: string) => wakeSlackAgentObject(platformEnv, CHICKPEA_SLACK_AGENT_BINDING, id, options.turnId)
       : undefined);
-    if (!wake || turn.interactionIntent?.disposition === 'react_only') return;
+    if (!wake) return;
     options.onAgentWake?.();
     void Promise.resolve().then(() => wake(instanceId)).catch(() => undefined);
   };

@@ -14,6 +14,7 @@ import {
 } from '../src/observability/runtime-latency.ts';
 import type { GatewayInboundDelivery } from '../src/slack/gateway/protocol.ts';
 import { seedGatewayIdentity } from '../src/slack/installation-execution.ts';
+import { parseAdmissionAgentWake } from '../src/slack/admission-agent-wake.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
 import { ThreadRunnerJobStore } from '../src/slack/thread-runner-jobs.ts';
@@ -174,7 +175,7 @@ assert.ok(runnerClass && leadWindow);
 interface RunnerProbe {
   wake(sentAt?: unknown, turnJobId?: unknown): Promise<void>;
   admit(job: unknown): Promise<{ admitted: boolean }>;
-  takeHandoff(jobId: string): Record<string, unknown>;
+  takeHandoff(jobId: string): { latency: Record<string, unknown>; agentWake?: unknown };
 }
 
 function runnerOver(storage: FakeObjectStorage, clock: { now: number }, records: Array<Record<string, unknown>>) {
@@ -198,6 +199,7 @@ function runnerOver(storage: FakeObjectStorage, clock: { now: number }, records:
       objectInstallationEnv,
       assertInstallationOwnership,
       seedGatewayIdentity,
+      parseAdmissionAgentWake,
       ThreadRunnerJobStore,
       DoSqlStateDb,
       SlackStatusRegistry,
@@ -231,14 +233,14 @@ test('a wake activates a fresh runner without storing anything, and the hand-off
   clock.now = 10_900;
   await runner.admit({ id: 'msg:C1:5000.000100', threadKey: 'T1:C1:5000.000100:owner-i1', payload: {}, sentAt: 9_700 });
   assert.equal(records.length, 1, 'the hand-off found the woken activation');
-  assert.deepEqual({ ...runner.takeHandoff('msg:C1:5000.000100') }, { handoffMs: 1_200, runnerWakeLeadMs: 300 });
+  assert.deepEqual({ ...runner.takeHandoff('msg:C1:5000.000100').latency }, { handoffMs: 1_200, runnerWakeLeadMs: 300 });
   await runner.admit({ id: 'msg:C1:5000.000200', threadKey: 'T1:C1:5000.000100:owner-i1', payload: {}, sentAt: 10_800 });
-  assert.deepEqual({ ...runner.takeHandoff('msg:C1:5000.000200') }, { handoffMs: 100 }, 'one wake leads one hand-off');
+  assert.deepEqual({ ...runner.takeHandoff('msg:C1:5000.000200').latency }, { handoffMs: 100 }, 'one wake leads one hand-off');
 
   await runner.wake(11_000);
   clock.now = 80_000;
   await runner.admit({ id: 'msg:C1:5000.000300', threadKey: 'T1:C1:5000.000100:owner-i1', payload: {}, sentAt: 79_000 });
-  assert.deepEqual({ ...runner.takeHandoff('msg:C1:5000.000300') }, { handoffMs: 1_000 }, 'a wake over a minute old leads nothing');
+  assert.deepEqual({ ...runner.takeHandoff('msg:C1:5000.000300').latency }, { handoffMs: 1_000 }, 'a wake over a minute old leads nothing');
 
   // A runner that held a running turn still resumes it when a wake activates it.
   const held = new FakeObjectStorage();
@@ -249,4 +251,27 @@ test('a wake activates a fresh runner without storing anything, and the hand-off
   const resumed = runnerOver(held, clock, []);
   await resumed.settled();
   assert.equal(held.alarm, 90_000);
+});
+
+// Defects caught: the runner drops admission's Agent wake (the turn's freeze
+// then wakes the object again and counts its lead from itself), keeps it for
+// a later attempt, stores it, takes a malformed one, or takes one over a
+// minute old (its object may have been evicted since).
+test("a hand-off carries admission's Agent wake to its turn's first attempt only, within the minute", async () => {
+  const clock = { now: 20_000 };
+  const storage = new FakeObjectStorage();
+  const { runner, settled } = runnerOver(storage, clock, []);
+  await settled();
+  const threadKey = 'T1:C1:5000.000100:owner-i1';
+  const agentWake = { instanceId: `agent_${'a'.repeat(40)}`, sentAt: 19_900 };
+  await runner.admit({ id: 'j1', threadKey, payload: { agentWake }, sentAt: 19_950 });
+  assert.deepEqual({ ...runner.takeHandoff('j1').agentWake as object }, agentWake);
+  assert.equal(runner.takeHandoff('j1').agentWake, undefined, 'a later attempt carries none');
+  assert.equal(JSON.stringify(storage.database.prepare('SELECT * FROM runner_jobs').all()).includes('agentWake'), false,
+    'the wake is never stored');
+  await runner.admit({ id: 'j2', threadKey, payload: { agentWake: { instanceId: threadKey, sentAt: 19_900 } }, sentAt: 19_950 });
+  assert.equal(runner.takeHandoff('j2').agentWake, undefined, 'a wake of no Agent instance is none');
+  await runner.admit({ id: 'j3', threadKey, payload: { agentWake }, sentAt: 19_950 });
+  clock.now = agentWake.sentAt + 60_001;
+  assert.equal(runner.takeHandoff('j3').agentWake, undefined, 'a wake over a minute old at the attempt is none');
 });

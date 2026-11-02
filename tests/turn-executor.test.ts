@@ -134,6 +134,18 @@ test('a delivered turn settles its row, clears active work, and lets the thread 
   assert.equal(run?.observationSignal, undefined, 'no control, no observation signal');
 });
 
+// Defect caught: the wake admission sent the turn's Agent object never reaches
+// the turn, whose freeze then wakes that object a second time.
+test("the wake admission sent the turn's Agent object reaches the turn", async () => {
+  const agentWake = { instanceId: `agent_${'c'.repeat(40)}`, sentAt: 1_785_900_000_500 };
+  const h = fakePorts(async (options) => { await options.onDelivered?.('completed' as never); });
+  assert.equal(await executeTurnJob(pendingJob(), h.ports, { ...h.options, agentWake }), true);
+  assert.deepEqual(h.runs[0]?.admissionAgentWake, agentWake);
+  const none = fakePorts(async (options) => { await options.onDelivered?.('completed' as never); });
+  await executeTurnJob(pendingJob(), none.ports, none.options);
+  assert.equal(none.runs[0]?.admissionAgentWake, undefined);
+});
+
 test('a failed first attempt is retained for a retry and ends its thread for this drain', async () => {
   const h = fakePorts(async () => { throw new Error('model unavailable'); });
   assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), false);
