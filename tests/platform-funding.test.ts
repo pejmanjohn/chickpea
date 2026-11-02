@@ -618,6 +618,44 @@ test('a charge that fails twice is logged once without content, and the installa
   assert.equal(calls.admit.length, 2, 'the failed charge dropped the cached admission');
 });
 
+// Defects caught: the charge released from the result's hold (a charge
+// confirmed after the caller moved on), and the result held for the record
+// write again.
+test('a platform-funded result waits for its charge as before, but not for its record write', async (t) => {
+  const { env, store } = hostedProxy(t);
+  let releaseCharge!: () => void;
+  const chargeHeld = new Promise<void>((resolve) => { releaseCharge = resolve; });
+  const calls = fakePort({ charge: () => chargeHeld });
+  let releaseRecord!: () => void;
+  const recordHeld = new Promise<void>((resolve) => { releaseRecord = resolve; });
+  const recorded: ModelRequestRecord[] = [];
+  configureModelRequestRecorder(async (record) => {
+    recorded.push(record);
+    await recordHeld;
+    return store.recordModelRequest(record);
+  });
+  const { model } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+  let read = false;
+
+  await withModelAccess(grant('inst_credits', 'platform'), env, 'reply', async () => {
+    const result = modelCall(model).then((message) => { read = true; return message; });
+    while (calls.charge.length === 0) await tick();
+    await tick();
+    assert.equal(read, false, 'the result waits for the charge');
+    const charged = performance.now();
+    releaseCharge();
+    assert.equal((await result).stopReason, 'stop');
+    const waited = performance.now() - charged;
+    assert.ok(waited < 1_000, `the result arrived ${waited} ms after the charge, not at the record budget`);
+    assert.equal(await store.getModelRequest(recorded[0]!.requestId), undefined, 'the record write is still held');
+    releaseRecord();
+  });
+
+  assert.deepEqual(calls.charge, recorded, 'the charge carries the record the proxy wrote');
+  assert.deepEqual(await store.getModelRequest(recorded[0]!.requestId), recorded[0]);
+});
+
 test('a platform-funded request without a current list price is refused before send, whatever its provider', async (t) => {
   const { env } = hostedProxy(t);
   const calls = fakePort();
