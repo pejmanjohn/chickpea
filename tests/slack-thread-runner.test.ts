@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
+import ts from 'typescript';
+
 import { activityStatus } from '../src/activity/status.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { ThreadRunnerJobStore } from '../src/slack/thread-runner-jobs.ts';
@@ -63,7 +65,33 @@ test('a runner instance resumes a running job at once and runs admitted jobs onl
   assert.doesNotMatch(admit, /runSoon|runAlarm/);
   assert.match(admit, /this\.wake\?\.\(\);\s*const existing = await this\.ctx\.storage\.getAlarm\(\);\s*if \(existing === null \|\| existing > Date\.now\(\)\) await this\.ctx\.storage\.setAlarm\(Date\.now\(\)\);/);
   assert.equal(runner.match(/this\.runSoon\(\)/g)?.length, 1, 'only the alarm runs the loop');
-  assert.match(runner, /async alarm\(\): Promise<void> \{\s*await this\.runSoon\(\);/);
+  assert.match(runner, /async alarm\(\): Promise<void> \{\s*this\.boot\.call\('alarm'\);\s*await this\.runSoon\(\);/);
+});
+
+test('every runner entry point reports its call to the activation marks before anything else', () => {
+  const path = new URL('../src/slack/thread-runner.ts', import.meta.url);
+  const source = ts.createSourceFile('thread-runner.ts', readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+  const runner = source.statements.find((node): node is ts.ClassDeclaration =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackThreadRunner');
+  assert.ok(runner);
+  const firstStatement = (method: ts.MethodDeclaration) => method.body?.statements[0]?.getText(source) ?? '';
+  const methods = runner.members.filter((member): member is ts.MethodDeclaration => ts.isMethodDeclaration(member));
+  const entries = methods.filter((method) =>
+    !method.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.PrivateKeyword));
+  assert.ok(entries.length >= 10, 'the RPC methods, the alarm and the host functions');
+  for (const method of entries) {
+    const name = method.name.getText(source);
+    // A missed entry point would credit its activation to a later call.
+    if (name.startsWith('chickpeaHost')) {
+      assert.match(firstStatement(method), new RegExp(`^return this\\.host\\(\\)\\.${name}\\(`), name);
+    } else {
+      assert.equal(firstStatement(method).startsWith(`this.boot.call('${name}'`), true, name);
+    }
+  }
+  const host = methods.find((method) => method.name.getText(source) === 'host');
+  assert.equal(host && firstStatement(host), "this.boot.call('host');");
+  // The constructor's end is marked however its resume check exits.
+  assert.match(readFileSync(path, 'utf8'), /\} finally \{\s*this\.boot\.constructed\(\);\s*\}\s*\}\);/);
 });
 
 test('the Worker entry exports SlackThreadRunner for its v11 binding', () => {

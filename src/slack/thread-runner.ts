@@ -33,6 +33,7 @@ import {
   type ObjectRestoreRequest,
   type ObjectRestoreRestartRequest,
 } from '../state/object-host.ts';
+import { RunnerBootMarks } from '../observability/runtime-latency.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
   cacheSlackInstallationExecutionContexts,
@@ -92,6 +93,8 @@ import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
  * Jobs already handed here always finish here, whatever the switch says.
  */
 export class SlackThreadRunner extends DurableObject implements SlackThreadRunnerRpc, InstallationObjectHostRpc {
+  /** This activation's `runner_boot` marks; every entry point reports its call first. */
+  private readonly boot = new RunnerBootMarks();
   private jobs: ThreadRunnerJobStore | undefined;
   private presentations: SlackRunPresentationStoreLogic | undefined;
   /**
@@ -132,6 +135,8 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
       } catch {
         // The 5 s backstop armed while the job ran still brings it back.
+      } finally {
+        this.boot.constructed();
       }
     });
   }
@@ -181,6 +186,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string }> {
+    this.boot.call('admit', { turnJobId: job?.id });
     try {
       assertInstallationOwnership(job?.installation, this.env as PlatformEnv);
     } catch {
@@ -222,6 +228,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
    * so the outbox is never held for the up to 14 s a coding cascade can take.
    */
   async stop(notice: TurnStopNotice): Promise<{ acknowledged: boolean }> {
+    this.boot.call('stop');
     let taken: { acknowledged: boolean; wake: boolean };
     try {
       taken = await this.stops().receive(notice);
@@ -238,6 +245,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async status(): Promise<ThreadRunnerStatus> {
+    this.boot.call('status');
     return this.store().status();
   }
 
@@ -251,6 +259,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     submissionId: string,
     status: TypedActivityStatus,
   ): Promise<StateRpcResult<null>> {
+    this.boot.call('observedStatus');
     try {
       if (!isSafeTypedActivityStatus(status)) return { ok: true, value: null };
       const key = `${instanceId}\n${submissionId}`;
@@ -281,6 +290,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     submissionId: string,
     request: MidRunReplyRequest,
   ): Promise<MidRunReplyOutcome> {
+    this.boot.call('midRunReply');
     const parsed = parseMidRunReplyRequest(request);
     if (!parsed) return { posted: false, refusal: 'unavailable' };
     try {
@@ -299,6 +309,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
    * started here.
    */
   async runFacts(turnJobId: string): Promise<StateRpcResult<SlackRunFactsView | null>> {
+    this.boot.call('runFacts');
     try {
       return { ok: true, value: this.registry.runFactsView(turnJobId) ?? null };
     } catch (error) {
@@ -310,12 +321,14 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async presentationGet(runId: string): Promise<StateRpcResult<SlackRunPresentation | null>> {
+    this.boot.call('presentationGet');
     return presentationResult(() => this.presentationStore().get(runId) ?? null);
   }
 
   async presentationTransition(
     input: SlackPresentationTransitionInput,
   ): Promise<StateRpcResult<SlackPresentationTransitionResult>> {
+    this.boot.call('presentationTransition');
     const result = presentationResult(() => this.presentationStore().transition(input));
     if (result.ok && result.value.outcome === 'applied') {
       // Keep the state store's readers current; best-effort like any publish.
@@ -327,6 +340,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async alarm(): Promise<void> {
+    this.boot.call('alarm');
     await this.runSoon();
   }
 
@@ -363,6 +377,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   private host(): InstallationObjectHostRpc {
+    this.boot.call('host');
     return objectHostFunctions({
       env: this.env as PlatformEnv,
       storage: this.ctx.storage,

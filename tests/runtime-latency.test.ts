@@ -16,7 +16,9 @@ import {
   opaqueRunRef,
   opaqueTurnRef,
   recordStateRpc,
+  resetRunnerActivationsForTest,
   resetStateRpcCountersForTest,
+  RunnerBootMarks,
   startRelayAlarmMetrics,
   STATE_RPC_SAMPLE_EVERY,
   STATE_RPC_SLOW_MS,
@@ -250,6 +252,45 @@ test('thread_runner_alarm reports one runner alarm with fixed fields only', () =
     durationMs: 600_010,
     outcome: 'drained',
   }]);
+});
+
+test('runner_boot logs an activation once, at its first call, and only the first in an isolate is cold', () => {
+  resetRunnerActivationsForTest();
+  const time = clock(50_000);
+  const { records, sink } = captureSink();
+  const first = new RunnerBootMarks(time.now, sink);
+  time.advance(30);
+  first.constructed();
+  time.advance(5);
+  first.call('admit', { sentAt: 48_100, turnJobId: 'evt:T_LATENCY:1785509000.000100' });
+  time.advance(100);
+  first.call('alarm');
+  first.call('admit', { sentAt: 50_100, turnJobId: 'evt:T_LATENCY:1785509000.000100' });
+  assert.deepEqual(records, [{
+    component: 'runtime',
+    event: 'runner_boot',
+    firstMethod: 'admit',
+    cold: true,
+    turnRef: opaqueTurnRef('evt:T_LATENCY:1785509000.000100'),
+    sentToConstructMs: 1_900,
+    constructMs: 30,
+    constructToFirstCallMs: 5,
+  }], 'later calls on the same activation log nothing');
+  assertContentFree(records[0]!);
+
+  // Another runner in the same isolate, woken by its alarm: no caller clock.
+  const next = new RunnerBootMarks(time.now, sink);
+  next.constructed();
+  next.call('alarm');
+  assert.deepEqual(records[1], {
+    component: 'runtime',
+    event: 'runner_boot',
+    firstMethod: 'alarm',
+    cold: false,
+    constructMs: 0,
+    constructToFirstCallMs: 0,
+  });
+  assert.equal(records.length, 2);
 });
 
 // Execute the production alarm entry point, not a copy: it must emit one
