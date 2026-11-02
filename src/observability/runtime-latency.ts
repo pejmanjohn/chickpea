@@ -72,6 +72,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   versionId: VERSION_ID,
   supersededBy: VERSION_ID,
   agentClass: TOKEN,
+  agentWakeSource: TOKEN,
 };
 
 export function emitRuntimeLatency(
@@ -363,7 +364,7 @@ export class TurnLatencyTracker {
   private read = 0;
   private midRunReplies = 0;
   private agentStageMs: number | undefined;
-  private agentWakeSentAt: number | undefined;
+  private agentWake: { sentAt: number; source: 'admission' | 'plan' } | undefined;
   private agentWakeLeadMs: number | undefined;
   private startToStageMs: number | undefined;
   private emitted = false;
@@ -402,16 +403,21 @@ export class TurnLatencyTracker {
     this.midRunReplies += 1;
   }
 
-  /** The turn sent its wake to its Agent's object; only the first wake is kept. */
-  markAgentWake(): void {
-    this.agentWakeSentAt ??= this.now();
+  /**
+   * The turn's Agent object was woken: by admission at `admissionSentAt` (the
+   * state store's clock), or by the turn now. Only the first wake is kept.
+   */
+  markAgentWake(admissionSentAt?: number): void {
+    this.agentWake ??= admissionSentAt === undefined
+      ? { sentAt: this.now(), source: 'plan' }
+      : { sentAt: admissionSentAt, source: 'admission' };
   }
 
   /** Staging the turn's input beside its Agent took this long; only the first staging is kept. */
   markAgentStage(ms: number): void {
     if (this.agentStageMs !== undefined) return;
     this.agentStageMs = ms;
-    if (this.agentWakeSentAt !== undefined) this.agentWakeLeadMs = this.now() - ms - this.agentWakeSentAt;
+    if (this.agentWake !== undefined) this.agentWakeLeadMs = this.now() - ms - this.agentWake.sentAt;
     this.startToStageMs = Math.max(0, this.now() - ms - this.startedAt);
   }
 
@@ -454,6 +460,7 @@ export class TurnLatencyTracker {
       runnerWakeLeadMs: this.context.runnerWakeLeadMs,
       agentStageMs: this.agentStageMs,
       agentWakeLeadMs: this.agentWakeLeadMs,
+      agentWakeSource: this.agentWakeLeadMs === undefined ? undefined : this.agentWake?.source,
       startToStageMs: this.startToStageMs,
       attemptMs: end - this.startedAt,
       folded: this.folded > 0 ? this.folded : undefined,

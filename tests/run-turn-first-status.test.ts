@@ -774,9 +774,16 @@ test('a turn wakes its Agent object once its plan is saved, before it stages, an
 });
 
 // Defects caught: a freeze that wakes the object admission already woke (two
-// wakes per turn); and when admission woke another instance, a freeze that
-// then skips its own object's wake.
-test("admission's wake of the instance the plan names stands; one of another instance changes nothing", async () => {
+// wakes per turn), a lead counted from the freeze when admission's wake came
+// first; and when admission woke another instance, a freeze that then skips
+// its own object's wake or counts its lead from admission's.
+test("admission's wake of the instance the plan names stands; one of another instance changes nothing", async (t) => {
+  const latency: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    if ((record as { event?: unknown } | undefined)?.event === 'turn_latency') {
+      latency.push(record as Record<string, unknown>);
+    }
+  });
   const frozenInstance = `agent_${'d'.repeat(40)}`;
   const run = async (admissionAgentWake?: RunTurnOptions['admissionAgentWake']) => {
     const events: string[] = [];
@@ -795,16 +802,20 @@ test("admission's wake of the instance the plan names stands; one of another ins
         return AGENT_ANSWER;
       },
     }, dmAssignment);
-    return { events };
+    return { events, record: latency.at(-1)! };
   };
   const sentAt = Date.now() - 5_000;
   const admitted = await run({ instanceId: frozenInstance, sentAt });
   assert.deepEqual(admitted.events, ['freeze', 'stage'], 'no second wake of the object admission woke');
+  assert.equal(admitted.record.agentWakeSource, 'admission');
+  assert.ok(Number(admitted.record.agentWakeLeadMs) >= 5_000, `the lead counts from admission's wake: ${admitted.record.agentWakeLeadMs}`);
 
   const baseline = await run();
   const other = await run({ instanceId: `agent_${'e'.repeat(40)}`, sentAt });
   assert.deepEqual(other.events, baseline.events, 'the turn freezes, wakes and stages as with no admission wake');
   assert.deepEqual(other.events, ['freeze', `wake:${frozenInstance}`, 'stage']);
+  assert.equal(other.record.agentWakeSource, 'plan');
+  assert.ok(Number(other.record.agentWakeLeadMs) < 5_000, `the lead counts from the freeze's wake: ${other.record.agentWakeLeadMs}`);
 });
 
 // Defect caught: a wake hung on anything but this attempt's freeze (an

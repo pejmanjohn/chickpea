@@ -312,7 +312,7 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 | `thread_runner_alarm` | Once per `SlackThreadRunner.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `jobs`, `ran`, `yielded`, `carried`, `dropped`, `durationMs` |
 | `runner_boot` | Once per `SlackThreadRunner` activation (an instance constructed in memory), at the first call it serves (Cloudflare) | `firstMethod` (`wake` for the state store waking it at a delivery's receipt, `admit`, `alarm`, `stop`, `status`, `observedStatus`, `midRunReply`, `runFacts`, `presentationGet`, `presentationTransition`, or `host` for a host function), `cold` (the first runner its isolate constructed), `constructMs` (the constructor through its resume check), `constructToFirstCallMs`, and with `wake` or `admit`: `turnRef` and `sentToConstructMs` (the state store's send to the constructor's start) |
 | `agent_boot` | Once per Flue agent object activation (a Slack thread's Agent, a routine run, a coding worker), at the first call it serves (Cloudflare) | `agentClass` (the generated Durable Object class), `firstMethod` (`wake` for the state store waking a thread's object as it hands the turn to its runner, or a runner waking it once the turn's plan froze, `stage` for a runner staging a turn's input, `fetch` for a Flue dispatch or read, `alarm`, or `host`), `cold` (the first agent object its isolate constructed), `constructMs`, `constructToFirstCallMs`, and with `wake` or `stage`: `turnRef` and `sentToConstructMs` (the sender's clock before it addressed the object, to the constructor's start) |
-| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`, `stopped`: a stopped run's ending), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `handoffMs` (a runner turn's first attempt: see below), `runnerWakeLeadMs` (a runner turn's first attempt, when the state store woke its runner at receipt: how long before the hand-off it sent the wake), `agentStageMs` (staging the turn's input beside the thread's Agent before dispatch, and loading the connector details its render reads: see below), `agentWakeLeadMs` (a Cloudflare turn that woke its Agent's object: how long before staging it sent the wake), `startToStageMs` (from the attempt's start to that staging's start: see below), `attemptMs`, `folded` (present when the turn took follow-ups: how many queued messages it read with its own), `foldedInformed` (of those, how many were a teammate's, read as information only), `read` (present when the turn replaced a mid-run 👀 with 👍: how many) |
+| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`, `stopped`: a stopped run's ending), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `handoffMs` (a runner turn's first attempt: see below), `runnerWakeLeadMs` (a runner turn's first attempt, when the state store woke its runner at receipt: how long before the hand-off it sent the wake), `agentStageMs` (staging the turn's input beside the thread's Agent before dispatch, and loading the connector details its render reads: see below), `agentWakeLeadMs` (a Cloudflare turn whose Agent object was woken: how long before staging the wake was sent), `agentWakeSource` (with `agentWakeLeadMs`: `admission` or `plan`, which wake it counts from), `startToStageMs` (from the attempt's start to that staging's start: see below), `attemptMs`, `folded` (present when the turn took follow-ups: how many queued messages it read with its own), `foldedInformed` (of those, how many were a teammate's, read as information only), `read` (present when the turn replaced a mid-run 👀 with 👍: how many) |
 | `turn_fold` | When the state store confirms that a running turn's model read messages sent while it worked (both lanes) | `turnRef`, `late` (how many messages this confirmation covers; each message is counted once), `informed` (of those, how many were a teammate's, read as information only), `turn` (of those, how many it read after a tool step rather than before its reply), `edits` (edits of messages it had already read, counted apart from `late`) |
 | `turn_fold` (edit) | Once per delivery of a person's edit of a message (both lanes) | `op` (`edit_admission`), `outcome` (`admitted`, `already_admitted` for a redelivery, `no_live_turn`, `not_foldable`, `not_author`, `stale`, `unchanged`, `unsupported` for a state store without edit admission, or `failed` when admission threw and the delivery is retried) |
 | `turn_fold` (coding job) | When a coding job's wait pauses for new messages, a later wait for it ends, or the Agent passes it guidance | `turnRef`, `op` (`coding_pause`, `coding_resume` or `coding_relay`), `outcome` (pause: `messages` or `unchecked`; resume: `completed`, `paused` or a failure reason; relay: `sent`, `finished`, `stopped` or `not_sent`) |
@@ -401,21 +401,25 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   `turnRef`, `agent_boot.sentToConstructMs` is the part before the Agent
   object's constructor. A turn that dispatched nothing, and a retry that
   reused an earlier dispatch, omit `agentStageMs`.
-- `turn_latency.agentWakeLeadMs` is how long before staging a Cloudflare turn
-  sent its Agent object a wake, which it sends once the turn's plan froze
-  (the first point the object may be addressed) without waiting for it. The
-  object's activation overlaps that lead, so when the wake reached an object
-  not in memory, the turn's `agent_boot` shows `firstMethod` `wake` and no
-  staging boot follows it, and `agentStageMs` drops by up to the lead. A
-  turn that froze no plan (a retry that restored one, a replay, a stopped
-  turn, a command) or staged nothing omits the field. The state store also
-  wakes the object as it hands the turn to its runner, to the instance the
+- `turn_latency.agentWakeLeadMs` is how long before staging a Cloudflare
+  turn its Agent object was sent a wake, without waiting for it. The state
+  store sends it as it hands the turn to its runner, to the instance the
   turn's plan will name (derived as the freeze derives it, and recorded in
   the inventory first), unless it already knows the turn freezes no plan: a
   stop, a plan already frozen, a react_only judgment, a command or an
   approval. The hand-off carries that wake to the runner, and when the
-  frozen plan names the same instance the turn sends no second wake (and
-  records no lead).
+  frozen plan names the same instance the turn sends no second wake:
+  `agentWakeSource` is `admission` and the lead counts from the state
+  store's send (two clocks). Otherwise the turn wakes the object once its
+  plan froze, and `agentWakeSource` is `plan`: an older state store, an
+  evicted runner, a wake older than a minute, or a plan that names another
+  instance. The object's activation overlaps the lead, so when the wake
+  reached an object not in memory, the turn's `agent_boot` shows
+  `firstMethod` `wake` and no staging boot follows it, and `agentStageMs`
+  drops by up to the lead. Whether that wake activated the object is the
+  `agent_boot` record's to say (joined by `turnRef`): the turn never waits
+  for it. A turn that froze no plan (a retry that restored one, a replay, a
+  stopped turn, a command) or staged nothing omits both fields.
 - `turn_latency.startToStageMs` is the attempt's own work before it stages
   that input: memory and the plan, the opening status, the judgment, the
   lease check, the thread's context read, the usage admission and the

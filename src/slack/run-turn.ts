@@ -290,7 +290,7 @@ export interface RunTurnOptions {
   /**
    * The wake the state store sent the thread's Agent object as it handed
    * this turn to its runner. The freeze sends no second wake to the instance
-   * it named.
+   * it named, and the turn's lead counts from this one.
    */
   admissionAgentWake?: AdmissionAgentWake;
   /** Adapter-owned dispatch/read checkpoints restored by the relay. */
@@ -459,8 +459,11 @@ export interface RunTurnOptions {
   onMidRunReply?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: how long staging the turn's input took. */
   onAgentStaged?: (ms: number) => void;
-  /** Set by `runTurn` itself when `turnLatency` is present: the turn sent its Agent object's wake. */
-  onAgentWake?: () => void;
+  /**
+   * Set by `runTurn` itself when `turnLatency` is present: the turn's Agent
+   * object was woken, by the freeze now or by admission (`admissionSentAt`).
+   */
+  onAgentWake?: (admissionSentAt?: number) => void;
 }
 
 /** How a stopped turn ends (see RunTurnOptions.stopEnding). */
@@ -558,7 +561,7 @@ export async function runTurn(
       onRead: () => tracker.markRead(),
       onMidRunReply: () => tracker.markMidRunReply(),
       onAgentStaged: (ms) => tracker.markAgentStage(ms),
-      onAgentWake: () => tracker.markAgentWake(),
+      onAgentWake: (admissionSentAt) => tracker.markAgentWake(admissionSentAt),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
         if (outcome === 'stopped') stopped = true;
@@ -1117,10 +1120,13 @@ async function runTurnAttempt(
   // overlap the rest of this preparation instead of delaying its staging. A
   // turn already judged react_only never stages. A failed wake is ignored:
   // staging activates the object itself. Admission's wake of the same
-  // instance came first, so it stands.
+  // instance came first, so it stands, and is the one the lead counts from.
   const wakeAgentObject = (instanceId: string): void => {
     if (turn.interactionIntent?.disposition === 'react_only') return;
-    if (options.admissionAgentWake?.instanceId === instanceId) return;
+    if (options.admissionAgentWake?.instanceId === instanceId) {
+      options.onAgentWake?.(options.admissionAgentWake.sentAt);
+      return;
+    }
     const wake = options.wakeAgentObject ?? (isCloudflareTarget()
       ? (id: string) => wakeSlackAgentObject(platformEnv, CHICKPEA_SLACK_AGENT_BINDING, id, options.turnId)
       : undefined);

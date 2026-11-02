@@ -548,6 +548,7 @@ test('turn_latency logs how long before staging the turn woke its Agent object',
   tracker.emit('returned');
   assert.equal(records[0]?.agentStageMs, 200);
   assert.equal(records[0]?.agentWakeLeadMs, 1_300, 'from the first wake to the first staging send');
+  assert.equal(records[0]?.agentWakeSource, 'plan');
 
   const wokenOnly = new TurnLatencyTracker({ lane: 'cloudflare', executor: 'runner' }, {}, time.now, sink);
   wokenOnly.markAgentWake();
@@ -557,6 +558,24 @@ test('turn_latency logs how long before staging the turn woke its Agent object',
   stagedOnly.emit('returned');
   assert.equal('agentWakeLeadMs' in records[1]!, false, 'a woken turn that staged nothing omits the field');
   assert.equal('agentWakeLeadMs' in records[2]!, false, 'a turn that staged without a wake omits the field');
+  assert.equal('agentWakeSource' in records[1]! || 'agentWakeSource' in records[2]!, false, 'and its source');
+});
+
+// Defects caught: the lead counted from the turn's own clock when admission's
+// wake came first, a later wake that moves it, and a record that does not
+// say which wake it counts from.
+test("turn_latency counts the lead from admission's wake of the Agent object when that came first", () => {
+  const time = clock(10_000);
+  const { records, sink } = captureSink();
+  const tracker = new TurnLatencyTracker({ lane: 'cloudflare', executor: 'runner' }, {}, time.now, sink);
+  time.advance(900);
+  tracker.markAgentWake(7_600);
+  tracker.markAgentWake();
+  time.advance(400);
+  tracker.markAgentStage(100);
+  tracker.emit('returned');
+  assert.equal(records[0]?.agentWakeLeadMs, 3_600, "from admission's send (the state store's clock) to the staging send");
+  assert.equal(records[0]?.agentWakeSource, 'admission');
 });
 
 test('turn_latency omits durations it cannot measure and never throws', () => {
