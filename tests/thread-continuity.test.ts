@@ -28,6 +28,7 @@ import {
   slackTurnSubmissionId,
   stageSlackTurnInputOnAgentObject,
   stagedConnectionToolkits,
+  type TurnInputSql,
   useAgentObjectStorageForTests,
   writeStagedTurnInput,
 } from '../src/agents/turn-input.ts';
