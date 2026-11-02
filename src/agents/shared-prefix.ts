@@ -152,6 +152,28 @@ function reducedSystemBlocks(): ReadonlyArray<readonly [string, ReducedTurn]> {
 }
 
 /**
+ * How a system prompt opens: with an Agent kind's constant block and its
+ * separator, then the tenant tail; with a reduced turn's block; or with
+ * neither.
+ */
+export type SlackSystemText =
+  | { readonly kind: 'shared'; readonly agentKind: AgentKind; readonly constant: string; readonly tail: string }
+  | { readonly kind: 'reduced'; readonly reason: ReducedTurn }
+  | { readonly kind: 'other' };
+
+export function classifySlackSystemText(text: string | undefined): SlackSystemText {
+  if (text === undefined) return { kind: 'other' };
+  const opensWith = (block: string) => text.startsWith(block + PART_SEPARATOR);
+  const agentKind = AGENT_KINDS.find((candidate) => opensWith(sharedSystemBlock(candidate)));
+  if (agentKind !== undefined) {
+    const constant = sharedSystemBlock(agentKind);
+    return { kind: 'shared', agentKind, constant, tail: text.slice(constant.length + PART_SEPARATOR.length) };
+  }
+  const reason = reducedSystemBlocks().find(([block]) => opensWith(block))?.[1];
+  return reason ? { kind: 'reduced', reason } : { kind: 'other' };
+}
+
+/**
  * The first tenant instruction: the Agent's saved instructions, its identity
  * in this workspace and channel, the saved instructions again inside the
  * external-action boundary, and the teammates it may ask.
@@ -217,25 +239,22 @@ export function sharePromptPrefix(payload: Payload, requestId: string): SharedPr
   const unshared = { payload, sharedPrefix: null };
   const tools = Array.isArray(payload.tools) ? payload.tools : [];
   const anchor = tools.findIndex((tool) => isRecord(tool) && tool.name === SHARED_PREFIX_LAST_TOOL);
-  const text = singleSystemText(payload);
-  const opensWith = (block: string) => text !== undefined && text.startsWith(block + PART_SEPARATOR);
-  const kind = AGENT_KINDS.find((candidate) => opensWith(sharedSystemBlock(candidate)));
-  const constant = kind === undefined ? undefined : sharedSystemBlock(kind);
-  const reduced = constant === undefined ? reducedSystemBlocks().find(([block]) => opensWith(block))?.[1] : undefined;
-  if (reduced) {
+  const system = classifySlackSystemText(singleSystemText(payload));
+  if (system.kind === 'reduced') {
     console.info('[chickpea] platform-funded Slack turn sent a reduced tool list without the shared prompt prefix', {
-      model: payload.model, reason: reduced, requestId,
+      model: payload.model, reason: system.reason, requestId,
     });
     return unshared;
   }
-  if (constant === undefined && anchor < 0) return unshared;
-  const tail = constant === undefined ? '' : text!.slice(constant.length + PART_SEPARATOR.length);
+  const opening = system.kind === 'shared' ? system : undefined;
+  if (opening === undefined && anchor < 0) return unshared;
+  const tail = opening?.tail ?? '';
   const universal = tools.slice(0, anchor + 1).map(withoutCacheControl);
   const miss = anchor < 0
     ? 'universal_tools_missing'
     : JSON.stringify(universal) !== renderedToolsJson()
       ? 'universal_tools_differ'
-      : constant === undefined ? 'system_block_missing' : tail.length === 0 ? 'tenant_block_empty' : undefined;
+      : opening === undefined ? 'system_block_missing' : tail.length === 0 ? 'tenant_block_empty' : undefined;
   if (miss) {
     missed += 1;
     console.warn('[chickpea] platform-funded request went out without the shared prompt prefix', {
@@ -247,14 +266,14 @@ export function sharePromptPrefix(payload: Payload, requestId: string): SharedPr
     return unshared;
   }
   const shape = shapeOf(tools.slice(anchor + 1));
-  const sharedPrefix: SharedPrefixId | null = kind && shape ? `${kind}/${shape}` : null;
+  const sharedPrefix: SharedPrefixId | null = opening && shape ? `${opening.agentKind}/${shape}` : null;
   const shared = {
     ...payload,
     tools: tools.map((tool, index) => index === anchor
       ? { ...(withoutCacheControl(tool) as Payload), cache_control: ONE_HOUR }
       : withoutCacheControl(tool)),
     system: [
-      { type: 'text', text: constant, cache_control: sharedPrefix ? ONE_HOUR : FIVE_MINUTES },
+      { type: 'text', text: opening?.constant, cache_control: sharedPrefix ? ONE_HOUR : FIVE_MINUTES },
       { type: 'text', text: tail, cache_control: FIVE_MINUTES },
     ],
     ...(Array.isArray(payload.messages) ? { messages: payload.messages.map(withFiveMinuteMarkers) } : {}),
