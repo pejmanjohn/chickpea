@@ -20,6 +20,8 @@ const LAZY_MODULES: Record<string, string> = {
   'src/agents/shared-prefix.ts': "the Anthropic platform-funded payload hook (config/model-access.ts)",
   'src/agents/shared-prefix-tools.json': "the Anthropic platform-funded payload hook (config/model-access.ts)",
   '@composio/core': 'the Composio client (config/composio-settings.ts)',
+  'src/connections/catalog/manifests':
+    "a connector's detail (connections/catalog/index.ts): turn staging, an Agent object's start, the Composio provider, Admin",
   'image-in-browser': 'image output preparation (images/prepare-output.ts)',
 };
 
@@ -28,7 +30,7 @@ const LAZY_MODULES: Record<string, string> = {
  * types included. Lower it when a change moves modules behind import();
  * scripts/worker-closure.mjs holds the built artifact to its own ceiling.
  */
-const STARTUP_SOURCE_BUDGET_BYTES = Math.round(12.25 * 2 ** 20);
+const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.45 * 2 ** 20);
 
 type Edge = { to: string; local: boolean; dynamic: boolean };
 
