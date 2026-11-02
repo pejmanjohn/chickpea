@@ -261,6 +261,11 @@ interface PromptSlackAgentInput {
   memoryBlock?: string;
   /** Focused seam; production stages in the agent object or the host process. */
   stageTurnInput?: (input: SlackTurnInputV1) => Promise<void>;
+  /**
+   * The milliseconds staging this turn's input took. On Cloudflare that is
+   * naming the thread's agent object and its staging call, which activate it.
+   */
+  onAgentStaged?: (ms: number) => void;
   /** Images already in this Slack conversation, collected by the host fetch. */
   threadImages?: readonly ThreadImageRecord[];
   threadFileIds?: readonly string[];
@@ -341,6 +346,8 @@ async function stageTurnInputForDispatch(
     observation,
     turnEnvelope,
   });
+  const now = input.now ?? Date.now;
+  const startedAt = now();
   try {
     if (input.stageTurnInput) {
       await input.stageTurnInput(turnInput);
@@ -354,6 +361,7 @@ async function stageTurnInputForDispatch(
     // Nothing was admitted: the turn retries like any failed dispatch.
     throw new AgentPromptFailure('agent', 503, false, true, error);
   }
+  input.onAgentStaged?.(now() - startedAt);
 }
 
 /** A Slack thread's coordinator instance, as a persisted dispatch envelope names it. */

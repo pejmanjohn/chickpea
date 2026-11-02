@@ -353,7 +353,11 @@ test('the real ChickpeaSlack render runs the staged turn plan, not its creation 
   assert.equal(CURRENT_SLACK_TURN_STATE_NAME, 'chickpeaSlackTurn');
 });
 
-test('the Cloudflare extension is branded as Flue expects and stages into the object storage', async () => {
+test('the Cloudflare extension is branded as Flue expects and stages into the object storage', async (t) => {
+  const boots: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: Record<string, unknown>) => {
+    if (record?.event === 'agent_boot') boots.push(record);
+  });
   assert.equal(FLUE_CLOUDFLARE_EXTENSION_BRAND, Symbol.for('@flue/runtime/cloudflare-extension'));
   // The installed Flue must still recognize extensions by this registry key.
   const dist = fileURLToPath(new URL('../node_modules/@flue/runtime/dist/', import.meta.url));
@@ -368,24 +372,33 @@ test('the Cloudflare extension is branded as Flue expects and stages into the ob
     ctx: { id: { name?: string } },
     env: unknown,
   ) => {
-    chickpeaStageTurnInput(json: string): void;
+    chickpeaStageTurnInput(json: string, sentAt?: number): void;
   };
   const current = plan();
   const instanceId = deriveRuntimePlanInstanceId(current);
   const input = createSlackTurnInput({ turnJobId: 'turn_do', instanceId, runtimePlan: current });
-  new Extended({ id: { name: instanceId } }, {}).chickpeaStageTurnInput(serializeSlackTurnInput(input));
+  const sentAt = Date.now() - 1_000;
+  const object = new Extended({ id: { name: instanceId } }, {});
+  object.chickpeaStageTurnInput(serializeSlackTurnInput(input), sentAt);
+  object.chickpeaStageTurnInput(serializeSlackTurnInput(input), sentAt);
   assert.equal(parseSlackTurnInput(readStagedTurnInputJson(sql, 'turn_do')).instanceId, instanceId);
+  assert.equal(boots.length, 1, 'the activation logs agent_boot at its first staging only');
+  assert.equal(boots[0]?.firstMethod, 'stage');
+  assert.equal(boots[0]?.agentClass, 'ChickpeaSlackThreadObject', 'the most derived class, which Flue names per agent');
+  assert.ok(Number(boots[0]?.sentToConstructMs) >= 1_000);
 
   const calls: string[] = [];
   const binding = {
     idFromName: (name: string) => `id:${name}`,
     get: (id: string) => ({
       async setName(name: string) { calls.push(`setName:${id}:${name}`); },
-      async chickpeaStageTurnInput(json: string) { calls.push(`stage:${parseSlackTurnInput(json).turnJobId}`); },
+      async chickpeaStageTurnInput(json: string, sent: number) {
+        calls.push(`stage:${parseSlackTurnInput(json).turnJobId}:${typeof sent}`);
+      },
     }),
   };
   await stageSlackTurnInputOnAgentObject({ FLUE_AGENT: binding }, 'FLUE_AGENT', input);
-  assert.deepEqual(calls, ['stage:turn_do'], 'the object is addressed by name; staging is the one call');
+  assert.deepEqual(calls, ['stage:turn_do:number'], 'the object is addressed by name; staging is the one call');
   await assert.rejects(stageSlackTurnInputOnAgentObject({}, 'FLUE_AGENT', input), /unavailable/);
 });
 

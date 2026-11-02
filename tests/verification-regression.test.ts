@@ -261,12 +261,13 @@ test('a step that ran the test runner records every file it reran alone, and a r
 test('proofs after the suite form one group behind a single Node build; the export stays last and alone', () => {
   const full = createRegressionPlan({ files: ['src/new-runtime.ts'], testFiles });
   const scripts = full.steps.map((step: { script?: string, file?: string }) => step.script ?? step.file ?? 'tests');
-  assert.deepEqual(scripts.slice(0, 4), ['verify:hygiene', 'build', 'test', 'flue:build']);
+  // The closure ceiling reads the build before anything rebuilds dist-cf.
+  assert.deepEqual(scripts.slice(0, 5), ['verify:hygiene', 'build', 'verify:worker-closure', 'test', 'flue:build']);
   // The alarm-fallback smoke rebuilds dist-cf, so it runs alone after the group.
   assert.equal(full.steps.at(-1).script, 'verify:cf-smoke:alarm');
   assert.equal(full.steps.at(-1).group, undefined);
-  for (const step of full.steps.slice(4, -1)) assert.equal(step.group, 'proofs');
-  for (const step of full.steps.slice(0, 4)) assert.equal(step.group, undefined);
+  for (const step of full.steps.slice(5, -1)) assert.equal(step.group, 'proofs');
+  for (const step of full.steps.slice(0, 5)) assert.equal(step.group, undefined);
   const release = createRegressionPlan({ mode: 'release', testFiles });
   assert.equal(release.steps.at(-1).script, 'verify:oss-export');
   assert.equal(release.steps.at(-1).group, undefined);

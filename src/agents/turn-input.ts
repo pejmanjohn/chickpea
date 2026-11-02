@@ -1,7 +1,11 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { sha256Hex } from '../security/digest.ts';
 import type { FlueObservationTarget, FlueTurnObservationV1 } from '../slack/turn-job-types.ts';
-import { FLUE_CLOUDFLARE_EXTENSION_BRAND, installationAgentObject } from './cloudflare-extension.ts';
+import {
+  FLUE_CLOUDFLARE_EXTENSION_BRAND,
+  installationAgentObject,
+  reportAgentObjectCall,
+} from './cloudflare-extension.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from './names.ts';
 import {
   deriveRuntimePlanInstanceId,
@@ -255,7 +259,7 @@ function ensureTurnInputTable(sql: TurnInputSql): void {
  * Agent-object side of staging. The first write for a TurnJob wins: its plan
  * is frozen, and a retry must see what the first attempt dispatched against.
  */
-export function writeStagedTurnInput(sql: TurnInputSql, json: string, now: number): void {
+export function writeStagedTurnInput(sql: TurnInputSql, json: string, now: number): SlackTurnInput {
   const input = parseSlackTurnInput(json);
   ensureTurnInputTable(sql);
   sql.exec(
@@ -281,6 +285,7 @@ export function writeStagedTurnInput(sql: TurnInputSql, json: string, now: numbe
        SELECT turn_job_id FROM ${TURN_INPUT_TABLE}
      )`,
   );
+  return input;
 }
 
 export function readStagedTurnInputJson(sql: TurnInputSql, turnJobId: string): string | undefined {
@@ -314,10 +319,17 @@ export const slackThreadCloudflareExtension = {
     class ChickpeaSlackThreadObject extends (
       installationAgentObject(Base) as new (...args: never[]) => AgentObjectInstance
     ) {
-      /** Host RPC: stage one turn's input before its dispatch. */
-      chickpeaStageTurnInput(json: string): void {
+      /**
+       * Host RPC: stage one turn's input before its dispatch. `sentAt` is the
+       * runner's clock before it named this object, for `agent_boot`.
+       */
+      chickpeaStageTurnInput(json: string, sentAt?: unknown): void {
         if (typeof json !== 'string') throw new Error('Slack turn input must be serialized.');
-        writeStagedTurnInput(this.ctx.storage.sql, json, Date.now());
+        const input = writeStagedTurnInput(this.ctx.storage.sql, json, Date.now());
+        reportAgentObjectCall(this, 'stage', {
+          sentAt: typeof sentAt === 'number' ? sentAt : undefined,
+          turnJobId: input.turnJobId,
+        });
       }
     },
   [FLUE_CLOUDFLARE_EXTENSION_BRAND]: true as const,
@@ -326,7 +338,7 @@ export const slackThreadCloudflareExtension = {
 interface AgentObjectNamespace {
   idFromName(name: string): unknown;
   get(id: unknown): {
-    chickpeaStageTurnInput(json: string): Promise<void>;
+    chickpeaStageTurnInput(json: string, sentAt: number): Promise<void>;
   };
 }
 
@@ -345,7 +357,7 @@ export async function stageSlackTurnInputOnAgentObject(
   }
   const json = serializeSlackTurnInput(input);
   const stub = binding.get(binding.idFromName(input.instanceId));
-  await stub.chickpeaStageTurnInput(json);
+  await stub.chickpeaStageTurnInput(json, Date.now());
 }
 
 type CloudflareContextReader = () => { storage: { sql: TurnInputSql } };
