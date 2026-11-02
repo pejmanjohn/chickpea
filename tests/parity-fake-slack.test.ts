@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { createMemoryScopeSlack } from '../src/memory/scope.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
+import { CLEF_PROFILES, fakeClefAnswer } from './helpers/fake-clef.ts';
 import { FakeSlackBackend, STUB_REPLY_MARKER } from './parity/fake-slack.ts';
 import { normalizeSlackTurn } from '../src/slack/turn-normalization.ts';
 
@@ -316,4 +317,33 @@ test('a provider delay spread moves the Agent hold and the classifier hold in op
   assert.notEqual(turns[0]!.agent, turns[1]!.agent, 'the Agent hold changes from turn to turn');
   assert.equal(held(true), held(true), 'a classifier call does not advance the spread');
   assert.notEqual(held(false), turns[2]!.agent, 'an Agent call advances the spread');
+});
+
+// Defect caught: the perf harness measures a Clef answer the production
+// parser does not read, counts no Clef calls, or the smoke's default answer
+// clears the gate and stops covering today's fallback path.
+test('the fake backend answers Clef in its wire shape, logs the call, and defaults to uncertain', async () => {
+  const backend = new FakeSlackBackend();
+  const ask = async () => {
+    const response = await backend.asFetch()('http://fake.invalid/ai/run/clef', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ state: 'Source: dm_message', questions: {} }),
+    });
+    return { status: response.status, body: await response.json() as Record<string, unknown> };
+  };
+  const byDefault = await ask();
+  assert.equal(byDefault.status, 200);
+  assert.deepEqual(byDefault.body, fakeClefAnswer('uncertain'));
+  assert.ok(Math.max(...Object.values(CLEF_PROFILES.uncertain)) < 0.6, 'the default stays below the gate');
+
+  backend.configure({ clef: { answer: 'work' } });
+  assert.deepEqual((await ask()).body, fakeClefAnswer('work'));
+  backend.configure({ clef: { answer: 'error' } });
+  assert.equal((await ask()).status, 500);
+
+  const clefCalls = backend.wireLog.filter((entry) => entry.method === 'ai/run');
+  assert.equal(clefCalls.length, 3);
+  assert.equal(clefCalls.every((entry) => entry.kind === 'provider'), true);
+  assert.deepEqual(clefCalls[0]?.body, { state: 'Source: dm_message', questions: {} });
 });
