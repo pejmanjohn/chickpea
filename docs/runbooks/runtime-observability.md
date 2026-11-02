@@ -401,7 +401,7 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   approval, or one whose Agent has no model), with a V3 presentation
   nothing was shown for yet, no other undelivered turn ahead of it in its
   conversation, and not for an Agent with its own Slack app. The wait is
-  capped at 600 ms (`ADMISSION_STATUS_CAP_MS`). When Slack acknowledged the
+  capped at 1 s (`ADMISSION_STATUS_CAP_MS`). When Slack acknowledged the
   status within it, the hand-off carries the presentation with the status
   shown, the runner makes no native start and no opening write, and
   `firstWrite` is `admission_status`: `receiptToFirstWriteMs` and
