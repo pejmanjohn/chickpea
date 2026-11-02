@@ -23,6 +23,7 @@ const LAZY_MODULES: Record<string, string> = {
   'src/connections/catalog/manifests':
     "a connector's detail (connections/catalog/index.ts): turn staging, an Agent object's start, the Composio provider, Admin",
   'image-in-browser': 'image output preparation (images/prepare-output.ts)',
+  'unpdf': 'the first PDF attachment read (slack/attachment-normalization.ts)',
 };
 
 /**
