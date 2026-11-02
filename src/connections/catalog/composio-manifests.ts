@@ -143,6 +143,31 @@ export interface ComposioManifest {
   capabilities: ComposioManifestCapability[];
 }
 
+/** What the catalog lists for a capability before its manifest loads: never its description or input. */
+export type ComposioCapabilityHeader = Pick<
+  ComposioManifestCapability,
+  'id' | 'toolName' | 'lane' | 'effect' | 'maxResultBytes' | 'sideEffectLabel'
+>;
+
+/**
+ * What the catalog lists for a manifest before it loads: the connector's copy,
+ * sign-in, preset and validation call, and each capability's header. The
+ * generator writes these to composio-headers.ts.
+ */
+export interface ComposioManifestHeader extends Omit<ComposioManifest, 'review' | 'capabilities'> {
+  capabilities: readonly ComposioCapabilityHeader[];
+}
+
+export function composioManifestHeader(manifest: ComposioManifest): ComposioManifestHeader {
+  const { review: _review, capabilities, ...connector } = manifest;
+  return {
+    ...connector,
+    capabilities: capabilities.map(({ id, toolName, lane, effect, maxResultBytes, sideEffectLabel }) => ({
+      id, toolName, lane, effect, maxResultBytes, ...(sideEffectLabel ? { sideEffectLabel } : {}),
+    })),
+  };
+}
+
 const Text = (maximum: number) => v.pipe(v.string(), v.minLength(1), v.maxLength(maximum));
 const ToolSlug = v.pipe(v.string(), v.regex(/^[A-Z0-9][A-Z0-9_]{0,127}$/));
 const Lookup = v.strictObject({

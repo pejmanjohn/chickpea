@@ -14,12 +14,14 @@ import {
   renderDraftReport,
   reviewedTools,
   snapshotFromComposio,
+  writeComposioCatalogModules,
 } from './lib/composio-manifests.ts';
 
 const USAGE = `Usage:
   npm run connectors:composio -- snapshot <toolkit> --from <export-directory>
   npm run connectors:composio -- snapshot <toolkit> --fetch   (reads COMPOSIO_API_KEY; GET requests only)
   npm run connectors:composio -- draft <toolkit> [--report <file>] [--validation-arguments <json>]
+  npm run connectors:composio -- generate   (lists every manifest but the held ones in the catalog)
   npm run connectors:composio -- check`;
 
 const { positionals, values } = parseArgs({
@@ -33,7 +35,10 @@ const { positionals, values } = parseArgs({
 });
 const [command, toolkit] = positionals;
 
-if (command === 'check') {
+if (command === 'generate') {
+  await writeComposioCatalogModules();
+  console.log('Wrote src/connections/catalog/composio-headers.ts and composio-details.ts.');
+} else if (command === 'check') {
   const problems = await checkComposioManifestDirectory();
   for (const problem of problems) console.error(problem);
   if (problems.length > 0) process.exit(1);
