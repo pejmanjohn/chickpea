@@ -1740,6 +1740,30 @@ export class TurnJobStoreLogic {
   }
 
   /**
+   * Whether an undelivered turn of the same conversation was enqueued before
+   * this one: one running or waiting ahead of it there. A row without a
+   * conversation key counts as behind.
+   */
+  queuedBehind(id: string): boolean {
+    const self = this.db.get(
+      'SELECT rowid AS row_order, thread_key, enqueued_at FROM turn_jobs WHERE id = ?',
+      id,
+    );
+    if (typeof self?.thread_key !== 'string') return true;
+    return this.db.get(
+      `SELECT 1 AS ahead FROM turn_jobs
+       WHERE thread_key = ? AND id != ? AND ${PENDING_ROW}
+         AND (enqueued_at < ? OR (enqueued_at = ? AND rowid < ?))
+       LIMIT 1`,
+      self.thread_key,
+      id,
+      Number(self.enqueued_at),
+      Number(self.enqueued_at),
+      Number(self.row_order),
+    ) !== undefined;
+  }
+
+  /**
    * Start handing a pending alarm row to its thread runner. The row is the
    * runner's from here on (the alarm never runs it again); it stays a
    * hand-off until the runner confirms its admission. False when it is no

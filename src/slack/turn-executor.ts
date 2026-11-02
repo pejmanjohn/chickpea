@@ -172,8 +172,11 @@ export interface SandboxTurnReader {
 }
 
 export interface TurnExecutionOptions {
-  /** Which lane and executor the turn_latency record names, and a runner's hand-off delay and wake lead. */
-  latency: Pick<TurnLatencyContext, 'lane' | 'executor' | 'handoffMs' | 'runnerWakeLeadMs'>;
+  /** Which lane and executor the turn_latency record names, and what a runner's hand-off measured. */
+  latency: Pick<
+    TurnLatencyContext,
+    'lane' | 'executor' | 'handoffMs' | 'runnerWakeLeadMs' | 'admissionStatusMs' | 'admissionStatusAt'
+  >;
   /** The wake admission sent this turn's Agent object as it handed the turn over (see RunTurnOptions). */
   agentWake?: AdmissionAgentWake;
   /**

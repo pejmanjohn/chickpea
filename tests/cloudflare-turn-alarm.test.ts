@@ -42,6 +42,7 @@ import { installationOwnershipOf, installationScopeOf } from '../src/config/inst
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
 import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
+import { admissionStatusPresentation, showAdmissionStatus } from '../src/slack/admission-activity.ts';
 import { givenUpRecoveryText } from '../src/usage/run-settlement.ts';
 
 // What the transplanted turn executor imports for stop records.
@@ -378,7 +379,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
   const alarmMethods = [
     'armAlarmNoLaterThan', 'alarm', 'drainRelayAlarm', 'dispatchToRunners', 'admitToRunner', 'wakeAgentAtHandoff',
-    'dispatchingWhile', 'deliverStopNotices',
+    'showStatusAtHandoff', 'dispatchingWhile', 'deliverStopNotices',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -411,6 +412,8 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     Date, setTimeout, clearTimeout, AbortController, Promise,
     MAX_TURN_DRAIN_BATCH: 16,
     RUNNER_DISPATCH_MAX_PAGES: 16,
+    admissionStatusPresentation,
+    showAdmissionStatus,
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
     sandboxTurnReaders: () => () => [],
     installationOwnershipOf,
@@ -527,6 +530,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   };
   (probe as unknown as { carriedAlarmTurns: Map<string, string> }).carriedAlarmTurns = new Map();
   (probe as unknown as { admissionsSeen: number }).admissionsSeen = 0;
+  (probe as unknown as { firstHandoffs: Set<string> }).firstHandoffs = new Set();
   (probe as unknown as { stopAborts: StopAbortFence }).stopAborts = hooks.stopAborts ?? new StopAbortFence();
   probe.ctx = { storage: {
     async getAlarm() { return record.alarmAt; },
@@ -913,7 +917,8 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
 
 function admissionHarness(runner: { refuse?: boolean } = {}) {
   const methods = [
-    'admitSlackTurn', 'admitToRunner', 'wakeAgentAtHandoff', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
+    'admitSlackTurn', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan',
+    'admissionWakeAt', 'runnerMode',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -928,6 +933,8 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
   const AdmissionProbe = vm.runInNewContext(code, {
     Date,
     console: { warn() {} },
+    admissionStatusPresentation,
+    showAdmissionStatus,
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
     slackAgentThreadKey,
     installationOwnershipOf,
@@ -943,7 +950,7 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
   const db = openStateDb(':memory:');
   let clock = NOW;
   const turns = new TurnJobStoreLogic(db, () => clock++);
-  const probe = new AdmissionProbe();
+  const probe = Object.assign(new AdmissionProbe(), { firstHandoffs: new Set<string>() });
   probe.stores = {
     turnJobs: turns,
     presentations: { get: () => undefined },

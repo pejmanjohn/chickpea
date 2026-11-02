@@ -253,6 +253,11 @@ import {
 } from './slack/thread-runner-rpc.ts';
 import { receiptRunnerWake } from './slack/receipt-runner-wake.ts';
 import { admissionAgentInstance, type AdmissionAgentFacts, type AdmissionAgentWake } from './slack/admission-agent-wake.ts';
+import {
+  admissionStatusPresentation,
+  showAdmissionStatus,
+  type AdmissionStatusMark,
+} from './slack/admission-activity.ts';
 import { CHICKPEA_SLACK_AGENT_BINDING } from './slack/bounded-agent-observation.ts';
 import { wakeSlackAgentObject } from './agents/turn-input.ts';
 import { localSlackPresentationStatePort } from './slack/presentation-state-port.ts';
@@ -835,6 +840,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   private dispatchWake: (() => void) | undefined;
   /** Slack turns admitted in this isolate (events, deliveries, OAuth resumes). */
   private admissionsSeen = 0;
+  /**
+   * Turns whose first hand-off waits here for its status (showStatusAtHandoff).
+   * No re-admission overtakes one: it would hand the runner the presentation
+   * from before the status, then the first hand-off a later one.
+   */
+  private readonly firstHandoffs = new Set<string>();
   /**
    * This instance, as the owner of the gateway inbox leases it takes. Only one
    * instance owns this object's storage at a time; a lease under any other
@@ -1718,7 +1729,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         ? this.call((stores) => stores.turnJobs.dispatchableNow(turnJobId))
         : undefined;
       const handedOver = ready?.ok && ready.value
-        ? await this.admitToRunner(ready.value).catch(() => false)
+        ? await this.admitToRunner(ready.value, true).catch(() => false)
         : false;
       if (!handedOver) await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
     }
@@ -2727,14 +2738,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * Admit one runner-owned turn to its thread's SlackThreadRunner, with the
    * presentation as this store holds it, and confirm the hand-off. Idempotent:
    * a runner keeps a job it already holds. False leaves the row a hand-off for
-   * the next alarm to admit again.
+   * the next alarm to admit again. A turn's first hand-off may show its status
+   * first (showStatusAtHandoff); a hand-off made again never does.
    */
-  private async admitToRunner(job: PendingTurnJob): Promise<boolean> {
+  private async admitToRunner(job: PendingTurnJob, firstHandoff = false): Promise<boolean> {
     const stores = this.stores;
     const threadKey = slackAgentThreadKey(job.turn, job.assignment);
     const runner = threadRunnerStub(this.env as PlatformEnv, threadKey);
     if (!stores || !runner) return false;
-    const presentation = job.runId ? stores.presentations.get(job.runId) : undefined;
     const slackInstallation = stores.config.getWorkspaceInstallation(effectiveTurnSlackInstallationId(job.turn));
     // The bot identity this store verified within the window, so the runner
     // does not ask Slack for it again before the turn's first status.
@@ -2743,10 +2754,22 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const agentWake = this.wakeAgentAtHandoff(job, {
       installation, botUserId: slackInstallation?.botUserId, inventory: stores.objectInventory,
     });
+    let admissionStatus: AdmissionStatusMark | undefined;
+    if (firstHandoff) {
+      this.firstHandoffs.add(job.id);
+      try {
+        admissionStatus = await this.showStatusAtHandoff(job, slackInstallation?.botUserId);
+      } finally {
+        this.firstHandoffs.delete(job.id);
+      }
+    }
+    // Read after the status: the runner's copy is the only one from here on.
+    const presentation = job.runId ? stores.presentations.get(job.runId) : undefined;
     const payload: ThreadRunnerJobPayload = {
       ...(presentation ? { presentation } : {}),
       ...(gatewayIdentity ? { gatewayIdentity } : {}),
       ...(agentWake ? { agentWake } : {}),
+      ...(admissionStatus ? { admissionStatus } : {}),
     };
     try {
       const result = await runner.admit({
@@ -2789,6 +2812,40 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   }
 
   /**
+   * Show a turn's opening status as its Agent before its first hand-off,
+   * instead of at the runner's start: only on a turn that will dispatch, has
+   * nothing ahead of it in its conversation (a turn waiting behind another
+   * must not replace that turn's status), and is not an Agent with its own
+   * Slack app (admissionStatusPresentation). The hand-off waits at most
+   * ADMISSION_STATUS_CAP_MS. The row records the status only if Slack
+   * acknowledged it in time and nothing else moved the row meanwhile; the
+   * runner otherwise shows it as before. Never fails the hand-off.
+   */
+  private async showStatusAtHandoff(
+    job: PendingTurnJob,
+    botUserId: string | undefined,
+  ): Promise<AdmissionStatusMark | undefined> {
+    try {
+      const stores = this.stores;
+      if (!stores || !job.runId) return undefined;
+      const presentation = admissionStatusPresentation(job, stores.presentations.get(job.runId), botUserId);
+      if (!presentation || stores.turnJobs.queuedBehind(job.id)) return undefined;
+      const resolveInstallation = this.createAlarmIdentityResolver(stores);
+      return await showAdmissionStatus({
+        presentation,
+        agentId: job.assignment.agent.id,
+        state: localSlackPresentationState(stores, this.env as PlatformEnv),
+        client: async () => (await resolveInstallation(effectiveTurnSlackInstallationId(job.turn))).client,
+        commit: (shown) =>
+          stores.presentations.get(shown.runId)?.projectionVersion === presentation.projectionVersion &&
+          stores.presentations.putSnapshot(shown),
+      });
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * The default executor: hand every pending turn whose thread is
    * free to its runner, a page at a time, and return without waiting for any
    * turn. Unconfirmed hand-offs are admitted again first, so a hand-off lost
@@ -2803,18 +2860,21 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     readmitHandoffs = true,
   ): Promise<number> {
     let dispatched = 0;
-    const admitAll = async (jobs: PendingTurnJob[]) => {
-      const admitted = await Promise.all(jobs.map((job) => this.admitToRunner(job)));
+    const admitAll = async (jobs: PendingTurnJob[], firstHandoff: boolean) => {
+      const admitted = await Promise.all(jobs.map((job) => this.admitToRunner(job, firstHandoff)));
       dispatched += admitted.filter(Boolean).length;
     };
-    if (readmitHandoffs) await admitAll(stores.turnJobs.listHandoffs(MAX_TURN_DRAIN_BATCH));
+    if (readmitHandoffs) {
+      await admitAll(stores.turnJobs.listHandoffs(MAX_TURN_DRAIN_BATCH)
+        .filter((job) => !this.firstHandoffs.has(job.id)), false);
+    }
     for (let page = 0; newTurns && page < RUNNER_DISPATCH_MAX_PAGES; page += 1) {
       const jobs = stores.turnJobs.listDispatchable({
         limit: MAX_TURN_DRAIN_BATCH,
         threadKey: (job) => slackAgentThreadKey(job.turn, job.assignment),
       }).filter((job) => stores.turnJobs.assignRunner(job.id));
       if (jobs.length === 0) break;
-      await admitAll(jobs);
+      await admitAll(jobs, true);
     }
     return dispatched;
   }

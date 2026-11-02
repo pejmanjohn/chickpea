@@ -509,6 +509,39 @@ test("turn_latency logs a runner turn's hand-off delay and wake lead from its co
   records.forEach(assertContentFree);
 });
 
+// Defects caught: a first write that ignores the status the state store
+// showed before the hand-off (receiptToFirstWriteMs would then count to the
+// runner's later write), one a later write replaces, a wait that is not
+// logged, and fields on a turn whose hand-off tried no status.
+test('turn_latency counts the first write from the status the state store showed before the hand-off', () => {
+  const { records, sink } = captureSink();
+  const time = clock(10_000);
+  const tracker = new TurnLatencyTracker({
+    receivedAt: 8_000, admittedAt: 8_300, handoffMs: 40, admissionStatusMs: 310, admissionStatusAt: 8_610,
+    lane: 'cloudflare', executor: 'runner',
+  }, { turnJobId: 'msg:C1:1785509000.000100', attempt: 1 }, time.now, sink);
+  time.advance(700);
+  tracker.markSlackWrite('activity_status');
+  tracker.emit('returned');
+  assert.equal(records[0]?.firstWrite, 'admission_status');
+  assert.equal(records[0]?.receiptToFirstWriteMs, 610);
+  assert.equal(records[0]?.admissionToFirstWriteMs, 310);
+  assert.equal(records[0]?.admissionStatusMs, 310);
+  // The cap or a failure: the wait is logged, and the runner's write is the first.
+  const missed = new TurnLatencyTracker({
+    receivedAt: 8_000, admittedAt: 8_300, admissionStatusMs: 600, lane: 'cloudflare', executor: 'runner',
+  }, {}, clock(10_000).now, sink);
+  missed.markSlackWrite('agent_session');
+  missed.emit('returned');
+  assert.equal(records[1]?.firstWrite, 'agent_session');
+  assert.equal(records[1]?.receiptToFirstWriteMs, 2_000);
+  assert.equal(records[1]?.admissionStatusMs, 600);
+  new TurnLatencyTracker({ admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, {}, clock(10_000).now, sink)
+    .emit('returned');
+  assert.equal('admissionStatusMs' in records[2]!, false, 'a hand-off that tried no status omits the field');
+  records.forEach(assertContentFree);
+});
+
 // Defects caught: a start-to-stage time that includes the staging itself, one
 // a later staging (a retry's) overwrites, and a field present on a turn that
 // staged nothing.

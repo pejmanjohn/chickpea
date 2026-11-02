@@ -27,22 +27,31 @@ export interface AdmissionAgentFacts {
 }
 
 /**
+ * Whether, by what admission knows, a handed-over turn will first dispatch
+ * to its Agent: not when a stop holds or stopped it, it already froze or
+ * dispatched a plan, it was judged react_only, the host answers it (a
+ * command, an approval), or its Agent has no model. `botUserId` is the
+ * installation's bot, which a command may address.
+ */
+export function handedOverTurnDispatches(job: HandedOverTurn, botUserId: string | undefined): boolean {
+  if (turnJobGate(job) !== 'run') return false;
+  if (job.runtimePlan || job.agentInstanceId || job.dispatchReceipt || job.flueSettlement) return false;
+  if ((job.turn.interactionIntent ?? job.progress.interactionIntent)?.disposition === 'react_only') return false;
+  if (job.assignment.runtimeContract === 'chickpea-v1' && !job.assignment.model) return false;
+  return !isDeterministicSlackCommand(job.turn, {
+    botUserId,
+    agentUserGroupId: job.assignment.agent.slackPresence?.userGroupId,
+  });
+}
+
+/**
  * The Flue instance a handed-over turn's plan will name, recorded in the
- * installation's inventory before anything addresses it; or undefined when,
- * by what admission knows, the turn freezes no plan: a stop holds or stopped
- * it, it already froze or dispatched one, it was judged react_only, the host
- * answers it (a command, an approval), or its Agent has no model. A turn
- * judged react_only later, or whose model needs repair, wastes the wake.
+ * installation's inventory before anything addresses it; or undefined when
+ * the turn freezes no plan (handedOverTurnDispatches). A turn judged
+ * react_only later, or whose model needs repair, wastes the wake.
  */
 export function admissionAgentInstance(job: HandedOverTurn, facts: AdmissionAgentFacts): string | undefined {
-  if (turnJobGate(job) !== 'run') return undefined;
-  if (job.runtimePlan || job.agentInstanceId || job.dispatchReceipt || job.flueSettlement) return undefined;
-  if ((job.turn.interactionIntent ?? job.progress.interactionIntent)?.disposition === 'react_only') return undefined;
-  if (job.assignment.runtimeContract === 'chickpea-v1' && !job.assignment.model) return undefined;
-  if (isDeterministicSlackCommand(job.turn, {
-    botUserId: facts.botUserId,
-    agentUserGroupId: job.assignment.agent.slackPresence?.userGroupId,
-  })) return undefined;
+  if (!handedOverTurnDispatches(job, facts.botUserId)) return undefined;
   const instanceId = deriveSlackTurnInstanceId(job.turn, job.assignment, facts.installation);
   facts.inventory.recordAgentInstance('slack_agent', instanceId);
   return instanceId;

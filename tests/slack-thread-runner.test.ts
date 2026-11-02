@@ -13,6 +13,7 @@ import {
   seedGatewayIdentity,
 } from '../src/slack/installation-execution.ts';
 import { parseAdmissionAgentWake } from '../src/slack/admission-agent-wake.ts';
+import { parseAdmissionStatusMark } from '../src/slack/admission-activity.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { ThreadRunnerJobStore } from '../src/slack/thread-runner-jobs.ts';
 import { NodeStateDb } from '../src/state/node-state-db.ts';
@@ -119,7 +120,7 @@ test("the runner's admit reports the hand-off's send time and keeps its delay fo
     ts.transpileModule(`class AdmitProbe { ${parts.map((part) => part!.getText(source)).join('\n')} }\nAdmitProbe`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText,
-    { Date: { now: () => 70_000 }, assertInstallationOwnership: () => undefined, seedGatewayIdentity, parseAdmissionAgentWake, console },
+    { Date: { now: () => 70_000 }, assertInstallationOwnership: () => undefined, seedGatewayIdentity, parseAdmissionAgentWake, parseAdmissionStatusMark, console },
   ) as new () => Record<string, unknown> & {
     admit(job: unknown): Promise<Record<string, unknown>>;
     takeHandoff(jobId: string): { latency: Record<string, unknown> };
@@ -176,6 +177,7 @@ test("the runner's admit takes a carried gateway identity into its cache and sto
       },
       seedGatewayIdentity,
       parseAdmissionAgentWake,
+      parseAdmissionStatusMark,
       console: { warn() {} },
     },
   ) as new () => { admit(job: unknown): Promise<Record<string, unknown>> };
