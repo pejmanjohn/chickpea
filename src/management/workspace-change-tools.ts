@@ -6,8 +6,8 @@ import type { WorkspaceManagementToolName } from './tool-adapter.ts';
 /**
  * The management tools that propose, apply, undo, and read back workspace
  * configuration changes, which carry most of the management schema bytes. A
- * Slack thread mounts them once agent-authoring is active in it, as the last
- * capability segment (shared-prefix.ts), so a turn that changes nothing
+ * Slack thread mounts them once agent-authoring is active in it, as their
+ * own capability segment (shared-prefix.ts), so a turn that changes nothing
  * sends a smaller prompt.
  */
 export const WORKSPACE_CHANGE_TOOL_NAMES = [

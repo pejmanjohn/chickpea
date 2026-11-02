@@ -17,7 +17,6 @@ import {
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
 import { ManagementError, type ManagementApplyResult, type ManagementOperation } from '../src/management/types.ts';
-import { WORKSPACE_CHANGE_TOOL_NAMES } from '../src/management/workspace-change-tools.ts';
 import type { NormalizedSlackTurn, SlackAgentAsk } from '../src/slack/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
@@ -137,10 +136,8 @@ test('Slack offers the model no tool that confirms a workspace change', () => {
     new URL('../src/agents/shared-prefix-tools.json', import.meta.url), 'utf8',
   )) as { tools: Array<{ name: string }>; segments: Record<string, Array<{ name: string }>> };
   const names = [...rendered.tools, ...Object.values(rendered.segments).flat()].map(({ name }) => name);
-  assert.ok(names.includes('inspect_workspace'), 'the snapshot is the management tool set');
+  assert.ok(names.includes('apply_workspace_changes'), 'the snapshot is the management tool set');
   assert.ok(!names.includes('confirm_workspace_change'), 'no Slack tool applies a held change');
-  assert.ok(!(WORKSPACE_CHANGE_TOOL_NAMES as readonly string[]).includes('confirm_workspace_change'),
-    'nor does agent-authoring add one');
 });
 
 test('an archive the model proposed in a person\'s turn applies only on the person\'s approval', async () => {

@@ -125,6 +125,8 @@ test('a later turn of an activated thread sends the change tools after the share
     assert.deepEqual(anthropicToolAdditions(request), [], 'nothing is added mid-conversation');
     assert.deepEqual(anthropicToolRemovals(request), [], 'and nothing is withdrawn');
     assert.equal(request.system[0].text, sharedSystemBlock('system'));
+    assert.equal(chargedSharedPrefix(request), 'system/interactive_streaming_management', 'a shared shape, cached for an hour');
+    assert.deepEqual(request.system[0].cache_control, { type: 'ephemeral', ttl: '1h' });
   }
 });
 

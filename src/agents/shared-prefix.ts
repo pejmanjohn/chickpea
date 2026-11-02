@@ -27,8 +27,12 @@ import {
 } from './shared-prefix-layout.ts';
 import rendered from './shared-prefix-tools.json' with { type: 'json' };
 
-/** The capability tools a turn may mount after breakpoint A, in mount order. */
-const SHAPE_SEGMENTS = ['interactive', 'streaming', 'coding', 'image', 'front_desk'] as const;
+/**
+ * The capability tools a turn may mount after breakpoint A, in mount order.
+ * `management` is the workspace change tools, which a thread mounts from
+ * the turn after its model activates agent-authoring.
+ */
+const SHAPE_SEGMENTS = ['interactive', 'streaming', 'management', 'coding', 'image', 'front_desk'] as const;
 type ShapeSegment = (typeof SHAPE_SEGMENTS)[number];
 
 /** Every non-empty ordered selection of `Segments`, joined with underscores. */
@@ -53,17 +57,17 @@ export type SharedPrefixId = `${AgentKind}/${SharedPrefixShape}`;
 
 /**
  * Channel and DM turns mount the interactive tools, so these are the shapes
- * worth warming. Coding and front-desk shapes are not warmed: their first
- * request writes the prefix and later ones, in any workspace, read it. Only
- * the system kind ever mounts the front desk, and warming it would double
- * the warmed set.
+ * worth warming. Management, coding and front-desk shapes are not warmed:
+ * their first request writes the prefix and later ones, in any workspace,
+ * read it. Only the system kind ever mounts the front desk, and warming any
+ * of them would double the warmed set.
  */
 export type WarmedSharedPrefixShape = Exclude<
   Extract<SharedPrefixShape, 'interactive' | `interactive_${string}`>,
-  `${string}coding${string}` | `${string}front_desk${string}`
+  `${string}management${string}` | `${string}coding${string}` | `${string}front_desk${string}`
 >;
 
-const UNWARMED_SEGMENTS: readonly ShapeSegment[] = ['coding', 'front_desk'];
+const UNWARMED_SEGMENTS: readonly ShapeSegment[] = ['management', 'coding', 'front_desk'];
 
 export const WARMED_SHARED_PREFIX_SHAPES = (Object.keys(SHARED_PREFIX_SHAPES) as SharedPrefixShape[])
   .filter((shape): shape is WarmedSharedPrefixShape =>

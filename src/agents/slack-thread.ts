@@ -1011,7 +1011,7 @@ export function useChickpeaSlackRuntimeCapabilities(
         useInstruction(presentationIntent.instruction);
         useTool(presentationIntent.tool);
       }
-      // Last among the shared tools, so a thread that adds them keeps the prefix before them.
+      // The shared prefix's management segment (shared-prefix.ts), after the streaming one.
       management?.changeTools?.();
     },
   });
