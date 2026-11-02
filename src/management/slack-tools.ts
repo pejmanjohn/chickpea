@@ -604,6 +604,13 @@ export const SLACK_MANAGEMENT_GUIDANCE = [
   'Standalone requests for future or repeated work belong to manage_scheduled_work, even when the requester does not use the word “schedule” (for example, “check this again in 5 minutes”). “Again” means create a fresh follow-up unless the requester explicitly identifies an existing routine to edit. Keep “in N minutes” relative by using scheduleKind in plus minutes; do not compute a wall-clock time. “Tell me anything new” implies outputPolicy post_on_change. Clear create, edit, pause, resume, disable, and run-now actions apply immediately without approval. Before acting on an existing routine, call inspect_routines and use an exact routine ID and current version where required; ask the requester to disambiguate if more than one routine matches. Deleting scheduled work is deliberately excluded from manage_scheduled_work because it is irreversible: for a clear request to delete a routine, first call inspect_routines, then send the exact delete_routine operation to propose_workspace_changes and show presentation.slack; the routine is deleted only when the person approves it. Never use apply_workspace_changes for routine deletion. Apart from routine deletion, do not route standalone scheduled work through propose_workspace_changes or apply_workspace_changes. Compound Agent-configuration changes still use the normal proposal flow.',
 ].join(' ');
 
+/**
+ * A user Agent's guidance only. Only Chickpea creates Agents, and Clef's
+ * management signal cannot tell a user Agent's creation request from
+ * Chickpea's, so the user Agent hands it over without loading the guide.
+ */
+export const USER_AGENT_CREATION_HANDOFF_INSTRUCTION = 'When someone asks you to create a new Agent, do not activate agent-authoring: only Chickpea creates Agents, so call request_chickpea_handoff with reason cross_agent and follow the instruction it returns.';
+
 /** Names the acting Agent; a user Agent's goes in the tenant block of its system prompt. */
 export function slackManagementRoutingInstruction(agentId: string): string {
   return `This Slack conversation is routed to trusted acting Agent ID ${agentId}.`;

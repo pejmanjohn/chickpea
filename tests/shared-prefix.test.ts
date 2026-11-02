@@ -26,13 +26,14 @@ import {
 import {
   RUNTIME_PLAN_INSTRUCTIONS,
   SHARED_PREFIX_LAST_TOOL,
+  reducedSystemBlocks,
   sharedSystemBlock,
 } from '../src/agents/shared-prefix-layout.ts';
 import { SLACK_INTERACTION_DEFAULTS, SLACK_RUNTIME_GUARDRAIL } from '../src/config/effective-config.ts';
 import type { AgentKind } from '../src/config/types.ts';
 import { EXTERNAL_ACTION_AUTHORITY_PREAMBLE } from '../src/connections/runtime.ts';
 import { AGENT_AUTHORING_ROUTER_INSTRUCTION } from '../src/management/agent-authoring/index.ts';
-import { SLACK_MANAGEMENT_GUIDANCE } from '../src/management/slack-tools.ts';
+import { SLACK_MANAGEMENT_GUIDANCE, USER_AGENT_CREATION_HANDOFF_INSTRUCTION } from '../src/management/slack-tools.ts';
 import { FILE_COMPLETION_INSTRUCTION } from '../src/slack/file-delivery-completion.ts';
 import { SLACK_LISTS_INSTRUCTION } from '../src/slack/lists/tools.ts';
 import { SLACK_ACTION_LINK_INSTRUCTION } from '../src/slack/message-format.ts';
@@ -143,6 +144,23 @@ for (const agentKind of ['system', 'user'] as const) {
       'the tenant block opens with the Agent\'s own instructions');
   });
 }
+
+// Defect caught: system Chickpea, which creates Agents, is told to hand
+// creation off; a user Agent loses the hand-off; or a turn without the
+// management tools is told to call one.
+test('the creation hand-off is in a user Agent\'s shared block only, and only with the management tools', async () => {
+  assert.ok(sharedSystemBlock('user').includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+  assert.ok(!sharedSystemBlock('system').includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+  assert.ok(!SLACK_MANAGEMENT_GUIDANCE.includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+  for (const [block, reason] of reducedSystemBlocks()) {
+    if (reason === 'management_unmounted') assert.ok(!block.includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+  }
+  const [userConstant, userTenant] = (await render({ ...ALPHA, agentKind: 'user' })).system.map((block: any) => block.text);
+  assert.ok(userConstant.includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+  assert.ok(!userTenant.includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+  const systemPrompt = (await render({ ...ALPHA, agentKind: 'system' })).system.map((block: any) => block.text).join('\n');
+  assert.ok(!systemPrompt.includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+});
 
 for (const agentKind of ['system', 'user'] as const) {
   for (const shape of WARMED_SHARED_PREFIX_SHAPES) {
