@@ -252,7 +252,7 @@ import {
   type ThreadRunnerTurnResult,
 } from './slack/thread-runner-rpc.ts';
 import { receiptRunnerWake } from './slack/receipt-runner-wake.ts';
-import { admissionAgentInstance, type AdmissionAgentWake } from './slack/admission-agent-wake.ts';
+import { admissionAgentInstance, type AdmissionAgentFacts, type AdmissionAgentWake } from './slack/admission-agent-wake.ts';
 import { CHICKPEA_SLACK_AGENT_BINDING } from './slack/bounded-agent-observation.ts';
 import { wakeSlackAgentObject } from './agents/turn-input.ts';
 import { localSlackPresentationStatePort } from './slack/presentation-state-port.ts';
@@ -2740,7 +2740,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     // does not ask Slack for it again before the turn's first status.
     const gatewayIdentity = carriedGatewayIdentity(slackInstallation);
     const installation = installationOwnershipOf(this.env as PlatformEnv);
-    const agentWake = this.wakeAgentAtHandoff(job, installation, slackInstallation?.botUserId);
+    const agentWake = this.wakeAgentAtHandoff(job, {
+      installation, botUserId: slackInstallation?.botUserId, inventory: stores.objectInventory,
+    });
     const payload: ThreadRunnerJobPayload = {
       ...(presentation ? { presentation } : {}),
       ...(gatewayIdentity ? { gatewayIdentity } : {}),
@@ -2772,20 +2774,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * hand-off. Returns what the hand-off carries, so the turn's freeze sends
    * no second wake to the same object and measures its lead from this one.
    */
-  private wakeAgentAtHandoff(
-    job: PendingTurnJob,
-    installation: ReturnType<typeof installationOwnershipOf>,
-    botUserId: string | undefined,
-  ): AdmissionAgentWake | undefined {
+  private wakeAgentAtHandoff(job: PendingTurnJob, facts: AdmissionAgentFacts): AdmissionAgentWake | undefined {
     try {
-      const stores = this.stores;
-      if (!stores) return undefined;
-      const instanceId = admissionAgentInstance(job, { installation, botUserId, inventory: stores.objectInventory });
+      const instanceId = admissionAgentInstance(job, facts);
       if (!instanceId) return undefined;
       const sentAt = Date.now();
-      void Promise.resolve(
-        wakeSlackAgentObject(this.env as PlatformEnv, CHICKPEA_SLACK_AGENT_BINDING, instanceId, job.id, sentAt),
-      ).catch(() => undefined);
+      void wakeSlackAgentObject(this.env as PlatformEnv, CHICKPEA_SLACK_AGENT_BINDING, instanceId, job.id, sentAt)
+        .catch(() => undefined);
       return { instanceId, sentAt };
     } catch {
       // The freeze wakes the object instead.

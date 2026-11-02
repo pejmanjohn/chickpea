@@ -16,7 +16,15 @@ export interface AdmissionAgentWake {
 /** What admission holds of a turn it hands over. */
 export type HandedOverTurn =
   & Pick<PendingTurnJob, 'turn' | 'assignment' | 'stop' | 'fold' | 'runtimePlan' | 'agentInstanceId' | 'dispatchReceipt' | 'flueSettlement'>
-  & { progress?: Pick<TurnProgress, 'interactionIntent'> };
+  & { progress: Pick<TurnProgress, 'interactionIntent'> };
+
+/** What the state store knows besides the turn when it hands it over. */
+export interface AdmissionAgentFacts {
+  installation: InstallationOwnership | undefined;
+  /** The installation's bot, which a command may address. */
+  botUserId: string | undefined;
+  inventory: Pick<InstallationObjectRecorder, 'recordAgentInstance'>;
+}
 
 /**
  * The Flue instance a handed-over turn's plan will name, recorded in the
@@ -26,18 +34,10 @@ export type HandedOverTurn =
  * answers it (a command, an approval), or its Agent has no model. A turn
  * judged react_only later, or whose model needs repair, wastes the wake.
  */
-export function admissionAgentInstance(
-  job: HandedOverTurn,
-  facts: {
-    installation: InstallationOwnership | undefined;
-    /** The installation's bot, which a command may address. */
-    botUserId: string | undefined;
-    inventory: Pick<InstallationObjectRecorder, 'recordAgentInstance'>;
-  },
-): string | undefined {
+export function admissionAgentInstance(job: HandedOverTurn, facts: AdmissionAgentFacts): string | undefined {
   if (turnJobGate(job) !== 'run') return undefined;
   if (job.runtimePlan || job.agentInstanceId || job.dispatchReceipt || job.flueSettlement) return undefined;
-  if ((job.turn.interactionIntent ?? job.progress?.interactionIntent)?.disposition === 'react_only') return undefined;
+  if ((job.turn.interactionIntent ?? job.progress.interactionIntent)?.disposition === 'react_only') return undefined;
   if (job.assignment.runtimeContract === 'chickpea-v1' && !job.assignment.model) return undefined;
   if (isDeterministicSlackCommand(job.turn, {
     botUserId: facts.botUserId,
