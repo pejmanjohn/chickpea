@@ -156,21 +156,31 @@ test('a hand-off decision tells the state store once, inside the capture, before
 });
 
 // Defects caught: awaiting the note (wake_awaited: a store that never answers
-// would hang the run), and a refused or thrown note failing the run or
-// skipping the takeover's dispatch.
+// would hang the run), a refused or thrown note failing the run or skipping
+// the takeover's dispatch, and a refused note left as an unhandled rejection.
 test('a note the state store refuses, never answers, or cannot take neither delays nor fails the run or the hand-off', async () => {
   const cases: Array<[string, (note: SlackFrontDeskHandoffNote) => Promise<void>]> = [
     ['refused', () => Promise.reject(new Error('state store unavailable'))],
     ['never answered', () => new Promise<void>(() => undefined)],
     ['thrown', () => { throw new Error('stub replaced'); }],
   ];
-  for (const [name, answer] of cases) {
-    const h = executorPorts(async (options) => {
-      options.onFrontDeskHandoff?.(HANDOFF);
-      await options.onDelivered?.('succeeded');
-    }, answer);
-    assert.equal(await promptly(executeTurnJob(chickpeaJob(), h.ports, h.options)), true, name);
-    assert.deepEqual(h.calls, ['noteFrontDeskHandoff', 'markDelivered', 'dispatchFrontDeskHandoff(agent_support)'], name);
+  const rejections: unknown[] = [];
+  const onRejection = (reason: unknown) => { rejections.push(reason); };
+  process.on('unhandledRejection', onRejection);
+  try {
+    for (const [name, answer] of cases) {
+      const h = executorPorts(async (options) => {
+        options.onFrontDeskHandoff?.(HANDOFF);
+        await options.onDelivered?.('succeeded');
+      }, answer);
+      assert.equal(await promptly(executeTurnJob(chickpeaJob(), h.ports, h.options)), true, name);
+      assert.deepEqual(h.calls, ['noteFrontDeskHandoff', 'markDelivered', 'dispatchFrontDeskHandoff(agent_support)'], name);
+    }
+    // The refused note settles after the run returned: its rejection is the capture's to take.
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(rejections, [], 'a refused note is taken where it was sent');
+  } finally {
+    process.off('unhandledRejection', onRejection);
   }
 });
 
