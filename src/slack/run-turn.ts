@@ -1950,6 +1950,10 @@ async function runTurnAttempt(
           agentId: assignment.agentId,
         })
       : [];
+    // The Agent's first render mounts the change tools on it (workspace-change-tools.ts).
+    // Clef's management call started with the judgment and ends within its bound.
+    const workspaceChangeTools = runtimePlanDecision !== undefined &&
+      (turn.managementProposalPending === true || await (judgment?.managementLikely ?? false));
     const handoffBlock = formatSlackPublicHandoff(frozenHandoff);
     const progressiveRelayFactory = options.prepareProgressiveRelay ??
       (agentViewPresentation
@@ -2161,6 +2165,7 @@ async function runTurnAttempt(
             ...(threadImages ? { threadImages } : {}),
             ...(threadFiles.length ? { threadFileIds: threadFiles.map(({ id }) => id) } : {}),
             ...(admittedListIds.length ? { admittedListIds } : {}),
+            ...(workspaceChangeTools ? { workspaceChangeTools } : {}),
             ...turnEnvelope,
             ...(platformEnv ? { env: platformEnv } : {}),
             ...(executionPrepared ? { executionPrepared } : {}),

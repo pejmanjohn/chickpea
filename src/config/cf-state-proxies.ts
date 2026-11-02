@@ -2081,11 +2081,12 @@ export class CfSlackStateStore implements SlackStateStore {
     admittedListIds?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[4],
     turnEnvelope?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[5],
     threadFileIds?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[6],
+    workspaceChangeTools?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[7],
   ) {
     return rpcVia(this.stub,
       'slackFlueDispatchPrepare',
       (stub) => stub.slackFlueDispatchPrepare(
-        id, message, observation, threadImages, admittedListIds, turnEnvelope, threadFileIds,
+        id, message, observation, threadImages, admittedListIds, turnEnvelope, threadFileIds, workspaceChangeTools,
       ),
     );
   }

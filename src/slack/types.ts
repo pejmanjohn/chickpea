@@ -234,6 +234,13 @@ export interface NormalizedSlackTurn {
    */
   managementApprovalProposalId?: string;
   /**
+   * Set only by host admission: a change set from this requester still waits
+   * on them in this conversation after their typed message neither approved
+   * nor declined it. The turn's first request then mounts the workspace
+   * change tools, so the Agent can revise or re-propose it.
+   */
+  managementProposalPending?: true;
+  /**
    * A pending browser action this exact reply approved at admission, for the
    * same requester, thread, and Agent. The action is bound to this message's
    * timestamp; Slack text cannot supply the id.

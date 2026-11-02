@@ -584,6 +584,8 @@ export interface TagStateRpc {
     /** Additive and optional: the per-turn settings envelope to freeze. */
     turnEnvelope?: TurnEnvelopeV1,
     threadFileIds?: readonly string[],
+    /** Additive and optional: an older store ignores it, and the turn's first request stays lean. */
+    workspaceChangeTools?: boolean,
   ): Promise<StateRpcResult<FlueDispatchEnvelopeV1>>;
   /** The settings envelope frozen with a turn's dispatch; the Agent reads it once per turn. */
   slackTurnEnvelopeGet(id: string): Promise<StateRpcResult<TurnEnvelopeV1 | null>>;

@@ -293,6 +293,7 @@ export async function executeTurnJob(
       admittedListIds?: readonly string[],
       turnEnvelope?: TurnEnvelopeV1,
       threadFileIds?: readonly string[],
+      workspaceChangeTools?: boolean,
     ) => {
       try {
         return await ports.turnJobs.prepareFlueDispatch(
@@ -303,6 +304,7 @@ export async function executeTurnJob(
           admittedListIds,
           turnEnvelope,
           threadFileIds,
+          workspaceChangeTools,
         );
       } catch (error) {
         if (!isTurnJobStopRefusal(error)) throw error;

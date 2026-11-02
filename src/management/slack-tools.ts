@@ -95,36 +95,12 @@ const SIGNAL_ATTRIBUTE_KEYS = [
   'messageTs',
   'turnJobId',
 ] as const;
-const SIGNAL_OPTIONAL_ATTRIBUTE_KEYS = [
-  'conversationKind',
-  'requesterText',
-  'requesterTextSource',
-  'requesterTimezone',
-  'attachmentFileIds',
-  'attachmentIntakeStatus',
-  'attachmentCount',
-  'threadImages',
-  'threadFileIds',
-  'admittedListIds',
-] as const;
-const SIGNAL_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
-  ...SIGNAL_ATTRIBUTE_KEYS,
-  ...SIGNAL_OPTIONAL_ATTRIBUTE_KEYS,
-]);
 /**
- * The host appends one attachment-analysis signal to an upload turn, and it
- * becomes the delivery that later renders of the response read until another
- * message reaches the model: a joined delivery or another appended signal,
- * such as the file-delivery check. It carries the triggering message's own identity forward
- * plus its own bounded evidence counters, so the same Slack request keeps the
- * same management authority on each of its renders.
+ * Facts a delivery never names: the routed Agent comes from the plan, and a
+ * public page read only from the web capability's own turn state. A delivery
+ * that names one is not a host Slack signal.
  */
-const ATTACHMENT_CONTEXT_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
-  ...SIGNAL_ALLOWED_ATTRIBUTE_KEYS,
-  'attachmentStatus',
-  'attachmentSuccessCount',
-  'attachmentFailureCount',
-]);
+const SIGNAL_RESERVED_ATTRIBUTE_KEYS = ['agentId', 'publicDocRead'] as const;
 
 export const scheduleActionInputSchema = v.object({
   requiredConnectionAccountIds: v.optional(v.pipe(v.array(v.string()), v.maxLength(100), v.description('Exact accounts this future task requires. Required on create or task change: use [] for connection-free work. Get stable IDs from inspect_workspace for the owning Agent and choose only the accounts needed by the task, never all available accounts. Omit for metadata-only edits to preserve the saved set. Ask the requester if the service/account is ambiguous.'))),
@@ -160,6 +136,8 @@ export interface SlackManagementSignal {
   turnJobId: string;
   /** Host-admitted List references for this exact request. */
   admittedListIds?: readonly string[];
+  /** The host mounts the workspace change tools in this turn's first request (workspace-change-tools.ts). */
+  workspaceChangeTools?: true;
   /** Files attached to the requester's current message, from the host's normalized turn. Never model-written. */
   attachmentFileIds?: readonly string[];
   threadFileIds?: readonly string[];
@@ -1005,16 +983,19 @@ export function parseSlackManagementSignal(
   plan: RuntimePlanV2,
 ): SlackManagementSignal | undefined {
   if (delivery.kind !== 'signal' || !delivery.attributes) return undefined;
+  // The attachment-analysis signal the host appends to an upload turn is the
+  // delivery later renders read until another message reaches the model. It
+  // carries the triggering message's identity forward, so the same Slack
+  // request keeps the same management authority on each of its renders.
   const attachmentContext = delivery.type === 'slack.attachment_context' &&
     delivery.tagName === 'slack_attachment_context';
   if (!attachmentContext &&
       (delivery.type !== 'slack.message' || delivery.tagName !== 'slack_message')) {
     return undefined;
   }
-  const allowedKeys = attachmentContext
-    ? ATTACHMENT_CONTEXT_ALLOWED_ATTRIBUTE_KEYS
-    : SIGNAL_ALLOWED_ATTRIBUTE_KEYS;
-  if (Object.keys(delivery.attributes).some((key) => !allowedKeys.has(key))) return undefined;
+  // Any other attribute is ignored: during a rolling deploy a newer host's
+  // addition must not strip a turn of its tools in an older Agent.
+  if (SIGNAL_RESERVED_ATTRIBUTE_KEYS.some((key) => Object.hasOwn(delivery.attributes!, key))) return undefined;
   const values = Object.fromEntries(SIGNAL_ATTRIBUTE_KEYS.map((key) => [
     key,
     boundedAttribute(delivery.attributes?.[key], key, key.endsWith('Ts') ? 80 : 256),
@@ -1051,6 +1032,8 @@ export function parseSlackManagementSignal(
     ...(admittedListIds ? { admittedListIds } : {}),
     ...(attachmentFileIds ? { attachmentFileIds } : {}),
     ...(threadFileIds ? { threadFileIds } : {}),
+    // Any other value is no signal: the turn stays lean.
+    ...(delivery.attributes.workspaceChangeTools === 'mounted' ? { workspaceChangeTools: true as const } : {}),
     agentId: plan.agentId,
   };
 }

@@ -228,6 +228,8 @@ export interface SlackFlueDispatchState {
     /** Per-turn settings the Agent's tools read; frozen with the first dispatch. */
     turnEnvelope?: TurnEnvelopeV1,
     threadFileIds?: readonly string[],
+    /** The turn's first request mounts the workspace change tools. */
+    workspaceChangeTools?: boolean,
   ): FlueDispatchEnvelopeV1 | Promise<FlueDispatchEnvelopeV1>;
   recordReceipt(
     receipt: FlueDispatchReceiptV1,
@@ -272,6 +274,12 @@ interface PromptSlackAgentInput {
   threadFileIds?: readonly string[];
   /** Host-admitted List references for this exact turn. */
   admittedListIds?: readonly string[];
+  /**
+   * Clef read the message as a configuration change, or a change set waits
+   * on the requester here: the turn's first request mounts the workspace
+   * change tools. Frozen with the envelope; a retry reuses it.
+   */
+  workspaceChangeTools?: boolean;
   /**
    * Freezes the per-turn settings envelope. Runs only before the first
    * dispatch; a failure leaves the turn without one (tools read live).
@@ -454,6 +462,7 @@ export async function promptSlackThreadAgent(
       input.admittedListIds,
       turnEnvelope,
       input.threadFileIds,
+      input.workspaceChangeTools,
     );
   }
   input.state.dispatchEnvelope = envelope;

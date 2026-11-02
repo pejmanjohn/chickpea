@@ -15,6 +15,7 @@ import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { SlackPresentationStatePort } from '../src/slack/agent-view-presentation.ts';
 import { SlackRunPresentationStoreLogic, type SlackRunPresentation } from '../src/slack/run-presentations.ts';
+import { CLEF_TIMEOUT_MS } from '../src/slack/clef-intent.ts';
 import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import type { FrozenRuntimePlanDecision } from '../src/slack/turn-job-types.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
@@ -694,6 +695,37 @@ test('a restored intent asks neither Clef nor the classifier and records nothing
   } finally {
     platformEnv = undefined;
   }
+});
+
+// Defect caught: Clef's management signal or a waiting change set never
+// reaches the dispatch, or a quiet, failed, or timed-out management call
+// mounts the change tools anyway.
+test('Clef\'s management signal or a waiting change set reaches the dispatch; a quiet, failed, or slow call does not', async () => {
+  const carried = async (
+    manage: number | 'error' | 'hang',
+    turnOverrides: Partial<NormalizedSlackTurn> = {},
+  ) => {
+    let dispatched: boolean | undefined | 'not dispatched' = 'not dispatched';
+    platformEnv = fakeClefEnv('reply', { manage }).env;
+    holdClassifierAnswer = async () => undefined;
+    await withScriptedClassifier(() => firstStatusTimeline('dm', null, {
+      agentPrompt: async (input) => {
+        dispatched = input.workspaceChangeTools;
+        return {
+          text: 'Done.', requestedModel: classifiedAssignment.model ?? null, returnedModel: null,
+          reportedUsage: null, usageCompleteness: 'not_reported',
+        };
+      },
+    }, classifiedAssignment, turnOverrides));
+    return dispatched;
+  };
+  assert.equal(await carried(0.97), true, 'Clef fired');
+  assert.equal(await carried(0.1), undefined, 'Clef stayed quiet');
+  assert.equal(await carried('error'), undefined, 'the call failed');
+  const started = Date.now();
+  assert.equal(await carried('hang'), undefined, 'the call never answered');
+  assert.ok(Date.now() - started < CLEF_TIMEOUT_MS + 2_000, 'the turn went on at Clef\'s bound');
+  assert.equal(await carried(0.1, { managementProposalPending: true }), true, 'a change set waits on the requester');
 });
 
 /** The DM's own Agent, so its memory prepares and the turn reaches the dispatch. */

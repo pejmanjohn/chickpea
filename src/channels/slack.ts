@@ -3876,8 +3876,9 @@ async function processSlackEvent(
   let midRunReceipt: TurnMidRunReceipt | undefined;
 
   // A stop phrase or check-in keeps its host meaning and is never judged.
-  const typedApproval = typedByPerson && !browserActionAnswered && !steeringPhrase &&
-      admissionTruth.eligible && admittedActorMembershipId
+  const typedApprovalJudged = typedByPerson && !browserActionAnswered && !steeringPhrase &&
+    admissionTruth.eligible && Boolean(admittedActorMembershipId);
+  const typedApproval = typedApprovalJudged && admittedActorMembershipId
     ? await resolveTypedSlackManagementApproval({
         turn,
         assignment,
@@ -3919,6 +3920,11 @@ async function processSlackEvent(
     turn.managementApprovalProposalId = typedApproval.proposalId;
     turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
     deterministicCommand = true;
+  }
+  // A typed reply that left a change set waiting; the read began at routing.
+  if (typedApprovalJudged && !typedApproval &&
+      (await routedReads?.proposal?.catch(() => undefined))?.status === 'pending') {
+    turn.managementProposalPending = true;
   }
   const declinedProposalId = typedApproval?.kind === 'decline' ? typedApproval.proposalId : undefined;
 
