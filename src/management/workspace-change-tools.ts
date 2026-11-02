@@ -43,9 +43,9 @@ export function noteAgentAuthoringActivation(event: {
   const { args } = event;
   if (typeof args !== 'object' || args === null || !('name' in args) || args.name !== AGENT_AUTHORING_SKILL_NAME) return;
   activatedInstances.add(event.instanceId);
-  for (const oldest of activatedInstances) {
-    if (activatedInstances.size <= MAX_ACTIVATED_INSTANCES) break;
-    activatedInstances.delete(oldest);
+  if (activatedInstances.size > MAX_ACTIVATED_INSTANCES) {
+    const oldest = activatedInstances.values().next();
+    if (!oldest.done) activatedInstances.delete(oldest.value);
   }
 }
 

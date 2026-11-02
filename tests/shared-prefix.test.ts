@@ -378,11 +378,11 @@ const FRONT_DESK = {
  * its next turn, which mounts the change tools from its start.
  */
 async function renderManagementTurn(variant: SlackRequestVariant): Promise<RenderedRequest> {
-  const [, [request]] = await renderSlackThread(variant, [
+  const [, second] = await renderSlackThread(variant, [
     { text: 'Create an Agent named Scout.', replies: [{ toolCall: { name: 'activate_skill', input: { name: 'agent-authoring' } } }, { text: 'Done.' }] },
     { text: 'Rename it Ranger.', replies: [] },
-  ]) as [RenderedRequest[], RenderedRequest[]];
-  return request!;
+  ]);
+  return second![0]!;
 }
 
 /** The change tools as a turn that mounts them from its start carries them. */
