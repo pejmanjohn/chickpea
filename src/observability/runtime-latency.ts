@@ -270,20 +270,16 @@ export class RunnerBootMarks {
   ): void {
     if (this.served) return;
     this.served = true;
-    try {
-      const at = this.now();
-      const constructedAt = this.constructedAt ?? at;
-      emitRuntimeLatency('runner_boot', {
-        firstMethod: method,
-        cold: this.cold,
-        turnRef: typeof from.turnJobId === 'string' ? opaqueTurnRef(from.turnJobId) : undefined,
-        sentToConstructMs: from.sentAt === undefined ? undefined : this.constructStartedAt - from.sentAt,
-        constructMs: constructedAt - this.constructStartedAt,
-        constructToFirstCallMs: at - constructedAt,
-      }, this.sink);
-    } catch {
-      // Observability is best effort and never changes the call.
-    }
+    const at = this.now();
+    const constructedAt = this.constructedAt ?? at;
+    emitRuntimeLatency('runner_boot', {
+      firstMethod: method,
+      cold: this.cold,
+      turnRef: opaqueTurnRef(from.turnJobId),
+      sentToConstructMs: from.sentAt === undefined ? undefined : this.constructStartedAt - from.sentAt,
+      constructMs: constructedAt - this.constructStartedAt,
+      constructToFirstCallMs: at - constructedAt,
+    }, this.sink);
   }
 }
 

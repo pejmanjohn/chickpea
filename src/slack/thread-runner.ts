@@ -186,7 +186,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string; handoffMs?: number }> {
-    const sentAt = typeof job?.sentAt === 'number' && Number.isFinite(job.sentAt) ? job.sentAt : undefined;
+    const sentAt = job?.sentAt;
     this.boot.call('admit', { sentAt, turnJobId: job?.id });
     const enteredAt = Date.now();
     try {

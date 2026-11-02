@@ -377,8 +377,8 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   reached storage. An `admit` with no `runner_boot` of its `turnRef` reached
   an instance already in memory. The state store keeps the hand-off fields
   of its latest 256 hand-offs in memory only, so a runner that reads its row
-  before the hand-off is confirmed, or after the state store restarted, logs
-  neither; every attempt of the turn repeats them.
+  after the state store restarted logs neither; every attempt of the turn
+  repeats them.
 - `turn_latency` measures from `turn_jobs.enqueued_at` (durable admission)
   and from `turn_jobs.received_at` (receipt). A gateway delivery becomes a turn
   row only when an alarm drains the gateway inbox, so while a long turn holds
