@@ -210,12 +210,9 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
    * reports the activation and keeps the send time for that hand-off's lead;
    * it writes nothing, and runs no job or alarm.
    */
-  async wake(sentAt?: unknown, turnJobId?: unknown): Promise<void> {
-    this.boot.call('wake', {
-      sentAt: typeof sentAt === 'number' ? sentAt : undefined,
-      turnJobId: typeof turnJobId === 'string' ? turnJobId : undefined,
-    });
-    if (typeof sentAt === 'number') this.wokenAt = sentAt;
+  async wake(sentAt: number, turnJobId?: string): Promise<void> {
+    this.boot.call('wake', { sentAt, turnJobId });
+    this.wokenAt = sentAt;
   }
 
   async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string }> {
@@ -243,9 +240,8 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     }
     const result = this.store().admit({ ...job, payload: {} }, Date.now());
     if (result.admitted && sentAt !== undefined) {
-      const wokenAt = this.wokenAt;
+      const lead = this.wokenAt === undefined ? undefined : sentAt - this.wokenAt;
       this.wokenAt = undefined;
-      const lead = wokenAt === undefined ? undefined : sentAt - wokenAt;
       this.handoffs.set(job.id, {
         handoffMs: enteredAt - sentAt,
         ...(lead !== undefined && lead >= 0 && lead <= RUNNER_WAKE_LEAD_WINDOW_MS ? { runnerWakeLeadMs: lead } : {}),

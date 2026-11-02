@@ -229,7 +229,7 @@ export function emitThreadRunnerSuperseded(
 // runner_boot and agent_boot: one record per in-memory activation of a
 // SlackThreadRunner, or of a Flue agent's Durable Object.
 
-/** What a runner activation served first: an RPC (a receipt's `wake` among them), its alarm, or a host function. */
+/** What a runner activation served first: an RPC, its alarm, or a host function. */
 export type RunnerBootMethod = keyof SlackThreadRunnerRpc | 'alarm' | 'host';
 
 /**

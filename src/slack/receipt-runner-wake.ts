@@ -1,19 +1,11 @@
-import type { AgentThreadRoute, CustomAgentConfig, WorkspaceInstallation } from '../config/types.ts';
+import type { ConfigStoreLogic } from '../config/store.ts';
 import { parseAgentUserGroupMentions } from './agent-routing.ts';
 import type { GatewayInboundDelivery } from './gateway/protocol.ts';
 import { slackAgentThreadKey } from './thread-key.ts';
 import { normalizeSlackTurn } from './turn-normalization.ts';
 
 /** The state store's own reads at a delivery's receipt; no Slack call. */
-export interface ReceiptWakeReads {
-  getWorkspaceInstallation(workspaceId: string): WorkspaceInstallation | undefined;
-  getAgentThreadRoute(
-    workspaceId: string,
-    channelId: string,
-    threadTs: string,
-  ): Pick<AgentThreadRoute, 'ownerIncarnation'> | undefined;
-  listAgents(): CustomAgentConfig[];
-}
+export type ReceiptWakeReads = Pick<ConfigStoreLogic, 'getWorkspaceInstallation' | 'getAgentThreadRoute' | 'listAgents'>;
 
 export interface ReceiptRunnerWake {
   /** The key the turn's hand-off addresses its runner by (`slackAgentThreadKey`). */
