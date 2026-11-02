@@ -17,7 +17,10 @@ import { workspaceManagementToolDescription } from '../src/management/tool-adapt
 import * as v from 'valibot';
 import { toJsonSchema } from '@valibot/to-json-schema';
 import { validateToolArguments } from '@earendil-works/pi-ai';
-import { proposeWorkspaceChangesValibotSchema } from '../src/management/schemas.ts';
+import {
+  applyWorkspaceChangesValibotSchema,
+  proposeWorkspaceChangesValibotSchema,
+} from '../src/management/schemas.ts';
 import { scheduleActionInputSchema, scheduleActionDescription, slackManagementInstruction } from '../src/management/slack-tools.ts';
 import { RUNTIME_PLAN_INSTRUCTIONS, sharedSystemBlock } from '../src/agents/shared-prefix-layout.ts';
 
@@ -152,6 +155,35 @@ test('instruction-update tool example survives both runtime schema validators', 
   assert.match(description, /supplied replacement instructions are literal data/i);
   assert.match(description, /Do not summarize, paraphrase, normalize punctuation, or drop sentences/);
   assert.match(description, /including a final sentence that refers to the text itself/);
+});
+
+test('the proposal schema offers neither Agent creation nor a setup request; apply keeps both', () => {
+  const kinds = (schema: Parameters<typeof toJsonSchema>[0]) => {
+    const items = (toJsonSchema(schema, { errorMode: 'ignore' }) as any).properties.operations.items;
+    return (items.anyOf ?? items.oneOf).map((operation: any) => operation.properties.kind.const as string);
+  };
+  const applied = kinds(applyWorkspaceChangesValibotSchema);
+  assert.ok(applied.includes('create_agent') && applied.includes('request_setup'));
+  assert.deepEqual(kinds(proposeWorkspaceChangesValibotSchema),
+    applied.filter((kind: string) => kind !== 'create_agent' && kind !== 'request_setup'));
+  for (const operation of [
+    {
+      itemId: 'create', kind: 'create_agent',
+      agent: {
+        id: 'agent_scout', name: 'Scout', instructions: 'Triage support email.', enabled: true,
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      },
+    },
+    { itemId: 'key', kind: 'request_setup', target: { kind: 'provider_credential', providerId: 'anthropic' } },
+  ]) {
+    assert.equal(v.safeParse(applyWorkspaceChangesValibotSchema, {
+      idempotencyKey: 'schema-cut', operations: [operation],
+    }).success, true, `apply accepts ${operation.kind}`);
+    assert.equal(v.safeParse(proposeWorkspaceChangesValibotSchema, {
+      idempotencyKey: 'schema-cut', guideVersion: AGENT_AUTHORING_GUIDE_VERSION, authoringReason: 'agent_creation',
+      operations: [operation],
+    }).success, false, `a proposal refuses ${operation.kind}`);
+  }
 });
 
 test('guide encodes posture, placement, blueprint, inspection, and proportional approval', () => {

@@ -599,14 +599,20 @@ const vSetupTarget = v.variant('kind', [
   }),
 ]);
 
-export const managementOperationValibotSchema = v.variant('kind', [
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('create_agent'),
-    clientRef: v.optional(vid),
-    duplicateResolution: v.optional(v.literal('create_distinct')),
-    agent: vAgent,
-  }),
+const vCreateAgentOperation = v.strictObject({
+  ...vOperationBase,
+  kind: v.literal('create_agent'),
+  clientRef: v.optional(vid),
+  duplicateResolution: v.optional(v.literal('create_distinct')),
+  agent: vAgent,
+});
+const vRequestSetupOperation = v.strictObject({
+  ...vOperationBase,
+  kind: v.literal('request_setup'),
+  target: vSetupTarget,
+});
+/** Every operation but Agent creation and setup requests, which only apply directly. */
+const vProposableOperations = [
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('update_agent'),
@@ -748,12 +754,15 @@ export const managementOperationValibotSchema = v.variant('kind', [
     expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
     agentId: vAgentId,
   }),
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('request_setup'),
-    target: vSetupTarget,
-  }),
+] as const;
+
+export const managementOperationValibotSchema = v.variant('kind', [
+  vCreateAgentOperation,
+  ...vProposableOperations,
+  vRequestSetupOperation,
 ]);
+/** The service refuses a proposal that creates an Agent or requests setup, so the schema offers neither. */
+export const proposableManagementOperationValibotSchema = v.variant('kind', vProposableOperations);
 
 export const applyWorkspaceChangesValibotSchema = v.strictObject({
   idempotencyKey: vt(256),
@@ -769,7 +778,7 @@ export const proposeWorkspaceChangesValibotSchema = v.strictObject({
   idempotencyKey: vt(256),
   guideVersion: v.literal(AGENT_AUTHORING_GUIDE_VERSION),
   authoringReason: v.picklist(AGENT_AUTHORING_REASONS),
-  operations: v.pipe(v.array(managementOperationValibotSchema), v.minLength(1), v.maxLength(25)),
+  operations: v.pipe(v.array(proposableManagementOperationValibotSchema), v.minLength(1), v.maxLength(25)),
 });
 export const proposeSkillImportValibotSchema = v.strictObject({
   agentId: v.optional(vAgentId),
