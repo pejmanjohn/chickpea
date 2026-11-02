@@ -249,7 +249,7 @@ async function resolveGatewayExecutionContext(
   }
   const client = createGatewaySlackWebClient(gateway);
   const { botUserId, teamId } = await verifiedIdentity(
-    `${installation.workspaceId}:${binding.bindingId}:${installation.botUserId ?? ''}`,
+    gatewayIdentityKey(installation.workspaceId, binding.bindingId, installation.botUserId),
     async () => {
       let auth: Awaited<ReturnType<typeof client.auth.test>>;
       try {
@@ -302,7 +302,9 @@ async function resolveGatewayExecutionContext(
  * digest of the bot token, so a reinstall, rebinding or rotated token is
  * verified afresh; a revoked token still fails the turn's first real Slack
  * call. Only a successful verification is reused, and the identity checks
- * still run against it on every resolution; a failure is never cached.
+ * still run against it on every resolution; a failure is never cached. A
+ * thread runner, often in a fresh isolate, starts with the state
+ * store's gateway verification when its turn's hand-off carries one.
  */
 export const IDENTITY_VERIFICATION_TTL_MS = 60_000;
 
@@ -313,10 +315,18 @@ interface VerifiedIdentity {
   botName?: string;
 }
 
-const identityVerifications = new Map<
-  string,
-  { expiresAt: number; identity: Promise<VerifiedIdentity> }
->();
+interface IdentityVerification {
+  expiresAt: number;
+  identity: Promise<VerifiedIdentity>;
+  /** Set once the verification succeeded. */
+  verified?: VerifiedIdentity;
+}
+
+const identityVerifications = new Map<string, IdentityVerification>();
+
+function gatewayIdentityKey(workspaceId: string, bindingId: string, botUserId: string | undefined): string {
+  return `${workspaceId}:${bindingId}:${botUserId ?? ''}`;
+}
 
 async function verifiedIdentity(
   key: string,
@@ -327,21 +337,95 @@ async function verifiedIdentity(
   if (cached && cached.expiresAt > now()) return cached.identity;
   // Concurrent resolutions share one in-flight auth.test.
   const identity = verify();
-  const entry = { expiresAt: now() + IDENTITY_VERIFICATION_TTL_MS, identity };
+  const entry: IdentityVerification = { expiresAt: now() + IDENTITY_VERIFICATION_TTL_MS, identity };
   identityVerifications.set(key, entry);
   try {
-    return await identity;
+    entry.verified = await identity;
+    return entry.verified;
   } catch (error) {
     if (identityVerifications.get(key) === entry) identityVerifications.delete(key);
     throw error;
   } finally {
-    if (identityVerifications.size > 64) {
-      const at = now();
-      for (const [candidate, value] of identityVerifications) {
-        if (value.expiresAt <= at) identityVerifications.delete(candidate);
-      }
-    }
+    pruneIdentityVerifications(now());
   }
+}
+
+function pruneIdentityVerifications(at: number): void {
+  if (identityVerifications.size <= 64) return;
+  for (const [candidate, value] of identityVerifications) {
+    if (value.expiresAt <= at) identityVerifications.delete(candidate);
+  }
+}
+
+/**
+ * A gateway installation's bot identity as an `auth.test` in this isolate
+ * verified it, for the state store to hand a thread runner with a turn: the
+ * workspace, the binding the gateway answered for, the bot's user id, and
+ * when this isolate stops reusing the answer. These are the bot's own Slack
+ * ids, not a credential: the runner still reads its installation and
+ * binding itself, keys the reuse by them, and checks the identity against
+ * them, and every Slack call it makes is authorized by the gateway as
+ * before.
+ */
+export interface CarriedGatewayIdentity {
+  workspaceId: string;
+  bindingId: string;
+  botUserId: string;
+  expiresAt: number;
+}
+
+/**
+ * This isolate's unexpired verification of a gateway installation's
+ * identity, when its answer matched the installation (a mismatch never
+ * travels); undefined otherwise.
+ */
+export function carriedGatewayIdentity(
+  installation: Pick<WorkspaceInstallation, 'workspaceId' | 'transportMode' | 'gatewayBindingId' | 'botUserId'> |
+    undefined,
+  now = Date.now(),
+): CarriedGatewayIdentity | undefined {
+  if (installation?.transportMode !== 'gateway' || !installation.gatewayBindingId || !installation.botUserId) {
+    return undefined;
+  }
+  const entry = identityVerifications.get(
+    gatewayIdentityKey(installation.workspaceId, installation.gatewayBindingId, installation.botUserId),
+  );
+  if (!entry?.verified || entry.expiresAt <= now ||
+      entry.verified.teamId !== installation.workspaceId ||
+      entry.verified.botUserId !== installation.botUserId) return undefined;
+  return {
+    workspaceId: installation.workspaceId,
+    bindingId: installation.gatewayBindingId,
+    botUserId: entry.verified.botUserId,
+    expiresAt: entry.expiresAt,
+  };
+}
+
+/**
+ * Reuse a verification another isolate made (carriedGatewayIdentity) until
+ * it expires there, and never longer than one window from now, so a
+ * revocation is honored no later than that isolate would honor it. A
+ * verification here that lasts at least as long is kept. Anything malformed
+ * is ignored, and the next resolution verifies for itself.
+ */
+export function seedGatewayIdentity(carried: unknown, now = Date.now()): void {
+  if (!isCarriedGatewayIdentity(carried)) return;
+  const expiresAt = Math.min(carried.expiresAt, now + IDENTITY_VERIFICATION_TTL_MS);
+  if (expiresAt <= now) return;
+  const key = gatewayIdentityKey(carried.workspaceId, carried.bindingId, carried.botUserId);
+  const existing = identityVerifications.get(key);
+  if (existing && existing.expiresAt >= expiresAt) return;
+  const verified = { botUserId: carried.botUserId, teamId: carried.workspaceId };
+  identityVerifications.set(key, { expiresAt, identity: Promise.resolve(verified), verified });
+  pruneIdentityVerifications(now);
+}
+
+function isCarriedGatewayIdentity(value: unknown): value is CarriedGatewayIdentity {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return ['workspaceId', 'bindingId', 'botUserId'].every((field) =>
+    typeof record[field] === 'string' && record[field] !== '') &&
+    typeof record.expiresAt === 'number' && Number.isFinite(record.expiresAt);
 }
 
 export function resetIdentityVerificationsForTests(): void {
