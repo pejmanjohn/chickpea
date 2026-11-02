@@ -21,7 +21,7 @@ let connectorDetails: Promise<void> | undefined;
 export function acquireNodeProcessOwnership() {
   const ownership = acquireNodeStateOwnership();
   connectorDetails ??= preloadAllConnectorDetails().catch(() => undefined);
-  return ownership;
+  return { ...ownership, ready: () => connectorDetails };
 }
 
 export async function startNodeBackground(): Promise<void> {
