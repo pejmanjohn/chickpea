@@ -27,7 +27,6 @@ import {
   useSkill,
   useTool,
 } from '@flue/runtime';
-import { Bash, InMemoryFs } from 'just-bash';
 import * as v from 'valibot';
 
 import {
@@ -1824,7 +1823,12 @@ function createRuntimePlanSandbox(
       // Native plans grant only their frozen connector scopes. Empty plans
       // need no account reads.
       if (!plan.repositories.length) {
-        return bash(() => new Bash({ fs: new InMemoryFs() })).createSandbox(options);
+        // Loaded here, as egress.ts does for the scoped shell, to keep the
+        // interpreter out of the Worker's startup graph.
+        return bash(async () => {
+          const { Bash, InMemoryFs } = await import('just-bash');
+          return new Bash({ fs: new InMemoryFs() });
+        }).createSandbox(options);
       }
       const repositoryAccess = await resolveRuntimePlanBashRepositoryAccess(plan, env, turn);
       return runtimePlanRepositoryShell(repositoryAccess).createSandbox(options);
