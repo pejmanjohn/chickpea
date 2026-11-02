@@ -43,6 +43,7 @@ import {
   type FeePost,
 } from './platform-funding.ts';
 import type { PlatformEnv } from './state-backend.ts';
+import type { PromptCacheScope } from '../agents/openai-prompt-cache.ts';
 import type { SharedPrefixDecision, SharedPrefixId } from '../agents/shared-prefix.ts';
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
@@ -507,26 +508,54 @@ interface ModelAccessRequest<TModel, TOptions> {
 
 type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'route' | 'model' | 'fundingSource'>;
 
-interface ListPriceMode {
+interface PayloadRequest {
+  readonly requestId: string;
+  /** The model pi-ai builds the request for, endpoint included. */
+  readonly model: Model<Api>;
+  readonly scope: PromptCacheScope;
+}
+
+/** Core's payload hooks for one provider, which run after the caller's in this order. */
+interface PayloadMode {
+  pin?(payload: Record<string, unknown>): Record<string, unknown>;
+  /** Sets the cache breakpoints that let a Slack turn read a prefix other threads wrote. */
+  sharePrefix?(payload: Record<string, unknown>, request: PayloadRequest): Promise<SharedPrefixDecision>;
+}
+
+interface ListPriceMode extends PayloadMode {
   pin(payload: Record<string, unknown>): Record<string, unknown>;
-  /** Sets the cache breakpoints that let a Slack turn read a prefix other workspaces wrote. */
-  sharePrefix?(payload: Record<string, unknown>, requestId: string): Promise<SharedPrefixDecision>;
   readonly listPricedServiceTiers: readonly string[];
   readonly listPricedInferenceGeos: readonly string[];
 }
 
+type PayloadSharer = (
+  payload: Record<string, unknown>,
+  request: PayloadRequest,
+) => SharedPrefixDecision | Promise<SharedPrefixDecision>;
+
+/**
+ * Loaded on first use: every module the shared instructions come from
+ * imports this one. Without it the request goes out as built.
+ */
+function lazySharing(load: () => Promise<PayloadSharer>): NonNullable<PayloadMode['sharePrefix']> {
+  return async (payload, request) => {
+    const share = await load().catch((error: unknown) => {
+      console.warn('[chickpea] shared prompt prefix unavailable', { error: error instanceof Error ? error.name : 'unknown' });
+      return undefined;
+    });
+    return share ? share(payload, request) : { payload, sharedPrefix: null };
+  };
+}
+
+const shareOpenAIPrefix = lazySharing(async () => (await import('../agents/openai-prompt-cache.ts')).shareOpenAIPromptCache);
+
 const LIST_PRICE_MODES = {
   anthropic: {
     pin: ({ inference_geo: _geo, speed: _speed, ...payload }) => ({ ...payload, service_tier: 'standard_only' }),
-    // Loaded on first use: every module the shared instructions come from
-    // imports this one. Without it the request goes out as built.
-    sharePrefix: async (payload, requestId) => {
-      const shared = await import('../agents/shared-prefix.ts').catch((error: unknown) => {
-        console.warn('[chickpea] shared prompt prefix unavailable', { error: error instanceof Error ? error.name : 'unknown' });
-        return undefined;
-      });
-      return shared ? shared.sharePromptPrefix(payload, requestId) : { payload, sharedPrefix: null };
-    },
+    sharePrefix: lazySharing(async () => {
+      const { sharePromptPrefix } = await import('../agents/shared-prefix.ts');
+      return (payload, request) => sharePromptPrefix(payload, request.requestId);
+    }),
     listPricedServiceTiers: ['standard'],
     // Older models serve without a region and report `not_available`.
     listPricedInferenceGeos: ['global', 'not_available'],
@@ -534,10 +563,16 @@ const LIST_PRICE_MODES = {
   openai: {
     // The default, `auto`, takes the project's tier, which can be a priced one.
     pin: (payload) => ({ ...payload, service_tier: 'default' }),
+    sharePrefix: shareOpenAIPrefix,
     listPricedServiceTiers: ['default'],
     listPricedInferenceGeos: [],
   },
 } satisfies Record<string, ListPriceMode>;
+
+/** A customer-funded request is never pinned; only its prompt cache is shared. */
+const CUSTOMER_PAYLOAD_MODES: Partial<Record<ModelAccessProviderId, PayloadMode>> = {
+  openai: { sharePrefix: shareOpenAIPrefix },
+};
 
 type ListPricedProvider = keyof typeof LIST_PRICE_MODES;
 
@@ -578,9 +613,15 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
   const reporting = providerId === 'openrouter' ? 'openrouter' : listPriced;
   const reader = reporting && providerReportReader(reporting, options?.fetch);
-  const priced = listPriced && listPricedPayload(options?.onPayload, LIST_PRICE_MODES[listPriced], request.requestId);
+  const payloadMode = platformGrant
+    ? listPriced && LIST_PRICE_MODES[listPriced]
+    : bound && CUSTOMER_PAYLOAD_MODES[bound.grant.providerId];
+  const payloadHook = payloadMode && requestPayload(options?.onPayload, payloadMode, {
+    requestId: request.requestId,
+    scope: { installationId: cell.attribution.installationId },
+  });
   const send = (start: (model: TModel) => AssistantMessageEventStream) =>
-    sendRequest(cell, sent, request, platformGrant, reader, priced, start);
+    sendRequest(cell, sent, request, platformGrant, reader, payloadHook, start);
   if (!bound) return { model, options, redact: (stream) => stream, send };
   const { access } = bound;
   return {
@@ -590,7 +631,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       apiKey: access.apiKey,
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
       ...(reader ? { fetch: reader.fetch } : {}),
-      ...(priced ? { onPayload: priced.onPayload } : {}),
+      ...(payloadHook ? { onPayload: payloadHook.onPayload } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
     send,
@@ -603,11 +644,11 @@ function sendRequest<TModel extends Model<Api>>(
   request: SentRequest,
   platformGrant: ModelAccessGrant | undefined,
   reader: ProviderReportReader | undefined,
-  priced: ListPricedPayload | undefined,
+  payloadHook: RequestPayload | undefined,
   start: (model: TModel) => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
   const { installationId } = cell;
-  const settle = recorder || platformGrant ? settleRequest(cell, request, platformGrant, reader, priced) : undefined;
+  const settle = recorder || platformGrant ? settleRequest(cell, request, platformGrant, reader, payloadHook) : undefined;
   if (!installationId && !platformGrant) {
     const source = start(model);
     if (!settle) return source;
@@ -678,11 +719,11 @@ function settleRequest(
   request: SentRequest,
   platformGrant: ModelAccessGrant | undefined,
   reader: ProviderReportReader | undefined,
-  priced: ListPricedPayload | undefined,
+  payloadHook: RequestPayload | undefined,
 ): (final: AssistantMessage) => Promise<void> {
   const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
   const mode = listPriced && LIST_PRICE_MODES[listPriced];
-  return (final) => settleRecord(cell.env, request, platformGrant, priced?.sharedPrefix() ?? null, async () => {
+  return (final) => settleRecord(cell.env, request, platformGrant, payloadHook?.sharedPrefix() ?? null, async () => {
     const finishedAt = Date.now();
     const report = await reader?.report() ?? NO_PROVIDER_REPORT;
     const record = modelRequestRecord({
@@ -708,25 +749,27 @@ function offList(reported: string | null, listPriced: readonly string[]): boolea
   return reported !== null && !listPriced.includes(reported);
 }
 
-interface ListPricedPayload {
+interface RequestPayload {
   onPayload: NonNullable<StreamOptions['onPayload']>;
   /** Undefined until the hook has built a payload. */
   sharedPrefix(): SharedPrefixId | null | undefined;
 }
 
-function listPricedPayload(
+function requestPayload(
   callerHook: StreamOptions['onPayload'],
-  mode: ListPriceMode,
-  requestId: string,
-): ListPricedPayload {
+  mode: PayloadMode,
+  request: Omit<PayloadRequest, 'model'>,
+): RequestPayload {
   let sharedPrefix: SharedPrefixId | null | undefined;
   return {
     onPayload: async (payload, model) => {
       const returned = await callerHook?.(payload, model);
       const composed = returned === undefined ? payload : returned;
-      if (!isRecord(composed)) throw new Error('A platform-funded request payload is not an object.');
-      const pinned = mode.pin(composed);
-      const decision = mode.sharePrefix ? await mode.sharePrefix(pinned, requestId) : { payload: pinned, sharedPrefix: null };
+      if (!isRecord(composed)) throw new Error('A model request payload is not an object.');
+      const pinned = mode.pin ? mode.pin(composed) : composed;
+      const decision = mode.sharePrefix
+        ? await mode.sharePrefix(pinned, { ...request, model })
+        : { payload: pinned, sharedPrefix: null };
       sharedPrefix = decision.sharedPrefix;
       return decision.payload;
     },

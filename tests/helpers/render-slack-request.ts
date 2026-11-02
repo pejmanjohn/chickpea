@@ -1,9 +1,9 @@
 /**
- * Render the exact Anthropic Messages request one Slack turn sends, through
- * the production ChickpeaSlack harness, model access and pi-ai, without
- * egress: the SDK's `beta.messages.create`, which pi-ai sends every Anthropic
- * request through, captures its params and throws, and
- * `fetch` refuses. Import this module before any `src/` module: it scopes the
+ * Render the exact Anthropic Messages or OpenAI Responses request one Slack
+ * turn sends, through the production ChickpeaSlack harness, model access and
+ * pi-ai, without egress: the SDK method pi-ai sends every request of that
+ * provider through (`beta.messages.create`, `responses.create`) captures its
+ * params and throws, and `fetch` refuses. Import this module before any `src/` module: it scopes the
  * process's state database and provider key first.
  */
 import { mkdtempSync } from 'node:fs';
@@ -20,6 +20,7 @@ process.env.EXA_API_KEY = 'render-only-not-a-key';
 process.env.SLACK_STATE_DB_PATH = join(mkdtempSync(join(tmpdir(), 'render-slack-request-')), 'state.db');
 
 const Anthropic = (await import('@anthropic-ai/sdk')).default as any;
+const OpenAI = (await import('openai')).default as any;
 const { createFlueContext, resolveModel } = await import('@flue/runtime/internal');
 const { useModel, useTool } = await import('@flue/runtime');
 const { ChickpeaSlack } = await import('../../src/agents/slack-thread.ts');
@@ -45,7 +46,12 @@ export interface SlackRequestVariant {
   user: string;
   text: string;
   agentKind?: 'system' | 'user';
+  /** Anthropic by default. */
+  provider?: 'anthropic' | 'openai';
+  /** The provider's model ID; claude-opus-5-5 or gpt-5.6-terra by default. */
   model?: string;
+  /** The endpoint model access resolves, as a standalone deployment's base URL override sets it. */
+  baseUrl?: string;
   funding?: 'platform' | 'customer';
   progressiveStreamingOffered?: boolean;
   progressiveStreamingMode?: 'early' | 'final_answer';
@@ -76,7 +82,7 @@ let captured: unknown;
 let charged: { sharedPrefix: SharedPrefixId | null; requestId: string } | undefined;
 const chargedRecords = new WeakMap<RenderedRequest, { sharedPrefix: SharedPrefixId | null; requestId: string }>();
 const blockedUrls: string[] = [];
-Anthropic.Beta.Messages.prototype.create = function (params: unknown) {
+Anthropic.Beta.Messages.prototype.create = OpenAI.Responses.prototype.create = function (params: unknown) {
   captured = structuredClone(params);
   throw new Error('render only');
 };
@@ -94,7 +100,8 @@ const userAgent = {
 function currentAgent(): any {
   const variant = current!;
   const agent = variant.agentKind === 'user' ? userAgent : createChickpeaAgent();
-  return { ...agent, model: `anthropic/${variant.model ?? 'claude-opus-5-5'}`, ...variant.agentOverrides };
+  const model = variant.provider === 'openai' ? `openai/${variant.model ?? 'gpt-5.6-terra'}` : `anthropic/${variant.model ?? 'claude-opus-5-5'}`;
+  return { ...agent, model, ...variant.agentOverrides };
 }
 const store: any = getConfigStore();
 const identity: any = getIdentityStore();
@@ -110,7 +117,13 @@ identity.getMembershipAccessOverlay = async () => undefined;
 identity.getUser = async () => ({ id: 'user', slackTeamId: current!.workspace, slackUserId: current!.user });
 identity.resolveSlackIdentity = async () => ({ user: { id: 'user' }, membership: { id: 'member' }, binding: { membershipId: 'member' } });
 configureInstallationAdmission(async () => 'admitted');
-configureModelAccessResolver({ resolve: async () => ({ apiKey: 'render-only-not-a-key' }) });
+// pi-ai sends a key without `sk-` on OpenAI's endpoint as a ChatGPT sign-in, which drops request fields.
+configureModelAccessResolver({
+  resolve: async () => ({
+    apiKey: current?.provider === 'openai' ? 'sk-render-only-not-a-key' : 'render-only-not-a-key',
+    ...(current?.baseUrl ? { baseUrl: current.baseUrl } : {}),
+  }),
+});
 configurePlatformFunding({
   ...NO_RUN_FEES,
   funding: async () => current!.funding ?? 'platform',
@@ -174,7 +187,7 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   const messageTs = variant.frontDesk ? variant.thread : (Number(variant.thread) + 0.0001).toFixed(6);
   const assignment = {
     workspaceId: variant.workspace, channelId: variant.channel, agentId: agent.id, agent, model: agent.model,
-    modelAttribution: { source: 'workspace_default', providerId: 'anthropic', workspaceDefaultRevision: 1 },
+    modelAttribution: { source: 'workspace_default', providerId: variant.provider ?? 'anthropic', workspaceDefaultRevision: 1 },
     ...(variant.frontDesk ? { runtimeContract: 'chickpea-v1', frontDesk: variant.frontDesk } : {}),
   } as any;
   const turn = {
@@ -217,9 +230,10 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
     : { kind: 'signal', type: 'slack.message', tagName: 'slack_message', body, attributes };
   const harness: any = await context.initializeRootHarness(
     variant.codingWorkspace ? renderedOnWorker(ChickpeaSlack) : ChickpeaSlack, signal as any, plan);
+  const providerId = variant.provider ?? 'anthropic';
   const grant = {
-    installationId: `inst_${variant.workspace}`, providerId: 'anthropic', runId: `run_${variant.thread}`,
-    fundingSource: variant.funding ?? 'platform', credentialRefId: 'platform:anthropic', credentialVersion: 1,
+    installationId: `inst_${variant.workspace}`, providerId, runId: `run_${variant.thread}`,
+    fundingSource: variant.funding ?? 'platform', credentialRefId: `platform:${providerId}`, credentialVersion: 1,
   } as any;
   const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: grant.installationId }) as any;
   try {
@@ -227,7 +241,7 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   } catch (error) {
     if (!captured) throw error;
   }
-  if (!captured) throw new Error('No Anthropic request was captured.');
+  if (!captured) throw new Error(`No ${providerId} request was captured.`);
   if (charged !== undefined) chargedRecords.set(captured as RenderedRequest, charged);
   return captured as RenderedRequest;
 }
