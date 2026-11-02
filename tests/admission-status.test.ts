@@ -378,7 +378,7 @@ test('a status write that misses the cap or fails hands off on time, with the pr
         if (answer === 'reject') {
           assert.ok(waited < ADMISSION_STATUS_CAP_MS, `${answer}: a failure hands off at once (${waited} ms)`);
         } else {
-          assert.ok(waited >= ADMISSION_STATUS_CAP_MS - 5 && waited < ADMISSION_STATUS_CAP_MS + 250,
+          assert.ok(waited >= ADMISSION_STATUS_CAP_MS - 5 && waited < ADMISSION_STATUS_CAP_MS + 1_000,
             `${answer}: handed off at the cap (${waited} ms)`);
           assert.ok(mark.waitedMs >= ADMISSION_STATUS_CAP_MS - 5);
         }

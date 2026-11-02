@@ -407,11 +407,15 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   `firstWrite` is `admission_status`: `receiptToFirstWriteMs` and
   `admissionToFirstWriteMs` then count to the state store's record of it
   (one clock with receipt and admission). Otherwise (the cap, a Slack
-  failure, or a row that moved meanwhile) nothing is recorded and the
-  runner shows the status as before; `admissionStatusMs` is present and
-  `firstWrite` is the runner's. A status that lands after the cap shows
-  until the runner's own writes replace it. Absent on later attempts, on
-  hand-offs made again, and from an older state store or runner.
+  failure, a write refused before any call by the thread fence or an
+  unavailable projection, or a row that moved meanwhile) nothing is
+  recorded and the runner shows the status as before; `admissionStatusMs`
+  is present and `firstWrite` is the runner's. A status that lands after
+  the cap shows until the runner's own writes replace it. The wait comes
+  before the hand-off is sent, so `admissionToStartMs` and
+  `runnerWakeLeadMs` include it and `handoffMs` does not. Absent on later
+  attempts, on hand-offs made again, and from an older state store or
+  runner.
 - `turn_latency.agentStageMs` is the runner's wait to stage a turn's input
   beside its thread's Agent object, which also loads the connector details
   (tool descriptions and input schemas) the turn's managed connections need

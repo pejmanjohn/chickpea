@@ -109,9 +109,10 @@ export const ADMISSION_STATUS_CAP_MS = 600;
  * registry refreshes the one a turn starts with an interval (90 s) after the
  * turn registers it. A status shown less than this long before the turn
  * started still shows when that refresh lands, so the turn need not write it
- * again at once.
+ * again at once. The 10 s left over covers the two objects' clocks and the
+ * refresh's own round trip.
  */
-const ADMISSION_STATUS_FRESH_MS = 30_000;
+const ADMISSION_STATUS_FRESH_MS = 20_000;
 
 /** Whether the status the state store showed at `shownAt` (its clock), at this attempt's hand-off, is still fresh. */
 export function admissionStatusFresh(shownAt: number | undefined): boolean {
