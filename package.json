@@ -143,6 +143,7 @@
     "verify:live:smoke": "node --import tsx qa/live/cli.ts smoke",
     "verify:live:deep": "node --import tsx qa/live/cli.ts deep",
     "evaluate:agent-authoring": "node --import tsx scripts/evaluate-agent-authoring.mjs",
+    "evaluate:agent-authoring:lean": "node --import tsx scripts/evaluate-agent-authoring.mjs --mount lean",
     "evaluate:schedule-contract": "node --import tsx scripts/evaluate-schedule-contract.mjs",
     "evaluate:slack-presentation": "node --import tsx scripts/evaluate-slack-presentation.mjs",
     "evaluate:slack-approval-intent": "node --import tsx scripts/evaluate-slack-approval-intent.mjs",
