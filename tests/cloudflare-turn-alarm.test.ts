@@ -865,6 +865,8 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
     slackAgentThreadKey: () => 'T1:C1:1.0:owner-i1',
     installationOwnershipOf,
+    effectiveTurnSlackInstallationId: () => 'workspace',
+    carriedGatewayIdentity: () => undefined,
     threadRunnerStub: (_env: unknown, threadKey: string) => ({
       async admit(job: { id: string }) {
         admissions.push({ id: job.id, threadKey });
@@ -886,6 +888,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
         confirmRunner: (id: string) => confirmed.push(id),
       },
       presentations: { get: () => undefined },
+      config: { getWorkspaceInstallation: () => undefined },
     };
     probe.stores = stores;
     probe.env = {};
@@ -928,6 +931,8 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
     slackAgentThreadKey,
     installationOwnershipOf,
+    effectiveTurnSlackInstallationId: () => 'workspace',
+    carriedGatewayIdentity: () => undefined,
     threadRunnerStub: (_env: unknown, threadKey: string) => ({
       async admit(job: { id: string }) {
         admissions.push({ id: job.id, threadKey });
@@ -942,6 +947,7 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
   probe.stores = {
     turnJobs: turns,
     presentations: { get: () => undefined },
+    config: { getWorkspaceInstallation: () => undefined },
     slack: {
       admitCanonical: (input: { turnJob: TurnJob }, _work: unknown, turnJobs: TurnJobStoreLogic) => {
         turnJobs.enqueue(input.turnJob);

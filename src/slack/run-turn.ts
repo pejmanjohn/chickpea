@@ -1319,10 +1319,8 @@ async function runTurnAttempt(
   // A reattached turn showed it on its first attempt.
   const readingFollowUps = followUps.length > 0 && !options.flueDispatch?.dispatchReceipt;
   // The turn's opening status writes, in order: the admitted activity, then
-  // the follow-ups it reads. The turn's reads (the lease check, the thread's
-  // context) and its judgment do not wait for them; everything visible after
-  // those reads does, so no later write or presentation transition can land
-  // between them.
+  // the follow-ups it reads. The lease check, the context read and the
+  // judgment do not wait for them; every visible write after those does.
   const openingStatusShown = readingFollowUps
     ? admittedStatusShown.then(() =>
         statusTurn.setStatus(foldActivityStatus(followUps, 'start')).catch(() => false))
@@ -1675,15 +1673,15 @@ async function runTurnAttempt(
     // Nothing below acts before the basis is recorded; a retry restores it and
     // never judges again.
     const intent = await judgment?.basis ?? turn.interactionIntent;
-    const leaseLost = preparedMemory?.ownerBound === true && !(await leaseCheck);
+    const leaseHeld = await leaseCheck;
     await openingStatusShown;
-    if (leaseLost) {
+    if (preparedMemory?.ownerBound && !leaseHeld) {
       // Fail closed, never silently: the durable relay only retires a turn job
       // once delivery is tombstoned, so an early `return` here left the job
       // pending and the alarm re-armed forever behind a live "Thinking…"
       // status. Mirror the post-run lease fence: one sanitized final, the
       // status cleared, and a terminal delivery outcome.
-      logMemoryLeaseFailure('before_run', assignment.agentId, preparedMemory?.quarantined === true);
+      logMemoryLeaseFailure('before_run', assignment.agentId, preparedMemory.quarantined === true);
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(failureFinalText(turn, AGENT_FAILURE_TEXT), 'plain_text', 'error');
       await finishStatus('failure');

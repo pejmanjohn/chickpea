@@ -2711,14 +2711,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const presentation = job.runId ? stores.presentations.get(job.runId) : undefined;
     // The bot identity this store verified within the window, so the runner
     // does not ask Slack for it again before the turn's first status.
-    let gatewayIdentity: ReturnType<typeof carriedGatewayIdentity>;
-    try {
-      gatewayIdentity = carriedGatewayIdentity(
-        stores.config.getWorkspaceInstallation(effectiveTurnSlackInstallationId(job.turn)),
-      );
-    } catch {
-      // The runner verifies it itself.
-    }
+    const gatewayIdentity = carriedGatewayIdentity(
+      stores.config.getWorkspaceInstallation(effectiveTurnSlackInstallationId(job.turn)),
+    );
     const payload: ThreadRunnerJobPayload = {
       ...(presentation ? { presentation } : {}),
       ...(gatewayIdentity ? { gatewayIdentity } : {}),
