@@ -12,7 +12,8 @@ import type { Api, Model, OpenAIResponsesCompat } from '@earendil-works/pi-ai';
 
 import { isRecord } from '../security/content-validation.ts';
 import { sha256Hex } from '../security/digest.ts';
-import { classifySlackSystemText, type SharedPrefixDecision } from './shared-prefix.ts';
+import type { ModelRequestPurpose } from '../usage/model-requests.ts';
+import { SHARED_PREFIX_LAST_TOOL, classifySlackSystemText, type SharedPrefixDecision } from './shared-prefix.ts';
 
 type Payload = Record<string, unknown>;
 
@@ -43,6 +44,16 @@ export type LeaveReason =
 export type PromptCachePlan =
   | { readonly action: 'share'; readonly cuts: readonly [PrefixCut, ...PrefixCut[]] }
   | { readonly action: 'leave'; readonly reason: LeaveReason };
+
+/** A Slack turn left for one of these reasons went out without the prefix it should share. */
+const MISSED: Readonly<Record<LeaveReason, boolean>> = {
+  breakpoints_unsupported: false,
+  caching_off: false,
+  caller_breakpoints: false,
+  no_developer_text: true,
+  not_shared_slack_turn: true,
+  reduced_slack_turn: false,
+};
 
 const OPENAI_ORIGIN = 'https://api.openai.com';
 
@@ -97,11 +108,23 @@ export function applyPromptCachePlan(payload: Payload, cuts: readonly PrefixCut[
 /** Any throw sends the payload as given. The charge's shared prefix stays Anthropic's alone. */
 export async function shareOpenAIPromptCache(
   payload: Payload,
-  request: { readonly requestId: string; readonly model: Model<Api>; readonly scope: PromptCacheScope },
+  request: {
+    readonly requestId: string;
+    readonly model: Model<Api>;
+    readonly scope: PromptCacheScope;
+    readonly purpose: ModelRequestPurpose;
+  },
 ): Promise<SharedPrefixDecision> {
   try {
     const plan = planPromptCache(payload, request.model);
-    if (plan.action === 'leave') return { payload, sharedPrefix: null };
+    if (plan.action === 'leave') {
+      if (MISSED[plan.reason] && request.purpose === 'reply' && mountsSlackTools(payload)) {
+        console.warn('[chickpea] OpenAI Slack turn went out without the shared prompt prefix', {
+          model: request.model.id, reason: plan.reason, requestId: request.requestId,
+        });
+      }
+      return { payload, sharedPrefix: null };
+    }
     return { payload: applyPromptCachePlan(payload, plan.cuts, await promptCacheKey(request.scope)), sharedPrefix: null };
   } catch (error) {
     console.warn('[chickpea] OpenAI prompt cache plan failed; the request goes out as built', {
@@ -115,6 +138,12 @@ export async function shareOpenAIPromptCache(
 
 function leave(reason: LeaveReason): PromptCachePlan {
   return { action: 'leave', reason };
+}
+
+/** Only a Slack turn mounts the last universal tool. */
+function mountsSlackTools(payload: Payload): boolean {
+  return Array.isArray(payload.tools) &&
+    payload.tools.some((tool) => isRecord(tool) && tool.name === SHARED_PREFIX_LAST_TOOL);
 }
 
 function explicitMode(options: unknown): boolean {

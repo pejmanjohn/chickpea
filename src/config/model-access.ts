@@ -513,6 +513,7 @@ interface PayloadRequest {
   /** The model pi-ai builds the request for, endpoint included. */
   readonly model: Model<Api>;
   readonly scope: PromptCacheScope;
+  readonly purpose: ModelRequestPurpose;
 }
 
 /** Core's payload hooks for one provider, which run after the caller's in this order. */
@@ -619,6 +620,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   const payloadHook = payloadMode && requestPayload(options?.onPayload, payloadMode, {
     requestId: request.requestId,
     scope: { installationId: cell.attribution.installationId },
+    purpose: cell.purpose,
   });
   const send = (start: (model: TModel) => AssistantMessageEventStream) =>
     sendRequest(cell, sent, request, platformGrant, reader, payloadHook, start);

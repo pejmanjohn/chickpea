@@ -5,18 +5,24 @@ import type { Api, Model } from '@earendil-works/pi-ai';
 
 import {
   applyPromptCachePlan,
+  explicitBreakpointsOffered,
   planPromptCache,
   promptCacheKey,
   shareOpenAIPromptCache,
   type PromptCacheKey,
 } from '../src/agents/openai-prompt-cache.ts';
 import { sharedSystemBlock, slackSystemBase } from '../src/agents/shared-prefix.ts';
+import { BUNDLED_MODEL_CATALOG } from '../src/model-catalog/bundled.ts';
+import { resolveActiveCatalogRoute } from '../src/model-catalog/catalog.ts';
 import { getBuiltinModel } from '../src/model-catalog/pi-builtin-models.ts';
 
 const TERRA = builtin('gpt-5.6-terra');
 const GPT_5_5 = builtin('gpt-5.5');
 const SCOPE = { installationId: 'inst_alpha' };
-const REQUEST = { requestId: 'req_openai_cache_test', model: TERRA, scope: SCOPE };
+const REQUEST = { requestId: 'req_openai_cache_test', model: TERRA, scope: SCOPE, purpose: 'reply' } as const;
+const MISSED_TURN = '[chickpea] OpenAI Slack turn went out without the shared prompt prefix';
+const LOOKUP_TOOL = { type: 'function', name: 'lookup', parameters: { type: 'object' }, strict: false };
+const SLACK_TOOLS = [LOOKUP_TOOL, { type: 'function', name: 'present_details', parameters: { type: 'object' }, strict: false }];
 
 /** Flue's sections after Chickpea's instructions, as composeSystemPrompt joins them. */
 const FLUE_TAIL = [
@@ -46,7 +52,7 @@ function responsesPayload(developer: unknown, overrides: Record<string, unknown>
     prompt_cache_retention: undefined,
     prompt_cache_options: undefined,
     store: false,
-    tools: [{ type: 'function', name: 'present_details', parameters: { type: 'object' }, strict: false }],
+    tools: [LOOKUP_TOOL],
     reasoning: { effort: 'none' },
     ...overrides,
   };
@@ -214,4 +220,41 @@ test('a throwing planner returns the payload and logs no prompt text', async (t)
     { model: 'gpt-5.6-terra', requestId: REQUEST.requestId, error: 'TypeError' },
   ]]);
   assert.ok(!JSON.stringify(warn.mock.calls.map((call) => call.arguments)).includes('secret'));
+});
+
+test('an unrecognized reply-purpose Slack turn warns with model, reason and request ID only', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const slack = (developer: unknown, overrides: Record<string, unknown> = {}) =>
+    responsesPayload(developer, { tools: SLACK_TOOLS, ...overrides });
+  const drifted = `Changed. ${slackText('system', 'Tenant secret.')}`;
+  const reduced = `${slackSystemBase({ kind: 'user', managementMounted: true, memberToolsMounted: false })}\n\nTenant secret.`;
+
+  await shareOpenAIPromptCache(slack(drifted), REQUEST);
+  await shareOpenAIPromptCache({ ...slack(drifted), input: [{ role: 'system', content: drifted }] }, REQUEST);
+  for (const [name, payload, request] of [
+    ['a turn that shares', slack(slackText('system', 'Tenant secret.')), REQUEST],
+    ['a reduced turn', slack(reduced), REQUEST],
+    ['a model without breakpoints', slack(drifted), { ...REQUEST, model: GPT_5_5 }],
+    ['a compaction', slack(drifted), { ...REQUEST, purpose: 'compaction' }],
+    ['a request without Slack tools', responsesPayload(drifted), REQUEST],
+  ] as const) {
+    await shareOpenAIPromptCache(payload, request);
+    assert.equal(warn.mock.callCount(), 2, `${name} does not warn`);
+  }
+
+  assert.deepEqual(warn.mock.calls.map((call) => call.arguments), [
+    [MISSED_TURN, { model: 'gpt-5.6-terra', reason: 'not_shared_slack_turn', requestId: REQUEST.requestId }],
+    [MISSED_TURN, { model: 'gpt-5.6-terra', reason: 'no_developer_text', requestId: REQUEST.requestId }],
+  ]);
+  assert.ok(!JSON.stringify(warn.mock.calls.map((call) => call.arguments)).includes('secret'));
+});
+
+test('every bundled API-key OpenAI model routes to pi-ai\'s own model, which takes explicit breakpoints', () => {
+  const ids = BUNDLED_MODEL_CATALOG.filter((entry) => entry.lanes.openai_api_key).map((entry) => entry.id);
+  assert.ok(ids.includes('openai/gpt-5.6-terra'), 'the bundled catalog offers API-key OpenAI models');
+  for (const id of ids) {
+    const route = resolveActiveCatalogRoute(id, 'openai_api_key');
+    assert.equal(route?.source, 'pi_native', `${id} routes to pi-ai's model, not a compiled profile without the flag`);
+    assert.ok(explicitBreakpointsOffered(route.model as Model<Api>), `${id} carries pi-ai's explicit prompt cache flag`);
+  }
 });
