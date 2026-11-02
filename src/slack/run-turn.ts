@@ -3114,9 +3114,18 @@ export async function freezeRuntimePlanForTurn(input: {
         actorMembershipId: input.turn.actorMembershipId,
       }
     : undefined;
-  // Independent reads: the workspace policy, the actor's connections, and
-  // the thread's previous plan.
-  const [workspaceDecision, connectionContext, previous] = await Promise.all([
+  const canonicalModel = resolvedAssignmentModel(input.assignment);
+  if (!canonicalModel) {
+    throw new Error('Runtime plan compilation requires a frozen model.');
+  }
+  const settingsStore = input.settingsStore ?? getSettingsStore(input.platformEnv);
+  // Independent reads, in one round to the state store: the workspace
+  // policy, the actor's connections, the thread's previous plan, the runtime
+  // model, the image role, the browser capability, and the granted website
+  // logins.
+  const [
+    workspaceDecision, connectionContext, previous, runtimeModel, imageRole, browserCapability, websiteLogins,
+  ] = await Promise.all([
     resolveCodingWorkspaceDecision(
       input.assignment,
       input.platformEnv,
@@ -3131,33 +3140,6 @@ export async function freezeRuntimePlanForTurn(input: {
           input.turn.actorMembershipId, input.assignment.agentId,
         )
       : undefined,
-  ]);
-  // The constant guidance opens the agent's system prompt in code
-  // (shared-prefix.ts); the plan carries only what names this Agent.
-  const instructions = slackTenantInstructions(input.assignment);
-  const allEffectiveConnections = connectionContext?.effective ?? [];
-  const connectionAuthorizations = connectionContext?.authorizations;
-  const teamReconnects = connectionContext?.teamReconnects;
-  const sameActorThread = previous && input.turn.actorMembershipId &&
-    previous.actorMembershipId === input.turn.actorMembershipId &&
-    previous.agentId === input.assignment.agentId &&
-    previous.ownerIncarnation === (input.assignment.ownerIncarnation ?? 1) &&
-    previous.conversation.workspaceId === input.turn.workspaceId &&
-    previous.conversation.channelId === input.turn.channelId &&
-    previous.conversation.threadTs === input.turn.threadTs;
-  const connectionResolution = selectConnectionsForRequest({
-    connections: allEffectiveConnections,
-    requestText: input.requestText ?? input.turn.text,
-    ...(sameActorThread && previous.connectionSelections ? { previousSelections: previous.connectionSelections } : {}),
-  });
-  const canonicalModel = resolvedAssignmentModel(input.assignment);
-  if (!canonicalModel) {
-    throw new Error('Runtime plan compilation requires a frozen model.');
-  }
-  const settingsStore = input.settingsStore ?? getSettingsStore(input.platformEnv);
-  // The runtime model, the image role, the browser capability, and the
-  // granted website logins resolve independently.
-  const [runtimeModel, imageRole, browserCapability, websiteLogins] = await Promise.all([
     resolveRuntimeModel(
       input.assignment.agentId,
       canonicalModel,
@@ -3184,6 +3166,24 @@ export async function freezeRuntimePlanForTurn(input: {
     // Login metadata only; passwords are decrypted at call time.
     websiteLoginsForTurn(settingsStore, input.assignment.agent.websiteLogins),
   ]);
+  // The constant guidance opens the agent's system prompt in code
+  // (shared-prefix.ts); the plan carries only what names this Agent.
+  const instructions = slackTenantInstructions(input.assignment);
+  const allEffectiveConnections = connectionContext?.effective ?? [];
+  const connectionAuthorizations = connectionContext?.authorizations;
+  const teamReconnects = connectionContext?.teamReconnects;
+  const sameActorThread = previous && input.turn.actorMembershipId &&
+    previous.actorMembershipId === input.turn.actorMembershipId &&
+    previous.agentId === input.assignment.agentId &&
+    previous.ownerIncarnation === (input.assignment.ownerIncarnation ?? 1) &&
+    previous.conversation.workspaceId === input.turn.workspaceId &&
+    previous.conversation.channelId === input.turn.channelId &&
+    previous.conversation.threadTs === input.turn.threadTs;
+  const connectionResolution = selectConnectionsForRequest({
+    connections: allEffectiveConnections,
+    requestText: input.requestText ?? input.turn.text,
+    ...(sameActorThread && previous.connectionSelections ? { previousSelections: previous.connectionSelections } : {}),
+  });
   // The image role is the store's alone. Freezing its bounded capability here
   // is what mounts `generate_image` on the Agent; an unresolved or
   // uncredentialed role freezes an unfilled capability instead.

@@ -157,6 +157,8 @@ const REPLY_ANSWER = '{"disposition":"reply","reason":"substantive_request"}';
 let classifierAnswer = REPLY_ANSWER;
 /** Runs inside the Agent stand-in before it answers. */
 let holdAgentPrompt: ((timeline: string[], presentation: PresentationRead) => Promise<void>) | undefined;
+/** The running turn's timeline, for a hook that waits on it. */
+let currentTimeline: string[] = [];
 /** The platform env the turn runs under; an `AI` on it is Clef's binding. */
 let platformEnv: Record<string, unknown> | undefined;
 
@@ -175,6 +177,7 @@ async function firstStatusTimeline(
   turnOverrides: Partial<NormalizedSlackTurn> = {},
 ) {
   const timeline: string[] = [];
+  currentTimeline = timeline;
   const recordedIntents: SlackInteractionIntent[] = [];
   const reactionsAdded: Array<Record<string, unknown>> = [];
   let presentation: SlackRunPresentation | undefined;
@@ -819,6 +822,26 @@ test('a turn wakes its Agent object once its plan is saved, before it stages, an
   assert.deepEqual(events, ['freeze', 'freeze:saved', `wake:${instanceId}`, 'stage']);
   assert.equal(latency.length, 1);
   assert.ok(Number(latency[0]?.agentWakeLeadMs) >= 25, `the lead covers the wait to stage: ${latency[0]?.agentWakeLeadMs}`);
+});
+
+// Defect caught: the plan's model, image-role, browser and login reads
+// waiting for its workspace, connection and previous-plan reads: two rounds
+// to the state store, one after the other, instead of one.
+test("the plan's independent reads go to the state store in one round", async () => {
+  const { timeline } = await firstStatusTimeline('dm', null, {
+    // The previous plan's read answers only once the image role was asked for (or after the bound).
+    getBoundRuntimePlan: async () => {
+      currentTimeline.push('turnJobs.getBoundRuntimePlan');
+      await waitUntil(() => currentTimeline.includes('config.getAgentModelRole'));
+      currentTimeline.push('answered:turnJobs.getBoundRuntimePlan');
+      return undefined;
+    },
+  }, dmAssignment);
+  const role = timeline.indexOf('config.getAgentModelRole');
+  assert.ok(role >= 0, `the image role was read: ${timeline.join(' ')}`);
+  assert.ok(role < timeline.indexOf('answered:turnJobs.getBoundRuntimePlan'),
+    `it did not wait for the previous plan's read: ${timeline.join(' ')}`);
+  assert.ok(timeline.includes('agentPrompt'), 'the turn dispatched');
 });
 
 // Defects caught: a freeze that wakes the object admission already woke (two
