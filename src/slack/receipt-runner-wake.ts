@@ -1,5 +1,5 @@
 import type { ConfigStoreLogic } from '../config/store.ts';
-import { parseAgentUserGroupMentions } from './agent-routing.ts';
+import { agentIsActive, parseAgentUserGroupMentions } from './agent-routing.ts';
 import type { GatewayInboundDelivery } from './gateway/protocol.ts';
 import { slackAgentThreadKey } from './thread-key.ts';
 import { normalizeSlackTurn } from './turn-normalization.ts';
@@ -66,10 +66,10 @@ export function receiptRunnerWake(
   };
 }
 
-/** A group the text mentions is one of this installation's Agents, not a group of people. */
+/** A group the text mentions is one of this installation's Agents that answers, not a group of people. */
 function mentionsAnAgent(text: string, reads: Pick<ReceiptWakeReads, 'listAgents'>): boolean {
   const groups = new Set(parseAgentUserGroupMentions(text));
   return reads.listAgents().some((agent) =>
-    agent.kind === 'user' && agent.slackPresence?.userGroupId !== undefined &&
+    agent.kind === 'user' && agentIsActive(agent) && agent.slackPresence?.userGroupId !== undefined &&
     groups.has(agent.slackPresence.userGroupId));
 }

@@ -104,13 +104,21 @@ test('a wake that never answers, rejects or throws leaves the receipt as it was'
 // post), for a click, for a redelivered duplicate, or when turns do not go to
 // thread runners at all.
 test('a delivery that cannot become a turn wakes no runner', async () => {
-  await withLane(async ({ config }) => {
+  await withLane(async ({ config, help }) => {
     // The same mention wakes a runner here, so each case below is refused by its own difference.
     assert.equal(await receiptStoreWakes(config, delivery(AGENT_MENTION)), 1);
+    config.createAgent({
+      ...help, id: 'agent_paused', name: 'Paused', enabled: false,
+      slackPresence: {
+        requestedHandle: 'paused', normalizedHandle: 'paused', desiredState: 'active', health: 'healthy', userGroupId: 'SPAUSED',
+        avatar: { kind: 'generated', revision: 1, seed: 'paused', url: 'https://example.com/paused.svg' },
+      },
+    });
     const silent: Array<[string, GatewayInboundDelivery, Parameters<typeof receiptStore>[1]?]> = [
       ['an unaddressed Channel message', delivery(message({ ts: '8000.000100', text: 'lunch?' }))],
       ['a reply in a thread no Agent owns', delivery(message({ ts: '8000.000200', thread_ts: '8000.000100', text: 'yes' }))],
       ['a mention of a group of people', delivery(message({ ts: '8000.000300', text: '<!subteam^SPEOPLE|@people> standup?' }))],
+      ['a mention of a disabled Agent', delivery(message({ ts: '8000.000310', text: '<!subteam^SPAUSED|@paused> around?' }))],
       ['a reaction', delivery({
         type: 'reaction_added', user: 'U1', reaction: 'eyes', item: { type: 'message', channel: 'C1', ts: '5000.000100' },
         event_ts: '8000.000400',
