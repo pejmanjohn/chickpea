@@ -92,3 +92,14 @@ test('a header leaves out every tool description and input schema', async () => 
   assert.ok(bytes(COMPOSIO_MANIFEST_HEADERS) * 5 < bytes(await readBundledComposioManifests()),
     'the headers are a small part of the manifests');
 });
+
+test("a precondition's lookups name capabilities of the same manifest, which the provider compiles alone", async () => {
+  for (const manifest of await readBundledComposioManifests()) {
+    const ids = new Set(manifest.capabilities.map(({ id }) => id));
+    for (const { id, preconditions } of manifest.capabilities) {
+      for (const { current, target } of preconditions ?? []) {
+        for (const lookup of [current, target]) assert.ok(ids.has(lookup.capability), `${id} looks up ${lookup.capability}`);
+      }
+    }
+  }
+});
