@@ -251,6 +251,7 @@ import {
   type ThreadRunnerTurnOp,
   type ThreadRunnerTurnResult,
 } from './slack/thread-runner-rpc.ts';
+import { receiptRunnerWake } from './slack/receipt-runner-wake.ts';
 import { localSlackPresentationStatePort } from './slack/presentation-state-port.ts';
 import {
   drainSlackPresentationRepairs,
@@ -2253,6 +2254,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         return {status:200, body:{...httpDeliveryReceipt(value, admitted.value.outcome), interaction:admitted.value.interaction}};
       }
       if (admitted.value !== 'verified') outcome = admitted.value;
+      if (admitted.value === 'accepted') this.wakeRunnerAtReceipt(value.delivery!);
       // A duplicate also arms recovery: a previous insert may have survived an
       // alarm-write failure or loss of the HTTP response.
       if (admitted.value !== 'verified') await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
@@ -2274,9 +2276,29 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       return gatewayUiReceiptNow(delivery, stores.uiSurfaces) ?? stores.gatewayInbox.admit(delivery);
     });
     if (result.ok && typeof result.value === 'string') {
+      if (result.value === 'accepted') this.wakeRunnerAtReceipt(delivery);
       await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
     }
     return result;
+  }
+
+  /**
+   * Wake the thread runner a just-received delivery's turn will be handed
+   * to, so that runner activates while the turn is admitted (see
+   * receiptRunnerWake for which deliveries). Never awaited: the gateway's
+   * acknowledgement waits for this receipt. Nothing here changes the receipt.
+   */
+  private wakeRunnerAtReceipt(delivery: GatewayInboundDelivery): void {
+    try {
+      if (!this.runnerMode()) return;
+      const predicted = this.call((stores) => receiptRunnerWake(delivery, stores.config));
+      if (!predicted.ok || !predicted.value) return;
+      const runner = threadRunnerStub(this.env as PlatformEnv, predicted.value.threadKey);
+      if (!runner) return;
+      void Promise.resolve(runner.wake(Date.now(), predicted.value.turnJobId)).catch(() => undefined);
+    } catch {
+      // The hand-off addresses the runner either way.
+    }
   }
 
   async resumeTurnAfterOAuth(

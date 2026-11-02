@@ -481,7 +481,7 @@ const ADDRESSING_SITES: Record<string, { covered: string; sites: readonly string
     sites: ['return namespace.getByName(tagStateInstanceName(env));'],
   },
   'slack/thread-runner-rpc.ts': {
-    covered: 'thread_runner, recorded at turn enqueue',
+    covered: "thread_runner, recorded at turn enqueue; a receipt's wake may reach it first, and a runner never handed a job stores nothing",
     sites: ['return namespace.getByName(installationObjectName(env, threadKey));'],
   },
   'agents/turn-input.ts': {
