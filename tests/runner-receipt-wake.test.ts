@@ -5,258 +5,31 @@ import vm from 'node:vm';
 
 import ts from 'typescript';
 
-import { processGatewaySlackEnvelope } from '../src/channels/slack.ts';
-import {
-  assertInstallationOwnership,
-  installationOwnershipOf,
-  objectInstallationEnv,
-  scopeInstallationEnv,
-} from '../src/config/installation-scope.ts';
-import { closeNodeStateStores, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
-import { ConfigStoreLogic } from '../src/config/store.ts';
-import type { CustomAgentConfig } from '../src/config/types.ts';
+import { assertInstallationOwnership, objectInstallationEnv } from '../src/config/installation-scope.ts';
+import type { ConfigStoreLogic } from '../src/config/store.ts';
 import {
   opaqueTurnRef,
   resetRunnerActivationsForTest,
   RunnerBootMarks,
 } from '../src/observability/runtime-latency.ts';
-import { agentRoutineDeletion } from '../src/routines/store.ts';
-import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
-import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState } from '../src/slack/gateway/http-delivery.ts';
 import type { GatewayInboundDelivery } from '../src/slack/gateway/protocol.ts';
-import { gatewayUiReceiptNow } from '../src/slack/gateway/ui-receipt.ts';
-import {
-  carriedGatewayIdentity,
-  effectiveTurnSlackInstallationId,
-  seedGatewayIdentity,
-} from '../src/slack/installation-execution.ts';
-import { receiptRunnerWake } from '../src/slack/receipt-runner-wake.ts';
+import { seedGatewayIdentity } from '../src/slack/installation-execution.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
 import { ThreadRunnerJobStore } from '../src/slack/thread-runner-jobs.ts';
 import { createRunnerSupersedeState, runnerLoopScheduler } from '../src/slack/thread-runner-loop.ts';
-import { threadRunnerStub } from '../src/slack/thread-runner-rpc.ts';
-import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import type { SlackEvent } from '../src/slack/types.ts';
-import { promisify } from '../src/state/async-facade.ts';
 import { DoSqlStateDb } from '../src/state/do-state-db.ts';
-import { openStateDb } from '../src/state/node-state-db.ts';
+import {
+  AGENT_MENTION,
+  delivery,
+  HELP_GROUP,
+  message,
+  receiptStore,
+  withLane,
+} from './helpers/gateway-admission-lane.ts';
 import { FakeObjectRestoreContext, FakeObjectStorage } from './helpers/installation-objects.ts';
-import { createSlackOwner } from './helpers/slack-owner.ts';
-
-// The production receipt and hand-off methods of TagStateStore, not copies.
-const cloudflare = ts.createSourceFile(
-  'cloudflare.ts',
-  readFileSync(new URL('../src/cloudflare.ts', import.meta.url), 'utf8'),
-  ts.ScriptTarget.Latest,
-  true,
-);
-const stateClass = cloudflare.statements.find((node): node is ts.ClassDeclaration =>
-  ts.isClassDeclaration(node) && node.name?.text === 'TagStateStore');
-assert.ok(stateClass);
-const stateMethod = (name: string) => {
-  const method = stateClass.members.find((member) =>
-    ts.isMethodDeclaration(member) && member.name.getText(cloudflare) === name);
-  assert.ok(method, `production method ${name} exists`);
-  return method.getText(cloudflare);
-};
-const ReceiptProbe = vm.runInNewContext(
-  ts.transpileModule(
-    `class ReceiptProbe { ${['admitGatewayDelivery', 'wakeRunnerAtReceipt', 'runnerMode', 'admitToRunner']
-      .map(stateMethod).join('\n')} }\nReceiptProbe`,
-    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
-  ).outputText,
-  {
-    Date,
-    Promise,
-    console: { warn() {} },
-    GATEWAY_HTTP_SETTING,
-    parseHttpDeliveryState,
-    gatewayUiReceiptNow,
-    receiptRunnerWake,
-    threadRunnerStub,
-    slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
-    slackAgentThreadKey,
-    installationOwnershipOf,
-    effectiveTurnSlackInstallationId,
-    carriedGatewayIdentity,
-  },
-) as new () => {
-  admitGatewayDelivery(delivery: GatewayInboundDelivery): Promise<unknown>;
-  admitToRunner(job: TurnJob): Promise<boolean>;
-};
-
-interface Wake { name: string; sentAt: number; turnJobId?: string }
-
-/**
- * A state store that receives deliveries into an inbox answering `outcome`,
- * over `config`, and hands turns to the runners its env's namespace names.
- */
-function receiptStore(config: ConfigStoreLogic, options: {
-  env?: Record<string, unknown>;
-  outcome?: 'accepted' | 'duplicate';
-  wake?: () => Promise<void>;
-} = {}) {
-  const wakes: Wake[] = [];
-  const handoffs: string[] = [];
-  let armed = 0;
-  const namespace = {
-    getByName: (name: string) => ({
-      wake: (sentAt: number, turnJobId?: string) => {
-        wakes.push({ name, sentAt, ...(turnJobId === undefined ? {} : { turnJobId }) });
-        return options.wake ? options.wake() : Promise.resolve();
-      },
-      admit: async () => {
-        handoffs.push(name);
-        return { admitted: true };
-      },
-    }),
-  };
-  const env = scopeInstallationEnv(
-    { CHICKPEA_TENANCY: 'installation', SLACK_THREAD_RUNNER: namespace, ...options.env } as PlatformEnv,
-    { installationId: 'inst_receipt_wake' },
-  );
-  const stores = {
-    settings: { getSetting: () => undefined },
-    uiSurfaces: { get: () => undefined },
-    gatewayInbox: { admit: () => options.outcome ?? 'accepted' },
-    config,
-    presentations: { get: () => undefined },
-    turnJobs: { confirmRunner() {} },
-  };
-  const probe = Object.assign(new ReceiptProbe(), {
-    env,
-    stores,
-    call(fn: (value: typeof stores) => unknown) {
-      try {
-        return { ok: true, value: fn(stores) };
-      } catch {
-        return { ok: false, error: { code: 'internal', message: 'failed' } };
-      }
-    },
-    admissionWakeAt: () => 0,
-    armAlarmNoLaterThan: async () => {
-      armed += 1;
-    },
-  });
-  return { probe, wakes, handoffs, armed: () => armed };
-}
-
-const HELP_GROUP = 'SHELP';
-
-interface Lane {
-  config: ConfigStoreLogic;
-  help: CustomAgentConfig;
-  jobs: TurnJob[];
-  /** Admit a delivery as the state store's inbox drain does. */
-  admit(delivery: GatewayInboundDelivery): Promise<void>;
-}
-
-/**
- * Workspace T1 on the shared gateway with Channel C1, where the Agent @help
- * (group SHELP) is granted; U1 is its Owner. Admission reads the same config
- * the state store reads at receipt.
- */
-async function withLane(scenario: (lane: Lane) => Promise<void>): Promise<void> {
-  const envKeys = ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH'] as const;
-  const previousEnv = envKeys.map((key) => process.env[key]);
-  for (const key of envKeys) process.env[key] = ':memory:';
-  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
-  closeNodeStateStores();
-  const db = openStateDb(':memory:');
-  const config = new ConfigStoreLogic(db, agentRoutineDeletion);
-  const stores: AppStores = {
-    ...resolveStores(),
-    config: promisify(config, { close: () => db.close() }) as unknown as AppStores['config'],
-  };
-  try {
-    const owner = await createSlackOwner(stores.identity, { teamId: 'T1', userId: 'U1' });
-    await stores.config.ensureWorkspaceInstallation({
-      workspaceId: 'T1', transportMode: 'gateway', appId: 'A1', botUserId: 'UBOT',
-      gatewayBindingId: 'binding1', runtimeContract: 'chickpea-v1',
-    });
-    await stores.config.materializeChickpeaAgent();
-    await stores.config.putChannel({ workspaceId: 'T1', channelId: 'C1', label: 'team', lifecycle: 'active' }, 0);
-    const help = await stores.config.createAgent({
-      id: 'agent_help', name: 'Support', instructions: 'Help.', enabled: true, lifecycle: 'active',
-      creatorMembershipId: owner.membership.id, editPolicy: 'creator_and_admins', model: 'local-stub/help',
-      skills: [], mcpServers: [], apiConnections: [], repositories: [],
-      slackPresence: {
-        requestedHandle: 'help', normalizedHandle: 'help', desiredState: 'active', health: 'healthy',
-        userGroupId: HELP_GROUP, avatar: { kind: 'generated', revision: 1, seed: 'help', url: 'https://example.com/help.svg' },
-      },
-    });
-    await stores.config.putAgentChannelGrant({
-      workspaceId: 'T1', channelId: 'C1', agentId: help.id, status: 'active',
-      createdByMembershipId: owner.membership.id, channelLabel: 'team', channelIsPrivate: false,
-    }, 0);
-    const channel = { id: 'C1', name: 'team', is_channel: true, is_private: false, is_member: true, is_archived: false };
-    const groups = [{ id: HELP_GROUP, name: 'Support', handle: 'help', description: '', date_delete: 0, date_update: 1 }];
-    const gateway = {
-      workspaceId: 'T1',
-      async loadBinding() { return { workspaceId: 'T1', appId: 'A1', botUserId: 'UBOT', bindingId: 'binding1' }; },
-      async call(operation: string, args: Record<string, unknown>) {
-        if (operation === 'users.info') {
-          return { user: {
-            id: args.user, team_id: 'T1', name: String(args.user), deleted: false, is_bot: false, is_app_user: false,
-            is_restricted: false, is_ultra_restricted: false, is_stranger: false,
-          } };
-        }
-        if (operation === 'conversations.info') return { channel };
-        if (operation === 'conversations.members') return { members: ['U1', 'UBOT'] };
-        if (operation === 'users.conversations') return { channels: [channel] };
-        if (operation === 'usergroups.list') return { usergroups: groups };
-        if (operation === 'chat.postMessage') return { ok: true, ts: '9000.000001', channel: args.channel };
-        throw new Error(`Unexpected gateway operation: ${operation}`);
-      },
-    } as unknown as GatewayDeploymentClient;
-    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
-    const jobs: TurnJob[] = [];
-    const enqueueTurn = async (job: TurnJob) => {
-      jobs.push(job);
-      return { ok: true as const, value: null };
-    };
-    await scenario({
-      config,
-      help,
-      jobs,
-      async admit(delivery) {
-        assert.equal(delivery.kind, 'event.deliver');
-        if (delivery.kind !== 'event.deliver') return;
-        assert.equal(await processGatewaySlackEnvelope(delivery.envelope, undefined, gateway, { stores, enqueueTurn }), 'accepted');
-      },
-    });
-  } finally {
-    if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator);
-    else Reflect.deleteProperty(globalThis, 'navigator');
-    closeNodeStateStores();
-    db.close();
-    envKeys.forEach((key, index) => {
-      if (previousEnv[index] === undefined) delete process.env[key];
-      else process.env[key] = previousEnv[index];
-    });
-  }
-}
-
-let deliveries = 0;
-
-function delivery(event: SlackEvent): GatewayInboundDelivery {
-  deliveries += 1;
-  return {
-    protocolVersion: 1, kind: 'event.deliver', deliveryId: `delivery_${deliveries}`, bindingId: 'binding1',
-    workspaceId: 'T1', envelope: { workspaceId: 'T1', eventId: `Ev${deliveries}`, eventTime: 1_000 + deliveries, event },
-  };
-}
-
-function message(fields: { ts: string; text: string; channel?: string; thread_ts?: string; bot_id?: string }): SlackEvent {
-  const channel = fields.channel ?? 'C1';
-  return {
-    type: 'message', channel, channel_type: channel.startsWith('D') ? 'im' : 'channel', user: 'U1', ...fields,
-  } as SlackEvent;
-}
-
-const AGENT_MENTION = message({ ts: '5000.000100', text: `<!subteam^${HELP_GROUP}|@help> what changed?` });
 
 /** Settles within a second, or fails: the receipt never waits for the wake. */
 function promptly<T>(promise: Promise<T>): Promise<T> {
