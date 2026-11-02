@@ -49,6 +49,8 @@ const ALLOWED = new Map<string, string>([
     'Price provenance: cites the endpoints listing each price was read from; sends nothing.'],
   ['src/slack/attachment-model-context.ts',
     'Compares a model\'s endpoint origin to decide native PDF support; sends nothing.'],
+  ['src/agents/openai-prompt-cache.ts',
+    'Compares a model\'s endpoint origin to decide explicit prompt cache breakpoints; sends nothing.'],
   ['src/openai-subscription/credentials.ts', SUBSCRIPTION_LANE],
   ['src/openai-subscription/protocol.ts', SUBSCRIPTION_LANE],
   ['src/openai-subscription/provider.ts', SUBSCRIPTION_LANE],
