@@ -310,6 +310,11 @@ interface PromptSlackAgentInput {
   /** Called once the durable receipt exists and observation is about to begin. */
   onObservationStarted?: () => void;
   /**
+   * Called once the reply is seen completed, with its result, as its
+   * settlement record starts and before this call returns. Must not throw.
+   */
+  onSettlementObserved?: (result: AgentDispatchResult) => void;
+  /**
    * Every chunk the reply's observation reads, in stream order, beside the
    * dispatched submission. A saved settlement observes nothing. Must not throw.
    */
@@ -668,6 +673,7 @@ export async function promptSlackThreadAgent(
   }
 
   const { displayComponents, ...settled } = completed;
+  input.onSettlementObserved?.(completed);
   let checkpoint: FlueSettlementCheckpointV1;
   try {
     checkpoint = await input.state.recordSettlement({

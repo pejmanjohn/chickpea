@@ -9,9 +9,11 @@ import type { WebClient } from '@slack/web-api';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
+import type { AgentDispatchResult, promptSlackThreadAgent } from '../src/slack/flue-dispatch.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
+import { AGENT_FAILURE_TEXT } from '../src/slack/web-client-presenter.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
@@ -129,6 +131,30 @@ function presentationFor(store: SlackRunPresentationStoreLogic, runId: string, t
   };
 }
 
+const ANSWER: AgentDispatchResult = {
+  text: 'The release notes cover three fixes.',
+  requestedModel: assignment.model ?? null,
+  returnedModel: null,
+  reportedUsage: null,
+  usageCompleteness: 'not_reported',
+};
+
+/**
+ * The reply as promptSlackThreadAgent ends it: settlement observed, then its
+ * record (here, waiting up to 500 ms for `recorded`) before it returns.
+ */
+async function settledAnswer(
+  input: Parameters<typeof promptSlackThreadAgent>[0],
+  recorded: () => boolean = () => true,
+  timeline?: string[],
+): Promise<AgentDispatchResult> {
+  input.onSettlementObserved?.(ANSWER);
+  const deadline = Date.now() + 500;
+  while (!recorded() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  timeline?.push('agent:returned');
+  return ANSWER;
+}
+
 test('a rate-limited delivery lease check retries the attempt, and the retry delivers the answer', async () => {
   const messageTs = '1790000200.000100';
   const turn = leaseTurn('Ev_LEASE_LIMIT', messageTs);
@@ -142,7 +168,7 @@ test('a rate-limited delivery lease check retries the attempt, and the retry del
   const state = presentationFor(store, runId, turn);
   const finals: string[] = [];
   let leaseChecks = 0;
-  let rateLimitLeaseCheck: number | undefined = 2; // the post-answer check
+  let rateLimitLeaseCheck: number | undefined = 2; // the post-answer check, started at settlement observed
   const client = {
     apiCall: async () => ({ ok: true }),
     assistant: { threads: { setStatus: async () => ({ ok: true }) } },
@@ -182,13 +208,7 @@ test('a rate-limited delivery lease check retries the attempt, and the retry del
     presentationState: state,
     workStore: work,
     usageRecordingEnabled: false,
-    agentPrompt: async () => ({
-      text: 'The release notes cover three fixes.',
-      requestedModel: assignment.model ?? null,
-      returnedModel: null,
-      reportedUsage: null,
-      usageCompleteness: 'not_reported' as const,
-    }),
+    agentPrompt: async (input) => settledAnswer(input),
   });
   try {
     await assert.rejects(
@@ -222,7 +242,8 @@ test('a rate-limited delivery lease check retries the attempt, and the retry del
 // Defects caught (with the admitted status held): the context read waiting
 // for the opening status writes, and the title, a presentation transition,
 // landing before the lease fence decided or while the admitted status's own
-// transitions are still in flight.
+// transitions are still in flight. After the run: the delivery lease's reads
+// waiting for the reply's settlement record instead of starting beside it.
 test('the context read runs while the owner lease is checked and the admitted status is written; the title waits for both', async () => {
   const messageTs = '1790000300.000100';
   const turn = leaseTurn('Ev_LEASE_OVERLAP', messageTs);
@@ -271,6 +292,7 @@ test('the context read runs while the owner lease is checked and the admitted st
           }
           timeline.push('lease:members_answered');
         }
+        if (membersChecks === 2) timeline.push('lease:after_run_read');
         return { ok: true, members: [turn.userId, 'U_CHICKPEA'] };
       },
       replies: seen('conversations.replies', { ok: true, messages: [] }),
@@ -297,13 +319,8 @@ test('the context read runs while the owner lease is checked and the admitted st
       presentationState: state,
       workStore: work,
       usageRecordingEnabled: false,
-      agentPrompt: async () => ({
-        text: 'The release notes cover three fixes.',
-        requestedModel: assignment.model ?? null,
-        returnedModel: null,
-        reportedUsage: null,
-        usageCompleteness: 'not_reported' as const,
-      }),
+      agentPrompt: async (input) =>
+        settledAnswer(input, () => timeline.includes('lease:after_run_read'), timeline),
     });
     const read = timeline.indexOf('conversations.replies');
     const leaseAnswered = timeline.indexOf('lease:members_answered');
@@ -315,8 +332,82 @@ test('the context read runs while the owner lease is checked and the admitted st
     assert.ok(read < statusShown, `the context read does not wait for the admitted status: ${timeline.join(' ')}`);
     assert.ok(titled > leaseAnswered, `the title waits for the lease: ${timeline.join(' ')}`);
     assert.ok(titled > statusShown, `the title waits for the admitted status: ${timeline.join(' ')}`);
+    assert.ok(timeline.indexOf('lease:after_run_read') < timeline.indexOf('agent:returned'),
+      `the delivery lease reads start at settlement observed: ${timeline.join(' ')}`);
     assert.equal(finals.length, 1);
     assert.match(finals[0]!, /three fixes/);
+  } finally {
+    db.close();
+    work.close();
+  }
+});
+
+// Defects caught: a refusal from the check started at settlement observed
+// that no longer withholds the answer, and a second, later check in its
+// place (three membership reads instead of two).
+test('a delivery lease refused at settlement observed withholds the answer: the only final is the failure notice', async () => {
+  const messageTs = '1790000400.000100';
+  const turn = leaseTurn('Ev_LEASE_REFUSED', messageTs);
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment, sourceVisibility: 'public', admittedAt: Date.now(),
+  }));
+  const runId = admitted.run.id;
+  const db = openStateDb(':memory:');
+  const store = new SlackRunPresentationStoreLogic(db);
+  const state = presentationFor(store, runId, turn);
+  const timeline: string[] = [];
+  const written: string[] = [];
+  let membersChecks = 0;
+  const client = {
+    apiCall: async () => ({ ok: true }),
+    assistant: { threads: { setStatus: async () => ({ ok: true }), setTitle: async () => ({ ok: true }) } },
+    auth: { test: async () => ({ ok: true, user_id: 'U_CHICKPEA' }) },
+    users: { info: async () => ({ ok: true, user: { id: turn.userId, team_id: turn.workspaceId } }) },
+    conversations: {
+      info: async () => ({ ok: true, channel: { id: turn.channelId, context_team_id: turn.workspaceId, is_member: true } }),
+      members: async () => {
+        membersChecks += 1;
+        if (membersChecks === 1) return { ok: true, members: [turn.userId, 'U_CHICKPEA'] };
+        timeline.push('lease:after_run_read');
+        return { ok: true, members: ['U_CHICKPEA'] };
+      },
+      replies: async () => ({ ok: true, messages: [] }),
+      history: async () => ({ ok: true, messages: [] }),
+    },
+    chat: {
+      startStream: async (input: { chunks?: Array<{ text?: string }> }) => {
+        written.push(input.chunks?.map((chunk) => chunk.text ?? '').join('') ?? '');
+        return { ok: true, ts: '1790000400.000200' };
+      },
+      appendStream: async (input: { chunks?: Array<{ text?: string }> }) => {
+        written.push(input.chunks?.map((chunk) => chunk.text ?? '').join('') ?? '');
+        return { ok: true };
+      },
+      stopStream: async () => ({ ok: true }),
+      postMessage: async (input: { text?: string }) => {
+        written.push(input.text ?? '');
+        return { ok: true, ts: '1790000400.000200' };
+      },
+    },
+  } as unknown as WebClient;
+  try {
+    await runTurn(turn, assignment, undefined, {
+      client,
+      runId,
+      turnId: `turn_${runId}`,
+      presentationState: state,
+      workStore: work,
+      usageRecordingEnabled: false,
+      agentPrompt: async (input) =>
+        settledAnswer(input, () => timeline.includes('lease:after_run_read'), timeline),
+    });
+    assert.deepEqual(timeline, ['lease:after_run_read', 'agent:returned'],
+      'the refusing read started at settlement observed');
+    assert.equal(membersChecks, 2, 'one check before the run and the one started at settlement observed');
+    assert.equal(written.length, 1);
+    assert.ok(written[0]!.includes(AGENT_FAILURE_TEXT), `the final is the failure notice: ${written[0]}`);
+    assert.doesNotMatch(written[0]!, /three fixes/, 'the answer is never written');
   } finally {
     db.close();
     work.close();
