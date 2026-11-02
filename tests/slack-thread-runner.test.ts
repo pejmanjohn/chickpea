@@ -7,6 +7,11 @@ import vm from 'node:vm';
 import ts from 'typescript';
 
 import { activityStatus } from '../src/activity/status.ts';
+import {
+  carriedGatewayIdentity,
+  resetIdentityVerificationsForTests,
+  seedGatewayIdentity,
+} from '../src/slack/installation-execution.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { ThreadRunnerJobStore } from '../src/slack/thread-runner-jobs.ts';
 import { NodeStateDb } from '../src/state/node-state-db.ts';
@@ -111,7 +116,7 @@ test("the runner's admit reports the hand-off's send time and keeps its delay fo
     ts.transpileModule(`class AdmitProbe { ${parts.map((part) => part!.getText(source)).join('\n')} }\nAdmitProbe`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText,
-    { Date: { now: () => 70_000 }, assertInstallationOwnership: () => undefined, console },
+    { Date: { now: () => 70_000 }, assertInstallationOwnership: () => undefined, seedGatewayIdentity, console },
   ) as new () => Record<string, unknown> & {
     admit(job: unknown): Promise<Record<string, unknown>>;
     takeHandoff(jobId: string): Record<string, unknown>;
@@ -145,6 +150,61 @@ test("the runner's admit reports the hand-off's send time and keeps its delay fo
     { admitted: true });
   assert.deepEqual(older.marks, [['admit', { sentAt: undefined, turnJobId: 'turn_1' }]]);
   assert.deepEqual({ ...older.instance.takeHandoff('turn_1') }, {});
+});
+
+// Defects caught: a runner that drops the carried identity (its turn asks
+// Slack again before its first status), one that stores it with the job, and
+// one that takes it from a hand-off of another installation.
+test("the runner's admit takes a carried gateway identity into its cache and stores no payload", async () => {
+  const text = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
+  const source = ts.createSourceFile('thread-runner.ts', text, ts.ScriptTarget.Latest, true);
+  const runner = source.statements.find((node): node is ts.ClassDeclaration =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackThreadRunner');
+  const admit = runner?.members.find((node) => ts.isMethodDeclaration(node) && node.name.getText(source) === 'admit');
+  assert.ok(admit);
+  const AdmitProbe = vm.runInNewContext(
+    ts.transpileModule(`class AdmitProbe { handoffs = new Map();\n${admit.getText(source)} }\nAdmitProbe`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+    {
+      Date,
+      assertInstallationOwnership: (installation: unknown) => {
+        if (installation === 'another') throw new Error('installation mismatch');
+      },
+      seedGatewayIdentity,
+      console: { warn() {} },
+    },
+  ) as new () => { admit(job: unknown): Promise<Record<string, unknown>> };
+  const stored: unknown[] = [];
+  const instance = Object.assign(new AdmitProbe(), {
+    env: {},
+    boot: { call() {} },
+    store: () => ({
+      admit: (job: { payload: unknown }) => {
+        stored.push(job.payload);
+        return { admitted: true };
+      },
+    }),
+    ctx: { storage: { getAlarm: async () => null, setAlarm: async () => undefined } },
+  });
+  const installation = {
+    workspaceId: 'TGATEWAY', transportMode: 'gateway' as const, gatewayBindingId: 'binding_test', botUserId: 'UBOT',
+  };
+  const gatewayIdentity = {
+    workspaceId: 'TGATEWAY', bindingId: 'binding_test', botUserId: 'UBOT', expiresAt: Date.now() + 30_000,
+  };
+  resetIdentityVerificationsForTests();
+  try {
+    await instance.admit({ id: 'turn_other', threadKey: 'k', payload: { gatewayIdentity }, installation: 'another' });
+    assert.equal(carriedGatewayIdentity(installation), undefined, 'another installation\'s hand-off seeds nothing');
+
+    await instance.admit({ id: 'turn_1', threadKey: 'k', payload: { gatewayIdentity } });
+    assert.deepEqual(carriedGatewayIdentity(installation), gatewayIdentity,
+      "the turn's resolution finds the state store's verification (no auth.test)");
+    assert.equal(JSON.stringify(stored), '[{}]', 'the job is stored without its payload');
+  } finally {
+    resetIdentityVerificationsForTests();
+  }
 });
 
 test('the Worker entry exports SlackThreadRunner for its v11 binding', () => {

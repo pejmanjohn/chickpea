@@ -14,6 +14,7 @@ import { runReviewConfigured } from '../review/port.ts';
 import { SLACK_SETTING_KEYS } from './credentials.ts';
 import { GATEWAY_DEPLOYMENT_IDENTITY_SETTING } from './gateway/identity.ts';
 import { GATEWAY_BINDING_SETTING } from './gateway/settings.ts';
+import type { CarriedGatewayIdentity } from './installation-execution.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { MidRunReplyOutcome, MidRunReplyRequest } from './midrun-reply.ts';
 import type {
@@ -134,6 +135,14 @@ export interface ThreadRunnerJobPayload {
    * runner keeps the authoritative copy from then on.
    */
   presentation?: SlackRunPresentation;
+  /**
+   * The gateway bot identity the state store verified within the window
+   * (installation-execution.ts), taken into the runner's cache instead of an
+   * `auth.test` of its own. Absent from an older state store, or when the
+   * state store holds no fresh verification: the runner verifies as before.
+   * Never stored: `admit` keeps no payload.
+   */
+  gatewayIdentity?: CarriedGatewayIdentity;
 }
 
 /** The RPC surface of one `SlackThreadRunner` (see thread-runner.ts). */

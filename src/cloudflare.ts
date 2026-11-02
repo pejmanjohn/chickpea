@@ -43,6 +43,7 @@ import { gitIdentityConfigCommand, resolveWorkspaceGitIdentity } from './sandbox
 import { recordDeliveredSlackAgentMessage } from './slack/public-context.ts';
 import {
   cacheSlackInstallationExecutionContexts,
+  carriedGatewayIdentity,
   effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
   verifySlackInstallationTurnAccess,
@@ -2708,7 +2709,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const runner = threadRunnerStub(this.env as PlatformEnv, threadKey);
     if (!stores || !runner) return false;
     const presentation = job.runId ? stores.presentations.get(job.runId) : undefined;
-    const payload: ThreadRunnerJobPayload = presentation ? { presentation } : {};
+    // The bot identity this store verified within the window, so the runner
+    // does not ask Slack for it again before the turn's first status.
+    let gatewayIdentity: ReturnType<typeof carriedGatewayIdentity>;
+    try {
+      gatewayIdentity = carriedGatewayIdentity(
+        stores.config.getWorkspaceInstallation(effectiveTurnSlackInstallationId(job.turn)),
+      );
+    } catch {
+      // The runner verifies it itself.
+    }
+    const payload: ThreadRunnerJobPayload = {
+      ...(presentation ? { presentation } : {}),
+      ...(gatewayIdentity ? { gatewayIdentity } : {}),
+    };
     const installation = installationOwnershipOf(this.env as PlatformEnv);
     try {
       const result = await runner.admit({
@@ -3323,6 +3337,19 @@ async function drainGatewayInbox(
     }
     return stores.gatewayInbox.hasPending();
   }
+  // Runner mode: verify the bot identity while the deliveries are admitted,
+  // so each turn's hand-off can carry it (admitToRunner). A verification
+  // still fresh in this isolate is reused, and a failure here fails nothing.
+  const event = onAdmitted
+    ? pending.map((item) => item.delivery).find((delivery) => delivery.kind === 'event.deliver')
+    : undefined;
+  const verifyingIdentity = event?.kind === 'event.deliver'
+    ? resolveSlackInstallationExecutionContext(event.envelope.workspaceId, platformEnv, {
+        config: { getWorkspaceInstallation: (id) => stores.config.getWorkspaceInstallation(id) },
+        settings: appStores.settings,
+        gatewayClient: client,
+      }).then(() => undefined, () => undefined)
+    : undefined;
   let needsRetry = false;
   const uiExecution = { stores: appStores, enqueueTurn: localTurnEnqueue(stores) };
   const admit = async (item: (typeof pending)[number]) => {
@@ -3396,6 +3423,7 @@ async function drainGatewayInbox(
       }
     },
   ));
+  await verifyingIdentity;
   return needsRetry || stores.gatewayInbox.hasPending();
 }
 
