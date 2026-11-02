@@ -171,8 +171,8 @@ export interface SandboxTurnReader {
 }
 
 export interface TurnExecutionOptions {
-  /** Which lane and executor the turn_latency record names. */
-  latency: Pick<TurnLatencyContext, 'lane' | 'executor'>;
+  /** Which lane and executor the turn_latency record names, and a runner's hand-off delay. */
+  latency: Pick<TurnLatencyContext, 'lane' | 'executor' | 'handoffMs'>;
   /**
    * Recorded with the dispatch so the agent relays observed activity to the
    * executor that registered this turn's status (see status-relay.ts).
@@ -323,8 +323,6 @@ export async function executeTurnJob(
   const turnLatency = {
     ...(job.enqueuedAt === undefined ? {} : { admittedAt: job.enqueuedAt }),
     ...(job.receivedAt === undefined ? {} : { receivedAt: job.receivedAt }),
-    ...(job.handoffMs === undefined ? {} : { handoffMs: job.handoffMs }),
-    ...(job.handoffRoundTripMs === undefined ? {} : { handoffRoundTripMs: job.handoffRoundTripMs }),
     ...options.latency,
   };
   // The plan this job froze, kept current as runTurn freezes it.

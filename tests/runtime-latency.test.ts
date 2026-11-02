@@ -347,20 +347,17 @@ test('alarm() emits a threw record and still rethrows a store failure', async ()
   assert.equal(alarmSink.records[0]?.outcome, 'threw');
 });
 
-// The production hand-off, not a copy: it sends its clock with the job and
-// confirms with the runner's answer and its own round trip.
+// The production hand-off, not a copy: it sends its clock with the job.
 const admitToRunnerMethod = stateClass.members.find((member) =>
   ts.isMethodDeclaration(member) && member.name.getText(cloudflareSource) === 'admitToRunner');
 assert.ok(admitToRunnerMethod, 'production admitToRunner() exists');
 
 function handoffProbe(answer: Record<string, unknown>) {
-  let now = 70_000;
   const sent: LogRecord[] = [];
   const confirmed: unknown[][] = [];
   const runner = {
     admit: async (job: LogRecord) => {
       sent.push({ ...job });
-      now += 2_000;
       return answer;
     },
   };
@@ -370,7 +367,7 @@ function handoffProbe(answer: Record<string, unknown>) {
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
     ).outputText,
     {
-      Date: { now: () => now },
+      Date: { now: () => 70_000 },
       console: { warn: () => undefined },
       slackAgentThreadKey: () => 'T1:C1:1.0',
       threadRunnerStub: () => runner,
@@ -382,22 +379,17 @@ function handoffProbe(answer: Record<string, unknown>) {
   probe.stores = {
     presentations: { get: () => undefined },
     turnJobs: {
-      confirmRunner: (id: string, timing?: LogRecord) => confirmed.push([id, timing && { ...timing }]),
+      confirmRunner: (...args: unknown[]) => confirmed.push(args),
     },
   };
   return { admit: () => probe.admitToRunner({ id: 'turn_1', turn: {}, assignment: {} }), sent, confirmed };
 }
 
-test('a runner hand-off sends its clock and confirms with the runner delay and its own round trip', async () => {
-  const current = handoffProbe({ admitted: true, handoffMs: 1_900 });
-  assert.equal(await current.admit(), true);
-  assert.equal(current.sent[0]?.sentAt, 70_000);
-  assert.deepEqual(current.confirmed, [['turn_1', { handoffRoundTripMs: 2_000, handoffMs: 1_900 }]]);
-
-  // A runner on an older version answers without a delay: only the round trip.
-  const older = handoffProbe({ admitted: true });
-  assert.equal(await older.admit(), true);
-  assert.deepEqual(older.confirmed, [['turn_1', { handoffRoundTripMs: 2_000 }]]);
+test("a runner hand-off sends the state store's clock with the job", async () => {
+  const admitted = handoffProbe({ admitted: true });
+  assert.equal(await admitted.admit(), true);
+  assert.equal(admitted.sent[0]?.sentAt, 70_000);
+  assert.deepEqual(admitted.confirmed, [['turn_1']]);
 
   const refused = handoffProbe({ admitted: false, refused: 'installation_mismatch' });
   assert.equal(await refused.admit(), false);
@@ -439,6 +431,17 @@ test('turn_latency measures admission to the first acknowledged write and to fin
     attemptMs: 5_100,
   }]);
   assertContentFree(records[0]!);
+});
+
+test("turn_latency logs a runner turn's hand-off delay from its context", () => {
+  const { records, sink } = captureSink();
+  new TurnLatencyTracker(
+    { admittedAt: 9_000, handoffMs: 1_900, lane: 'cloudflare', executor: 'runner' },
+    { turnJobId: 'evt:T_LATENCY:1785509000.000100', attempt: 1 },
+    clock(10_000).now,
+    sink,
+  ).emit('returned');
+  assert.equal(records[0]?.handoffMs, 1_900);
 });
 
 test('turn_latency omits durations it cannot measure and never throws', () => {
@@ -708,7 +711,7 @@ test('the Node relay passes the durable admission time to runTurn', async () => 
   assert.deepEqual(seen, [{ admittedAt: 1_700_000_000_000, lane: 'node', executor: 'node' }]);
 });
 
-test('a job admitted from a gateway inbox row carries its receipt and hand-off times into turn_latency', () => {
+test('a job admitted from a gateway inbox row carries its receipt time into turn_latency', () => {
   const db = openStateDb(':memory:');
   try {
     let now = 1_800_000_000_000;
@@ -755,23 +758,11 @@ test('a job admitted from a gateway inbox row carries its receipt and hand-off t
     assert.equal(gateway?.enqueuedAt, receivedAt + 90_000);
     assert.equal(http?.receivedAt, http?.enqueuedAt);
 
-    // The state store hands the row to its runner and records how long that took.
-    assert.equal(turns.assignRunner('evt:gateway'), true);
-    turns.confirmRunner('evt:gateway', { handoffMs: 1_900, handoffRoundTripMs: 2_000 });
-    assert.equal(turns.assignRunner('evt:http'), true);
-    turns.confirmRunner('evt:http');
-    const view = turns.runnerView('evt:gateway').job!;
-    assert.equal('handoffMs' in turns.runnerView('evt:http').job!, false, 'no timing, no hand-off fields');
-
     const time = clock(receivedAt + 91_000);
     const { records, sink } = captureSink();
     const tracker = new TurnLatencyTracker(
-      {
-        admittedAt: view.enqueuedAt!, receivedAt: view.receivedAt!,
-        handoffMs: view.handoffMs!, handoffRoundTripMs: view.handoffRoundTripMs!,
-        lane: 'cloudflare', executor: 'runner',
-      },
-      { turnJobId: view.id },
+      { admittedAt: gateway!.enqueuedAt!, receivedAt: gateway!.receivedAt!, lane: 'cloudflare', executor: 'alarm' },
+      { turnJobId: gateway!.id },
       time.now,
       sink,
     );
@@ -781,8 +772,6 @@ test('a job admitted from a gateway inbox row carries its receipt and hand-off t
     assert.equal(records[0]?.receiptToAdmissionMs, 90_000);
     assert.equal(records[0]?.admissionToFirstWriteMs, 2_000);
     assert.equal(records[0]?.receiptToFirstWriteMs, 92_000);
-    assert.equal(records[0]?.handoffMs, 1_900);
-    assert.equal(records[0]?.handoffRoundTripMs, 2_000);
   } finally {
     db.close();
   }

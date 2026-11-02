@@ -308,10 +308,8 @@ export interface TurnLatencyContext {
   admittedAt?: number;
   /** `turn_jobs.received_at`: gateway inbox acceptance, else admission. */
   receivedAt?: number;
-  /** A runner's turn: its `admit` start minus the state store's send time (two clocks). */
+  /** A runner turn's first attempt: the runner's `admit` start minus the state store's send time (two clocks). */
   handoffMs?: number;
-  /** A runner's turn: the state store's `admit` round trip. */
-  handoffRoundTripMs?: number;
   lane: TurnLatencyLane;
   executor: TurnLatencyExecutor;
 }
@@ -396,7 +394,6 @@ export class TurnLatencyTracker {
       receiptToAdmissionMs: sinceReceipt(admittedAt),
       receiptToFirstWriteMs: sinceReceipt(this.firstWrite?.at),
       handoffMs: this.context.handoffMs,
-      handoffRoundTripMs: this.context.handoffRoundTripMs,
       attemptMs: end - this.startedAt,
       folded: this.folded > 0 ? this.folded : undefined,
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,

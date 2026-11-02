@@ -260,7 +260,6 @@ import {
   MAX_TURN_DRAIN_BATCH,
   oauthResumeTurnJobId,
   type PendingTurnJob,
-  type TurnHandoffTiming,
 } from './slack/turn-jobs.ts';
 import type { TurnFoldRequest, TurnSteeringDecision } from './slack/turn-job-types.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
@@ -2711,26 +2710,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const presentation = job.runId ? stores.presentations.get(job.runId) : undefined;
     const payload: ThreadRunnerJobPayload = presentation ? { presentation } : {};
     const installation = installationOwnershipOf(this.env as PlatformEnv);
-    const sentAt = Date.now();
-    let timing: TurnHandoffTiming;
     try {
       const result = await runner.admit({
         id: job.id,
         threadKey,
         payload,
         ...(installation ? { installation } : {}),
-        sentAt,
+        sentAt: Date.now(),
       });
       if (result.refused) throw new Error(result.refused);
-      timing = {
-        handoffRoundTripMs: Date.now() - sentAt,
-        ...(typeof result.handoffMs === 'number' ? { handoffMs: result.handoffMs } : {}),
-      };
     } catch {
       console.warn('[chickpea] Thread runner admission failed; the hand-off is retried');
       return false;
     }
-    stores.turnJobs.confirmRunner(job.id, timing);
+    stores.turnJobs.confirmRunner(job.id);
     return true;
   }
 

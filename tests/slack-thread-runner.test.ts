@@ -98,31 +98,32 @@ test('every runner entry point reports its call to the activation marks before i
   assert.match(readFileSync(path, 'utf8'), /\} finally \{\s*this\.boot\.constructed\(\);\s*\}\s*\}\);/);
 });
 
-test("the runner's admit reports the hand-off's send time to its activation marks and answers the delay", async () => {
-  const source = ts.createSourceFile(
-    'thread-runner.ts',
-    readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
-  );
+test("the runner's admit reports the hand-off's send time and keeps its delay for that job's first attempt", async () => {
+  const text = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
+  const source = ts.createSourceFile('thread-runner.ts', text, ts.ScriptTarget.Latest, true);
   const runner = source.statements.find((node): node is ts.ClassDeclaration =>
     ts.isClassDeclaration(node) && node.name?.text === 'SlackThreadRunner');
-  const admit = runner?.members.find((member) =>
-    ts.isMethodDeclaration(member) && member.name.getText(source) === 'admit');
-  assert.ok(admit);
+  const member = (name: string) => runner?.members.find((node) =>
+    (ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node)) && node.name.getText(source) === name);
+  const parts = ['handoffs', 'admit', 'takeHandoff'].map(member);
+  assert.ok(parts.every(Boolean));
   const AdmitProbe = vm.runInNewContext(
-    ts.transpileModule(`class AdmitProbe { ${admit.getText(source)} }\nAdmitProbe`, {
+    ts.transpileModule(`class AdmitProbe { ${parts.map((part) => part!.getText(source)).join('\n')} }\nAdmitProbe`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText,
     { Date: { now: () => 70_000 }, assertInstallationOwnership: () => undefined, console },
-  ) as new () => Record<string, unknown> & { admit(job: unknown): Promise<Record<string, unknown>> };
+  ) as new () => Record<string, unknown> & {
+    admit(job: unknown): Promise<Record<string, unknown>>;
+    takeHandoff(jobId: string): Record<string, unknown>;
+  };
   const probe = () => {
     const marks: unknown[][] = [];
+    const answers = [{ admitted: true }];
     const instance = new AdmitProbe();
     Object.assign(instance, {
       env: {},
       boot: { call: (method: string, from: Record<string, unknown>) => marks.push([method, { ...from }]) },
-      store: () => ({ admit: () => ({ admitted: true }) }),
+      store: () => ({ admit: () => answers.shift() ?? { admitted: false } }),
       ctx: { storage: { getAlarm: async () => null, setAlarm: async () => undefined } },
     });
     return { instance, marks };
@@ -130,14 +131,20 @@ test("the runner's admit reports the hand-off's send time to its activation mark
 
   const sent = probe();
   assert.deepEqual({ ...await sent.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {}, sentAt: 68_100 }) },
-    { admitted: true, handoffMs: 1_900 });
+    { admitted: true });
   assert.deepEqual(sent.marks, [['admit', { sentAt: 68_100, turnJobId: 'turn_1' }]]);
+  // The state store retrying a hand-off the runner already holds keeps the first delay.
+  await sent.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {}, sentAt: 69_500 });
+  assert.deepEqual({ ...sent.instance.takeHandoff('turn_2') }, {}, "another job never reads this job's delay");
+  assert.deepEqual({ ...sent.instance.takeHandoff('turn_1') }, { handoffMs: 1_900 });
+  assert.deepEqual({ ...sent.instance.takeHandoff('turn_1') }, {}, 'a later attempt of the job carries none');
 
   // A state store on an older version sends no clock: no delay, no send time.
   const older = probe();
   assert.deepEqual({ ...await older.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {} }) },
     { admitted: true });
   assert.deepEqual(older.marks, [['admit', { sentAt: undefined, turnJobId: 'turn_1' }]]);
+  assert.deepEqual({ ...older.instance.takeHandoff('turn_1') }, {});
 });
 
 test('the Worker entry exports SlackThreadRunner for its v11 binding', () => {
@@ -147,7 +154,8 @@ test('the Worker entry exports SlackThreadRunner for its v11 binding', () => {
 
 test('the runner executes through the shared turn executor as the runner executor', () => {
   const runner = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
-  assert.match(runner, /executeTurnJob\(job, ports, \{\s*latency: \{ lane: 'cloudflare', executor: 'runner' \}/);
+  // The turn's latency context takes the hand-off delay of the job it runs.
+  assert.match(runner, /executeTurnJob\(job, ports, \{\s*latency: \{ lane: 'cloudflare', executor: 'runner', \.\.\.this\.takeHandoff\(job\.id\) \},/);
   assert.match(runner, /observationRoute: \{ executor: 'runner'/);
   assert.match(runner, /statusRegistry: this\.registry/);
 });
