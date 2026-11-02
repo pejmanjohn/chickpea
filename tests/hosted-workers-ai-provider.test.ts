@@ -5,7 +5,7 @@ import { normalizeContext } from '@earendil-works/pi-ai';
 import { hasProvider, resetModelsForTests, resolveModel } from '@flue/runtime/internal';
 
 import { registerCloudflareBindingProvider } from '../src/cloudflare-provider.ts';
-import { ModelAccessError } from '../src/config/model-access.ts';
+import { ModelAccessError, withDeploymentLane } from '../src/config/model-access.ts';
 import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -29,12 +29,22 @@ test('a deployment serving many installations registers a closed cloudflare prov
   const closed = registeredPiProvider('cloudflare');
   assert.ok(closed);
   assert.deepEqual(closed.getModels(), [], 'no cloudflare/<model> id resolves');
+  assert.deepEqual(closed.getAllModels?.(), [], 'no model of any type is listed');
   assert.throws(() => resolveModel('cloudflare/@cf/zai-org/glm-4.7-flash'), /Unknown model|cloudflare/i);
+  const model = { id: '@cf/x', provider: 'cloudflare' } as never;
   assert.throws(
-    () => closed.streamSimple({ id: '@cf/x', provider: 'cloudflare' } as never, normalizeContext({ messages: [] }), {}),
-    (error: unknown) => error instanceof ModelAccessError,
-    'a request that reaches the provider is refused',
+    () => closed.streamSimple(model, normalizeContext({ messages: [] }), {}),
+    (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing',
+    'outside any cell the proxy refuses first',
   );
+  // Inside a cell the proxy lets through (a standalone lane), the closed provider refuses for itself.
+  await withDeploymentLane({}, 'lane', 'reply', async () => {
+    assert.throws(
+      () => closed.streamSimple(model, normalizeContext({ messages: [] }), {}),
+      (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_not_offered',
+      'the closed provider refuses before the binding',
+    );
+  });
   assert.equal(calls.length, 0, 'the binding is never called');
   await withEnv({ CHICKPEA_TENANCY: 'installation' }, async () => {
     assert.equal(registerCloudflareBindingProvider(binding, { AI: binding }), false, 'the process says installation tenancy');
