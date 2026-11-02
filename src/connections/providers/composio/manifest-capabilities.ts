@@ -1,7 +1,6 @@
 import * as v from 'valibot';
 
 import { isRecord } from '../../../security/content-validation.ts';
-import { MANAGED_CONNECTOR_CATALOG, composioManifest } from '../../catalog/index.ts';
 import {
   compileComposioManifest,
   type ComposioManifest,
@@ -28,8 +27,7 @@ const RESULT_BUDGETS = [
 ] as const;
 
 export function manifestComposioCapabilities(
-  manifests: readonly ComposioManifest[] = MANAGED_CONNECTOR_CATALOG.list()
-    .flatMap(({ toolkit }) => composioManifest(toolkit) ?? []),
+  manifests: readonly ComposioManifest[],
 ): Record<string, ManifestComposioCapability> {
   const entries: Record<string, ManifestComposioCapability> = {};
   for (const manifest of manifests) {

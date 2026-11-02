@@ -13,16 +13,23 @@ import {
 } from '../../activity/semantic.ts';
 import { MANAGED_NOTION_CONNECTORS } from './notion.ts';
 import {
-  COMPOSIO_MANIFESTS,
   compileComposioManifest,
-  type ComposioManifest,
+  composioConnectorHeader,
+  parseComposioManifest,
+  type ComposioManifestHeader,
 } from './composio-manifests.ts';
+import { COMPOSIO_MANIFEST_HEADERS } from './composio-headers.ts';
+import { COMPOSIO_MANIFEST_LOADERS } from './composio-details.ts';
+import { onDemand, type Loaded, type OnDemand } from '../../runtime/on-demand.ts';
 import type {
+  ConnectorDetail,
   ManagedAccessLane,
   ManagedAccountResourceConstraints,
   ManagedBindingResourceConstraints,
   ManagedCapabilityDefinition,
+  ManagedCapabilityHeader,
   ManagedConnectorDefinition,
+  ManagedConnectorHeader,
   ManagedResourceSelection,
 } from './types.ts';
 
@@ -31,13 +38,22 @@ const TOOL_NAME_PATTERN = /^[a-z0-9][a-z0-9_]{0,191}$/;
 const RESOURCE_KEY_PATTERN = /^[a-z][A-Za-z0-9]{0,127}$/;
 const RESOURCE_HANDLE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 
+/**
+ * The managed connectors and their capabilities, by header: ids, tool names,
+ * lanes, effects, copy and resource contracts, everything but each tool's
+ * description and input schema. Those load per toolkit (`detail`).
+ */
 export class ManagedConnectorCatalog {
-  private readonly connectorsByToolkit = new Map<string, ManagedConnectorDefinition>();
-  private readonly capabilitiesById = new Map<string, ManagedCapabilityDefinition>();
-  private readonly capabilitiesByToolName = new Map<string, ManagedCapabilityDefinition>();
-  private readonly connectors: ManagedConnectorDefinition[];
+  private readonly connectorsByToolkit = new Map<string, ManagedConnectorHeader>();
+  private readonly capabilitiesById = new Map<string, ManagedCapabilityHeader>();
+  private readonly capabilitiesByToolName = new Map<string, ManagedCapabilityHeader>();
+  private readonly connectors: ManagedConnectorHeader[];
+  private readonly details = new Map<string, OnDemand<ConnectorDetail>>();
 
-  constructor(definitions: readonly ManagedConnectorDefinition[]) {
+  constructor(
+    definitions: readonly ManagedConnectorHeader[],
+    private readonly loadDetail: (toolkit: string) => Promise<ConnectorDetail>,
+  ) {
     this.connectors = definitions.map((definition) => validateConnector(definition));
     const toolNames = new Set<string>();
     for (const connector of this.connectors) {
@@ -64,35 +80,52 @@ export class ManagedConnectorCatalog {
     }
   }
 
-  list(): readonly ManagedConnectorDefinition[] {
+  list(): readonly ManagedConnectorHeader[] {
     return this.connectors;
   }
 
-  connector(toolkit: string): ManagedConnectorDefinition | undefined {
+  connector(toolkit: string): ManagedConnectorHeader | undefined {
     return this.connectorsByToolkit.get(toolkit.trim().toLowerCase());
   }
 
-  capability(id: string): ManagedCapabilityDefinition | undefined {
+  capability(id: string): ManagedCapabilityHeader | undefined {
     return this.capabilitiesById.get(id.trim());
   }
 
-  capabilityForToolName(toolName: string): ManagedCapabilityDefinition | undefined {
+  capabilityForToolName(toolName: string): ManagedCapabilityHeader | undefined {
     return this.capabilitiesByToolName.get(toolName.trim());
   }
 
-  capabilities(toolkit: string, accessLane: ManagedAccessLane): ManagedCapabilityDefinition[] {
+  capabilities(toolkit: string, accessLane: ManagedAccessLane): ManagedCapabilityHeader[] {
     const connector = this.connector(toolkit);
     if (!connector) return [];
     return connector.capabilities.filter(
       ({ accessLane: lane }) => accessLane === 'write' || lane === 'read',
     );
   }
+
+  /**
+   * A connector's whole definition, loaded on its first use. Undefined for a
+   * toolkit the catalog lacks.
+   */
+  detail(toolkit: string): OnDemand<ConnectorDetail> | undefined {
+    const key = this.connector(toolkit)?.toolkit;
+    if (key === undefined) return undefined;
+    let detail = this.details.get(key);
+    if (!detail) {
+      detail = onDemand(`connector detail ${key}`, () => this.loadDetail(key));
+      this.details.set(key, detail);
+    }
+    return detail;
+  }
 }
 
+/** A catalog of whole definitions, such as a test's; their details load without an import. */
 export function createManagedConnectorCatalog(
   definitions: readonly ManagedConnectorDefinition[],
 ): ManagedConnectorCatalog {
-  return new ManagedConnectorCatalog(definitions);
+  const byToolkit = new Map(definitions.map((connector) => [connector.toolkit.trim().toLowerCase(), connector]));
+  return new ManagedConnectorCatalog(definitions, async (toolkit) => ({ connector: byToolkit.get(toolkit)! }));
 }
 
 const HAND_WRITTEN_CONNECTORS: readonly ManagedConnectorDefinition[] = [
@@ -106,18 +139,91 @@ const HAND_WRITTEN_CONNECTORS: readonly ManagedConnectorDefinition[] = [
   ...MANAGED_YOUTUBE_CONNECTORS,
 ];
 
-const MANIFESTS_WITHOUT_HAND_WRITTEN_CONNECTOR = new Map(COMPOSIO_MANIFESTS
-  .filter(({ toolkit }) => !HAND_WRITTEN_CONNECTORS.some((connector) => connector.toolkit === toolkit))
-  .map((manifest) => [manifest.toolkit, manifest]));
+const HAND_WRITTEN_BY_TOOLKIT = new Map(HAND_WRITTEN_CONNECTORS.map((connector) => [connector.toolkit, connector]));
 
-export const MANAGED_CONNECTOR_CATALOG = createManagedConnectorCatalog([
+/** A hand-written connector for the same toolkit takes precedence over its manifest. */
+const COMPOSIO_HEADERS = new Map(COMPOSIO_MANIFEST_HEADERS
+  .filter(({ toolkit }) => !HAND_WRITTEN_BY_TOOLKIT.has(toolkit))
+  .map((header) => [header.toolkit, header]));
+
+/**
+ * The shipped catalog. A Composio toolkit's detail imports its manifest's
+ * chunk; a hand-written connector is already in memory but loads through the
+ * same seam, so a path that skips the load fails for every connector alike.
+ */
+export const MANAGED_CONNECTOR_CATALOG = new ManagedConnectorCatalog([
   ...HAND_WRITTEN_CONNECTORS,
-  ...[...MANIFESTS_WITHOUT_HAND_WRITTEN_CONNECTOR.values()].map(compileComposioManifest),
-]);
+  ...[...COMPOSIO_HEADERS.values()].map(composioConnectorHeader),
+], async (toolkit) => {
+  const handWritten = HAND_WRITTEN_BY_TOOLKIT.get(toolkit);
+  if (handWritten) return { connector: handWritten };
+  const manifest = parseComposioManifest((await COMPOSIO_MANIFEST_LOADERS[toolkit]!()).default);
+  return { connector: compileComposioManifest(manifest), manifest };
+});
 
-export function composioManifest(toolkit: string): ComposioManifest | undefined {
-  return MANIFESTS_WITHOUT_HAND_WRITTEN_CONNECTOR.get(toolkit.trim().toLowerCase());
+/** A bundled Composio manifest's header: its copy, sign-in mode, preset, version and validation call. */
+export function composioHeader(toolkit: string): ComposioManifestHeader | undefined {
+  return COMPOSIO_HEADERS.get(toolkit.trim().toLowerCase());
 }
+
+/** A shipped connector's whole definition, loaded on first use (ManagedConnectorCatalog.detail). */
+export function connectorDetail(toolkit: string): OnDemand<ConnectorDetail> | undefined {
+  return MANAGED_CONNECTOR_CATALOG.detail(toolkit);
+}
+
+/** Load these toolkits' details together; a toolkit the catalog lacks is skipped. */
+export async function loadConnectorDetails(
+  toolkits: Iterable<string>,
+  catalog: ManagedConnectorCatalog = MANAGED_CONNECTOR_CATALOG,
+): Promise<ReadonlyMap<string, Loaded<ConnectorDetail>>> {
+  const unique = [...new Set([...toolkits].map((toolkit) => toolkit.trim().toLowerCase()))];
+  const loaded = await Promise.all(unique.map(async (toolkit) => {
+    const detail = catalog.detail(toolkit);
+    return detail ? [toolkit, await detail.load()] as const : undefined;
+  }));
+  return new Map(loaded.filter((entry) => entry !== undefined));
+}
+
+/**
+ * Load the details a Flue render of these managed connections reads
+ * (useManagedConnectionTools), so the render finds them in memory.
+ */
+export async function preloadManagedConnectionDetails(
+  connections: readonly { toolkit: string }[] | undefined,
+): Promise<void> {
+  await loadConnectorDetails((connections ?? []).map(({ toolkit }) => toolkit));
+}
+
+/** Load every shipped connector's detail, for a render whose connections are not known ahead. */
+export async function preloadAllConnectorDetails(): Promise<void> {
+  await loadConnectorDetails(MANAGED_CONNECTOR_CATALOG.list().map(({ toolkit }) => toolkit));
+}
+
+/**
+ * These toolkits' details for synchronous code, such as a Flue render, after
+ * an async seam loaded them: CapabilityNotLoadedError for one it did not.
+ */
+export function requireConnectorDetails(
+  toolkits: Iterable<string>,
+  catalog: ManagedConnectorCatalog = MANAGED_CONNECTOR_CATALOG,
+): ReadonlyMap<string, Loaded<ConnectorDetail>> {
+  const details = new Map<string, Loaded<ConnectorDetail>>();
+  for (const toolkit of toolkits) {
+    const key = toolkit.trim().toLowerCase();
+    const detail = catalog.detail(key);
+    if (detail && !details.has(key)) details.set(key, detail.require());
+  }
+  return details;
+}
+
+/** A capability's whole definition, description and input schema included, from its loaded connector. */
+export function managedCapabilityDefinition(
+  detail: Loaded<ConnectorDetail>,
+  capabilityId: string,
+): ManagedCapabilityDefinition | undefined {
+  return detail.connector.capabilities.find(({ id }) => id === capabilityId.trim());
+}
+
 
 export function semanticDescriptorForManagedCapability(
   capabilityId: string,
@@ -137,7 +243,7 @@ export function semanticDescriptorForManagedTool(
 
 /** The auth-config lane a credential needs for these capabilities: write when any of them writes. */
 export function managedAccessLane(
-  connector: ManagedConnectorDefinition,
+  connector: ManagedConnectorHeader,
   capabilities: readonly string[],
 ): ManagedAccessLane {
   return connector.capabilities.some(({ id, accessLane }) =>
@@ -145,7 +251,7 @@ export function managedAccessLane(
 }
 
 export function intersectManagedResourceConstraints(
-  connector: ManagedConnectorDefinition,
+  connector: ManagedConnectorHeader,
   accountConstraints: ManagedAccountResourceConstraints | undefined,
   bindingConstraints: ManagedBindingResourceConstraints | undefined,
 ): ManagedAccountResourceConstraints | undefined {
@@ -176,7 +282,7 @@ export function intersectManagedResourceConstraints(
 }
 
 function withoutPageScope(
-  connector: ManagedConnectorDefinition,
+  connector: ManagedConnectorHeader,
   constraints: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!connector.pageScope || !(connector.pageScope.key in constraints)) return constraints;
@@ -194,7 +300,7 @@ export function projectManagedResourceHandles(
   ]));
 }
 
-function validateConnector(definition: ManagedConnectorDefinition): ManagedConnectorDefinition {
+function validateConnector(definition: ManagedConnectorHeader): ManagedConnectorHeader {
   const toolkit = definition.toolkit.trim().toLowerCase();
   if (!ID_PATTERN.test(definition.id) || !ID_PATTERN.test(toolkit) ||
       !ID_PATTERN.test(definition.providerId)) {
@@ -285,11 +391,14 @@ function parseBindingHandles(value: unknown): string[] | undefined {
 }
 
 export type {
+  ConnectorDetail,
   ManagedAccessLane,
   ManagedAccountResourceConstraints,
   ManagedBindingResourceConstraints,
   ManagedCapabilityDefinition,
+  ManagedCapabilityHeader,
   ManagedConnectorDefinition,
+  ManagedConnectorHeader,
   ManagedEffectClass,
   ManagedProviderAvailability,
   ManagedProviderAvailabilityStatus,

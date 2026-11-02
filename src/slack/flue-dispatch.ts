@@ -49,6 +49,7 @@ import {
 import { CREDITS_EXHAUSTED_CODE } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { preloadManagedConnectionDetails } from '../connections/catalog/index.ts';
 import {
   CODING_WORKSPACE_USE_DATA_NAME,
   codingWorkspaceOpenedFromReplyData,
@@ -352,11 +353,14 @@ async function stageTurnInputForDispatch(
     if (input.stageTurnInput) {
       await input.stageTurnInput(turnInput);
     } else if (isCloudflareTarget()) {
+      // The agent object loads the connector details its render reads.
       await stageSlackTurnInputOnAgentObject(input.env, CHICKPEA_SLACK_AGENT_BINDING, turnInput);
     } else {
       rememberInProcessTurnInput(turnInput);
       await input.state.stageTurnInput?.(serializeSlackTurnInput(turnInput));
     }
+    // Node renders in this process.
+    if (!isCloudflareTarget()) await preloadManagedConnectionDetails(runtimePlan.managedConnections);
   } catch (error) {
     // Nothing was admitted: the turn retries like any failed dispatch.
     throw new AgentPromptFailure('agent', 503, false, true, error);

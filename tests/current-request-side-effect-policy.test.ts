@@ -6,7 +6,7 @@ import type { SecureFetch } from 'just-bash';
 import { MANAGED_SUBMISSION_AGENT_NAMES } from '../src/agents/names.ts';
 import { createScopedFetch } from '../src/config/egress.ts';
 import { resolveRuntimePlanMcpConnections } from '../src/config/profile-mcp.ts';
-import { createManagedConnectionTools } from '../src/connections/managed-tools.ts';
+import { createLoadedManagedConnectionTools } from './helpers/managed-tools.ts';
 import {
   assertArtifactDeliveryAllowed,
   bindCurrentRequestConversation,
@@ -74,7 +74,7 @@ for (const agentName of MANAGED_SUBMISSION_AGENT_NAMES) {
 
   test(`${agentName}: selected managed writes reach provider; unselected capabilities are not mounted`, async () => {
     let calls = 0;
-    const tools = createManagedConnectionTools({
+    const tools = await createLoadedManagedConnectionTools({
       workspaceId: 'T_FIXTURE', agentId: 'agent_fixture', actorMembershipId: 'membership_fixture',
       connections: [{ id: 'connection_fixture', providerId: 'google', adapterId: 'composio', toolkit: 'googlesheets', allowedCapabilities: ['sheets.values.update'] }],
       resolvePlatformEnv: async () => undefined,

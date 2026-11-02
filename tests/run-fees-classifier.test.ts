@@ -26,7 +26,7 @@ import { parseSlackManagementSignal } from '../src/management/slack-tools.ts';
 import { parseCurrentRequestEnvelope, serializeCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import { WORKSPACE_TOOL_NAMES } from '../src/sandbox/workspace-tools.ts';
 import { slackPresentationIntentCapability } from '../src/slack/presentation-intent.ts';
-import { qualifiesAsTask, TASK_TOOL_TABLE, type RunAction } from '../src/usage/run-fees.ts';
+import { qualifiesAsTask, taskToolTable, type RunAction } from '../src/usage/run-fees.ts';
 import { withEnv } from './helpers/env.ts';
 
 const MODEL = 'faux/run-fees-classifier';
@@ -274,13 +274,13 @@ test('a turn with files mounts upload_skills and read_slack_file after every too
 
 test('the table classifies every tool name Core registers', () => {
   const unclassified = [...registered]
-    .filter(([name]) => !TASK_TOOL_TABLE.has(name))
+    .filter(([name]) => !taskToolTable().has(name))
     .map(([name, source]) => `${name} (from ${source})`);
   assert.deepEqual(unclassified, [], 'every registered tool has a row');
 });
 
 test('the table holds no row for a tool Core does not register', () => {
-  const stale = [...TASK_TOOL_TABLE.keys()].filter((name) => !registered.has(name));
+  const stale = [...taskToolTable().keys()].filter((name) => !registered.has(name));
   assert.deepEqual(stale, [], 'every row names a registered tool');
 });
 

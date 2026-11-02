@@ -1,4 +1,4 @@
-import { MANAGED_CONNECTOR_CATALOG, composioManifest } from './catalog/index.ts';
+import { MANAGED_CONNECTOR_CATALOG, composioHeader } from './catalog/index.ts';
 
 export interface ManagedConnectorCanaryManifest {
   capability: string;
@@ -12,10 +12,8 @@ export const MANAGED_CONNECTOR_CANARY_MANIFESTS: Readonly<
   Record<string, ManagedConnectorCanaryManifest>
 > = Object.freeze({
   ...Object.fromEntries(MANAGED_CONNECTOR_CATALOG.list().flatMap(({ toolkit }) => {
-    const generated = composioManifest(toolkit);
-    return generated
-      ? [[toolkit, manifest(generated.validationCapability, generated.validationArguments)]]
-      : [];
+    const header = composioHeader(toolkit);
+    return header ? [[toolkit, manifest(header.validationCapability, header.validationArguments)]] : [];
   })),
   gmail: manifest('gmail.profile.read'),
   googlecalendar: manifest('calendar.calendars.list', { maxResults: 10 }),

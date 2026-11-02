@@ -1,5 +1,6 @@
 import { objectInstallationEnv, type ObjectContext } from '../config/installation-scope.ts';
 import { AgentBootMarks, type AgentBootMethod } from '../observability/runtime-latency.ts';
+import { preloadAllConnectorDetails } from '../connections/catalog/index.ts';
 import {
   objectHostFunctions,
   type HostObjectStorage,
@@ -128,5 +129,26 @@ function agentHost(agent: object): InstallationObjectHostRpc {
 /** The `cloudflare` export of an agent with no other object extension. */
 export const installationAgentExtension = {
   base: installationAgentObject,
+  [FLUE_CLOUDFLARE_EXTENSION_BRAND]: true as const,
+};
+
+/**
+ * The `cloudflare` export of a routine run. Its render reads its plan from
+ * creation data, which no staging precedes, so the object loads every
+ * connector's detail when it starts. A failure leaves the render to fail its
+ * run, as a failed start would.
+ */
+export const routineExecutionCloudflareExtension = {
+  base: (Base: AgentObjectClass): AgentObjectClass => {
+    const Installation = installationAgentObject(Base) as new (...args: never[]) => {
+      onStart?(props?: unknown): unknown;
+    };
+    return class ChickpeaRoutineExecutionObject extends Installation {
+      async onStart(props?: unknown): Promise<unknown> {
+        await preloadAllConnectorDetails().catch(() => undefined);
+        return super.onStart?.(props);
+      }
+    };
+  },
   [FLUE_CLOUDFLARE_EXTENSION_BRAND]: true as const,
 };

@@ -53,7 +53,6 @@ const SLACK_LIST_TOOLS: Record<(typeof SLACK_LIST_TOOL_NAMES)[number], boolean> 
 };
 
 const QUALIFYING_TOOLS: readonly string[] = [
-  ...MANAGED_CONNECTOR_CATALOG.list().flatMap(({ capabilities }) => capabilities.map(({ toolName }) => toolName)),
   ...WEB_TOOL_NAMES,
   CONNECTION_REQUEST_TOOL_NAME,
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
@@ -100,6 +99,8 @@ function closedTable(): ReadonlyMap<string, TaskRule> {
   const entries: [string, TaskRule][] = [
     ...Object.entries(SLACK_READ_TOOLS),
     ...Object.entries(SLACK_LIST_TOOLS),
+    ...MANAGED_CONNECTOR_CATALOG.list().flatMap(({ capabilities }) =>
+      capabilities.map(({ toolName }): [string, boolean] => [toolName, true])),
     ...QUALIFYING_TOOLS.map((name): [string, boolean] => [name, true]),
     ...NON_QUALIFYING_TOOLS.map((name): [string, boolean] => [name, false]),
     ...REPOSITORY_SHELL_TOOLS.map((name): [string, TaskRule] => [name, 'with_repository_shell']),
@@ -111,7 +112,12 @@ function closedTable(): ReadonlyMap<string, TaskRule> {
   return table;
 }
 
-export const TASK_TOOL_TABLE: ReadonlyMap<string, TaskRule> = closedTable();
+let table: ReadonlyMap<string, TaskRule> | undefined;
+
+/** Every tool name's task rule, built on first use rather than when the module loads. */
+export function taskToolTable(): ReadonlyMap<string, TaskRule> {
+  return table ??= closedTable();
+}
 
 const MCP_TOOL_PREFIX = 'mcp__';
 
@@ -120,7 +126,7 @@ const TASK_FAMILIES: ReadonlySet<SemanticTargetFamily> = new Set(['managed_conne
 export function qualifiesAsTask(run: FeeRun, action: RunAction): boolean {
   if (run.kind === 'scheduled') return action.kind === 'post';
   if (action.kind === 'post') return false;
-  const rule = TASK_TOOL_TABLE.get(action.toolName);
+  const rule = taskToolTable().get(action.toolName);
   if (rule === 'with_repository_shell') return run.repositoryShell;
   if (rule !== undefined) return rule;
   if (action.toolName.startsWith(MCP_TOOL_PREFIX)) return true;

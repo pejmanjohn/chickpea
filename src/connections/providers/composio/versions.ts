@@ -1,4 +1,4 @@
-import { composioManifest } from '../../catalog/index.ts';
+import { composioHeader } from '../../catalog/index.ts';
 
 export const COMPOSIO_TOOLKIT_VERSIONS = {
   gmail: '20260817_00',
@@ -20,5 +20,5 @@ export type PinnedComposioToolkit = keyof typeof COMPOSIO_TOOLKIT_VERSIONS;
 
 export function composioToolkitVersion(toolkit: string): string | undefined {
   return COMPOSIO_TOOLKIT_VERSIONS[toolkit.toLowerCase() as PinnedComposioToolkit] ??
-    composioManifest(toolkit)?.version;
+    composioHeader(toolkit)?.version;
 }

@@ -56,7 +56,7 @@ import {
   MANAGED_CONNECTOR_CATALOG,
   type ManagedAccessLane,
   type ManagedConnectorCatalog,
-  type ManagedConnectorDefinition,
+  type ManagedConnectorHeader,
   intersectManagedResourceConstraints,
   managedAccessLane,
   projectManagedResourceHandles,
@@ -869,7 +869,7 @@ export class ConnectionAccountService {
    */
   private async foldableSignIn(
     account: ConnectionAccountInput & { policy: ConnectionAccountManagedPolicy },
-    connector: ManagedConnectorDefinition,
+    connector: ManagedConnectorHeader,
   ): Promise<ConnectionAccount[] | undefined> {
     const { signIn, adapterId, toolkit, principalRef } = account.policy;
     if (!connector.sharedSignIn || !signIn || !providerNamedPerson(signIn.person)) return undefined;
@@ -940,7 +940,7 @@ export class ConnectionAccountService {
     workspaceId: string;
     ownerKind: 'team' | 'member';
     needed: ManagedAccessLane;
-    connector: ManagedConnectorDefinition;
+    connector: ManagedConnectorHeader;
     source: ConnectionAccount;
     group: readonly ConnectionAccount[];
     accounts: readonly ConnectionAccount[];
@@ -1676,7 +1676,7 @@ export class ConnectionAccountService {
     principal: AuthPrincipal;
     workspaceId: string;
     ownerKind: 'team' | 'member';
-    connector: ManagedConnectorDefinition;
+    connector: ManagedConnectorHeader;
     policy: ConnectionAccountManagedPolicy;
   }): Promise<void> {
     if (!input.connector.sharedSignIn) return;
@@ -1806,7 +1806,7 @@ function assertManagedAccountPolicy(
   catalog: ManagedConnectorCatalog,
   providerId: string,
   policy: Extract<ConnectionAccountPolicy, { kind: 'managed' }>,
-): ManagedConnectorDefinition {
+): ManagedConnectorHeader {
   const connector = catalog.connector(policy.toolkit);
   const catalogCapabilities = new Set(connector?.capabilities.map(({ id }) => id) ?? []);
   const resourcePolicyValid = !connector?.resources?.length ||
@@ -1852,7 +1852,7 @@ function applyManagedValidation(
  * writes, the next sign-in drops back to read.
  */
 function signInGroupAccessLane(
-  connector: ManagedConnectorDefinition,
+  connector: ManagedConnectorHeader,
   members: readonly ConnectionAccount[],
 ): ManagedAccessLane {
   return members.some(({ policy }) => policy.kind === 'managed' &&
@@ -1869,7 +1869,7 @@ function laneCovers(issued: ManagedAccessLane, needed: ManagedAccessLane): boole
  * provider named for this sign-in, or the signer when it names nobody.
  */
 function managedSignIn(
-  connector: ManagedConnectorDefinition,
+  connector: ManagedConnectorHeader,
   accessLane: ManagedAccessLane,
   validation: ManagedConnectionValidationResult | void,
   signerMembershipId: string,

@@ -1,4 +1,5 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { loadConnectorDetails, preloadManagedConnectionDetails } from '../connections/catalog/index.ts';
 import { sha256Hex } from '../security/digest.ts';
 import type { FlueObservationTarget, FlueTurnObservationV1 } from '../slack/turn-job-types.ts';
 import {
@@ -288,6 +289,15 @@ export function writeStagedTurnInput(sql: TurnInputSql, json: string, now: numbe
   return input;
 }
 
+/** The toolkits of every staged input's managed connections, read without parsing the inputs. */
+export function stagedConnectionToolkits(sql: TurnInputSql): string[] {
+  ensureTurnInputTable(sql);
+  return sql.exec(
+    `SELECT DISTINCT json_extract(connection.value, '$.toolkit') AS toolkit
+     FROM ${TURN_INPUT_TABLE}, json_each(input_json, '$.runtimePlan.managedConnections') AS connection`,
+  ).toArray().flatMap(({ toolkit }) => typeof toolkit === 'string' ? [toolkit] : []);
+}
+
 export function readStagedTurnInputJson(sql: TurnInputSql, turnJobId: string): string | undefined {
   ensureTurnInputTable(sql);
   const row = sql.exec(
@@ -310,6 +320,7 @@ export function readStagedTurnInputJsonBySubmission(sql: TurnInputSql, submissio
 
 interface AgentObjectInstance {
   ctx: { storage: { sql: TurnInputSql } };
+  onStart?(props?: unknown): unknown;
 }
 
 type AgentObjectClass = new (...args: never[]) => object;
@@ -320,16 +331,28 @@ export const slackThreadCloudflareExtension = {
       installationAgentObject(Base) as new (...args: never[]) => AgentObjectInstance
     ) {
       /**
-       * Host RPC: stage one turn's input before its dispatch. `sentAt` is the
-       * runner's clock before it named this object, for `agent_boot`.
+       * Host RPC: stage one turn's input before its dispatch, and load the
+       * connector details its render reads. `sentAt` is the runner's clock
+       * before it named this object, for `agent_boot`.
        */
-      chickpeaStageTurnInput(json: string, sentAt?: unknown): void {
+      async chickpeaStageTurnInput(json: string, sentAt?: unknown): Promise<void> {
         if (typeof json !== 'string') throw new Error('Slack turn input must be serialized.');
         const input = writeStagedTurnInput(this.ctx.storage.sql, json, Date.now());
         reportAgentObjectCall(this, 'stage', {
           sentAt: typeof sentAt === 'number' ? sentAt : undefined,
           turnJobId: input.turnJobId,
         });
+        await preloadManagedConnectionDetails(input.runtimePlan.managedConnections);
+      }
+
+      /**
+       * An object evicted after staging resumes its submissions without a new
+       * staging, so its start loads what the staged inputs' renders read. A
+       * failure leaves the render to fail its turn, which retries.
+       */
+      async onStart(props?: unknown): Promise<unknown> {
+        await loadConnectorDetails(stagedConnectionToolkits(this.ctx.storage.sql)).catch(() => undefined);
+        return super.onStart?.(props);
       }
     },
   [FLUE_CLOUDFLARE_EXTENSION_BRAND]: true as const,
