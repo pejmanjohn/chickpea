@@ -448,12 +448,13 @@ test('both Clef calls run, and the management answer never changes the dispositi
     assert.equal(h.managementCalls(), 1, 'one management call');
     assert.equal(Object.hasOwn(h.dispositionQuestions() as object, 'manage'), false,
       'the disposition call does not carry the management question');
-    const { management, managementMs, managementInputTokens, managementTop, managementFired, basisMs, clefMs, modelMs, ...disposition } = trace;
-    void [management, managementMs, managementInputTokens, managementTop, managementFired, basisMs, clefMs, modelMs];
+    const disposition = Object.fromEntries(
+      Object.entries(trace).filter(([key]) => !key.startsWith('management') && !key.endsWith('Ms')),
+    );
     return {
       likely: await h.judgment.managementLikely,
-      fired: managementFired,
-      top: managementTop,
+      fired: trace.managementFired,
+      top: trace.managementTop,
       decided: { basis, recorded: h.recorded, metered: h.metered.length, timeline: h.timeline, disposition },
     };
   };

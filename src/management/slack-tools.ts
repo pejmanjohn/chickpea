@@ -990,19 +990,17 @@ export function parseSlackManagementSignal(
   plan: RuntimePlanV2,
 ): SlackManagementSignal | undefined {
   if (delivery.kind !== 'signal' || !delivery.attributes) return undefined;
-  // The attachment-analysis signal the host appends to an upload turn is the
-  // delivery later renders read until another message reaches the model. It
-  // carries the triggering message's identity forward, so the same Slack
-  // request keeps the same management authority on each of its renders.
+  // An upload turn's attachment analysis carries the triggering message's
+  // identity forward, so later renders keep the same management authority.
   const attachmentContext = delivery.type === 'slack.attachment_context' &&
     delivery.tagName === 'slack_attachment_context';
   if (!attachmentContext &&
       (delivery.type !== 'slack.message' || delivery.tagName !== 'slack_message')) {
     return undefined;
   }
-  // Any other attribute is ignored: during a rolling deploy a newer host's
-  // addition must not strip a turn of its tools in an older Agent.
-  if (SIGNAL_RESERVED_ATTRIBUTE_KEYS.some((key) => Object.hasOwn(delivery.attributes!, key))) return undefined;
+  // Any other attribute is ignored, so a newer host's addition does not strip
+  // an older Agent's turn of its tools during a rolling deploy.
+  for (const key of SIGNAL_RESERVED_ATTRIBUTE_KEYS) if (Object.hasOwn(delivery.attributes, key)) return undefined;
   const values = Object.fromEntries(SIGNAL_ATTRIBUTE_KEYS.map((key) => [
     key,
     boundedAttribute(delivery.attributes?.[key], key, key.endsWith('Ts') ? 80 : 256),

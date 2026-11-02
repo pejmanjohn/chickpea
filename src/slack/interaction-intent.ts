@@ -509,7 +509,6 @@ export function judgeGuaranteedInteraction(
     outcome,
     early: earlyInteractionJudgment(outcome),
   }));
-  // A second call, never a question in the first: nothing below reads it for the disposition.
   const management = readClefManagement(context, options.env);
   const managementLikely = management.then(managementFired);
 

@@ -68,11 +68,7 @@ interface FlueDispatchEnvelopeV2 extends FlueDispatchEnvelopeBase {
       threadFileIds?: string;
       /** Sorted bounded List ids admitted from host-visible current-task sources. */
       admittedListIds?: string;
-      /**
-       * The turn's first request mounts the workspace change tools: Clef read
-       * the message as a configuration change, or a change set waits on the
-       * requester here (workspace-change-tools.ts).
-       */
+      /** The turn's first request mounts the workspace change tools (workspace-change-tools.ts). */
       workspaceChangeTools?: 'mounted';
     };
   };
