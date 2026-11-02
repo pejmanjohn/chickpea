@@ -2181,7 +2181,7 @@ async function runTurnAttempt(
             ...(options.onAgentStaged ? { onAgentStaged: options.onAgentStaged } : {}),
             ...(preparedMemory
               ? {
-                  onSettlementObserved: (settled: AgentDispatchResult) => {
+                  onSettlementObserved: (settled) => {
                     if (!plainAnswer(settled)) return;
                     settledLeaseCheck = preparedMemory.validateLease();
                     settledLeaseCheck.catch(() => undefined);
