@@ -396,7 +396,14 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   hand-off: a reaction, a click, an evicted runner, or a thread whose owner
   changed (its wake reached the previous owner's runner). A wake that becomes
   no turn (a refused guest, a mention routing declines) costs one runner
-  activation and stores nothing.
+  activation and stores nothing. A front desk hand-off wakes the Agent's
+  runner at the decision: when Chickpea's run decides to hand its root DM to
+  an Agent, its runner tells the state store (`noteFrontDeskHandoff`) before
+  the line is posted, and the state store wakes the runner the takeover turn
+  will be handed to (the thread's next owner incarnation) and keeps the
+  decision time as that turn's receipt, so the takeover's `runnerWakeLeadMs`
+  and `receiptToAdmissionMs` measure from the decision, about two seconds
+  before its admission.
 - `turn_latency.admissionStatusMs` is how long the state store's hand-off
   waited for the turn's opening status ("Thinking…" as its Agent), shown
   from the state store before a turn's first hand-off instead of at the

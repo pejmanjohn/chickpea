@@ -656,6 +656,9 @@ export function runnerSlackPort(
     markCodingActiveWork: (...args) => storeCall(() => remote.markCodingActiveWork(...args)),
     isCodingActiveWork: (...args) => storeCall(() => remote.isCodingActiveWork(...args)),
     release: (...args) => storeCall(() => remote.release(...args)),
+    // Never awaited by the turn (see TurnExecutionPorts.slack): a store that
+    // cannot be reached loses one wake, so its failure is left as it is.
+    ...(remote.noteFrontDeskHandoff ? { noteFrontDeskHandoff: (note) => remote.noteFrontDeskHandoff!(note) } : {}),
   };
 }
 

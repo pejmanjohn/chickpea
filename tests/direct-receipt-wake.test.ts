@@ -90,7 +90,7 @@ const ReceiptProbe = vm.runInNewContext(
   ts.transpileModule(
     `${['RELAY_BATCH_WINDOW_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
 class ReceiptProbe { ${[
-      'noteSlackDelivery', 'wakeRunnerAtReceipt', 'createAlarmIdentityResolver', 'admitSlackTurn', 'admitToRunner',
+      'noteSlackDelivery', 'wakeRunnerAtReceipt', 'sendRunnerWake', 'createAlarmIdentityResolver', 'admitSlackTurn', 'admitToRunner',
       'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
     ].map(stateMethod).join('\n')} }\nReceiptProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },

@@ -97,6 +97,7 @@ import type {
   SlackCanonicalAdmissionResult,
   SlackDeliveryNote,
   SlackEditAdmission,
+  SlackFrontDeskHandoffNote,
 } from '../slack/claim-store.ts';
 import type { SlackMessageEdit } from '../slack/edits.ts';
 import type {
@@ -772,6 +773,12 @@ export interface TagStateRpc {
    * the installation's identity while the Worker admits the delivery.
    */
   noteSlackDelivery(note: SlackDeliveryNote): Promise<StateRpcResult<null>>;
+  /**
+   * A thread runner's note that Chickpea's run decided a front desk hand-off
+   * (SlackStateStore.noteFrontDeskHandoff): wake the runner the takeover turn
+   * will be handed to and keep the decision time as that turn's receipt.
+   */
+  noteFrontDeskHandoff(note: SlackFrontDeskHandoffNote): Promise<StateRpcResult<null>>;
   /** Clone a completed authorization-link turn into one idempotent resume turn. */
   resumeTurnAfterOAuth(
     originalTaskId: string,

@@ -538,6 +538,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         markCodingActiveWork: (key, generation) => rows.markCodingActiveWork(key, generation),
         isCodingActiveWork: (key, generation) => rows.isCodingActiveWork(key, generation),
         release: (key) => rows.release(key),
+        noteFrontDeskHandoff: (note) => rows.noteFrontDeskHandoff(note),
       }, jobs),
       config,
       presentationState: presentation.state,

@@ -200,7 +200,7 @@ import {
   type WarmWindowStorage,
   workspaceWarmWindowMs,
 } from './sandbox/warm-window.ts';
-import type { SlackCanonicalAdmissionInput, SlackDeliveryNote } from './slack/claim-store.ts';
+import type { SlackCanonicalAdmissionInput, SlackDeliveryNote, SlackFrontDeskHandoffNote } from './slack/claim-store.ts';
 import type { SlackMessageEdit } from './slack/edits.ts';
 import {
   SlackPresentationStateError,
@@ -251,7 +251,7 @@ import {
   type ThreadRunnerTurnOp,
   type ThreadRunnerTurnResult,
 } from './slack/thread-runner-rpc.ts';
-import { receiptRunnerWake, type ReceiptWakeDelivery } from './slack/receipt-runner-wake.ts';
+import { receiptRunnerWake, type ReceiptRunnerWake, type ReceiptWakeDelivery } from './slack/receipt-runner-wake.ts';
 import { admissionAgentInstance, type AdmissionAgentFacts, type AdmissionAgentWake } from './slack/admission-agent-wake.ts';
 import {
   admissionStatusPresentation,
@@ -338,7 +338,7 @@ import { createLiveWorkspaceManagementService } from './management/live-service.
 import { createPlatformProductTelemetry } from './telemetry/platform.ts';
 import type { ProductTelemetryCapture } from './telemetry/client.ts';
 import type { SlackAgentAskDispatcher } from './slack/agent-asks.ts';
-import type { SlackFrontDeskHandoffDispatcher } from './slack/front-desk.ts';
+import { frontDeskHandoffRunnerWake, type SlackFrontDeskHandoffDispatcher } from './slack/front-desk.ts';
 import { createWaitUntilTelemetryLifecycle } from './telemetry/runtime.ts';
 import {
   invokeSlackWorkspaceManagementTool,
@@ -2343,13 +2343,46 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * Returns whether a runner was woken.
    */
   private wakeRunnerAtReceipt(delivery: ReceiptWakeDelivery): boolean {
+    if (!this.runnerMode()) return false;
+    const predicted = this.call((stores) => receiptRunnerWake(delivery, stores.config));
+    return predicted.ok && predicted.value !== undefined && this.sendRunnerWake(predicted.value);
+  }
+
+  /**
+   * A thread runner's note that Chickpea's run decided to hand its root DM
+   * to an Agent (CfSlackStateStore.noteFrontDeskHandoff). That Agent's
+   * takeover turn is admitted about two seconds later, once the run has
+   * posted its line and settled. In one store turn, predict the runner the
+   * takeover will be handed to as admission will key it
+   * (frontDeskHandoffRunnerWake) and keep the decision time as that turn's
+   * receipt (turnJobs.noteReceipt, so its receiptToAdmissionMs and
+   * runnerWakeLeadMs measure from the decision); then wake the runner
+   * (sendRunnerWake). The runner awaits none of it, and nothing here changes
+   * what is admitted: a wrong prediction costs one activation.
+   */
+  async noteFrontDeskHandoff(note: SlackFrontDeskHandoffNote): Promise<StateRpcResult<null>> {
+    const predicted = this.call((stores) => {
+      const wake = frontDeskHandoffRunnerWake(note, stores.config);
+      if (wake && Number.isFinite(note.decidedAt)) stores.turnJobs.noteReceipt(wake.eventId, note.decidedAt);
+      return wake;
+    });
+    if (!predicted.ok) return predicted;
+    if (predicted.value) this.sendRunnerWake(predicted.value);
+    return { ok: true, value: null };
+  }
+
+  /**
+   * Wake the runner at `threadKey`, naming the turn it will be handed, so it
+   * activates while that turn is admitted. Never awaited: the gateway's
+   * acknowledgement waits for its receipt, and the direct path's and the
+   * runner's notes are themselves unawaited. Returns whether a wake was sent.
+   */
+  private sendRunnerWake({ threadKey, turnJobId }: ReceiptRunnerWake): boolean {
     try {
       if (!this.runnerMode()) return false;
-      const predicted = this.call((stores) => receiptRunnerWake(delivery, stores.config));
-      if (!predicted.ok || !predicted.value) return false;
-      const runner = threadRunnerStub(this.env as PlatformEnv, predicted.value.threadKey);
+      const runner = threadRunnerStub(this.env as PlatformEnv, threadKey);
       if (!runner) return false;
-      void Promise.resolve(runner.wake(Date.now(), predicted.value.turnJobId)).catch(() => undefined);
+      void Promise.resolve(runner.wake(Date.now(), turnJobId)).catch(() => undefined);
       return true;
     } catch {
       // The hand-off addresses the runner either way.

@@ -1,5 +1,5 @@
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
-import type { ConfigStore } from '../config/store.ts';
+import type { ConfigStore, ConfigStoreLogic } from '../config/store.ts';
 import type {
   FrontDeskDirectory,
   RecentSlackAgentReply,
@@ -7,7 +7,8 @@ import type {
   SlackPublicContextEntry,
 } from '../config/types.ts';
 import type { RuntimePlanFrontDeskV1 } from '../agents/runtime-plan.ts';
-import { slackConversationKind } from './thread-key.ts';
+import type { SlackFrontDeskHandoffNote } from './claim-store.ts';
+import { slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
 import { SLACK_FILE_ONLY_TEXT } from './turn-normalization.ts';
 import type { NormalizedSlackTurn, SlackFrontDeskTurn } from './types.ts';
@@ -78,7 +79,7 @@ export function frontDeskTakeoverTurn(origin: FrontDeskOrigin, frontDesk: SlackF
   return {
     workspaceId: origin.workspaceId,
     channelId: origin.channelId,
-    eventId: `front-desk:${origin.channelId}:${origin.messageTs}`,
+    eventId: frontDeskTakeoverEventId(origin.channelId, origin.messageTs),
     text: origin.text,
     userId: origin.userId,
     messageTs: origin.messageTs,
@@ -90,6 +91,57 @@ export function frontDeskTakeoverTurn(origin: FrontDeskOrigin, frontDesk: SlackF
     ...(origin.attachments?.length ? { attachments: origin.attachments.map(({ fileId }) => ({ fileId })) } : {}),
     ...(origin.attachmentIntake ? { attachmentIntake: { ...origin.attachmentIntake } } : {}),
     frontDesk: { fromAgentId: frontDesk.fromAgentId, via: frontDesk.via },
+  };
+}
+
+/** The event id a takeover turn carries; its row's receipt time is keyed by it (TurnJobStoreLogic.noteReceipt). */
+export function frontDeskTakeoverEventId(channelId: string, messageTs: string): string {
+  return `front-desk:${channelId}:${messageTs}`;
+}
+
+/** The claim key, and the queued turn's ID, of a message's front-desk takeover: one per message, whoever takes it. */
+export function frontDeskTakeoverKey(channelId: string, messageTs: string): string {
+  return `msg:${channelId}:${messageTs}:handoff`;
+}
+
+/** The state store's own reads at a hand-off's decision; no Slack call. */
+export type FrontDeskHandoffWakeReads = Pick<ConfigStoreLogic, 'getWorkspaceInstallation' | 'getAgentThreadRoute'>;
+
+export interface FrontDeskHandoffWake {
+  /** The key the takeover's hand-off addresses its runner by (`slackAgentThreadKey`). */
+  threadKey: string;
+  /** The takeover's turn job id (`frontDeskTakeoverKey`). */
+  turnJobId: string;
+  /** The event id the takeover turn carries (`frontDeskTakeoverEventId`). */
+  eventId: string;
+}
+
+/**
+ * The thread runner a decided hand-off's takeover turn will be handed to,
+ * keyed as its admission will key it, with the ids that turn will carry; or
+ * undefined when, by what the state store knows at the decision, admission
+ * would hand nothing over. Admission (`admitFrontDeskTakeover`, then routing
+ * with `frontDeskAgentId`) moves Chickpea's root DM route to the Agent under
+ * the next owner incarnation, so the runner is that incarnation's; it denies
+ * a thread with no route, one another Agent owns, and an installation that is
+ * not chickpea-v1 or is revoked, so none of those is woken. A route already
+ * the Agent's is a hand-off made before: its turn is queued or done. The
+ * route can still move between the decision and the admission (a mention of
+ * another Agent in the thread, a pick on a card); a wrong prediction then
+ * costs one runner activation and nothing else.
+ */
+export function frontDeskHandoffRunnerWake(
+  note: SlackFrontDeskHandoffNote,
+  reads: FrontDeskHandoffWakeReads,
+): FrontDeskHandoffWake | undefined {
+  const installation = reads.getWorkspaceInstallation(note.workspaceId);
+  if (!installation || installation.health === 'revoked' || installation.runtimeContract !== 'chickpea-v1') return undefined;
+  const route = reads.getAgentThreadRoute(note.workspaceId, note.channelId, note.threadTs);
+  if (!route || route.agentId !== CHICKPEA_AGENT_ID || note.agentId === CHICKPEA_AGENT_ID) return undefined;
+  return {
+    threadKey: slackAgentThreadKey(note, { runtimeContract: 'chickpea-v1', ownerIncarnation: route.ownerIncarnation + 1 }),
+    turnJobId: frontDeskTakeoverKey(note.channelId, note.messageTs),
+    eventId: frontDeskTakeoverEventId(note.channelId, note.messageTs),
   };
 }
 
