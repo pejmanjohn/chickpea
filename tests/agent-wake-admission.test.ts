@@ -153,6 +153,38 @@ test('a handed-over turn wakes, before its hand-off, the Agent object its plan t
   });
 });
 
+// Defect caught: a guest Agent's wake keyed by the thread alone, which wakes
+// the owner's transcript while its own turn stages beside another object.
+test("an Agent answering an ask in another's thread wakes its own transcript, as its freeze names it", async () => {
+  await withLane(async (lane) => {
+    const installation = hostedInstallation(RECEIPT_INSTALLATION_ID);
+    const owner = await admitted(lane, AGENT_MENTION);
+    const guest: TurnJob = {
+      ...owner,
+      id: 'msg:C1:5000.000300',
+      turn: {
+        ...owner.turn, messageTs: '5000.000300', eventId: 'Ev_ask', source: 'agent_mention',
+        agentAsk: { fromAgentId: owner.assignment.agentId, fromAgentName: 'Support', originMessageTs: '5000.000200' },
+      },
+      assignment: { ...owner.assignment, agentId: CHICKPEA_AGENT_ID, threadGuest: true,
+        agent: { ...owner.assignment.agent, id: CHICKPEA_AGENT_ID } },
+    };
+    const woken: string[] = [];
+    for (const job of [owner, guest]) {
+      installation.stores.turnJobs.enqueue(job);
+      const store = receiptStore(lane.config, { inventory: installation.stores.objectInventory });
+      assert.equal(await store.probe.admitToRunner(pending(job)), true);
+      const frozen = installation.stores.turnJobs.freezeRuntimePlan(job.id, compileRuntimePlanV2({
+        installation: installationOwnershipOf(store.env)!, turn: job.turn, assignment: job.assignment,
+        instructions: 'Help.', memoryEpoch: 1,
+      }));
+      assert.deepEqual(store.agentWakes.map(({ name }) => name), [frozen.instanceId]);
+      woken.push(frozen.instanceId);
+    }
+    assert.notEqual(woken[0], woken[1], "the guest's transcript is its own");
+  });
+});
+
 // Defects caught: an awaited wake (the hand-off waits for an activation), a
 // rejection left unhandled, a synchronous throw or an inventory failure that
 // fails or changes the hand-off.
