@@ -13,12 +13,14 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
  * first load. Every module a Worker's entry imports statically loads before a
  * Durable Object's constructor runs, at about 0.1 s per MiB. One static import
  * from anything the entry reaches turns a lazy load into a no-op, which is how
- * the first just-bash lazy load went unnoticed.
+ * the lazy loads of just-bash and shared-prefix.ts stopped working unnoticed.
  */
 const LAZY_MODULES: Record<string, string> = {
   'just-bash': "a Flue agent's sandbox (agents/slack-thread.ts, config/egress.ts)",
   'src/agents/shared-prefix.ts': "the Anthropic platform-funded payload hook (config/model-access.ts)",
   'src/agents/shared-prefix-tools.json': "the Anthropic platform-funded payload hook (config/model-access.ts)",
+  '@composio/core': 'the Composio client (config/composio-settings.ts)',
+  'image-in-browser': 'image output preparation (images/prepare-output.ts)',
 };
 
 type Edge = { to: string; local: boolean; dynamic: boolean };
