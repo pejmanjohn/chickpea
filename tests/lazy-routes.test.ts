@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { Hono } from 'hono';
 
+import { betterAuthPublicRouteKeys } from '../src/auth/better-auth-routes.ts';
 import { createBetterAuthRuntimeRoutes } from '../src/auth/better-auth-runtime.ts';
 import { createMcpOAuthRuntimeRoutes } from '../src/auth/mcp-oauth-routes.ts';
 import { BETTER_AUTH_PUBLIC_PATHS, MCP_OAUTH_PATHS } from '../src/auth/public-auth-paths.ts';
@@ -30,6 +31,20 @@ for (const surface of SURFACES) {
     }
   });
 }
+
+test('the lazy Better Auth mount answers every route of the public handler\'s own table', async () => {
+  // The runtime module registers its routes from the same path list the mount uses, so this
+  // checks the handler's deny-by-default route table instead, which the list must cover.
+  const mount = lazyRoutes('Better Auth', BETTER_AUTH_PUBLIC_PATHS, async () => new Hono().all('*', (c) => c.text('mounted')));
+  const app = new Hono().route('/', mount);
+  const keys = betterAuthPublicRouteKeys();
+  assert.ok(keys.length >= 13, 'the public route table is the one under test');
+  for (const key of keys) {
+    const [method, path] = key.split(' ') as [string, string];
+    const response = await app.request(path, { method });
+    assert.equal(response.status, 200, `${key} is outside the lazy Better Auth mount`);
+  }
+});
 
 test('a lazy mount leaves its neighbours alone and loads its module once, on the first matching request', async () => {
   let loads = 0;

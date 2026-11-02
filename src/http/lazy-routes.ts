@@ -7,7 +7,9 @@ import { onDemand } from '../runtime/on-demand.ts';
  * at Worker startup. Every module the entry imports statically loads before a
  * Durable Object's constructor runs, so a request-only surface mounts through
  * this and a Slack turn never pays for it. The loaded sub-app answers the
- * request itself, so `paths` must cover every route it registers.
+ * request itself, so `paths` must cover every route it registers. It answers
+ * through its own context: the parent's error handler and per-request caches
+ * keyed on the parent context do not reach it (neither surface uses them).
  */
 export function lazyRoutes(name: string, paths: readonly string[], load: () => Promise<Hono>): Hono {
   const routes = onDemand(name, load);
