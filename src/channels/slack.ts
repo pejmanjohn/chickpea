@@ -875,6 +875,7 @@ function handleDirectSlackEvents(
   credentialRevision: string | null,
 ): NonNullable<SlackChannelOptions['events']> {
   return async ({ c, payload }) => {
+    const receivedAt = Date.now();
     const platformEnv = c.env as PlatformEnv | undefined;
     const hosted = deploymentTenancy(platformEnv) === 'installation';
     // A host's delivery must be for its app, and for the workspace whose
@@ -897,6 +898,11 @@ function handleDirectSlackEvents(
         payload.event && typeof payload.event === 'object'
       ? (payload.event as { type?: unknown }).type
       : undefined;
+    // A person's message: the state store wakes its runner and verifies the
+    // identity while the chain below admits it.
+    if ((verifiedEventType === 'message' || verifiedEventType === 'app_mention') && isCloudflareTarget()) {
+      noteDirectDelivery(c, stores.slackState, payload as unknown as SlackEventFixture, receivedAt);
+    }
     if (verifiedEventType === 'app_uninstalled' || verifiedEventType === 'tokens_revoked') {
       // Hosted, only the installation's own bot token ends it, and an event
       // from before this installation is about an earlier one. The host acts
@@ -974,6 +980,35 @@ function handleDirectSlackEvents(
       }),
     );
   };
+}
+
+/**
+ * Tell the state store a direct installation's delivery was verified
+ * (TagStateStore.noteSlackDelivery), so it wakes the runner the turn will be
+ * handed to, keeps the receipt time for that turn, and verifies the
+ * installation's identity while this Worker admits the delivery over the
+ * store's RPCs. Only on Cloudflare, where the state store is an object apart
+ * from this Worker. Nothing here is awaited, so the Worker's own chain is as
+ * it was, and a store that cannot be reached changes nothing.
+ */
+function noteDirectDelivery(
+  c: Parameters<typeof detach>[0],
+  state: SlackStateStore,
+  payload: Pick<SlackEventFixture, 'team_id' | 'event_id' | 'event_time' | 'event'>,
+  receivedAt: number,
+): void {
+  if (!state.noteDelivery) return;
+  try {
+    detach(c, state.noteDelivery({
+      workspaceId: payload.team_id,
+      eventId: payload.event_id,
+      eventTime: payload.event_time,
+      event: payload.event,
+      receivedAt,
+    }).catch(() => undefined));
+  } catch {
+    // A note that cannot be sent is none; the delivery is admitted as before.
+  }
 }
 
 function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['interactions']> {

@@ -32,6 +32,7 @@ import type {
   TurnStopNotice,
 } from './turn-job-types.ts';
 import type { SlackRunFactsView } from './status-registry.ts';
+import type { SlackInboundEnvelope } from './transport/types.ts';
 import type {
   FlueDispatchReceiptV1,
   FlueObservationTarget,
@@ -235,9 +236,27 @@ export interface SlackThreadRegistry {
   setActiveWork(key: string, generation: string, active: boolean): Promise<void>;
 }
 
+/**
+ * A direct installation's verified Slack delivery, as the Worker tells the
+ * state store of it at receipt (SlackStateStore.noteDelivery): the delivery's
+ * envelope and the Worker's clock when it verified the delivery.
+ */
+export interface SlackDeliveryNote extends SlackInboundEnvelope {
+  receivedAt: number;
+}
+
 /** The combined claims + thread-registry surface the Slack channel consumes. */
 export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   admitCanonical(input: SlackCanonicalAdmissionInput): Promise<SlackCanonicalAdmissionResult>;
+  /**
+   * Cloudflare, the direct path: a verified delivery was received at the
+   * Worker, which goes on to admit it over this store. The state store wakes
+   * the runner the turn will be handed to, keeps the receipt time for that
+   * turn, and verifies the installation's identity before the admission
+   * status write asks for it (TagStateStore.noteSlackDelivery). Never awaited
+   * on the request path; nothing here changes what the Worker admits.
+   */
+  noteDelivery?(note: SlackDeliveryNote): Promise<void>;
   /** Admit a person's edit of a message whose turn is queued or running (SlackStateLogic.admitEdit). */
   admitEdit?(edit: SlackMessageEdit): Promise<SlackEditAdmission>;
   /** Node fallback when Slack truth cannot authorize a canonical Work/Run. */

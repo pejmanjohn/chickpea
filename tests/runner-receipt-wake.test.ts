@@ -15,6 +15,7 @@ import {
 import type { GatewayInboundDelivery } from '../src/slack/gateway/protocol.ts';
 import { seedGatewayIdentity } from '../src/slack/installation-execution.ts';
 import { parseAdmissionAgentWake } from '../src/slack/admission-agent-wake.ts';
+import { receiptRunnerWake } from '../src/slack/receipt-runner-wake.ts';
 import { parseAdmissionStatusMark } from '../src/slack/admission-activity.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
@@ -146,6 +147,23 @@ test('a delivery that cannot become a turn wakes no runner', async () => {
     for (const [name, received, options] of silent) {
       assert.equal(await receiptStoreWakes(config, received, options), 0, `${name} wakes no runner`);
     }
+  });
+});
+
+// Defects caught: the prediction refusing a direct installation (the direct
+// path's receipt, TagStateStore.noteSlackDelivery, then wakes nothing), keying
+// it apart from the gateway's, or waking without the bot identity it needs.
+test("a direct installation's delivery predicts the runner the gateway's would", async () => {
+  await withLane(async ({ config }) => {
+    const received = delivery(AGENT_MENTION);
+    assert.equal(received.kind, 'event.deliver');
+    const predicted = receiptRunnerWake(received, config);
+    assert.ok(predicted);
+    config.updateWorkspaceInstallation('T1', { transportMode: 'direct', gatewayBindingId: null });
+    assert.deepEqual(receiptRunnerWake({ kind: 'event.deliver', envelope: received.envelope }, config), predicted,
+      'the direct path asks with the event alone');
+    config.updateWorkspaceInstallation('T1', { botUserId: null });
+    assert.equal(receiptRunnerWake(received, config), undefined, 'an installation without its bot identity is refused');
   });
 });
 

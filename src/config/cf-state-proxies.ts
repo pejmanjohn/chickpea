@@ -166,6 +166,7 @@ import type {
 } from '../identity/types.ts';
 import type {
   SlackCanonicalAdmissionInput,
+  SlackDeliveryNote,
   SlackStateStore,
 } from '../slack/claim-store.ts';
 import type { SlackMessageEdit } from '../slack/edits.ts';
@@ -2010,6 +2011,10 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async admitCanonical(input: SlackCanonicalAdmissionInput) {
     return rpcVia(this.stub,'admitSlackTurn', (stub) => stub.admitSlackTurn(input));
+  }
+
+  async noteDelivery(note: SlackDeliveryNote) {
+    await rpcVia(this.stub, 'noteSlackDelivery', (stub) => stub.noteSlackDelivery(note));
   }
 
   async admitEdit(edit: SlackMessageEdit) {
