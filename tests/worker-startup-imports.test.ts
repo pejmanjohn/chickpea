@@ -67,7 +67,8 @@ function edgesOf(file: string): Edge[] {
       } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         const [argument] = node.arguments;
         if (argument && ts.isStringLiteralLike(argument)) {
-          edges.push(edgeTo(file, argument.text, true));
+          // An import() outside every function runs when the module is evaluated.
+          edges.push(edgeTo(file, argument.text, ts.findAncestor(node, ts.isFunctionLike) !== undefined));
         }
       }
       ts.forEachChild(node, visit);
