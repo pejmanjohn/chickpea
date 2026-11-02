@@ -105,7 +105,7 @@ import {
   UNIVERSAL_ARTIFACT_TOOL_NAMES,
   slackAgentKind,
   slackSystemBase,
-} from './shared-prefix.ts';
+} from './shared-prefix-layout.ts';
 import {
   isDeniedRepositoryEndpoint,
   matchesGrantedCodeSearch,

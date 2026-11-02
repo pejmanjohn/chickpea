@@ -17,6 +17,8 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
  */
 const LAZY_MODULES: Record<string, string> = {
   'just-bash': "a Flue agent's sandbox (agents/slack-thread.ts, config/egress.ts)",
+  'src/agents/shared-prefix.ts': "the Anthropic platform-funded payload hook (config/model-access.ts)",
+  'src/agents/shared-prefix-tools.json': "the Anthropic platform-funded payload hook (config/model-access.ts)",
 };
 
 type Edge = { to: string; local: boolean; dynamic: boolean };
