@@ -7,7 +7,7 @@ import type {
   User,
 } from '../identity/types.ts';
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
-import { createBetterAuth } from './better-auth.ts';
+import { type ChickpeaBetterAuth, createBetterAuth } from './better-auth.ts';
 import { hostedLoginAgrees, type HostedLoginFence, type HostedSessionRead } from './hosted-login.ts';
 import type {
   AuthPrincipal,
@@ -117,7 +117,7 @@ interface SessionRead {
 
 export class BetterAuthSessionAuthenticator implements PrincipalAuthenticator {
   readonly kind = 'better_auth';
-  private auth: ReturnType<typeof createBetterAuth> | undefined;
+  private auth: Promise<ChickpeaBetterAuth> | undefined;
 
   constructor(private readonly input: BetterAuthSessionAuthenticatorInput) {}
 
@@ -154,7 +154,7 @@ export class BetterAuthSessionAuthenticator implements PrincipalAuthenticator {
 
   private async readSession(request: Request): Promise<SessionRead | undefined> {
     this.auth ??= this.createAuth();
-    const result = await this.auth.api.getSession({
+    const result = await (await this.auth).api.getSession({
       headers: request.headers,
       returnHeaders: true,
     }) as unknown as {
@@ -167,7 +167,7 @@ export class BetterAuthSessionAuthenticator implements PrincipalAuthenticator {
     return { betterAuthUserId, sessionId, headers: result.headers };
   }
 
-  private createAuth(): ReturnType<typeof createBetterAuth> {
+  private createAuth(): Promise<ChickpeaBetterAuth> {
     return createBetterAuth({
       backend: this.input.backend,
       baseURL: this.input.baseURL,

@@ -97,7 +97,7 @@ async function fixture(t: TestContext, options: {
     clientMetadataDocuments: options.clientMetadataDocuments ?? true,
     ...(options.fetchClientMetadataResource ? { fetchClientMetadataResource: options.fetchClientMetadataResource } : {}),
   };
-  const auth = createBetterAuth({ ...environment, privateSeam: { async resolveAdmissionOperation() { return admission; } } });
+  const auth = await createBetterAuth({ ...environment, privateSeam: { async resolveAdmissionOperation() { return admission; } } });
   const handler = createBetterAuthPublicHandler({
     ...environment,
     ...(options.mcpRegistrationPolicy ? { mcpRegistrationPolicy: options.mcpRegistrationPolicy } : {}),

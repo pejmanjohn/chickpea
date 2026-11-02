@@ -2,6 +2,7 @@ import { isAPIError } from 'better-auth/api';
 
 import { admitPendingMcpOAuthClient, DEFAULT_MCP_REGISTRATION_POLICY } from './better-auth-backend.ts';
 import {
+  type ChickpeaBetterAuth,
   createBetterAuth,
   requireSupportedOrigin,
   type CreateBetterAuthInput,
@@ -51,7 +52,7 @@ export type BetterAuthPublicHandlerInput = CreateBetterAuthInput;
  */
 export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInput) {
   const baseURL = requireSupportedOrigin(input.baseURL);
-  let auth: ReturnType<typeof createBetterAuth> | undefined;
+  let auth: ChickpeaBetterAuth | undefined;
   const registrationPolicy = { ...DEFAULT_MCP_REGISTRATION_POLICY, ...input.mcpRegistrationPolicy };
 
   return async function handleBetterAuthPublicRequest(request: Request): Promise<Response> {
@@ -80,7 +81,7 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
       }
     }
 
-    auth ??= createBetterAuth({ ...input, baseURL });
+    auth ??= await createBetterAuth({ ...input, baseURL });
     if (url.pathname === '/api/auth/oauth2/authorize') {
       const documentClient = input.clientMetadataDocuments === true &&
         isClientMetadataDocumentUrl(url.searchParams.get('client_id') ?? '', baseURL);
@@ -159,7 +160,7 @@ interface RegisteredClient {
  */
 async function withOfflineAccessForRenewableClient(
   request: Request,
-  auth: ReturnType<typeof createBetterAuth>,
+  auth: ChickpeaBetterAuth,
   documentClient: boolean,
 ): Promise<Request | Response> {
   const url = new URL(request.url);

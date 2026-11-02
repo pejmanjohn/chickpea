@@ -47,7 +47,7 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
       return admissions.get(operationId) ?? null;
     },
   };
-  const auth = createBetterAuth({
+  const auth = await createBetterAuth({
     backend,
     baseURL: url.origin,
     secret: SECRET,

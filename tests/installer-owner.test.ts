@@ -88,7 +88,7 @@ test('an interrupted activation resumes, a new attempt by the same person replac
   const clock = { now: NOW };
   const backend = new NodeBetterAuthBackend(':memory:');
   const environment = { backend, baseURL: ORIGIN, secret: SECRET };
-  const auth = createBetterAuth(environment);
+  const auth = await createBetterAuth(environment);
   const capabilityHash = (capability: string) => createHash('sha256').update(capability).digest('hex');
   const activate = (identity: SqliteIdentityStore, capability: string, proof = OWNER) => activateInstallerOwner({
     identity, environment, proof, capability,

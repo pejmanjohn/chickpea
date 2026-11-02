@@ -27,6 +27,15 @@ const LAZY_MODULES: Record<string, string> = {
   '@modelcontextprotocol/sdk/client': 'the MCP SDK (config/mcp-sdk.ts): a connection test, an identity probe, an OAuth start, exchange, refresh or registration',
   '@modelcontextprotocol/sdk/validation': 'the MCP SDK (config/mcp-sdk.ts): a connection test or an identity probe',
   '@modelcontextprotocol/sdk/shared/auth-utils.js': "the MCP SDK (config/mcp-sdk.ts): an OAuth authorization's start",
+  '@modelcontextprotocol/server': 'the management MCP server (management/mcp.ts), behind the MCP route app.ts mounts lazily',
+  'better-auth': 'Better Auth (auth/better-auth.ts): a sign-in, a session read, an MCP or an Admin authentication',
+  '@better-auth/mcp': 'Better Auth (auth/better-auth.ts): a sign-in, a session read, an MCP or an Admin authentication',
+  '@better-auth/cimd': 'client ID metadata documents (auth/mcp-client-metadata.ts, from auth/better-auth.ts)',
+  'src/auth/mcp-client-metadata.ts': 'client ID metadata documents (auth/better-auth.ts)',
+  'src/auth/better-auth-runtime.ts': "Better Auth's public routes (app.ts) and Admin's sign-out (admin/routes.ts)",
+  'src/auth/better-auth-routes.ts': "Better Auth's public routes (auth/better-auth-runtime.ts)",
+  'src/auth/mcp-oauth-routes.ts': 'the MCP resource and its sign-in pages (app.ts)',
+  'src/management/mcp.ts': 'the management MCP server (auth/mcp-oauth-routes.ts)',
 };
 
 /**

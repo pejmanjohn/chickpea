@@ -59,7 +59,7 @@ async function fixture({
     backend, baseURL: ORIGIN, secret: randomBytes(32).toString('base64url'),
     privateSeam: { async resolveAdmissionOperation() { return admission; } },
   };
-  const auth = modules.createBetterAuth(options);
+  const auth = await modules.createBetterAuth(options);
   const handler = modules.createBetterAuthPublicHandler({
     ...options, ...(mcpRegistrationPolicy ? { mcpRegistrationPolicy } : {}),
   });

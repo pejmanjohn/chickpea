@@ -310,7 +310,7 @@ export class SlackAdmissionService {
       if (!organization || !control?.betterAuthOrganizationId || !attempt.invitationId) {
         throw new SlackOidcError('invalid_state');
       }
-      const auth = this.createAuth();
+      const auth = await this.createAuth();
       const reconciled = await auth.chickpea.reconcileSlackIdentity({
         slackTeamId: proof.slackTeamId,
         slackUserId: proof.slackUserId,
@@ -356,7 +356,7 @@ export class SlackAdmissionService {
       displayName: 'Chickpea',
       slackTeamId: proof.slackTeamId,
     });
-    const auth = this.createAuth();
+    const auth = await this.createAuth();
     const reconciled = await auth.chickpea.reconcileSlackIdentity({
       slackTeamId: proof.slackTeamId,
       slackUserId: proof.slackUserId,
@@ -503,7 +503,7 @@ export class SlackAdmissionService {
       }
       if (!operation.betterAuthUserId || !operation.betterAuthOrganizationId ||
           !operation.betterAuthMembershipId) {
-        const reconciled = await this.createAuth().chickpea.reconcileSlackIdentity({
+        const reconciled = await (await this.createAuth()).chickpea.reconcileSlackIdentity({
           slackTeamId: attempt.admittedTeamId,
           slackUserId: attempt.admittedSlackUserId,
           displayName: 'Slack member',
@@ -556,7 +556,7 @@ export class SlackAdmissionService {
       const organization = await this.dependencies.identity.ensureOrganization({
         displayName: 'Chickpea', slackTeamId: attempt.admittedTeamId,
       });
-      const auth = this.createAuth();
+      const auth = await this.createAuth();
       const reconciled = await auth.chickpea.reconcileSlackIdentity({
         slackTeamId: attempt.admittedTeamId,
         slackUserId: attempt.admittedSlackUserId,
@@ -629,7 +629,7 @@ export class SlackAdmissionService {
           !control?.betterAuthOrganizationId) {
         throw new SlackOidcError('invalid_state');
       }
-      const reconciled = await this.createAuth().chickpea.reconcileSlackIdentity({
+      const reconciled = await (await this.createAuth()).chickpea.reconcileSlackIdentity({
         slackTeamId: input.attempt.admittedTeamId,
         slackUserId: input.attempt.admittedSlackUserId,
         displayName: input.displayName,
@@ -683,7 +683,7 @@ export class SlackAdmissionService {
     request: Request,
   ): Promise<SlackAdmissionCallbackResult> {
     try {
-      const response = await this.createAuth().chickpea.issueSession(operationId, request);
+      const response = await (await this.createAuth()).chickpea.issueSession(operationId, request);
       if (!response.ok) throw new Error('session rejected');
       return { destination, sessionResponse: response };
     } catch {

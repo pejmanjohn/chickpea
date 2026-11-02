@@ -8,6 +8,7 @@ import {
 import type { IdentityStore } from '../identity/types.ts';
 import { actualBodyLimit } from '../security/request-body-limit.ts';
 import { createBetterAuthPublicHandler } from './better-auth-routes.ts';
+import { BETTER_AUTH_PUBLIC_PATHS } from './public-auth-paths.ts';
 import { AuthRateLimitError, AuthRateLimiter } from './rate-limit.ts';
 import { requestAuthSourceKey } from './source-key.ts';
 import {
@@ -56,10 +57,7 @@ export function betterAuthPublicRoutes(dispatch: (c: Context) => Promise<Respons
     }
   };
 
-  app.all('/api/auth/*', handle);
-  app.all('/.well-known/oauth-protected-resource', handle);
-  app.all('/.well-known/oauth-protected-resource/mcp', handle);
-  app.all('/.well-known/oauth-authorization-server/api/auth', handle);
+  for (const path of BETTER_AUTH_PUBLIC_PATHS) app.all(path, handle);
 
   return app;
 }

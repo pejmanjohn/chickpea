@@ -7,6 +7,7 @@ import type { BetterAuthPrincipalRecord, IdentityStore } from '../identity/types
 import {
   BETTER_AUTH_SLACK_PROVIDER_ID,
   createBetterAuthSessionReader,
+  type BetterAuthSessionReader,
   requireSupportedOrigin,
 } from './better-auth.ts';
 import type { BetterAuthMembershipRecord, McpRegistrationThrottle } from './better-auth-backend.ts';
@@ -212,13 +213,13 @@ type HostedLogins = ReturnType<typeof hostedLogins>;
  * and it only reads (createBetterAuthSessionReader).
  */
 function hostedLogins(environment: BetterAuthEnvironment, readLogin?: HostedRouting<PlatformEnv>['readLogin']) {
-  let auth: ReturnType<typeof createBetterAuthSessionReader> | undefined;
+  let auth: Promise<BetterAuthSessionReader> | undefined;
   const betterAuth = () => auth ??= createBetterAuthSessionReader(environment);
   const forUser = async (betterAuthUserId: string): Promise<PresentedLogin | undefined> => {
     const read: { slackAccountIds: readonly string[]; memberships?: readonly BetterAuthMembershipRecord[] } = readLogin
       ? await readLogin(betterAuthUserId)
       : {
-          slackAccountIds: (await (await betterAuth().$context).internalAdapter.findAccounts(betterAuthUserId))
+          slackAccountIds: (await (await (await betterAuth()).$context).internalAdapter.findAccounts(betterAuthUserId))
             .filter((account) => account.providerId === BETTER_AUTH_SLACK_PROVIDER_ID)
             .map((account) => account.accountId),
         };
@@ -242,7 +243,7 @@ function hostedLogins(environment: BetterAuthEnvironment, readLogin?: HostedRout
       // Chickpea's hook ends a session past its absolute expiry in this read.
       let result: { headers?: Headers; response?: { session?: { id?: unknown }; user?: { id?: unknown } } | null };
       try {
-        result = await betterAuth().api.getSession({
+        result = await (await betterAuth()).api.getSession({
           headers: request.headers,
           returnHeaders: true,
           ...(refresh ? {} : { query: { disableRefresh: true } }),
@@ -271,7 +272,7 @@ function hostedLogins(environment: BetterAuthEnvironment, readLogin?: HostedRout
     async fromAccessToken(token: string): Promise<PresentedLogin | undefined> {
       const claims = await verifyMcpAccessToken(token, {
         baseURL: environment.baseURL,
-        getJwks: () => betterAuthJwks(betterAuth()),
+        getJwks: async () => betterAuthJwks(await betterAuth()),
       });
       return typeof claims?.sub === 'string' && claims.sub ? forUser(claims.sub) : undefined;
     },
