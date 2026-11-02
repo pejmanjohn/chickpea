@@ -185,8 +185,10 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return this.presentations;
   }
 
-  async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string }> {
-    this.boot.call('admit', { turnJobId: job?.id });
+  async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string; handoffMs?: number }> {
+    const sentAt = typeof job?.sentAt === 'number' && Number.isFinite(job.sentAt) ? job.sentAt : undefined;
+    this.boot.call('admit', { sentAt, turnJobId: job?.id });
+    const enteredAt = Date.now();
     try {
       assertInstallationOwnership(job?.installation, this.env as PlatformEnv);
     } catch {
@@ -213,7 +215,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     this.wake?.();
     const existing = await this.ctx.storage.getAlarm();
     if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
-    return result;
+    return sentAt === undefined ? result : { ...result, handoffMs: enteredAt - sentAt };
   }
 
   /**

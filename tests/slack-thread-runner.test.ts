@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import vm from 'node:vm';
 
 import ts from 'typescript';
 
@@ -68,13 +69,16 @@ test('a runner instance resumes a running job at once and runs admitted jobs onl
   assert.match(runner, /async alarm\(\): Promise<void> \{\s*this\.boot\.call\('alarm'\);\s*await this\.runSoon\(\);/);
 });
 
-test('every runner entry point reports its call to the activation marks before anything else', () => {
+test('every runner entry point reports its call to the activation marks before it touches the instance', () => {
   const path = new URL('../src/slack/thread-runner.ts', import.meta.url);
   const source = ts.createSourceFile('thread-runner.ts', readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
   const runner = source.statements.find((node): node is ts.ClassDeclaration =>
     ts.isClassDeclaration(node) && node.name?.text === 'SlackThreadRunner');
   assert.ok(runner);
-  const firstStatement = (method: ts.MethodDeclaration) => method.body?.statements[0]?.getText(source) ?? '';
+  // The first statement that reaches the instance (a plain local may come before it).
+  const firstStatement = (method: ts.MethodDeclaration) =>
+    method.body?.statements.map((statement) => statement.getText(source))
+      .find((text) => text.includes('this.')) ?? '';
   const methods = runner.members.filter((member): member is ts.MethodDeclaration => ts.isMethodDeclaration(member));
   const entries = methods.filter((method) =>
     !method.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.PrivateKeyword));
@@ -92,6 +96,48 @@ test('every runner entry point reports its call to the activation marks before a
   assert.equal(host && firstStatement(host), "this.boot.call('host');");
   // The constructor's end is marked however its resume check exits.
   assert.match(readFileSync(path, 'utf8'), /\} finally \{\s*this\.boot\.constructed\(\);\s*\}\s*\}\);/);
+});
+
+test("the runner's admit reports the hand-off's send time to its activation marks and answers the delay", async () => {
+  const source = ts.createSourceFile(
+    'thread-runner.ts',
+    readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const runner = source.statements.find((node): node is ts.ClassDeclaration =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackThreadRunner');
+  const admit = runner?.members.find((member) =>
+    ts.isMethodDeclaration(member) && member.name.getText(source) === 'admit');
+  assert.ok(admit);
+  const AdmitProbe = vm.runInNewContext(
+    ts.transpileModule(`class AdmitProbe { ${admit.getText(source)} }\nAdmitProbe`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+    { Date: { now: () => 70_000 }, assertInstallationOwnership: () => undefined, console },
+  ) as new () => Record<string, unknown> & { admit(job: unknown): Promise<Record<string, unknown>> };
+  const probe = () => {
+    const marks: unknown[][] = [];
+    const instance = new AdmitProbe();
+    Object.assign(instance, {
+      env: {},
+      boot: { call: (method: string, from: Record<string, unknown>) => marks.push([method, { ...from }]) },
+      store: () => ({ admit: () => ({ admitted: true }) }),
+      ctx: { storage: { getAlarm: async () => null, setAlarm: async () => undefined } },
+    });
+    return { instance, marks };
+  };
+
+  const sent = probe();
+  assert.deepEqual({ ...await sent.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {}, sentAt: 68_100 }) },
+    { admitted: true, handoffMs: 1_900 });
+  assert.deepEqual(sent.marks, [['admit', { sentAt: 68_100, turnJobId: 'turn_1' }]]);
+
+  // A state store on an older version sends no clock: no delay, no send time.
+  const older = probe();
+  assert.deepEqual({ ...await older.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {} }) },
+    { admitted: true });
+  assert.deepEqual(older.marks, [['admit', { sentAt: undefined, turnJobId: 'turn_1' }]]);
 });
 
 test('the Worker entry exports SlackThreadRunner for its v11 binding', () => {

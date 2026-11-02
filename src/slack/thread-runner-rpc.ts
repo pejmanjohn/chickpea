@@ -141,8 +141,10 @@ export interface SlackThreadRunnerRpc {
   /**
    * Persist a hand-off. `refused` (a reason token) means the runner did not
    * take the job, so the state store keeps it a hand-off and retries.
+   * `handoffMs`: the handler's start minus the job's `sentAt`, across the two
+   * objects' clocks; absent without a `sentAt`.
    */
-  admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string }>;
+  admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string; handoffMs?: number }>;
   status(): Promise<ThreadRunnerStatus>;
   /** Activity the agent observed for a turn this runner executes. */
   observedStatus(

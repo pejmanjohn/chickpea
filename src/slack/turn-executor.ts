@@ -323,6 +323,8 @@ export async function executeTurnJob(
   const turnLatency = {
     ...(job.enqueuedAt === undefined ? {} : { admittedAt: job.enqueuedAt }),
     ...(job.receivedAt === undefined ? {} : { receivedAt: job.receivedAt }),
+    ...(job.handoffMs === undefined ? {} : { handoffMs: job.handoffMs }),
+    ...(job.handoffRoundTripMs === undefined ? {} : { handoffRoundTripMs: job.handoffRoundTripMs }),
     ...options.latency,
   };
   // The plan this job froze, kept current as runTurn freezes it.

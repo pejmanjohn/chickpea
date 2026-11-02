@@ -240,6 +240,9 @@ export interface PendingTurnJob {
    * for a gateway delivery, otherwise the admission time. Null on older rows.
    */
   receivedAt?: number;
+  /** Set in a runner's view while this store remembers the row's hand-off (see TurnHandoffTiming). */
+  handoffMs?: number;
+  handoffRoundTripMs?: number;
   /** Present only when a per-thread runner owns the row (see TurnJobExecutor). */
   executor?: 'runner';
   /** The runner has not yet confirmed admitting this row. */
@@ -271,6 +274,21 @@ export interface PendingTurnJob {
  * admission, then `runner`.
  */
 export type TurnJobExecutor = 'alarm' | 'runner';
+
+/**
+ * How long this store's hand-off of a row to its runner took, for the turn's
+ * `turn_latency`. Kept in memory only, so a row read after this store
+ * restarts, or before the runner's admit returns, has none.
+ */
+export interface TurnHandoffTiming {
+  /** The runner's `admit` start minus this store's send time: two clocks. */
+  handoffMs?: number;
+  /** The `admit` call's round trip on this store's clock. */
+  handoffRoundTripMs: number;
+}
+
+/** Hand-off timings a store keeps for its runners' first reads. */
+const MAX_HANDOFF_TIMINGS = 256;
 
 /** A turn row as its runner reads it before (re)attaching. */
 export interface RunnerTurnJobView {
@@ -385,6 +403,8 @@ interface StopThreadRow {
 export class TurnJobStoreLogic {
   /** Receipt times of gateway deliveries being turned into jobs, by event ID. */
   private readonly receiptTimes = new Map<string, number>();
+  /** Hand-off timings of rows given to runners, by row ID, oldest first. */
+  private readonly handoffTimings = new Map<string, TurnHandoffTiming>();
 
   constructor(
     private readonly db: StateDb,
@@ -1753,12 +1773,17 @@ export class TurnJobStoreLogic {
     ).changes === 1;
   }
 
-  /** The runner admitted the row durably. */
-  confirmRunner(id: string): void {
+  /** The runner admitted the row durably, the hand-off taking `timing`. */
+  confirmRunner(id: string, timing?: TurnHandoffTiming): void {
     this.db.run(
       "UPDATE turn_jobs SET executor = 'runner' WHERE id = ? AND executor = 'handoff'",
       id,
     );
+    if (!timing) return;
+    this.handoffTimings.delete(id);
+    this.handoffTimings.set(id, timing);
+    const oldest = this.handoffTimings.keys().next();
+    if (this.handoffTimings.size > MAX_HANDOFF_TIMINGS && !oldest.done) this.handoffTimings.delete(oldest.value);
   }
 
   /** The thread runner key of a runner-owned row, whatever its status. */
@@ -1833,7 +1858,8 @@ export class TurnJobStoreLogic {
       this.quarantineUnreadable(unreadable);
       return { status: 'recovery_required', executor };
     }
-    return { status: 'pending', executor, job };
+    const timing = this.handoffTimings.get(id);
+    return { status: 'pending', executor, job: timing ? { ...job, ...timing } : job };
   }
 
   countPendingDeliveriesForWorkspace(workspaceId: string): number {
