@@ -7,11 +7,13 @@ import { providerStreamsForModel, sideCallOptions } from '../config/pi-provider.
 import { resolveRuntimeModel } from '../config/runtime-model.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import { emitInteractionJudgment } from '../observability/runtime-latency.ts';
 import {
   hasCredentialLikeContent,
   hasDisallowedControlCharacter,
   isRecord,
 } from '../security/content-validation.ts';
+import { readClefInteraction, type ClefOutcome } from './clef-intent.ts';
 import type { AgentDispatchResult } from './flue-dispatch.ts';
 import {
   stripResolvedSlackCommandAddress,
@@ -19,6 +21,7 @@ import {
 } from './command-address.ts';
 
 const SLACK_INTERACTION_DISPOSITIONS = ['ignore', 'react_only', 'reply', 'work'] as const;
+export type SlackInteractionDisposition = (typeof SLACK_INTERACTION_DISPOSITIONS)[number];
 
 const SLACK_INTERACTION_REASONS = [
   'pure_ack',
@@ -63,7 +66,7 @@ export const SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS = [
 ].join('\n');
 export type SemanticReaction = (typeof SEMANTIC_REACTIONS)[number];
 
-type ReactionTarget = 'trigger' | 'thread_root' | 'latest_user';
+export type ReactionTarget = 'trigger' | 'thread_root' | 'latest_user';
 type SlackInteractionSource =
   | 'app_mention'
   | 'agent_mention'
@@ -77,7 +80,7 @@ export type SlackInteractionIntent =
   | { disposition: 'reply'; reason: SlackInteractionReason }
   | { disposition: 'work'; reason: SlackInteractionReason; checklist: string[] };
 
-interface SlackInteractionIntentContext {
+export interface SlackInteractionIntentContext {
   workspaceId: string;
   channelId: string;
   eventId: string;
@@ -210,7 +213,7 @@ export async function resolveSlackInteractionIntent(
   return (await classifySlackInteraction(context, env, prompt, timeoutMs)).intent;
 }
 
-interface SlackInteractionClassification {
+export interface SlackInteractionClassification {
   intent: SlackInteractionIntent;
   result?: AgentDispatchResult;
   failed: boolean;
@@ -250,6 +253,339 @@ export async function classifySlackInteraction(
       failed: true,
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Guaranteed turns: the Clef gate ahead of the model classifier.
+//
+// Only `run-turn.ts` judges a guaranteed turn this way. The owned-thread
+// candidate path in `src/channels/slack.ts` keeps `classifySlackInteraction`.
+
+/**
+ * Clef's top probability at or above this decides a text disposition without
+ * the model: 70% coverage at 96% accuracy on the 2026-11-01 synthetic set,
+ * 69-76% coverage at 100% on real DMs.
+ */
+export const CLEF_CONFIDENT_TOP = 0.6;
+/** Clef's memory noul at or above this makes a turn substantive, as the model's `memoryIntent: possible` does. */
+export const CLEF_MEMORY_POSSIBLE = 0.5;
+
+declare const LABELS_OWED: unique symbol;
+
+/**
+ * A `work` basis Clef decided. Its checklist is empty, and the model's labels
+ * are owed through `lateChecklist`. The brand is type-only: the persisted
+ * record keeps today's shape, and only `earlyInteractionJudgment` builds one.
+ */
+export type ClefWorkIntent = Extract<SlackInteractionIntent, { disposition: 'work' }> & {
+  readonly [LABELS_OWED]: true;
+};
+
+/** A disposition Clef may decide alone. A reaction needs the model's emoji and target; `ignore` cannot happen on a guaranteed turn. */
+export type EarlyIntent = Extract<SlackInteractionIntent, { disposition: 'reply' }> | ClefWorkIntent;
+
+/**
+ * The dispatch policy, a pure function of Clef's outcome. `dispatch`: the
+ * turn may record `intent` and act on it before the model answers.
+ * `await_model`: today's path.
+ */
+export type EarlyInteractionJudgment =
+  | { readonly kind: 'dispatch'; readonly intent: EarlyIntent }
+  | { readonly kind: 'await_model' };
+
+const AWAIT_MODEL: EarlyInteractionJudgment = { kind: 'await_model' };
+/** A fresh intent each time: the record is a mutable object the turn owns. */
+const earlyReply = (): EarlyInteractionJudgment => ({
+  kind: 'dispatch',
+  intent: { disposition: 'reply', reason: 'substantive_request' },
+});
+
+export function earlyInteractionJudgment(clef: ClefOutcome): EarlyInteractionJudgment {
+  if (clef.kind !== 'read') return AWAIT_MODEL;
+  const { choice, probabilities, memory } = clef.reading;
+  // The evaluation gated on the probability of Clef's own choice, before any fold.
+  if (probabilities[choice] < CLEF_CONFIDENT_TOP) return AWAIT_MODEL;
+  switch (choice) {
+    case 'reply':
+      return earlyReply();
+    case 'work':
+      return { kind: 'dispatch', intent: clefWorkIntent() };
+    case 'react_only':
+      // The evaluation's fold: a possible memory request is never a reaction.
+      return memory >= CLEF_MEMORY_POSSIBLE ? earlyReply() : AWAIT_MODEL;
+    case 'ignore':
+      // Impossible for a guaranteed input; the model decides, as today.
+      return AWAIT_MODEL;
+  }
+}
+
+function clefWorkIntent(): ClefWorkIntent {
+  const work: Extract<SlackInteractionIntent, { disposition: 'work' }> = {
+    disposition: 'work', reason: 'substantive_request', checklist: [],
+  };
+  return work as ClefWorkIntent;
+}
+
+/**
+ * What the model's answer may still change after a Clef basis. There is no
+ * disposition here: the record is final, only its presentation refines.
+ */
+export type Refinement =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'labels'; readonly labels: readonly string[] }
+  | { readonly kind: 'discarded'; readonly why: 'disagreed' | 'model_unavailable' };
+
+export function refineEarly(recorded: EarlyIntent, model: SlackInteractionClassification): Refinement {
+  if (model.failed) return { kind: 'discarded', why: 'model_unavailable' };
+  if (model.intent.disposition !== recorded.disposition) return { kind: 'discarded', why: 'disagreed' };
+  return model.intent.disposition === 'work' ? { kind: 'labels', labels: model.intent.checklist } : { kind: 'none' };
+}
+
+/**
+ * The judgment's state. Every phase with an `intent` has it persisted, so
+ * there is no phase where a disposition is known but unrecorded.
+ *
+ *   pending  --shortcut rule, recorded------------>  shortcut
+ *   pending  --Clef confident reply|work, recorded->  early
+ *   pending  --model answers, recorded------------->  final by model
+ *   early    --model answers---------------------->  final by clef, with its refinement
+ *
+ * A Clef read that does not dispatch, or arrives after the model recorded, is
+ * an observation in the trace, not a state.
+ */
+export type TurnJudgment =
+  | { readonly phase: 'pending' }
+  | { readonly phase: 'shortcut'; readonly intent: SlackInteractionIntent }
+  | { readonly phase: 'early'; readonly intent: EarlyIntent }
+  | { readonly phase: 'final'; readonly by: 'model'; readonly intent: SlackInteractionIntent }
+  | { readonly phase: 'final'; readonly by: 'clef'; readonly intent: EarlyIntent; readonly refinement: Refinement };
+
+/**
+ * One guaranteed turn's judgment. The disposition is decided once, recorded,
+ * and then final: an answer that arrives after the basis can only bring work
+ * labels, typed as labels, so it cannot be recorded or flip the turn.
+ */
+export interface GuaranteedInteractionJudgment {
+  /**
+   * The disposition the turn acts on, resolved only after `record` persisted
+   * it. Decided by the shortcut rules; by a confident Clef that settles before
+   * the model; or by the model, its fallback included. Rejects only when
+   * `record` rejects, or `meter` on the model path, as today.
+   */
+  readonly basis: Promise<SlackInteractionIntent>;
+  /**
+   * Labels for a `work` basis Clef decided without them: the model's
+   * checklist when the model also judged `work`. `undefined` for every other
+   * basis, and when the model disagrees or fails. Never rejects.
+   */
+  readonly lateChecklist: Promise<readonly string[] | undefined>;
+  /**
+   * Everything the judgment started has ended: the basis recorded or refused,
+   * the model settled and metered, Clef settled. Resolves to the content-free
+   * trace. Never rejects.
+   */
+  readonly settled: Promise<InteractionJudgmentTrace>;
+}
+
+export interface GuaranteedInteractionJudgmentOptions {
+  readonly env: PlatformEnv | undefined;
+  readonly settings?: SettingsStore;
+  readonly turnJobId?: string;
+  /**
+   * Persist the basis; the store keeps the first write. Called exactly once,
+   * with the basis, before `basis` resolves.
+   */
+  readonly record: (intent: SlackInteractionIntent) => Promise<void>;
+  /**
+   * Record the model classifier's usage. Called at most once, only when the
+   * model was asked. On the model path it runs beside `record` and `basis`
+   * waits for both, as today. After a Clef basis it runs once the model
+   * settles; `settled` waits for it and a rejection is logged.
+   */
+  readonly meter: (classification: SlackInteractionClassification) => Promise<void>;
+  /**
+   * The model side. Defaults to `classifySlackInteraction` on the routed
+   * Agent's model, which never rejects; a replacement must not reject either.
+   * Tests hold its answer here and fake Clef at its real boundary, `env.AI`.
+   */
+  readonly classify?: (context: SlackInteractionIntentContext) => Promise<SlackInteractionClassification>;
+}
+
+/** The judgment's final state and what it observed, flattened for the `interaction_judgment` event. Holds no text. */
+export interface InteractionJudgmentTrace {
+  readonly recordedBy: 'shortcut' | 'clef' | 'model' | 'unrecorded';
+  readonly basis?: SlackInteractionDisposition;
+  /** From the judgment's start to the recorded basis. */
+  readonly basisMs?: number;
+  /** How Clef ended; `skipped` after a shortcut. */
+  readonly clef: ClefOutcome['kind'] | 'skipped';
+  readonly clefMs?: number;
+  readonly clefInputTokens?: number;
+  readonly clefChoice?: SlackInteractionDisposition;
+  /** Probability of Clef's own choice. */
+  readonly clefTop?: number;
+  /** P(reply) + P(work): the slice a speculative dispatch would act on. */
+  readonly clefTextMass?: number;
+  readonly clefMemory?: number;
+  readonly gate?: EarlyInteractionJudgment['kind'];
+  /** Clef would have dispatched, but the model had recorded first. */
+  readonly clefLate?: boolean;
+  readonly model?: SlackInteractionDisposition;
+  readonly modelFailed?: boolean;
+  readonly modelMs?: number;
+  readonly refinement?: Refinement['kind'] | Extract<Refinement, { kind: 'discarded' }>['why'];
+  /** The disposition Clef read (after its memory fold) equals the model's. Present when both answered. */
+  readonly agreed?: boolean;
+}
+
+/**
+ * Judge a guaranteed turn: the shortcut rules first; otherwise Clef and the
+ * model at once, and the first decisive answer becomes the recorded basis.
+ */
+export function judgeGuaranteedInteraction(
+  context: SlackInteractionIntentContext & { guaranteed: true },
+  options: GuaranteedInteractionJudgmentOptions,
+): GuaranteedInteractionJudgment {
+  const startedAt = Date.now();
+  let judgment: TurnJudgment = { phase: 'pending' };
+  let basisMs: number | undefined;
+  const emit = (trace: InteractionJudgmentTrace): InteractionJudgmentTrace => {
+    emitInteractionJudgment({ ...trace, turnJobId: options.turnJobId });
+    return trace;
+  };
+
+  const shortcut = resolveImmediateSlackInteractionIntent(context);
+  if (shortcut) {
+    const basis = options.record(shortcut).then(() => {
+      judgment = { phase: 'shortcut', intent: shortcut };
+      basisMs = Date.now() - startedAt;
+      return shortcut;
+    });
+    basis.catch(() => undefined);
+    const settled = basis.then(
+      () => judgmentTrace(judgment, basisMs),
+      () => judgmentTrace(judgment, basisMs),
+    ).then(emit);
+    return { basis, lateChecklist: Promise.resolve(undefined), settled };
+  }
+
+  const classify = options.classify ?? ((input: SlackInteractionIntentContext) =>
+    classifySlackInteraction(input, options.env, undefined, undefined, {
+      ...(options.settings ? { settings: options.settings } : {}),
+    }));
+  // The model side never rejects by contract; a rejection would otherwise hang `basis`.
+  const model = classify(context).then(
+    (classification) => ({ classification, ms: Date.now() - startedAt }),
+    () => ({ classification: { intent: fallbackIntent(true), failed: true }, ms: Date.now() - startedAt }),
+  );
+  const clef = readClefInteraction(context, options.env).then((outcome) => ({
+    outcome,
+    early: earlyInteractionJudgment(outcome),
+  }));
+
+  // Exactly one decider. A promise keeps its first resolution, so whichever
+  // settles first decides and a late Clef dispatch records nothing.
+  type Decided =
+    | { readonly by: 'clef'; readonly intent: EarlyIntent }
+    | { readonly by: 'model'; readonly classification: SlackInteractionClassification };
+  const decided = new Promise<Decided>((resolve) => {
+    void clef.then(({ early }) => {
+      if (early.kind === 'dispatch') resolve({ by: 'clef', intent: early.intent });
+    });
+    void model.then(({ classification }) => resolve({ by: 'model', classification }));
+  });
+
+  const basis = decided.then(async (d) => {
+    if (d.by === 'model') {
+      // Today's order: the record and the usage meter together, then the dispatch may go.
+      await Promise.all([options.record(d.classification.intent), options.meter(d.classification)]);
+      judgment = { phase: 'final', by: 'model', intent: d.classification.intent };
+      basisMs = Date.now() - startedAt;
+      return d.classification.intent;
+    }
+    await options.record(d.intent);
+    judgment = { phase: 'early', intent: d.intent };
+    basisMs = Date.now() - startedAt;
+    return d.intent;
+  });
+  basis.catch(() => undefined);
+
+  const refined = decided.then(async (d) => {
+    if (d.by !== 'clef') return undefined;
+    const [{ classification }] = await Promise.all([model, basis.catch(() => undefined)]);
+    const refinement = refineEarly(d.intent, classification);
+    if (judgment.phase === 'early') judgment = { phase: 'final', by: 'clef', intent: d.intent, refinement };
+    return refinement;
+  });
+  const lateChecklist = refined.then((refinement) => (refinement?.kind === 'labels' ? refinement.labels : undefined));
+
+  const lateMeter = decided.then(async (d) => {
+    if (d.by !== 'clef') return;
+    const { classification } = await model;
+    await options.meter(classification).catch(() => {
+      console.warn('[chickpea] Slack interaction classifier usage after a Clef basis was not recorded');
+    });
+  });
+
+  const settled = Promise.allSettled([basis, lateMeter, refined]).then(async () => {
+    const [{ outcome, early }, { classification, ms }, d] = await Promise.all([clef, model, decided]);
+    return emit(judgmentTrace(judgment, basisMs, {
+      clef: outcome,
+      gate: early.kind,
+      clefLate: early.kind === 'dispatch' && d.by === 'model',
+      model: classification,
+      modelMs: ms,
+      agreed: outcome.kind === 'read' && !classification.failed
+        ? (early.kind === 'dispatch' ? early.intent.disposition : outcome.reading.choice) === classification.intent.disposition
+        : undefined,
+    }));
+  });
+
+  return { basis, lateChecklist, settled };
+}
+
+function judgmentTrace(
+  judgment: TurnJudgment,
+  basisMs: number | undefined,
+  observed?: {
+    clef: ClefOutcome;
+    gate: EarlyInteractionJudgment['kind'];
+    clefLate: boolean;
+    model: SlackInteractionClassification;
+    modelMs: number;
+    agreed: boolean | undefined;
+  },
+): InteractionJudgmentTrace {
+  const recordedBy = judgment.phase === 'pending'
+    ? 'unrecorded'
+    : judgment.phase === 'final' ? judgment.by : judgment.phase === 'early' ? 'clef' : 'shortcut';
+  const refinement = judgment.phase === 'final' && judgment.by === 'clef'
+    ? (judgment.refinement.kind === 'discarded' ? judgment.refinement.why : judgment.refinement.kind)
+    : undefined;
+  const reading = observed?.clef.kind === 'read' ? observed.clef.reading : undefined;
+  return {
+    recordedBy,
+    ...(judgment.phase === 'pending' ? {} : { basis: judgment.intent.disposition }),
+    ...(basisMs === undefined ? {} : { basisMs }),
+    clef: observed?.clef.kind ?? 'skipped',
+    ...(observed && observed.clef.kind !== 'unavailable' ? { clefMs: observed.clef.ms } : {}),
+    ...(reading?.inputTokens === undefined ? {} : { clefInputTokens: reading.inputTokens }),
+    ...(reading
+      ? {
+          clefChoice: reading.choice,
+          clefTop: reading.probabilities[reading.choice],
+          clefTextMass: reading.probabilities.reply + reading.probabilities.work,
+          clefMemory: reading.memory,
+        }
+      : {}),
+    ...(observed ? { gate: observed.gate } : {}),
+    ...(observed?.clefLate ? { clefLate: true } : {}),
+    ...(observed
+      ? { model: observed.model.intent.disposition, modelFailed: observed.model.failed, modelMs: observed.modelMs }
+      : {}),
+    ...(refinement === undefined ? {} : { refinement }),
+    ...(observed?.agreed === undefined ? {} : { agreed: observed.agreed }),
+  };
 }
 
 /**

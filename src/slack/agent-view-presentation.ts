@@ -1754,7 +1754,8 @@ export class SlackAgentViewPresentation {
    * off (legacy checklist path is preserved), a plan already exists
    * (ambient/obvious-work — never double-attach or reorder), the checklist is
    * outside the 1..4 native range, or any Slack effect has already begun
-   * (delivery-only replay, a streaming or finalized presentation).
+   * (delivery-only replay, a streaming or finalized presentation, or a V3
+   * terminal delivery under way, which late labels can arrive after).
    */
   async adoptLatePlan(taskLabels: readonly string[]): Promise<void> {
     if (taskLabels.length < 1 || taskLabels.length > 4) return;
@@ -1763,6 +1764,7 @@ export class SlackAgentViewPresentation {
     if (presentation.schemaVersion === 3 && taskLabels.length < 2) return;
     if (presentation.plan) return;
     if (presentation.stream.state !== 'absent') return;
+    if (presentation.schemaVersion === 3 && presentation.terminalDelivery.state !== 'none') return;
     await this.transition(presentation, { kind: 'adopt_plan', taskLabels });
   }
 

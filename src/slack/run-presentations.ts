@@ -2184,6 +2184,11 @@ function applyMutation(
         throw stateError('invalid_input', 'V3 task plans require multiple committed milestones.');
       }
       requireState(current, 'absent');
+      // Late labels (a Clef-decided work turn) can arrive after a final that
+      // posts fresh, with no stream; a plan must not attach to a finished reply.
+      if (current.schemaVersion === 3 && current.terminalDelivery.state !== 'none') {
+        throw stateError('invalid_transition', 'A plan cannot attach once the terminal delivery began.');
+      }
       next.plan = current.schemaVersion === 3
         ? buildPlanV3(current.runId, mutation.taskLabels)
         : buildPlan(current.runId, mutation.taskLabels);

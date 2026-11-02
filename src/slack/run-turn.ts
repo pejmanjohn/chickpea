@@ -220,7 +220,8 @@ import { createWorkExecutionLifecycle } from '../work/executor.ts';
 import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import type { RunExecutionAuthority, WorkStore } from '../work/types.ts';
 import {
-  classifySlackInteraction,
+  judgeGuaranteedInteraction,
+  type SlackInteractionClassification,
   type SlackInteractionIntent,
 } from './interaction-intent.ts';
 import {
@@ -1095,43 +1096,6 @@ async function runTurnAttempt(
       earlyStatusWork = showAdmittedStatus(earlyStatusInstanceId);
     }
   }
-  let interactionIntent = turn.interactionIntent;
-  // Classification and the memory → plan → Work lifecycle chain read
-  // independent state; each chain keeps its own writes in order.
-  const classifyTurn = async (): Promise<void> => {
-    if (deterministicCommand || interactionIntent || stoppedBeforeDispatch) return;
-    const classification = await classifySlackInteraction({
-      workspaceId: turn.workspaceId,
-      channelId: turn.channelId,
-      eventId: turn.eventId,
-      text: requestText,
-      source: turn.source,
-      guaranteed: true,
-      ...(turn.activeWorkAtAdmission === undefined
-        ? {}
-        : { activeWork: turn.activeWorkAtAdmission }),
-      profileInstructions:
-        'instructions' in assignment && typeof assignment.instructions === 'string'
-          ? assignment.instructions
-          : assignment.agent.instructions,
-      requestedModel: resolvedModel ?? null,
-    }, platformEnv, undefined, undefined, {
-      ...(settingsStore ? { settings: settingsStore } : {}),
-    });
-    interactionIntent = classification.intent;
-    turn.interactionIntent = interactionIntent;
-    await Promise.all([
-      options.onInteractionIntent?.(interactionIntent),
-      recordExplicitInteractionClassifierUsage({
-        turn,
-        assignment,
-        classification,
-        requestedModel: resolvedModel ?? null,
-        platformEnv,
-        options,
-      }),
-    ]);
-  };
   const prepareTurn = async () => {
     const memory = skipMemory
       ? undefined
@@ -1237,8 +1201,43 @@ async function runTurnAttempt(
   };
   let earlyStatusTurn: ReturnType<typeof registerStatusTurn> | undefined;
   let prepared: Awaited<ReturnType<typeof prepareTurn>>;
-  const classified = classifyTurn();
-  classified.catch(() => undefined);
+  // The judgment and the memory → plan → Work lifecycle chain read
+  // independent state; each chain keeps its own writes in order. A retry
+  // restores its recorded basis on `turn.interactionIntent` and judges nothing.
+  const judgment = deterministicCommand || turn.interactionIntent || stoppedBeforeDispatch
+    ? undefined
+    : judgeGuaranteedInteraction({
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        eventId: turn.eventId,
+        text: requestText,
+        source: turn.source,
+        guaranteed: true,
+        ...(turn.activeWorkAtAdmission === undefined
+          ? {}
+          : { activeWork: turn.activeWorkAtAdmission }),
+        profileInstructions:
+          'instructions' in assignment && typeof assignment.instructions === 'string'
+            ? assignment.instructions
+            : assignment.agent.instructions,
+        requestedModel: resolvedModel ?? null,
+      }, {
+        env: platformEnv,
+        ...(settingsStore ? { settings: settingsStore } : {}),
+        ...(options.turnId ? { turnJobId: options.turnId } : {}),
+        record: async (intent) => {
+          turn.interactionIntent = intent;
+          await options.onInteractionIntent?.(intent);
+        },
+        meter: (classification) => recordExplicitInteractionClassifierUsage({
+          turn,
+          assignment,
+          classification,
+          requestedModel: resolvedModel ?? null,
+          platformEnv,
+          options,
+        }),
+      });
   try {
     const [visible, preparation] = await Promise.allSettled([
       earlyStatusWork,
@@ -1252,7 +1251,7 @@ async function runTurnAttempt(
     // Only the status turn is open yet. Like any failed V3 attempt, it keeps
     // the admitted activity visible for the next attempt.
     earlyStatusTurn?.close();
-    await classified.catch(() => undefined);
+    await judgment?.settled;
     throw error;
   }
   const {
@@ -1307,6 +1306,8 @@ async function runTurnAttempt(
   };
   let terminalStatusFinished = false;
   let yielded = false;
+  /** Labels the model sent after a Clef `work` basis, adopted while the run is under way. */
+  let latePlan: Promise<void> | undefined;
   const finishStatus = async (result: 'answer' | 'failure'): Promise<void> => {
     // Close the sink first. Agent observations are relayed best-effort from a
     // different Cloudflare isolate and may still arrive after settlement
@@ -1492,7 +1493,8 @@ async function runTurnAttempt(
     await options.onDelivered?.(outcome);
     await presenter.markCanonicalPresentationFinalized();
     await usageRecorder?.repairAfterDelivery();
-    const checklist = interactionIntent?.disposition === 'work' ? interactionIntent.checklist : undefined;
+    const intent = turn.interactionIntent;
+    const checklist = intent?.disposition === 'work' ? intent.checklist : undefined;
     if (workChecklistTs && checklist &&
         !interactionProgress.checklist?.supersededByNative) {
       try {
@@ -1564,7 +1566,7 @@ async function runTurnAttempt(
   };
 
   const dispatchExpected = modelRepairText === undefined && !turn.managementApprovalProposalId &&
-    !memoryCommand && interactionIntent?.disposition !== 'react_only';
+    !memoryCommand && turn.interactionIntent?.disposition !== 'react_only';
   const turnEnvelope = dispatchExpected && options.replayText === undefined &&
       !stoppedBeforeDispatch && !options.flueDispatch?.dispatchEnvelope
     ? turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv)
@@ -1633,7 +1635,9 @@ async function runTurnAttempt(
     leaseCheck?.catch(() => undefined);
     const contextRead = dispatchExpected ? readTurnContext() : undefined;
     const contextReadSettled = contextRead?.catch(() => undefined);
-    await classified;
+    // Nothing below acts before the basis is recorded; a retry restores it and
+    // never judges again.
+    const intent = await judgment?.basis ?? turn.interactionIntent;
     if (preparedMemory?.ownerBound && !(await leaseCheck)) {
       // Fail closed, never silently: the durable relay only retires a turn job
       // once delivery is tombstoned, so an early `return` here left the job
@@ -1791,10 +1795,10 @@ async function runTurnAttempt(
         return;
       }
     }
-    if (interactionIntent?.disposition === 'react_only') {
+    if (intent?.disposition === 'react_only') {
       await titleSet;
       const prepared = await workLifecycle?.prepareExecution(
-        `Slack reaction response: ${interactionIntent.reaction}`,
+        `Slack reaction response: ${intent.reaction}`,
       );
       await workLifecycle?.settleExecution({
         outcome: 'succeeded',
@@ -1808,10 +1812,10 @@ async function runTurnAttempt(
           !(await agentViewPresentation.prepareDeferredTerminalDelivery('answer'))) {
         throw new Error('Slack reaction delivery requires reconciliation.');
       }
-      const reactionCoordinate = resolveReactionCoordinate(turn, interactionIntent.target);
+      const reactionCoordinate = resolveReactionCoordinate(turn, intent.target);
       let delivered: SlackReactionReceipt;
       try {
-        delivered = await presenter.deliverReaction(interactionIntent.reaction, reactionCoordinate);
+        delivered = await presenter.deliverReaction(intent.reaction, reactionCoordinate);
       } catch (error) {
         await agentViewPresentation?.recordTerminalDeliveryReceipt(slackDeliveryFailureOutcome(error));
         throw error;
@@ -1826,9 +1830,9 @@ async function runTurnAttempt(
     }
     if (usageRecordingEnabled && options.replayText === undefined) await openUsageRecorder();
     await titleSet;
-    const workChecklist = interactionIntent?.disposition === 'work'
-      ? interactionIntent.checklist
-      : undefined;
+    const working = intent?.disposition === 'work';
+    // Empty for a `work` basis Clef decided: its labels can only come late.
+    const workChecklist = intent?.disposition === 'work' && intent.checklist.length > 0 ? intent.checklist : undefined;
     // A substantive @-mention is classified late (above), AFTER Work admission
     // froze the presentation without a plan — whereas ambient and obvious-work
     // turns carry their plan from admission. Attach the late-classified work
@@ -1842,10 +1846,20 @@ async function runTurnAttempt(
         console.warn('[chickpea] Slack late native plan attachment failed');
       });
     }
+    // Labels owed after a Clef `work` basis. Started after the title, as the
+    // early plan is; the store refuses them once a stream or a terminal
+    // delivery began, and the reply then stands without a plan.
+    latePlan = judgment?.lateChecklist.then(async (labels) => {
+      if (!labels) return;
+      await agentViewPresentation?.adoptLatePlan(labels).catch(() => {
+        console.warn('[chickpea] Slack late native plan attachment failed');
+      });
+    });
     // The eyes reaction is a lightweight receipt on the user's root message,
     // distinct from the native activity status. Persist whether this run
     // created it so terminal cleanup never removes a pre-existing reaction.
-    if (workChecklist && !interactionProgress.acknowledgment) {
+    // It follows the disposition, so a Clef `work` basis gets it at once.
+    if (working && !interactionProgress.acknowledgment) {
       try {
         workAcknowledgment = await presenter.addSemanticReaction(
           'work_ack',
@@ -2619,6 +2633,10 @@ async function runTurnAttempt(
       }
       await removeWorkAcknowledgment();
     }
+    // After a Clef basis the classifier is still answering for its late labels
+    // and its usage record; both land here, within the classifier's own bound.
+    await latePlan;
+    await judgment?.settled;
     // Work writes queued behind a slow Work store are recorded now, within a
     // bound. The reply and its cleanup are done, so the user waits for none of
     // them. A yielded turn waits too: work left running after the alarm
@@ -2697,7 +2715,7 @@ export async function repairSlackInteractionProgress(
 async function recordExplicitInteractionClassifierUsage(input: {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
-  classification: Awaited<ReturnType<typeof classifySlackInteraction>>;
+  classification: SlackInteractionClassification;
   requestedModel: string | null;
   platformEnv: PlatformEnv | undefined;
   options: RunTurnOptions;

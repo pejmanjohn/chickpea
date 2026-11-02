@@ -1717,6 +1717,39 @@ test('adopt_plan is refused when native tasks are disabled', () => {
   }
 });
 
+// Defect caught: labels that arrive after a Clef-decided work turn's final
+// began (a fresh post, no stream) attach a plan to a finished reply.
+test('adopt_plan is refused on V3 once the terminal delivery began, and accepted before', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db);
+    // A late-classified mention is frozen without a plan.
+    const planless = (runId: string) => {
+      const { taskLabels: _labels, ...input } = createV3Input(runId);
+      return input;
+    };
+    const open = store.create(planless('run_v3_late_plan_open'));
+    const adopted = advance(store, open, { kind: 'adopt_plan', taskLabels: ['Release summary', 'Notable changes'] });
+    assert.deepEqual(adopted.plan?.tasks.map((task) => task.title), ['Release summary', 'Notable changes']);
+
+    let closing: SlackRunPresentation = store.create(planless('run_v3_late_plan_closing'));
+    closing = advance(store, closing, {
+      kind: 'record_terminal_delivery_intent',
+      operationId: 'terminal_run_v3_late_plan_1',
+      result: 'answer',
+    });
+    assert.equal(closing.stream.state, 'absent', 'a fresh final leaves the stream absent');
+    assert.throws(
+      () => advance(store, closing, { kind: 'adopt_plan', taskLabels: ['Release summary', 'Notable changes'] }),
+      (error: unknown) =>
+        error instanceof SlackPresentationStateError && error.code === 'invalid_transition',
+    );
+    assert.equal(store.get(closing.runId)?.plan, undefined);
+  } finally {
+    db.close();
+  }
+});
+
 test('the append budget is sized to Slack Tier 4: 100 a minute with a burst', () => {
   assert.equal(60_000 / DEFAULT_SLACK_APPEND_BUDGET.refillWindowMs, 100);
   assert.ok(DEFAULT_SLACK_APPEND_BUDGET.capacity >= 8, 'eight threads can open together');

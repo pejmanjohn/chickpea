@@ -1871,6 +1871,35 @@ test('adoptLatePlan is a no-op without native tasks and never overwrites an exis
   }
 });
 
+// Defect caught: a Clef-decided work turn's late labels attach a plan after
+// the final began, or the refusal surfaces as a warning on every such turn.
+test('adoptLatePlan is silent once a V3 terminal delivery began', async () => {
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (...values: unknown[]) => { warnings.push(values.map(String).join(' ')); };
+  const h = harness({ schemaVersion: 3 });
+  try {
+    assert.equal(await h.presentation.prepareDeferredTerminalDelivery('answer'), true);
+    assert.equal(h.store.get(h.runId)?.stream.state, 'absent');
+    await h.presentation.adoptLatePlan(['Release summary', 'Notable changes']);
+    assert.equal(h.store.get(h.runId)?.plan, undefined);
+    assert.deepEqual(warnings, []);
+  } finally {
+    console.warn = warn;
+    h.db.close();
+  }
+  const open = harness({ schemaVersion: 3 });
+  try {
+    await open.presentation.adoptLatePlan(['Release summary', 'Notable changes']);
+    assert.deepEqual(
+      open.store.get(open.runId)?.plan?.tasks.map((task) => task.title),
+      ['Release summary', 'Notable changes'],
+    );
+  } finally {
+    open.db.close();
+  }
+});
+
 test('a V1 progressive-off presentation stays terminal-only after the V2 deploy', async () => {
   const h = harness({ schemaVersion: 1, progressive: false, native: false });
   try {
