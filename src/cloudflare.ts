@@ -2303,11 +2303,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * this store's RPCs. In one store turn, keep the receipt time for the turn
    * admitted later (turnJobs.noteReceipt, so receiptToAdmissionMs means the
    * same as on the gateway's path) and wake the runner the turn will be
-   * handed to (wakeRunnerAtReceipt); then start verifying the installation's
-   * identity, so the admission status write finds it fresh in this isolate
-   * (showStatusAtHandoff) instead of paying auth.test inside its cap. The
-   * Worker awaits none of it and nothing here changes what it admits: a
-   * failure fails nothing, and the identity is never logged.
+   * handed to (wakeRunnerAtReceipt); when one was predicted, the delivery
+   * becomes a turn whose status write needs the installation's identity, so
+   * start verifying it, held in this invocation (waitUntil) so the runtime
+   * carries the auth.test to its end, and the admission status write finds
+   * it fresh in this isolate (showStatusAtHandoff) instead of paying
+   * auth.test inside its cap. A delivery that wakes no runner (a join, an
+   * edit, a bot's post) verifies nothing. The Worker awaits none of it and
+   * nothing here changes what it admits: a failure fails nothing, and the
+   * identity is never logged.
    */
   async noteSlackDelivery(note: SlackDeliveryNote): Promise<StateRpcResult<null>> {
     const { workspaceId, eventId, eventTime, event, receivedAt } = note;
@@ -2319,8 +2323,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     });
     if (!noted.ok) return noted;
     if (noted.value) {
-      this.wakeRunnerAtReceipt({ kind: 'event.deliver', envelope: { workspaceId, eventId, eventTime, event } });
-      void noted.value(workspaceId).then(() => undefined, () => undefined);
+      const woken = this.wakeRunnerAtReceipt({ kind: 'event.deliver', envelope: { workspaceId, eventId, eventTime, event } });
+      if (woken) {
+        const verifying = noted.value(workspaceId).then(() => undefined, () => undefined);
+        // The runtime has waitUntil on DurableObjectState; the module declaration omits it.
+        const state = this.ctx as DurableObjectState & { waitUntil?(promise: Promise<unknown>): void };
+        if (typeof state.waitUntil === 'function') state.waitUntil(verifying);
+      }
     }
     return { ok: true, value: null };
   }
@@ -2331,17 +2340,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * receiptRunnerWake for which deliveries). Never awaited: the gateway's
    * acknowledgement waits for this receipt, and the direct path's note
    * (noteSlackDelivery) is itself unawaited. Nothing here changes the receipt.
+   * Returns whether a runner was woken.
    */
-  private wakeRunnerAtReceipt(delivery: ReceiptWakeDelivery): void {
+  private wakeRunnerAtReceipt(delivery: ReceiptWakeDelivery): boolean {
     try {
-      if (!this.runnerMode()) return;
+      if (!this.runnerMode()) return false;
       const predicted = this.call((stores) => receiptRunnerWake(delivery, stores.config));
-      if (!predicted.ok || !predicted.value) return;
+      if (!predicted.ok || !predicted.value) return false;
       const runner = threadRunnerStub(this.env as PlatformEnv, predicted.value.threadKey);
-      if (!runner) return;
+      if (!runner) return false;
       void Promise.resolve(runner.wake(Date.now(), predicted.value.turnJobId)).catch(() => undefined);
+      return true;
     } catch {
       // The hand-off addresses the runner either way.
+      return false;
     }
   }
 
