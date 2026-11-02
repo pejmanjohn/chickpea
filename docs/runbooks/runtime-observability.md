@@ -423,7 +423,10 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 - `turn_latency.startToStageMs` is the attempt's own work before it stages
   that input: memory and the plan, the opening status, the judgment, the
   lease check, the thread's context read, the usage admission and the
-  dispatch's preparation. The installation's identity check and the start
+  dispatch's preparation. The context read's Slack messages are read beside
+  memory and the plan; the transcript's continuation, memory's visibility
+  barrier and the people's names in it follow the plan. The installation's
+  identity check and the start
   claim come before the attempt starts, in `admissionToStartMs`.
   `admissionToStartMs` plus `startToStageMs` plus `agentStageMs` is
   admission to the input staged. Present exactly when `agentStageMs` is.

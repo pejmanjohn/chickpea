@@ -6,6 +6,7 @@ import { after, before, test } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
 
+import { deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
@@ -336,6 +337,90 @@ test('the context read runs while the owner lease is checked and the admitted st
       `the delivery lease reads start at settlement observed: ${timeline.join(' ')}`);
     assert.equal(finals.length, 1);
     assert.match(finals[0]!, /three fixes/);
+  } finally {
+    db.close();
+    work.close();
+  }
+});
+
+// Defects caught: the thread's context read waiting for the plan's freeze
+// (it started only once the turn's preparation ended), and a lease refused
+// before the run that no longer withholds the turn once that read began
+// first: no dispatch, no title, and the failure notice its only final.
+test("the thread's context read starts beside the plan's freeze, before the lease check; a refused lease still withholds the turn", async () => {
+  const messageTs = '1790000500.000100';
+  const turn = leaseTurn('Ev_LEASE_EARLY_READ', messageTs);
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment, sourceVisibility: 'public', admittedAt: Date.now(),
+  }));
+  const runId = admitted.run.id;
+  const db = openStateDb(':memory:');
+  const store = new SlackRunPresentationStoreLogic(db);
+  const state = presentationFor(store, runId, turn);
+  const timeline: string[] = [];
+  const written: string[] = [];
+  const seen = <T>(method: string, result: T) => async () => {
+    timeline.push(method);
+    return result;
+  };
+  const client = {
+    apiCall: async () => ({ ok: true }),
+    assistant: { threads: {
+      setStatus: async () => ({ ok: true }),
+      setTitle: seen('assistant.threads.setTitle', { ok: true }),
+    } },
+    auth: { test: async () => ({ ok: true, user_id: 'U_CHICKPEA' }) },
+    users: { info: async () => ({ ok: true, user: { id: turn.userId, team_id: turn.workspaceId } }) },
+    conversations: {
+      info: async () => ({ ok: true, channel: { id: turn.channelId, context_team_id: turn.workspaceId, is_member: true } }),
+      // The person left the Channel: the owner lease is refused.
+      members: seen('lease:members', { ok: true, members: ['U_CHICKPEA'] }),
+      replies: seen('conversations.replies', { ok: true, messages: [] }),
+      history: seen('conversations.history', { ok: true, messages: [] }),
+    },
+    chat: {
+      startStream: async (input: { chunks?: Array<{ text?: string }> }) => {
+        written.push(input.chunks?.map((chunk) => chunk.text ?? '').join('') ?? '');
+        return { ok: true, ts: '1790000500.000200' };
+      },
+      appendStream: async () => ({ ok: true }),
+      stopStream: async () => ({ ok: true }),
+      postMessage: async (input: { text?: string }) => {
+        written.push(input.text ?? '');
+        return { ok: true, ts: '1790000500.000200' };
+      },
+    },
+  } as unknown as WebClient;
+  try {
+    await runTurn(turn, assignment, undefined, {
+      client,
+      runId,
+      turnId: `turn_${runId}`,
+      presentationState: state,
+      workStore: work,
+      usageRecordingEnabled: false,
+      // The freeze is held until the thread's read has begun (or half a second).
+      onRuntimePlan: async (candidate) => {
+        const deadline = Date.now() + 500;
+        while (!timeline.includes('conversations.replies') && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        timeline.push('plan:frozen');
+        return { runtimePlan: candidate, instanceId: deriveRuntimePlanInstanceId(candidate) };
+      },
+      agentPrompt: async (input) => {
+        timeline.push('agent');
+        return settledAnswer(input);
+      },
+    });
+    const read = timeline.indexOf('conversations.replies');
+    assert.ok(read >= 0, `the thread was read: ${timeline.join(' ')}`);
+    assert.ok(read < timeline.indexOf('plan:frozen'), `the read does not wait for the plan: ${timeline.join(' ')}`);
+    assert.ok(read < timeline.indexOf('lease:members'), `the read starts before the lease check: ${timeline.join(' ')}`);
+    assert.equal(timeline.includes('agent'), false, 'a refused lease dispatches nothing');
+    assert.equal(timeline.includes('assistant.threads.setTitle'), false, 'and titles nothing');
+    assert.deepEqual(written, [AGENT_FAILURE_TEXT], 'its only final is the failure notice');
   } finally {
     db.close();
     work.close();
