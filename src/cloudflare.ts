@@ -403,7 +403,9 @@ instrument({
 // the generated entry's guarded default so `cloudflare/*` remains keyless but
 // calls env.AI directly, without the default payload-logging AI Gateway.
 // Importable `env` is Cloudflare's ambient binding object; no I/O runs here.
-registerCloudflareBindingProvider(env.AI);
+// A deployment serving many installations keeps the binding for its own
+// judgments and registers no model provider from it.
+registerCloudflareBindingProvider(env.AI, env as unknown as Record<string, unknown>);
 
 export { ContainerProxy } from '@cloudflare/sandbox';
 
