@@ -19,6 +19,7 @@ import {
 } from './command-address.ts';
 
 const SLACK_INTERACTION_DISPOSITIONS = ['ignore', 'react_only', 'reply', 'work'] as const;
+export type SlackInteractionDisposition = (typeof SLACK_INTERACTION_DISPOSITIONS)[number];
 
 const SLACK_INTERACTION_REASONS = [
   'pure_ack',
@@ -63,7 +64,7 @@ export const SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS = [
 ].join('\n');
 export type SemanticReaction = (typeof SEMANTIC_REACTIONS)[number];
 
-type ReactionTarget = 'trigger' | 'thread_root' | 'latest_user';
+export type ReactionTarget = 'trigger' | 'thread_root' | 'latest_user';
 type SlackInteractionSource =
   | 'app_mention'
   | 'agent_mention'
@@ -77,7 +78,7 @@ export type SlackInteractionIntent =
   | { disposition: 'reply'; reason: SlackInteractionReason }
   | { disposition: 'work'; reason: SlackInteractionReason; checklist: string[] };
 
-interface SlackInteractionIntentContext {
+export interface SlackInteractionIntentContext {
   workspaceId: string;
   channelId: string;
   eventId: string;
