@@ -1,3 +1,4 @@
+import { deploymentServesManyInstallations } from './config/installation-scope.ts';
 import { registerPiProvider } from './config/pi-provider-registry.ts';
 import { isRecord } from './security/content-validation.ts';
 import {
@@ -24,10 +25,19 @@ const GPT_OSS_DEFAULT_MAX_TOKENS = 8_192;
  *
  * Importing this module is side-effect free. The Cloudflare-only entry calls
  * this helper with its ambient `env.AI` binding; the shared Node app never
- * imports it or registers a keyless `cloudflare/*` provider.
+ * imports it or registers a keyless `cloudflare/*` provider. A deployment
+ * serving many installations registers none either: its binding serves the
+ * deployment's own judgments (Clef), never a tenant's model request, which
+ * the model-access cell and readiness refuse anyway. Returns whether a
+ * provider was registered.
  */
-export function registerCloudflareBindingProvider(binding: CloudflareAIBinding): void {
+export function registerCloudflareBindingProvider(
+  binding: CloudflareAIBinding,
+  env?: Record<string, unknown>,
+): boolean {
+  if (deploymentServesManyInstallations(env)) return false;
   registerPiProvider(createCloudflareBindingProvider(binding));
+  return true;
 }
 
 /** Pure provider seam used to apply the same attachment policy as Pi APIs. */
