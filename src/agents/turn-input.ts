@@ -347,7 +347,7 @@ export const slackThreadCloudflareExtension = {
       /**
        * Host RPC: stage one turn's input before its dispatch, and load the
        * connector details its render reads. `sentAt` is the runner's clock
-       * before it named this object, for `agent_boot`.
+       * before it addressed this object, for `agent_boot`.
        */
       async chickpeaStageTurnInput(json: string, sentAt?: unknown): Promise<void> {
         if (typeof json !== 'string') throw new Error('Slack turn input must be serialized.');

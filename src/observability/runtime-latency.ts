@@ -306,9 +306,8 @@ export class RunnerBootMarks extends ObjectBootMarks<RunnerBootMethod> {
 
 /**
  * A Flue agent object's activation marks, logged as `agent_boot`. A wake and
- * a staged turn input carry the runner's clock from before it named the
- * object, so `sentToConstructMs` covers activating it, and
- * `constructToFirstCallMs` includes the start (`onStart`) that naming it ran.
+ * a staged turn input carry the runner's clock from before it addressed the
+ * object, so `sentToConstructMs` covers activating it.
  */
 export class AgentBootMarks extends ObjectBootMarks<AgentBootMethod> {
   constructor(agentClass: string, now: () => number = Date.now, sink?: RuntimeLatencySink) {
