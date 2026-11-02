@@ -82,10 +82,12 @@ let captured: unknown;
 let charged: { sharedPrefix: SharedPrefixId | null; requestId: string } | undefined;
 const chargedRecords = new WeakMap<RenderedRequest, { sharedPrefix: SharedPrefixId | null; requestId: string }>();
 const blockedUrls: string[] = [];
-Anthropic.Beta.Messages.prototype.create = OpenAI.Responses.prototype.create = function (params: unknown) {
+function captureRequest(params: unknown): never {
   captured = structuredClone(params);
   throw new Error('render only');
-};
+}
+Anthropic.Beta.Messages.prototype.create = captureRequest;
+OpenAI.Responses.prototype.create = captureRequest;
 globalThis.fetch = (async (url: unknown) => {
   blockedUrls.push(String(url));
   throw new Error('network blocked in render');
