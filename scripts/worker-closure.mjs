@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
 
 const MIB = 1024 * 1024;
-export const WORKER_STATIC_CLOSURE_CEILING_BYTES = Math.round(9.1 * MIB);
+export const WORKER_STATIC_CLOSURE_CEILING_BYTES = Math.round(7.65 * MIB);
 const ENTRY = 'virtual:cloudflare/worker-entry';
 
 /** The entry's static chunks, largest first, from the build's Vite manifest. */
