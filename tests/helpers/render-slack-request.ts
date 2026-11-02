@@ -73,6 +73,8 @@ export interface SlackRequestVariant {
   codingWorkspace?: true;
   /** The system Agent's root DM turn with these Agents on its front desk. */
   frontDesk?: import('../../src/config/types.ts').FrontDeskDirectory;
+  /** More host attributes on every turn's Slack signal, such as the change-tools signal. */
+  signalAttributes?: Record<string, string>;
 }
 
 export const USER_AGENT_ID = 'agent_brief_writer';
@@ -244,6 +246,8 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
 export interface SlackThreadTurn {
   text: string;
   replies: readonly ScriptedReply[];
+  /** This turn's Slack signal attributes, in place of the variant's. */
+  signalAttributes?: Record<string, string>;
 }
 
 /**
@@ -264,7 +268,9 @@ export async function renderSlackThread(
   });
   const rendered: RenderedRequest[][] = [];
   for (const [index, turn] of turns.entries()) {
-    rendered.push(await renderSlackTurn(context, { ...variant, text: turn.text }, index, turn.replies));
+    rendered.push(await renderSlackTurn(context, {
+      ...variant, text: turn.text, ...(turn.signalAttributes ? { signalAttributes: turn.signalAttributes } : {}),
+    }, index, turn.replies));
   }
   return rendered;
 }
@@ -319,6 +325,7 @@ async function renderSlackTurn(
     workspaceId: variant.workspace, channelId: variant.channel, threadTs: variant.thread, conversationKind,
     slackUserId: variant.user, eventId: turn.eventId, messageTs, turnJobId: `job_${variant.thread}${index ? `_${index}` : ''}`,
     ...(variant.threadImages ? { threadImages: serializeThreadImageRecords(variant.threadImages)! } : {}),
+    ...variant.signalAttributes,
   };
   const signal = variant.delivery === 'file_delivery_check'
     ? {

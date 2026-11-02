@@ -16,7 +16,7 @@ import {
   getCurrentTools,
   type Context,
 } from '@earendil-works/pi-ai';
-import { init, observe, useModel, useTool, type AgentProps } from '@flue/runtime';
+import { init, observe, useDelivery, useModel, useTool, type AgentProps } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import * as v from 'valibot';
 
@@ -130,6 +130,44 @@ test('a later turn of an activated thread sends the change tools after the share
   }
 });
 
+const SIGNALED = { workspaceChangeTools: 'mounted' };
+
+// Defect caught: the host's signal does not mount the tools in the first
+// request, mounts them in another position (a third cache shape no prewarm
+// shares), or adds them mid-conversation instead.
+for (const agentKind of ['system', 'user'] as const) {
+  test(`${agentKind} Agent: a signaled turn's first request carries the change tools in the shared management shape`, async () => {
+    const [, later] = await renderSlackThread(thread({ agentKind }), [
+      { text: 'Create an Agent named Scout.', replies: [ACTIVATE, DONE] },
+      { text: 'Rename it Ranger.', replies: [] },
+    ]);
+    const activatedLater = later![0]!;
+    const signaled = await renderSlackRequest(thread({ agentKind, signalAttributes: SIGNALED }));
+    const mounted = names(signaled.tools);
+    const at = mounted.indexOf(CHANGE_TOOLS[0]!);
+    assert.deepEqual(mounted.slice(at - 1, at + CHANGE_TOOLS.length), ['stream_answer', ...CHANGE_TOOLS]);
+    assert.equal(JSON.stringify(signaled.tools), JSON.stringify(activatedLater.tools),
+      'the same tools, byte for byte, as an activated thread\'s later turn');
+    assert.equal(signaled.system[0].text, sharedSystemBlock(agentKind));
+    assert.deepEqual(anthropicToolAdditions(signaled), [], 'declared from the start, not added');
+    assert.equal(chargedSharedPrefix(signaled), `${agentKind}/interactive_streaming_management`);
+    assert.deepEqual(signaled.system[0].cache_control, { type: 'ephemeral', ttl: '1h' });
+  });
+}
+
+// Defect caught: a value other than the host's own mounts the tools, or the
+// signal on one turn leaks into the thread's next.
+test('only the host\'s signal mounts the tools, and only on its own turn', async () => {
+  const [first, second] = await renderSlackThread(thread(), [
+    { text: 'Create an Agent named Scout.', replies: [DONE], signalAttributes: SIGNALED },
+    { text: 'Thanks.', replies: [] },
+  ]);
+  assert.ok(CHANGE_TOOLS.every((tool) => names(first![0]!.tools).includes(tool)));
+  assert.equal(chargedSharedPrefix(second![0]!), 'system/interactive_streaming', 'the next turn is lean again');
+  const other = await renderSlackRequest(thread({ signalAttributes: { workspaceChangeTools: 'always' } }));
+  assert.ok(CHANGE_TOOLS.every((tool) => !names(other.tools).includes(tool)));
+});
+
 const PROBE_MODEL = 'faux/change-tools-probe';
 
 /** The hook as a delivered Slack submission runs it, with stand-ins for the four tools. */
@@ -141,6 +179,66 @@ function ChangeToolsProbe({ id }: AgentProps) {
   }
   return 'Answer the request.';
 }
+
+/** As ChickpeaSlack reads the host's signal from the delivery. */
+function SignaledChangeToolsProbe({ id }: AgentProps) {
+  useModel(PROBE_MODEL);
+  useAgentAuthoringSkill();
+  const delivery = useDelivery();
+  const signaled = delivery.kind === 'signal' && delivery.attributes?.workspaceChangeTools === 'mounted';
+  if (useWorkspaceChangeToolsMounted(id, signaled)) {
+    for (const name of CHANGE_TOOLS) useTool({ name, description: `Stand-in for ${name}.`, input: v.object({}), run: () => 'ok' });
+  }
+  return 'Answer the request.';
+}
+
+// Defect caught: a signaled turn writes the thread's keep flag, so a false
+// positive makes every later turn carry the tools; or a signaled turn whose
+// model activates loses the flag that keeps them.
+test('a signaled turn keeps the tools for the thread only when its model activates agent-authoring', async () => {
+  const unobserve = observe((event) => noteAgentAuthoringActivation(event));
+  const faux = fauxProvider({ models: [{ id: 'change-tools-probe' }] });
+  const contexts: Context[] = [];
+  const seen = (reply: ReturnType<typeof fauxAssistantMessage>) => (context: Context) => {
+    contexts.push(structuredClone(context));
+    return reply;
+  };
+  const flue = await start({ agents: [{ agent: SignaledChangeToolsProbe, name: 'signaled-change-tools-probe' }], providers: [faux.provider] });
+  const signal = (body: string, attributes: Record<string, string>) => ({
+    message: { kind: 'signal' as const, type: 'slack.message', tagName: 'slack_message', body, attributes },
+  });
+  try {
+    const turn = async (handle: ReturnType<typeof init>, request: Parameters<ReturnType<typeof init>['dispatch']>[0]) => {
+      await handle.read(await handle.dispatch(request));
+    };
+    const mounted = (context: Context) => getCurrentTools(context.messages).map(({ name }) => name)
+      .filter((name) => CHANGE_TOOLS.includes(name));
+
+    const answered = init(SignaledChangeToolsProbe, { id: 'signaled-change-tools-answered' });
+    faux.setResponses([seen(fauxAssistantMessage('Done.')), seen(fauxAssistantMessage('Done.'))]);
+    await turn(answered, signal('Create an Agent named Scout.', SIGNALED));
+    await turn(answered, signal('Thanks.', {}));
+    const [signaledFirst, nextLean] = contexts.splice(0);
+    assert.deepEqual(mounted(signaledFirst!), CHANGE_TOOLS, 'the signaled turn\'s first request has them');
+    assert.deepEqual(mounted(nextLean!), [], 'the signal kept nothing');
+
+    const activated = init(SignaledChangeToolsProbe, { id: 'signaled-change-tools-activated' });
+    faux.setResponses([
+      seen(fauxAssistantMessage([fauxToolCall('activate_skill', { name: 'agent-authoring' })], { stopReason: 'toolUse' })),
+      seen(fauxAssistantMessage('Done.')),
+      seen(fauxAssistantMessage('Done.')),
+    ]);
+    await turn(activated, signal('Create an Agent named Scout.', SIGNALED));
+    await turn(activated, signal('Rename it Ranger.', {}));
+    const [first, afterActivation, kept] = contexts;
+    assert.deepEqual(mounted(first!), CHANGE_TOOLS);
+    assert.deepEqual(mounted(afterActivation!), CHANGE_TOOLS, 'activating changes nothing mid-turn');
+    assert.deepEqual(mounted(kept!), CHANGE_TOOLS, 'activation kept them for the thread');
+  } finally {
+    await flue.stop();
+    unobserve();
+  }
+});
 
 test('the thread keeps the change tools when the response that activated agent-authoring finishes', async () => {
   const unobserve = observe((event) => noteAgentAuthoringActivation(event));

@@ -6,9 +6,9 @@ import type { WorkspaceManagementToolName } from './tool-adapter.ts';
 /**
  * The management tools that propose, apply, undo, and read back workspace
  * configuration changes, which carry most of the management schema bytes. A
- * Slack thread mounts them once agent-authoring is active in it, as their
- * own capability segment (shared-prefix.ts), so a turn that changes nothing
- * sends a smaller prompt.
+ * Slack thread mounts them once agent-authoring is active in it, or for one
+ * turn the host signals, as their own capability segment (shared-prefix.ts),
+ * so a turn that changes nothing sends a smaller prompt.
  */
 export const WORKSPACE_CHANGE_TOOL_NAMES = [
   'propose_workspace_changes',
@@ -53,12 +53,16 @@ export function noteAgentAuthoringActivation(event: {
  * Whether this render mounts the change tools. Once agent-authoring is
  * activated in a thread they stay mounted for the rest of it, so no later
  * render withdraws them: the response that activated it keeps them when it
- * finishes.
+ * finishes. `signaled`, the host's signal on the turn's delivery (Clef read a
+ * configuration change, or a change set waits on the requester), mounts them
+ * from the turn's first request in the same position, so the request carries
+ * the shared management shape. It keeps nothing: the thread keeps them only
+ * if the model activates agent-authoring.
  */
-export function useWorkspaceChangeToolsMounted(instanceId: string): boolean {
+export function useWorkspaceChangeToolsMounted(instanceId: string, signaled = false): boolean {
   const [kept, keep] = usePersistentState<boolean>(WORKSPACE_CHANGE_TOOLS_STATE_NAME, false);
   if (kept) return true;
-  if (!activatedInstances.has(instanceId)) return false;
+  if (!activatedInstances.has(instanceId)) return signaled;
   useAgentFinish(() => {
     keep(true);
     activatedInstances.delete(instanceId);

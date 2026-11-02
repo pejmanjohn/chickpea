@@ -625,7 +625,7 @@ const SLACK_SKILL_UPLOAD_INSTRUCTION = 'The person\'s current message has files 
 
 /** Management tools the caller mounts later in the tool list, each where the shared prompt prefix needs it. */
 export interface DeferredSlackManagementTools {
-  /** The change tools, once agent-authoring is active in the thread (workspace-change-tools.ts). */
+  /** The change tools, once agent-authoring is active in the thread or the host signals the turn (workspace-change-tools.ts). */
   changeTools?: () => void;
   /** upload_skills, when the person's message has files. */
   skillUpload?: () => void;
@@ -649,7 +649,7 @@ export function useWorkspaceManagementSlackTools(
 ): DeferredSlackManagementTools | undefined {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal) return undefined;
-  const changeToolsMounted = useWorkspaceChangeToolsMounted(instanceId);
+  const changeToolsMounted = useWorkspaceChangeToolsMounted(instanceId, signal.workspaceChangeTools === true);
   const turnGuard = useSlackManagementTurnGuard(signal.turnJobId);
   const [creationState, persistCreationState] = usePersistentState<SlackAgentCreationTurnState>(
     SLACK_AGENT_CREATION_TURN_STATE,
