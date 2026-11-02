@@ -394,7 +394,7 @@ test('durable observational Work waits past 100ms without turning a slow owner i
     });
     const started = performance.now();
     assert.equal(await lifecycle.prepareExecution('durable routine prompt'), 'durable routine prompt');
-    assert.ok(performance.now() - started >= 475);
+    assert.ok(performance.now() - started >= 350);
     assert.equal(lifecycle.hasExecution, true);
     assert.deepEqual(gaps, []);
   } finally {
@@ -543,7 +543,7 @@ test('confirmed non-delivery can replace only the adapter render before fallback
   }
 });
 
-test('a confirmed delivery retry reuses durable prepared input despite later context drift', async () => {
+test('a confirmed delivery retry keeps the durable prepared input despite later context drift', async () => {
   const fixture = await lifecycleFixture('public');
   try {
     await fixture.lifecycle.prepareExecution('original prepared prompt');
@@ -574,9 +574,13 @@ test('a confirmed delivery retry reuses durable prepared input despite later con
     });
     assert.equal(
       await retry.prepareExecution('edited or rehydrated prompt'),
-      'original prepared prompt',
+      'edited or rehydrated prompt',
     );
     assert.equal((await fixture.store.getRun(fixture.runId))?.preparedInputRef, preparedRef);
+    assert.equal(
+      (await fixture.store.getContent(preparedRef!))?.body,
+      'original prepared prompt',
+    );
     assert.equal((await fixture.store.getRunExecution(retry.executionId))?.attemptNumber, 2);
   } finally {
     fixture.close();

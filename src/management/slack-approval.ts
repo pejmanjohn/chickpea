@@ -1,7 +1,7 @@
 import type { ConfigStore } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { CONNECTION_CATALOG_PRESETS } from '../config/presets.ts';
-import type { IdentityStore } from '../identity/types.ts';
+import type { IdentityResolution, IdentityStore } from '../identity/types.ts';
 import {
   handoffCreatedAgentThread,
   type CreatedAgentHandoffConfig,
@@ -95,12 +95,17 @@ export async function resolveHostSlackManagementProposal(input: {
   assignment: ResolvedAssignment;
   actorMembershipId: string;
   identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
+  knownIdentity?: IdentityResolution;
   management: Pick<ManagementStore, 'getActiveChangeSetProposal'>;
 }): Promise<ManagementChangeSetProposalRecord | undefined> {
   const signal = slackManagementSignal(input.turn, input.assignment, input.turn.eventId);
+  const { knownIdentity } = input;
   let actor: ManagementActorContext;
   try {
-    actor = await resolveSlackManagementActor(signal, input.identity);
+    actor = await resolveSlackManagementActor(
+      signal,
+      knownIdentity ? { resolveSlackIdentity: async () => knownIdentity } : input.identity,
+    );
   } catch (error) {
     if (error instanceof ManagementError && error.code === 'forbidden') return undefined;
     throw error;
@@ -143,7 +148,9 @@ export async function resolveTypedSlackManagementApproval(input: {
   assignment: ResolvedAssignment;
   actorMembershipId: string;
   identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
+  knownIdentity?: IdentityResolution;
   management: Pick<ManagementStore, 'getActiveChangeSetProposal' | 'markChangeSetProposalStale'>;
+  proposal?: ReturnType<typeof resolveHostSlackManagementProposal>;
   latestAgentTurnMessageTs: (query: SlackLatestAgentTurnQuery) => Promise<string | undefined>;
   judge: (reply: { text: string; change: string }) => Promise<SlackManagementApproval>;
 }): Promise<TypedSlackManagementApproval | undefined> {
@@ -152,7 +159,7 @@ export async function resolveTypedSlackManagementApproval(input: {
       turn.source === 'reaction_added') {
     return undefined;
   }
-  const proposal = await resolveHostSlackManagementProposal(input);
+  const proposal = await (input.proposal ?? resolveHostSlackManagementProposal(input));
   if (!proposal) return undefined;
   if (shouldResolveSlackManagementApproval(turn.text)) return { kind: 'approve', proposalId: proposal.proposalId };
   if (!await answersProposal(input, proposal)) return undefined;

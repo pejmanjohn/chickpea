@@ -6,6 +6,7 @@ import { compileRuntimePlanV2, type RuntimePlanV2 } from '../src/agents/runtime-
 import {
   prepareRuntimePlanModel,
   resolveRuntimePlanBashRepositoryAccess,
+  runtimePlanTurnContext,
 } from '../src/agents/slack-thread.ts';
 import {
   parseTurnEnvelope,
@@ -30,6 +31,7 @@ import { buildTurnEnvelope } from '../src/slack/turn-envelope-builder.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
+import { withCloudflareUserAgent } from './helpers/cloudflare-target.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -242,6 +244,27 @@ test('a simulated coding turn reads no frozen fact from the singleton; secrets a
   assert.deepEqual(stub.writes, [SANDBOX_SETTING_KEYS.monthlySessionCap]);
 });
 
+test('a turn whose staged input carries the envelope never fetches it from the singleton', async () => {
+  resetTurnEnvelopeCacheForTests();
+  const plan = repositoryPlan();
+  const envelope = envelopeFor({ [SANDBOX_SETTING_KEYS.enabled]: 'true' });
+  const stub = countingStateStub({ envelope, liveAgent: agent() });
+  const env = { TAG_STATE: { getByName: () => stub.rpc }, SANDBOX: {} };
+
+  await withCloudflareUserAgent(async () => {
+    const loader = (id: string) => getSlackStateStore(env).getTurnEnvelope!(id);
+    const coordinator = new TurnEnvelopeContext('turn_staged', AGENT_ID, loader, envelope);
+    for (let call = 0; call < 3; call += 1) await prepareRuntimePlanModel(plan, env, coordinator);
+    await resolveRuntimePlanBashRepositoryAccess(plan, env, coordinator);
+    const delivery = { kind: 'signal', type: 'slack.message', tagName: 'slack_message', body: '', attributes: { turnJobId: 'turn_staged' } };
+    assert.deepEqual(await runtimePlanTurnContext(plan, delivery as never, envelope)?.envelope(), envelope);
+    assert.equal(await new TurnEnvelopeContext('turn_staged', 'agent_other', loader, envelope).envelope(), undefined);
+  });
+
+  assert.equal(stub.count('slackTurnEnvelopeGet'), 0);
+  assert.equal(stub.count('configGetAgent'), 0);
+});
+
 test('without an envelope the same turn reads the singleton for every fact, as before', async () => {
   resetTurnEnvelopeCacheForTests();
   const plan = repositoryPlan();
@@ -414,17 +437,3 @@ function countingStateStub(input: { envelope: TurnEnvelopeV1 | null; liveAgent: 
   };
 }
 
-async function withCloudflareUserAgent<T>(run: () => Promise<T>): Promise<T> {
-  const prototype = Object.getPrototypeOf(globalThis.navigator) as object;
-  const original = Object.getOwnPropertyDescriptor(prototype, 'userAgent');
-  Object.defineProperty(prototype, 'userAgent', {
-    configurable: true,
-    enumerable: true,
-    value: 'Cloudflare-Workers',
-  });
-  try {
-    return await run();
-  } finally {
-    if (original) Object.defineProperty(prototype, 'userAgent', original);
-  }
-}

@@ -388,6 +388,8 @@ export const STATE_RPC_SAMPLE_EVERY = 100;
 
 const stateRpcCounters = { calls: 0, slow: 0 };
 
+const PERF_STATE_RPC_DELAY_MS = Math.max(0, Number(process.env.CHICKPEA_PERF_STATE_RPC_DELAY_MS ?? 0) || 0);
+
 /**
  * Time one RPC at the Cf*Store class boundary. Callers pass the in-flight
  * promise from a direct `this.stub.<method>(...)` call; the stub, its methods,
@@ -401,6 +403,7 @@ export async function timedStateRpc<T>(
   const startedAt = Date.now();
   let ok = false;
   try {
+    if (PERF_STATE_RPC_DELAY_MS > 0) await new Promise((resolve) => setTimeout(resolve, PERF_STATE_RPC_DELAY_MS));
     const result = await pending;
     ok = true;
     return result;

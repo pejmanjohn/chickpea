@@ -345,6 +345,7 @@ import {
   TurnEnvelopeContext,
   TurnSettingsView,
   type TurnEnvelopeAgentFacts,
+  type TurnEnvelopeV1,
 } from './turn-envelope.ts';
 
 bootstrapRuntimeProviders();
@@ -845,7 +846,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const initialData = useInitialData<RuntimePlanV2>();
   if (!initialData) throw new Error('ChickpeaSlack requires RuntimePlanV2 creation data.');
   const delivery = useDelivery();
-  const { runtimePlan: plan, memoryBlock } = useSlackTurnRenderInput(
+  const { runtimePlan: plan, memoryBlock, turnEnvelope } = useSlackTurnRenderInput(
     id,
     parseRuntimePlanV2(initialData),
     delivery,
@@ -866,7 +867,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
     schema: SlackDisplayComponentsSchema,
   });
   const managementEnabled = !!parseSlackManagementSignal(delivery, plan);
-  const turn = runtimePlanTurnContext(plan, delivery);
+  const turn = runtimePlanTurnContext(plan, delivery, turnEnvelope);
   // The returned shared block opens the system prompt; this Agent's own
   // instructions and identity open the tenant block after it.
   useInstruction(plan.instructions);
@@ -900,18 +901,18 @@ export function ChickpeaSlack({ id }: AgentProps) {
 export const CURRENT_SLACK_TURN_STATE_NAME = 'chickpeaSlackTurn';
 
 /**
- * This turn's plan and memory. The instance is the thread's transcript and
- * outlives any one plan, so its creation data is not this turn's plan (see
- * turn-input.ts). The turn is the delivered Slack message; a later render of
- * the same response whose delivery is a hook-appended signal (or a recovered
- * attempt resuming at one) finds it in persistent state, written as the
- * delivery was taken up.
+ * This turn's plan, memory, and staged envelope. The instance is the thread's
+ * transcript and outlives any one plan, so its creation data is not this
+ * turn's plan (see turn-input.ts). The turn is the delivered Slack message; a
+ * later render of the same response whose delivery is a hook-appended signal
+ * (or a recovered attempt resuming at one) finds it in persistent state,
+ * written as the delivery was taken up.
  */
 function useSlackTurnRenderInput(
   id: string,
   initialData: RuntimePlanV2,
   delivery: ReturnType<typeof useDelivery>,
-): { runtimePlan: RuntimePlanV2; memoryBlock?: string } {
+): { runtimePlan: RuntimePlanV2; memoryBlock?: string; turnEnvelope?: TurnEnvelopeV1 } {
   const [current, setCurrent] = usePersistentState<{ turnJobId?: string }>(
     CURRENT_SLACK_TURN_STATE_NAME,
     {},
@@ -1093,27 +1094,24 @@ export function slackDeliveryThreadImages(
 
 /**
  * This Slack turn's settings envelope, frozen by the host when it prepared
- * the dispatch and fetched on first use. Only a Cloudflare Slack turn has
- * one: on Node the tools' stores are local, and a routine run has no TurnJob.
+ * the dispatch: the copy the host staged beside the instance, else fetched
+ * from the host on first use. Only a Cloudflare Slack turn has one: on Node
+ * the tools' stores are local, and a routine run has no TurnJob.
  */
 export function runtimePlanTurnContext(
   plan: RuntimePlanV2,
   delivery: ReturnType<typeof useDelivery>,
+  staged?: TurnEnvelopeV1,
 ): TurnEnvelopeContext | undefined {
   if (!isCloudflareTarget() || delivery.kind !== 'signal') return undefined;
   const turnJobId = delivery.attributes?.turnJobId;
   if (typeof turnJobId !== 'string' || turnJobId.length === 0 || turnJobId.length > 200) {
     return undefined;
   }
-  return createTurnEnvelopeContext(turnJobId, plan.agentId);
-}
-
-/** A turn's envelope, fetched from the host by its TurnJob id (one read per turn). */
-function createTurnEnvelopeContext(turnJobId: string, agentId: string): TurnEnvelopeContext {
-  return new TurnEnvelopeContext(turnJobId, agentId, async (id) => {
+  return new TurnEnvelopeContext(turnJobId, plan.agentId, async (id) => {
     const env = await resolveAgentPlatformEnv();
     return getSlackStateStore(env).getTurnEnvelope?.(id);
-  });
+  }, staged);
 }
 
 /** Declare only the connected-service accounts frozen into this execution plan. */

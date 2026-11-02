@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { DEFAULT_INTERACTION_TIMEOUT_MS } from '../src/slack/interaction-intent.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,7 @@ import { after, before, test } from 'node:test';
 
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
+import { configureModelAccessResolver, resetModelAccessForTests } from '../src/config/model-access.ts';
 import { closeNodeStateStores, resolveStores, type AppStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
@@ -17,6 +19,7 @@ import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { SCRIPTED_MODEL, scriptedMessage, scriptedProvider } from './helpers/scripted-provider.ts';
 
 /**
  * How many state-store calls a turn makes before its first Slack write. In a
@@ -54,6 +57,14 @@ before(async () => {
   process.env.SLACK_STATE_DB_PATH = statePath;
   const store = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   await store.createAgent(assignment.agent);
+  const installation = await store.ensureWorkspaceInstallation({
+    workspaceId: assignment.workspaceId,
+    transportMode: 'direct',
+    defaultAgentId: assignment.agentId,
+    teamId: assignment.workspaceId,
+    botUserId: 'U_CHICKPEA',
+  });
+  await store.updateWorkspaceInstallation(assignment.workspaceId, { health: 'healthy' }, installation.revision);
   store.close();
 });
 
@@ -129,13 +140,31 @@ function surfaceTurn(surface: Surface): NormalizedSlackTurn {
 let turns = 0;
 /** Slack rejects the custom assistant status (a platform error), when set. */
 let rejectCustomStatus = false;
+let holdCustomStatus: ((timeline: string[]) => Promise<void>) | undefined;
+let holdNativeStart: ((timeline: string[]) => Promise<void>) | undefined;
+let holdClassifierAnswer: ((timeline: string[]) => Promise<void>) | undefined;
+
+async function waitUntil(ready: () => boolean): Promise<void> {
+  const deadline = Date.now() + DEFAULT_INTERACTION_TIMEOUT_MS / 4;
+  while (!ready() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
 
 async function firstStatusTimeline(
   surface: Surface,
   publicUrl?: string | null,
   overrides: Partial<RunTurnOptions> = {},
+  turnAssignment: ResolvedAssignment = assignment,
 ) {
   const timeline: string[] = [];
+  if (holdClassifierAnswer) {
+    const hold = holdClassifierAnswer;
+    scriptedProvider([async (model) => {
+      await hold(timeline);
+      return scriptedMessage(model, [{ type: 'text', text: '{"disposition":"reply","reason":"substantive_request"}' }], 'stop');
+    }], { providerId: 'anthropic' });
+  }
   turns += 1;
   const base = surfaceTurn(surface);
   // A distinct message per call, in the same Slack thread shape.
@@ -148,7 +177,7 @@ async function firstStatusTimeline(
   };
   const real = resolveStores();
   const admitted = await real.work.admitShadowRun(prepareSlackShadowAdmission({
-    turn, assignment, sourceVisibility: 'private', admittedAt: Date.now(),
+    turn, assignment: turnAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
   }));
   const runId = admitted.run.id;
   const stores = Object.fromEntries(
@@ -207,12 +236,20 @@ async function firstStatusTimeline(
         data: { ok: false, error: 'not_allowed' },
       });
     }
+    if (holdCustomStatus && method === 'assistant.threads.setStatus') {
+      await holdCustomStatus(timeline);
+      timeline.push('acknowledged:assistant.threads.setStatus');
+    }
     return { ok: true, ts: '1788000100.000100', channel: turn.channelId, messages: [] };
   };
   const client = {
     // agents.sessions.setStatus, labelled by the session status it sets.
     apiCall: async (_method: string, input: Record<string, unknown>) => {
       timeline.push(`slack:session:${String(input.status)}`);
+      if (holdNativeStart && input.status === 'processing') {
+        await holdNativeStart(timeline);
+        timeline.push('acknowledged:session:processing');
+      }
       return { ok: true };
     },
     assistant: { threads: { setStatus: slack('assistant.threads.setStatus') } },
@@ -250,16 +287,19 @@ async function firstStatusTimeline(
       timeline.push('turnJobs.getBoundRuntimePlan');
       return undefined;
     },
-    agentPrompt: async () => ({
-      text: 'Done.',
-      requestedModel: assignment.model ?? null,
-      returnedModel: null,
-      reportedUsage: null,
-      usageCompleteness: 'not_reported',
-    }),
+    agentPrompt: async () => {
+      timeline.push('agentPrompt');
+      return {
+        text: 'Done.',
+        requestedModel: assignment.model ?? null,
+        returnedModel: null,
+        reportedUsage: null,
+        usageCompleteness: 'not_reported',
+      };
+    },
   };
   try {
-    await runTurn(turn, assignment, undefined, { ...options, ...overrides });
+    await runTurn(turn, turnAssignment, undefined, { ...options, ...overrides });
   } finally {
     db.close();
   }
@@ -280,16 +320,20 @@ async function firstStatusTimeline(
  * Work lifecycle, all serial. Now the first write is Slack's native
  * `processing` indicator (the fast write); the session is then handed over and
  * the admitted activity is written as the custom status, which replaces it
- * (#207). Only the public URL precedes the native start, and the thread's
- * generation fence (checked by the hand-over and by the custom write)
- * precedes the custom write; a thread runner answers both from its `begin`
- * round trip. Classification, memory, the plan, and the Work
- * lifecycle all follow.
+ * (#207). Only the public URL precedes the native start. Classification,
+ * memory, the plan, and the Work lifecycle start once that call is issued
+ * and run while Slack acknowledges it. The custom status waits for the
+ * acknowledgement (its hand-over releases an acknowledged session) and is
+ * issued next; the reads do not wait for it either. The thread's generation
+ * fence (checked by the hand-over and by the custom write) is the status
+ * path's only other state read; a thread runner answers it from its `begin`
+ * round trip.
  */
 for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
-  test(`${surface}: native first, then the custom status, before classification, memory, and the plan`, async () => {
+  test(`${surface}: native first, before any other read, then the custom status`, async () => {
     const { beforeFirstWrite, slackWrites, timeline } = await firstStatusTimeline(surface);
-    assert.deepEqual(beforeFirstWrite, ['settings.getSetting'], 'only the public URL');
+    assert.deepEqual(beforeFirstWrite, ['settings.getSetting'],
+      'only the public URL is read before the native start');
     assert.deepEqual(slackWrites.slice(0, 3), [
       'slack:session:processing', // the fast first write
       'slack:session:active', // hand-over, so the custom text renders
@@ -299,9 +343,8 @@ for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
     // The hand-over and the custom write each check the thread's generation
     // fence; a runner answers both from the cache its `begin` round trip seeds.
     assert.deepEqual(
-      timeline.slice(0, custom).filter((entry) => !entry.startsWith('slack:')),
+      timeline.slice(0, custom).filter((entry) => entry.startsWith('presentations.')),
       [
-        'settings.getSetting',
         'presentations.getLatestThreadSessionGeneration',
         'presentations.getLatestThreadSessionGeneration',
       ],
@@ -309,13 +352,6 @@ for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
     );
     assert.equal(timeline.filter((entry) => entry === 'slack:session:processing').length, 1,
       'one native start');
-    for (const later of ['turnJobs.freezeRuntimePlan', 'work.getRun']) {
-      assert.ok(timeline.indexOf(later) > custom, `${later} runs after the custom status`);
-    }
-    if (surface !== 'thread_follow_up') {
-      // Classified late: the admitted activity shows before the disposition.
-      assert.ok(timeline.indexOf('turnJobs.recordInteractionIntent') > custom);
-    }
   });
 
   test(`${surface}: a runner that read the public URL at begin writes to Slack first`, async () => {
@@ -325,7 +361,7 @@ for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
     // The generation fence before the custom write: the runner seeds it from
     // the same `begin` round trip (see slack-thread-runner-execution tests).
     const custom = timeline.indexOf('slack:assistant.threads.setStatus');
-    assert.deepEqual(timeline.slice(0, custom).filter((entry) => !entry.startsWith('slack:')), [
+    assert.deepEqual(timeline.slice(0, custom).filter((entry) => entry.startsWith('presentations.')), [
       'presentations.getLatestThreadSessionGeneration',
       'presentations.getLatestThreadSessionGeneration',
     ]);
@@ -387,21 +423,86 @@ test('memory preparation that fails while the plan is still reading fails the tu
   }
 });
 
-test('a rejected custom status shows native again, still before classification and the plan', async () => {
+test('a rejected custom status shows native again, without a second start', async () => {
   rejectCustomStatus = true;
   try {
-    const { slackWrites, timeline } = await firstStatusTimeline('channel_mention', null);
+    const { slackWrites } = await firstStatusTimeline('channel_mention', null);
     assert.deepEqual(slackWrites.slice(0, 4), [
       'slack:session:processing',
       'slack:session:active',
       'slack:assistant.threads.setStatus', // rejected
       'slack:session:processing', // native shown again, not a second start
     ]);
-    const fallback = timeline.lastIndexOf('slack:session:processing');
-    for (const later of ['turnJobs.recordInteractionIntent', 'turnJobs.freezeRuntimePlan', 'work.getRun']) {
-      assert.ok(timeline.indexOf(later) > fallback, `${later} runs after the native fallback`);
-    }
   } finally {
     rejectCustomStatus = false;
+  }
+});
+
+test('classification and the plan do not wait for the custom status acknowledgement', async () => {
+  const reads = ['turnJobs.recordInteractionIntent', 'turnJobs.freezeRuntimePlan'];
+  holdCustomStatus = (timeline) => waitUntil(() => reads.every((read) => timeline.includes(read)));
+  try {
+    const { timeline } = await firstStatusTimeline('channel_mention', null);
+    const acknowledged = timeline.indexOf('acknowledged:assistant.threads.setStatus');
+    assert.ok(acknowledged > timeline.indexOf('slack:assistant.threads.setStatus'));
+    for (const read of reads) {
+      const at = timeline.indexOf(read);
+      assert.ok(at >= 0, `${read} happens`);
+      assert.ok(at < acknowledged, `${read} does not wait for the custom status acknowledgement`);
+    }
+  } finally {
+    holdCustomStatus = undefined;
+  }
+});
+
+test('classification and the plan start once the native start is issued, before Slack acknowledges it', async () => {
+  const reads = ['turnJobs.recordInteractionIntent', 'turnJobs.getBoundRuntimePlan'];
+  holdNativeStart = (timeline) => waitUntil(() => reads.every((read) => timeline.includes(read)));
+  try {
+    const { timeline } = await firstStatusTimeline('channel_mention', null);
+    const issued = timeline.indexOf('slack:session:processing');
+    const acknowledged = timeline.indexOf('acknowledged:session:processing');
+    assert.ok(issued >= 0 && acknowledged > issued, 'the native start was issued and acknowledged');
+    for (const read of reads) {
+      const at = timeline.indexOf(read);
+      assert.ok(at > issued, `${read} follows the native start`);
+      assert.ok(at < acknowledged, `${read} does not wait for the native acknowledgement`);
+    }
+    assert.ok(timeline.indexOf('slack:session:active') > acknowledged,
+      'the hand-over waits for the native acknowledgement');
+  } finally {
+    holdNativeStart = undefined;
+  }
+});
+
+test('the context is read before the classifier answers; the dispatch waits for the answer and its record', async () => {
+  holdClassifierAnswer = async (timeline) => {
+    await waitUntil(() => timeline.some((entry) => entry.startsWith('slack:conversations.')));
+    timeline.push('classifier:answered');
+  };
+  const previousKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'anthropic-first-status-key';
+  configureModelAccessResolver({ resolve: async () => ({ apiKey: 'anthropic-first-status-key' }) });
+  try {
+    const { timeline } = await firstStatusTimeline('dm', null, {}, {
+      ...assignment,
+      channelId: 'D_FIRST_STATUS',
+      model: `anthropic/${SCRIPTED_MODEL}`,
+      modelAttribution: { source: 'pinned', providerId: 'anthropic' },
+    });
+    const contextRead = timeline.findIndex((entry) => entry.startsWith('slack:conversations.'));
+    const answered = timeline.indexOf('classifier:answered');
+    const recorded = timeline.indexOf('turnJobs.recordInteractionIntent');
+    const dispatched = timeline.indexOf('agentPrompt');
+    assert.ok(contextRead >= 0 && answered >= 0 && recorded >= 0 && dispatched >= 0,
+      `the turn read, classified, recorded and dispatched: ${timeline.join(' ')}`);
+    assert.ok(contextRead < answered, `the context read does not wait for the classifier: ${timeline.join(' ')}`);
+    assert.ok(answered < dispatched && recorded < dispatched,
+      `the dispatch waits for the classifier's answer and its record: ${timeline.join(' ')}`);
+  } finally {
+    holdClassifierAnswer = undefined;
+    if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousKey;
+    resetModelAccessForTests();
   }
 });

@@ -43,6 +43,7 @@ export interface SlackChannel {
   mpim?: true;
   /** Shared beyond this workspace (Slack Connect or across an organization), or about to be. */
   shared?: true;
+  contextTeamId?: string;
 }
 
 export interface SlackChannelList {

@@ -179,7 +179,7 @@ test('runtime routing is native-first, lane-isolated, and explicit for unsupport
     () => resolveRuntimeModel('agent', 'anthropic/claude-not-reviewed', dependencies),
     /not supported by this Chickpea release/i,
   );
-  assert.deepEqual(applied, ['openai', 'openai', 'anthropic', 'anthropic']);
+  assert.deepEqual(applied, ['openai', 'openai', 'anthropic', 'anthropic', 'openai', 'anthropic']);
   assert.equal(
     canonicalRuntimeModel(`${OPENAI_PLATFORM_COMPAT_PROVIDER_ID}/gpt-5.6-sol`),
     'openai/gpt-5.6-sol',

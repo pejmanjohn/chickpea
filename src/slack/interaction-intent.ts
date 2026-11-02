@@ -98,7 +98,7 @@ const TARGETS = new Set<string>(['trigger', 'thread_root', 'latest_user']);
 const GENERIC_CHECKLIST = /^(?:work(?:ing)?|investigat(?:e|ing)|think(?:ing)?|look(?:ing)? into it|check(?:ing)?|research(?:ing)?)\.?$/i;
 const SLACK_ENTITY = /<[!@#][^>]*>/;
 const MAX_CHECKLIST_LABEL_BYTES = 160;
-const DEFAULT_INTERACTION_TIMEOUT_MS = 8_000;
+export const DEFAULT_INTERACTION_TIMEOUT_MS = 8_000;
 
 const REACTION_FALLBACKS: Record<SemanticReaction, readonly string[]> = {
   agreement: ['+1'],

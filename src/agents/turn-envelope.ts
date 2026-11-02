@@ -246,10 +246,12 @@ export function resetTurnEnvelopeCacheForTests(): void {
 
 /**
  * One turn's view of its envelope inside the Agent (or a coding worker).
- * The envelope is fetched at most once per turn and isolate; every lookup
- * after that is local. When the turn has no envelope (Node, a routine run, a
- * turn dispatched before this existed, or a failed fetch) every accessor
- * falls back to the live store, exactly as before.
+ * A Slack turn's render hands over the envelope the host staged beside the
+ * instance (already parsed, see turn-input.ts); otherwise the envelope is
+ * fetched at most once per turn and isolate, and every lookup after that is
+ * local. When the turn has no envelope (Node, a routine run, a turn
+ * dispatched before this existed, or a failed fetch) every accessor falls
+ * back to the live store, exactly as before.
  */
 export class TurnEnvelopeContext {
   private pending: Promise<TurnEnvelopeV1 | undefined> | undefined;
@@ -259,6 +261,7 @@ export class TurnEnvelopeContext {
     readonly turnJobId: string,
     readonly agentId: string,
     private readonly load: (turnJobId: string) => Promise<unknown>,
+    private readonly staged?: TurnEnvelopeV1,
   ) {}
 
   /** This turn's frozen envelope, or undefined when tools must read live. */
@@ -304,6 +307,7 @@ export class TurnEnvelopeContext {
   }
 
   private async resolve(): Promise<TurnEnvelopeV1 | undefined> {
+    if (this.staged) return this.forThisAgent(this.staged);
     const cached = resolvedEnvelopes.get(this.turnJobId);
     if (cached !== undefined) return this.forThisAgent(cached ?? undefined);
     let envelope: TurnEnvelopeV1 | undefined;

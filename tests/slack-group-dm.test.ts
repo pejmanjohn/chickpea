@@ -45,6 +45,7 @@ const CHANNELS: Record<string, Record<string, unknown>> = {
     id: CONNECT_DM, name: 'mpdm-owner--partner-1', is_mpim: true, is_private: true,
     is_member: true, is_archived: false, is_shared: true, is_ext_shared: true,
   },
+  COUTSIDE: { id: 'COUTSIDE', name: 'outside', is_channel: true, is_private: false, is_member: false, is_archived: false },
   CPARTNERS: {
     id: 'CPARTNERS', name: 'partners', is_channel: true, is_private: false, is_member: true,
     is_archived: false, is_shared: true, is_ext_shared: true,
@@ -100,7 +101,7 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
     });
     for (const [agentId, channelId, channelIsPrivate] of [
       ['agent_ops', 'C1', false], ['agent_helper', 'C1', false], ['agent_secret', 'CPRIVATE', true],
-      ['agent_ops', 'CPARTNERS', false],
+      ['agent_ops', 'CPARTNERS', false], ['agent_ops', 'COUTSIDE', false],
     ] as const) {
       await stores.config.putAgentChannelGrant({
         workspaceId: 'T1', channelId, agentId, status: 'active',
@@ -242,7 +243,7 @@ test('people talking to each other in a group DM reach no Agent, and Slack is no
     await harness.deliver({ ts: '1800000420.000100', text: '<!subteam^SDESIGN|@design-team> thoughts?' });
     assert.deepEqual(harness.jobs, []);
     assert.deepEqual(harness.posts, []);
-    assert.deepEqual(harness.calls, ['conversations.info', 'users.info'],
+    assert.deepEqual(harness.calls, ['users.info', 'conversations.info'],
       'only the message naming a group of people is read, as a possible Agent address');
   });
 });
@@ -325,18 +326,31 @@ test('a group DM shared with another organization gets no Agent, Chickpea includ
   });
 });
 
-test('a Channel turn records only whether Slack says the Channel is shared beyond the workspace', async () => {
+test('a Channel turn records whether Slack says the Channel is shared beyond the workspace, and when its bot was found a member', async () => {
   await withHarness(async (harness) => {
+    const before = Date.now();
     await harness.deliver({ channel: 'C1', ts: '1800001020.000100', text: '<@UBOT> help', appMention: true });
     await harness.deliver({ channel: 'CPARTNERS', ts: '1800001030.000100', text: '<@UBOT> help', appMention: true });
     // A Channel message names its kind, so only the routed Agent's Channel lookup reads the facts.
     await harness.deliver({ channel: 'C1', ts: '1800001040.000100', text: `${OPS} help`, channelType: 'channel' });
     await harness.deliver({ channel: 'CPARTNERS', ts: '1800001050.000100', text: `${OPS} help`, channelType: 'channel' });
+    await harness.deliver({ channel: 'COUTSIDE', ts: '1800001060.000100', text: `${OPS} help`, channelType: 'channel' });
+    const after = Date.now();
     assert.deepEqual(harness.jobs.map((job) => [job.turn.channelId, job.turn.source, job.turn.sharedChannel]), [
       ['C1', 'app_mention', false],
       ['CPARTNERS', 'app_mention', true],
       ['C1', 'agent_mention', false],
       ['CPARTNERS', 'agent_mention', true],
+      ['COUTSIDE', 'agent_mention', false],
+    ]);
+    assert.deepEqual(harness.jobs.filter(({ turn }) => turn.source === 'agent_mention').map(({ turn }) => [
+      turn.channelId,
+      turn.channelMembership?.botUserId,
+      turn.channelMembership && turn.channelMembership.verifiedAt >= before && turn.channelMembership.verifiedAt <= after,
+    ]), [
+      ['C1', 'UBOT', true],
+      ['CPARTNERS', 'UBOT', true],
+      ['COUTSIDE', undefined, undefined],
     ]);
   });
 });

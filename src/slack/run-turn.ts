@@ -861,14 +861,20 @@ async function runTurnAttempt(
   // that text. Otherwise the native start is made at most once per attempt:
   // one that fails is not retried, and the custom status (or its settle) is
   // what the turn shows instead.
-  const startNativeIndicator = async (): Promise<void> => {
-    if (admittedVisibleStatus !== undefined || !agentViewPresentation) return;
+  let nativeStart: Promise<void> | undefined;
+  const startNativeIndicator = (): Promise<void> => {
+    if (admittedVisibleStatus !== undefined || !agentViewPresentation) return Promise.resolve();
+    const issued = Promise.withResolvers<void>();
     // True also for a retry whose earlier attempt started native processing
     // and stopped before its custom write, so that write hands over too. A
     // start whose outcome is unknown returns false: its custom writes do not
     // hand over, and may stay hidden until the turn settles (cosmetic).
-    nativeHeld = await agentViewPresentation.beginAgentSessionProcessing();
-    if (nativeHeld) options.onSlackWrite?.('agent_session');
+    nativeStart = agentViewPresentation.beginAgentSessionProcessing(() => issued.resolve()).then((held) => {
+      nativeHeld = held;
+      if (held) options.onSlackWrite?.('agent_session');
+    });
+    nativeStart.catch(() => undefined);
+    return Promise.race([issued.promise, nativeStart]);
   };
   /**
    * Hand the working indicator from native `processing` to the custom status
@@ -1035,8 +1041,8 @@ async function runTurnAttempt(
     nativeKeepalive = registration;
     return registration;
   };
-  const beginVisibleWork = async (statusInstanceId: string) => {
-    await startNativeIndicator();
+  const showAdmittedStatus = async (statusInstanceId: string) => {
+    await nativeStart;
     const registered = registerStatusTurn(statusInstanceId);
     // Native processing shows from the start (sent now, or by an earlier
     // attempt): keep it alive until a custom status takes over.
@@ -1059,22 +1065,36 @@ async function runTurnAttempt(
     }
     return registered;
   };
-  // A frozen V3 presentation shows its admitted activity before the turn
+  const beginVisibleWork = async (statusInstanceId: string) => {
+    await startNativeIndicator();
+    return showAdmittedStatus(statusInstanceId);
+  };
+  // A frozen V3 presentation issues Slack's native indicator before the turn
   // reads anything else (classification, memory, plan, Work lifecycle): in a
-  // thread runner each of those is a round trip to the state store. What it
-  // shows is the admission's own pending activity, whatever the turn decides
-  // later. Observed activity is routed by the Agent instance, known once the
-  // plan is frozen; nothing is observed before dispatch.
+  // thread runner each of those is a round trip to the state store. Those
+  // reads start once the native call is issued, not acknowledged; the status
+  // turn waits for the acknowledgement, hands the session over and issues the
+  // admitted activity as the custom status, and is awaited where it is first
+  // used. What it shows is the admission's own pending activity, whatever the
+  // turn decides later. Observed activity is routed by the Agent instance,
+  // known once the plan is frozen; nothing is observed before dispatch.
   // A stopped turn that never dispatched shows nothing new: its status turn
   // only lets the stopped ending clear what an earlier attempt showed.
   const earlyStatusInstanceId = options.runtimePlanDecision?.instanceId ??
     options.continuityKey ??
     slackAgentThreadKey(turn, assignment);
-  const earlyStatusTurn = frozenPresentation?.schemaVersion !== 3
-    ? undefined
-    : stoppedBeforeDispatch
-      ? registerStatusTurn(earlyStatusInstanceId)
-      : await beginVisibleWork(earlyStatusInstanceId);
+  let earlyStatusWork:
+    | ReturnType<typeof showAdmittedStatus>
+    | ReturnType<typeof registerStatusTurn>
+    | undefined;
+  if (frozenPresentation?.schemaVersion === 3) {
+    if (stoppedBeforeDispatch) {
+      earlyStatusWork = registerStatusTurn(earlyStatusInstanceId);
+    } else {
+      await startNativeIndicator();
+      earlyStatusWork = showAdmittedStatus(earlyStatusInstanceId);
+    }
+  }
   let interactionIntent = turn.interactionIntent;
   // Classification and the memory → plan → Work lifecycle chain read
   // independent state; each chain keeps its own writes in order.
@@ -1100,15 +1120,17 @@ async function runTurnAttempt(
     });
     interactionIntent = classification.intent;
     turn.interactionIntent = interactionIntent;
-    await options.onInteractionIntent?.(interactionIntent);
-    await recordExplicitInteractionClassifierUsage({
-      turn,
-      assignment,
-      classification,
-      requestedModel: resolvedModel ?? null,
-      platformEnv,
-      options,
-    });
+    await Promise.all([
+      options.onInteractionIntent?.(interactionIntent),
+      recordExplicitInteractionClassifierUsage({
+        turn,
+        assignment,
+        classification,
+        requestedModel: resolvedModel ?? null,
+        platformEnv,
+        options,
+      }),
+    ]);
   };
   const prepareTurn = async () => {
     const memory = skipMemory
@@ -1213,16 +1235,24 @@ async function runTurnAttempt(
       modelRepairText: undefined,
     };
   };
+  let earlyStatusTurn: ReturnType<typeof registerStatusTurn> | undefined;
   let prepared: Awaited<ReturnType<typeof prepareTurn>>;
+  const classified = classifyTurn();
+  classified.catch(() => undefined);
   try {
-    const [classified, preparation] = await Promise.allSettled([classifyTurn(), prepareTurn()]);
-    if (classified.status === 'rejected') throw classified.reason;
+    const [visible, preparation] = await Promise.allSettled([
+      earlyStatusWork,
+      prepareTurn(),
+    ]);
+    if (visible.status === 'rejected') throw visible.reason;
+    earlyStatusTurn = visible.value;
     if (preparation.status === 'rejected') throw preparation.reason;
     prepared = preparation.value;
   } catch (error) {
     // Only the status turn is open yet. Like any failed V3 attempt, it keeps
     // the admitted activity visible for the next attempt.
     earlyStatusTurn?.close();
+    await classified.catch(() => undefined);
     throw error;
   }
   const {
@@ -1349,9 +1379,6 @@ async function runTurnAttempt(
         }
       : undefined;
   let workChecklistTs = interactionProgress.checklist?.messageTs;
-  const workChecklist = interactionIntent?.disposition === 'work'
-    ? interactionIntent.checklist
-    : undefined;
   const triggerCoordinate = {
     channelId: turn.channelId,
     messageTs: turn.reactionTargetTs ?? turn.messageTs,
@@ -1465,10 +1492,11 @@ async function runTurnAttempt(
     await options.onDelivered?.(outcome);
     await presenter.markCanonicalPresentationFinalized();
     await usageRecorder?.repairAfterDelivery();
-    if (workChecklistTs && workChecklist &&
+    const checklist = interactionIntent?.disposition === 'work' ? interactionIntent.checklist : undefined;
+    if (workChecklistTs && checklist &&
         !interactionProgress.checklist?.supersededByNative) {
       try {
-        await presenter.updateWorkChecklist(workChecklistTs, workChecklist, true);
+        await presenter.updateWorkChecklist(workChecklistTs, checklist, true);
         const checklistProgress = interactionProgress.checklist;
         if (checklistProgress) {
           await recordInteractionProgress({
@@ -1535,6 +1563,56 @@ async function runTurnAttempt(
     await finishDelivery('stopped');
   };
 
+  const dispatchExpected = modelRepairText === undefined && !turn.managementApprovalProposalId &&
+    !memoryCommand && interactionIntent?.disposition !== 'react_only';
+  const turnEnvelope = dispatchExpected && options.replayText === undefined &&
+      !stoppedBeforeDispatch && !options.flueDispatch?.dispatchEnvelope
+    ? turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv)
+    : {};
+  const turnConfig = () => options.appStores?.config ?? getConfigStore(platformEnv);
+  const readTurnContext = async () => {
+    const continuation = await readThreadContinuation(options, runtimePlanDecision, turn);
+    const frozenHandoff = continuation
+      ? []
+      : runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
+    const threadRecord = assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0
+      ? turnConfig()
+      : undefined;
+    const hydratedContext = frozenHandoff.length > 0
+      ? currentMessageOnlyContext(turn)
+      : await hydrateTurnSlackContext({
+          client,
+          turn,
+          ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
+          siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig(), turn.workspaceId),
+          sharedAppReads,
+          state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
+          ...(threadRecord ? { record: threadRecord } : {}),
+          followUps,
+        });
+    const context = await resolveSlackContextNames(
+      client,
+      turn.workspaceId,
+      await assembleRetainedSlackContext(hydratedContext, turn, {
+        followUps,
+        visibilityBarrierAt: preparedMemory?.visibilityBarrierAt ?? null,
+        ...(threadRecord ? { store: threadRecord, agentId: assignment.agentId } : {}),
+      }),
+    );
+    const promptContext = continuation
+      ? slackContextSinceWatermark(context, continuation.messageTs, assignment.agentId)
+      : context;
+    const continuityNote = continuation && runtimePlanDecision
+      ? threadContinuityNote({
+          previous: continuation,
+          plan: runtimePlanDecision.runtimePlan,
+          turn,
+          sharedThread: slackConversationKind(turn) !== 'im',
+        })
+      : undefined;
+    return { frozenHandoff, context, promptContext, continuityNote };
+  };
+
   // 1. Visible work: set best-effort native status. A rejection degrades to
   //    Agent Session lifecycle only and never creates a progress message.
   try {
@@ -1551,7 +1629,12 @@ async function runTurnAttempt(
     // Owner-native memory is authorized live, independently of the frozen
     // config snapshot. Fence every visible Slack effect as well as model/tool
     // execution when the selected owner lease has already gone stale.
-    if (preparedMemory?.ownerBound && !(await preparedMemory.validateLease())) {
+    const leaseCheck = preparedMemory?.ownerBound ? preparedMemory.validateLease() : undefined;
+    leaseCheck?.catch(() => undefined);
+    const contextRead = dispatchExpected ? readTurnContext() : undefined;
+    const contextReadSettled = contextRead?.catch(() => undefined);
+    await classified;
+    if (preparedMemory?.ownerBound && !(await leaseCheck)) {
       // Fail closed, never silently: the durable relay only retires a turn job
       // once delivery is tombstoned, so an early `return` here left the job
       // pending and the alarm re-armed forever behind a live "Thinking…"
@@ -1562,6 +1645,7 @@ async function runTurnAttempt(
       await presenter.deliverFinal(failureFinalText(turn, AGENT_FAILURE_TEXT), 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
+      await contextReadSettled;
       return;
     }
     // The turn's model cannot run until Model providers is repaired: say so
@@ -1578,11 +1662,12 @@ async function runTurnAttempt(
     // A click's or form's text is host-authored, and an ask or a later
     // co-addressed turn joins a thread a person's message already titled.
     const personTypedText = typedByPerson && !turn.uiResponse;
-    if (personTypedText) {
-      await agentViewPresentation?.setTitle(turn.text).catch(() => {
-        console.warn('[chickpea] Slack Agent View title could not be recorded');
-      });
-    }
+    const titleSet = personTypedText
+      ? agentViewPresentation?.setTitle(turn.text).catch(() => {
+          console.warn('[chickpea] Slack Agent View title could not be recorded');
+        })
+      : undefined;
+    if (!dispatchExpected) await titleSet;
     if (turn.managementApprovalProposalId && options.replayText === undefined &&
         options.invokeManagementApproval && !options.managementApproval) {
       const persisted = await workLifecycle?.prepareExecution('Slack management approval');
@@ -1707,6 +1792,7 @@ async function runTurnAttempt(
       }
     }
     if (interactionIntent?.disposition === 'react_only') {
+      await titleSet;
       const prepared = await workLifecycle?.prepareExecution(
         `Slack reaction response: ${interactionIntent.reaction}`,
       );
@@ -1739,6 +1825,10 @@ async function runTurnAttempt(
       return;
     }
     if (usageRecordingEnabled && options.replayText === undefined) await openUsageRecorder();
+    await titleSet;
+    const workChecklist = interactionIntent?.disposition === 'work'
+      ? interactionIntent.checklist
+      : undefined;
     // A substantive @-mention is classified late (above), AFTER Work admission
     // froze the presentation without a plan — whereas ambient and obvious-work
     // turns carry their plan from admission. Attach the late-classified work
@@ -1791,51 +1881,9 @@ async function runTurnAttempt(
       await statusTurn.setStatus(initialStatus);
     }
 
-    // 2. Hydrate bounded context (degrades to current-message-only on failure).
-    // A turn that continues the thread's transcript sends only what arrived
-    // since the previous turn; the transcript already holds the rest,
-    // including any ownership handoff context its first turn carried.
-    const continuation = await readThreadContinuation(options, runtimePlanDecision, turn);
-    const frozenHandoff = continuation
-      ? []
-      : runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
-    const turnConfig = options.appStores?.config ?? getConfigStore(platformEnv);
-    const threadRecord = assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0
-      ? turnConfig
-      : undefined;
-    const hydratedContext = frozenHandoff.length > 0
-      ? currentMessageOnlyContext(turn)
-      : await hydrateTurnSlackContext({
-          client,
-          turn,
-          ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
-          siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig, turn.workspaceId),
-          sharedAppReads,
-          state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
-          ...(threadRecord ? { record: threadRecord } : {}),
-          followUps,
-        });
-    const context = await resolveSlackContextNames(
-      client,
-      turn.workspaceId,
-      await assembleRetainedSlackContext(hydratedContext, turn, {
-        followUps,
-        visibilityBarrierAt: preparedMemory?.visibilityBarrierAt ?? null,
-        ...(threadRecord ? { store: threadRecord, agentId: assignment.agentId } : {}),
-      }),
-    );
-    const promptContext = continuation
-      ? slackContextSinceWatermark(context, continuation.messageTs, assignment.agentId)
-      : context;
+    const { frozenHandoff, context, promptContext, continuityNote } =
+      await (contextRead ?? readTurnContext());
     review.context = promptContext;
-    const continuityNote = continuation && runtimePlanDecision
-      ? threadContinuityNote({
-          previous: continuation,
-          plan: runtimePlanDecision.runtimePlan,
-          turn,
-          sharedThread: slackConversationKind(turn) !== 'im',
-        })
-      : undefined;
     // A frozen plan reaches the render with the turn's staged input, so the
     // memory is rendered as an instruction there, once, instead of piling up
     // in the thread's transcript turn after turn.
@@ -1950,14 +1998,19 @@ async function runTurnAttempt(
           }
         : {}),
     });
-    const persistedPrompt = await workLifecycle?.prepareExecution(prompt);
     // Usage names the execution only once it exists. A creation queued behind
     // a slow Work store links when it lands; usage recorded before then names
     // none, never one that may not exist.
-    workLifecycle?.whenExecutionRecorded((executionId) => {
-      usageRecorder?.linkRunExecution(executionId);
-    });
-    const executionPrompt = persistedPrompt ?? prompt;
+    const executionPrepared = workLifecycle
+      ? workLifecycle.prepareExecution(prompt).then((persisted) => {
+          workLifecycle.whenExecutionRecorded((executionId) => {
+            usageRecorder?.linkRunExecution(executionId);
+          });
+          return persisted;
+        })
+      : undefined;
+    executionPrepared?.catch(() => undefined);
+    const executionPrompt = (ledgerAuthority ? await executionPrepared : undefined) ?? prompt;
 
     // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
     //    in a finally so a status that was actually set is cleared even if
@@ -1972,9 +2025,23 @@ async function runTurnAttempt(
     // retry loop from the claims being released on an uncaught throw).
     let text: string;
     let agentResult: AgentDispatchResult | undefined;
+    let earlyLeaseCheck: Promise<boolean> | undefined;
     // A settled answer replayed from its checkpoint carries no display
     // components; they are read back from the turn's stored surfaces.
     const settledBeforePrompt = options.flueDispatch?.flueSettlement?.outcome === 'completed';
+    const surfaceState = options.appStores?.slackState ?? getSlackStateStore(platformEnv);
+    const surfaceTurnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+    const readDisplaySurfaces = () => prepareDisplaySurfaces({
+      state: surfaceState,
+      turn,
+      agentId: assignment.agent.id,
+      turnJobId: surfaceTurnJobId,
+      ...(settledBeforePrompt ? {} : { fresh: agentResult?.displayComponents ?? [] }),
+    }).catch(() => {
+      console.warn('[chickpea] display components were not stored; the answer posts without them');
+      return [];
+    });
+    let earlyDisplaySurfaces: ReturnType<typeof readDisplaySurfaces> | undefined;
     let tablePresentation: SlackTablePresentation | undefined =
       options.flueDispatch?.flueSettlement?.outcome === 'completed'
         ? options.flueDispatch.flueSettlement.result.tablePresentations?.[0]
@@ -2042,8 +2109,9 @@ async function runTurnAttempt(
             ...(threadImages ? { threadImages } : {}),
             ...(threadFiles.length ? { threadFileIds: threadFiles.map(({ id }) => id) } : {}),
             ...(admittedListIds.length ? { admittedListIds } : {}),
-            ...turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv),
+            ...turnEnvelope,
             ...(platformEnv ? { env: platformEnv } : {}),
+            ...(executionPrepared ? { executionPrepared } : {}),
             ...(workLifecycle && options.runId
               ? {
                   workCorrelation: {
@@ -2072,6 +2140,7 @@ async function runTurnAttempt(
           });
         } finally {
           await streamAgeChecks?.stop();
+          await executionPrepared?.catch(() => undefined);
         }
         text = sandboxUnavailableFallback
           ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${agentResult.text}`
@@ -2088,14 +2157,26 @@ async function runTurnAttempt(
           presenter.setFooterModelLabel(codingFooterLabel);
           agentViewPresentation?.setFooterModelLabel(codingFooterLabel);
         }
-        await workLifecycle?.settleExecution({
+        const settling = workLifecycle?.settleExecution({
           outcome: 'succeeded',
           rawStatus: 'flue_succeeded',
           ...(agentResult.flueSubmissionRef
             ? { flueSubmissionRef: agentResult.flueSubmissionRef }
             : {}),
         });
-        await usageRecorder?.recordSuccess(agentResult);
+        const recordingUsage = usageRecorder?.recordSuccess(agentResult);
+        recordingUsage?.catch(() => undefined);
+        const plainAnswer = !agentResult.memoryUpdate && !agentResult.agentCreationTerminal &&
+          !agentResult.frontDeskHandoff;
+        if (preparedMemory && plainAnswer) {
+          earlyLeaseCheck = preparedMemory.validateLease();
+          earlyLeaseCheck.catch(() => undefined);
+        }
+        if (!handedBack && plainAnswer && options.replayTerminalResult === undefined) {
+          earlyDisplaySurfaces = readDisplaySurfaces();
+        }
+        await settling;
+        await recordingUsage;
       } catch (err) {
         // A Flue identity or idempotency conflict is not an ordinary model
         // failure. Its TurnJob already entered recovery_required and must not
@@ -2286,7 +2367,7 @@ async function runTurnAttempt(
     };
     const frontDeskPlan = runtimePlanDecision?.runtimePlan.frontDesk;
     const frontDeskDecision = agentResult?.frontDeskHandoff && frontDeskPlan
-      ? decideFrontDesk(agentResult.frontDeskHandoff, frontDeskPlan, await readFrontDeskMessage(turnConfig, turn))
+      ? decideFrontDesk(agentResult.frontDeskHandoff, frontDeskPlan, await readFrontDeskMessage(turnConfig(), turn))
       : undefined;
     if (frontDeskDecision) {
       await preparedMemory?.confirmInjection();
@@ -2407,7 +2488,8 @@ async function runTurnAttempt(
     // this one finishes; that bookkeeping race must not discard a completed,
     // lease-valid answer.
     await preparedMemory?.confirmInjection();
-    const leaseValid = acknowledgeMemoryUpdate || (await preparedMemory?.validateLease() ?? true);
+    const leaseValid = acknowledgeMemoryUpdate ||
+      (await (earlyLeaseCheck ?? preparedMemory?.validateLease()) ?? true);
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
       logMemoryLeaseFailure('after_run', assignment.agentId, preparedMemory.quarantined === true);
       await statusTurn.prepareFinal();
@@ -2442,23 +2524,10 @@ async function runTurnAttempt(
     const deliverableArtifacts = recoveredText === undefined && leaseValid && terminalResult === 'answer'
       ? artifacts
       : undefined;
-    const surfaceState = options.appStores?.slackState ?? getSlackStateStore(platformEnv);
-    const surfaceTurnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
     // Components travel only with the model's own lease-valid answer.
     const ownAnswer = terminalResult === 'answer' && recoveredText === undefined && leaseValid &&
       !(acknowledgeMemoryUpdate && agentResult?.memoryUpdate?.preservesContext !== true);
-    const displaySurfaces = ownAnswer
-      ? await prepareDisplaySurfaces({
-          state: surfaceState,
-          turn,
-          agentId: assignment.agent.id,
-          turnJobId: surfaceTurnJobId,
-          ...(settledBeforePrompt ? {} : { fresh: agentResult?.displayComponents ?? [] }),
-        }).catch(() => {
-          console.warn('[chickpea] display components were not stored; the answer posts without them');
-          return [];
-        })
-      : [];
+    const displaySurfaces = ownAnswer ? await (earlyDisplaySurfaces ?? readDisplaySurfaces()) : [];
     const displayComponents = renderDisplayComponents(displaySurfaces);
     await presenter.deliverFinal(
       text,
@@ -2860,8 +2929,10 @@ export async function resolveCodingWorkspaceDecision(
 
 /**
  * On Cloudflare the Agent runs in its own Durable Object, where every settings
- * read is an RPC back into this state object. Freeze what its tools read
- * (host-local reads here) so they do not call back per tool.
+ * read is an RPC back into the state object. Freeze what its tools read so
+ * they do not call back per tool: local reads in the state object, RPCs like
+ * every other read in a thread runner, started here so they overlap the
+ * context read.
  */
 function turnEnvelopeBuilder(
   plan: RuntimePlanV2 | undefined,
@@ -2869,10 +2940,15 @@ function turnEnvelopeBuilder(
   config: AppStores['config'] | undefined,
   env: PlatformEnv | undefined,
 ): { buildTurnEnvelope?: () => Promise<TurnEnvelopeV1 | undefined> } {
-  if (!plan || !settings || !config || !isCloudflareTarget()) return {};
-  return {
-    buildTurnEnvelope: () => buildTurnEnvelope({ plan, settings, config, ...(env ? { env } : {}) }),
-  };
+  if (!plan || !isCloudflareTarget()) return {};
+  const building = buildTurnEnvelope({
+    plan,
+    settings: settings ?? getSettingsStore(env),
+    config: config ?? getConfigStore(env),
+    ...(env ? { env } : {}),
+  });
+  building.catch(() => undefined);
+  return { buildTurnEnvelope: () => building };
 }
 
 /**

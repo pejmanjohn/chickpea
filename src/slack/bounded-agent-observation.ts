@@ -1,5 +1,6 @@
 import type { AgentReply, ConversationStreamChunk, DispatchReceipt } from '@flue/runtime';
-import { AgentInstanceNotFoundError } from '@flue/runtime';
+import { AgentInstanceNotFoundError, AgentRunError } from '@flue/runtime';
+import { replyFromSnapshot } from '@flue/runtime/internal';
 
 import { CHICKPEA_SLACK_AGENT_NAME } from '../agents/names.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
@@ -25,8 +26,9 @@ import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
  * conversation updates view (no `live` parameter, which the route answers at
  * once) and sleeps whenever a read reports the stream caught up, so no
  * cross-object nesting can accumulate and no busy loop can form. Once
- * settlement is observed it defers to Flue's `read()`, which then completes in
- * bounded immediate requests and preserves Flue's settled failure semantics.
+ * settlement is observed it reads the history view once for the reply, with
+ * Flue's own settled-failure semantics (`AgentRunError`), instead of Flue's
+ * `read()`, which would replay the conversation it has already seen.
  */
 
 export interface AgentUpdatesRoute {
@@ -55,7 +57,7 @@ export interface BoundedObservationTarget {
 /**
  * Backs the caught-up poll off geometrically once the stream has been quiet
  * for `idleAfterMs` and the target reports an idle candidate; any delivered
- * chunk returns it to the base interval.
+ * chunk ends the backoff.
  */
 export interface AdaptivePollPolicy {
   idleAfterMs: number;
@@ -66,7 +68,6 @@ export interface AdaptivePollPolicy {
 const DEFAULT_ADAPTIVE_POLICY: AdaptivePollPolicy = { idleAfterMs: 10_000, maxIntervalMs: 5_000, factor: 2 };
 
 export interface BoundedObservationOptions {
-  /** Delay before the next read once a read reports the stream caught up. */
   pollIntervalMs?: number;
   /** Test seam; production sleeps with a real timer. */
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
@@ -82,11 +83,16 @@ export interface ObservedSettlement {
 }
 
 /**
- * Slack progressive updates are batched at 250 ms and rate limited beyond
- * that, so a 750 ms cadence costs no visible latency while keeping the agent
- * object's request count small during a long model call.
+ * A caught-up stream is read again after 150 ms while a chunk has arrived in
+ * the last 3 s, and after 750 ms once it has gone quiet. A person waits on two
+ * moments, the first streamed text and the settlement after the last token,
+ * and each is noticed on average half a poll late, so the fast cadence covers
+ * the seconds around them. The slow cadence keeps the agent object's request
+ * count small through a long model call.
  */
 const DEFAULT_POLL_INTERVAL_MS = 750;
+const HOT_POLL_INTERVAL_MS = 150;
+const HOT_WINDOW_MS = 3_000;
 const SETTLEMENT_CHUNK = 'submission-settled';
 const RESET_CHUNK = 'conversation-reset';
 // Flue prepends this to every updates page, so a page is idle when the
@@ -101,6 +107,7 @@ export async function observeAgentSettlementBounded(
   options: BoundedObservationOptions = {},
 ): Promise<ObservedSettlement> {
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const hotPollIntervalMs = Math.min(HOT_POLL_INTERVAL_MS, pollIntervalMs);
   const sleep = options.sleep ?? abortableSleep;
   const now = options.now ?? Date.now;
   const adaptive = options.adaptive ? { ...DEFAULT_ADAPTIVE_POLICY, ...options.adaptive } : undefined;
@@ -108,20 +115,11 @@ export async function observeAgentSettlementBounded(
   let lastChunkAt = now();
   let seeded = target.initialIdleCandidate === true;
   let caughtUpOnce = false;
-  const base = `https://flue.invalid/agents/${encodeURIComponent(target.agentName)}/${encodeURIComponent(target.instanceId)}`;
+  const base = agentViewBase(target.agentName, target.instanceId);
   let offset = '-1';
   for (;;) {
     throwIfAborted(target.signal);
-    const response = await route(new Request(`${base}?view=updates&offset=${encodeURIComponent(offset)}`));
-    if (!response.ok) {
-      if (response.status === 404) {
-        const body = await response.json().catch(() => undefined) as { error?: { type?: string } } | undefined;
-        if (body?.error?.type === 'stream_not_found') {
-          throw new AgentInstanceNotFoundError({ id: target.instanceId });
-        }
-      }
-      throw new Error(`Bounded agent observation for "${target.agentName}" failed with status ${response.status}.`);
-    }
+    const response = await readAgentView(route, target, `${base}?view=updates&offset=${encodeURIComponent(offset)}`);
     const chunks = await response.json() as ConversationStreamChunk[];
     let settlement: ObservedSettlement | undefined;
     let delivered = 0;
@@ -147,9 +145,11 @@ export async function observeAgentSettlementBounded(
       (delivered === 0 && !advanced);
     if (!caughtUp) continue;
     caughtUpOnce = true;
+    const quietMs = now() - lastChunkAt;
     const idle = adaptive && (seeded || target.isIdleCandidate?.() === true) &&
-      now() - lastChunkAt >= adaptive.idleAfterMs;
-    interval = idle ? Math.min(adaptive.maxIntervalMs, interval * adaptive.factor) : pollIntervalMs;
+      quietMs >= adaptive.idleAfterMs;
+    interval = idle ? Math.min(adaptive.maxIntervalMs, interval * adaptive.factor)
+      : quietMs < HOT_WINDOW_MS ? hotPollIntervalMs : pollIntervalMs;
     await sleep(interval, target.signal);
   }
 }
@@ -225,11 +225,11 @@ export function createBoundedAgentReplyReader(input: {
   adaptive?: BoundedObservationOptions['adaptive'];
   now?: BoundedObservationOptions['now'];
 }): BoundedReplyReader {
-  return async ({ handle, instanceId, receipt, onEvent, signal, isIdleCandidate, initialIdleCandidate }) => {
+  return async ({ instanceId, receipt, onEvent, signal, isIdleCandidate, initialIdleCandidate }) => {
     const route = await input.resolveRoute(instanceId);
-    await observeAgentSettlementBounded(route, {
-      agentName: input.agentName,
-      instanceId,
+    const target = { agentName: input.agentName, instanceId };
+    const settlement = await observeAgentSettlementBounded(route, {
+      ...target,
       submissionId: receipt.submissionId,
       onEvent,
       ...(signal ? { signal } : {}),
@@ -241,10 +241,37 @@ export function createBoundedAgentReplyReader(input: {
       ...(input.adaptive ? { adaptive: input.adaptive } : {}),
       ...(input.now ? { now: input.now } : {}),
     });
-    // Settled: Flue's read now completes in immediate bounded requests and
-    // keeps its settled-failure semantics (AgentRunError) for the caller.
-    return handle.read(receipt as DispatchReceipt);
+    if (settlement.outcome !== 'completed') {
+      throw new AgentRunError({
+        outcome: settlement.outcome === 'aborted' ? 'aborted' : 'failed',
+        submissionId: receipt.submissionId,
+        ...(settlement.error === undefined ? {} : { cause: settlement.error }),
+      });
+    }
+    const history = await readAgentView(route, target, `${agentViewBase(input.agentName, instanceId)}?view=history`);
+    const snapshot = await history.json() as AgentConversationSnapshot;
+    return { ...replyFromSnapshot(snapshot, receipt.submissionId), uid: receipt.uid, submissionId: receipt.submissionId };
   };
+}
+
+function agentViewBase(agentName: string, instanceId: string): string {
+  return `https://flue.invalid/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
+}
+
+async function readAgentView(
+  route: AgentUpdatesRoute,
+  target: Pick<BoundedObservationTarget, 'agentName' | 'instanceId'>,
+  url: string,
+): Promise<Response> {
+  const response = await route(new Request(url));
+  if (response.ok) return response;
+  if (response.status === 404) {
+    const body = await response.json().catch(() => undefined) as { error?: { type?: string } } | undefined;
+    if (body?.error?.type === 'stream_not_found') {
+      throw new AgentInstanceNotFoundError({ id: target.instanceId });
+    }
+  }
+  throw new Error(`Bounded agent observation for "${target.agentName}" failed with status ${response.status}.`);
 }
 
 /** The agent's Durable Object namespace binding, as the Worker env exposes it. */
@@ -324,8 +351,9 @@ export async function readAgentHistoryBounded(
 ): Promise<AgentConversationSnapshot | undefined> {
   const binding = agentObjectNamespace(env, agentObjectBindingName(agentName));
   if (!binding) return undefined;
-  const base = `https://flue.invalid/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
-  const response = await agentObjectRoute(binding, instanceId)(new Request(`${base}?view=history&limit=${limit}`));
+  const response = await agentObjectRoute(binding, instanceId)(
+    new Request(`${agentViewBase(agentName, instanceId)}?view=history&limit=${limit}`),
+  );
   return response.ok ? await response.json() as AgentConversationSnapshot : undefined;
 }
 

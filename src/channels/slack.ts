@@ -223,6 +223,7 @@ import {
   isRetryableDependencyFailure,
   type SlackChannel as SlackConversation,
   type SlackInboundEnvelope,
+  type SlackMember,
   type SlackTransport,
 } from '../slack/transport/types.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
@@ -272,8 +273,12 @@ import {
   type SlackStopButtonPress,
 } from '../slack/types.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
+import type { IdentityResolution } from '../identity/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
-import { resolveTypedSlackManagementApproval } from '../management/slack-approval.ts';
+import {
+  resolveHostSlackManagementProposal,
+  resolveTypedSlackManagementApproval,
+} from '../management/slack-approval.ts';
 import type { SetupWakeRequest } from '../management/receipts.ts';
 import { admitSlackBrowserActionReply } from '../slack/browser-action-admission.ts';
 import {
@@ -489,10 +494,11 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   const timestamp = c.req.header('x-slack-request-timestamp') ?? '';
   const recoveryChallenge = await slackRecoveryChallenge(platformEnv, { rawBody, signature, timestamp });
   if (recoveryChallenge !== undefined) return c.json({ challenge: recoveryChallenge });
-  const verification = await slackDeliveryVerification(platformEnv);
+  const verification = await slackDeliveryVerification(platformEnv, rawBody);
   if (!verification) {
     return c.json({ error: 'slack_not_configured' }, 401);
   }
+  if (verification.delivery) verifiedDeliveries.set(c, verification.delivery);
   const route = channelForInstallation(
     verification.signingSecret,
     verification.credentialRevision,
@@ -529,20 +535,30 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   return response;
 };
 
+interface VerifiedSlackDelivery {
+  credentials: ResolvedSlackInstallationCredentials;
+  installation?: { teamId: string; read: Promise<WorkspaceInstallation | undefined> };
+}
+
+const verifiedDeliveries = new WeakMap<object, VerifiedSlackDelivery>();
+
 /**
  * The signing secret a delivery must carry, and the bot credential revision
  * its handlers act for. Standalone: both from the customer-owned app's
- * bundle. Installation tenancy: the host's app alone, the same for every
- * installation, so nothing is read before the signature is checked; the
+ * bundle, with the installation of the team an events body names read beside
+ * it (`delivery`). Installation tenancy: the host's app alone, the same for
+ * every installation, so nothing is read before the signature is checked; the
  * handlers read the installation's own state once it is.
  */
 async function slackDeliveryVerification(
   platformEnv: PlatformEnv | undefined,
+  unverifiedEventsBody?: string,
 ): Promise<{
   signingSecret: string;
   credentialRevision: string | null;
   cacheKey: string;
   hosted: boolean;
+  delivery?: VerifiedSlackDelivery;
 } | undefined> {
   if (requireInstallationScope(platformEnv)) {
     const app = hostedSlackAppOf(platformEnv);
@@ -550,6 +566,11 @@ async function slackDeliveryVerification(
       ? { signingSecret: app.signingSecret, credentialRevision: null, cacheKey: `hosted:${app.appId}`, hosted: true }
       : undefined;
   }
+  const teamId = unverifiedEventsBody === undefined ? undefined : unverifiedTeamId(unverifiedEventsBody);
+  const installation = teamId === undefined
+    ? undefined
+    : { teamId, read: resolveStores(platformEnv).config.getWorkspaceInstallation(teamId) };
+  installation?.read.catch(() => undefined);
   const credentials = await resolveSlackInstallationCredentials(
     slackInstallationCredentialId(platformEnv),
     platformEnv,
@@ -560,8 +581,18 @@ async function slackDeliveryVerification(
         credentialRevision: credentials.connectionRevision,
         cacheKey: credentials.connectionRevision ?? 'current',
         hosted: false,
+        delivery: { credentials, ...(installation ? { installation } : {}) },
       }
     : undefined;
+}
+
+function unverifiedTeamId(rawBody: string): string | undefined {
+  try {
+    const body = JSON.parse(rawBody) as { team_id?: unknown };
+    return typeof body.team_id === 'string' ? body.team_id : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function readSlackIngressBody(
@@ -797,7 +828,14 @@ function handleAgentAppSlackEvents(
     }
     const bot = await agentAppBotCredentials(platformEnv, handoff.agentId, handoff.appId);
     if (!bot) return;
-    await processSlackEvent(payload as unknown as SlackEventFixture, platformEnv, agentAppExecution(bot, platformEnv, gate.botToken));
+    await processSlackEvent(
+      payload as unknown as SlackEventFixture,
+      platformEnv,
+      agentAppExecution(bot, platformEnv, gate.botToken),
+      undefined,
+      undefined,
+      { installation },
+    );
   };
 }
 
@@ -844,7 +882,10 @@ function handleDirectSlackEvents(
     if (hosted && (payload.api_app_id !== hostedSlackAppOf(platformEnv)?.appId ||
         hostedSlackEventRoute(payload).route !== 'installation')) return;
     const stores = resolveStores(platformEnv);
-    const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
+    const early = verifiedDeliveries.get(c)?.installation;
+    const installation = await (early?.teamId === payload.team_id
+      ? early.read
+      : stores.config.getWorkspaceInstallation(payload.team_id));
     if (
       !installation || installation.transportMode !== 'direct' ||
       installation.health === 'revoked' ||
@@ -925,9 +966,10 @@ function handleDirectSlackEvents(
       );
       return;
     }
+    const known = hosted && installation.health !== 'healthy' ? undefined : { installation, credentials };
     detach(
       c,
-      processSlackEvent(payload as unknown as SlackEventFixture, platformEnv).catch((error) => {
+      processSlackEvent(payload as unknown as SlackEventFixture, platformEnv, undefined, undefined, undefined, known).catch((error) => {
         console.error('[chickpea] Slack event intake failed:', sanitizeError(error));
       }),
     );
@@ -1011,7 +1053,8 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
 }
 
 /**
- * The installation's Slack credentials for a direct delivery. A hosted bundle
+ * The installation's Slack credentials for a direct delivery: the ones its
+ * signature was checked with, when it was. A hosted bundle
  * that latches recovery on this read is answered as the app's recovery gate
  * answers every later request, not found, rather than as a server error; a
  * keyring that will not load stays a server error, transient for Slack to
@@ -1021,6 +1064,8 @@ async function directSlackCredentials(
   c: { notFound(): Response | Promise<Response> },
   platformEnv: PlatformEnv | undefined,
 ): Promise<ResolvedSlackInstallationCredentials | Response> {
+  const verified = verifiedDeliveries.get(c)?.credentials;
+  if (verified) return verified;
   try {
     return await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
   } catch (error) {
@@ -1055,6 +1100,7 @@ export interface ResolvedAgentRoutingActor {
   requesterTimezone?: string;
   routing: AgentRoutingActor;
   principal?: AuthPrincipal;
+  identity?: IdentityResolution;
 }
 
 function privateAgentActor(
@@ -1075,12 +1121,14 @@ export async function resolveAgentRoutingActor(input: {
   /** A Slack message/reaction event is current proof that its author belongs
    * to the exact source Channel at event time. */
   sourceChannelMembership?: boolean;
+  member?: Promise<SlackMember>;
   botUserId: string;
   transport: SlackTransport;
   stores: AppStores;
 }): Promise<ResolvedAgentRoutingActor> {
-  const member = await input.transport.lookupMember(input.userId);
+  const member = await (input.member ?? input.transport.lookupMember(input.userId));
   let principal: AuthPrincipal | undefined;
+  let identity: IdentityResolution | undefined;
   let fullMember = false;
   const provisioned = await provisionSlackInteractionMember({
     identity: input.stores.identity,
@@ -1105,6 +1153,7 @@ export async function resolveAgentRoutingActor(input: {
     provisioned.resolution.membership.status === 'active'
   ) {
     fullMember = true;
+    identity = provisioned.resolution;
     principal = {
       userId: provisioned.resolution.user.id,
       membershipId: provisioned.resolution.membership.id,
@@ -1126,6 +1175,7 @@ export async function resolveAgentRoutingActor(input: {
       fullMember,
     },
     ...(principal ? { principal } : {}),
+    ...(identity ? { identity } : {}),
     ...(member.timezone ? { requesterTimezone: member.timezone } : {}),
   };
 }
@@ -1354,15 +1404,18 @@ async function resolvedAgentAvatarUrl(
   agent: ResolvedAssignment['agent'],
   stores: AppStores,
   platformEnv: PlatformEnv | undefined,
+  publicUrl?: Promise<string | undefined>,
 ): Promise<string | undefined> {
-  const installationId = agentAvatarInstallation(platformEnv);
-  // A stored URL needs the origin only to name its installation. Otherwise
-  // every admitted turn and App Home seed passes here first, with the
+  // Every admitted turn and App Home seed passes here first, with the
   // request's (or the state store's local) stores: the one backfill point.
-  const origin = agent.slackPresence?.avatar.url && !installationId
-    ? undefined
-    : await resolveSlackPublicUrl(platformEnv, stores.settings, stores.identity);
-  return agentAvatarUrlForPresentation(agent, origin, installationId);
+  const origin = avatarNeedsPublicUrl(agent, platformEnv)
+    ? await (publicUrl ?? resolveSlackPublicUrl(platformEnv, stores.settings, stores.identity))
+    : undefined;
+  return agentAvatarUrlForPresentation(agent, origin, agentAvatarInstallation(platformEnv));
+}
+
+function avatarNeedsPublicUrl(agent: ResolvedAssignment['agent'], platformEnv: PlatformEnv | undefined): boolean {
+  return !agent.slackPresence?.avatar.url || Boolean(agentAvatarInstallation(platformEnv));
 }
 
 export async function postAgentRoutingFeedback(input: {
@@ -1601,7 +1654,7 @@ export async function processGatewaySlackEnvelope(
     stores,
     ...(providedExecution?.enqueueTurn ? { enqueueTurn: providedExecution.enqueueTurn } : {}),
     ...(providedExecution?.durableIngress ? { durableIngress: true } : {}),
-  });
+  }, undefined, undefined, { installation });
   return 'accepted';
 }
 
@@ -3136,12 +3189,12 @@ async function processSlackEvent(
   execution?: SlackEventExecution,
   ui?: SlackUiAdmission,
   ask?: SlackHostAddressedAdmission,
+  known?: { installation: WorkspaceInstallation; credentials?: ResolvedSlackInstallationCredentials },
 ): Promise<void> {
   // A click is admitted like a message; every early return below is a refusal
   // (its outcome starts at `unavailable`, a takeover's at `refused`).
   const stores = execution?.stores ?? resolveStores(platformEnv);
-  const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
-  const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
+  const installation = known?.installation ?? await stores.config.getWorkspaceInstallation(payload.team_id);
   if (!installation || installation.health === 'revoked') return;
   if (execution && !execution.agentApp && installation.transportMode !== 'gateway') return;
   if (!execution && installation.transportMode !== 'direct') return;
@@ -3174,17 +3227,27 @@ async function processSlackEvent(
   // Every bot Chickpea answers as here is itself: the installation's, and each Agent app's.
   const appBots = ask ? [] : await listAgentAppBots(stores.config);
   const tenantBots = ask || !agentSlackAppsHost() ? [] : tenantBotUserIds(appBots, installation.botUserId);
+  const threadRoutes = new Map<string, AgentThreadRoute | undefined>();
+  const threadRoute = async (channelId: string, threadTs: string) => {
+    const key = `${channelId}:${threadTs}`;
+    if (threadRoutes.has(key)) return threadRoutes.get(key);
+    const route = await stores.config.getAgentThreadRoute(payload.team_id, channelId, threadTs);
+    threadRoutes.set(key, route);
+    return route;
+  };
   if (!ask && installation.runtimeContract === 'chickpea-v1' && payload.event.type === 'message') {
     await recordAgentThreadMessage(stores.config, payload.team_id, payload.event, {
       ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
       siblingBotUserIds: tenantBots,
-    });
+    }, threadRoute);
   }
   const credentials = execution
     ? ({ connectionRevision: null } as ResolvedSlackInstallationCredentials)
-    : await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
+    : known?.credentials ??
+      await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
 
   if (payload.event.type === 'member_joined_channel') {
+    const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
     await handleMemberJoinedChannel(
       payload,
       stores,
@@ -3243,6 +3306,11 @@ async function processSlackEvent(
   let agentRoutingActor: ResolvedAgentRoutingActor | undefined;
   let agentSourceVisibility: 'public' | 'private' | undefined;
   let liveChannelName: string | undefined;
+  let routedReads: {
+    activeWork: Promise<boolean>;
+    proposal?: ReturnType<typeof resolveHostSlackManagementProposal>;
+    publicUrl?: Promise<string | undefined>;
+  } | undefined;
   const runtimeTransport = execution?.transport ?? (
     credentials.botToken ? createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, stores.settings)) : undefined
   );
@@ -3266,11 +3334,13 @@ async function processSlackEvent(
   if (
     !ask &&
     turnRequiresOwnedThread(turn) &&
-    !(await stores.config.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs))
+    !(await threadRoute(turn.channelId, turn.threadTs))
   ) {
     return;
   }
   if (!runtimeTransport || !runtimeClient || !resolvedBotUserId) return;
+  const member = runtimeTransport.lookupMember(turn.userId);
+  void member.catch(() => undefined);
   let conversation: SlackConversation | undefined;
   try {
     conversation = await resolveTurnConversation(turn, runtimeTransport);
@@ -3280,6 +3350,10 @@ async function processSlackEvent(
     return;
   }
   const surface = slackTurnSurface(turn);
+  const channelFacts = surface !== 'channel'
+    ? undefined
+    : conversation ? Promise.resolve(conversation) : runtimeTransport.lookupChannel(turn.channelId);
+  void channelFacts?.catch(() => undefined);
 
   // e. Resolve the config for this turn before canonical admission acquires
   //    the claims. A failure here must not release keys owned by a concurrent
@@ -3294,6 +3368,7 @@ async function processSlackEvent(
       agentRoutingActor = await resolveAgentRoutingActor({
         workspaceId: turn.workspaceId,
         userId: turn.userId,
+        member,
         ...(surface === 'channel' ? { channelId: turn.channelId } : {}),
         ...(surface === 'channel' ? { sourceChannelMembership: true } : {}),
         botUserId: resolvedBotUserId,
@@ -3322,6 +3397,7 @@ async function processSlackEvent(
         actor: agentRoutingActor.routing,
         ...(execution?.agentApp ? { agentApp: execution.agentApp } : {}),
         config: store,
+        installation,
         transport: runtimeTransport,
         ...(ask?.kind === 'takeover'
           ? { frontDeskAgentId: ask.targetAgentId }
@@ -3396,14 +3472,13 @@ async function processSlackEvent(
       }
       routedHandoff = routed.handoff;
       if (routed.coAddressed) turn.coAddressed = routed.coAddressed;
-      if (!ask) {
-        await claimChickpeaIntroductionForAgentInteraction({
-          actor: agentRoutingActor,
-          workspaceId: turn.workspaceId,
-          slackUserId: turn.userId,
-          management: stores.management,
-        });
-      }
+      const introduction = ask ? undefined : claimChickpeaIntroductionForAgentInteraction({
+        actor: agentRoutingActor,
+        workspaceId: turn.workspaceId,
+        slackUserId: turn.userId,
+        management: stores.management,
+      });
+      introduction?.catch(() => undefined);
       let routedAssignment = routed.assignment;
       if (routed.handoffFallbackRequired && routed.previousAgentId && routed.route.handoff) {
         const fallbackContext = await hydrateSlackPublicHandoffFallback(
@@ -3458,13 +3533,52 @@ async function processSlackEvent(
         if (frontDesk) routedAssignment = { ...routedAssignment, frontDesk };
       }
       routedBaseAssignment = routedAssignment;
+      const guestAgent = routedAssignment.threadGuest ? routedAssignment.agent : undefined;
+      const snapshotKey = guestAgent ? slackGuestThreadKey(threadKey, guestAgent.id) : threadKey;
+      const existingSnapshot = stores.snapshots.get(snapshotKey);
+      void existingSnapshot.catch(() => undefined);
       const policyAssignment = await resolveModelPolicyForAssignment(
-        routedAssignment, store, process.env, undefined, platformEnv,
+        routedAssignment, store, process.env, installation, platformEnv,
       );
+      await introduction;
+      const admittedCredential = {
+        model: policyAssignment.model,
+        credential: resolveModelCredentialAttribution(
+          policyAssignment.model, platformEnv, stores.settings, stores.usage,
+        ),
+      };
+      const proposalMembershipId = !ui && !ask && turn.source !== 'reaction_added'
+        ? agentRoutingActor.principal?.membershipId
+        : undefined;
+      routedReads = {
+        activeWork: state.isActiveWork(slackAgentThreadKey(turn, routedAssignment)),
+        ...(proposalMembershipId
+          ? {
+              proposal: resolveHostSlackManagementProposal({
+                turn,
+                assignment: routedAssignment,
+                actorMembershipId: proposalMembershipId,
+                identity: stores.identity,
+                ...(agentRoutingActor.identity ? { knownIdentity: agentRoutingActor.identity } : {}),
+                management: stores.management,
+              }),
+            }
+          : {}),
+        ...(avatarNeedsPublicUrl(routedAssignment.agent, platformEnv)
+          ? { publicUrl: resolveSlackPublicUrl(platformEnv, stores.settings, stores.identity) }
+          : {}),
+      };
+      for (const read of [admittedCredential.credential, ...Object.values(routedReads)]) {
+        void read.catch(() => undefined);
+      }
       candidateTurn = turn.source === 'reaction_added';
-      if (surface === 'channel') {
-        const channel = conversation ?? await runtimeTransport.lookupChannel(turn.channelId);
+      if (channelFacts) {
+        const channel = await channelFacts;
         turn.sharedChannel = channel.shared === true;
+        if (channel.member && channel.id === turn.channelId &&
+            (channel.contextTeamId === undefined || channel.contextTeamId === turn.workspaceId)) {
+          turn.channelMembership = { botUserId: resolvedBotUserId, verifiedAt: Date.now() };
+        }
         agentSourceVisibility = channel.private ? 'private' : 'public';
         liveChannelName = channel.name;
         if (liveChannelName && routedAssignment.channelLabel !== liveChannelName) {
@@ -3477,12 +3591,9 @@ async function processSlackEvent(
       } else {
         agentSourceVisibility = 'private';
       }
-      // A guest answering an ask keeps its own frozen configuration, so the
-      // owner's snapshot is never replaced by the guest's.
-      const guestAgent = routedAssignment.threadGuest ? routedAssignment.agent : undefined;
       const frozenAssignment = await withAdmittedModelCredential(await getOrReplaceSnapshotForRoute(
         stores.snapshots,
-        guestAgent ? slackGuestThreadKey(threadKey, guestAgent.id) : threadKey,
+        snapshotKey,
         guestAgent
           ? {
               agentId: guestAgent.id,
@@ -3491,7 +3602,9 @@ async function processSlackEvent(
             }
           : { ...routed.route, modelAttribution: policyAssignment.modelAttribution },
         () => effectiveSlackConfigFromAssignment(policyAssignment),
-      ), platformEnv, stores);
+        Date.now,
+        existingSnapshot,
+      ), platformEnv, stores, admittedCredential);
       assignment = {
         ...frozenAssignment,
         ...(routedAssignment.runtimeContract
@@ -3599,7 +3712,7 @@ async function processSlackEvent(
     return;
   }
   threadKey = slackAgentThreadKey(turn, assignment);
-  turn.activeWorkAtAdmission = await state.isActiveWork(threadKey);
+  turn.activeWorkAtAdmission = await (routedReads?.activeWork ?? state.isActiveWork(threadKey));
   const commandAddress = {
     botUserId: resolvedBotUserId,
     agentUserGroupId: assignment.agent.slackPresence?.userGroupId,
@@ -3615,6 +3728,7 @@ async function processSlackEvent(
     reason: 'slack_truth_unavailable',
   };
   let admittedActorMembershipId = agentRoutingActor?.principal?.membershipId;
+  let admittedIdentity = agentRoutingActor?.identity;
   let admittedRequesterTimezone = agentRoutingActor?.requesterTimezone;
   if (agentRoutingActor && agentSourceVisibility) {
     admissionTruth = {
@@ -3648,6 +3762,7 @@ async function processSlackEvent(
             member.resolution.membership.status === 'active'
           ) {
             admittedActorMembershipId = member.resolution.membership.id;
+            admittedIdentity = member.resolution;
           }
           return member.outcome === 'provisioned' || member.outcome === 'active';
         },
@@ -3768,7 +3883,9 @@ async function processSlackEvent(
         assignment,
         actorMembershipId: admittedActorMembershipId,
         identity: stores.identity,
+        ...(admittedIdentity ? { knownIdentity: admittedIdentity } : {}),
         management: stores.management,
+        ...(routedReads?.proposal ? { proposal: routedReads.proposal } : {}),
         latestAgentTurnMessageTs: async (query) => await state.latestAgentTurnMessageTs?.(query),
         judge: async (reply) => {
           const requestedModel = assignment.model ?? null;
@@ -3933,6 +4050,7 @@ async function processSlackEvent(
     assignment.agent,
     stores,
     platformEnv,
+    routedReads?.publicUrl,
   );
 
   // Canonical Work admission stores a concrete configured model. A missing
@@ -4236,8 +4354,9 @@ async function processSlackEvent(
   //    - CLOUDFLARE cannot drive a turn inside the events
   //      invocation's `waitUntil` is cancelled ~30s after the response
   //      (tail-log-confirmed), killing any longer model turn. So the handler
-  //      ENQUEUES the job into the state Durable Object — awaited, so the job +
-  //      armed alarm are durable BEFORE the ack (milliseconds) — and the DO's
+  //      ENQUEUES the job into the state Durable Object (a canonical
+  //      admission RPC does it itself) — awaited, so the job + armed alarm
+  //      are durable BEFORE the ack (milliseconds) — and the DO's
   //      alarm() runs the SAME runTurn with the platform's 15-minute wall-time
   //      budget. The claims are already held; each driver owns terminal claim
   //      release and preserves any admitted Flue envelope for reattachment.
@@ -4257,7 +4376,9 @@ async function processSlackEvent(
     const enqueueTurn = execution?.enqueueTurn ?? ask?.enqueueTurn;
     const enqueued = enqueueTurn
       ? await enqueueTurn(job)
-      : await tagStateStub(platformEnv).enqueueTurn(job);
+      : durableCanonicalTurnJob
+        ? { ok: true as const, value: null }
+        : await tagStateStub(platformEnv).enqueueTurn(job);
     if (!enqueued.ok) {
       // Enqueue failed before anything ran: free the claims so a Slack
       // redelivery can re-drive, and stay silent.
@@ -5175,14 +5296,12 @@ async function withAdmittedModelCredential<T extends Pick<ResolvedAssignment, 'm
   config: T,
   platformEnv: PlatformEnv | undefined,
   stores: Pick<AppStores, 'settings' | 'usage'>,
+  admitted?: { model: string; credential: ReturnType<typeof resolveModelCredentialAttribution> },
 ): Promise<Omit<T, 'modelCredential'> & Pick<ResolvedAssignment, 'modelCredential'>> {
   const { modelCredential: _snapshotCredential, ...current } = config;
-  const modelCredential = await resolveModelCredentialAttribution(
-    config.model,
-    platformEnv,
-    stores.settings,
-    stores.usage,
-  );
+  const modelCredential = await (admitted?.model === config.model
+    ? admitted.credential
+    : resolveModelCredentialAttribution(config.model, platformEnv, stores.settings, stores.usage));
   return modelCredential ? { ...current, modelCredential } : current;
 }
 
@@ -5229,10 +5348,11 @@ function slackEventFiles(event: SlackEventFixture['event']): unknown {
  * record write that fails loses only this context row, never the event.
  */
 async function recordAgentThreadMessage(
-  config: Pick<ConfigStore, 'getAgentThreadRoute' | 'putSlackPublicContext'>,
+  config: Pick<ConfigStore, 'putSlackPublicContext'>,
   workspaceId: string,
   event: SlackMessageEvent,
   self: SlackContextSelf,
+  threadRoute: (channelId: string, threadTs: string) => Promise<AgentThreadRoute | undefined>,
 ): Promise<void> {
   try {
     await recordSlackThreadEventMessage(
@@ -5240,7 +5360,7 @@ async function recordAgentThreadMessage(
       workspaceId,
       event,
       self,
-      async (rootTs) => Boolean(await config.getAgentThreadRoute(workspaceId, event.channel, rootTs)),
+      async (rootTs) => Boolean(await threadRoute(event.channel, rootTs)),
     );
   } catch {
     console.warn('[chickpea] thread record capture failed');

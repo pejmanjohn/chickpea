@@ -259,8 +259,9 @@ export async function getOrReplaceSnapshotForRoute(
   },
   resolve: () => EffectiveSlackConfig | Promise<EffectiveSlackConfig>,
   now: () => number = Date.now,
+  read: Promise<AgentSnapshot | undefined> = store.get(threadKey),
 ): Promise<AgentSnapshot> {
-  const existing = await store.get(threadKey);
+  const existing = await read;
   const existingGeneration = existing?.agent.configurationGeneration ?? existing?.agent.revision;
   if (
     existing && existing.agentId === route.agentId &&

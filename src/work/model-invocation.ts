@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { FlueExecutionInterceptor } from '@flue/runtime';
 
+import { readStagedSlackObservationTarget } from '../agents/turn-input.ts';
 import {
   getSlackStateStore,
   getWorkStore,
@@ -16,7 +17,8 @@ interface InvocationState {
   instanceId: string;
   submissionId: string;
   target?: FlueObservationTarget;
-  marked: boolean;
+  /** The state store's view of a staged target, awaited before the first model operation. */
+  live?: Promise<FlueObservationTarget | undefined>;
   marking?: Promise<void>;
   /** An observe-mode mark failed: this invocation is not marked again. */
   markUnavailable?: boolean;
@@ -70,52 +72,60 @@ export function createWorkModelInvocationInterceptor(options: {
       const instanceId = context.instanceId;
       const submissionId = context.submissionId;
       if (!instanceId || !submissionId) return next();
-      const target = await resolveTarget(instanceId, submissionId);
-      if (!target) {
-        throw new Error('Slack TurnJob observation correlation is unavailable.');
-      }
+      // The staged copy knows nothing of a turn the runner has since ended;
+      // the store does, so its read starts here and is awaited before the
+      // first model operation instead of before the render.
+      const staged = readStagedSlackObservationTarget(instanceId, submissionId);
+      const live = resolveTarget(instanceId, submissionId);
+      live.catch(() => undefined);
+      const target = staged ?? await live;
+      if (!target) throw correlationUnavailable();
       return invocationState.run({
         instanceId,
         submissionId,
-        ...(target ? { target } : {}),
-        marked: false,
+        target,
+        ...(staged ? { live } : {}),
       }, next);
     }
     if (operation.type !== 'model') return next();
     const active = invocationState.getStore();
     const correlation = active?.target?.workCorrelation;
     if (!active || !correlation) return next();
+    if (active.live) {
+      const current = await active.live;
+      delete active.live;
+      if (!current) throw correlationUnavailable();
+    }
     // Observe mode marks at most once per invocation: a failed mark (its
     // execution missing, or the store unreachable) is not retried by every
     // later model operation, which sent one store read per operation.
     if (active.markUnavailable && correlation.mode !== 'enforce') return next();
-    try {
-      await ensureInvocationMarked(active, correlation, markInvocation);
-    } catch (error) {
-      if (correlation.mode === 'enforce') throw error;
-      active.markUnavailable = true;
-      console.warn('[work] model invocation marker unavailable; legacy execution will continue');
-    }
+    const marking = ensureInvocationMarked(active, correlation, markInvocation);
+    if (correlation.mode === 'enforce') await marking;
     return next();
   };
 }
 
 export const workModelInvocationInterceptor = createWorkModelInvocationInterceptor();
 
-async function ensureInvocationMarked(
+function correlationUnavailable(): Error {
+  return new Error('Slack TurnJob observation correlation is unavailable.');
+}
+
+function ensureInvocationMarked(
   state: InvocationState,
   correlation: WorkTraceCorrelation,
   markInvocation: MarkInvocation,
 ): Promise<void> {
-  if (state.marked) return;
-  state.marking ??= markInvocation(correlation).then(() => {
-    state.marked = true;
+  state.marking ??= markInvocation(correlation).catch((error: unknown) => {
+    if (correlation.mode === 'enforce') {
+      delete state.marking;
+      throw error;
+    }
+    state.markUnavailable = true;
+    console.warn('[work] model invocation marker unavailable; legacy execution will continue');
   });
-  try {
-    await state.marking;
-  } finally {
-    if (!state.marked) delete state.marking;
-  }
+  return state.marking;
 }
 
 async function resolvePersistedObservationTarget(

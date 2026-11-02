@@ -214,6 +214,7 @@ export interface NormalizedSlackTurn {
    * or about to be. Absent when admission read no facts, as for a DM.
    */
   sharedChannel?: boolean;
+  channelMembership?: { botUserId: string; verifiedAt: number };
   contextMode: SlackContextMode;
   reaction?: string;
   reactionTargetTs?: string;

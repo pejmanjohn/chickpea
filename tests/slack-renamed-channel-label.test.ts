@@ -11,7 +11,12 @@ const OWNER = {
   is_restricted: false, is_ultra_restricted: false, is_stranger: false,
 };
 
-test('a Channel turn records the current Slack name and refreshes labels cached before a rename', async () => {
+type ChannelTurnStores = ReturnType<typeof resolveStores>;
+
+async function withChannelTurn(
+  beforeAnswer: (operation: string) => Promise<void> | void,
+  body: (admit: () => Promise<'accepted' | 'rejected'>, stores: ChannelTurnStores, jobs: TurnJob[]) => Promise<void>,
+): Promise<void> {
   const envKeys = ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH'] as const;
   const previousEnv = envKeys.map((key) => process.env[key]);
   for (const key of envKeys) process.env[key] = ':memory:';
@@ -54,6 +59,7 @@ test('a Channel turn records the current Slack name and refreshes labels cached 
       workspaceId: 'T1',
       async loadBinding() { return binding; },
       async call(operation: string) {
+        await beforeAnswer(operation);
         if (operation === 'users.info') return { user: OWNER };
         if (operation === 'conversations.info') return { channel: liveChannel };
         if (operation === 'conversations.members') return { members: ['U1', 'UBOT'] };
@@ -66,7 +72,7 @@ test('a Channel turn records the current Slack name and refreshes labels cached 
       configurable: true, value: { userAgent: 'Cloudflare-Workers' },
     });
     const jobs: TurnJob[] = [];
-    const accepted = await processGatewaySlackEnvelope({
+    const admit = () => processGatewaySlackEnvelope({
       workspaceId: 'T1', eventId: 'Ev3000', eventTime: 3000,
       event: {
         type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '3000.000100',
@@ -76,15 +82,7 @@ test('a Channel turn records the current Slack name and refreshes labels cached 
       stores,
       enqueueTurn: async (job) => { jobs.push(job); return { ok: true, value: null }; },
     });
-
-    assert.equal(accepted, 'accepted');
-    assert.equal(jobs.length, 1);
-    assert.equal(jobs[0]?.assignment.channelLabel, 'qa-cobalt');
-    assert.equal((await stores.config.getChannel('T1', 'C1'))?.label, 'qa-cobalt');
-    assert.deepEqual(
-      (await stores.config.listAgentChannelGrants('T1', 'C1')).map(({ channelLabel }) => channelLabel),
-      ['qa-cobalt'],
-    );
+    await body(admit, stores, jobs);
   } finally {
     if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator);
     else Reflect.deleteProperty(globalThis, 'navigator');
@@ -93,5 +91,72 @@ test('a Channel turn records the current Slack name and refreshes labels cached 
       if (previousEnv[index] === undefined) delete process.env[key];
       else process.env[key] = previousEnv[index];
     });
+  }
+}
+
+test('a Channel turn records the current Slack name and refreshes labels cached before a rename', async () => {
+  await withChannelTurn(() => undefined, async (admit, stores, jobs) => {
+    assert.equal(await admit(), 'accepted');
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0]?.assignment.channelLabel, 'qa-cobalt');
+    assert.equal((await stores.config.getChannel('T1', 'C1'))?.label, 'qa-cobalt');
+    assert.deepEqual(
+      (await stores.config.listAgentChannelGrants('T1', 'C1')).map(({ channelLabel }) => channelLabel),
+      ['qa-cobalt'],
+    );
+  });
+});
+
+test('a Channel turn asks Slack for its Channel while the author lookup is still unanswered', async () => {
+  const seen: string[] = [];
+  const author = Promise.withResolvers<void>();
+  const giveUp = setTimeout(() => author.resolve(), 500);
+  try {
+    await withChannelTurn(async (operation) => {
+      seen.push(operation);
+      if (operation === 'conversations.info') author.resolve();
+      if (operation === 'users.info') {
+        await author.promise;
+        seen.push('users.info answered');
+      }
+    }, async (admit, _stores, jobs) => {
+      assert.equal(await admit(), 'accepted');
+      assert.equal(jobs.length, 1);
+      assert.deepEqual(seen.slice(0, 3), ['users.info', 'conversations.info', 'users.info answered']);
+    });
+  } finally {
+    clearTimeout(giveUp);
+  }
+});
+
+test('a Channel turn asks whether its thread has work running while its snapshot read is unanswered', async () => {
+  const seen: string[] = [];
+  const snapshotRead = Promise.withResolvers<void>();
+  const giveUp = setTimeout(() => snapshotRead.resolve(), 500);
+  try {
+    await withChannelTurn(() => undefined, async (admit, stores, jobs) => {
+      const snapshots = stores.snapshots;
+      stores.snapshots = {
+        get: async (key) => {
+          await snapshotRead.promise;
+          seen.push('snapshot answered');
+          return snapshots.get(key);
+        },
+        putIfAbsent: (key, snapshot) => snapshots.putIfAbsent(key, snapshot),
+        replace: (key, snapshot) => snapshots.replace(key, snapshot),
+        listLiveRootsByAgent: (agentId) => snapshots.listLiveRootsByAgent(agentId),
+      };
+      const isActiveWork = stores.slackState.isActiveWork;
+      stores.slackState.isActiveWork = async (key) => {
+        seen.push('active work read');
+        snapshotRead.resolve();
+        return isActiveWork(key);
+      };
+      assert.equal(await admit(), 'accepted');
+      assert.equal(jobs.length, 1);
+      assert.deepEqual(seen.slice(0, 2), ['active work read', 'snapshot answered']);
+    });
+  } finally {
+    clearTimeout(giveUp);
   }
 });

@@ -13,7 +13,7 @@ import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../../src/model-catalog/provider-a
 
 export const SCRIPTED_MODEL = 'claude-sonnet-5-5';
 
-export type Reply = (model: Model<string>) => AssistantMessage;
+export type Reply = (model: Model<string>) => AssistantMessage | Promise<AssistantMessage>;
 
 export function scriptedMessage(model: Model<string>, content: AssistantMessage['content'], stopReason: 'stop' | 'toolUse'): AssistantMessage {
   return {
@@ -50,9 +50,10 @@ function streamMessage(output: AssistantMessageEventStream, final: AssistantMess
   output.end();
 }
 
-export function scriptedProvider(replies: Reply[]) {
+export function scriptedProvider(replies: Reply[], options: { providerId?: string } = {}) {
+  const providerId = options.providerId ?? ANTHROPIC_COMPAT_PROVIDER_ID;
   const model = {
-    id: SCRIPTED_MODEL, name: SCRIPTED_MODEL, api: 'anthropic-messages', provider: ANTHROPIC_COMPAT_PROVIDER_ID,
+    id: SCRIPTED_MODEL, name: SCRIPTED_MODEL, api: 'anthropic-messages', provider: providerId,
     baseUrl: 'https://provider.invalid', reasoning: false, input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8_192,
   } as Model<'anthropic-messages'>;
@@ -64,11 +65,11 @@ export function scriptedProvider(replies: Reply[]) {
     const output = createAssistantMessageEventStream();
     const reply = replies.shift();
     assert.ok(reply, 'a scripted reply remains for every request sent');
-    queueMicrotask(() => streamMessage(output, reply(sentModel)));
+    queueMicrotask(async () => streamMessage(output, await reply(sentModel)));
     return output;
   };
   registerPiProvider(createProvider({
-    id: ANTHROPIC_COMPAT_PROVIDER_ID,
+    id: providerId,
     auth: { apiKey: { name: 'probe', resolve: async () => ({ auth: {} }) } },
     models: [model],
     api: { stream, streamSimple: stream },

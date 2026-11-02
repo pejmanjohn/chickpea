@@ -131,6 +131,14 @@ function state(
   };
 }
 
+function historySnapshot(submissionId: string, text: string) {
+  return {
+    v: 1, conversationId: 'c', offset: '1',
+    messages: [{ id: 'reply', role: 'assistant', submissionId, parts: [{ type: 'text', text }] }],
+    settlements: [{ submissionId, outcome: 'completed' }],
+  };
+}
+
 function handle(overrides: Partial<AgentInstanceHandle>): AgentInstanceHandle {
   return {
     id: ENVELOPE.instanceId,
@@ -854,32 +862,29 @@ test('on Cloudflare the adapter observes through the agent namespace binding wit
           const url = new URL(request.url);
           requests.push(url);
           assert.equal(id, ENVELOPE.instanceId);
+          if (url.searchParams.get('view') === 'history') {
+            return Response.json(historySnapshot(RECEIPT.submissionId, 'done'));
+          }
           return Response.json(pages.shift(), { headers: {
             'Stream-Next-Offset': '0_1', ...(pages.length ? { 'Stream-Up-To-Date': 'true' } : {}),
           } });
         },
       }),
     };
-    let reads = 0;
     const dispatchState = state();
     const started = Date.now();
     const result = await promptSlackThreadAgent({
       ...promptInput(dispatchState, handle({
-        read: async (_receipt, options) => {
-          reads += 1;
-          assert.equal(options, undefined);
-          return { text: 'done', data: {}, submissionId: RECEIPT.submissionId };
-        },
+        read: async () => { throw new Error('Flue read() must not run; the reply comes from the history view'); },
       })),
       env: { FLUE_CHICKPEA_SLACK_V2_AGENT: namespace },
     });
     assert.equal(result.text, 'done');
-    assert.equal(reads, 1);
-    assert.equal(requests.length, 2);
-    assert.ok(Date.now() - started >= 700, 'the idle page waited the real poll interval');
+    assert.deepEqual(requests.map((url) => url.searchParams.get('view')), ['updates', 'updates', 'history'],
+      'the settlement is observed on the updates view, then the reply is read once from history');
+    assert.ok(Date.now() - started >= 100, 'the idle page waited the real poll interval');
     for (const url of requests) {
       assert.equal(url.pathname, `/agents/chickpea-slack-v2/${ENVELOPE.instanceId}`);
-      assert.equal(url.searchParams.get('view'), 'updates');
       assert.equal(url.searchParams.has('live'), false);
     }
     assert.equal(dispatchState.flueSettlement?.outcome, 'completed');
@@ -1130,11 +1135,13 @@ test('a turn whose reply never settles yields on abort, keeps its receipt, and r
 
   const settled = createBoundedAgentReplyReader({
     agentName: 'chickpea-slack-v2',
-    resolveRoute: () => async () => Response.json([
-      { type: 'stream-checkpoint', incarnation: 1 },
-      { type: 'submission-settled', submissionId: RECEIPT.submissionId, outcome: 'completed',
-        position: { batch: 1, index: 0 } },
-    ]),
+    resolveRoute: () => async (request) => new URL(request.url).searchParams.get('view') === 'history'
+      ? Response.json(historySnapshot(RECEIPT.submissionId, 'final answer'))
+      : Response.json([
+          { type: 'stream-checkpoint', incarnation: 1 },
+          { type: 'submission-settled', submissionId: RECEIPT.submissionId, outcome: 'completed',
+            position: { batch: 1, index: 0 } },
+        ]),
   });
   const result = await promptSlackThreadAgent({
     ...promptInput(dispatchState, agent),

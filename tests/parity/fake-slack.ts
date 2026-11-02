@@ -20,6 +20,8 @@ import { slackManifestRefusal } from '../helpers/slack-manifest-rules.ts';
  */
 
 export const STUB_REPLY_MARKER = 'stub-reply::glm-parity-marker';
+/** Coprime with any spread under 97, so the held steps visit distinct phases. */
+const SPREAD_STRIDE = 97;
 export const RAW_PROVIDER_ERROR_MARKER = 'raw_provider_error_marker';
 export const FAKE_PROVIDER_KEYS = {
   anthropic: 'anthropic-valid-key',
@@ -41,6 +43,8 @@ export interface WireEntry {
    */
   ok?: boolean;
   responseTs?: string;
+  at: number;
+  respondedAt?: number;
 }
 
 /**
@@ -53,6 +57,7 @@ interface RouteResult {
   rawBody?: string;
   contentType?: string;
   headers?: Record<string, string>;
+  slackEntry?: WireEntry;
 }
 
 /**
@@ -117,6 +122,7 @@ export interface FakeSlackBehaviorConfig {
   reactionsRemoveError?: string;
   /** Deterministic confidential bot/OIDC fixture used by the workerd smoke. */
   oauth?: FakeSlackOAuthConfig;
+  latencyMs?: number;
 }
 
 export interface FakeSlackOAuthConfig {
@@ -185,6 +191,7 @@ export interface FakeProviderConfig {
    * (default) responds immediately. HTTP transport only.
    */
   delayMs?: number;
+  delaySpreadMs?: number;
 }
 
 export interface FakeSlackBackendConfig {
@@ -235,6 +242,8 @@ export class FakeSlackBackend {
   private providerMode: 'ok' | 'http_500';
   private replyText: string;
   private providerDelayMs: number;
+  private providerDelaySpreadMs: number;
+  private heldAgentCalls = 0;
   private channels: FakeSlackChannel[];
   private conversationsListPageSize: number;
   private conversationsJoinError: string | undefined;
@@ -244,6 +253,7 @@ export class FakeSlackBackend {
   private workspaceUsers: FakeSlackUser[];
   private directMessages: Record<string, string>;
   private conversationsOpenError: string | undefined;
+  private slackLatencyMs: number;
   private userGroups: Array<{
     id: string;
     name: string;
@@ -295,10 +305,12 @@ export class FakeSlackBackend {
     this.workspaceUsers = slack.workspaceUsers ?? [];
     this.directMessages = slack.directMessages ?? {};
     this.conversationsOpenError = slack.conversationsOpenError ?? undefined;
+    this.slackLatencyMs = slack.latencyMs ?? 0;
     this.oauth = slack.oauth;
     this.providerMode = config.provider?.mode ?? 'ok';
     this.replyText = config.provider?.replyText ?? STUB_REPLY_MARKER;
     this.providerDelayMs = config.provider?.delayMs ?? 0;
+    this.providerDelaySpreadMs = config.provider?.delaySpreadMs ?? 0;
 
     this.repliesPages.forEach((page, index) => {
       if (page.next_cursor) {
@@ -310,13 +322,14 @@ export class FakeSlackBackend {
   /** fetch-compatible function that routes into the shared core. */
   asFetch(): typeof fetch {
     return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const arrivedAt = Date.now();
       const request = input instanceof Request ? input : new Request(input, init);
       const headers = headersObject(request.headers);
       // A multipart upload (an icon PNG) stays bytes; only text bodies decode.
       const body = isMultipart(headers)
         ? new Uint8Array(await request.clone().arrayBuffer())
         : await request.clone().text();
-      const result = this.route(request.url, body, headers);
+      const result = this.route(request.url, body, headers, arrivedAt);
       if (result.rawBody !== undefined) {
         return new Response(result.rawBody, {
           status: result.status,
@@ -333,6 +346,7 @@ export class FakeSlackBackend {
   /** Serve the SAME core over HTTP (for a future HTTP-transport lane). */
   async listen(port = 0): Promise<{ url: string; close: () => Promise<void> }> {
     const server = createServer((req, res) => {
+      const arrivedAt = Date.now();
       const chunks: Buffer[] = [];
       req.on('data', (chunk: Buffer) => chunks.push(chunk));
       req.on('end', () => {
@@ -340,19 +354,28 @@ export class FakeSlackBackend {
         const headers = normalizeNodeHeaders(req.headers);
         const body = isMultipart(headers) ? new Uint8Array(raw) : raw.toString('utf8');
         // Slow-turn path streams its own (delayed) response over `res`.
-        if (typeof body === 'string' && this.tryStreamDelayedProvider(req.url ?? '/', body, res)) {
+        if (typeof body === 'string' && this.tryStreamDelayedProvider(req.url ?? '/', body, res, arrivedAt)) {
           return;
         }
-        const result = this.route(req.url ?? '/', body, headers);
-        if (result.rawBody !== undefined) {
-          res.writeHead(result.status, {
-            'content-type': result.contentType ?? 'text/plain',
-            ...result.headers,
-          });
-          res.end(result.rawBody);
+        const result = this.route(req.url ?? '/', body, headers, arrivedAt);
+        const write = () => {
+          if (res.destroyed) return;
+          if (result.slackEntry) result.slackEntry.respondedAt = Date.now();
+          if (result.rawBody !== undefined) {
+            res.writeHead(result.status, {
+              'content-type': result.contentType ?? 'text/plain',
+              ...result.headers,
+            });
+            res.end(result.rawBody);
+          } else {
+            res.writeHead(result.status, { 'content-type': 'application/json', ...result.headers });
+            res.end(JSON.stringify(result.body));
+          }
+        };
+        if (result.slackEntry && this.slackLatencyMs > 0) {
+          setTimeout(write, this.slackLatencyMs);
         } else {
-          res.writeHead(result.status, { 'content-type': 'application/json', ...result.headers });
-          res.end(JSON.stringify(result.body));
+          write();
         }
       });
     });
@@ -550,6 +573,9 @@ export class FakeSlackBackend {
       if (config.slack.oauth !== undefined) {
         this.oauth = config.slack.oauth;
       }
+      if (config.slack.latencyMs !== undefined) {
+        this.slackLatencyMs = config.slack.latencyMs;
+      }
     }
     if (config.provider) {
       if (config.provider.mode !== undefined) {
@@ -560,6 +586,9 @@ export class FakeSlackBackend {
       }
       if (config.provider.delayMs !== undefined) {
         this.providerDelayMs = config.provider.delayMs;
+      }
+      if (config.provider.delaySpreadMs !== undefined) {
+        this.providerDelaySpreadMs = config.provider.delaySpreadMs;
       }
     }
   }
@@ -580,6 +609,7 @@ export class FakeSlackBackend {
     url: string,
     rawBody: string | Uint8Array,
     headers: Record<string, string> = {},
+    arrivedAt = Date.now(),
   ): RouteResult {
     const pathname = url.startsWith('http') ? new URL(url).pathname : (url.split('?')[0] ?? url);
 
@@ -623,7 +653,7 @@ export class FakeSlackBackend {
     }
     const body = wireBody(rawBody, headers);
 
-    const entry: WireEntry = { kind: isSlack ? 'slack' : 'provider', method, url, body };
+    const entry: WireEntry = { kind: isSlack ? 'slack' : 'provider', method, url, body, at: arrivedAt };
     this.wireLog.push(entry);
 
     if (!isSlack) {
@@ -647,9 +677,11 @@ export class FakeSlackBackend {
     // fake rejected (a rejected `{ ok:false }` makes the real WebClient throw).
     entry.ok = slackBody.ok !== false;
     if (typeof slackBody.ts === 'string') entry.responseTs = slackBody.ts;
+    entry.respondedAt = Date.now();
     return {
       status: 200,
       body: slackBody,
+      slackEntry: entry,
       ...(method === 'auth.test'
         ? { headers: { 'x-oauth-scopes': REQUIRED_SLACK_BOT_SCOPES.join(',') } }
         : {}),
@@ -1271,13 +1303,18 @@ export class FakeSlackBackend {
    * alive with immediate + periodic keepalive comments so workerd/miniflare
    * does not reset an idle stream. Returns true if it took over the response.
    */
-  private tryStreamDelayedProvider(url: string, bodyString: string, res: ServerResponse): boolean {
+  private tryStreamDelayedProvider(
+    url: string,
+    bodyString: string,
+    res: ServerResponse,
+    arrivedAt: number,
+  ): boolean {
     const pathname = url.startsWith('http') ? new URL(url).pathname : (url.split('?')[0] ?? url);
     if (!pathname.endsWith('/chat/completions')) return false;
     if (this.providerMode !== 'ok' || this.providerDelayMs <= 0) return false;
     const body = decodeWireBody(bodyString);
 
-    this.wireLog.push({ kind: 'provider', method: 'chat/completions', url, body });
+    this.wireLog.push({ kind: 'provider', method: 'chat/completions', url, body, at: arrivedAt });
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',
@@ -1289,14 +1326,23 @@ export class FakeSlackBackend {
         res.write(': keepalive\n\n');
       }
     }, 2000);
-    const content = openAiTextStreamBody(this.replyText);
+    const classifierReply = interactionClassifierReply(body);
+    const content = openAiTextStreamBody(classifierReply ?? this.replyText);
     setTimeout(() => {
       clearInterval(keepalive);
       if (res.writableEnded) return;
       res.write(content);
       res.end();
-    }, this.providerDelayMs);
+    }, this.heldDelayMs(classifierReply !== null));
     return true;
+  }
+
+  private heldDelayMs(classifier: boolean): number {
+    const spread = this.providerDelaySpreadMs;
+    if (spread <= 0) return this.providerDelayMs;
+    const position = classifier ? this.heldAgentCalls : this.heldAgentCalls++;
+    const step = ((position * SPREAD_STRIDE) % spread) - Math.floor(spread / 2);
+    return Math.max(0, this.providerDelayMs + (classifier ? -step : step));
   }
 
   private nextTs(): string {

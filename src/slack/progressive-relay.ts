@@ -47,6 +47,7 @@ interface ProgressiveRelaySummary {
  */
 export interface ProgressiveAppendControl {
   closing(): boolean;
+  closed: Promise<void>;
 }
 
 interface ProgressiveTextSink {
@@ -233,8 +234,10 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
 
   private readonly queue: RelayOperation[] = [];
   private closing = false;
+  private readonly closed = Promise.withResolvers<void>();
   private readonly appendControl: ProgressiveAppendControl = {
     closing: () => this.closing,
+    closed: this.closed.promise,
   };
   private pumpPromise: Promise<void> | undefined;
   private accepting = true;
@@ -307,7 +310,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       }
     }
     this.accepting = false;
-    this.closing = true;
+    this.markClosing();
     await this.drain();
     return this.summary();
   }
@@ -316,7 +319,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     reason: ProgressiveRelayInvalidationReason,
   ): Promise<ProgressiveRelaySummary> {
     this.queueInvalidation(reason);
-    this.closing = true;
+    this.markClosing();
     await this.drain();
     return this.summary();
   }
@@ -326,9 +329,14 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     // queue: the next read replays the receipt from its start, and the sink's
     // durable position skips everything this relay already accepted.
     this.accepting = false;
-    this.closing = true;
+    this.markClosing();
     await this.drain();
     return this.summary();
+  }
+
+  private markClosing(): void {
+    this.closing = true;
+    this.closed.resolve();
   }
 
   private handleToolInput(toolName: string, toolCallId: string): void {
@@ -466,7 +474,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     this.invalidated = true;
     this.invalidationReason = reason;
     this.accepting = false;
-    this.closing = true;
+    this.markClosing();
     this.queue.push({ kind: 'invalidate', reason });
     this.startPump();
   }
