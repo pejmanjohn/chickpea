@@ -306,6 +306,7 @@ import { SLACK_READ_TOOL_NAMES, useSlackReadingTools } from '../slack/reading/to
 import {
   parseSlackManagementSignal,
   useWorkspaceManagementSlackTools,
+  type DeferredSlackManagementTools,
 } from '../management/slack-tools.ts';
 import {
   WORKSPACE_MANAGEMENT_TOOL_NAMES,
@@ -973,7 +974,7 @@ export function useChickpeaSlackRuntimeCapabilities(
 ): void {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   const webTurn = useWebTurn(signal?.turnJobId);
-  let mountSkillUpload: (() => void) | undefined;
+  let management: DeferredSlackManagementTools | undefined;
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
     ...(turn ? { turn } : {}),
@@ -998,8 +999,8 @@ export function useChickpeaSlackRuntimeCapabilities(
     },
     mountBeforeTenantTools: (followUps) => {
       useAgentAuthoringSkill();
-      mountSkillUpload = useWorkspaceManagementSlackTools(
-        plan, resolveAgentPlatformEnv, webTurn.pageRead, writeAgentCreationTerminal, writeMemoryUpdate,
+      management = useWorkspaceManagementSlackTools(
+        plan, id, resolveAgentPlatformEnv, webTurn.pageRead, writeAgentCreationTerminal, writeMemoryUpdate,
       );
       useSlackListsTools(plan, resolveAgentPlatformEnv);
       useSlackReadingTools(plan, resolveAgentPlatformEnv);
@@ -1010,10 +1011,12 @@ export function useChickpeaSlackRuntimeCapabilities(
         useInstruction(presentationIntent.instruction);
         useTool(presentationIntent.tool);
       }
+      // Last among the shared tools, so a thread that adds them keeps the prefix before them.
+      management?.changeTools?.();
     },
   });
   usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
-  mountSkillUpload?.();
+  management?.skillUpload?.();
   const imageInventory = conversationThreadImageInventory(plan.conversation, threadImages);
   useReadSlackFileTool({
     instanceId: id,

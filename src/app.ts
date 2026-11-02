@@ -26,6 +26,7 @@ import { recoveryOnlyGate } from './auth/request-auth-control.ts';
 import { createManagementSetupRoutes } from './management/setup-routes.ts';
 import { createConnectRoutes } from './management/connect-routes.ts';
 import { activityStatusForObservation } from './activity/status.ts';
+import { noteAgentAuthoringActivation } from './management/workspace-change-tools.ts';
 import {
   observeProviderAuthRoute,
   providerAuthRouteInterceptor,
@@ -93,6 +94,17 @@ instrument({
     ) {
       publishActivityStatus(event.instanceId, status, context.env, event.submissionId);
     }
+  },
+  dispose() {},
+});
+
+// A Slack thread mounts the workspace change tools on the render after its
+// model activates agent-authoring.
+instrument({
+  key: Symbol.for('chickpea.agent-authoring-activation'),
+  interceptor: async (_operation, _context, next) => next(),
+  observe(event, context) {
+    if (context.agentName === CHICKPEA_SLACK_AGENT_NAME) noteAgentAuthoringActivation(event);
   },
   dispose() {},
 });

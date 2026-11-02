@@ -47,6 +47,7 @@ import {
   WorkspaceManagementService,
 } from './service.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
+import { WORKSPACE_CHANGE_TOOLS_INSTRUCTION, useWorkspaceChangeToolsMounted } from './workspace-change-tools.ts';
 import {
   invokeWorkspaceManagementTool,
   workspaceManagementToolDescription,
@@ -610,6 +611,7 @@ export const scheduleActionDescription = 'Create, edit, pause, resume, disable, 
 export const SLACK_MANAGEMENT_GUIDANCE = [
   'When the requester says “this Agent”, “you”, or asks the specifically mentioned Agent to edit itself, target the trusted acting Agent ID.',
   'The management service enforces requester permission and acting scope. A user Agent is target-locked to itself; system Chickpea may manage only Agents the requester can edit. Follow the agent-authoring skill for placement, immediate creation, proposal, and approval decisions.',
+  WORKSPACE_CHANGE_TOOLS_INSTRUCTION,
   'For one sufficiently understood new Agent in commit posture, call apply_workspace_changes immediately with exactly one base create_agent operation. Do not propose creation and do not ask the requester to say “create it”. Keep connections, repositories, routines, and caller-supplied Channel reach out of that operation. When the requester asked this Agent to use services, in this message or earlier in the conversation, pass their display names in connectorMentions in the order requested; those are bounded welcome-action hints, not connections or authority.',
   'For new Agents, omit the optional model field so the Agent inherits the workspace default unless the requester explicitly selected a model. Never invent a model pin or copy a model from another Agent. Preserve an explicitly selected model; if its provider is unavailable, explain the required setup instead of silently substituting a different model.',
   'For a compound creation request, create the standalone base Agent first. Then handle each follow-on edit or capability through its existing policy and tool; proposal and confirmation rules for those separate operations are unchanged. If the base Agent itself is materially unresolved, clarify before writing anything. If creation returns a duplicate-identity clarification, ask whether to use the existing Agent or choose a distinct name or handle instead of proposing or retrying unchanged content.',
@@ -643,22 +645,33 @@ export function slackSkillUploadKey(signal: Pick<SlackManagementSignal, 'agentId
 
 const SLACK_SKILL_UPLOAD_INSTRUCTION = 'The person\'s current message has files attached. If it asks to add them as skills, call upload_skills, which reads the files itself.';
 
+/** Management tools the caller mounts later in the tool list, each where the shared prompt prefix needs it. */
+export interface DeferredSlackManagementTools {
+  /** The change tools, once agent-authoring is active in the thread (workspace-change-tools.ts). */
+  changeTools?: () => void;
+  /** upload_skills, when the person's message has files. */
+  skillUpload?: () => void;
+}
+
 /**
  * Mount requester-bound management tools only for a verified Slack signal.
- * Returns the skill upload tool's mount when the person's message has files.
- * The caller runs it after the tenant tools, so a turn with files keeps the
- * shared prompt prefix every other turn reads.
+ * Returns the mounts of the change tools, which the caller runs after the
+ * shared capability tools, and of the skill upload tool, which it runs after
+ * the tenant tools, so a turn without them keeps the shared prompt prefix
+ * every other turn reads.
  */
 export function useWorkspaceManagementSlackTools(
   plan: RuntimePlanV2,
+  instanceId: string,
   resolvePlatformEnv: PlatformEnvResolver,
   /** Whether web content entered this conversation, from the web capability's turn state. */
   pageRead: () => boolean,
   writeAgentCreationTerminal?: (intent: SlackAgentCreationTerminalIntent) => void,
   writeMemoryUpdate?: (receipt: SlackMemoryUpdate) => void,
-): (() => void) | undefined {
+): DeferredSlackManagementTools | undefined {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal) return undefined;
+  const changeToolsMounted = useWorkspaceChangeToolsMounted(instanceId);
   const turnGuard = useSlackManagementTurnGuard(signal.turnJobId);
   const [creationState, persistCreationState] = usePersistentState<SlackAgentCreationTurnState>(
     SLACK_AGENT_CREATION_TURN_STATE,
@@ -882,69 +895,69 @@ export function useWorkspaceManagementSlackTools(
       return slackToolOutput(result);
     },
   });
-  useTool({
-    name: 'propose_workspace_changes',
-    description: workspaceManagementToolDescription('propose_workspace_changes'),
-    input: proposeWorkspaceChangesValibotSchema,
-    async run({ data }) {
-      const result = await invokeLiveSlackTool(
-        signalAfterPageRead(signal, pageRead()),
-        resolvePlatformEnv,
-        'propose_workspace_changes',
-        { ...data, operations: data.operations as ManagementOperation[] },
-        turnGuard,
-      );
-      creationCoordinator.recordFollowOn(result);
-      return slackToolOutput(result);
-    },
-  });
-  useTool({
-    name: 'apply_workspace_changes',
-    description: workspaceManagementToolDescription('apply_workspace_changes'),
-    input: slackApplyWorkspaceChangesValibotSchema,
-    async run({ data }) {
-      const prepared = creationCoordinator.prepare({
-        idempotencyKey: data.idempotencyKey,
-        operations: data.operations as ManagementOperation[],
-        ...(data.connectorMentions ? { connectorMentions: data.connectorMentions } : {}),
-      });
-      const result = await invokeLiveSlackTool(
-        signalAfterPageRead(signal, pageRead()),
-        resolvePlatformEnv,
-        'apply_workspace_changes',
-        { idempotencyKey: prepared.idempotencyKey, operations: prepared.operations },
-        turnGuard,
-      );
-      if (prepared.creation) creationCoordinator.record(result);
-      else creationCoordinator.recordFollowOn(result);
-      return slackToolOutput(result);
-    },
-  });
-  useTool({
-    name: 'undo_workspace_change',
-    description: workspaceManagementToolDescription('undo_workspace_change'),
-    input: undoWorkspaceChangeValibotSchema,
-    async run({ data }) {
-      const result = await invokeLiveSlackTool(
-        signal, resolvePlatformEnv, 'undo_workspace_change', data, turnGuard,
-      );
-      creationCoordinator.recordFollowOn(result);
-      return slackToolOutput(result);
-    },
-  });
-  useTool({
-    name: 'get_operation',
-    description: workspaceManagementToolDescription('get_operation'),
-    input: getOperationValibotSchema,
-    async run({ data }) {
-      return slackToolOutput(await invokeLiveSlackTool(
-        signal, resolvePlatformEnv, 'get_operation', data, turnGuard,
-      ));
-    },
-  });
-
-  if (!signal.attachmentFileIds) return undefined;
-  return () => {
+  const changeTools = () => {
+    useTool({
+      name: 'propose_workspace_changes',
+      description: workspaceManagementToolDescription('propose_workspace_changes'),
+      input: proposeWorkspaceChangesValibotSchema,
+      async run({ data }) {
+        const result = await invokeLiveSlackTool(
+          signalAfterPageRead(signal, pageRead()),
+          resolvePlatformEnv,
+          'propose_workspace_changes',
+          { ...data, operations: data.operations as ManagementOperation[] },
+          turnGuard,
+        );
+        creationCoordinator.recordFollowOn(result);
+        return slackToolOutput(result);
+      },
+    });
+    useTool({
+      name: 'apply_workspace_changes',
+      description: workspaceManagementToolDescription('apply_workspace_changes'),
+      input: slackApplyWorkspaceChangesValibotSchema,
+      async run({ data }) {
+        const prepared = creationCoordinator.prepare({
+          idempotencyKey: data.idempotencyKey,
+          operations: data.operations as ManagementOperation[],
+          ...(data.connectorMentions ? { connectorMentions: data.connectorMentions } : {}),
+        });
+        const result = await invokeLiveSlackTool(
+          signalAfterPageRead(signal, pageRead()),
+          resolvePlatformEnv,
+          'apply_workspace_changes',
+          { idempotencyKey: prepared.idempotencyKey, operations: prepared.operations },
+          turnGuard,
+        );
+        if (prepared.creation) creationCoordinator.record(result);
+        else creationCoordinator.recordFollowOn(result);
+        return slackToolOutput(result);
+      },
+    });
+    useTool({
+      name: 'undo_workspace_change',
+      description: workspaceManagementToolDescription('undo_workspace_change'),
+      input: undoWorkspaceChangeValibotSchema,
+      async run({ data }) {
+        const result = await invokeLiveSlackTool(
+          signal, resolvePlatformEnv, 'undo_workspace_change', data, turnGuard,
+        );
+        creationCoordinator.recordFollowOn(result);
+        return slackToolOutput(result);
+      },
+    });
+    useTool({
+      name: 'get_operation',
+      description: workspaceManagementToolDescription('get_operation'),
+      input: getOperationValibotSchema,
+      async run({ data }) {
+        return slackToolOutput(await invokeLiveSlackTool(
+          signal, resolvePlatformEnv, 'get_operation', data, turnGuard,
+        ));
+      },
+    });
+  };
+  const skillUpload = () => {
     useInstruction(SLACK_SKILL_UPLOAD_INSTRUCTION);
     useTool({
       name: 'upload_skills',
@@ -964,6 +977,10 @@ export function useWorkspaceManagementSlackTools(
         return slackToolOutput(result);
       },
     });
+  };
+  return {
+    ...(changeToolsMounted ? { changeTools } : {}),
+    ...(signal.attachmentFileIds ? { skillUpload } : {}),
   };
 }
 
