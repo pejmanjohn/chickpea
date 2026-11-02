@@ -407,12 +407,15 @@ function handoffProbe(answer: Record<string, unknown>) {
       slackAgentThreadKey: () => 'T1:C1:1.0',
       threadRunnerStub: () => runner,
       installationOwnershipOf: () => undefined,
+      effectiveTurnSlackInstallationId: () => 'workspace',
+      carriedGatewayIdentity: () => undefined,
     },
   ) as new () => { stores: unknown; env: unknown; admitToRunner(job: unknown): Promise<boolean> };
   const probe = new HandoffProbe();
   probe.env = {};
   probe.stores = {
     presentations: { get: () => undefined },
+    config: { getWorkspaceInstallation: () => undefined },
     turnJobs: {
       confirmRunner: (...args: unknown[]) => confirmed.push(args),
     },
