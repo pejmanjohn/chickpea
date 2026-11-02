@@ -9,6 +9,7 @@ import ts from 'typescript';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import {
   emitGatewayDelivery,
+  emitInteractionJudgment,
   emitRelayAlarm,
   emitThreadRunnerAlarm,
   emitRuntimeLatency,
@@ -116,6 +117,68 @@ test('runtime latency records keep only numbers, booleans, tokens, and opaque re
   });
   assert.match(String(record?.runRef), /^run_[0-9a-f]{24}$/);
   assertContentFree(record!);
+});
+
+// Defect caught: a free-text or probability field reaches Workers Logs as
+// written, or the fields production monitoring reads are dropped.
+test('interaction_judgment keeps its tokens, scales probabilities to thousandths, and drops free text', () => {
+  const { records, sink } = captureSink();
+  emitInteractionJudgment({
+    turnJobId: 'turn_judgment_raw_identifier',
+    recordedBy: 'clef',
+    basis: 'reply',
+    basisMs: 312.4,
+    clef: 'read',
+    clefMs: 260,
+    clefInputTokens: 878,
+    clefChoice: 'reply',
+    clefTop: 0.81,
+    clefTextMass: 0.91,
+    clefMemory: 0.02,
+    gate: 'dispatch',
+    model: 'react_only',
+    modelFailed: false,
+    modelMs: 2410,
+    refinement: 'disagreed',
+    agreed: false,
+  }, sink);
+  emitInteractionJudgment({
+    recordedBy: 'Complete the verification.',
+    clef: 'unavailable',
+    gate: 'await_model',
+    model: 'slack.botToken',
+    clefLate: true,
+  }, sink);
+  assert.equal(records.length, 2);
+  assert.deepEqual(records[0], {
+    component: 'runtime',
+    event: 'interaction_judgment',
+    turnRef: opaqueTurnRef('turn_judgment_raw_identifier'),
+    recordedBy: 'clef',
+    basis: 'reply',
+    basisMs: 312,
+    clef: 'read',
+    clefMs: 260,
+    clefInputTokens: 878,
+    clefChoice: 'reply',
+    clefTop: 810,
+    clefTextMass: 910,
+    clefMemory: 20,
+    gate: 'dispatch',
+    model: 'react_only',
+    modelFailed: false,
+    modelMs: 2410,
+    refinement: 'disagreed',
+    agreed: false,
+  });
+  assert.deepEqual(records[1], {
+    component: 'runtime',
+    event: 'interaction_judgment',
+    clef: 'unavailable',
+    gate: 'await_model',
+    clefLate: true,
+  });
+  for (const record of records) assertContentFree(record!);
 });
 
 test('runtime latency emission never throws when the sink fails', () => {

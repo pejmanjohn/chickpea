@@ -22,7 +22,8 @@ export type RuntimeLatencyEvent =
   | 'gateway_delivery'
   | 'thread_runner_alarm'
   | 'thread_runner_superseded'
-  | 'slack_read';
+  | 'slack_read'
+  | 'interaction_judgment';
 
 type RuntimeLatencyValue = number | boolean | string;
 
@@ -54,6 +55,13 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   filterReason: TOKEN,
   order: TOKEN,
   reason: TOKEN,
+  recordedBy: TOKEN,
+  basis: TOKEN,
+  clef: TOKEN,
+  clefChoice: TOKEN,
+  gate: TOKEN,
+  model: TOKEN,
+  refinement: TOKEN,
   runRef: OPAQUE_REF,
   turnRef: OPAQUE_REF,
   versionId: VERSION_ID,
@@ -375,6 +383,60 @@ export function emitCodingTaskSteering(
     turnRef: opaqueTurnRef(record.turnJobId),
     op: `coding_${record.op}`,
     outcome: record.outcome,
+  }, sink);
+}
+
+/**
+ * One guaranteed turn's interaction judgment, once everything it started has
+ * ended: who recorded the basis (`shortcut`, `clef`, `model`, `unrecorded`),
+ * how Clef ended, its choice and probabilities (in thousandths), the gate's
+ * decision, the model's answer and what became of it after a Clef basis, and
+ * whether the two agreed. Clef is platform infrastructure, so this event, not
+ * a tenant usage record, is where its calls and input tokens are counted.
+ */
+export function emitInteractionJudgment(
+  record: {
+    turnJobId?: string | undefined;
+    recordedBy: string;
+    basis?: string;
+    basisMs?: number;
+    clef: string;
+    clefMs?: number;
+    clefInputTokens?: number;
+    clefChoice?: string;
+    clefTop?: number;
+    clefTextMass?: number;
+    clefMemory?: number;
+    gate?: string;
+    clefLate?: boolean;
+    model?: string;
+    modelFailed?: boolean;
+    modelMs?: number;
+    refinement?: string;
+    agreed?: boolean;
+  },
+  sink?: RuntimeLatencySink,
+): void {
+  const thousandths = (value: number | undefined) => (value === undefined ? undefined : value * 1000);
+  emitRuntimeLatency('interaction_judgment', {
+    turnRef: opaqueTurnRef(record.turnJobId),
+    recordedBy: record.recordedBy,
+    basis: record.basis,
+    basisMs: record.basisMs,
+    clef: record.clef,
+    clefMs: record.clefMs,
+    clefInputTokens: record.clefInputTokens,
+    clefChoice: record.clefChoice,
+    clefTop: thousandths(record.clefTop),
+    clefTextMass: thousandths(record.clefTextMass),
+    clefMemory: thousandths(record.clefMemory),
+    gate: record.gate,
+    clefLate: record.clefLate,
+    model: record.model,
+    modelFailed: record.modelFailed,
+    modelMs: record.modelMs,
+    refinement: record.refinement,
+    agreed: record.agreed,
   }, sink);
 }
 

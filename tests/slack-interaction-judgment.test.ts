@@ -362,6 +362,33 @@ test('a rejecting record rejects the basis, settles the judgment, and leaks no r
   }
 });
 
+// Defect caught: a judged turn logs no event, logs more than one, or logs
+// message or profile text.
+test('a judged turn emits exactly one content-free interaction_judgment event', async () => {
+  const records: Array<Record<string, unknown>> = [];
+  const info = console.info;
+  console.info = (record: unknown) => {
+    if (typeof record === 'object' && record !== null) records.push(record as Record<string, unknown>);
+  };
+  try {
+    const h = harness({ clef: 'reply' });
+    await h.judgment.basis;
+    h.model.resolve({ intent: REPLY, failed: false });
+    await h.judgment.settled;
+    const events = records.filter((record) => record.event === 'interaction_judgment');
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.recordedBy, 'clef');
+    assert.equal(events[0]?.agreed, true);
+    assert.equal(events[0]?.clefTop, 810);
+    const serialized = JSON.stringify(events[0]);
+    for (const content of [MESSAGE, PROFILE, context.channelId, context.eventId]) {
+      assert.equal(serialized.includes(content), false, `the event must not contain ${content}`);
+    }
+  } finally {
+    console.info = info;
+  }
+});
+
 // Defect caught: the trace leaks message or profile text, or lacks the fields
 // production monitoring needs to confirm the gate holds.
 test('the settled trace is content-free and carries the agreement signal', async () => {

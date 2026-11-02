@@ -7,6 +7,7 @@ import { providerStreamsForModel, sideCallOptions } from '../config/pi-provider.
 import { resolveRuntimeModel } from '../config/runtime-model.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import { emitInteractionJudgment } from '../observability/runtime-latency.ts';
 import {
   hasCredentialLikeContent,
   hasDisallowedControlCharacter,
@@ -448,6 +449,10 @@ export function judgeGuaranteedInteraction(
   const startedAt = Date.now();
   let judgment: TurnJudgment = { phase: 'pending' };
   let basisMs: number | undefined;
+  const emit = (trace: InteractionJudgmentTrace): InteractionJudgmentTrace => {
+    emitInteractionJudgment({ ...trace, turnJobId: options.turnJobId });
+    return trace;
+  };
 
   const shortcut = resolveImmediateSlackInteractionIntent(context);
   if (shortcut) {
@@ -460,7 +465,7 @@ export function judgeGuaranteedInteraction(
     const settled = basis.then(
       () => judgmentTrace(judgment, basisMs),
       () => judgmentTrace(judgment, basisMs),
-    );
+    ).then(emit);
     return { basis, lateChecklist: Promise.resolve(undefined), settled };
   }
 
@@ -524,7 +529,7 @@ export function judgeGuaranteedInteraction(
 
   const settled = Promise.allSettled([basis, lateMeter, refined]).then(async () => {
     const [{ outcome, early }, { classification, ms }, d] = await Promise.all([clef, model, decided]);
-    return judgmentTrace(judgment, basisMs, {
+    return emit(judgmentTrace(judgment, basisMs, {
       clef: outcome,
       gate: early.kind,
       clefLate: early.kind === 'dispatch' && d.by === 'model',
@@ -533,7 +538,7 @@ export function judgeGuaranteedInteraction(
       agreed: outcome.kind === 'read' && !classification.failed
         ? (early.kind === 'dispatch' ? early.intent.disposition : outcome.reading.choice) === classification.intent.disposition
         : undefined,
-    });
+    }));
   });
 
   return { basis, lateChecklist, settled };
