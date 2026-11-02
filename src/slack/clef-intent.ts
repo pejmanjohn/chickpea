@@ -20,6 +20,11 @@ import type {
  * a new measurement. The reaction and target questions are sent because that
  * configuration sent them. Their answers are never read: Clef chose the right
  * reaction 19 of 35 times and the right target 1 of 35.
+ *
+ * The management question goes in a second call over the same state, never
+ * into this one: any question added to the disposition call moved its
+ * calibrated answers on the 2026-11-02 evaluation, and a separate call moved
+ * none.
  */
 
 export const CLEF_MODEL = '@cf/cloudflare/clef';
@@ -37,16 +42,29 @@ export interface ClefReading {
   readonly inputTokens?: number;
 }
 
+/** Clef's answer to the management question, parsed from the wire. */
+export interface ClefManagementReading {
+  /** P(the message asks to set up or change how Agents are configured, or to undo such a change), in [0, 1]. */
+  readonly manage: number;
+  /** Input tokens Clef reported for this call: platform cost evidence, never tenant usage. */
+  readonly inputTokens?: number;
+}
+
 /**
- * Every way a Clef read ends. `readClefInteraction` never rejects: each
- * failure is a value, and every value other than `read` sends the turn down
- * today's path.
+ * Every way a Clef read ends. A read never rejects: each failure is a
+ * value, and every value other than `read` means no answer.
  */
-export type ClefOutcome =
-  | { readonly kind: 'read'; readonly reading: ClefReading; readonly ms: number }
+export type ClefCallOutcome<Reading> =
+  | { readonly kind: 'read'; readonly reading: Reading; readonly ms: number }
   /** No callable `AI.run` on the platform env (Node, or a Worker without the binding). No call is made. */
   | { readonly kind: 'unavailable' }
   | { readonly kind: 'timeout' | 'error' | 'unparseable'; readonly ms: number };
+
+/** A disposition read; every value other than `read` sends the turn down today's path. */
+export type ClefOutcome = ClefCallOutcome<ClefReading>;
+
+/** A management read; every value other than `read` is no signal. */
+export type ClefManagementOutcome = ClefCallOutcome<ClefManagementReading>;
 
 /** The turn facts Clef's state text names. Recent context is absent on purpose: the measured mode is `none`. */
 export type ClefInteractionInput = Pick<
@@ -60,11 +78,34 @@ export type ClefInteractionInput = Pick<
  * AI Gateway logging. A call still running at `timeoutMs` is left to finish
  * and its answer dropped.
  */
-export async function readClefInteraction(
+export function readClefInteraction(
   input: ClefInteractionInput,
   env: PlatformEnv | undefined,
   timeoutMs: number = CLEF_TIMEOUT_MS,
 ): Promise<ClefOutcome> {
+  return askClef(input, env, CLEF_QUESTIONS, parseClefAnswer, timeoutMs);
+}
+
+/**
+ * The management question alone, in its own call beside the disposition's,
+ * with the same state, model, bound, and no options object. Its answer only
+ * adds tools to a turn; it never reaches the disposition.
+ */
+export function readClefManagement(
+  input: ClefInteractionInput,
+  env: PlatformEnv | undefined,
+  timeoutMs: number = CLEF_TIMEOUT_MS,
+): Promise<ClefManagementOutcome> {
+  return askClef(input, env, CLEF_MANAGEMENT_QUESTIONS, parseClefManagementAnswer, timeoutMs);
+}
+
+async function askClef<Reading>(
+  input: ClefInteractionInput,
+  env: PlatformEnv | undefined,
+  questions: Readonly<Record<string, unknown>>,
+  parse: (body: unknown) => Reading | undefined,
+  timeoutMs: number,
+): Promise<ClefCallOutcome<Reading>> {
   const binding = env?.AI;
   if (!isClefBinding(binding)) return { kind: 'unavailable' };
   const started = Date.now();
@@ -73,7 +114,7 @@ export async function readClefInteraction(
   try {
     const answered = await Promise.race([
       Promise.resolve()
-        .then(() => binding.run(CLEF_MODEL, { state: clefState(input), questions: CLEF_QUESTIONS }))
+        .then(() => binding.run(CLEF_MODEL, { state: clefState(input), questions }))
         .then(async (value) => ({
           body: value instanceof Response ? await value.json().catch(() => undefined) : value,
         })),
@@ -82,7 +123,7 @@ export async function readClefInteraction(
       }),
     ]);
     if (answered === 'timeout') return { kind: 'timeout', ms: elapsed() };
-    const reading = parseClefAnswer(answered.body);
+    const reading = parse(answered.body);
     return reading ? { kind: 'read', reading, ms: elapsed() } : { kind: 'unparseable', ms: elapsed() };
   } catch {
     return { kind: 'error', ms: elapsed() };
@@ -160,6 +201,17 @@ const CLEF_QUESTIONS = {
   },
 } as const;
 
+/**
+ * The `config` wording the 2026-11-02 evaluation measured as its own call:
+ * every change case scored at least 0.67 and no inspect case above 0.14.
+ */
+const CLEF_MANAGEMENT_QUESTIONS = {
+  manage: {
+    type: 'noul',
+    instructions: 'Is the current message asking to set up or change how Chickpea Agents are configured (an Agent, its instructions, connections, schedules, or skills), or to undo such a change, rather than to answer a question or do a task with the tools the Agent already has?',
+  },
+} as const;
+
 function clefState(input: ClefInteractionInput): string {
   return [
     CLEF_RULES,
@@ -212,13 +264,27 @@ function parseClefAnswer(body: unknown): ClefReading | undefined {
   if (reply === undefined || work === undefined || reactOnly === undefined || ignore === undefined) {
     return undefined;
   }
-  const usage = isRecord(payload.usage) ? payload.usage : undefined;
-  const tokens = usage?.input_tokens;
-  const inputTokens = typeof tokens === 'number' && Number.isInteger(tokens) && tokens >= 0 ? tokens : undefined;
+  const inputTokens = reportedInputTokens(payload);
   return {
     choice,
     probabilities: { reply, work, react_only: reactOnly, ignore },
     memory,
     ...(inputTokens === undefined ? {} : { inputTokens }),
   };
+}
+
+/** Reads `{ answers: { manage: { noul } }, usage?: { input_tokens } }`; a missing or out-of-range noul is `undefined`. */
+function parseClefManagementAnswer(body: unknown): ClefManagementReading | undefined {
+  const payload = clefPayload(body);
+  const answers = payload && isRecord(payload.answers) ? payload.answers : undefined;
+  const manage = answers && isRecord(answers.manage) ? unit(answers.manage.noul) : undefined;
+  if (!payload || manage === undefined) return undefined;
+  const inputTokens = reportedInputTokens(payload);
+  return { manage, ...(inputTokens === undefined ? {} : { inputTokens }) };
+}
+
+function reportedInputTokens(payload: Record<string, unknown>): number | undefined {
+  const usage = isRecord(payload.usage) ? payload.usage : undefined;
+  const tokens = usage?.input_tokens;
+  return typeof tokens === 'number' && Number.isInteger(tokens) && tokens >= 0 ? tokens : undefined;
 }

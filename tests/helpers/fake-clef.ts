@@ -47,6 +47,11 @@ export function fakeClefAnswer(answer: Exclude<FakeClefAnswer, 'error'>): Record
   return clefWire(CLEF_PROFILES[answer]);
 }
 
+/** Clef's answer to the management question, asked alone in its own call. */
+export function clefManagementWire(manage: number, inputTokens = 414): Record<string, unknown> {
+  return { answers: { manage: { type: 'noul', noul: manage } }, usage: { input_tokens: inputTokens, output_tokens: 0 } };
+}
+
 export interface FakeClefCall {
   model: string;
   inputs: Record<string, unknown>;
@@ -54,19 +59,34 @@ export interface FakeClefCall {
 }
 
 /**
- * A platform env whose `AI.run` answers Clef after `delayMs` with `answer`
- * (a named profile, a wire body, or a thrown error), recording each call.
+ * A platform env whose `AI.run` answers Clef after `delayMs`, recording each
+ * call. The disposition call gets `answer` (a named profile, a wire body, or
+ * a thrown error) and is recorded in `calls`; the management call, told
+ * apart by its question, gets `manage` (a noul, a thrown error, or no answer
+ * ever) and is recorded in `managementCalls`.
  */
 export function fakeClefEnv(
   answer: FakeClefAnswer | Record<string, unknown>,
-  options: { delayMs?: number } = {},
-): { env: { AI: { run: (...args: unknown[]) => Promise<unknown> } }; calls: FakeClefCall[] } {
+  options: { delayMs?: number; manage?: number | 'error' | 'hang' } = {},
+): {
+  env: { AI: { run: (...args: unknown[]) => Promise<unknown> } };
+  calls: FakeClefCall[];
+  managementCalls: FakeClefCall[];
+} {
   const calls: FakeClefCall[] = [];
+  const managementCalls: FakeClefCall[] = [];
   const run = async (...args: unknown[]): Promise<unknown> => {
-    calls.push({ model: String(args[0]), inputs: args[1] as Record<string, unknown>, options: args[2] });
+    const call = { model: String(args[0]), inputs: args[1] as Record<string, unknown>, options: args[2] };
+    const management = Object.hasOwn(call.inputs.questions as object, 'manage');
+    (management ? managementCalls : calls).push(call);
     if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+    if (management) {
+      if (options.manage === 'hang') return new Promise<never>(() => undefined);
+      if (options.manage === 'error') throw new Error('Workers AI unavailable');
+      return clefManagementWire(options.manage ?? 0.02);
+    }
     if (answer === 'error') throw new Error('Workers AI unavailable');
     return typeof answer === 'string' ? fakeClefAnswer(answer) : answer;
   };
-  return { env: { AI: { run } }, calls };
+  return { env: { AI: { run } }, calls, managementCalls };
 }

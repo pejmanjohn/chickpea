@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { ClefOutcome } from '../src/slack/clef-intent.ts';
+import { CLEF_TIMEOUT_MS, type ClefOutcome } from '../src/slack/clef-intent.ts';
 import {
   earlyInteractionJudgment,
   judgeGuaranteedInteraction,
@@ -12,7 +12,7 @@ import {
   type SlackInteractionIntent,
   type SlackInteractionIntentContext,
 } from '../src/slack/interaction-intent.ts';
-import { clefWire, fakeClefEnv, type ClefProbabilities } from './helpers/fake-clef.ts';
+import { CLEF_PROFILES, clefWire, fakeClefEnv, type ClefProbabilities } from './helpers/fake-clef.ts';
 
 const MESSAGE = 'Can you summarize what changed in the release notes this week?';
 const PROFILE = 'You are Scout. Keep answers short.';
@@ -123,6 +123,7 @@ function deferred<T>() {
 function harness(input: {
   clef: Parameters<typeof fakeClefEnv>[0] | 'absent';
   clefDelayMs?: number;
+  manage?: NonNullable<Parameters<typeof fakeClefEnv>[1]>['manage'];
   record?: GuaranteedInteractionJudgmentOptions['record'];
   meter?: GuaranteedInteractionJudgmentOptions['meter'];
 }) {
@@ -131,7 +132,9 @@ function harness(input: {
   const metered: SlackInteractionClassification[] = [];
   const model = deferred<SlackInteractionClassification>();
   let classifyCalls = 0;
-  const fake = input.clef === 'absent' ? undefined : fakeClefEnv(input.clef, { delayMs: input.clefDelayMs ?? 0 });
+  const fake = input.clef === 'absent'
+    ? undefined
+    : fakeClefEnv(input.clef, { delayMs: input.clefDelayMs ?? 0, ...(input.manage === undefined ? {} : { manage: input.manage }) });
   const options: GuaranteedInteractionJudgmentOptions = {
     env: fake?.env,
     record: input.record ?? (async (intent) => {
@@ -156,6 +159,8 @@ function harness(input: {
   return {
     judgment, timeline, recorded, metered, model, basisSeen,
     clefCalls: () => fake?.calls.length ?? 0,
+    managementCalls: () => fake?.managementCalls.length ?? 0,
+    dispositionQuestions: () => fake?.calls[0]?.inputs.questions,
     classifyCalls: () => classifyCalls,
   };
 }
@@ -327,6 +332,9 @@ test('a shortcut records without asking Clef or the model', async () => {
     assert.equal(await judgment.lateChecklist, undefined);
     const trace = await judgment.settled;
     assert.equal(fake.calls.length, 0);
+    assert.equal(fake.managementCalls.length, 0, 'nor the management question');
+    assert.equal(await judgment.managementLikely, false);
+    assert.equal(trace.management, undefined);
     assert.equal(classifyCalls, 0);
     assert.equal(meterCalls, 0);
     assert.equal(trace.recordedBy, 'shortcut');
@@ -380,6 +388,9 @@ test('a judged turn emits exactly one content-free interaction_judgment event', 
     assert.equal(events[0]?.recordedBy, 'clef');
     assert.equal(events[0]?.agreed, true);
     assert.equal(events[0]?.clefTop, 810);
+    assert.equal(events[0]?.management, 'read');
+    assert.equal(events[0]?.managementTop, 20);
+    assert.equal(events[0]?.managementFired, false);
     const serialized = JSON.stringify(events[0]);
     for (const content of [MESSAGE, PROFILE, context.channelId, context.eventId]) {
       assert.equal(serialized.includes(content), false, `the event must not contain ${content}`);
@@ -398,8 +409,16 @@ test('the settled trace is content-free and carries the agreement signal', async
   const trace = await h.judgment.settled;
   assert.deepEqual(
     Object.keys(trace).sort(),
-    ['agreed', 'basis', 'basisMs', 'clef', 'clefChoice', 'clefInputTokens', 'clefMemory', 'clefMs', 'clefTextMass', 'clefTop', 'gate', 'model', 'modelFailed', 'modelMs', 'recordedBy'],
+    [
+      'agreed', 'basis', 'basisMs', 'clef', 'clefChoice', 'clefInputTokens', 'clefMemory', 'clefMs', 'clefTextMass', 'clefTop', 'gate',
+      'management', 'managementFired', 'managementInputTokens', 'managementMs', 'managementTop',
+      'model', 'modelFailed', 'modelMs', 'recordedBy',
+    ],
   );
+  assert.equal(trace.management, 'read');
+  assert.equal(trace.managementTop, 0.02);
+  assert.equal(trace.managementFired, false);
+  assert.equal(trace.managementInputTokens, 414);
   assert.equal(trace.recordedBy, 'model');
   assert.equal(trace.gate, 'await_model');
   assert.equal(trace.clefChoice, 'reply');
@@ -412,4 +431,66 @@ test('the settled trace is content-free and carries the agreement signal', async
   for (const content of [MESSAGE, PROFILE, 'release', 'Scout', context.channelId, context.workspaceId, context.eventId]) {
     assert.equal(serialized.includes(content), false, `the trace must not contain ${content}`);
   }
+});
+
+// Defect caught: the management question shares the disposition call (which
+// moved its calibrated answers on the evaluation), or its answer leaks into
+// the recorded disposition, the order of record and meter, or the gate.
+test('both Clef calls run, and the management answer never changes the disposition', async () => {
+  const outcome = async (clef: 'reply' | 'work' | 'uncertain' | 'react_only', manage: number | 'error') => {
+    const h = harness({ clef, manage });
+    await tick();
+    h.model.resolve({ intent: clef === 'work' ? MODEL_WORK : clef === 'reply' ? REPLY : MODEL_REACT, failed: false });
+    const basis = await h.judgment.basis;
+    await h.basisSeen;
+    const trace = await h.judgment.settled;
+    assert.equal(h.clefCalls(), 1, 'one disposition call');
+    assert.equal(h.managementCalls(), 1, 'one management call');
+    assert.equal(Object.hasOwn(h.dispositionQuestions() as object, 'manage'), false,
+      'the disposition call does not carry the management question');
+    const { management, managementMs, managementInputTokens, managementTop, managementFired, basisMs, clefMs, modelMs, ...disposition } = trace;
+    void [management, managementMs, managementInputTokens, managementTop, managementFired, basisMs, clefMs, modelMs];
+    return {
+      likely: await h.judgment.managementLikely,
+      fired: managementFired,
+      top: managementTop,
+      decided: { basis, recorded: h.recorded, metered: h.metered.length, timeline: h.timeline, disposition },
+    };
+  };
+  for (const clef of ['reply', 'work', 'uncertain', 'react_only'] as const) {
+    const quiet = await outcome(clef, 0.01);
+    const change = await outcome(clef, 0.97);
+    const failed = await outcome(clef, 'error');
+    assert.deepEqual(change.decided, quiet.decided, `${clef}: a firing management answer changes nothing else`);
+    assert.deepEqual(failed.decided, quiet.decided, `${clef}: a failed management call changes nothing else`);
+    assert.deepEqual([quiet.likely, quiet.fired, quiet.top], [false, false, 0.01]);
+    assert.deepEqual([change.likely, change.fired, change.top], [true, true, 0.97]);
+    assert.deepEqual([failed.likely, failed.fired, failed.top], [false, false, undefined]);
+  }
+});
+
+// Defect caught: the threshold is off by one, or it reads the disposition's
+// memory noul instead of the management call's.
+test('the management signal fires at 0.5 and not at 0.499', async () => {
+  for (const [manage, likely] of [[0.5, true], [0.499, false]] as const) {
+    const h = harness({ clef: clefWire(CLEF_PROFILES.reply, { memory: 0.9 }), manage });
+    h.model.resolve({ intent: REPLY, failed: false });
+    assert.equal(await h.judgment.managementLikely, likely, String(manage));
+    assert.equal((await h.judgment.settled).managementFired, likely);
+  }
+});
+
+// Defect caught: a management call that never answers holds the turn's
+// basis, or reads as a signal once Clef's bound passes.
+test('a management call that never answers is no signal at Clef\'s bound, and the basis does not wait for it', async () => {
+  const h = harness({ clef: 'reply', manage: 'hang' });
+  assert.deepEqual(await h.judgment.basis, REPLY, 'the confident disposition dispatches as before');
+  const started = Date.now();
+  assert.equal(await h.judgment.managementLikely, false);
+  assert.ok(Date.now() - started <= CLEF_TIMEOUT_MS + 250, 'no longer than Clef\'s bound');
+  h.model.resolve({ intent: REPLY, failed: false });
+  const trace = await h.judgment.settled;
+  assert.equal(trace.management, 'timeout');
+  assert.equal(trace.managementFired, false);
+  assert.equal(trace.managementTop, undefined);
 });
