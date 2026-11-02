@@ -1,4 +1,5 @@
 import { deploymentServesManyInstallations } from './config/installation-scope.ts';
+import { ModelAccessError } from './config/model-access.ts';
 import { registerPiProvider } from './config/pi-provider-registry.ts';
 import { isRecord } from './security/content-validation.ts';
 import {
@@ -35,9 +36,40 @@ export function registerCloudflareBindingProvider(
   binding: CloudflareAIBinding,
   env?: Record<string, unknown>,
 ): boolean {
-  if (deploymentServesManyInstallations(env)) return false;
+  if (servesManyInstallations(env)) {
+    registerPiProvider(closedCloudflareProvider(binding));
+    return false;
+  }
   registerPiProvider(createCloudflareBindingProvider(binding));
   return true;
+}
+
+/** A tenancy value the deployment cannot read is treated as serving many: the closed provider, never the open one. */
+function servesManyInstallations(env: Record<string, unknown> | undefined): boolean {
+  try {
+    return deploymentServesManyInstallations(env);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The `cloudflare` provider a deployment serving many installations
+ * registers: it lists no model, so no `cloudflare/<model>` id resolves, and a
+ * request that reaches it is refused before the binding. It must exist:
+ * Flue's generated entry installs its own binding provider when none is
+ * registered, outside the model-access proxy and through the default AI
+ * Gateway, which retains payloads.
+ */
+function closedCloudflareProvider(binding: CloudflareAIBinding): ReturnType<typeof createCloudflareBindingProvider> {
+  const open = createCloudflareBindingProvider(binding);
+  const refuse = (): never => {
+    throw new ModelAccessError('provider_not_offered', 'Workers AI models are not offered to an installation of a deployment serving many.');
+  };
+  const closed: Record<string | symbol, unknown> = { ...open, getModels: () => [], stream: refuse, streamSimple: refuse };
+  // Flue resolves an unlisted `cloudflare/<model>` id through this template; the closed provider has none.
+  delete closed[Symbol.for('flue.dynamicModelTemplate')];
+  return closed as unknown as typeof open;
 }
 
 /** Pure provider seam used to apply the same attachment policy as Pi APIs. */
