@@ -27,10 +27,10 @@ const GPT_OSS_DEFAULT_MAX_TOKENS = 8_192;
  * Importing this module is side-effect free. The Cloudflare-only entry calls
  * this helper with its ambient `env.AI` binding; the shared Node app never
  * imports it or registers a keyless `cloudflare/*` provider. A deployment
- * serving many installations registers none either: its binding serves the
- * deployment's own judgments (Clef), never a tenant's model request, which
- * the model-access cell and readiness refuse anyway. Returns whether a
- * provider was registered.
+ * serving many installations registers a closed one (closedCloudflareProvider):
+ * its binding serves the deployment's own judgments (Clef), never a tenant's
+ * model request, which the model-access cell and readiness refuse anyway.
+ * Returns whether the open provider was registered.
  */
 export function registerCloudflareBindingProvider(
   binding: CloudflareAIBinding,
@@ -64,9 +64,9 @@ function servesManyInstallations(env: Record<string, unknown> | undefined): bool
 function closedCloudflareProvider(binding: CloudflareAIBinding): ReturnType<typeof createCloudflareBindingProvider> {
   const open = createCloudflareBindingProvider(binding);
   const refuse = (): never => {
-    throw new ModelAccessError('provider_not_offered', 'Workers AI models are not offered to an installation of a deployment serving many.');
+    throw new ModelAccessError('provider_not_offered', 'Workers AI models are not offered to an installation of a deployment serving many installations.');
   };
-  const closed: Record<string | symbol, unknown> = { ...open, getModels: () => [], stream: refuse, streamSimple: refuse };
+  const closed: Record<string | symbol, unknown> = { ...open, getModels: () => [], getAllModels: () => [], stream: refuse, streamSimple: refuse };
   // Flue resolves an unlisted `cloudflare/<model>` id through this template; the closed provider has none.
   delete closed[Symbol.for('flue.dynamicModelTemplate')];
   return closed as unknown as typeof open;
