@@ -479,17 +479,26 @@ test("turn_latency logs a runner turn's hand-off delay from its context", () => 
   assert.equal(records[0]?.handoffMs, 1_900);
 });
 
-test('turn_latency logs how long staging the turn input took, from its first staging', () => {
+// Defects caught: a start-to-stage time that includes the staging itself, one
+// a later staging (a retry's) overwrites, and a field present on a turn that
+// staged nothing.
+test('turn_latency logs how long staging the turn input took and how soon it began, from its first staging', () => {
   const { records, sink } = captureSink();
+  const time = clock(10_000);
   const tracker = new TurnLatencyTracker(
-    { admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, {}, clock(10_000).now, sink,
+    { admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, {}, time.now, sink,
   );
+  // The attempt prepares for 1.2 s, then staging takes 240 ms.
+  time.advance(1_440);
   tracker.markAgentStage(240);
+  time.advance(500);
   tracker.markAgentStage(15);
   tracker.emit('returned');
   assert.equal(records[0]?.agentStageMs, 240);
+  assert.equal(records[0]?.startToStageMs, 1_200);
   new TurnLatencyTracker({ lane: 'node', executor: 'node' }, {}, clock(0).now, sink).emit('returned');
   assert.equal('agentStageMs' in records[1]!, false, 'a turn that staged nothing omits the field');
+  assert.equal('startToStageMs' in records[1]!, false);
 });
 
 // Defects caught: the lead is measured to the end of staging instead of its
