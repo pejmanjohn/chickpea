@@ -2090,8 +2090,12 @@ async function main() {
       const alarmLatency = /turn_latency[\s\S]{0,400}?executor['"]?:\s*['"]alarm['"]/.test(output);
       const dispatched = /relay_alarm[\s\S]{0,600}?jobsDispatched['"]?:\s*[1-9]/.test(output);
       if (SMOKE_TURN_EXECUTOR === 'runner') {
+        // The admission hands a new turn to its runner itself; the relay alarm
+        // dispatches only what that hand-off missed, so its count proves nothing
+        // on a quiet run. The runner's own alarm running jobs, and no turn
+        // executed by the relay alarm, is the hand-off's evidence.
         check(
-          runnerRan && runnerLatency && dispatched,
+          runnerRan && runnerLatency && !alarmLatency,
           'default executor (variable unset): turns were handed to and run by thread runners',
         );
       } else {
