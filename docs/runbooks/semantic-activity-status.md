@@ -62,7 +62,11 @@ custom status shows. So the status line follows real progress:
   text shows from the first moment and native starts at the first quiet
   stretch. Otherwise, and for a turn waiting behind another in its
   conversation or an Agent with its own Slack app, the runner starts native
-  first and hands over to the custom status as before.
+  first and hands over to the custom status as before. On a direct
+  installation on Cloudflare the state store verifies the installation's
+  identity when the Worker tells it of the delivery's receipt
+  (`noteSlackDelivery`), so the write finds it and pays no `auth.test`
+  inside its wait.
 - **Real progress** is a tool starting or settling, a coding worker's stage,
   and a workspace milestone. Each is timed by its own event: observed
   activity as it arrives from the Agent, a workspace milestone by its
