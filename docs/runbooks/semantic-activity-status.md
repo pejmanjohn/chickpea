@@ -56,7 +56,7 @@ custom status shows. So the status line follows real progress:
 
 - **At the start**, the state store shows the turn's opening status (its
   admitted activity, as its Agent) before handing the turn to its thread
-  runner, waiting at most 1 s (`showStatusAtHandoff` in
+  runner, waiting at most 1.5 s (`showStatusAtHandoff` in
   `src/cloudflare.ts`). When Slack acknowledged it in time, the runner keeps
   it: no native `processing` and no hand-over at the start, so the custom
   text shows from the first moment and native starts at the first quiet

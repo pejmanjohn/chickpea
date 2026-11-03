@@ -104,10 +104,11 @@ export async function presentAdmittedSlackActivity(
 /**
  * How long a turn's hand-off waits for admission's status write
  * (showAdmissionStatus). A warm isolate's write takes 0.2-0.3 s; the first
- * Slack call from a cold one took 0.9 s on Chickpea Cloud, so the cap covers
- * it rather than hand the runner a status that lands a moment later.
+ * Slack call from a cold one took 0.9-1.1 s on Chickpea Cloud, so the cap
+ * covers it rather than hand the runner a status that lands a moment later
+ * and is replaced by its native start.
  */
-export const ADMISSION_STATUS_CAP_MS = 1_000;
+export const ADMISSION_STATUS_CAP_MS = 1_500;
 
 /**
  * Slack drops a custom status two minutes after it was set, and the status

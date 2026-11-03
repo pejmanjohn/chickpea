@@ -11,10 +11,10 @@ const SECRET = Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => (index 
 const DAY_SECONDS = 24 * 60 * 60;
 const DAY_MS = DAY_SECONDS * 1_000;
 
-test('Admin sessions roll for seven days and stop after thirty days', () => {
+test('Admin sessions roll for seven days and stop after thirty days', async () => {
   const backend = new NodeBetterAuthBackend(':memory:');
   try {
-    const options = createBetterAuthOptions({ backend, baseURL: ORIGIN, secret: SECRET });
+    const options = await createBetterAuthOptions({ backend, baseURL: ORIGIN, secret: SECRET });
     assert.equal(options.session?.expiresIn, 7 * DAY_SECONDS);
     assert.equal(options.session?.updateAge, DAY_SECONDS);
 
@@ -54,14 +54,14 @@ test('reviewed Better Auth migrations are idempotent and Slack-only authenticati
     baseURL: ORIGIN,
     secret: SECRET,
   };
-  const options = createBetterAuthOptions(input);
+  const options = await createBetterAuthOptions(input);
   assert.deepEqual(options.emailAndPassword, { enabled: false, disableSignUp: true });
   assert.deepEqual(options.account?.accountLinking, {
     enabled: false,
     disableImplicitLinking: true,
     trustedProviders: [],
   });
-  const auth = createBetterAuth(input);
+  const auth = await createBetterAuth(input);
   const response = await auth.handler(jsonRequest('/api/auth/sign-up/email', {
     email: 'Owner@Example.com',
     name: 'Owner',

@@ -102,7 +102,7 @@ test('PostgreSQL migrations apply once and leave nothing for Better Auth to add'
   // Better Auth's own planner, over Chickpea's production options, finds the
   // migrated schema complete: the committed history matches 1.7.1's schema.
   const backend = new PostgresBetterAuthBackend(pool);
-  const plan = await getMigrations(createBetterAuthOptions({
+  const plan = await getMigrations(await createBetterAuthOptions({
     backend, baseURL: ORIGIN, secret: randomBytes(32).toString('base64url'),
   }));
   assert.deepEqual(
@@ -176,7 +176,7 @@ test('the PostgreSQL backend sets no session state and returns every connection'
   const statements: string[] = [];
   const pool = new pg.Pool({ ...config, max: 4 });
   const backend = new PostgresBetterAuthBackend(recording(pool, statements));
-  const auth = createBetterAuth({
+  const auth = await createBetterAuth({
     backend, baseURL: ORIGIN, secret: randomBytes(32).toString('base64url'),
   });
   await auth.$context;

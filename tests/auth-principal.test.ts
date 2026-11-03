@@ -21,7 +21,7 @@ test('active Better Auth session resolves only through canonical Slack authority
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   try {
     let admission: BetterAuthAdmissionOperation | null = null;
-    const auth = createBetterAuth({
+    const auth = await createBetterAuth({
       backend,
       baseURL: ORIGIN,
       secret: SECRET,
@@ -187,7 +187,7 @@ const ORGANIZATION = '11111111-1111-4111-8111-111111111111';
 async function boundMembership() {
   const backend = new NodeBetterAuthBackend(':memory:');
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const reconciled = await createBetterAuth({ backend, baseURL: ORIGIN, secret: SECRET }).chickpea
+  const reconciled = await (await createBetterAuth({ backend, baseURL: ORIGIN, secret: SECRET })).chickpea
     .reconcileSlackIdentity({
       slackTeamId: TEAM, slackUserId: USER, displayName: 'Owner',
       organization: { id: ORGANIZATION, name: 'Chickpea', slug: 'chickpea' },

@@ -1,9 +1,10 @@
-import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin } from 'better-auth';
-import { APIError, createAuthEndpoint, createAuthMiddleware } from 'better-auth/api';
-import { setSessionCookie } from 'better-auth/cookies';
-import { getOrgAdapter, jwt, organization } from 'better-auth/plugins';
-import { mcp } from '@better-auth/mcp';
+import type { betterAuth, BetterAuthOptions, BetterAuthPlugin } from 'better-auth';
+import type { APIError, createAuthEndpoint, createAuthMiddleware } from 'better-auth/api';
+import type { setSessionCookie } from 'better-auth/cookies';
+import type { getOrgAdapter, jwt, organization } from 'better-auth/plugins';
+import type { mcp } from '@better-auth/mcp';
 
+import { onDemand } from '../runtime/on-demand.ts';
 import {
   admitPendingMcpOAuthClient,
   DEFAULT_MCP_REGISTRATION_POLICY,
@@ -11,7 +12,7 @@ import {
   type McpRegistrationPolicy,
   type McpRegistrationThrottle,
 } from './better-auth-backend.ts';
-import { clientMetadataDiscovery, type ClientMetadataFetch } from './mcp-client-metadata.ts';
+import type { clientMetadataDiscovery, ClientMetadataFetch } from './mcp-client-metadata.ts';
 import {
   MCP_OAUTH_SCOPES,
   mcpResourceForOrigin,
@@ -110,16 +111,59 @@ export interface PublicOAuthClientApi {
     Promise<{ client_name?: unknown } | null | undefined>;
 }
 
-export function createBetterAuth(input: CreateBetterAuthInput) {
+interface BetterAuthModules {
+  betterAuth: typeof betterAuth;
+  APIError: typeof APIError;
+  createAuthEndpoint: typeof createAuthEndpoint;
+  createAuthMiddleware: typeof createAuthMiddleware;
+  setSessionCookie: typeof setSessionCookie;
+  getOrgAdapter: typeof getOrgAdapter;
+  jwt: typeof jwt;
+  organization: typeof organization;
+  mcp: typeof mcp;
+  clientMetadataDiscovery: typeof clientMetadataDiscovery;
+}
+
+/**
+ * Better Auth, its plugins and the client metadata discovery (about 1 MiB
+ * built), loaded by the first sign-in, session read or MCP request in an
+ * isolate and never at Worker startup: a Slack turn needs none of it. The
+ * factories below await it, so a caller cannot skip the load.
+ */
+const betterAuthModules = onDemand<BetterAuthModules>('Better Auth', async () => {
+  const [core, api, cookies, plugins, mcpPlugin, clientMetadata] = await Promise.all([
+    import('better-auth'),
+    import('better-auth/api'),
+    import('better-auth/cookies'),
+    import('better-auth/plugins'),
+    import('@better-auth/mcp'),
+    import('./mcp-client-metadata.ts'),
+  ]);
+  return {
+    betterAuth: core.betterAuth,
+    APIError: api.APIError,
+    createAuthEndpoint: api.createAuthEndpoint,
+    createAuthMiddleware: api.createAuthMiddleware,
+    setSessionCookie: cookies.setSessionCookie,
+    getOrgAdapter: plugins.getOrgAdapter,
+    jwt: plugins.jwt,
+    organization: plugins.organization,
+    mcp: mcpPlugin.mcp,
+    clientMetadataDiscovery: clientMetadata.clientMetadataDiscovery,
+  };
+});
+
+export async function createBetterAuth(input: CreateBetterAuthInput) {
   const baseURL = requireSupportedOrigin(input.baseURL);
   const internalMarker = Object.freeze({});
   const normalizedInput = { ...input, baseURL };
-  const auth = betterAuth(createOptions(normalizedInput, internalMarker));
+  const modules = await betterAuthModules.load();
+  const auth = modules.betterAuth(createOptions(normalizedInput, internalMarker, modules));
 
   return Object.assign(auth, {
     chickpea: {
       reconcileSlackIdentity: (identity: ReconcileSlackIdentityInput) =>
-        reconcileSlackIdentity(auth, identity),
+        reconcileSlackIdentity(auth, identity, modules),
       issueSession: async (operationId: string, request?: Request): Promise<Response> => {
         const api = auth.api as unknown as {
           issueChickpeaSession(input: {
@@ -148,18 +192,24 @@ export function createBetterAuth(input: CreateBetterAuthInput) {
  * signing one costs another read. It also omits the oauth-provider's
  * databaseHooks.session.delete (back-channel logout), which Chickpea does not offer.
  */
-export function createBetterAuthSessionReader(input: Pick<CreateBetterAuthInput, 'backend' | 'baseURL' | 'secret'>) {
+export async function createBetterAuthSessionReader(input: Pick<CreateBetterAuthInput, 'backend' | 'baseURL' | 'secret'>) {
   const baseURL = requireSupportedOrigin(input.baseURL);
-  return betterAuth({
-    ...createOptions({ ...input, baseURL }, Object.freeze({})),
-    plugins: [jwt({ ...JWT_OPTIONS, disableSettingJwtHeader: true })],
+  const modules = await betterAuthModules.load();
+  return modules.betterAuth({
+    ...createOptions({ ...input, baseURL }, Object.freeze({}), modules),
+    plugins: [modules.jwt({ ...JWT_OPTIONS, disableSettingJwtHeader: true })],
   });
 }
 
+/** Better Auth with Chickpea's seam, as createBetterAuth resolves it. */
+export type ChickpeaBetterAuth = Awaited<ReturnType<typeof createBetterAuth>>;
+/** The session-only Better Auth createBetterAuthSessionReader resolves. */
+export type BetterAuthSessionReader = Awaited<ReturnType<typeof createBetterAuthSessionReader>>;
+
 /** The production options are also the source of the pinned fresh-schema generator. */
-export function createBetterAuthOptions(input: CreateBetterAuthInput): BetterAuthOptions {
+export async function createBetterAuthOptions(input: CreateBetterAuthInput): Promise<BetterAuthOptions> {
   const baseURL = requireSupportedOrigin(input.baseURL);
-  return createOptions({ ...input, baseURL }, Object.freeze({}));
+  return createOptions({ ...input, baseURL }, Object.freeze({}), await betterAuthModules.load());
 }
 
 /**
@@ -186,6 +236,7 @@ const JWT_OPTIONS = {
 function createOptions(
   input: CreateBetterAuthInput & { baseURL: string },
   internalMarker: object,
+  modules: BetterAuthModules,
 ): BetterAuthOptions {
   const secureCookies = new URL(input.baseURL).protocol === 'https:';
   return {
@@ -239,7 +290,7 @@ function createOptions(
       },
     },
     hooks: {
-      after: createAuthMiddleware(async (ctx) => {
+      after: modules.createAuthMiddleware(async (ctx) => {
         if (ctx.path !== '/get-session') return;
         const session = ctx.context.session?.session as
           | { token: string; absoluteExpiresAt?: Date | string | number }
@@ -268,14 +319,14 @@ function createOptions(
       useSecureCookies: secureCookies,
     },
     plugins: [
-      organization({
+      modules.organization({
         allowUserToCreateOrganization: false,
         cancelPendingInvitationsOnReInvite: true,
         invitationExpiresIn: 7 * 24 * 60 * 60,
         async sendInvitationEmail() {},
       }),
-      jwt(JWT_OPTIONS),
-      mcp({
+      modules.jwt(JWT_OPTIONS),
+      modules.mcp({
         resource: mcpResourceForOrigin(input.baseURL),
         loginPage: '/auth/mcp/login',
         consentPage: '/auth/mcp/consent',
@@ -293,16 +344,16 @@ function createOptions(
         clientRegistrationRequirePKCE: true,
         ...(input.clientMetadataDocuments === true ? {
           extensions: [{
-            clientDiscovery: clientMetadataDiscovery(input.fetchClientMetadataResource, {
+            clientDiscovery: modules.clientMetadataDiscovery(input.fetchClientMetadataResource, {
               throttle: input.throttleRegistration,
               admitPending: () =>
                 admitPendingMcpOAuthClient(input.backend, { ...DEFAULT_MCP_REGISTRATION_POLICY, ...input.mcpRegistrationPolicy }),
             }, input.baseURL),
           }],
         } : {}),
-        ...(input.mayIssueTokens ? { customTokenResponseFields: tokenIssuanceGate(input.mayIssueTokens) } : {}),
+        ...(input.mayIssueTokens ? { customTokenResponseFields: tokenIssuanceGate(input.mayIssueTokens, modules.APIError) } : {}),
       }) as unknown as BetterAuthPlugin,
-      createPrivateSessionPlugin(input.privateSeam, internalMarker),
+      createPrivateSessionPlugin(input.privateSeam, internalMarker, modules),
     ],
     telemetry: { enabled: false },
   };
@@ -313,7 +364,10 @@ function createOptions(
  * refresh grant (after spending the code), so throwing refuses the grant
  * and leaves a presented refresh token unrotated.
  */
-function tokenIssuanceGate(mayIssueTokens: (betterAuthUserId: string) => Promise<boolean>) {
+function tokenIssuanceGate(
+  mayIssueTokens: (betterAuthUserId: string) => Promise<boolean>,
+  APIError: BetterAuthModules['APIError'],
+) {
   return async ({ user }: { user?: { id?: unknown } | null }): Promise<Record<string, unknown>> => {
     if (typeof user?.id !== 'string' || !(await mayIssueTokens(user.id))) {
       throw new APIError('BAD_REQUEST', {
@@ -328,11 +382,12 @@ function tokenIssuanceGate(mayIssueTokens: (betterAuthUserId: string) => Promise
 function createPrivateSessionPlugin(
   seam: BetterAuthPrivateSeam | undefined,
   internalMarker: object,
+  modules: BetterAuthModules,
 ): BetterAuthPlugin {
   return {
     id: 'chickpea-private-session',
     endpoints: {
-      issueChickpeaSession: createAuthEndpoint(
+      issueChickpeaSession: modules.createAuthEndpoint(
         BETTER_AUTH_PRIVATE_SESSION_PATH,
         { method: 'POST' },
         async (ctx) => {
@@ -352,7 +407,7 @@ function createPrivateSessionPlugin(
             accountId: slackAccountId(admission.slackTeamId, admission.slackUserId),
           });
           const user = await ctx.context.internalAdapter.findUserById(admission.betterAuthUserId);
-          const member = await getOrgAdapter(ctx.context).findMemberByOrgId({
+          const member = await modules.getOrgAdapter(ctx.context).findMemberByOrgId({
             userId: admission.betterAuthUserId,
             organizationId: admission.betterAuthOrganizationId,
           });
@@ -362,7 +417,7 @@ function createPrivateSessionPlugin(
           }
 
           const session = await ctx.context.internalAdapter.createSession(user.id);
-          await setSessionCookie(ctx, { session, user });
+          await modules.setSessionCookie(ctx, { session, user });
           return ctx.json({
             ok: true,
             operationId: admission.operationId,
@@ -378,6 +433,7 @@ function createPrivateSessionPlugin(
 async function reconcileSlackIdentity(
   auth: ReturnType<typeof betterAuth>,
   input: ReconcileSlackIdentityInput,
+  modules: BetterAuthModules,
 ): Promise<ReconciledSlackIdentity> {
   const accountId = slackAccountId(input.slackTeamId, input.slackUserId);
   const accountKey = { providerId: BETTER_AUTH_SLACK_PROVIDER_ID, accountId };
@@ -422,8 +478,8 @@ async function reconcileSlackIdentity(
     }
   }
 
-  const orgAdapter = getOrgAdapter(
-    context as unknown as Parameters<typeof getOrgAdapter>[0],
+  const orgAdapter = modules.getOrgAdapter(
+    context as unknown as Parameters<BetterAuthModules['getOrgAdapter']>[0],
   );
   let organizationRecord = await orgAdapter.findOrganizationBySlug(input.organization.slug);
   if (!organizationRecord) {

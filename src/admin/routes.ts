@@ -722,7 +722,6 @@ import {
 } from '../auth/better-auth-environment.ts';
 import { SlackAdmissionService } from '../auth/slack-admission.ts';
 import { SlackOidcError } from '../auth/slack-oidc.ts';
-import { createBetterAuthEnvironmentPublicHandler } from '../auth/better-auth-runtime.ts';
 import {
   AuthorizationError,
   canEditAgent,
@@ -6742,6 +6741,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     authResponseHeaders(c);
     const context = await betterAuthContext(c);
     if (!context) return c.redirect('/auth/slack/sign-in?destination=%2Fadmin', 303);
+    const { createBetterAuthEnvironmentPublicHandler } = await import('../auth/better-auth-runtime.ts');
     const handler = createBetterAuthEnvironmentPublicHandler({
       environment: context.environment,
     });

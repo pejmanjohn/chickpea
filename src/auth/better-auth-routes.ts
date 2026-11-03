@@ -2,6 +2,7 @@ import { isAPIError } from 'better-auth/api';
 
 import { admitPendingMcpOAuthClient, DEFAULT_MCP_REGISTRATION_POLICY } from './better-auth-backend.ts';
 import {
+  type ChickpeaBetterAuth,
   createBetterAuth,
   requireSupportedOrigin,
   type CreateBetterAuthInput,
@@ -37,6 +38,11 @@ const PUBLIC_ROUTES = new Map<string, PublicRoute>([
   ['POST /api/auth/sign-out', 'browser-mutation'],
 ] as const);
 
+/** Every `METHOD path` the public handler answers, for the lazy mount's test. */
+export function betterAuthPublicRouteKeys(): string[] {
+  return [...PUBLIC_ROUTES.keys()];
+}
+
 const AUTHORIZATION_SERVER_METADATA_PATHS = new Set([
   '/.well-known/oauth-authorization-server/api/auth',
   '/api/auth/.well-known/oauth-authorization-server',
@@ -51,7 +57,7 @@ export type BetterAuthPublicHandlerInput = CreateBetterAuthInput;
  */
 export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInput) {
   const baseURL = requireSupportedOrigin(input.baseURL);
-  let auth: ReturnType<typeof createBetterAuth> | undefined;
+  let auth: Promise<ChickpeaBetterAuth> | undefined;
   const registrationPolicy = { ...DEFAULT_MCP_REGISTRATION_POLICY, ...input.mcpRegistrationPolicy };
 
   return async function handleBetterAuthPublicRequest(request: Request): Promise<Response> {
@@ -80,16 +86,18 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
       }
     }
 
+    // The promise, so two first requests in flight together build one instance.
     auth ??= createBetterAuth({ ...input, baseURL });
+    const instance = await auth;
     if (url.pathname === '/api/auth/oauth2/authorize') {
       const documentClient = input.clientMetadataDocuments === true &&
         isClientMetadataDocumentUrl(url.searchParams.get('client_id') ?? '', baseURL);
       if (documentClient) request = withConsent(request);
-      const renewable = await withOfflineAccessForRenewableClient(request, auth, documentClient);
+      const renewable = await withOfflineAccessForRenewableClient(request, instance, documentClient);
       if (renewable instanceof Response) return renewable;
       request = renewable;
     }
-    const response = await auth.handler(request);
+    const response = await instance.handler(request);
     if (route === 'registration') {
       emitManagementMetric('oauth.dcr', {
         stage: 'registration',
@@ -159,7 +167,7 @@ interface RegisteredClient {
  */
 async function withOfflineAccessForRenewableClient(
   request: Request,
-  auth: ReturnType<typeof createBetterAuth>,
+  auth: ChickpeaBetterAuth,
   documentClient: boolean,
 ): Promise<Request | Response> {
   const url = new URL(request.url);

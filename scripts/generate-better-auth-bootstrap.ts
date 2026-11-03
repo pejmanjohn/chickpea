@@ -59,7 +59,7 @@ const POSTGRES_CONTINUATIONS = [
 
 async function compileFreshSchema(database: unknown): Promise<string> {
   const backend = { database } as unknown as BetterAuthDatabaseBackend;
-  const options = createBetterAuthOptions({
+  const options = await createBetterAuthOptions({
     backend,
     baseURL: 'https://schema.chickpea.invalid',
     secret: 'schema-only-secret-is-never-used-at-runtime',
