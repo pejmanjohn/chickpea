@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { DEFAULT_INTERACTION_TIMEOUT_MS } from '../src/slack/interaction-intent.ts';
+import { DEFAULT_INTERACTION_TIMEOUT_MS, type SlackInteractionIntent } from '../src/slack/interaction-intent.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,12 +13,13 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { SlackPresentationStatePort } from '../src/slack/agent-view-presentation.ts';
-import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
+import { SlackRunPresentationStoreLogic, type SlackRunPresentation } from '../src/slack/run-presentations.ts';
 import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { fakeClefEnv } from './helpers/fake-clef.ts';
 import { SCRIPTED_MODEL, scriptedMessage, scriptedProvider } from './helpers/scripted-provider.ts';
 
 /**
@@ -142,7 +143,15 @@ let turns = 0;
 let rejectCustomStatus = false;
 let holdCustomStatus: ((timeline: string[]) => Promise<void>) | undefined;
 let holdNativeStart: ((timeline: string[]) => Promise<void>) | undefined;
-let holdClassifierAnswer: ((timeline: string[]) => Promise<void>) | undefined;
+type PresentationRead = () => SlackRunPresentation | undefined;
+let holdClassifierAnswer: ((timeline: string[], presentation: PresentationRead) => Promise<void>) | undefined;
+const REPLY_ANSWER = '{"disposition":"reply","reason":"substantive_request"}';
+/** The classifier's JSON answer once released. */
+let classifierAnswer = REPLY_ANSWER;
+/** Runs inside the Agent stand-in before it answers. */
+let holdAgentPrompt: ((timeline: string[], presentation: PresentationRead) => Promise<void>) | undefined;
+/** The platform env the turn runs under; an `AI` on it is Clef's binding. */
+let platformEnv: Record<string, unknown> | undefined;
 
 async function waitUntil(ready: () => boolean): Promise<void> {
   const deadline = Date.now() + DEFAULT_INTERACTION_TIMEOUT_MS / 4;
@@ -158,11 +167,15 @@ async function firstStatusTimeline(
   turnAssignment: ResolvedAssignment = assignment,
 ) {
   const timeline: string[] = [];
+  const recordedIntents: SlackInteractionIntent[] = [];
+  const reactionsAdded: Array<Record<string, unknown>> = [];
+  let presentation: SlackRunPresentation | undefined;
+  const readPresentation: PresentationRead = () => presentation;
   if (holdClassifierAnswer) {
     const hold = holdClassifierAnswer;
     scriptedProvider([async (model) => {
-      await hold(timeline);
-      return scriptedMessage(model, [{ type: 'text', text: '{"disposition":"reply","reason":"substantive_request"}' }], 'stop');
+      await hold(timeline, readPresentation);
+      return scriptedMessage(model, [{ type: 'text', text: classifierAnswer }], 'stop');
     }], { providerId: 'anthropic' });
   }
   turns += 1;
@@ -185,6 +198,8 @@ async function firstStatusTimeline(
   ) as unknown as AppStores;
   const db = openStateDb(':memory:');
   const presentations = new SlackRunPresentationStoreLogic(db);
+  presentation = undefined;
+  const refreshPresentation = () => { presentation = presentations.get(runId); };
   const sessionGeneration = Number(turn.messageTs.replace('.', ''));
   presentations.create({
     schemaVersion: 3,
@@ -217,12 +232,20 @@ async function firstStatusTimeline(
   // A runner owns this state locally, except the thread's generation fence,
   // which it reads from the state store.
   const presentationState: SlackPresentationStatePort = {
-    getRunPresentation: (id) => presentations.get(id),
+    getRunPresentation: (id) => {
+      const current = presentations.get(id);
+      if (id === runId) presentation = current;
+      return current;
+    },
     getLatestThreadSessionGeneration: (root) => {
       timeline.push('presentations.getLatestThreadSessionGeneration');
       return presentations.getLatestThreadSessionGeneration(root);
     },
-    transitionRunPresentation: (input) => presentations.transition(input),
+    transitionRunPresentation: (input) => {
+      const result = presentations.transition(input);
+      refreshPresentation();
+      return result;
+    },
     reserveSlackAppend: (workspaceId) => presentations.reserveAppend(workspaceId),
     applySlackAppendCooldown: (workspaceId, retryAfterMs) =>
       presentations.applyAppendCooldown(workspaceId, retryAfterMs),
@@ -253,7 +276,13 @@ async function firstStatusTimeline(
       return { ok: true };
     },
     assistant: { threads: { setStatus: slack('assistant.threads.setStatus') } },
-    reactions: { add: slack('reactions.add'), remove: slack('reactions.remove') },
+    reactions: {
+      add: async (input: Record<string, unknown>) => {
+        reactionsAdded.push(input);
+        return slack('reactions.add')();
+      },
+      remove: slack('reactions.remove'),
+    },
     conversations: { replies: slack('conversations.replies'), history: slack('conversations.history') },
     chat: {
       postMessage: slack('chat.postMessage'),
@@ -277,7 +306,10 @@ async function firstStatusTimeline(
     usageRecordingEnabled: false,
     ...(publicUrl === undefined ? {} : { publicUrl }),
     // The runner's per-turn state-store writes (see runnerTurnJobsPort).
-    onInteractionIntent: async () => { timeline.push('turnJobs.recordInteractionIntent'); },
+    onInteractionIntent: async (intent) => {
+      timeline.push('turnJobs.recordInteractionIntent');
+      recordedIntents.push(intent);
+    },
     onRuntimePlan: async (candidate) => {
       timeline.push('turnJobs.freezeRuntimePlan');
       const { deriveRuntimePlanInstanceId } = await import('../src/agents/runtime-plan.ts');
@@ -289,6 +321,7 @@ async function firstStatusTimeline(
     },
     agentPrompt: async () => {
       timeline.push('agentPrompt');
+      await holdAgentPrompt?.(timeline, readPresentation);
       return {
         text: 'Done.',
         requestedModel: assignment.model ?? null,
@@ -299,8 +332,9 @@ async function firstStatusTimeline(
     },
   };
   try {
-    await runTurn(turn, turnAssignment, undefined, { ...options, ...overrides });
+    await runTurn(turn, turnAssignment, platformEnv, { ...options, ...overrides });
   } finally {
+    refreshPresentation();
     db.close();
   }
   const first = timeline.findIndex((entry) => entry.startsWith('slack:'));
@@ -310,6 +344,9 @@ async function firstStatusTimeline(
     beforeFirstWrite: timeline.slice(0, first),
     slackWrites: timeline.filter((entry) => entry.startsWith('slack:')),
     firstWrite: first,
+    presentation: readPresentation(),
+    recordedIntents,
+    reactionsAdded,
   };
 }
 
@@ -504,5 +541,148 @@ test('the context is read before the classifier answers; the dispatch waits for 
     if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = previousKey;
     resetModelAccessForTests();
+  }
+});
+
+/** The DM assignment whose classifier runs on the scripted anthropic provider. */
+const classifiedAssignment: ResolvedAssignment = {
+  ...assignment,
+  channelId: 'D_FIRST_STATUS',
+  model: `anthropic/${SCRIPTED_MODEL}`,
+  modelAttribution: { source: 'pinned', providerId: 'anthropic' },
+};
+
+async function withScriptedClassifier<T>(run: () => Promise<T>): Promise<T> {
+  const previousKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'anthropic-first-status-key';
+  configureModelAccessResolver({ resolve: async () => ({ apiKey: 'anthropic-first-status-key' }) });
+  try {
+    return await run();
+  } finally {
+    holdClassifierAnswer = undefined;
+    holdAgentPrompt = undefined;
+    platformEnv = undefined;
+    classifierAnswer = REPLY_ANSWER;
+    if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousKey;
+    resetModelAccessForTests();
+  }
+}
+
+const WORK_ANSWER = JSON.stringify({
+  disposition: 'work', reason: 'substantive_request', checklist: ['Release summary', 'Notable changes'],
+});
+
+/** Releases the classifier once the Agent has been dispatched. */
+const answerAfterDispatch = async (timeline: string[]) => {
+  await waitUntil(() => timeline.includes('agentPrompt'));
+  timeline.push('classifier:answered');
+};
+
+// Defect caught: the gain is lost because the dispatch still waits for the
+// model, or the dispatch no longer waits for the recorded basis.
+test('a confident Clef reply dispatches on its record before the classifier answers', async () => {
+  const clef = fakeClefEnv('reply');
+  platformEnv = clef.env;
+  holdClassifierAnswer = answerAfterDispatch;
+  await withScriptedClassifier(async () => {
+    const { timeline, recordedIntents } = await firstStatusTimeline('dm', null, {}, classifiedAssignment);
+    const recorded = timeline.indexOf('turnJobs.recordInteractionIntent');
+    const dispatched = timeline.indexOf('agentPrompt');
+    const answered = timeline.indexOf('classifier:answered');
+    assert.ok(recorded >= 0 && dispatched >= 0 && answered >= 0,
+      `the turn recorded, dispatched, and the classifier answered: ${timeline.join(' ')}`);
+    assert.ok(recorded < dispatched, `the dispatch waits for the record: ${timeline.join(' ')}`);
+    assert.ok(dispatched < answered, `the dispatch does not wait for the classifier: ${timeline.join(' ')}`);
+    assert.deepEqual(recordedIntents, [{ disposition: 'reply', reason: 'substantive_request' }]);
+    assert.equal(clef.calls.length, 1);
+  });
+});
+
+// Defect caught: the eyes wait for the model's labels, or the labels never
+// reach the presentation once the model answers.
+test('a confident Clef work shows the eyes before the classifier answers and adopts its labels late', async () => {
+  const clef = fakeClefEnv('work');
+  platformEnv = clef.env;
+  classifierAnswer = WORK_ANSWER;
+  holdClassifierAnswer = answerAfterDispatch;
+  holdAgentPrompt = async (_timeline, presentation) => {
+    await waitUntil(() => presentation()?.plan !== undefined);
+  };
+  await withScriptedClassifier(async () => {
+    const { timeline, presentation, recordedIntents } = await firstStatusTimeline('dm', null, {}, classifiedAssignment);
+    const eyes = timeline.indexOf('slack:reactions.add');
+    const dispatched = timeline.indexOf('agentPrompt');
+    const answered = timeline.indexOf('classifier:answered');
+    assert.ok(eyes >= 0 && eyes < dispatched && dispatched < answered,
+      `the eyes precede the dispatch, which precedes the classifier: ${timeline.join(' ')}`);
+    assert.deepEqual(recordedIntents, [{ disposition: 'work', reason: 'substantive_request', checklist: [] }],
+      'the record keeps an empty checklist; the labels are presentation');
+    assert.deepEqual(
+      presentation?.plan?.tasks.map((task) => task.title),
+      ['Release summary', 'Notable changes'],
+      'the model\'s labels became the plan while the stream was absent',
+    );
+    assert.equal(clef.calls.length, 1);
+  });
+});
+
+// Defect caught: a plan attaches to a finished reply, or its refusal warns on
+// every such turn.
+test('labels that arrive after the final began attach no plan and raise no warning', async () => {
+  platformEnv = fakeClefEnv('work').env;
+  classifierAnswer = WORK_ANSWER;
+  holdClassifierAnswer = async (timeline, presentation) => {
+    await waitUntil(() => {
+      const current = presentation();
+      return current?.schemaVersion === 3 && current.terminalDelivery.state !== 'none';
+    });
+    timeline.push('classifier:answered');
+  };
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (...values: unknown[]) => { warnings.push(values.map(String).join(' ')); };
+  try {
+    await withScriptedClassifier(async () => {
+      const { timeline, presentation } = await firstStatusTimeline('dm', null, {}, classifiedAssignment);
+      assert.ok(timeline.indexOf('agentPrompt') < timeline.indexOf('classifier:answered'), timeline.join(' '));
+      assert.equal(presentation?.schemaVersion === 3 && presentation.terminalDelivery.state !== 'none', true);
+      assert.equal(presentation?.plan, undefined);
+      assert.deepEqual(warnings.filter((entry) => entry.includes('late native plan')), []);
+    });
+  } finally {
+    console.warn = warn;
+  }
+});
+
+// Defect caught: Clef's emoji or target is used (right 19 of 35 and 1 of 35
+// times), or a confident react_only dispatches the Agent.
+test('a confident Clef react_only takes the classifier\'s reaction and target and never dispatches', async () => {
+  const clef = fakeClefEnv('react_only');
+  platformEnv = clef.env;
+  classifierAnswer = JSON.stringify({ disposition: 'react_only', reason: 'pure_ack', reaction: 'seen', target: 'thread_root' });
+  holdClassifierAnswer = async (timeline) => { timeline.push('classifier:answered'); };
+  await withScriptedClassifier(async () => {
+    const { timeline, recordedIntents, reactionsAdded } = await firstStatusTimeline('dm', null, {}, classifiedAssignment);
+    assert.equal(timeline.includes('agentPrompt'), false, `no dispatch: ${timeline.join(' ')}`);
+    assert.deepEqual(recordedIntents, [
+      { disposition: 'react_only', reason: 'pure_ack', reaction: 'seen', target: 'thread_root' },
+    ]);
+    assert.deepEqual(reactionsAdded.map((reaction) => reaction.name), ['eyes']);
+    assert.equal(clef.calls.length, 1);
+  });
+});
+
+// Defect caught: a retry judges again and may answer differently from the
+// basis the first attempt recorded.
+test('a restored intent asks neither Clef nor the classifier and records nothing', async () => {
+  const clef = fakeClefEnv('reply');
+  platformEnv = clef.env;
+  try {
+    const { timeline } = await firstStatusTimeline('thread_follow_up');
+    assert.equal(clef.calls.length, 0);
+    assert.equal(timeline.includes('turnJobs.recordInteractionIntent'), false);
+  } finally {
+    platformEnv = undefined;
   }
 });

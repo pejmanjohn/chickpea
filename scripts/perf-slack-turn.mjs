@@ -24,6 +24,7 @@ const VISIBLE_METHODS = new Set([
   'chat.postMessage',
 ]);
 const CLASSIFIER_PROMPT = 'Classify one Slack interaction';
+const CLEF_ANSWERS = new Set(['reply', 'work', 'react_only', 'uncertain', 'error']);
 const TS_BASE = 1790000000;
 const FINAL_TIMEOUT_MS = 60_000;
 const STATE_RPC_SAMPLE_EVERY = 100;
@@ -40,6 +41,8 @@ function parseFlags(argv) {
       'state-rpc-delay-ms': { type: 'string', default: '40' },
       'provider-delay-spread-ms': { type: 'string', default: '750' },
       'thread-replies': { type: 'string', default: '1' },
+      'clef-delay-ms': { type: 'string', default: '250' },
+      'clef-answer': { type: 'string', default: 'reply' },
       'skip-build': { type: 'boolean', default: false },
       out: { type: 'string' },
       'wrangler-log': { type: 'string' },
@@ -51,6 +54,9 @@ function parseFlags(argv) {
     if (!Number.isInteger(value) || value < min) throw new Error(`--${name} must be an integer >= ${min}`);
     return value;
   };
+  if (!CLEF_ANSWERS.has(values['clef-answer'])) {
+    throw new Error(`--clef-answer must be one of ${[...CLEF_ANSWERS].join(', ')}`);
+  }
   const expandHome = (path) => (path?.startsWith('~/') ? join(homedir(), path.slice(2)) : path);
   const wranglerLog = expandHome(values['wrangler-log']);
   return {
@@ -60,6 +66,8 @@ function parseFlags(argv) {
     stateRpcDelayMs: count('state-rpc-delay-ms', 0),
     providerDelaySpreadMs: count('provider-delay-spread-ms', 0),
     threadReplies: count('thread-replies', 0),
+    clefDelayMs: count('clef-delay-ms', 0),
+    clefAnswer: values['clef-answer'],
     skipBuild: values['skip-build'],
     out: resolve(expandHome(values.out) ?? join(DEFAULT_RUNS_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}.json`)),
     label: values.label,
@@ -105,6 +113,7 @@ function wireMetrics(entries, finals, t0) {
   const since = (entry) => (entry ? entry.at - t0 : null);
   const slack = entries.filter((entry) => entry.kind === 'slack');
   const modelCalls = entries.filter((entry) => entry.kind === 'provider' && entry.method === 'chat/completions');
+  const clefCalls = entries.filter((entry) => entry.kind === 'provider' && entry.method === 'ai/run');
   const finalEntry = finalWireEntry(entries, finals[0]);
   const clear = finalEntry
     ? slack.filter((entry) => entry.at >= finalEntry.at && entry.method === 'assistant.threads.setStatus' &&
@@ -119,6 +128,8 @@ function wireMetrics(entries, finals, t0) {
     firstModel: since(modelCalls[0]),
     modelCalls: modelCalls.length,
     classifierCalls: modelCalls.filter(isClassifier).length,
+    firstClef: since(clefCalls[0]),
+    clefCalls: clefCalls.length,
     firstText: since(slack.find((entry) => entry.method === 'chat.startStream')),
     final: since(finalEntry),
     finalVia: finalEntry?.method ?? null,
@@ -128,7 +139,9 @@ function wireMetrics(entries, finals, t0) {
     slackErrors: slack.filter((entry) => entry.ok === false).map((entry) => entry.method),
     finalsCount: finals.length,
     timeline: entries.map((entry) => ({
-      method: entry.kind === 'slack' ? entry.method : `model:${isClassifier(entry) ? 'classifier' : entry.method}`,
+      method: entry.kind === 'slack'
+        ? entry.method
+        : `model:${entry.method === 'ai/run' ? 'clef' : isClassifier(entry) ? 'classifier' : entry.method}`,
       at: entry.at - t0,
       ...(entry.respondedAt === undefined ? {} : { respondedAt: entry.respondedAt - t0 }),
     })),
@@ -176,12 +189,13 @@ function summarize(samples) {
     const rpcDeltas = group.map((sample) => sample.stateRpc.maxIsolateCallsAfter - sample.stateRpc.maxIsolateCallsBefore);
     summary[name] = {
       turns: group.length,
-      ...Object.fromEntries(['final', 'firstVisible', 'firstModel', 'firstText', 'ack', 'clear']
+      ...Object.fromEntries(['final', 'firstVisible', 'firstClef', 'firstModel', 'firstText', 'ack', 'clear']
         .map((metric) => [metric, stats(group.map((sample) => sample[metric]))])),
       slackCallsMedian: stats(group.map((sample) => sample.slackCalls)).median,
       topMethods: Object.entries(methods).sort((a, b) => b[1] - a[1]).slice(0, 8)
         .map(([method, count]) => ({ method, perTurn: Number((count / group.length).toFixed(2)) })),
       modelCallsMedian: stats(group.map((sample) => sample.modelCalls)).median,
+      clefCallsMedian: stats(group.map((sample) => sample.clefCalls)).median,
       approxStateRpcsPerTurn: Math.round(rpcDeltas.reduce((sum, delta) => sum + delta, 0) / group.length),
       errors: group.reduce((sum, sample) => sum + sample.errors.length, 0),
       finals: group.reduce((sum, sample) => sum + sample.finalsCount, 0),
@@ -194,16 +208,18 @@ const cell = (value, width = 6) => String(value ?? '-').padStart(width);
 
 function printTable(samples) {
   const columns = [
-    ['case', 8], ['turn', 6], ['ack', 6], ['visible', 8], ['model', 6], ['text', 6], ['final', 6], ['clear', 6],
-    ['slack', 6], ['models', 7], ['rpc~', 6], ['finals', 7], ['err', 4], ['tl.start', 9], ['tl.first', 9], ['tl.final', 9],
+    ['case', 8], ['turn', 6], ['ack', 6], ['visible', 8], ['clef', 6], ['model', 6], ['text', 6], ['final', 6],
+    ['clear', 6], ['slack', 6], ['models', 7], ['clefs', 6], ['rpc~', 6], ['finals', 7], ['err', 4], ['tl.start', 9],
+    ['tl.first', 9], ['tl.final', 9],
   ];
   console.log(columns.map(([name, width]) => cell(name, width)).join(' '));
   for (const sample of samples) {
     const latency = sample.turnLatency.find((record) => record.admissionToFinalMs !== undefined) ?? sample.turnLatency[0];
     const row = [
       sample.case, sample.reply === null ? `${sample.turn}` : `${sample.turn}.${sample.reply}`, sample.ack,
-      sample.firstVisible, sample.firstModel, sample.firstText, sample.final, sample.clear, sample.slackCalls,
-      sample.modelCalls, sample.stateRpc.maxIsolateCallsAfter - sample.stateRpc.maxIsolateCallsBefore,
+      sample.firstVisible, sample.firstClef, sample.firstModel, sample.firstText, sample.final, sample.clear,
+      sample.slackCalls, sample.modelCalls, sample.clefCalls,
+      sample.stateRpc.maxIsolateCallsAfter - sample.stateRpc.maxIsolateCallsBefore,
       sample.finalsCount, sample.errors.length, latency?.admissionToStartMs, latency?.admissionToFirstWriteMs,
       latency?.admissionToFinalMs,
     ];
@@ -214,11 +230,11 @@ function printTable(samples) {
 function printSummary(summary) {
   for (const [name, group] of Object.entries(summary)) {
     console.log(`\n${name} (${group.turns} turns), ms from the signed POST: median [min..max]`);
-    for (const metric of ['final', 'firstVisible', 'firstModel', 'firstText', 'ack', 'clear']) {
+    for (const metric of ['final', 'firstVisible', 'firstClef', 'firstModel', 'firstText', 'ack', 'clear']) {
       const { median, min, max, n } = group[metric];
       console.log(`  ${metric.padEnd(13)} ${cell(median)} [${min ?? '-'}..${max ?? '-'}] n=${n}`);
     }
-    console.log(`  slack calls median ${group.slackCallsMedian}; model calls median ${group.modelCallsMedian}`);
+    console.log(`  slack calls median ${group.slackCallsMedian}; model calls median ${group.modelCallsMedian}; clef calls median ${group.clefCallsMedian}`);
     console.log(`  top methods per turn: ${group.topMethods.map(({ method, perTurn }) => `${method}=${perTurn}`).join(', ')}`);
     console.log(`  state RPCs per turn ~${group.approxStateRpcsPerTurn} (approximate: 1-in-${STATE_RPC_SAMPLE_EVERY} samples)`);
     console.log(`  errors ${group.errors}; finals ${group.finals}`);
@@ -266,6 +282,7 @@ async function main() {
     smoke.applyLocalAuthMigrations();
     const fake = await backend.listen(await getFreePort());
     smoke.writeDevVars(fake.url);
+    relayClefToFake(smoke.CF_AI_SMOKE_CONFIG, fake.url);
     if (flags.stateRpcDelayMs > 0) {
       appendFileSync(
         join(REPO_ROOT, 'dist-cf', 'chickpea', '.dev.vars'),
@@ -293,6 +310,7 @@ async function main() {
     backend.configure({
       slack: { latencyMs: flags.slackLatencyMs },
       provider: { delayMs: flags.providerDelayMs, delaySpreadMs: flags.providerDelaySpreadMs },
+      clef: { delayMs: flags.clefDelayMs, answer: flags.clefAnswer },
     });
     await backend.quiesce(1500, 30_000);
     const setupTraffic = [...new Set(backend.wireLog.map((entry) => entry.method))];
@@ -408,7 +426,7 @@ async function main() {
     mkdirSync(dirname(flags.out), { recursive: true });
     writeFileSync(flags.out, `${JSON.stringify(report, null, 2)}\n`);
 
-    console.log(`\nslack latency ${flags.slackLatencyMs} ms, provider delay ${flags.providerDelayMs}±${Math.floor(flags.providerDelaySpreadMs / 2)} ms, state rpc delay ${flags.stateRpcDelayMs} ms, build ${build.profile}@${build.sourceCommit}`);
+    console.log(`\nslack latency ${flags.slackLatencyMs} ms, provider delay ${flags.providerDelayMs}±${Math.floor(flags.providerDelaySpreadMs / 2)} ms, clef ${flags.clefAnswer} after ${flags.clefDelayMs} ms, state rpc delay ${flags.stateRpcDelayMs} ms, build ${build.profile}@${build.sourceCommit}`);
     printTable(samples);
     printSummary(summary);
     console.log(`\nstate RPCs per turn ~${report.stateRpc.approxPerTurn} (${report.stateRpc.note})`);
@@ -426,6 +444,13 @@ async function main() {
   } finally {
     await cleanup();
   }
+}
+
+/** The AI stub relays Clef to the fake backend, which owns the answer and its delay and logs the call. */
+function relayClefToFake(configPath, fakeUrl) {
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.vars = { ...(config.vars ?? {}), AI_SMOKE_CLEF_URL: fakeUrl };
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
 function backendConfig(smoke) {

@@ -3,6 +3,7 @@ import { createHash, sign as signBytes } from 'node:crypto';
 import { AddressInfo } from 'node:net';
 
 import { REQUIRED_SLACK_BOT_SCOPES } from '../../src/slack/scopes.ts';
+import { fakeClefAnswer, type FakeClefAnswer } from '../helpers/fake-clef.ts';
 import { slackManifestRefusal } from '../helpers/slack-manifest-rules.ts';
 
 /**
@@ -58,6 +59,8 @@ interface RouteResult {
   contentType?: string;
   headers?: Record<string, string>;
   slackEntry?: WireEntry;
+  /** Held before the response is written: a provider that answers slowly. */
+  delayMs?: number;
 }
 
 /**
@@ -194,9 +197,23 @@ export interface FakeProviderConfig {
   delaySpreadMs?: number;
 }
 
+/**
+ * The Clef answer the Workers AI smoke stub relays for `@cf/cloudflare/clef`
+ * (`scripts/fixtures/cloudflare-ai-binding-smoke.mjs` posts the call to
+ * `/ai/run/clef` when `AI_SMOKE_CLEF_URL` names this backend). Each call lands
+ * in the wire log as `ai/run`, so the perf harness counts `clefCalls`. The
+ * default, `uncertain`, sends every turn down today's path.
+ */
+export interface FakeClefConfig {
+  /** Held before answering; the measured in-network p50 is about 260 ms. */
+  delayMs?: number;
+  answer?: FakeClefAnswer;
+}
+
 export interface FakeSlackBackendConfig {
   slack?: FakeSlackBehaviorConfig;
   provider?: FakeProviderConfig;
+  clef?: FakeClefConfig;
 }
 
 /** Default 2-page cursor fixture copied from tests/slack-events-route.test.ts. */
@@ -243,6 +260,7 @@ export class FakeSlackBackend {
   private replyText: string;
   private providerDelayMs: number;
   private providerDelaySpreadMs: number;
+  private clef: Required<FakeClefConfig>;
   private heldAgentCalls = 0;
   private channels: FakeSlackChannel[];
   private conversationsListPageSize: number;
@@ -311,6 +329,7 @@ export class FakeSlackBackend {
     this.replyText = config.provider?.replyText ?? STUB_REPLY_MARKER;
     this.providerDelayMs = config.provider?.delayMs ?? 0;
     this.providerDelaySpreadMs = config.provider?.delaySpreadMs ?? 0;
+    this.clef = { delayMs: config.clef?.delayMs ?? 0, answer: config.clef?.answer ?? 'uncertain' };
 
     this.repliesPages.forEach((page, index) => {
       if (page.next_cursor) {
@@ -330,6 +349,7 @@ export class FakeSlackBackend {
         ? new Uint8Array(await request.clone().arrayBuffer())
         : await request.clone().text();
       const result = this.route(request.url, body, headers, arrivedAt);
+      if (result.delayMs) await new Promise((resolve) => setTimeout(resolve, result.delayMs));
       if (result.rawBody !== undefined) {
         return new Response(result.rawBody, {
           status: result.status,
@@ -374,6 +394,8 @@ export class FakeSlackBackend {
         };
         if (result.slackEntry && this.slackLatencyMs > 0) {
           setTimeout(write, this.slackLatencyMs);
+        } else if (result.delayMs) {
+          setTimeout(write, result.delayMs);
         } else {
           write();
         }
@@ -591,6 +613,10 @@ export class FakeSlackBackend {
         this.providerDelaySpreadMs = config.provider.delaySpreadMs;
       }
     }
+    if (config.clef) {
+      if (config.clef.delayMs !== undefined) this.clef.delayMs = config.clef.delayMs;
+      if (config.clef.answer !== undefined) this.clef.answer = config.clef.answer;
+    }
   }
 
   /** Clear the wire log and per-turn counters (keeps behavior config). */
@@ -644,6 +670,8 @@ export class FakeSlackBackend {
       method = 'responses';
     } else if (isAnthropicMessages) {
       method = 'messages';
+    } else if (pathname === '/ai/run/clef') {
+      method = 'ai/run';
     } else if (this.isProviderModelsPath(pathname)) {
       method = 'models';
     } else if (this.isOpenRouterAuthPath(pathname)) {
@@ -657,6 +685,7 @@ export class FakeSlackBackend {
     this.wireLog.push(entry);
 
     if (!isSlack) {
+      if (method === 'ai/run') return this.clefResponse();
       const providerAdmin = this.providerAdminResponse(pathname, headers);
       if (providerAdmin) {
         return providerAdmin;
@@ -1175,6 +1204,19 @@ export class FakeSlackBackend {
       messages: page.messages,
       ...(page.next_cursor ? { response_metadata: { next_cursor: page.next_cursor } } : {}),
     };
+  }
+
+  /** Clef's wire answer, or HTTP 500 for `error`, after `clef.delayMs`. */
+  private clefResponse(): RouteResult {
+    const delayMs = this.clef.delayMs;
+    if (this.clef.answer === 'error') {
+      return {
+        status: 500,
+        body: { success: false, errors: [{ message: 'Clef unavailable', code: 500 }] },
+        delayMs,
+      };
+    }
+    return { status: 200, body: fakeClefAnswer(this.clef.answer), delayMs };
   }
 
   private providerResponse(): RouteResult {
