@@ -2077,6 +2077,7 @@ async function runTurnAttempt(
     let text: string;
     let agentResult: AgentDispatchResult | undefined;
     let earlyLeaseCheck: Promise<boolean> | undefined;
+    let settledLeaseCheck: Promise<boolean> | undefined;
     // A settled answer replayed from its checkpoint carries no display
     // components; they are read back from the turn's stored surfaces.
     const settledBeforePrompt = options.flueDispatch?.flueSettlement?.outcome === 'completed';
@@ -2178,6 +2179,15 @@ async function runTurnAttempt(
               ? { onObservationStarted: options.onObservationStarted }
               : {}),
             ...(options.onAgentStaged ? { onAgentStaged: options.onAgentStaged } : {}),
+            ...(preparedMemory
+              ? {
+                  onSettlementObserved: (settled) => {
+                    if (!plainAnswer(settled)) return;
+                    settledLeaseCheck = preparedMemory.validateLease();
+                    settledLeaseCheck.catch(() => undefined);
+                  },
+                }
+              : {}),
             ...(options.codingTaskStarted ? { codingTaskStarted: true } : {}),
             ...(reviewSession
               ? { onConversationChunk: (chunk, submissionId) => reviewSession.ingest(chunk, submissionId) }
@@ -2218,13 +2228,12 @@ async function runTurnAttempt(
         });
         const recordingUsage = usageRecorder?.recordSuccess(agentResult);
         recordingUsage?.catch(() => undefined);
-        const plainAnswer = !agentResult.memoryUpdate && !agentResult.agentCreationTerminal &&
-          !agentResult.frontDeskHandoff;
-        if (preparedMemory && plainAnswer) {
-          earlyLeaseCheck = preparedMemory.validateLease();
+        const plain = plainAnswer(agentResult);
+        if (preparedMemory && plain) {
+          earlyLeaseCheck = settledLeaseCheck ?? preparedMemory.validateLease();
           earlyLeaseCheck.catch(() => undefined);
         }
-        if (!handedBack && plainAnswer && options.replayTerminalResult === undefined) {
+        if (!handedBack && plain && options.replayTerminalResult === undefined) {
           earlyDisplaySurfaces = readDisplaySurfaces();
         }
         await settling;
@@ -3281,6 +3290,11 @@ async function resolveCodingModelRoute(input: Parameters<typeof freezeCodingMode
 
 const MEMORY_CHANGED_RETRY_TEXT =
   'Agent memory or Slack access changed while I was answering, so I withheld the draft. Before trying again, check whether any requested external action already completed.';
+
+/** An answer whose delivery no memory write, Agent creation or hand-off decides: the lease alone fences it. */
+function plainAnswer(result: AgentDispatchResult): boolean {
+  return !result.memoryUpdate && !result.agentCreationTerminal && !result.frontDeskHandoff;
+}
 
 function resolveMemoryDeliveryText(
   draft: string,

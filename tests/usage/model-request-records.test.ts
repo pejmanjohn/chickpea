@@ -512,32 +512,54 @@ test('a failing record write leaves the model result unchanged and logs one cont
   ]));
 });
 
-test('a hanging record write lets the stream end after its budget', { timeout: 10_000 }, async (t) => {
+test('a hanging record write never holds the result, and its scope ends after the budget', { timeout: 10_000 }, async (t) => {
   recordingAccess(t, () => new Promise(() => undefined));
   const message = reply('stop', { input: 1, output: 1 });
   const { model } = scriptedAnthropic([completes(message)]);
   const started = Date.now();
+  let resultAfter = Infinity;
 
-  const result = await withModelAccess(grant('stateless_hanging'), undefined, 'reply', () => modelCall(model));
+  const result = await withModelAccess(grant('stateless_hanging'), undefined, 'reply', async () => {
+    const read = await modelCall(model);
+    resultAfter = Date.now() - started;
+    return read;
+  });
 
   const elapsed = Date.now() - started;
   assert.deepEqual(result, message);
+  assert.ok(resultAfter < 1_000, `the result arrived after ${resultAfter} ms`);
   assert.ok(elapsed >= 1_900 && elapsed < 4_000, `ended after ${elapsed} ms`);
 });
 
-test('the record is in the store when the caller reads the request result', async (t) => {
+// Defects caught: the terminal event held for the record write again (the
+// caller's read below finds the record), and an attempt that settles before
+// its record is written (it ends while the write is held).
+test('the caller reads a request result before its record is written, and its attempt ends only once it is', async (t) => {
   const store = new SqliteUsageStore(':memory:');
   t.after(() => store.close());
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
   const { written } = recordingAccess(t, async (record) => {
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await held;
     return store.recordModelRequest(record);
   });
-  const { model } = scriptedAnthropic([completes(reply('stop', { input: 7, output: 3 }))]);
+  const message = reply('stop', { input: 7, output: 3 });
+  const { model } = scriptedAnthropic([completes(message)]);
+  const interceptor = interceptorFor({ env: undefined, grant: grant('sub_released'), agentId: 'agent_released' });
+  let ended = false;
 
-  await withModelAccess(grant('stateless_ordered'), undefined, 'reply', async () => {
-    await modelCall(model);
-    assert.equal((await store.getModelRequest(written[0]!.record.requestId))?.inputTokens, 7);
-  });
+  const attempted = interceptor(AGENT_OPERATION, attempt('released'), async () => {
+    assert.deepEqual(await modelCall(model), message);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(written.length, 1, 'the record write has started');
+    assert.equal(await store.getModelRequest(written[0]!.record.requestId), undefined, 'and is still held');
+  }).then(() => { ended = true; });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(ended, false, 'the attempt waits for the record write');
+  release();
+  await attempted;
+
+  assert.equal((await store.getModelRequest(written[0]!.record.requestId))?.inputTokens, 7);
 });
 
 test('an Anthropic or OpenAI request records no provider cost and its usable response ID, and its provider gets the caller fetch', async (t) => {

@@ -497,6 +497,8 @@ test('native table intent is reduced into and replayed from the durable settleme
   assert.deepEqual(replay.tablePresentations, result.tablePresentations);
 });
 
+// Also caught: the settled reply handed to the caller only after its
+// settlement record, which delays the reads the caller starts on it.
 test('receipt-scoped relay is prepared after durable receipt and drains after settlement', async () => {
   const operations: string[] = [];
   const relay: SlackProgressiveReadRelay = {
@@ -571,6 +573,7 @@ test('receipt-scoped relay is prepared after durable receipt and drains after se
       return relay;
     },
     beforeResult: async () => { operations.push('before:result'); },
+    onSettlementObserved: (settled) => { operations.push(`settlement:observed:${settled.text}`); },
   });
 
   assert.equal(result.text, 'done');
@@ -578,6 +581,7 @@ test('receipt-scoped relay is prepared after durable receipt and drains after se
     'receipt:persisted',
     `relay:prepared:${ENVELOPE.instanceId}:${RECEIPT.submissionId}`,
     'event:message-delta',
+    'settlement:observed:done',
     'settlement:persisted',
     'relay:closed',
     'before:result',
