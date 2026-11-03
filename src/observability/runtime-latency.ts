@@ -63,6 +63,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   basis: TOKEN,
   clef: TOKEN,
   clefChoice: TOKEN,
+  management: TOKEN,
   gate: TOKEN,
   model: TOKEN,
   refinement: TOKEN,
@@ -545,6 +546,11 @@ export function emitInteractionJudgment(
     modelMs?: number;
     refinement?: string;
     agreed?: boolean;
+    management?: string;
+    managementMs?: number;
+    managementInputTokens?: number;
+    managementTop?: number;
+    managementFired?: boolean;
   },
   sink?: RuntimeLatencySink,
 ): void {
@@ -568,6 +574,11 @@ export function emitInteractionJudgment(
     modelMs: record.modelMs,
     refinement: record.refinement,
     agreed: record.agreed,
+    management: record.management,
+    managementMs: record.managementMs,
+    managementInputTokens: record.managementInputTokens,
+    managementTop: thousandths(record.managementTop),
+    managementFired: record.managementFired,
   }, sink);
 }
 

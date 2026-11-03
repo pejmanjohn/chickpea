@@ -5,9 +5,10 @@ import {
   CLEF_MODEL,
   CLEF_TIMEOUT_MS,
   readClefInteraction,
+  readClefManagement,
   type ClefInteractionInput,
 } from '../src/slack/clef-intent.ts';
-import { clefWire, fakeClefAnswer, fakeClefEnv } from './helpers/fake-clef.ts';
+import { clefManagementWire, clefWire, fakeClefAnswer, fakeClefEnv } from './helpers/fake-clef.ts';
 
 /**
  * Fixtures copied from the 2026-11-01 evaluation (`variants.mjs`, question
@@ -195,4 +196,55 @@ test('extra questions and fields are ignored and never reach the reading', async
   const read = await readClefInteraction(DM, fakeClefEnv(noUsage).env);
   assert.equal(read.kind, 'read');
   if (read.kind === 'read') assert.equal('inputTokens' in read.reading, false);
+});
+
+/** The `config` wording, asked alone, that the 2026-11-02 management evaluation measured at 0.5. */
+const MANAGEMENT_QUESTIONS = {
+  manage: {
+    type: 'noul',
+    instructions: 'Is the current message asking to set up or change how Chickpea Agents are configured (an Agent, its instructions, connections, schedules, or skills), or to undo such a change, rather than to answer a question or do a task with the tools the Agent already has?',
+  },
+};
+
+// Defect caught: the management question drifts from the measured wording,
+// reads a different state, joins the disposition call (which moved its
+// calibrated answers), or routes through AI Gateway logging.
+test('the management call sends the disposition call\'s state with only the measured management question', async () => {
+  for (const [input, state] of [[DM, DM_STATE], [MENTION, MENTION_STATE]] as const) {
+    const { env, calls, managementCalls } = fakeClefEnv(clefWire(REPLY), { manage: 0.91 });
+    const outcome = await readClefManagement(input, env);
+    assert.equal(outcome.kind, 'read');
+    if (outcome.kind === 'read') assert.deepEqual(outcome.reading, { manage: 0.91, inputTokens: 414 });
+    assert.equal(calls.length, 0, 'the disposition call is not made');
+    assert.equal(managementCalls.length, 1);
+    assert.equal(managementCalls[0]?.model, CLEF_MODEL);
+    assert.equal(managementCalls[0]?.options, undefined);
+    assert.equal(managementCalls[0]?.inputs.state, state);
+    assert.deepEqual(managementCalls[0]?.inputs.questions, MANAGEMENT_QUESTIONS);
+    assert.deepEqual(Object.keys(managementCalls[0]?.inputs ?? {}), ['state', 'questions']);
+  }
+  const disposition = fakeClefEnv(clefWire(REPLY));
+  await readClefInteraction(DM, disposition.env);
+  assert.equal(Object.hasOwn(disposition.calls[0]?.inputs.questions as object, 'manage'), false,
+    'the disposition call never carries the management question');
+});
+
+// Defect caught: a failed or malformed management answer reads as a signal,
+// or a slow one holds the turn past Clef's bound.
+test('a management call that fails, never answers, or answers out of range is not a read', async () => {
+  assert.deepEqual(await readClefManagement(DM, undefined), { kind: 'unavailable' });
+  assert.equal((await readClefManagement(DM, fakeClefEnv('reply', { manage: 'error' }).env)).kind, 'error');
+  const started = Date.now();
+  assert.equal((await readClefManagement(DM, fakeClefEnv('reply', { manage: 'hang' }).env, 30)).kind, 'timeout');
+  assert.ok(Date.now() - started < 500, 'the read returned at the bound');
+  for (const [name, body] of [
+    ['a disposition answer', clefWire(REPLY)],
+    ['noul above 1', clefManagementWire(1.2)],
+    ['noul not a number', { answers: { manage: { type: 'noul', noul: 'yes' } } }],
+    ['null', null],
+  ] as const) {
+    assert.equal((await readClefManagement(DM, { AI: { run: async () => body } })).kind, 'unparseable', name);
+  }
+  const enveloped = await readClefManagement(DM, { AI: { run: async () => ({ result: clefManagementWire(0.4, 380) }) } });
+  assert.deepEqual(enveloped.kind === 'read' ? enveloped.reading : undefined, { manage: 0.4, inputTokens: 380 });
 });

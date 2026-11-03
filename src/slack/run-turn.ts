@@ -1950,6 +1950,9 @@ async function runTurnAttempt(
           agentId: assignment.agentId,
         })
       : [];
+    // Started with the judgment and bounded by it; the Agent's first render mounts the change tools on it.
+    const workspaceChangeTools = runtimePlanDecision !== undefined &&
+      (turn.managementProposalPending === true || await (judgment?.managementLikely ?? false));
     const handoffBlock = formatSlackPublicHandoff(frozenHandoff);
     const progressiveRelayFactory = options.prepareProgressiveRelay ??
       (agentViewPresentation
@@ -2161,6 +2164,7 @@ async function runTurnAttempt(
             ...(threadImages ? { threadImages } : {}),
             ...(threadFiles.length ? { threadFileIds: threadFiles.map(({ id }) => id) } : {}),
             ...(admittedListIds.length ? { admittedListIds } : {}),
+            ...(workspaceChangeTools ? { workspaceChangeTools } : {}),
             ...turnEnvelope,
             ...(platformEnv ? { env: platformEnv } : {}),
             ...(executionPrepared ? { executionPrepared } : {}),

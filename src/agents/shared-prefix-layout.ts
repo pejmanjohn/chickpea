@@ -19,7 +19,11 @@ import type { ResolvedAssignment } from '../config/types.ts';
 import { EXTERNAL_ACTION_AUTHORITY_PREAMBLE, savedAgentInstructionsBlock } from '../connections/runtime.ts';
 import { AGENT_AUTHORING_ROUTER_INSTRUCTION } from '../management/agent-authoring/index.ts';
 import { firstTeammateInstruction } from '../management/first-teammate.ts';
-import { SLACK_MANAGEMENT_GUIDANCE, slackManagementInstruction } from '../management/slack-tools.ts';
+import {
+  SLACK_MANAGEMENT_GUIDANCE,
+  USER_AGENT_CREATION_HANDOFF_INSTRUCTION,
+  slackManagementInstruction,
+} from '../management/slack-tools.ts';
 import { FILE_COMPLETION_INSTRUCTION } from '../slack/file-delivery-completion.ts';
 import { SLACK_LISTS_INSTRUCTION } from '../slack/lists/tools.ts';
 import { SLACK_ACTION_LINK_INSTRUCTION } from '../slack/message-format.ts';
@@ -72,7 +76,7 @@ export function slackSystemBase(input: {
     // A user Agent's routing sentence names its own ID, so it goes in the tenant block.
     ...(!input.managementMounted ? [] : input.kind === 'system'
       ? [slackManagementInstruction(CHICKPEA_AGENT_ID), firstTeammateInstruction()]
-      : [SLACK_MANAGEMENT_GUIDANCE]),
+      : [SLACK_MANAGEMENT_GUIDANCE, USER_AGENT_CREATION_HANDOFF_INSTRUCTION]),
     ...(input.memberToolsMounted ? [SLACK_LISTS_INSTRUCTION, SLACK_READING_INSTRUCTION] : []),
     SLACK_PRESENT_TABLE_INSTRUCTION,
   ].join(PART_SEPARATOR);

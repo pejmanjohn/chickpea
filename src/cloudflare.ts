@@ -1752,10 +1752,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     admittedListIds?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[4],
     turnEnvelope?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[5],
     threadFileIds?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[6],
+    workspaceChangeTools?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[7],
   ) {
     return this.call((stores) =>
       stores.turnJobs.prepareFlueDispatch(
-        id, message, observation, threadImages, admittedListIds, turnEnvelope, threadFileIds,
+        id, message, observation, threadImages, admittedListIds, turnEnvelope, threadFileIds, workspaceChangeTools,
       ),
     );
   }

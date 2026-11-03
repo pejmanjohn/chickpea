@@ -221,9 +221,13 @@ function evalSearchHits(query) {
 let selectedModel = FAUX_MODEL;
 /**
  * `full` mounts every tool up front. `lean` mounts the change tools the way a
- * Slack turn does: once the guide is active in the conversation.
+ * Slack turn does: once the guide is active in the conversation. `signal` is
+ * `lean` plus a perfect stand-in for Clef's management signal: a case whose
+ * expectation allows activation has them from its first request.
  */
 let evalMount = 'full';
+/** Under `--mount signal`, the case being run would carry the host's change-tools signal. */
+let currentCaseSignaled = false;
 /** The requester message being answered; the web tools read it as a Slack turn does. */
 let currentRequesterMessage = '';
 /** The web turn of the message being answered, fresh for each message as a Slack turn's is. */
@@ -643,8 +647,8 @@ function useEvaluationTools(changeToolsAt) {
 
 /** A guided agent's change-tool mount; a baseline has no guide to activate, so it keeps every tool. */
 function guidedChangeToolsAt(id) {
-  if (evalMount !== 'lean') return 'inline';
-  return useWorkspaceChangeToolsMounted(id) ? 'last' : 'none';
+  if (evalMount === 'full') return 'inline';
+  return useWorkspaceChangeToolsMounted(id, currentCaseSignaled) ? 'last' : 'none';
 }
 
 const EVAL_COMMON_INSTRUCTION = [
@@ -669,7 +673,7 @@ function CurrentGuideEvalAgent({ id }) {
   useModel(selectedModel);
   useInstruction(USER_AGENT_EVAL_INSTRUCTION);
   useInstruction(AGENT_AUTHORING_ROUTER_INSTRUCTION);
-  if (evalMount === 'lean') useInstruction(WORKSPACE_CHANGE_TOOLS_INSTRUCTION);
+  if (evalMount !== 'full') useInstruction(WORKSPACE_CHANGE_TOOLS_INSTRUCTION);
   useAgentAuthoringSkill();
   useEvaluationTools(guidedChangeToolsAt(id));
   useEvalResponseMetadata();
@@ -690,7 +694,7 @@ function CurrentGuideSystemEvalAgent({ id }) {
   useModel(selectedModel);
   useInstruction(SYSTEM_CHICKPEA_EVAL_INSTRUCTION);
   useInstruction(AGENT_AUTHORING_ROUTER_INSTRUCTION);
-  if (evalMount === 'lean') useInstruction(WORKSPACE_CHANGE_TOOLS_INSTRUCTION);
+  if (evalMount !== 'full') useInstruction(WORKSPACE_CHANGE_TOOLS_INSTRUCTION);
   useAgentAuthoringSkill();
   useEvaluationTools(guidedChangeToolsAt(id));
   useEvalResponseMetadata();
@@ -722,18 +726,20 @@ function parseArgs(argv) {
   if (!['current', 'baseline', 'both'].includes(options.variant)) {
     throw new Error('--variant must be current, baseline, or both.');
   }
-  if (!['full', 'lean'].includes(options.mount)) throw new Error('--mount must be full or lean.');
+  if (!['full', 'lean', 'signal'].includes(options.mount)) throw new Error('--mount must be full, lean, or signal.');
   return options;
 }
 
 function printHelp() {
   process.stdout.write([
-    'Usage: npm run evaluate:agent-authoring -- [--live] [--case ID] [--variant current|baseline|both] [--mount full|lean] [--output PATH]',
+    'Usage: npm run evaluate:agent-authoring -- [--live] [--case ID] [--variant current|baseline|both] [--mount full|lean|signal] [--output PATH]',
     '',
     'Without --live, validates the versioned corpus and runs a deterministic Flue boundary smoke test.',
     'With --live, AGENT_AUTHORING_EVAL_MODEL is required and each selected case uses a fresh conversation.',
     'With --mount lean, the guided variant mounts propose_workspace_changes and apply_workspace_changes only',
     'once agent-authoring is active in the conversation, as a Slack thread does; a call before that is counted.',
+    'With --mount signal, a case whose expectation allows activation has them from its first request, as a',
+    'perfect pre-dispatch signal would mount them; any other case is lean.',
     'Output contains case IDs, token counts, tool names, and assertion tokens; never prompts or assistant text.',
     '',
   ].join('\n'));
@@ -1068,6 +1074,43 @@ async function runLeanMountSmoke(corpus, faux) {
   assert(kept.unavailableToolCalls === 0 && JSON.stringify(kept.toolCalls.slice(-2).map(({ name, message }) => `${message}:${name}`)) ===
     JSON.stringify(['1:propose_workspace_changes', '1:record_eval_assessment']),
   'Lean mount: the follow-up message lost the change tools.');
+}
+
+/**
+ * The signal mount: a case that may activate has the change tools in its
+ * first request, so a call before activation runs; a case that must not
+ * activate stays lean, so the same call runs nothing.
+ */
+async function runSignalMountSmoke(corpus, faux) {
+  const creation = corpus.cases.find(({ id }) => id === 'new-agent-single-approval');
+  const ordinary = corpus.cases.find(({ id }) => id === 'ordinary-support-work');
+  assert(creation && ordinary && ordinary.expected.activation === 'forbidden', 'Signal mount smoke cases are missing.');
+  const call = (name, input) => fauxAssistantMessage([fauxToolCall(name, input)], { stopReason: 'toolUse' });
+  const create = () => call('apply_workspace_changes', {
+    idempotencyKey: 'create-scout',
+    operations: [{
+      itemId: 'agent',
+      kind: 'create_agent',
+      agent: {
+        id: 'agent_scout', name: 'Scout', description: 'Triages support email.', requestedHandle: 'scout',
+        editPolicy: 'all_workspace_members', instructions: 'Triage support email by urgency.', enabled: true,
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      },
+    }],
+  });
+  const recorded = (posture, placements, approvalPosture) => call('record_eval_assessment', {
+    posture, placements, approvalPosture, capabilityClaimsGrounded: true,
+  });
+
+  faux.setResponses([create(), recorded('commit', ['identity', 'instructions'], 'direct_allowed')]);
+  const signaled = await runCase('current', creation);
+  assert(signaled.signaled && signaled.unavailableToolCalls === 0 && signaled.toolNames.includes('apply_workspace_changes'),
+    'Signal mount: a signaled case did not have apply_workspace_changes in its first request.');
+
+  faux.setResponses([create(), recorded('ordinary_work', [], 'none')]);
+  const unsignaled = await runCase('current', ordinary);
+  assert(!unsignaled.signaled && unsignaled.unavailableToolCalls === 1 && !unsignaled.toolNames.includes('apply_workspace_changes'),
+    'Signal mount: a case that must not activate had the change tools mounted.');
 }
 
 async function runDeterministicConfirmationCase(entry, faux) {
@@ -1745,6 +1788,7 @@ async function runDeterministicSmoke(corpus) {
 
     await runConnectionTrialSmoke(corpus, faux);
     if (evalMount === 'lean') await runLeanMountSmoke(corpus, faux);
+    if (evalMount === 'signal') await runSignalMountSmoke(corpus, faux);
 
     return {
       mode: 'deterministic_smoke',
@@ -1786,6 +1830,10 @@ async function runDeterministicSmoke(corpus) {
           'lean_mount_recovery_via_activation_observed',
           'lean_mount_unmounted_call_counted',
           'lean_mount_kept_for_follow_up',
+        ] : []),
+        ...(evalMount === 'signal' ? [
+          'signal_mount_first_request_observed',
+          'signal_mount_unsignaled_lean_observed',
         ] : []),
       ],
     };
@@ -1835,6 +1883,7 @@ async function runLive(corpus, options) {
 
 async function runCase(variant, entry) {
   const actingScope = entry.actingScope ?? 'user_agent';
+  currentCaseSignaled = evalMount === 'signal' && entry.expected.activation !== 'forbidden';
   const handle = init(evalAgentFor(variant, entry));
   const calls = [];
   const toolNames = [];
@@ -1887,6 +1936,7 @@ async function runCase(variant, entry) {
     caseId: entry.id,
     variant,
     actingScope,
+    signaled: currentCaseSignaled,
     durationMs,
     usage,
     toolNames,
@@ -1926,6 +1976,7 @@ function buildReport(corpus, model, rawResults) {
       durationMs: raw.durationMs,
       usage: raw.usage,
       activation: raw.toolNames.includes('activate_skill'),
+      ...(evalMount === 'signal' ? { signaled: raw.signaled } : {}),
       skillCreationRead: raw.toolNames.includes('read_skill_resource'),
       toolNames: [...new Set(raw.toolNames)],
       unavailableToolCalls: raw.unavailableToolCalls,
@@ -2427,7 +2478,7 @@ async function main() {
     return;
   }
   evalMount = options.mount;
-  if (evalMount === 'lean') observe(noteAgentAuthoringActivation);
+  if (evalMount !== 'full') observe(noteAgentAuthoringActivation);
   const corpus = await loadCorpus();
   const report = options.live
     ? await runLive(corpus, options)

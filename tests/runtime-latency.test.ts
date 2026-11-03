@@ -144,6 +144,11 @@ test('interaction_judgment keeps its tokens, scales probabilities to thousandths
     modelMs: 2410,
     refinement: 'disagreed',
     agreed: false,
+    management: 'read',
+    managementMs: 240.6,
+    managementInputTokens: 414,
+    managementTop: 0.973,
+    managementFired: true,
   }, sink);
   emitInteractionJudgment({
     recordedBy: 'Complete the verification.',
@@ -151,6 +156,8 @@ test('interaction_judgment keeps its tokens, scales probabilities to thousandths
     gate: 'await_model',
     model: 'slack.botToken',
     clefLate: true,
+    management: 'Create an Agent named Scout.',
+    managementFired: false,
   }, sink);
   assert.equal(records.length, 2);
   assert.deepEqual(records[0], {
@@ -173,6 +180,11 @@ test('interaction_judgment keeps its tokens, scales probabilities to thousandths
     modelMs: 2410,
     refinement: 'disagreed',
     agreed: false,
+    management: 'read',
+    managementMs: 241,
+    managementInputTokens: 414,
+    managementTop: 973,
+    managementFired: true,
   });
   assert.deepEqual(records[1], {
     component: 'runtime',
@@ -180,6 +192,7 @@ test('interaction_judgment keeps its tokens, scales probabilities to thousandths
     clef: 'unavailable',
     gate: 'await_model',
     clefLate: true,
+    managementFired: false,
   });
   for (const record of records) assertContentFree(record!);
 });

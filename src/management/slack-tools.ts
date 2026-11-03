@@ -95,36 +95,12 @@ const SIGNAL_ATTRIBUTE_KEYS = [
   'messageTs',
   'turnJobId',
 ] as const;
-const SIGNAL_OPTIONAL_ATTRIBUTE_KEYS = [
-  'conversationKind',
-  'requesterText',
-  'requesterTextSource',
-  'requesterTimezone',
-  'attachmentFileIds',
-  'attachmentIntakeStatus',
-  'attachmentCount',
-  'threadImages',
-  'threadFileIds',
-  'admittedListIds',
-] as const;
-const SIGNAL_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
-  ...SIGNAL_ATTRIBUTE_KEYS,
-  ...SIGNAL_OPTIONAL_ATTRIBUTE_KEYS,
-]);
 /**
- * The host appends one attachment-analysis signal to an upload turn, and it
- * becomes the delivery that later renders of the response read until another
- * message reaches the model: a joined delivery or another appended signal,
- * such as the file-delivery check. It carries the triggering message's own identity forward
- * plus its own bounded evidence counters, so the same Slack request keeps the
- * same management authority on each of its renders.
+ * Facts a delivery never names: the routed Agent comes from the plan, and a
+ * public page read only from the web capability's own turn state. A delivery
+ * that names one is not a host Slack signal.
  */
-const ATTACHMENT_CONTEXT_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
-  ...SIGNAL_ALLOWED_ATTRIBUTE_KEYS,
-  'attachmentStatus',
-  'attachmentSuccessCount',
-  'attachmentFailureCount',
-]);
+const SIGNAL_RESERVED_ATTRIBUTE_KEYS = ['agentId', 'publicDocRead'] as const;
 
 export const scheduleActionInputSchema = v.object({
   requiredConnectionAccountIds: v.optional(v.pipe(v.array(v.string()), v.maxLength(100), v.description('Exact accounts this future task requires. Required on create or task change: use [] for connection-free work. Get stable IDs from inspect_workspace for the owning Agent and choose only the accounts needed by the task, never all available accounts. Omit for metadata-only edits to preserve the saved set. Ask the requester if the service/account is ambiguous.'))),
@@ -160,6 +136,8 @@ export interface SlackManagementSignal {
   turnJobId: string;
   /** Host-admitted List references for this exact request. */
   admittedListIds?: readonly string[];
+  /** The host mounts the workspace change tools in this turn's first request (workspace-change-tools.ts). */
+  workspaceChangeTools?: true;
   /** Files attached to the requester's current message, from the host's normalized turn. Never model-written. */
   attachmentFileIds?: readonly string[];
   threadFileIds?: readonly string[];
@@ -626,6 +604,13 @@ export const SLACK_MANAGEMENT_GUIDANCE = [
   'Standalone requests for future or repeated work belong to manage_scheduled_work, even when the requester does not use the word “schedule” (for example, “check this again in 5 minutes”). “Again” means create a fresh follow-up unless the requester explicitly identifies an existing routine to edit. Keep “in N minutes” relative by using scheduleKind in plus minutes; do not compute a wall-clock time. “Tell me anything new” implies outputPolicy post_on_change. Clear create, edit, pause, resume, disable, and run-now actions apply immediately without approval. Before acting on an existing routine, call inspect_routines and use an exact routine ID and current version where required; ask the requester to disambiguate if more than one routine matches. Deleting scheduled work is deliberately excluded from manage_scheduled_work because it is irreversible: for a clear request to delete a routine, first call inspect_routines, then send the exact delete_routine operation to propose_workspace_changes and show presentation.slack; the routine is deleted only when the person approves it. Never use apply_workspace_changes for routine deletion. Apart from routine deletion, do not route standalone scheduled work through propose_workspace_changes or apply_workspace_changes. Compound Agent-configuration changes still use the normal proposal flow.',
 ].join(' ');
 
+/**
+ * A user Agent's guidance only. Only Chickpea creates Agents, and Clef's
+ * management signal cannot tell a user Agent's creation request from
+ * Chickpea's, so the user Agent hands it over without loading the guide.
+ */
+export const USER_AGENT_CREATION_HANDOFF_INSTRUCTION = 'When someone asks you to create a new Agent, do not activate agent-authoring: only Chickpea creates Agents, so call request_chickpea_handoff with reason cross_agent and follow the instruction it returns.';
+
 /** Names the acting Agent; a user Agent's goes in the tenant block of its system prompt. */
 export function slackManagementRoutingInstruction(agentId: string): string {
   return `This Slack conversation is routed to trusted acting Agent ID ${agentId}.`;
@@ -647,7 +632,7 @@ const SLACK_SKILL_UPLOAD_INSTRUCTION = 'The person\'s current message has files 
 
 /** Management tools the caller mounts later in the tool list, each where the shared prompt prefix needs it. */
 export interface DeferredSlackManagementTools {
-  /** The change tools, once agent-authoring is active in the thread (workspace-change-tools.ts). */
+  /** The change tools, once agent-authoring is active in the thread or the host signals the turn (workspace-change-tools.ts). */
   changeTools?: () => void;
   /** upload_skills, when the person's message has files. */
   skillUpload?: () => void;
@@ -671,7 +656,7 @@ export function useWorkspaceManagementSlackTools(
 ): DeferredSlackManagementTools | undefined {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal) return undefined;
-  const changeToolsMounted = useWorkspaceChangeToolsMounted(instanceId);
+  const changeToolsMounted = useWorkspaceChangeToolsMounted(instanceId, signal.workspaceChangeTools === true);
   const turnGuard = useSlackManagementTurnGuard(signal.turnJobId);
   const [creationState, persistCreationState] = usePersistentState<SlackAgentCreationTurnState>(
     SLACK_AGENT_CREATION_TURN_STATE,
@@ -1005,16 +990,17 @@ export function parseSlackManagementSignal(
   plan: RuntimePlanV2,
 ): SlackManagementSignal | undefined {
   if (delivery.kind !== 'signal' || !delivery.attributes) return undefined;
+  // An upload turn's attachment analysis carries the triggering message's
+  // identity forward, so later renders keep the same management authority.
   const attachmentContext = delivery.type === 'slack.attachment_context' &&
     delivery.tagName === 'slack_attachment_context';
   if (!attachmentContext &&
       (delivery.type !== 'slack.message' || delivery.tagName !== 'slack_message')) {
     return undefined;
   }
-  const allowedKeys = attachmentContext
-    ? ATTACHMENT_CONTEXT_ALLOWED_ATTRIBUTE_KEYS
-    : SIGNAL_ALLOWED_ATTRIBUTE_KEYS;
-  if (Object.keys(delivery.attributes).some((key) => !allowedKeys.has(key))) return undefined;
+  // Any other attribute is ignored, so a newer host's addition does not strip
+  // an older Agent's turn of its tools during a rolling deploy.
+  for (const key of SIGNAL_RESERVED_ATTRIBUTE_KEYS) if (Object.hasOwn(delivery.attributes, key)) return undefined;
   const values = Object.fromEntries(SIGNAL_ATTRIBUTE_KEYS.map((key) => [
     key,
     boundedAttribute(delivery.attributes?.[key], key, key.endsWith('Ts') ? 80 : 256),
@@ -1051,6 +1037,8 @@ export function parseSlackManagementSignal(
     ...(admittedListIds ? { admittedListIds } : {}),
     ...(attachmentFileIds ? { attachmentFileIds } : {}),
     ...(threadFileIds ? { threadFileIds } : {}),
+    // Any other value is no signal: the turn stays lean.
+    ...(delivery.attributes.workspaceChangeTools === 'mounted' ? { workspaceChangeTools: true as const } : {}),
     agentId: plan.agentId,
   };
 }

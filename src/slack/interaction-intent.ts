@@ -13,7 +13,12 @@ import {
   hasDisallowedControlCharacter,
   isRecord,
 } from '../security/content-validation.ts';
-import { readClefInteraction, type ClefOutcome } from './clef-intent.ts';
+import {
+  readClefInteraction,
+  readClefManagement,
+  type ClefManagementOutcome,
+  type ClefOutcome,
+} from './clef-intent.ts';
 import type { AgentDispatchResult } from './flue-dispatch.ts';
 import {
   stripResolvedSlackCommandAddress,
@@ -269,6 +274,12 @@ export async function classifySlackInteraction(
 export const CLEF_CONFIDENT_TOP = 0.6;
 /** Clef's memory noul at or above this makes a turn substantive, as the model's `memoryIntent: possible` does. */
 export const CLEF_MEMORY_POSSIBLE = 0.5;
+/**
+ * Clef's management noul at or above this mounts the workspace change tools
+ * in the turn's first request: every change case and no inspect case on the
+ * 2026-11-02 synthetic set, firing on 3 of 88 other guaranteed turns.
+ */
+export const CLEF_MANAGEMENT_LIKELY = 0.5;
 
 declare const LABELS_OWED: unique symbol;
 
@@ -380,9 +391,17 @@ export interface GuaranteedInteractionJudgment {
    */
   readonly lateChecklist: Promise<readonly string[] | undefined>;
   /**
+   * Clef's separate management call read the message as a change to how
+   * Agents are configured (its noul at or above CLEF_MANAGEMENT_LIKELY). The
+   * call never touches the disposition. A shortcut asks nothing, and a
+   * timeout, error, unparseable answer, or missing binding is no signal: each
+   * is `false`, within Clef's bound. Never rejects.
+   */
+  readonly managementLikely: Promise<boolean>;
+  /**
    * Everything the judgment started has ended: the basis recorded or refused,
-   * the model settled and metered, Clef settled. Resolves to the content-free
-   * trace. Never rejects.
+   * the model settled and metered, both Clef calls settled. Resolves to the
+   * content-free trace. Never rejects.
    */
   readonly settled: Promise<InteractionJudgmentTrace>;
 }
@@ -436,6 +455,14 @@ export interface InteractionJudgmentTrace {
   readonly refinement?: Refinement['kind'] | Extract<Refinement, { kind: 'discarded' }>['why'];
   /** The disposition Clef read (after its memory fold) equals the model's. Present when both answered. */
   readonly agreed?: boolean;
+  /** How the management call ended; absent after a shortcut, which asks nothing. */
+  readonly management?: ClefManagementOutcome['kind'];
+  readonly managementMs?: number;
+  readonly managementInputTokens?: number;
+  /** Clef's management noul. */
+  readonly managementTop?: number;
+  /** The turn's first request mounts the change tools on Clef's account. */
+  readonly managementFired?: boolean;
 }
 
 /**
@@ -466,7 +493,7 @@ export function judgeGuaranteedInteraction(
       () => judgmentTrace(judgment, basisMs),
       () => judgmentTrace(judgment, basisMs),
     ).then(emit);
-    return { basis, lateChecklist: Promise.resolve(undefined), settled };
+    return { basis, lateChecklist: Promise.resolve(undefined), managementLikely: Promise.resolve(false), settled };
   }
 
   const classify = options.classify ?? ((input: SlackInteractionIntentContext) =>
@@ -482,6 +509,8 @@ export function judgeGuaranteedInteraction(
     outcome,
     early: earlyInteractionJudgment(outcome),
   }));
+  const management = readClefManagement(context, options.env);
+  const managementLikely = management.then(managementFired);
 
   // Exactly one decider. A promise keeps its first resolution, so whichever
   // settles first decides and a late Clef dispatch records nothing.
@@ -528,9 +557,10 @@ export function judgeGuaranteedInteraction(
   });
 
   const settled = Promise.allSettled([basis, lateMeter, refined]).then(async () => {
-    const [{ outcome, early }, { classification, ms }, d] = await Promise.all([clef, model, decided]);
+    const [{ outcome, early }, { classification, ms }, d, managed] = await Promise.all([clef, model, decided, management]);
     return emit(judgmentTrace(judgment, basisMs, {
       clef: outcome,
+      management: managed,
       gate: early.kind,
       clefLate: early.kind === 'dispatch' && d.by === 'model',
       model: classification,
@@ -541,7 +571,11 @@ export function judgeGuaranteedInteraction(
     }));
   });
 
-  return { basis, lateChecklist, settled };
+  return { basis, lateChecklist, managementLikely, settled };
+}
+
+function managementFired(outcome: ClefManagementOutcome): boolean {
+  return outcome.kind === 'read' && outcome.reading.manage >= CLEF_MANAGEMENT_LIKELY;
 }
 
 function judgmentTrace(
@@ -549,6 +583,7 @@ function judgmentTrace(
   basisMs: number | undefined,
   observed?: {
     clef: ClefOutcome;
+    management: ClefManagementOutcome;
     gate: EarlyInteractionJudgment['kind'];
     clefLate: boolean;
     model: SlackInteractionClassification;
@@ -585,6 +620,18 @@ function judgmentTrace(
       : {}),
     ...(refinement === undefined ? {} : { refinement }),
     ...(observed?.agreed === undefined ? {} : { agreed: observed.agreed }),
+    ...(observed ? managementTrace(observed.management) : {}),
+  };
+}
+
+function managementTrace(outcome: ClefManagementOutcome): Partial<InteractionJudgmentTrace> {
+  const reading = outcome.kind === 'read' ? outcome.reading : undefined;
+  return {
+    management: outcome.kind,
+    ...(outcome.kind === 'unavailable' ? {} : { managementMs: outcome.ms }),
+    ...(reading?.inputTokens === undefined ? {} : { managementInputTokens: reading.inputTokens }),
+    ...(reading ? { managementTop: reading.manage } : {}),
+    managementFired: managementFired(outcome),
   };
 }
 

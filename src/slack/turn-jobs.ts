@@ -2144,6 +2144,8 @@ export class TurnJobStoreLogic {
     admittedListIds?: readonly string[],
     turnEnvelope?: TurnEnvelopeV1,
     threadFileIds?: readonly string[],
+    /** Mount the change tools in the turn's first request; frozen with the envelope like every attribute. */
+    workspaceChangeTools?: boolean,
   ): FlueDispatchEnvelopeV1 {
     if (typeof message !== 'string' || message.length === 0) {
       throw new Error('Flue dispatch message must be non-empty.');
@@ -2229,6 +2231,7 @@ export class TurnJobStoreLogic {
             ...(serializedThreadImages ? { threadImages: serializedThreadImages } : {}),
             ...(serializedThreadFileIds ? { threadFileIds: serializedThreadFileIds } : {}),
             ...(serializedAdmittedListIds ? { admittedListIds: serializedAdmittedListIds } : {}),
+            ...(workspaceChangeTools === true ? { workspaceChangeTools: 'mounted' as const } : {}),
             ...((turn.attachmentIntake || turn.attachments?.length)
               ? {
                   attachmentIntakeStatus: turn.attachmentIntake?.status ?? 'ok',
@@ -3473,6 +3476,7 @@ function parseSlackSignalMessage(
     'threadImages',
     'threadFileIds',
     'admittedListIds',
+    'workspaceChangeTools',
   ]);
   const parsed = {
     workspaceId: validateBoundedString(attributes.workspaceId, 'Slack workspace id', 128),
@@ -3514,6 +3518,9 @@ function parseSlackSignalMessage(
     ...(attributes.admittedListIds === undefined
       ? {}
       : { admittedListIds: validateAdmittedListIds(attributes.admittedListIds) }),
+    ...(attributes.workspaceChangeTools === undefined
+      ? {}
+      : { workspaceChangeTools: validateWorkspaceChangeTools(attributes.workspaceChangeTools) }),
   };
   if ((parsed.attachmentIntakeStatus === undefined) !== (parsed.attachmentCount === undefined)) {
     throw new Error('Flue Slack attachment intake metadata is incomplete.');
@@ -3549,6 +3556,11 @@ function validateAdmittedListIds(value: unknown): string {
   const parsed = parseAdmittedSlackListIds(value);
   if (!parsed) throw new Error('Flue Slack List admission metadata is invalid.');
   return serializeAdmittedSlackListIds(parsed)!;
+}
+
+function validateWorkspaceChangeTools(value: unknown): 'mounted' {
+  if (value === 'mounted') return value;
+  throw new Error('Flue Slack change-tools signal is invalid.');
 }
 
 function validateConversationKind(value: unknown): 'channel' | 'im' | 'mpim' {
