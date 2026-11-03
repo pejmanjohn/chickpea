@@ -2485,19 +2485,22 @@ async function runTurnAttempt(
         await endWithoutReply();
         return;
       }
-      // The host's line, never the model's draft.
-      review.answer = frontDeskDecision.line;
-      await statusTurn.prepareFinal();
-      await presenter.deliverFinal(frontDeskDecision.line, 'plain_text', 'complete');
-      const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
       if (frontDeskDecision.kind === 'handoff') {
+        // Known before the line is posted: the executor wakes the Agent's
+        // runner on it now, and admits the takeover once the line is settled.
         options.onFrontDeskHandoff?.({
           turn,
           fromAgentId: assignment.agentId,
           agentId: frontDeskDecision.option.agentId,
           agentName: frontDeskDecision.option.name,
         });
-      } else if (frontDeskDecision.kind === 'card') {
+      }
+      // The host's line, never the model's draft.
+      review.answer = frontDeskDecision.line;
+      await statusTurn.prepareFinal();
+      await presenter.deliverFinal(frontDeskDecision.line, 'plain_text', 'complete');
+      const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+      if (frontDeskDecision.kind === 'card') {
         await deliverAgentChoiceSurface({
           turn,
           assignment,

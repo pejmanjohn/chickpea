@@ -245,6 +245,21 @@ export interface SlackDeliveryNote extends SlackInboundEnvelope {
   receivedAt: number;
 }
 
+/**
+ * A front desk hand-off decided inside Chickpea's run, as its thread runner
+ * tells the state store of it (SlackStateStore.noteFrontDeskHandoff): the
+ * person's root DM message, the Agent it goes to, and the runner's clock at
+ * the decision.
+ */
+export interface SlackFrontDeskHandoffNote {
+  workspaceId: string;
+  channelId: string;
+  threadTs: string;
+  messageTs: string;
+  agentId: string;
+  decidedAt: number;
+}
+
 /** The combined claims + thread-registry surface the Slack channel consumes. */
 export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   admitCanonical(input: SlackCanonicalAdmissionInput): Promise<SlackCanonicalAdmissionResult>;
@@ -257,6 +272,15 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
    * on the request path; nothing here changes what the Worker admits.
    */
   noteDelivery?(note: SlackDeliveryNote): Promise<void>;
+  /**
+   * Cloudflare, a thread runner: Chickpea's run decided to hand its root DM
+   * to an Agent, about two seconds before that Agent's takeover turn is
+   * admitted. The state store wakes the runner the takeover will be handed to
+   * and keeps the decision time as that turn's receipt
+   * (TagStateStore.noteFrontDeskHandoff). Never awaited on the run's path;
+   * nothing here changes what is admitted.
+   */
+  noteFrontDeskHandoff?(note: SlackFrontDeskHandoffNote): Promise<void>;
   /** Admit a person's edit of a message whose turn is queued or running (SlackStateLogic.admitEdit). */
   admitEdit?(edit: SlackMessageEdit): Promise<SlackEditAdmission>;
   /** Node fallback when Slack truth cannot authorize a canonical Work/Run. */

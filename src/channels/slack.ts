@@ -93,6 +93,7 @@ import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import {
   frontDeskConversation,
   frontDeskFailureLine,
+  frontDeskTakeoverKey,
   frontDeskTakeoverTurn,
   type FrontDeskOrigin,
   type SlackFrontDeskHandoffRequest,
@@ -2245,11 +2246,6 @@ async function resumeCoAddressedTurns(input: {
 /** The claim key, and the queued turn's ID, of one Agent's turn on a message another Agent's turn holds. */
 function askMessageKey(channelId: string, messageTs: string, agentId: string): string {
   return `msg:${channelId}:${messageTs}:ask-${agentId}`;
-}
-
-/** The claim key, and the queued turn's ID, of a message's front-desk takeover: one per message, whoever takes it. */
-function frontDeskTakeoverKey(channelId: string, messageTs: string): string {
-  return `msg:${channelId}:${messageTs}:handoff`;
 }
 
 /**

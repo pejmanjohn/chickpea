@@ -19,7 +19,7 @@ import { isPlatformReset, settlementFailureFacts } from './agent-failure-diagnos
 import type { AdmissionAgentWake } from './admission-agent-wake.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 import { alarmYieldIsFree, type AlarmTurnJobControl } from './alarm-turn-drain.ts';
-import type { SlackStateLogic } from './claim-store.ts';
+import type { SlackStateLogic, SlackStateStore } from './claim-store.ts';
 import type { SlackStatusRegistry } from './status-registry.ts';
 import { postSteeringReply, steeringReplyTarget } from './steering-replies.ts';
 import {
@@ -115,11 +115,15 @@ export interface TurnExecutionPorts {
     | 'markError'
     | 'finishStop'
   >> & Partial<AsyncCapable<Pick<TurnJobStoreLogic, 'fold'>>>;
-  /** Slack claims and the per-thread active-work flag. */
+  /**
+   * Slack claims and the per-thread active-work flag; and, from a thread
+   * runner, the note of a front desk hand-off the state store wakes the
+   * Agent's runner on (absent where turns run in the state store itself).
+   */
   slack: AsyncCapable<Pick<
     SlackStateLogic,
     'setActiveWork' | 'markCodingActiveWork' | 'isCodingActiveWork' | 'release'
-  >>;
+  >> & Pick<SlackStateStore, 'noteFrontDeskHandoff'>;
   /** Thread context for every Agent message the turn delivers. */
   config: Parameters<typeof recordDeliveredSlackAgentMessage>[0];
   /**
@@ -574,7 +578,24 @@ export async function executeTurnJob(
         agentAsks.note(delivery);
         return recordDeliveredSlackAgentMessage(ports.config, job.turn, job.assignment, delivery);
       },
-      onFrontDeskHandoff: (request) => { frontDeskHandoff = request; },
+      onFrontDeskHandoff: (request) => {
+        frontDeskHandoff = request;
+        // The state store wakes the Agent's runner now, about two seconds
+        // before the takeover is admitted (TagStateStore.noteFrontDeskHandoff).
+        // The run never waits for it, and a failure fails nothing.
+        try {
+          void Promise.resolve(ports.slack.noteFrontDeskHandoff?.({
+            workspaceId: request.turn.workspaceId,
+            channelId: request.turn.channelId,
+            threadTs: request.turn.threadTs,
+            messageTs: request.turn.messageTs,
+            agentId: request.agentId,
+            decidedAt: Date.now(),
+          })).catch(() => undefined);
+        } catch {
+          // The hand-off addresses the runner either way.
+        }
+      },
       ...(replayText === undefined ? {} : { replayText }),
       stopEnding: stoppedEnding,
       ...(job.previousStop ? { previousStop: job.previousStop } : {}),

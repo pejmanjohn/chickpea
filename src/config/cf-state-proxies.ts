@@ -167,6 +167,7 @@ import type {
 import type {
   SlackCanonicalAdmissionInput,
   SlackDeliveryNote,
+  SlackFrontDeskHandoffNote,
   SlackStateStore,
 } from '../slack/claim-store.ts';
 import type { SlackMessageEdit } from '../slack/edits.ts';
@@ -2017,6 +2018,10 @@ export class CfSlackStateStore implements SlackStateStore {
     await rpcVia(this.stub, 'noteSlackDelivery', (stub) => stub.noteSlackDelivery(note));
   }
 
+  async noteFrontDeskHandoff(note: SlackFrontDeskHandoffNote) {
+    await rpcVia(this.stub, 'noteFrontDeskHandoff', (stub) => stub.noteFrontDeskHandoff(note));
+  }
+
   async admitEdit(edit: SlackMessageEdit) {
     return rpcVia(this.stub, 'slackTurnAdmitEdit', (stub) => stub.slackTurnAdmitEdit(edit));
   }
@@ -2474,6 +2479,11 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
 
   release(key: string) {
     return this.slack((store) => store.release(key));
+  }
+
+  /** One attempt, never replayed: a wake lost to a disconnect costs nothing a second wake would recover. */
+  noteFrontDeskHandoff(note: SlackFrontDeskHandoffNote) {
+    return this.once((store) => store.noteFrontDeskHandoff(note));
   }
 
   matchFlueObservation(instanceId: string, submissionId?: string) {
